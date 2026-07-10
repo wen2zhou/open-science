@@ -1,0 +1,37 @@
+name: CodeQL
+
+# Native GitHub SAST for the JS/TS codebase. Free for public repos.
+# Value for this Electron app: IPC surface, preload/contextIsolation, renderer handling
+# of external content. Runs on PRs to main, pushes to main, and weekly.
+on:
+  push:
+    branches: [main]
+  pull_request:
+    branches: [main]
+  schedule:
+    # Weekly, Monday 03:27 UTC (off the :00 mark to avoid the cron rush).
+    - cron: '27 3 * * 1'
+
+permissions:
+  contents: read
+  security-events: write
+
+jobs:
+  analyze:
+    name: Analyze (JS/TS)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          # Electron main + renderer are both JS/TS; this language pack covers both.
+          languages: javascript-typescript
+
+      # JS/TS needs no compilation, so no build step is required before analysis.
+      - name: Perform CodeQL Analysis
+        uses: github/codeql-action/analyze@v3
+        with:
+          category: "/language:javascript-typescript"

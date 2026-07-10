@@ -1,0 +1,30 @@
+# Configuration for GitHub's native "automatically generated release notes".
+# release-mac.yml already publishes with `generate_release_notes: true`; this file
+# only adds label-based categorization. No third-party app (e.g. Release Drafter) needed.
+# Depends on the label taxonomy documented in repo-governance.md.
+changelog:
+  exclude:
+    labels:
+      - ignore-for-release
+  categories:
+    - title: ⚠️ Breaking Changes
+      labels:
+        - breaking-change
+    - title: 🚀 Features
+      labels:
+        - "type: feature"
+    - title: 🐛 Fixes
+      labels:
+        - "type: fix"
+    - title: 📚 Documentation
+      labels:
+        - "type: docs"
+    - title: 🔧 Maintenance
+      labels:
+        - "type: chore"
+    - title: 📦 Dependencies
+      labels:
+        - dependencies
+    - title: Other Changes
+      labels:
+        - "*"

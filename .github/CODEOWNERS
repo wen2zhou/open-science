@@ -1,0 +1,12 @@
+# Code owners for open-science.
+# Purpose: reviewer routing + enables branch protection's "require review from Code Owners".
+# Single maintainer today, so the default rule covers everything; the targeted rules
+# below document intent for when more owners are added.
+
+# Default owner for the whole repo
+* @wen2zhou
+
+# Governance, CI and automation — always route to the maintainer
+/.github/          @wen2zhou
+/CLAUDE.md         @wen2zhou
+/repo-governance.md @wen2zhou

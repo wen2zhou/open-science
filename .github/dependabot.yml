@@ -24,3 +24,16 @@ updates:
           - "vite*"
           - "vitest*"
           - "@vitejs/*"
+
+  # Keep the Action versions pinned in .github/workflows/*.yml current (security + breaking
+  # changes land as major bumps). All actions grouped into one PR — low volume, avoids noise.
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly
+      day: monday
+    open-pull-requests-limit: 5
+    groups:
+      actions:
+        patterns:
+          - "*"
