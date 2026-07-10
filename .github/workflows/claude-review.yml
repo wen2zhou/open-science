@@ -5,7 +5,7 @@ name: Claude PR Review
 on:
   pull_request:
     branches:
-      - master
+      - main
     types: [opened, synchronize, reopened]
 
 concurrency:

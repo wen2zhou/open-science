@@ -1,0 +1,42 @@
+name: Feature Request
+description: Suggest a new capability or improvement.
+labels: ["feature", "triage"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for sharing your idea. A concrete description of the problem you're solving helps us evaluate and prioritise the request.
+
+  - type: textarea
+    id: problem
+    attributes:
+      label: Problem / motivation
+      description: What are you trying to do that's currently difficult or impossible?
+      placeholder: "I'm trying to ... but ..."
+    validations:
+      required: true
+
+  - type: textarea
+    id: solution
+    attributes:
+      label: Proposed solution
+      description: What would you like to see? Feel free to be specific about UI, behaviour, or API shape.
+    validations:
+      required: true
+
+  - type: textarea
+    id: alternatives
+    attributes:
+      label: Alternatives considered
+      description: Have you tried working around this? Are there other approaches that could solve the problem?
+
+  - type: dropdown
+    id: pr
+    attributes:
+      label: Would you be willing to submit a PR?
+      options:
+        - "Yes"
+        - "Yes, with guidance"
+        - "No"
+    validations:
+      required: true

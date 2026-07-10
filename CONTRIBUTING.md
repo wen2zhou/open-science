@@ -76,10 +76,18 @@ green. New behavior should come with tests.
 
 ## Commit Messages
 
-- Write clear, imperative-mood commit subjects (e.g. "Add project sidebar
-  filter", not "Added" or "Adds").
-- Keep the subject concise; use the body to explain the *why* when it isn't
-  obvious from the diff.
+We follow [Conventional Commits](https://www.conventionalcommits.org/): prefix
+the subject with a type, e.g. `feat: add project sidebar filter`.
+
+- Common types: `feat` (new feature), `fix` (bug fix), `docs`, `refactor`,
+  `test`, `chore` (tooling/deps/housekeeping).
+- Write the subject in imperative mood (`add`, not `added`/`adds`) and keep it
+  concise; use the body to explain the *why* when it isn't obvious from the diff.
+- Use `feat:` / `fix:` for user-visible changes — these are the ones that also
+  need a `CHANGELOG.md` entry.
+
+This is convention, not enforced by a hook yet; it keeps history readable and
+lets us adopt automated releases later without rewriting it.
 
 ## Pull Requests
 
