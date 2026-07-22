@@ -778,12 +778,12 @@ describe('JobPoller — harvest wiring', () => {
   it('dispatches harvest asynchronously when a job transitions to success (does not await)', async () => {
     // harvestFn hangs forever — the tick must still return promptly.
     let harvestStarted = false
-    const harvestFn: HarvestFn = vi.fn((_job: ComputeJob): Promise<void> => {
+    const harvestFn = vi.fn((): Promise<void> => {
       harvestStarted = true
       return new Promise(() => {
         /* never resolves */
       })
-    })
+    }) as unknown as HarvestFn
 
     const job = makeJob()
     const update = vi.fn((_id: string, u: unknown) => Promise.resolve({ ...job, ...(u as object) }))

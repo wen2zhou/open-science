@@ -14,7 +14,7 @@ import { ConcurrencyManager } from './concurrency-manager'
 import { ComputeApprovalBroker } from './compute-approval-broker'
 import type { SshRunner } from './ssh-runner'
 import type { ScpRunner } from './scp-runner'
-import { computeProviderId } from '../../shared/compute'
+import { computeProviderId, type ComputeJob } from '../../shared/compute'
 
 // Mock the job-dispatcher module to prevent real SSH dispatches
 vi.mock('./job-dispatcher', async () => {
@@ -93,7 +93,7 @@ describe('ConcurrencyManager integration with ComputeService', () => {
       makeFakeScp(),
       undefined,
       jobRepo,
-      onJobUpdatedSpy as any,
+      onJobUpdatedSpy as unknown as (job: ComputeJob) => void,
       undefined,
       storageRoot,
       concurrencyManager

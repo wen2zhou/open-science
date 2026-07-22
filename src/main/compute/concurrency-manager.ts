@@ -141,7 +141,7 @@ export class ConcurrencyManager {
           try {
             await this.jobRepository.update(job.job_id, { status: 'submitted' })
             await this.dispatchJob(job.job_id)
-          } catch (err) {
+          } catch {
             // If dispatch fails, mark job as error and continue to next queued job
             await this.jobRepository.update(job.job_id, {
               status: 'error',

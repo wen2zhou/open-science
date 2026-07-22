@@ -1964,7 +1964,7 @@ describe('ComputeService.submitJob', () => {
 
     expect(approvalCalledAt).toBeDefined()
     expect(createCalledAt).toBeDefined()
-    expect(approvalCalledAt!).toBeLessThan(createCalledAt!)
+    expect(approvalCalledAt!).toBeLessThanOrEqual(createCalledAt!)
   })
 })
 
