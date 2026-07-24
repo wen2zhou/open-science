@@ -421,10 +421,42 @@ export class JobPoller {
       // Reset vanish counter since we have a definitive result.
       this.vanishCounters.delete(job.job_id)
 
-      let status: 'success' | 'failed' | 'timeout'
+      // Phase 04: Slurm remoteState override (design.md §4.4 / issue 03 design discrepancy #2).
+      // The numeric exit code from sacct is unreliable for scheduler-initiated terminations:
+      //   - TIMEOUT:       sacct often reports exit 0:15 (signal 15), code portion = 0
+      //   - OUT_OF_MEMORY: exit 0:9 or 125:0 depending on Slurm version
+      //   - NODE_FAIL:     exit 0:1 (node eviction signal)
+      //   - PREEMPTED:     exit 0:9 (SIGKILL from preemption)
+      //   - CANCELLED:     exit 0:15 when user ran scancel
+      // When remoteState is available it is the authoritative termination cause; numeric exit code
+      // carries supplementary detail but must not override the scheduler state classification.
+      let status: 'success' | 'failed' | 'timeout' | 'cancelled'
       let errorCode: string | undefined
 
-      if (exitCode === 0) {
+      if (remoteState === 'TIMEOUT') {
+        // Slurm walltime exceeded — classify as timeout regardless of numeric code.
+        status = 'timeout'
+        errorCode = 'timeout'
+      } else if (remoteState === 'CANCELLED') {
+        // Slurm CANCELLED: could be user-initiated (scancel by this app) or scheduler-initiated
+        // (dependency failure, admin cancel). Without a user_cancelled marker on the job, we
+        // treat scheduler-visible CANCELLED as 'cancelled' so the user sees the correct state.
+        // A user-initiated cancel path stamps error_code='user_cancelled' before this point;
+        // the direct cancel path (Direct driver) never reaches here (no remoteState).
+        status = 'cancelled'
+        errorCode = job.error_code ?? 'user_cancelled'
+      } else if (
+        remoteState === 'OUT_OF_MEMORY' ||
+        remoteState === 'NODE_FAIL' ||
+        remoteState === 'PREEMPTED' ||
+        remoteState === 'FAILED' ||
+        remoteState === 'BOOT_FAIL' ||
+        remoteState === 'DEADLINE'
+      ) {
+        // Scheduler-originated failure — always 'failed', preserve exact remoteState for diagnostics.
+        status = 'failed'
+        errorCode = 'job_failed'
+      } else if (exitCode === 0) {
         status = 'success'
       } else if (exitCode === 124) {
         status = 'timeout'
@@ -460,14 +492,22 @@ export class JobPoller {
         finishedAt: new Date()
       })
       this.deps.onJobUpdated?.(updated)
-      // Async-dispatch harvest for success/failed/timeout (design §3). Not awaited — must not
-      // block the tick loop. 'error' status is never reached here (only in the noHandle path).
+      // Async-dispatch harvest for all terminal statuses (design §3, design.md §4.4: all terminal
+      // states including cancelled proceed to harvest). Not awaited — must not block the tick loop.
       this._dispatchHarvest(updated)
       return
     }
 
     // Process gone but no exit_code file — potential process_vanished.
+    // Exception: if a cancel was already applied (error_code='user_cancelled'), do not override it
+    // with process_vanished — the process disappearing is the expected result of cancel.
     if (!alive && !hasExitCode) {
+      if (job.status === 'cancelled' || job.error_code === 'user_cancelled') {
+        // The process is gone because we cancelled it — leave as terminal, dispatch harvest.
+        this._dispatchHarvest(job)
+        return
+      }
+
       const state = this.vanishCounters.get(job.job_id) ?? { ticks: 0 }
       state.ticks++
       this.vanishCounters.set(job.job_id, state)

@@ -75,6 +75,11 @@ type NotebookLocalRpcServerOptions = {
       queued_count: number
       provider_ceilings: Record<string, number>
     }>
+    // Per-job lifecycle operations (issue 04): cancel a running/submitted job (driver-delegated) and
+    // clean up a terminal+harvested job's remote workdir (guarded). Optional so existing test doubles
+    // that predate issue 04 still satisfy the shape (matches the optional-computeService pattern).
+    cancelJob?(jobId: string): Promise<void>
+    cleanupJob?(jobId: string): Promise<void>
   }
   skillImporter?: Pick<ConversationSkillImporter, 'request'>
 }
@@ -404,6 +409,25 @@ class NotebookLocalRpcServer {
       if (op === 'concurrency_status') {
         const sessionId = typeof params.session_id === 'string' ? params.session_id : ''
         return this.computeService.getSessionConcurrencyStatus(sessionId)
+      }
+
+      // op='cancel_job' — explicit user-initiated cancellation (design.md §6 / issue 04).
+      // Uses the job's snapshotted driver; Direct kills the process group, Slurm runs scancel.
+      // Transitions the job to status='cancelled' with error_code='user_cancelled'.
+      if (op === 'cancel_job') {
+        if (!this.computeService.cancelJob) throw new Error('cancel_job is not supported.')
+        const jobId = typeof params.job_id === 'string' ? params.job_id : ''
+        await this.computeService.cancelJob(jobId)
+        return { ok: true }
+      }
+
+      // op='cleanup_job' — delete the remote workdir for a terminal+harvested job (design.md §6).
+      // Guards: terminal + harvested + safe workdir boundary + jobId-in-path ownership check.
+      if (op === 'cleanup_job') {
+        if (!this.computeService.cleanupJob) throw new Error('cleanup_job is not supported.')
+        const jobId = typeof params.job_id === 'string' ? params.job_id : ''
+        await this.computeService.cleanupJob(jobId)
+        return { ok: true }
       }
 
       throw new Error(`Unknown computeCall op: ${op}`)

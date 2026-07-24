@@ -179,6 +179,12 @@ export const emitJobNotification = async (
     remote_workdir: updatedJob.remote_workdir,
     stdout_tail: updatedJob.stdout_tail,
     stderr_tail: updatedJob.stderr_tail,
+    // Scheduler diagnostics + harvest timestamp so the renderer keeps distinct terminal diagnostics
+    // and cleanup-eligibility after a broadcast (issue 04 — must not clobber these to undefined).
+    remote_state: updatedJob.remote_state,
+    queue_reason: updatedJob.queue_reason,
+    scheduler_diagnostic: updatedJob.scheduler_diagnostic,
+    harvested_at: updatedJob.harvested_at,
     notified_at: updatedJob.notified_at,
     notification_consumed_at: updatedJob.notification_consumed_at,
     // Payload fields (spec §11.3).

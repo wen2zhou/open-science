@@ -493,3 +493,116 @@ describe('notebook local RPC server', () => {
     }
   })
 })
+
+// Issue 04: attach_job(id).cancel() / .cleanup() map to the cancel_job / cleanup_job computeCall ops.
+// The RPC layer must forward job_id to ComputeService.cancelJob / cleanupJob (which own the driver
+// delegation + safety guards; those are tested in compute-lifecycle.test.ts).
+describe('notebook local RPC server — cancel_job / cleanup_job ops (issue 04)', () => {
+  const makeService = async (): Promise<NotebookRuntimeService> => {
+    const root = await createStorageRoot()
+    return new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+  }
+
+  it('cancel_job op forwards job_id to ComputeService.cancelJob', async () => {
+    const service = await makeService()
+    const cancelCalls: string[] = []
+    const fakeComputeService = {
+      cancelJob: async (jobId: string): Promise<void> => {
+        cancelCalls.push(jobId)
+      },
+      cleanupJob: async (): Promise<void> => {}
+    }
+    const server = new NotebookLocalRpcServer(service, {
+      token: 'secret-token',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      computeService: fakeComputeService as any
+    })
+    const connection = await server.ensureStarted()
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: { authorization: 'Bearer secret-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          method: 'computeCall',
+          params: { op: 'cancel_job', job_id: 'job-9' }
+        })
+      })
+      const payload = (await response.json()) as { result: { ok: boolean } }
+      expect(response.status).toBe(200)
+      expect(payload.result.ok).toBe(true)
+      expect(cancelCalls).toEqual(['job-9'])
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('cleanup_job op forwards job_id to ComputeService.cleanupJob', async () => {
+    const service = await makeService()
+    const cleanupCalls: string[] = []
+    const fakeComputeService = {
+      cancelJob: async (): Promise<void> => {},
+      cleanupJob: async (jobId: string): Promise<void> => {
+        cleanupCalls.push(jobId)
+      }
+    }
+    const server = new NotebookLocalRpcServer(service, {
+      token: 'secret-token',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      computeService: fakeComputeService as any
+    })
+    const connection = await server.ensureStarted()
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: { authorization: 'Bearer secret-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          method: 'computeCall',
+          params: { op: 'cleanup_job', job_id: 'job-7' }
+        })
+      })
+      const payload = (await response.json()) as { result: { ok: boolean } }
+      expect(response.status).toBe(200)
+      expect(payload.result.ok).toBe(true)
+      expect(cleanupCalls).toEqual(['job-7'])
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('cleanup_job op surfaces a guard failure from ComputeService as an RPC error', async () => {
+    const service = await makeService()
+    const fakeComputeService = {
+      cancelJob: async (): Promise<void> => {},
+      cleanupJob: async (): Promise<void> => {
+        throw new Error('Cannot cleanup job "job-7": harvest has not completed yet.')
+      }
+    }
+    const server = new NotebookLocalRpcServer(service, {
+      token: 'secret-token',
+      // eslint-disable-next-line @typescript-eslint/no-explicit-any
+      computeService: fakeComputeService as any
+    })
+    const connection = await server.ensureStarted()
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: { authorization: 'Bearer secret-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          method: 'computeCall',
+          params: { op: 'cleanup_job', job_id: 'job-7' }
+        })
+      })
+      // The outer request handler serializes a thrown Error as { error: <message string> }.
+      const payload = (await response.json()) as { error?: string }
+      expect(response.status).toBe(500)
+      expect(payload.error).toMatch(/harvest has not completed/)
+    } finally {
+      await server.close()
+    }
+  })
+})

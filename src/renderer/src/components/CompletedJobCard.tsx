@@ -22,6 +22,9 @@ function getStatusDisplay(job: JobSummary): { label: string; colorClass: string 
       return { label: 'failed', colorClass: 'text-red-600' }
     case 'timeout':
       return { label: 'timed out', colorClass: 'text-red-600' }
+    case 'cancelled':
+      // User-initiated cancel — neutral (slate), distinct from scheduler/workload failures (issue 04).
+      return { label: 'cancelled', colorClass: 'text-slate-500' }
     case 'error':
       return { label: 'error', colorClass: 'text-red-600' }
     default:

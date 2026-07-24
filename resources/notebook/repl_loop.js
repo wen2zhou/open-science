@@ -160,6 +160,10 @@ const hostCompute = {
       // Attaches to an existing job by job_id. .status() reads from DB only (no SSH).
       // .result() returns the full JobResult (spec §11.4): scans the local harvest directory,
       // returns workspace-relative file paths, never triggers harvest or SSH (design §9).
+      // .cancel() delegates to the job's snapshotted driver (Direct: process-group kill; Slurm:
+      // scancel) and transitions the job to 'cancelled' (design §6). No-op for terminal jobs.
+      // .cleanup() deletes ONLY this job's remote workdir, and only for terminal + harvested jobs
+      // (design §6). It never touches image/weight/cache paths.
       attach_job(jobId) {
         return {
           job_id: jobId,
@@ -168,6 +172,12 @@ const hostCompute = {
           },
           async result() {
             return computeRpc({ op: 'job_result', job_id: jobId })
+          },
+          async cancel() {
+            return computeRpc({ op: 'cancel_job', job_id: jobId })
+          },
+          async cleanup() {
+            return computeRpc({ op: 'cleanup_job', job_id: jobId })
           }
         }
       },

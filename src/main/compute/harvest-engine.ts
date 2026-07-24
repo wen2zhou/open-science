@@ -268,7 +268,10 @@ export const harvestJob = async (job: ComputeJob, deps: HarvestDeps): Promise<vo
   }
 
   // Helper: finalize + broadcast + return (DRY for all early-exit paths).
-  const finalizeAndReturn = async (harvestError: string | null, leftOnRemoteJson: string): Promise<void> => {
+  const finalizeAndReturn = async (
+    harvestError: string | null,
+    leftOnRemoteJson: string
+  ): Promise<void> => {
     const updatedJob = await finalize(harvestError, leftOnRemoteJson)
     // Broadcast the compute_done notification. We already have host lookup result here for
     // displayName, but early-exit paths don't — so we delegate displayName lookup to the
@@ -308,6 +311,14 @@ export const harvestJob = async (job: ComputeJob, deps: HarvestDeps): Promise<vo
         remote_workdir: updatedJob.remote_workdir,
         stdout_tail: updatedJob.stdout_tail,
         stderr_tail: updatedJob.stderr_tail,
+        // Scheduler diagnostics + harvest timestamp (issue 04). harvested_at is load-bearing: the
+        // renderer gates the Cleanup affordance on it, so this post-harvest broadcast MUST carry it —
+        // otherwise the store would overwrite the harvested job with harvested_at=undefined and hide
+        // the Cleanup button that just became available.
+        remote_state: updatedJob.remote_state,
+        queue_reason: updatedJob.queue_reason,
+        scheduler_diagnostic: updatedJob.scheduler_diagnostic,
+        harvested_at: updatedJob.harvested_at,
         notified_at: updatedJob.notified_at,
         notification_consumed_at: updatedJob.notification_consumed_at,
         featured_files: payload.featured_files,

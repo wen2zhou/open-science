@@ -111,10 +111,7 @@ class FakeDirectDriver implements ComputeDriver {
   dispatch(): Promise<DriverHandle> {
     return Promise.reject(new Error('not used by the poller'))
   }
-  async pollMany(
-    _context: DriverContext,
-    jobs: DriverJob[]
-  ): Promise<PollManyResult> {
+  async pollMany(_context: DriverContext, jobs: DriverJob[]): Promise<PollManyResult> {
     this.pollCalls++
     if (this.unreachable) return { kind: 'unreachable', message: this.unreachable.message }
     const map = new Map<string, RemoteObservation>()
@@ -178,7 +175,11 @@ const makePollerWithFakeDriver = (
   if (!safeRepo.findErrorUnnotified) {
     safeRepo.findErrorUnnotified = () => Promise.resolve([])
   }
-  const runner: SshRunner = { run: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })) }
+  const runner: SshRunner = {
+    run: vi.fn(() =>
+      Promise.resolve({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })
+    )
+  }
   const poller = new JobPoller({
     runner,
     hostRepository: hostRepo,
@@ -206,7 +207,9 @@ describe('JobPoller', () => {
       get: vi.fn(() => Promise.resolve(job)),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo, {
       onJobUpdated: vi.fn()
@@ -237,7 +240,9 @@ describe('JobPoller', () => {
       get: vi.fn(() => Promise.resolve(job)),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     driver.observations.set('job-1', {
@@ -260,7 +265,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     driver.observations.set('job-1', {
@@ -286,7 +293,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     driver.observations.set('job-1', {
@@ -312,7 +321,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     driver.observations.set('job-1', {
@@ -347,7 +358,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     driver.unreachable = { message: 'SSH connection timed out' }
@@ -356,10 +369,16 @@ describe('JobPoller', () => {
 
     expect(update).toHaveBeenCalledWith(
       'job-1',
-      expect.objectContaining({ lastPollError: 'SSH connection timed out', retryAfterUserAction: true })
+      expect.objectContaining({
+        lastPollError: 'SSH connection timed out',
+        retryAfterUserAction: true
+      })
     )
     // Status must NOT have flipped.
-    expect(update).not.toHaveBeenCalledWith('job-1', expect.objectContaining({ status: expect.any(String) }))
+    expect(update).not.toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({ status: expect.any(String) })
+    )
   })
 
   it('records lastPollError when the driver throws and does not flip status', async () => {
@@ -369,14 +388,22 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const driver = new FakeDirectDriver()
     // Override pollMany to throw an unexpected error.
-    driver.pollMany = vi.fn(() => Promise.reject(new Error('unexpected boom'))) as typeof driver.pollMany
+    driver.pollMany = vi.fn(() =>
+      Promise.reject(new Error('unexpected boom'))
+    ) as typeof driver.pollMany
     const registry = new ComputeDriverRegistry()
     registry.register(driver)
-    const runner: SshRunner = { run: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })) }
+    const runner: SshRunner = {
+      run: vi.fn(() =>
+        Promise.resolve({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })
+      )
+    }
     const poller = new JobPoller({
       runner,
       hostRepository: hostRepo,
@@ -390,7 +417,10 @@ describe('JobPoller', () => {
       'job-1',
       expect.objectContaining({ lastPollError: 'unexpected boom', retryAfterUserAction: true })
     )
-    expect(update).not.toHaveBeenCalledWith('job-1', expect.objectContaining({ status: expect.any(String) }))
+    expect(update).not.toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({ status: expect.any(String) })
+    )
   })
 
   it('disambiguates exit 137: elapsed >= timeout_seconds → timeout', async () => {
@@ -403,7 +433,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     driver.observations.set('job-1', {
@@ -432,7 +464,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     driver.observations.set('job-1', {
@@ -461,7 +495,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     driver.observations.set('job-1', {
@@ -489,7 +525,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo)
 
@@ -508,7 +546,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const tracker = new DispatchTracker()
     tracker.begin(job.job_id) // dispatch is actively running in this process
@@ -534,14 +574,20 @@ describe('JobPoller', () => {
   })
 
   it('start/stop manage the interval', () => {
-    const jobRepo = { findNonTerminal: vi.fn(() => Promise.resolve([])) } as unknown as ComputeJobRepository
+    const jobRepo = {
+      findNonTerminal: vi.fn(() => Promise.resolve([]))
+    } as unknown as ComputeJobRepository
     const hostRepo = { get: vi.fn() } as unknown as ComputeHostRepository
     const fakeHandle = 42 as unknown as ReturnType<typeof globalThis.setInterval>
     const setIntervalMock = vi.fn(() => fakeHandle)
     const clearIntervalMock = vi.fn()
     const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo)
     // start/stop accept injected timers via the deps — rebuild a poller that wires them.
-    const runner: SshRunner = { run: vi.fn(() => Promise.resolve({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })) }
+    const runner: SshRunner = {
+      run: vi.fn(() =>
+        Promise.resolve({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })
+      )
+    }
     const p2 = new JobPoller({
       runner,
       hostRepository: hostRepo,
@@ -563,7 +609,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const harvestFn = vi.fn(() => new Promise<void>(() => {})) // never resolves
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
@@ -587,7 +635,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const harvestFn = vi.fn(() => Promise.resolve())
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
@@ -612,7 +662,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const harvestFn = vi.fn(() => Promise.resolve())
     const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
@@ -629,11 +681,16 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     let resolveHarvest: () => void = () => {}
     const harvestFn = vi.fn(
-      () => new Promise<void>((resolve) => { resolveHarvest = resolve })
+      () =>
+        new Promise<void>((resolve) => {
+          resolveHarvest = resolve
+        })
     )
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
     driver.observations.set('job-1', {
@@ -650,8 +707,11 @@ describe('JobPoller', () => {
 
     // Second tick while harvest is still in-flight: findTerminalUnharvested would re-queue it, but the
     // in-flight dedup must suppress a second dispatch. findTerminalUnharvested returns the same job.
-    ;(jobRepo as unknown as { findTerminalUnharvested: ReturnType<typeof vi.fn> }).findTerminalUnharvested =
-      vi.fn(() => Promise.resolve([{ ...job, status: 'success', harvested_at: undefined }]))
+    ;(
+      jobRepo as unknown as { findTerminalUnharvested: ReturnType<typeof vi.fn> }
+    ).findTerminalUnharvested = vi.fn(() =>
+      Promise.resolve([{ ...job, status: 'success', harvested_at: undefined }])
+    )
     await poller.tick()
     expect(harvestFn).toHaveBeenCalledTimes(1) // still one — dedup held
 
@@ -672,11 +732,16 @@ describe('JobPoller', () => {
       findTerminalUnharvested: vi.fn(() => Promise.resolve([jobA, jobB, jobC])),
       update
     } as unknown as JobRepo
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const blockers: Array<() => void> = []
     const harvestFn = vi.fn(
-      () => new Promise<void>((resolve) => { blockers.push(resolve) })
+      () =>
+        new Promise<void>((resolve) => {
+          blockers.push(resolve)
+        })
     )
     const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
 
@@ -704,7 +769,9 @@ describe('JobPoller', () => {
       findTerminalUnharvested: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const harvestFn = vi.fn(() => Promise.reject(new Error('harvest blew up')))
     const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
@@ -720,7 +787,9 @@ describe('JobPoller', () => {
       findTerminalUnharvested: vi.fn(() => Promise.resolve([job])),
       update: vi.fn((_id: string, u: unknown) => Promise.resolve({ ...job, ...(u as object) }))
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const harvestFn = vi.fn(() => Promise.resolve())
     const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
@@ -737,7 +806,9 @@ describe('JobPoller', () => {
       findTerminalUnharvested: vi.fn(() => Promise.resolve([])), // nothing unharvested
       update: vi.fn()
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const harvestFn = vi.fn(() => Promise.resolve())
     const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
@@ -771,10 +842,15 @@ describe('JobPoller', () => {
       findErrorUnnotified: vi.fn(() => Promise.resolve([])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const broadcast = vi.fn()
-    const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, { broadcast, storageRoot: '/store' })
+    const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, {
+      broadcast,
+      storageRoot: '/store'
+    })
 
     await poller.tick()
     await waitFor(() => broadcast.mock.calls.length > 0)
@@ -791,7 +867,9 @@ describe('JobPoller', () => {
       findErrorUnnotified: vi.fn(() => Promise.resolve([])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo) // no broadcast
 
@@ -822,10 +900,15 @@ describe('JobPoller', () => {
       findErrorUnnotified: vi.fn(() => Promise.resolve([])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const broadcast = vi.fn()
-    const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, { broadcast, storageRoot: '/store' })
+    const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, {
+      broadcast,
+      storageRoot: '/store'
+    })
 
     await poller.tick()
     await waitFor(() => broadcast.mock.calls.length > 0)
@@ -847,10 +930,15 @@ describe('JobPoller', () => {
       get: vi.fn(() => Promise.resolve(job)),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const broadcast = vi.fn()
-    const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, { broadcast, storageRoot: '/store' })
+    const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, {
+      broadcast,
+      storageRoot: '/store'
+    })
 
     // Two overlapping ticks before the first notified_at write completes.
     await Promise.all([poller.tick(), poller.tick()])
@@ -888,7 +976,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve(jobs)),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     for (const job of jobs) {
@@ -905,7 +995,10 @@ describe('JobPoller', () => {
 
     // Every job transitioned to success (one batched pollMany call for the provider).
     for (const job of jobs) {
-      expect(update).toHaveBeenCalledWith(job.job_id, expect.objectContaining({ status: 'success' }))
+      expect(update).toHaveBeenCalledWith(
+        job.job_id,
+        expect.objectContaining({ status: 'success' })
+      )
     }
     expect(driver.pollCalls).toBe(1)
   })
@@ -929,7 +1022,9 @@ describe('JobPoller', () => {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       update
     } as unknown as ComputeJobRepository
-    const hostRepo = { get: vi.fn(() => Promise.resolve(sampleHost())) } as unknown as ComputeHostRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
 
     const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
     driver.observations.set('job-1', {
@@ -943,5 +1038,162 @@ describe('JobPoller', () => {
     await poller.tick()
 
     expect(update).toHaveBeenCalledWith('job-1', expect.objectContaining({ status: 'success' }))
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Slurm remoteState terminal classification (issue 04 / issue 03 finding #2)
+//
+// sacct's numeric exit code is unreliable for scheduler-initiated terminations (TIMEOUT reports
+// 0:15, OOM 0:9, etc.), so the poller must consult `remoteState` to classify the terminal status.
+// These tests drive the observation's remoteState + exitCode and assert the resulting status /
+// error_code, plus that remoteState is persisted separately from the cross-provider status.
+// ---------------------------------------------------------------------------
+
+describe('JobPoller — Slurm remoteState terminal classification', () => {
+  // Runs one tick with a terminal observation carrying the given remoteState + exitCode, and returns
+  // the update payload the poller wrote (the second arg of jobRepository.update).
+  const classify = async (
+    remoteState: string | undefined,
+    exitCode: number,
+    jobOverrides: Partial<ComputeJob> = {}
+  ): Promise<Record<string, unknown>> => {
+    const job = makeJob(jobOverrides)
+    const update = vi.fn((_id: string, u: unknown) => Promise.resolve({ ...job, ...(u as object) }))
+    const jobRepo = {
+      findNonTerminal: vi.fn(() => Promise.resolve([job])),
+      update
+    } as unknown as ComputeJobRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
+
+    const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo)
+    driver.observations.set(job.job_id, {
+      alive: false,
+      exitCode,
+      hasExitCode: true,
+      stdoutTail: '',
+      stderrTail: '',
+      remoteState,
+      schedulerDiagnostic: remoteState ? `slurm state ${remoteState}` : undefined
+    })
+
+    await poller.tick()
+    expect(update).toHaveBeenCalledTimes(1)
+    return update.mock.calls[0][1] as Record<string, unknown>
+  }
+
+  it('classifies remoteState=TIMEOUT as timeout even when sacct exit code is 0 (0:15 → code 0)', async () => {
+    const payload = await classify('TIMEOUT', 0)
+    expect(payload).toMatchObject({
+      status: 'timeout',
+      errorCode: 'timeout',
+      remoteState: 'TIMEOUT'
+    })
+  })
+
+  it('classifies remoteState=OUT_OF_MEMORY as failed (not success) despite exit code 0', async () => {
+    const payload = await classify('OUT_OF_MEMORY', 0)
+    expect(payload).toMatchObject({
+      status: 'failed',
+      errorCode: 'job_failed',
+      remoteState: 'OUT_OF_MEMORY'
+    })
+  })
+
+  it('classifies remoteState=PREEMPTED as failed and preserves the remote state for diagnostics', async () => {
+    const payload = await classify('PREEMPTED', 0)
+    expect(payload).toMatchObject({ status: 'failed', remoteState: 'PREEMPTED' })
+  })
+
+  it('classifies remoteState=NODE_FAIL as failed', async () => {
+    const payload = await classify('NODE_FAIL', 0)
+    expect(payload).toMatchObject({ status: 'failed', remoteState: 'NODE_FAIL' })
+  })
+
+  it('classifies scheduler-visible CANCELLED as cancelled', async () => {
+    const payload = await classify('CANCELLED', 0)
+    expect(payload).toMatchObject({ status: 'cancelled' })
+    expect(payload.errorCode).toBe('user_cancelled')
+  })
+
+  it('preserves a pre-stamped user_cancelled marker when CANCELLED is later observed', async () => {
+    const payload = await classify('CANCELLED', 0, { error_code: 'user_cancelled' })
+    expect(payload).toMatchObject({ status: 'cancelled', errorCode: 'user_cancelled' })
+  })
+
+  it('still maps a clean COMPLETED/exit 0 to success', async () => {
+    const payload = await classify('COMPLETED', 0)
+    expect(payload).toMatchObject({ status: 'success' })
+  })
+
+  it('maps a non-zero exit with no special remoteState to failed', async () => {
+    const payload = await classify('COMPLETED', 3)
+    expect(payload).toMatchObject({ status: 'failed', errorCode: 'job_failed' })
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Cancelled jobs: harvest + no process_vanished override (issue 04)
+// ---------------------------------------------------------------------------
+
+describe('JobPoller — cancelled job harvest recovery', () => {
+  it('does not flip a user_cancelled job to process_vanished when the process is gone', async () => {
+    // A job already marked cancelled (error_code=user_cancelled) whose process is gone and has no
+    // exit_code file. The vanish path must NOT overwrite it — the process is gone BECAUSE we killed it.
+    const job = makeJob({ status: 'cancelled', error_code: 'user_cancelled' })
+    const update = vi.fn((_id: string, u: unknown) => Promise.resolve({ ...job, ...(u as object) }))
+    const jobRepo = {
+      findNonTerminal: vi.fn(() => Promise.resolve([job])),
+      findTerminalUnharvested: vi.fn(() => Promise.resolve([])),
+      update
+    } as unknown as ComputeJobRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
+
+    const harvestFn = vi.fn(() => Promise.resolve())
+    const { poller, driver } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
+    driver.observations.set(job.job_id, {
+      alive: false,
+      exitCode: null,
+      hasExitCode: false,
+      stdoutTail: '',
+      stderrTail: ''
+    })
+
+    await poller.tick()
+
+    // No status update to process_vanished / error.
+    expect(update).not.toHaveBeenCalled()
+    // Harvest was dispatched for the cancelled job (design.md §4.4 — all terminal states harvest).
+    expect(harvestFn).toHaveBeenCalled()
+  })
+
+  it('includes cancelled jobs in the restart-recovery harvest scan', async () => {
+    // findTerminalUnharvested must return cancelled jobs so a restart re-queues their harvest.
+    const cancelled = makeJob({
+      status: 'cancelled',
+      error_code: 'user_cancelled',
+      harvested_at: undefined
+    })
+    const findTerminalUnharvested = vi.fn(() => Promise.resolve([cancelled]))
+    const jobRepo = {
+      findNonTerminal: vi.fn(() => Promise.resolve([])),
+      findTerminalUnharvested,
+      update: vi.fn()
+    } as unknown as ComputeJobRepository
+    const hostRepo = {
+      get: vi.fn(() => Promise.resolve(sampleHost()))
+    } as unknown as ComputeHostRepository
+
+    const harvestFn = vi.fn(() => Promise.resolve())
+    const { poller } = makePollerWithFakeDriver(jobRepo, hostRepo, { harvestFn })
+
+    await poller.tick()
+
+    expect(findTerminalUnharvested).toHaveBeenCalled()
+    expect(harvestFn).toHaveBeenCalledWith(expect.objectContaining({ status: 'cancelled' }))
   })
 })

@@ -13,6 +13,7 @@ const asStatus = (value: string): ComputeJobStatus => {
     'success',
     'failed',
     'timeout',
+    'cancelled',
     'error'
   ]
   return valid.includes(value as ComputeJobStatus) ? (value as ComputeJobStatus) : 'error'
@@ -158,13 +159,14 @@ export class ComputeJobRepository {
     return rows.map(toJob)
   }
 
-  // Returns all terminal jobs (success/failed/timeout) that have not yet been harvested.
+  // Returns all terminal jobs (success/failed/timeout/cancelled) that have not yet been harvested.
   // Used by the poller's restart-recovery scan to re-queue harvests interrupted by an app restart.
+  // 'cancelled' is included because design.md §4.4 requires all terminal states to go through harvest.
   async findTerminalUnharvested(): Promise<ComputeJob[]> {
     const client = await this.getClient()
     const rows = await client.computeJob.findMany({
       where: {
-        status: { in: ['success', 'failed', 'timeout'] },
+        status: { in: ['success', 'failed', 'timeout', 'cancelled'] },
         harvestedAt: null
       },
       orderBy: { createdAt: 'asc' }

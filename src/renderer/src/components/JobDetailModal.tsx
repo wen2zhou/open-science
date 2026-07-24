@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useRef, useState } from 'react'
-import { ArrowLeft, ExternalLink, X } from 'lucide-react'
+import { ArrowLeft, ExternalLink, X, Ban, Trash2 } from 'lucide-react'
 import { Dialog } from 'radix-ui'
 
 import type { JobSummary } from '../../../shared/compute'
@@ -9,7 +9,13 @@ import { dialogOverlayClassName, dialogPanelClassName } from '@/components/ui/di
 import { cn } from '@/lib/utils'
 import { JobStatusBadge } from './JobStatusBadge'
 import { JobTerminalOutput } from './JobTerminalOutput'
-import { formatDuration, jobElapsedMs } from './remote-job-badge-utils'
+import {
+  formatDuration,
+  jobElapsedMs,
+  jobDiagnostic,
+  canCancelJob,
+  canCleanupJob
+} from './remote-job-badge-utils'
 import { FileBrowserModal } from '../pages/settings/FileBrowserModal'
 
 // How often the terminal output auto-refreshes (design.md §15.3: ≈15s).
@@ -152,6 +158,56 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
 
   const tabContent = activeTab === 'stdout' ? latestJob.stdout_tail : latestJob.stderr_tail
 
+  // Terminal diagnostic (distinct message per cancel / timeout / OOM / preemption / node-fail /
+  // dispatch error). Only rendered for terminal jobs (tone !== 'neutral').
+  const diagnostic = jobDiagnostic(latestJob)
+
+  // Cancel / cleanup action state. `pending` disables the buttons; `actionError` surfaces a failed
+  // cleanup guard (e.g. not-harvested) without collapsing it into the terminal diagnostic.
+  const [pending, setPending] = useState<null | 'cancel' | 'cleanup'>(null)
+  const [actionError, setActionError] = useState<string | null>(null)
+
+  const handleCancel = useCallback(async () => {
+    setActionError(null)
+    setPending('cancel')
+    try {
+      await window.api.compute.cancelJob(latestJob.job_id)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPending(null)
+    }
+  }, [latestJob.job_id])
+
+  const handleCleanup = useCallback(async () => {
+    setActionError(null)
+    setPending('cleanup')
+    try {
+      await window.api.compute.cleanupJob(latestJob.job_id)
+    } catch (err) {
+      setActionError(err instanceof Error ? err.message : String(err))
+    } finally {
+      setPending(null)
+    }
+  }, [latestJob.job_id])
+
+  const showCancel = canCancelJob(latestJob)
+  const showCleanup = canCleanupJob(latestJob)
+  // Terminal but not yet harvested: Cleanup is intentionally withheld (would risk losing outputs).
+  // Show an explanatory hint instead of silently offering nothing (issue 04 cross-cutting).
+  const TERMINAL_UI = new Set(['success', 'failed', 'timeout', 'cancelled', 'error'])
+  const showCleanupHint = TERMINAL_UI.has(latestJob.status) && !showCleanup
+
+  // Tone → banner colour classes. Kept local so the diagnostic helper stays framework-agnostic.
+  const bannerClass: Record<typeof diagnostic.tone, string> = {
+    success: 'bg-green-50 text-green-800 border-green-200',
+    failed: 'bg-red-50 text-red-800 border-red-200',
+    timeout: 'bg-red-50 text-red-800 border-red-200',
+    cancelled: 'bg-slate-50 text-slate-700 border-slate-200',
+    error: 'bg-red-50 text-red-800 border-red-200',
+    neutral: ''
+  }
+
   return (
     <>
       {/* Sub-header: Back + job title + status badge */}
@@ -196,6 +252,24 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
         </div>
       </div>
 
+      {/* Terminal diagnostic banner — distinct message per cancel / timeout / OOM / preemption /
+          node-fail / dispatch error (issue 04: actionable, not a single generic error). */}
+      {diagnostic.tone !== 'neutral' && diagnostic.title && (
+        <div
+          data-testid="job-diagnostic"
+          data-tone={diagnostic.tone}
+          className={`shrink-0 border-b px-4 py-2.5 text-[12px] ${bannerClass[diagnostic.tone]}`}
+        >
+          <span className="font-semibold">{diagnostic.title}</span>
+          <span className="ml-1.5 opacity-90">{diagnostic.detail}</span>
+          {latestJob.remote_state && (
+            <span className="ml-1.5 font-mono text-[10.5px] opacity-70">
+              (scheduler state: {latestJob.remote_state})
+            </span>
+          )}
+        </div>
+      )}
+
       {/* 3b placeholder: featured outputs / left-on-remote — hidden until harvest data exists */}
       {/* <FeaturedOutputs job={latestJob} /> */}
 
@@ -219,6 +293,64 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
           <JobTerminalOutput content={tabContent} />
         </div>
       </div>
+
+      {/* Action footer: Cancel (non-terminal jobs) / Cleanup (terminal + harvested jobs). Also shown
+          for terminal-but-unharvested jobs to explain why Cleanup is not yet available (issue 04,
+          design.md §6 — actionable hints, not silent absence). */}
+      {(showCancel || showCleanup || showCleanupHint) && (
+        <div
+          className="flex shrink-0 flex-col gap-1.5 border-t border-border px-4 py-3"
+          data-testid="job-actions"
+        >
+          {actionError && (
+            <div
+              data-testid="job-action-error"
+              className="rounded border border-red-200 bg-red-50 px-2.5 py-1.5 text-[11.5px] text-red-700"
+            >
+              {actionError}
+            </div>
+          )}
+          {(showCancel || showCleanup) && (
+            <div className="flex items-center justify-end gap-2">
+              {showCancel && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  data-testid="job-cancel-button"
+                  disabled={pending !== null}
+                  onClick={handleCancel}
+                >
+                  <Ban size={13} className="mr-1" aria-hidden="true" />
+                  {pending === 'cancel' ? 'Cancelling…' : 'Cancel job'}
+                </Button>
+              )}
+              {showCleanup && (
+                <Button
+                  type="button"
+                  variant="outline"
+                  size="sm"
+                  data-testid="job-cleanup-button"
+                  disabled={pending !== null}
+                  onClick={handleCleanup}
+                >
+                  <Trash2 size={13} className="mr-1" aria-hidden="true" />
+                  {pending === 'cleanup' ? 'Cleaning up…' : 'Clean up workdir'}
+                </Button>
+              )}
+            </div>
+          )}
+          {/* Explain why Cleanup is unavailable for terminal-but-unharvested jobs (actionable hint). */}
+          {showCleanupHint && (
+            <span
+              data-testid="job-cleanup-hint"
+              className="text-right text-[10.5px] text-muted-foreground"
+            >
+              Cleanup becomes available once harvest completes.
+            </span>
+          )}
+        </div>
+      )}
     </>
   )
 }

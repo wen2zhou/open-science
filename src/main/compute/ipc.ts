@@ -106,6 +106,14 @@ export const toJobSummary = async (
     remote_workdir: job.remote_workdir,
     stdout_tail: job.stdout_tail,
     stderr_tail: job.stderr_tail,
+    // Scheduler diagnostics (design.md §4.4) — carried through so the renderer can render distinct
+    // terminal diagnostics (OOM / preemption / node-fail / timeout) that all share `failed`/`timeout`
+    // status but differ by remote_state (issue 04).
+    remote_state: job.remote_state,
+    queue_reason: job.queue_reason,
+    scheduler_diagnostic: job.scheduler_diagnostic,
+    // Harvest completion timestamp — the renderer gates the Cleanup affordance on this (issue 04).
+    harvested_at: job.harvested_at,
     // Phase 3b notification inbox timestamps (issue 06).
     notified_at: job.notified_at,
     notification_consumed_at: job.notification_consumed_at,
@@ -173,6 +181,10 @@ type ComputeHandlers = {
   jobsPendingNotification: (sessionId: string) => Promise<JobSummary[]>
   // Marks the given job ids as notification-consumed. Idempotent (issue 05).
   jobsMarkConsumed: (sessionId: string, jobIds: string[]) => Promise<void>
+  // Cancels a running/submitted job (issue 04). Uses the job's snapshotted driver.
+  cancelJob: (jobId: string) => Promise<void>
+  // Cleans up the remote workdir of a terminal+harvested job (issue 04). Safety-guarded.
+  cleanupJob: (jobId: string) => Promise<void>
 }
 
 // Adapts a repository into thin handlers.
@@ -327,6 +339,12 @@ const createComputeHandlers = (
     jobsMarkConsumed: async (_sessionId, jobIds) => {
       if (!jobRepository) return
       await jobRepository.markNotificationsConsumed(jobIds)
+    },
+    cancelJob: async (jobId) => {
+      await service.cancelJob(jobId)
+    },
+    cleanupJob: async (jobId) => {
+      await service.cleanupJob(jobId)
     }
   }
 }
@@ -490,6 +508,11 @@ const registerComputeIpcHandlers = (
   ipcMain.handle('compute:jobs:mark-consumed', (_event, sessionId: string, jobIds: string[]) =>
     handlers.jobsMarkConsumed(sessionId, jobIds)
   )
+
+  // Cancel a running or submitted job (issue 04). Uses the job's snapshotted driver.
+  ipcMain.handle('compute:job:cancel', (_event, jobId: string) => handlers.cancelJob(jobId))
+  // Cleanup a terminal + harvested job's remote workdir (issue 04).
+  ipcMain.handle('compute:job:cleanup', (_event, jobId: string) => handlers.cleanupJob(jobId))
 
   // Per-session enabled compute hosts (issue 06). The renderer owns the durable state (session
   // JSON); the main-process registry is the runtime cache consulted by list_compute RPC ops.

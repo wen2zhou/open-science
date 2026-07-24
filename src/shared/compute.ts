@@ -138,11 +138,15 @@ export type ComputeApprovalRequest = {
   resources?: string
   timeout_seconds?: number
   remote_workdir?: string
+  // Resolved driver (direct | slurm) shown in the approval card so the user knows which backend
+  // will execute the job (issue 04 design discrepancy #4 fix).
+  driver?: 'direct' | 'slurm'
 }
 
 // The job status values for the Phase 3a state machine. 'queued' is reserved for Phase 3c.
+// 'cancelled' is added in issue 04: explicit user-initiated cancellation (design.md §4.4).
 export type ComputeJobStatus =
-  'queued' | 'submitted' | 'running' | 'success' | 'failed' | 'timeout' | 'error'
+  'queued' | 'submitted' | 'running' | 'success' | 'failed' | 'timeout' | 'cancelled' | 'error'
 
 // A compute job record, normalized for cross-process sharing (main → renderer via IPC, main → repl
 // via JSON RPC). Timestamps are epoch milliseconds; JSON columns are parsed at the repository
@@ -239,7 +243,9 @@ export type SubmitJobResult = {
   remote_workdir: string
 }
 
-// Error codes for compute jobs (Phase 3a subset of spec §12).
+// Error codes for compute jobs (Phase 3a/04 subset of spec §12).
+// 'user_cancelled': explicit user-initiated cancellation (distinguishes from scheduler failures).
+// All other codes represent infrastructure or scheduler-side failures.
 export type ComputeJobErrorCode =
   | 'approval_denied'
   | 'host_unreachable'
@@ -247,6 +253,7 @@ export type ComputeJobErrorCode =
   | 'job_failed'
   | 'timeout'
   | 'process_vanished'
+  | 'user_cancelled'
 
 // Lightweight job summary returned by the renderer IPC `compute:jobs:list` and broadcast via
 // `compute:job-updated`. Contains the fields the UI needs for badge + job feed display. The host
@@ -272,6 +279,16 @@ export type JobSummary = {
   remote_workdir: string | undefined
   stdout_tail: string | undefined
   stderr_tail: string | undefined
+  // Scheduler diagnostics kept separate from `status` (design.md §4.4). The renderer uses these to
+  // render distinct terminal diagnostics — e.g. OOM / preemption / node-fail all map to `failed`
+  // status but carry different remote_state, so the UI must read remote_state to tell them apart
+  // (issue 04 cross-cutting: failure hints must be actionable, not collapsed into one generic error).
+  remote_state?: string | undefined
+  queue_reason?: string | undefined
+  scheduler_diagnostic?: string | undefined
+  // Set when harvest has completed (epoch ms). The renderer gates the Cleanup affordance on this:
+  // cleanup is only offered for terminal + harvested jobs (design.md §6, issue 04).
+  harvested_at?: number | undefined
   // Phase 3b: inbox timestamps — renderer uses these to decide whether to start an analysis turn.
   notified_at: number | undefined
   notification_consumed_at: number | undefined

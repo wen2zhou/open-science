@@ -459,6 +459,12 @@ type OpenScienceAPI = {
     jobsPendingNotification: (sessionId: string) => Promise<JobSummary[]>
     // Marks job ids as notification-consumed after a successful analysis turn (issue 05).
     jobsMarkConsumed: (sessionId: string, jobIds: string[]) => Promise<void>
+    // Cancels a running/submitted job via its snapshotted driver (Direct: process group; Slurm:
+    // scancel). Transitions the job to 'cancelled' and harvests any present files (issue 04).
+    cancelJob: (jobId: string) => Promise<void>
+    // Deletes a terminal + harvested job's remote workdir. Guarded: never touches image/weight/cache
+    // paths; refuses running or un-harvested jobs (issue 04, design.md §6).
+    cleanupJob: (jobId: string) => Promise<void>
     // Fires when a job's status or tail changes (broadcast from the main-process poller).
     onJobUpdated: (listener: (job: JobSummary) => void) => () => void
     // Per-session enabled compute hosts (issue 06). The renderer owns durable state (session JSON);
@@ -998,6 +1004,13 @@ const api: OpenScienceAPI = {
     // Marks job ids as notification-consumed after a successful analysis turn (issue 05).
     jobsMarkConsumed: (sessionId, jobIds) =>
       ipcRenderer.invoke('compute:jobs:mark-consumed', sessionId, jobIds) as Promise<void>,
+    // Cancels a running/submitted job via its snapshotted driver (Direct: process group; Slurm:
+    // scancel). Transitions the job to 'cancelled' + harvests any files already present (issue 04).
+    cancelJob: (jobId: string) => ipcRenderer.invoke('compute:job:cancel', jobId) as Promise<void>,
+    // Deletes a terminal + harvested job's remote workdir. Guarded: never touches image/weight/cache
+    // paths, refuses running or un-harvested jobs (issue 04, design.md §6).
+    cleanupJob: (jobId: string) =>
+      ipcRenderer.invoke('compute:job:cleanup', jobId) as Promise<void>,
     // Fires when a job's status or tail changes (broadcast from the main-process poller).
     onJobUpdated: (listener: (job: JobSummary) => void) =>
       onIpcMessage<JobSummary>('compute:job-updated', listener),

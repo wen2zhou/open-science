@@ -22,6 +22,8 @@ export const WEB_INVOKE_CHANNELS = {
   'cli.uninstall': 'cli:uninstall',
   'compute.bookmarksGet': 'compute:bookmarks:get',
   'compute.bookmarksSet': 'compute:bookmarks:set',
+  'compute.cancelJob': 'compute:job:cancel',
+  'compute.cleanupJob': 'compute:job:cleanup',
   'compute.concurrencySet': 'compute:concurrency:set',
   'compute.create': 'compute:create',
   'compute.delete': 'compute:delete',

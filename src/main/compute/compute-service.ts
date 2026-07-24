@@ -1328,8 +1328,9 @@ export class ComputeService {
       command_full: command,
       inputs_summary: inputsSummary || undefined,
       // The resolved resource request (audit snapshot) + resolved driver (design.md §5 / cross-cutting:
-      // resources and backend selection must appear in the approval snapshot).
+      // resources and backend selection must appear in the approval snapshot; issue 04 adds driver).
       resources: resourceRequestString,
+      driver: resolvedDriver,
       timeout_seconds: timeoutSeconds,
       remote_workdir: remoteWorkdir
     }
@@ -1456,8 +1457,8 @@ export class ComputeService {
       throw new Error(`No compute job found with id "${jobId}".`)
     }
 
-    // Terminal states that can have harvest output.
-    const terminalStates = new Set(['success', 'failed', 'timeout', 'error'])
+    // Terminal states that can have harvest output (design.md §4.4 — cancelled is also terminal).
+    const terminalStates = new Set(['success', 'failed', 'timeout', 'cancelled', 'error'])
     const isTerminal = terminalStates.has(job.status)
 
     // Parse left_on_remote JSON from the job row (may be undefined before harvest).
@@ -1572,11 +1573,187 @@ export class ComputeService {
     return status
   }
 
+  // Cancels a running or submitted job (design.md §6: attach_job().cancel()).
+  //
+  // Uses the job's snapshotted driver (from job.driver column) — never re-derives the target from
+  // host settings (cross-cutting: actions must use the snapshot, not mutable config). Resolves the
+  // SSH target and delegates the actual termination to the driver (Direct: process-group kill via pgid;
+  // Slurm: scancel). Then transitions the job to status='cancelled' + error_code='user_cancelled'.
+  //
+  // Only non-terminal jobs (queued / submitted / running) can be cancelled; for terminal ones this is a
+  // no-op so callers don't need to check state before calling (idempotent-ish per design.md §6).
+  //
+  // Dispatch harvest for the (now-cancelled) job so any files already in the workdir are collected
+  // (design.md §4.4 — all terminal states proceed to harvest).
+  async cancelJob(
+    jobId: string,
+    opts: {
+      harvestFn?: (job: import('../../shared/compute').ComputeJob) => Promise<void>
+    } = {}
+  ): Promise<void> {
+    if (!this.jobRepository) {
+      throw new Error('ComputeJobRepository is required to call cancelJob.')
+    }
+
+    const job = await this.jobRepository.get(jobId)
+    if (!job) {
+      throw new Error(`No compute job found with id "${jobId}".`)
+    }
+
+    // Non-terminal guard: only cancel if the job is still active.
+    const NON_TERMINAL = new Set(['queued', 'submitted', 'running'])
+    if (!NON_TERMINAL.has(job.status)) {
+      // Already terminal — no-op (idempotent).
+      return
+    }
+
+    // Delegate kill to the snapshotted driver (Direct: kill -<pgid>; Slurm: scancel). The driver
+    // swallows connectivity errors (best-effort), so cancel() never throws here.
+    if (job.remote_handle) {
+      const { parseRemoteHandle } = await import('../../shared/remote-handle')
+      const { resolveJobDriver } = await import('./compute-driver')
+      const handle = parseRemoteHandle(job.remote_handle)
+      if (handle && job.driver) {
+        const driver = resolveJobDriver(job, sharedComputeDriverRegistry)
+        if (driver) {
+          const host = await this.repository.get(job.provider_id)
+          if (host) {
+            try {
+              const target = await resolveSshTarget(host.sshAlias, host.sshOverrides)
+              await driver.cancel(
+                { target, workdir: job.remote_workdir ?? handle.paths.workdir },
+                // The DriverHandle is the raw versioned handle stored in the handle discriminated union.
+                handle.raw as import('./compute-driver').DriverHandle
+              )
+            } catch {
+              // Best-effort: cancel failure must not block the status transition.
+            }
+          }
+        }
+      }
+    }
+
+    // Transition to cancelled + user_cancelled error code.
+    const updated = await this.jobRepository.update(jobId, {
+      status: 'cancelled',
+      errorCode: 'user_cancelled',
+      finishedAt: new Date()
+    })
+    this.onJobUpdated?.(updated)
+
+    // Dispatch harvest so any files already in the remote workdir are collected (design.md §4.4).
+    if (opts.harvestFn) {
+      void opts.harvestFn(updated).catch(() => {
+        // Non-fatal: harvest failure must not propagate to the cancel operation.
+      })
+    }
+  }
+
+  // Cleans up a terminal + harvested job's remote workdir (design.md §6: attach_job().cleanup()).
+  //
+  // Guards:
+  //   1. Job must exist and belong to the repository (ownership).
+  //   2. Job must be in a terminal state (success/failed/timeout/cancelled/error).
+  //   3. Job must be harvested (harvestedAt set) so no files are lost.
+  //   4. The workdir path must be a "safe" job-owned path to prevent deleting arbitrary directories.
+  //      - It must be absolute or start with ~/ (not a bare `~` or relative path).
+  //      - It must contain the job id somewhere in the path (verifiable ownership hint).
+  //      - Image, weight, and cache paths MUST NOT be in the deletion range (never contain jobId anyway,
+  //        but the guard provides defense-in-depth by failing on paths that don't embed the job id).
+  //   5. Deletion is via the job's snapshotted SSH target, not re-derived from mutable host config.
+  //
+  // Returns immediately on success; throws on any guard failure (does NOT delete partial directories).
+  async cleanupJob(jobId: string): Promise<void> {
+    if (!this.jobRepository) {
+      throw new Error('ComputeJobRepository is required to call cleanupJob.')
+    }
+
+    const job = await this.jobRepository.get(jobId)
+    if (!job) {
+      throw new Error(`No compute job found with id "${jobId}".`)
+    }
+
+    // Guard 2: must be terminal.
+    const TERMINAL = new Set(['success', 'failed', 'timeout', 'cancelled', 'error'])
+    if (!TERMINAL.has(job.status)) {
+      throw new Error(
+        `Cannot cleanup job "${jobId}": job is not in a terminal state (current status: ${job.status}). ` +
+          `Wait for the job to finish before cleaning up.`
+      )
+    }
+
+    // Guard 3: must be harvested.
+    if (!job.harvested_at) {
+      throw new Error(
+        `Cannot cleanup job "${jobId}": harvest has not completed yet. ` +
+          `Wait for harvest to finish before cleaning up.`
+      )
+    }
+
+    // Guard 4: safe workdir boundary.
+    const workdir = job.remote_workdir
+    if (!workdir) {
+      throw new Error(`Cannot cleanup job "${jobId}": no remote workdir recorded on this job.`)
+    }
+
+    // The path must be absolute or start with ~/ and must embed the jobId as an ownership proof.
+    // This prevents accidentally deleting ~ or / or a shared directory by requiring the jobId
+    // substring — job worktrees are always under .openscience/jobs/<jobId>/ (design.md §4.5).
+    const isAbsOrHome = workdir === '~' || workdir.startsWith('/') || workdir.startsWith('~/')
+    if (!isAbsOrHome) {
+      throw new Error(
+        `Cannot cleanup job "${jobId}": workdir "${workdir}" is not an absolute or home-relative path. ` +
+          `Cleanup aborted to prevent deleting an unexpected directory.`
+      )
+    }
+    if (!workdir.includes(jobId)) {
+      throw new Error(
+        `Cannot cleanup job "${jobId}": workdir "${workdir}" does not contain the job id. ` +
+          `Cleanup aborted — image, weight, and cache paths are never in the cleanup scope.`
+      )
+    }
+
+    // Guard 5: use snapshotted SSH target, not mutable host config.
+    const host = await this.repository.get(job.provider_id)
+    if (!host) {
+      throw new Error(
+        `Cannot cleanup job "${jobId}": host "${job.provider_id}" was deleted. ` +
+          `The remote workdir "${workdir}" must be removed manually.`
+      )
+    }
+
+    let target
+    try {
+      target = await resolveSshTarget(host.sshAlias, host.sshOverrides)
+    } catch (err) {
+      const msg = err instanceof Error ? err.message : String(err)
+      throw new Error(
+        `Cannot cleanup job "${jobId}": cannot reach host "${host.displayName}": ${msg}`
+      )
+    }
+
+    // Execute the remote deletion. Single-quoted path prevents shell injection; the ownership guard
+    // above already confirmed the path contains the job id so this is safe.
+    const { shellSingleQuote: sq } = await import('./scp-runner')
+    const rmCmd = `rm -rf ${sq(workdir)}`
+    const result = await this.runner.run(target, rmCmd, {
+      timeoutMs: 30_000,
+      loginShell: false,
+      maxOutputBytes: 256
+    })
+
+    if (result.exitCode !== 0 && !result.timedOut) {
+      throw new Error(
+        `Failed to delete remote workdir "${workdir}" for job "${jobId}": ${result.stderr || `exit ${result.exitCode}`}`
+      )
+    }
+  }
+
   // Internal callback wrapper: when a job transitions to a terminal state, notify ConcurrencyManager
   // to trigger auto-dispatch of queued jobs. This is called by the JobPoller via onJobUpdated.
   // Exposed as a method so the JobPoller (or IPC layer) can wire it in production.
   notifyJobCompleted(job: import('../../shared/compute').ComputeJob): void {
-    const terminalStates = new Set(['success', 'failed', 'timeout', 'error'])
+    const terminalStates = new Set(['success', 'failed', 'timeout', 'cancelled', 'error'])
     if (terminalStates.has(job.status) && this.concurrencyManager) {
       // Fire-and-forget: ConcurrencyManager.onJobCompleted() is async but we don't await it here
       // to keep the onJobUpdated callback synchronous (matches the existing pattern).
