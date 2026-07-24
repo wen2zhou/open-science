@@ -129,4 +129,53 @@ describe('compute host prisma client (integration)', () => {
     const created = await repository.create({ sshAlias: 'lab-gpu' })
     expect(created.providerId).toBe('ssh:lab-gpu')
   })
+
+  // compute-contract-baseline: the executionBackend column is added to a pre-existing ComputeHost table
+  // that predates it. Existing host rows must survive and read back as executionBackend='auto'
+  // (design.md §10 — migration must not break existing host reads).
+  it('adds executionBackend to a pre-existing ComputeHost table (additive, legacy rows → auto)', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-compute-backend-migrate-'))
+
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+
+    // Simulate a DB with an old ComputeHost table that lacks the executionBackend column.
+    await client.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS "ComputeHost" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "providerId" TEXT NOT NULL,
+      "displayName" TEXT NOT NULL,
+      "shape" TEXT NOT NULL DEFAULT 'direct_ssh',
+      "sshAlias" TEXT NOT NULL,
+      "sshOverrides" TEXT,
+      "scratchRoot" TEXT,
+      "scratchPinned" BOOLEAN NOT NULL DEFAULT false,
+      "concurrencyLimit" INTEGER,
+      "probeResult" TEXT,
+      "detailsDoc" TEXT NOT NULL DEFAULT '',
+      "detailsUpdatedAt" DATETIME,
+      "detailsUpdatedBy" TEXT,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "updatedAt" DATETIME NOT NULL
+    )`)
+    await client.$executeRawUnsafe(
+      `INSERT INTO "ComputeHost" ("id","providerId","displayName","sshAlias","detailsDoc","updatedAt")
+       VALUES ('h1','ssh:legacy','legacy-host','legacy','notes',CURRENT_TIMESTAMP)`
+    )
+
+    // ensureProjectSchema must add the column without error and without disturbing the row.
+    await expect(ensureProjectSchema(client)).resolves.toBeUndefined()
+    await expect(ensureProjectSchema(client)).resolves.toBeUndefined()
+
+    const repository = new ComputeHostRepository(() => Promise.resolve(client))
+    const hosts = await repository.list()
+    expect(hosts).toHaveLength(1)
+    expect(hosts[0]!.providerId).toBe('ssh:legacy')
+    // Legacy host reads back as 'auto' (design.md §10 existing-host default).
+    expect(hosts[0]!.executionBackend).toBe('auto')
+
+    // Writing the preference works on the migrated table.
+    await repository.updateExecutionBackend('ssh:legacy', 'direct')
+    const after = await repository.get('ssh:legacy')
+    expect(after?.executionBackend).toBe('direct')
+  })
 })

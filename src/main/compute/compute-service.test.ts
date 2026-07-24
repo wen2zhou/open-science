@@ -27,6 +27,7 @@ const sampleHost = (overrides: Partial<ComputeHost> = {}): ComputeHost => ({
   scratchRoot: undefined,
   scratchPinned: false,
   concurrencyLimit: undefined,
+  executionBackend: 'auto',
   probeResult: undefined,
   detailsDoc: '',
   detailsUpdatedAt: undefined,
@@ -59,12 +60,14 @@ const makeRepo = (
   updateDetails: ReturnType<typeof vi.fn>
   updateScratchPinned: ReturnType<typeof vi.fn>
   updateConcurrencyLimit: ReturnType<typeof vi.fn>
+  updateExecutionBackend: ReturnType<typeof vi.fn>
 } => {
   const updateProbeResult = vi.fn(() => Promise.resolve())
   const updateScratchRoot = vi.fn(() => Promise.resolve())
   const updateDetails = vi.fn(() => Promise.resolve())
   const updateScratchPinned = vi.fn(() => Promise.resolve())
   const updateConcurrencyLimit = vi.fn(() => Promise.resolve())
+  const updateExecutionBackend = vi.fn(() => Promise.resolve())
   const repo: ComputeHostRepository = {
     get: vi.fn(() => Promise.resolve(host)),
     list: vi.fn(() => Promise.resolve([])),
@@ -74,7 +77,8 @@ const makeRepo = (
     updateScratchRoot,
     updateDetails,
     updateScratchPinned,
-    updateConcurrencyLimit
+    updateConcurrencyLimit,
+    updateExecutionBackend
   } as unknown as ComputeHostRepository
   return {
     repo,
@@ -82,7 +86,8 @@ const makeRepo = (
     updateScratchRoot,
     updateDetails,
     updateScratchPinned,
-    updateConcurrencyLimit
+    updateConcurrencyLimit,
+    updateExecutionBackend
   }
 }
 
@@ -1965,6 +1970,185 @@ describe('ComputeService.submitJob', () => {
     expect(approvalCalledAt).toBeDefined()
     expect(createCalledAt).toBeDefined()
     expect(approvalCalledAt!).toBeLessThanOrEqual(createCalledAt!)
+  })
+})
+
+// Resource validation + driver resolution at the submit boundary (design.md §4.1, §5).
+describe('ComputeService.submitJob — resource + driver contract', () => {
+  const okRunner = () =>
+    makeFakeRunner({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })
+
+  const buildService = (
+    host: ComputeHost | null
+  ): {
+    service: ComputeService
+    createCalls: ReturnType<typeof vi.fn>
+    requestWithContext: ReturnType<typeof vi.fn>
+  } => {
+    const { repo } = makeRepo(host)
+    const { repo: jobRepo, createCalls } = makeJobRepo()
+    const requestWithContext = vi.fn(() => Promise.resolve('once' as const))
+    const broker = {
+      request: vi.fn(),
+      requestWithContext,
+      respond: vi.fn()
+    } as unknown as ComputeApprovalBroker
+    const service = new ComputeService(okRunner(), repo, broker, undefined, undefined, jobRepo)
+    return { service, createCalls, requestWithContext }
+  }
+
+  it('rejects unknown resource fields BEFORE approval with a structured invalid_resources error', async () => {
+    const { service, createCalls, requestWithContext } = buildService(sampleHost())
+    const err = await service
+      .submitJob(
+        'ssh:biowulf',
+        't',
+        'echo',
+        { resources: { bogus: 1 } },
+        { sessionId: 's1', projectId: 'p1' }
+      )
+      .catch((e) => e)
+    expect(err.computeCallError?.error_code).toBe('invalid_resources')
+    // No approval fired, no row written.
+    expect(requestWithContext).not.toHaveBeenCalled()
+    expect(createCalls).not.toHaveBeenCalled()
+  })
+
+  it('rejects an invalid numeric resource before approval', async () => {
+    const { service, requestWithContext } = buildService(sampleHost())
+    const err = await service
+      .submitJob(
+        'ssh:biowulf',
+        't',
+        'echo',
+        { resources: { gpus: -1 } },
+        { sessionId: 's1', projectId: 'p1' }
+      )
+      .catch((e) => e)
+    expect(err.computeCallError?.error_code).toBe('invalid_resources')
+    expect(err.computeCallError?.field).toBe('gpus')
+    expect(requestWithContext).not.toHaveBeenCalled()
+  })
+
+  it('accepts a valid resource request and snapshots it onto the job row', async () => {
+    const { service, createCalls } = buildService(sampleHost())
+    await service.submitJob(
+      'ssh:biowulf',
+      't',
+      'echo',
+      { resources: { gpus: 2, partition: 'gpu' } },
+      { sessionId: 's1', projectId: 'p1' }
+    )
+    expect(createCalls).toHaveBeenCalledOnce()
+    const request = createCalls.mock.calls[0]![0] as {
+      resourceRequest?: string
+      driver?: string
+    }
+    expect(request.driver).toBe('direct')
+    expect(JSON.parse(request.resourceRequest!)).toEqual({ gpus: 2, partition: 'gpu' })
+  })
+
+  it('omits the resource_request column when resources is an empty object', async () => {
+    const { service, createCalls } = buildService(sampleHost())
+    await service.submitJob(
+      'ssh:biowulf',
+      't',
+      'echo',
+      { resources: {} },
+      { sessionId: 's1', projectId: 'p1' }
+    )
+    const request = createCalls.mock.calls[0]![0] as { resourceRequest?: string }
+    expect(request.resourceRequest).toBeUndefined()
+  })
+
+  it('snapshots driver=direct when host preference is auto and no Slurm detected', async () => {
+    const { service, createCalls } = buildService(
+      sampleHost({ executionBackend: 'auto', probeResult: undefined })
+    )
+    await service.submitJob('ssh:biowulf', 't', 'echo', {}, { sessionId: 's1', projectId: 'p1' })
+    const request = createCalls.mock.calls[0]![0] as { driver?: string }
+    expect(request.driver).toBe('direct')
+  })
+
+  it('snapshots driver=direct when host preference is direct', async () => {
+    const { service, createCalls } = buildService(sampleHost({ executionBackend: 'direct' }))
+    await service.submitJob('ssh:biowulf', 't', 'echo', {}, { sessionId: 's1', projectId: 'p1' })
+    const request = createCalls.mock.calls[0]![0] as { driver?: string }
+    expect(request.driver).toBe('direct')
+  })
+
+  it('rejects an explicit slurm preference before approval (Slurm not enabled in this slice)', async () => {
+    const { service, requestWithContext } = buildService(sampleHost({ executionBackend: 'slurm' }))
+    const err = await service
+      .submitJob('ssh:biowulf', 't', 'echo', {}, { sessionId: 's1', projectId: 'p1' })
+      .catch((e) => e)
+    expect(err.computeCallError?.error_code).toBe('host_unreachable')
+    expect(requestWithContext).not.toHaveBeenCalled()
+  })
+
+  it('rejects auto when the probe detected Slurm (Slurm not enabled in this slice)', async () => {
+    const { service } = buildService(
+      sampleHost({
+        executionBackend: 'auto',
+        probeResult: {
+          ok: true,
+          probedAt: '2026-01-01T00:00:00Z',
+          exitCode: 0,
+          errorTail: null,
+          detectedScheduler: 'slurm'
+        }
+      })
+    )
+    const err = await service
+      .submitJob('ssh:biowulf', 't', 'echo', {}, { sessionId: 's1', projectId: 'p1' })
+      .catch((e) => e)
+    expect(err.computeCallError?.error_code).toBe('host_unreachable')
+  })
+
+  it('includes the resolved resources in the approval snapshot', async () => {
+    const { service, requestWithContext } = buildService(sampleHost())
+    await service.submitJob(
+      'ssh:biowulf',
+      't',
+      'echo',
+      { resources: { nodes: 2 } },
+      { sessionId: 's1', projectId: 'p1' }
+    )
+    const approvalArg = requestWithContext.mock.calls[0]![0] as { resources?: string }
+    expect(approvalArg.resources).toBe(JSON.stringify({ nodes: 2 }))
+  })
+})
+
+describe('ComputeService.setExecutionBackend', () => {
+  const fakeRunner = makeFakeRunner({
+    exitCode: 0,
+    stdout: '',
+    stderr: '',
+    truncated: false,
+    timedOut: false
+  })
+
+  it('persists a valid backend', async () => {
+    const { repo, updateExecutionBackend } = makeRepo()
+    const service = new ComputeService(fakeRunner, repo)
+    await service.setExecutionBackend('ssh:biowulf', 'slurm')
+    expect(updateExecutionBackend).toHaveBeenCalledWith('ssh:biowulf', 'slurm')
+  })
+
+  it('rejects an unknown backend value', async () => {
+    const { repo } = makeRepo()
+    const service = new ComputeService(fakeRunner, repo)
+    await expect(service.setExecutionBackend('ssh:biowulf', 'kubernetes')).rejects.toThrow(
+      /auto.*direct.*slurm/i
+    )
+  })
+
+  it('throws when the host does not exist', async () => {
+    const { repo } = makeRepo(null)
+    const service = new ComputeService(fakeRunner, repo)
+    await expect(service.setExecutionBackend('ssh:nope', 'direct')).rejects.toThrow(
+      /no compute host/i
+    )
   })
 })
 

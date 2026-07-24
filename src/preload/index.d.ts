@@ -396,6 +396,8 @@ interface OpenScienceAPI {
     scratchSet(providerId: string, path: string): Promise<void>
     // Concurrent job limit: store 1..500 (not enforced in Phase 1).
     concurrencySet(providerId: string, limit: number): Promise<void>
+    // Execution-backend preference (design.md §4.1): auto | direct | slurm.
+    executionBackendSet(providerId: string, backend: string): Promise<void>
     // Fires when a compute call needs user approval (runs before any SSH is made).
     onApprovalRequest(listener: (request: ComputeApprovalRequest) => void): () => void
     // Renderer sends back the user's decision (once / conversation / project / deny).

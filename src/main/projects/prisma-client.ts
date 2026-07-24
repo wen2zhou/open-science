@@ -150,6 +150,7 @@ const COMPUTE_HOST_TABLE_DDL = `CREATE TABLE IF NOT EXISTS "ComputeHost" (
     "scratchRoot" TEXT,
     "scratchPinned" BOOLEAN NOT NULL DEFAULT false,
     "concurrencyLimit" INTEGER,
+    "executionBackend" TEXT,
     "probeResult" TEXT,
     "detailsDoc" TEXT NOT NULL DEFAULT '',
     "detailsUpdatedAt" DATETIME,
@@ -191,6 +192,10 @@ const COMPUTE_JOB_TABLE_DDL = `CREATE TABLE IF NOT EXISTS "ComputeJob" (
     "stdoutTail" TEXT,
     "stderrTail" TEXT,
     "errorCode" TEXT,
+    "driver" TEXT,
+    "remoteState" TEXT,
+    "queueReason" TEXT,
+    "schedulerDiagnostic" TEXT,
     "lastPollError" TEXT,
     "harvestError" TEXT,
     "leftOnRemote" TEXT,
@@ -214,6 +219,18 @@ const COMPUTE_JOB_ADD_HARVEST_ERROR_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "
 const COMPUTE_JOB_ADD_LEFT_ON_REMOTE_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "leftOnRemote" TEXT`
 const COMPUTE_JOB_ADD_NOTIFIED_AT_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "notifiedAt" DATETIME`
 const COMPUTE_JOB_ADD_NOTIFICATION_CONSUMED_AT_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "notificationConsumedAt" DATETIME`
+
+// Migration guard (compute-contract-baseline): add the execution-backend preference column to
+// ComputeHost for DBs created before this issue. Nullable; existing rows read back as 'auto' (the
+// repository normalizes null → 'auto'). Catch swallows the duplicate-column error (idempotent).
+const COMPUTE_HOST_ADD_EXECUTION_BACKEND_DDL = `ALTER TABLE "ComputeHost" ADD COLUMN "executionBackend" TEXT`
+
+// Migration guards (compute-contract-baseline): add resolved-driver + scheduler-diagnostic columns to
+// ComputeJob. All nullable; existing rows are unaffected and stay fully readable (design.md §10).
+const COMPUTE_JOB_ADD_DRIVER_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "driver" TEXT`
+const COMPUTE_JOB_ADD_REMOTE_STATE_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "remoteState" TEXT`
+const COMPUTE_JOB_ADD_QUEUE_REASON_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "queueReason" TEXT`
+const COMPUTE_JOB_ADD_SCHEDULER_DIAGNOSTIC_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "schedulerDiagnostic" TEXT`
 
 // Indexes for ComputeJob: by providerId (per-host poller queries), sessionId (UI list), status
 // (finding non-terminal jobs on restart). IF NOT EXISTS makes re-runs idempotent.
@@ -262,6 +279,10 @@ const ensureProjectSchema = async (client: PrismaClient): Promise<void> => {
   await client.$executeRawUnsafe(COMPUTE_HOST_TABLE_DDL)
   await client.$executeRawUnsafe(COMPUTE_HOST_PROVIDER_ID_INDEX_DDL)
 
+  // Migration guard: add executionBackend to ComputeHost for DBs created before compute-contract-
+  // baseline. Nullable; existing rows read back as 'auto' (design.md §10).
+  await client.$executeRawUnsafe(COMPUTE_HOST_ADD_EXECUTION_BACKEND_DDL).catch(() => undefined)
+
   // Compute jobs (compute-jobs issue 01, Phase 3a): pure-additive table + three indexes.
   // IF NOT EXISTS makes each statement safe to re-run on any pre-existing DB.
   await client.$executeRawUnsafe(COMPUTE_JOB_TABLE_DDL)
@@ -281,6 +302,13 @@ const ensureProjectSchema = async (client: PrismaClient): Promise<void> => {
   await client
     .$executeRawUnsafe(COMPUTE_JOB_ADD_NOTIFICATION_CONSUMED_AT_DDL)
     .catch(() => undefined)
+
+  // Migration guards (compute-contract-baseline): add resolved-driver + scheduler-diagnostic columns
+  // to ComputeJob. All nullable; existing rows are unaffected and stay fully readable (design.md §10).
+  await client.$executeRawUnsafe(COMPUTE_JOB_ADD_DRIVER_DDL).catch(() => undefined)
+  await client.$executeRawUnsafe(COMPUTE_JOB_ADD_REMOTE_STATE_DDL).catch(() => undefined)
+  await client.$executeRawUnsafe(COMPUTE_JOB_ADD_QUEUE_REASON_DDL).catch(() => undefined)
+  await client.$executeRawUnsafe(COMPUTE_JOB_ADD_SCHEDULER_DIAGNOSTIC_DDL).catch(() => undefined)
 }
 
 let clientPromise: Promise<PrismaClient> | undefined

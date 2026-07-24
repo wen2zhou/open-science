@@ -145,6 +145,8 @@ type ComputeHandlers = {
   scratchSet: (providerId: string, path: string) => Promise<void>
   // Concurrent job limit: store 1..500 (not enforced in Phase 1).
   concurrencySet: (providerId: string, limit: number) => Promise<void>
+  // Execution-backend preference (design.md §4.1): auto | direct | slurm.
+  executionBackendSet: (providerId: string, backend: string) => Promise<void>
   // Session-level concurrency control (Phase 3c, issue 04).
   setSessionConcurrencyLimit: (sessionId: string, limit: number) => Promise<void>
   getSessionConcurrencyStatus: (sessionId: string) => Promise<{
@@ -287,6 +289,7 @@ const createComputeHandlers = (
       service.replaceDetails(providerId, { text, oldText, author }),
     scratchSet: (providerId, path) => service.setScratchRoot(providerId, path),
     concurrencySet: (providerId, limit) => service.setConcurrencyLimit(providerId, limit),
+    executionBackendSet: (providerId, backend) => service.setExecutionBackend(providerId, backend),
     setSessionConcurrencyLimit: (sessionId, limit) =>
       service.setSessionConcurrencyLimit(sessionId, limit),
     getSessionConcurrencyStatus: (sessionId) => service.getSessionConcurrencyStatus(sessionId),
@@ -420,6 +423,9 @@ const registerComputeIpcHandlers = (
   )
   ipcMain.handle('compute:concurrency:set', (_event, providerId: string, limit: number) =>
     handlers.concurrencySet(providerId, limit)
+  )
+  ipcMain.handle('compute:execution-backend:set', (_event, providerId: string, backend: string) =>
+    handlers.executionBackendSet(providerId, backend)
   )
   // Session-level concurrency control (Phase 3c, issue 04).
   ipcMain.handle(

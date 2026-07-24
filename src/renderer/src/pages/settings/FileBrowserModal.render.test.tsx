@@ -24,6 +24,7 @@ const connectedHost = (overrides: Partial<ComputeHost> = {}): ComputeHost => ({
   scratchRoot: '/scratch/user',
   scratchPinned: true,
   concurrencyLimit: undefined,
+  executionBackend: 'auto',
   probeResult: {
     ok: true,
     probedAt: new Date().toISOString(),

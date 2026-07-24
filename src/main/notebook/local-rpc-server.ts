@@ -339,9 +339,9 @@ class NotebookLocalRpcServer {
         const projectId = typeof params.project_id === 'string' ? params.project_id : ''
         const options = {
           environment: typeof params.environment === 'string' ? params.environment : undefined,
-          resourceRequest: isRecord(params.resources)
-            ? JSON.stringify(params.resources)
-            : undefined,
+          // Pass the raw resource object so ComputeService validates it against the shared schema at
+          // the RPC boundary and rejects unknown fields / unsafe values before approval (design.md §5).
+          resources: isRecord(params.resources) ? params.resources : undefined,
           inputs: Array.isArray(params.inputs) ? (params.inputs as unknown[]) : undefined,
           outputManifest: Array.isArray(params.outputs)
             ? JSON.stringify(params.outputs)

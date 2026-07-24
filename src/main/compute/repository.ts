@@ -5,10 +5,12 @@ import type {
   ComputeHostShape,
   CreateComputeHostRequest,
   DetailsAuthor,
+  ExecutionBackendPreference,
   ProbeResult,
   SshOverrides
 } from '../../shared/compute'
 import { computeProviderId, DETAILS_DOC_MAX_LENGTH } from '../../shared/compute'
+import { ExecutionBackendPreferenceSchema } from '../../shared/compute-resources'
 
 // Only the computeHost delegate is needed; typing to this subset keeps the repository unit-testable
 // with a lightweight mock instead of a real (engine-backed) PrismaClient (aligns with the reviewer and
@@ -40,6 +42,15 @@ const asShape = (value: string): ComputeHostShape =>
 const asAuthor = (value: string | null): DetailsAuthor | undefined =>
   value === 'user' || value === 'agent' ? value : undefined
 
+// Normalizes the execution-backend column back to the domain union. Per design.md §10, a missing/
+// corrupt/unknown value MUST NOT break host reads — it degrades to 'auto' (the existing-host default)
+// rather than throwing. This keeps Direct SSH working even if a migration partially failed.
+const asBackend = (value: string | null): ExecutionBackendPreference | undefined => {
+  if (value === null) return undefined
+  const parsed = ExecutionBackendPreferenceSchema.safeParse(value)
+  return parsed.success ? parsed.data : undefined
+}
+
 // Maps a Prisma row (JSON strings + DateTime + nullable columns) into the epoch-ms domain shape shared
 // with the renderer.
 const toHost = (row: PrismaComputeHost): ComputeHost => ({
@@ -52,6 +63,8 @@ const toHost = (row: PrismaComputeHost): ComputeHost => ({
   scratchRoot: row.scratchRoot ?? undefined,
   scratchPinned: row.scratchPinned,
   concurrencyLimit: row.concurrencyLimit ?? undefined,
+  // Existing/legacy rows (null) normalize to 'auto' — the existing-host default (design.md §10).
+  executionBackend: asBackend(row.executionBackend) ?? 'auto',
   probeResult: parseJson<ProbeResult>(row.probeResult),
   detailsDoc: row.detailsDoc,
   detailsUpdatedAt: row.detailsUpdatedAt?.getTime(),
@@ -131,6 +144,9 @@ class ComputeHostRepository {
         displayName,
         sshAlias: alias,
         sshOverrides: serializeOverrides(request.sshOverrides),
+        // New hosts default to 'auto' (design.md §4.1). The probe later advises; it never auto-switches
+        // dispatch (design.md §10).
+        executionBackend: 'auto',
         detailsDoc,
         detailsUpdatedBy: hasDetails ? 'user' : null,
         detailsUpdatedAt: hasDetails ? new Date() : null
@@ -213,6 +229,21 @@ class ComputeHostRepository {
     await client.computeHost.update({
       where: { providerId },
       data: { concurrencyLimit }
+    })
+  }
+
+  // Persists the execution-backend preference (design.md §4.1). This is a pure user override — calling
+  // it never changes how an existing job is polled/cancelled (the driver is snapshotted per-job at
+  // submit time). Callers must validate the value is one of auto|direct|slurm before calling.
+  async updateExecutionBackend(
+    providerId: string,
+    backend: ExecutionBackendPreference
+  ): Promise<void> {
+    const client = await this.getClient()
+
+    await client.computeHost.update({
+      where: { providerId },
+      data: { executionBackend: backend }
     })
   }
 }

@@ -155,6 +155,16 @@ model ComputeJob {
   stdoutTail      String?
   stderrTail      String?
   errorCode       String?
+  // Resolved driver + scheduler diagnostics (design.md §4.1 / §4.4). All nullable, added additively
+  // (issue compute-contract-baseline §10): legacy rows read back as null and stay fully readable.
+  // driver: the driver snapshotted at submit time (direct | slurm); never changes after submit.
+  // remoteState: provider-specific state name (e.g. Slurm PENDING/RUNNING) kept off the state machine.
+  // queueReason: why a scheduler job is still pending (QOSGrpMemLimit etc.).
+  // schedulerDiagnostic: opaque provider diagnostic blob for the UI.
+  driver              String?
+  remoteState         String?
+  queueReason         String?
+  schedulerDiagnostic String?
   // lastPollError: set when SSH connectivity fails during a poll tick (design.md §8 boundary 2).
   // The job status is NOT changed — this field surfaces the transient error to the UI.
   // Cleared on the next successful poll. retry_after_user_action is always true for this field.
@@ -194,6 +204,10 @@ model ComputeHost {
   scratchRoot      String?
   scratchPinned    Boolean   @default(false)
   concurrencyLimit Int? // stored but not enforced in Phase 1
+  // Execution-backend preference (design.md §4.1): auto | direct | slurm. Nullable + defaults to null so
+  // existing host rows read back as 'auto' without a destructive migration; the repository normalizes
+  // null → 'auto' at the boundary (issue compute-contract-baseline §10 compatibility).
+  executionBackend String?
   probeResult      String? // JSON probe snapshot, written by a later issue
   detailsDoc       String    @default("") // markdown notes, <= 32768 chars
   detailsUpdatedAt DateTime?

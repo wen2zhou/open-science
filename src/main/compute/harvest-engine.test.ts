@@ -74,6 +74,7 @@ const sampleHost = (): import('../../shared/compute').ComputeHost => ({
   scratchRoot: undefined,
   scratchPinned: false,
   concurrencyLimit: undefined,
+  executionBackend: 'auto',
   probeResult: undefined,
   detailsDoc: '',
   detailsUpdatedAt: undefined,

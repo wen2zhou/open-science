@@ -332,6 +332,117 @@ describe('ComputeJob schema migration (integration)', () => {
     expect(cleared.notification_consumed_at).toBeUndefined()
   })
 
+  // compute-contract-baseline: driver + scheduler diagnostic columns are added to a Phase 3b DB.
+  it('applies driver + scheduler diagnostic columns to a Phase 3b DB: old rows readable', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-jobs-contract-migrate-'))
+
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+
+    // Simulate a Phase 3b DB: ComputeJob table WITHOUT the contract-baseline columns.
+    await client.$executeRawUnsafe(`CREATE TABLE IF NOT EXISTS "ComputeJob" (
+      "id" TEXT NOT NULL PRIMARY KEY,
+      "providerId" TEXT NOT NULL,
+      "shape" TEXT NOT NULL,
+      "sessionId" TEXT NOT NULL,
+      "projectId" TEXT NOT NULL,
+      "status" TEXT NOT NULL DEFAULT 'submitted',
+      "intent" TEXT NOT NULL,
+      "command" TEXT NOT NULL,
+      "commandHash" TEXT NOT NULL,
+      "environment" TEXT,
+      "resourceRequest" TEXT,
+      "inputManifest" TEXT,
+      "outputManifest" TEXT,
+      "harvestConfig" TEXT,
+      "timeoutSeconds" INTEGER,
+      "remoteWorkdir" TEXT,
+      "remoteHandle" TEXT,
+      "exitCode" INTEGER,
+      "stdoutTail" TEXT,
+      "stderrTail" TEXT,
+      "errorCode" TEXT,
+      "lastPollError" TEXT,
+      "harvestError" TEXT,
+      "leftOnRemote" TEXT,
+      "notifiedAt" DATETIME,
+      "notificationConsumedAt" DATETIME,
+      "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+      "submittedAt" DATETIME,
+      "startedAt" DATETIME,
+      "finishedAt" DATETIME,
+      "harvestedAt" DATETIME
+    )`)
+    // Insert a legacy 3b row (no driver/diagnostic columns).
+    await client.$executeRawUnsafe(
+      `INSERT INTO "ComputeJob" ("id","providerId","shape","sessionId","projectId","intent","command","commandHash","status","createdAt")
+       VALUES ('legacy-3b','ssh:test','direct_ssh','s1','p1','legacy','echo ok','hash','running',CURRENT_TIMESTAMP)`
+    )
+
+    // Apply ensureProjectSchema — must add the 4 new columns without error, idempotently.
+    await expect(ensureProjectSchema(client)).resolves.toBeUndefined()
+    await expect(ensureProjectSchema(client)).resolves.toBeUndefined()
+
+    // Legacy row is fully readable; new columns default to undefined (design.md §10).
+    const repo = new ComputeJobRepository(() => Promise.resolve(client))
+    const jobs = await repo.findNonTerminal()
+    expect(jobs).toHaveLength(1)
+    expect(jobs[0]!.job_id).toBe('legacy-3b')
+    expect(jobs[0]!.driver).toBeUndefined()
+    expect(jobs[0]!.remote_state).toBeUndefined()
+    expect(jobs[0]!.queue_reason).toBeUndefined()
+    expect(jobs[0]!.scheduler_diagnostic).toBeUndefined()
+  })
+
+  it('round-trips driver snapshot + scheduler diagnostics (create driver, update diagnostics)', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-jobs-driver-'))
+
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+
+    await ensureProjectSchema(client)
+    const repo = new ComputeJobRepository(() => Promise.resolve(client))
+
+    const created = await repo.create({
+      id: 'job-driver',
+      providerId: 'ssh:test',
+      shape: 'direct_ssh',
+      sessionId: 's1',
+      projectId: 'p1',
+      intent: 'driver test',
+      command: 'echo ok',
+      commandHash: 'abc',
+      driver: 'direct'
+    })
+    expect(created.driver).toBe('direct')
+
+    const updated = await repo.update('job-driver', {
+      remoteState: 'PENDING',
+      queueReason: 'QOSGrpMemLimit',
+      schedulerDiagnostic: '{"squeue":"R"}'
+    })
+    expect(updated.remote_state).toBe('PENDING')
+    expect(updated.queue_reason).toBe('QOSGrpMemLimit')
+    expect(updated.scheduler_diagnostic).toBe('{"squeue":"R"}')
+
+    // Read back via get() to verify persistence.
+    const fetched = await repo.get('job-driver')
+    expect(fetched!.driver).toBe('direct')
+    expect(fetched!.remote_state).toBe('PENDING')
+    expect(fetched!.queue_reason).toBe('QOSGrpMemLimit')
+    expect(fetched!.scheduler_diagnostic).toBe('{"squeue":"R"}')
+
+    // Clear the nullable diagnostics.
+    const cleared = await repo.update('job-driver', {
+      remoteState: null,
+      queueReason: null,
+      schedulerDiagnostic: null
+    })
+    expect(cleared.remote_state).toBeUndefined()
+    expect(cleared.queue_reason).toBeUndefined()
+    expect(cleared.scheduler_diagnostic).toBeUndefined()
+  })
+
   it('findTerminalUnharvested returns terminal jobs with null harvestedAt, excludes already-harvested and non-terminal', async () => {
     storageRoot = await mkdtemp(join(tmpdir(), 'open-science-jobs-unharvested-'))
 

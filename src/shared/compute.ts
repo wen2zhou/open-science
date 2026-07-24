@@ -40,6 +40,16 @@ export type ProbeResult = {
 // Who last wrote the details doc — the user (UI edit) or the agent (compute_details, later issue).
 export type DetailsAuthor = 'user' | 'agent'
 
+// The persisted execution-backend preference (design.md §4.1). `auto` resolves from the latest probe
+// (slurm when detected, else direct); `direct` / `slurm` are explicit user overrides. Existing hosts
+// default to `auto` and a detected scheduler never silently switches dispatch.
+export type ExecutionBackendPreference = 'auto' | 'direct' | 'slurm'
+
+// The default provider concurrency ceiling when ComputeHost.concurrencyLimit is unset. Mirrors
+// ConcurrencyManager.DEFAULT_PROVIDER_CEILING so the Settings UI never shows a number that contradicts
+// the actual enforced limit (design.md — concurrency UI/backend drift fix).
+export const DEFAULT_PROVIDER_CEILING = 10
+
 // A registered SSH compute host, normalized for the renderer.
 export type ComputeHost = {
   id: string
@@ -52,6 +62,9 @@ export type ComputeHost = {
   scratchRoot: string | undefined
   scratchPinned: boolean
   concurrencyLimit: number | undefined
+  // Execution-backend preference (design.md §4.1). Always present for rows migrated by this issue;
+  // undefined only for rows written before the column existed (treated as 'auto').
+  executionBackend: ExecutionBackendPreference | undefined
   probeResult: ProbeResult | undefined
   detailsDoc: string
   detailsUpdatedAt: number | undefined
@@ -90,8 +103,11 @@ export type ExecResult = {
 // Structured error payload for call_command failures. error_code identifies the failure class;
 // retry_after_user_action=true means the system will NOT retry automatically — the user must fix
 // an external condition first (e.g. SSH connectivity).
+// `invalid_resources` (compute-contract-baseline): returned when a submit_job resource request fails
+// schema validation at the RPC boundary, before approval/SSH (design.md §5).
 export type ComputeCallError = {
-  error_code: 'host_unreachable' | 'timeout' | 'approval_denied' | 'queue_full'
+  error_code:
+    'host_unreachable' | 'timeout' | 'approval_denied' | 'queue_full' | 'invalid_resources'
   message: string
   retry_after_user_action: boolean
 }
@@ -153,6 +169,15 @@ export type ComputeJob = {
   stdout_tail: string | undefined
   stderr_tail: string | undefined
   error_code: string | undefined
+  // Resolved driver snapshotted at submit time (design.md §4.1). Once written it never changes, so a
+  // job is always polled/cancelled/recovered by the same driver regardless of later host edits.
+  // Optional + nullable: legacy rows predate this column and read as undefined.
+  driver?: 'direct' | 'slurm' | undefined
+  // Scheduler diagnostics kept separate from the cross-provider state machine (design.md §4.4) so
+  // provider-specific state names never leak into `status`. All optional / nullable for legacy rows.
+  remote_state?: string | undefined
+  queue_reason?: string | undefined
+  scheduler_diagnostic?: string | undefined
   // Set when a poll SSH connection fails; job status is NOT changed. Cleared on next successful poll.
   // retry_after_user_action is always true for this condition (design.md §8 boundary 2 / §11).
   // Optional: absent means no poll error has been recorded for this job.

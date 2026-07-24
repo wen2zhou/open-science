@@ -437,6 +437,8 @@ type OpenScienceAPI = {
     scratchSet: (providerId: string, path: string) => Promise<void>
     // Concurrent job limit: store 1..500 (not enforced in Phase 1).
     concurrencySet: (providerId: string, limit: number) => Promise<void>
+    // Execution-backend preference (design.md §4.1): auto | direct | slurm.
+    executionBackendSet: (providerId: string, backend: string) => Promise<void>
     // Lists a remote directory (browse experience).
     listDir: (providerId: string, path: string) => Promise<DirListing>
     // Downloads a remote file to OS Downloads (os-downloads) or project artifact (artifact).
@@ -969,6 +971,8 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke('compute:scratch:set', providerId, path) as Promise<void>,
     concurrencySet: (providerId, limit) =>
       ipcRenderer.invoke('compute:concurrency:set', providerId, limit) as Promise<void>,
+    executionBackendSet: (providerId, backend) =>
+      ipcRenderer.invoke('compute:execution-backend:set', providerId, backend) as Promise<void>,
     download: (providerId, remotePath, dest) =>
       ipcRenderer.invoke('compute:download', providerId, remotePath, dest) as Promise<LocalFile>,
     revealInFolder: (filePath) =>

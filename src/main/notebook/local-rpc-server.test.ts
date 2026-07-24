@@ -420,4 +420,76 @@ describe('notebook local RPC server', () => {
       await server.close()
     }
   })
+
+  it('submit_job forwards the raw resources object to ComputeService (validation at the boundary)', async () => {
+    const root = await createStorageRoot()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const submitCalls: Array<{ resources?: unknown; resourceRequest?: string }> = []
+    const fakeComputeService = {
+      callCommand: async () => ({}),
+      list: async () => [],
+      getDetails: async () => ({ doc: '', isSkeleton: true }),
+      appendDetails: async () => {},
+      replaceDetails: async () => {},
+      download: async () => ({}),
+      submitJob: async (
+        _providerId: string,
+        _intent: string,
+        _command: string,
+        options: { resources?: unknown; resourceRequest?: string }
+      ) => {
+        submitCalls.push(options)
+        return { job_id: 'job-1', provider_id: 'ssh:c', status: 'submitted', remote_workdir: '/w' }
+      },
+      getJobStatus: async () => ({}),
+      getJobResult: async () => ({}),
+      getEnabledComputeHosts: () => [],
+      setSessionConcurrencyLimit: async () => {},
+      getSessionConcurrencyStatus: async () => ({
+        session_limit: null,
+        active_count: 0,
+        queued_count: 0,
+        provider_ceilings: {}
+      })
+    }
+    const server = new NotebookLocalRpcServer(service, {
+      token: 'secret-token',
+      computeService: fakeComputeService
+    })
+    const connection = await server.ensureStarted()
+
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: { authorization: 'Bearer secret-token', 'content-type': 'application/json' },
+        body: JSON.stringify({
+          method: 'computeCall',
+          params: {
+            op: 'submit_job',
+            provider_id: 'ssh:c',
+            intent: 'run',
+            command: 'echo hi',
+            session_id: 's1',
+            project_id: 'p1',
+            resources: { gpus: 2, partition: 'gpu' }
+          }
+        })
+      })
+      const payload = (await response.json()) as { result: { job_id: string } }
+
+      expect(response.status).toBe(200)
+      expect(payload.result.job_id).toBe('job-1')
+      // The raw object is forwarded untouched; validation happens in ComputeService.
+      expect(submitCalls).toHaveLength(1)
+      expect(submitCalls[0]!.resources).toEqual({ gpus: 2, partition: 'gpu' })
+      expect(submitCalls[0]!.resourceRequest).toBeUndefined()
+    } finally {
+      await server.close()
+    }
+  })
 })

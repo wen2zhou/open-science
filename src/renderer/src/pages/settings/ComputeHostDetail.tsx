@@ -1,8 +1,18 @@
-import { AlertTriangle, ChevronDown, ChevronUp, Cpu, HardDrive, MemoryStick, Pin, RefreshCw, Zap } from 'lucide-react'
+import {
+  AlertTriangle,
+  ChevronDown,
+  ChevronUp,
+  Cpu,
+  HardDrive,
+  MemoryStick,
+  Pin,
+  RefreshCw,
+  Zap
+} from 'lucide-react'
 import { useEffect, useRef, useState } from 'react'
 
 import type { ComputeHost } from '../../../../shared/compute'
-import { DETAILS_DOC_MAX_LENGTH } from '../../../../shared/compute'
+import { DEFAULT_PROVIDER_CEILING, DETAILS_DOC_MAX_LENGTH } from '../../../../shared/compute'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
@@ -44,6 +54,7 @@ export function ComputeHostDetail({
   const saveDetails = useComputeStore((state) => state.saveDetails)
   const setScratch = useComputeStore((state) => state.setScratch)
   const setConcurrency = useComputeStore((state) => state.setConcurrency)
+  const setExecutionBackend = useComputeStore((state) => state.setExecutionBackend)
 
   const [probeError, setProbeError] = useState<string | undefined>(undefined)
 
@@ -67,6 +78,11 @@ export function ComputeHostDetail({
   const [concurrencyInput, setConcurrencyInput] = useState('')
   const [concurrencySaving, setConcurrencySaving] = useState(false)
   const [concurrencyError, setConcurrencyError] = useState<string | undefined>(undefined)
+
+  // Execution-backend editor state (design.md §4.1).
+  const [backendInput, setBackendInput] = useState<'auto' | 'direct' | 'slurm'>('auto')
+  const [backendSaving, setBackendSaving] = useState(false)
+  const [backendError, setBackendError] = useState<string | undefined>(undefined)
 
   // Details expand/collapse state
   const [isDetailsExpanded, setIsDetailsExpanded] = useState(false)
@@ -581,7 +597,8 @@ export function ComputeHostDetail({
           <div className="min-w-0">
             <h4 className="text-sm font-medium text-foreground">Concurrent job limit</h4>
             <p className="mt-0.5 text-xs text-muted-foreground">
-              Maximum jobs running at the same time on this host (1–500). Not yet enforced.
+              Maximum jobs running at the same time on this host (1–500). Enforced per host; jobs
+              over the limit are queued until a slot frees.
             </p>
           </div>
           {!isEditingConcurrency ? (
@@ -609,7 +626,7 @@ export function ComputeHostDetail({
                 setConcurrencyInput(e.target.value)
                 setConcurrencyError(undefined)
               }}
-              placeholder="10"
+              placeholder={String(DEFAULT_PROVIDER_CEILING)}
               aria-label="Concurrent job limit"
               aria-describedby={concurrencyError ? 'concurrency-error' : undefined}
             />
@@ -645,10 +662,70 @@ export function ComputeHostDetail({
         ) : (
           <div className="mt-3 rounded-lg border border-border bg-muted/20 px-3.5 py-2.5">
             <span className="font-mono text-xs text-muted-foreground">
-              {host.concurrencyLimit != null ? host.concurrencyLimit : '100 (default)'}
+              {host.concurrencyLimit != null
+                ? host.concurrencyLimit
+                : `${DEFAULT_PROVIDER_CEILING} (default)`}
             </span>
           </div>
         )}
+      </div>
+
+      {/* Execution backend block (design.md §4.1) */}
+      <div className="mt-7">
+        <div className="flex items-start justify-between gap-4">
+          <div className="min-w-0">
+            <h4 className="text-sm font-medium text-foreground">Execution backend</h4>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              How jobs are launched on this host. <span className="font-semibold">Auto</span>{' '}
+              resolves from the probe (Slurm when detected, else Direct SSH);{' '}
+              <span className="font-semibold">Direct</span> /{' '}
+              <span className="font-semibold">Slurm</span> are explicit overrides. The choice is
+              snapshotted per job at submit time.
+            </p>
+          </div>
+        </div>
+
+        <div className="mt-3 flex flex-col gap-2">
+          <div className="flex flex-wrap items-center gap-3">
+            {(['auto', 'direct', 'slurm'] as const).map((value) => {
+              const active = (host.executionBackend ?? 'auto') === value
+              return (
+                <Button
+                  key={value}
+                  type="button"
+                  variant={active ? 'default' : 'outline'}
+                  size="sm"
+                  disabled={backendSaving}
+                  aria-pressed={active}
+                  aria-busy={backendSaving && backendInput === value}
+                  onClick={() => {
+                    setBackendInput(value)
+                    setBackendError(undefined)
+                    void (async (): Promise<void> => {
+                      setBackendSaving(true)
+                      try {
+                        await setExecutionBackend(providerId, value)
+                      } catch (err) {
+                        setBackendError(
+                          err instanceof Error ? err.message : 'Failed to set execution backend.'
+                        )
+                      } finally {
+                        setBackendSaving(false)
+                      }
+                    })()
+                  }}
+                >
+                  {value === 'auto' ? 'Auto' : value === 'direct' ? 'Direct SSH' : 'Slurm'}
+                </Button>
+              )
+            })}
+          </div>
+          {backendError ? (
+            <p role="alert" className="text-xs text-destructive">
+              {backendError}
+            </p>
+          ) : null}
+        </div>
       </div>
     </div>
   )

@@ -20,6 +20,7 @@ const host = (overrides: Partial<ComputeHost> = {}): ComputeHost => ({
   scratchRoot: undefined,
   scratchPinned: false,
   concurrencyLimit: undefined,
+  executionBackend: 'auto',
   probeResult: undefined,
   detailsDoc: '',
   detailsUpdatedAt: undefined,
@@ -53,7 +54,8 @@ beforeEach(() => {
     deleteHost: vi.fn(),
     saveDetails: vi.fn(),
     setScratch: vi.fn(),
-    setConcurrency: vi.fn()
+    setConcurrency: vi.fn(),
+    setExecutionBackend: vi.fn(() => Promise.resolve())
   }
   useComputeStore.setState(state)
   stubDetailsGet('')
@@ -122,14 +124,27 @@ describe('ComputeHostDetail', () => {
     expect(container.textContent).toContain('PINNED')
   })
 
-  it('shows (default) when concurrencyLimit is not set', () => {
+  it('shows the real default concurrency ceiling when concurrencyLimit is not set', () => {
     useComputeStore.setState({ hosts: [host()], isLoaded: true })
 
     act(() => {
       root.render(<ComputeHostDetail providerId="ssh:biowulf" onRemoved={vi.fn()} />)
     })
 
-    expect(container.textContent).toContain('(default)')
+    // Must match ConcurrencyManager.DEFAULT_PROVIDER_CEILING (10), not the stale 100.
+    expect(container.textContent).toContain('10 (default)')
+    expect(container.textContent).not.toContain('100')
+  })
+
+  it('states that the concurrency limit is enforced (not "not yet enforced")', () => {
+    useComputeStore.setState({ hosts: [host()], isLoaded: true })
+
+    act(() => {
+      root.render(<ComputeHostDetail providerId="ssh:biowulf" onRemoved={vi.fn()} />)
+    })
+
+    expect(container.textContent).toContain('Enforced')
+    expect(container.textContent).not.toContain('Not yet enforced')
   })
 
   it('shows concurrencyLimit value when set', () => {
@@ -140,6 +155,20 @@ describe('ComputeHostDetail', () => {
     })
 
     expect(container.textContent).toContain('10')
+  })
+
+  it('renders the Execution backend selector with the persisted preference', () => {
+    useComputeStore.setState({ hosts: [host({ executionBackend: 'direct' })], isLoaded: true })
+
+    act(() => {
+      root.render(<ComputeHostDetail providerId="ssh:biowulf" onRemoved={vi.fn()} />)
+    })
+
+    expect(container.textContent).toContain('Execution backend')
+    expect(container.textContent).toContain('Direct SSH')
+    // The active option is marked pressed.
+    const pressed = container.querySelector('button[aria-pressed="true"]')
+    expect(pressed?.textContent).toContain('Direct SSH')
   })
 
   it('calls saveDetails with author=user when Save is clicked in details editor', async () => {

@@ -14,6 +14,12 @@ import type {
   SubmitJobResult
 } from '../../shared/compute'
 import { DETAILS_DOC_MAX_LENGTH } from '../../shared/compute'
+import {
+  ExecutionBackendPreferenceSchema,
+  validateResourceRequest,
+  serializeResourceRequest,
+  type ResourceRequest
+} from '../../shared/compute-resources'
 import type { DirListing, DownloadDest, LocalFile, RemoteFsError } from '../../shared/remote-fs'
 import { classifyRemoteError, parseFindListing } from '../../shared/remote-fs'
 import type { ComputeApprovalBroker } from './compute-approval-broker'
@@ -522,6 +528,23 @@ export class ComputeService {
     }
 
     await this.repository.updateConcurrencyLimit(providerId, limit)
+  }
+
+  // Persists the execution-backend preference (design.md §4.1). A pure user override: it never changes
+  // how an existing job runs (each job snapshots its driver at submit). Validated against the shared
+  // schema so a corrupt value from the IPC boundary cannot land in the DB.
+  async setExecutionBackend(providerId: string, backend: string): Promise<void> {
+    const host = await this.repository.get(providerId)
+    if (!host) {
+      throw new Error(`No compute host found with provider id "${providerId}".`)
+    }
+
+    const parsed = ExecutionBackendPreferenceSchema.safeParse(backend)
+    if (!parsed.success) {
+      throw new Error(`Execution backend must be one of auto, direct, slurm (got "${backend}").`)
+    }
+
+    await this.repository.updateExecutionBackend(providerId, parsed.data)
   }
 
   // Lists the contents of a remote directory using find -printf via the existing exec SshRunner.
@@ -1096,6 +1119,49 @@ export class ComputeService {
     return size
   }
 
+  // Resolves the persisted execution-backend preference into a concrete driver (design.md §4.1).
+  //
+  // `auto` resolves from the host's latest probe: slurm when a Slurm scheduler was detected, else
+  // direct. Per design.md §10, this is advisory for EXISTING hosts — auto only resolves to slurm when
+  // a probe actually detected it; it never silently re-dispatches an auto host as slurm based on a
+  // stale/default. `direct`/`slurm` are explicit user overrides.
+  //
+  // This baseline slice does NOT ship a Slurm driver, so slurm resolution returns 'slurm_disabled'
+  // (a structured error) rather than silently dispatching via the Direct path — the job fails fast
+  // with a clear message instead of running on the wrong backend (design.md §3 invariant 7).
+  private _resolveDriver(
+    host: ComputeHost
+  ): { ok: true; driver: 'direct' | 'slurm' } | { ok: false; error: ComputeCallError } {
+    const preference = host.executionBackend ?? 'auto'
+    if (preference === 'direct') return { ok: true, driver: 'direct' }
+    if (preference === 'slurm') {
+      // Explicit slurm selection is rejected until the Slurm driver lands (Issue 03).
+      return {
+        ok: false,
+        error: {
+          error_code: 'host_unreachable',
+          message:
+            'Slurm execution is not enabled on this host yet. Select "Direct SSH" or "Auto" in Compute settings.',
+          retry_after_user_action: true
+        }
+      }
+    }
+    // auto: resolve from the probe. Only slurm detection routes to slurm; everything else is direct.
+    const detected = host.probeResult?.detectedScheduler
+    if (detected === 'slurm') {
+      return {
+        ok: false,
+        error: {
+          error_code: 'host_unreachable',
+          message:
+            'A Slurm scheduler was detected on this host, but Slurm execution is not enabled yet. Select "Direct SSH" in Compute settings to run jobs now.',
+          retry_after_user_action: true
+        }
+      }
+    }
+    return { ok: true, driver: 'direct' }
+  }
+
   // Submits a remote compute job asynchronously (design.md §4, §5).
   //
   // Flow:
@@ -1114,6 +1180,11 @@ export class ComputeService {
     command: string,
     options: {
       environment?: string
+      // Raw resource request object validated at this boundary (design.md §5). Takes precedence over
+      // resourceRequest when both are supplied.
+      resources?: unknown
+      // Pre-serialized resource JSON (legacy/test path). Passed through unvalidated when `resources`
+      // is absent — callers should prefer `resources`.
       resourceRequest?: string
       inputs?: RawInputSpec[]
       outputManifest?: string
@@ -1131,6 +1202,43 @@ export class ComputeService {
     if (!host) {
       throw new Error(`No compute host found with provider id "${providerId}".`)
     }
+
+    // ── RESOLVE DRIVER (before approval / SSH; design.md §4.1) ─────────────────────
+    // Resolved once and snapshotted onto the job; later host re-probes / edits never change how this
+    // job is polled or cancelled.
+    const driverResolution = this._resolveDriver(host)
+    if (!driverResolution.ok) {
+      const err = new Error(driverResolution.error.message) as Error & {
+        computeCallError: ComputeCallError
+      }
+      err.computeCallError = driverResolution.error
+      throw err
+    }
+    const resolvedDriver = driverResolution.driver
+
+    // ── VALIDATE RESOURCES (RPC boundary; design.md §5) ────────────────────────────
+    // Rejects unknown fields, invalid numbers, and unsafe scheduler strings BEFORE approval/SSH with a
+    // structured error. The validated request is the audit snapshot the approval card and the driver
+    // consume (cross-cutting: resources + backend must appear in the job snapshot).
+    let resourceRequestString: string | undefined = options.resourceRequest
+    let validatedResources: ResourceRequest | undefined = undefined
+    if (options.resources !== undefined) {
+      const validation = validateResourceRequest(options.resources)
+      if (!validation.ok) {
+        const err = new Error(validation.error.message) as Error & {
+          computeCallError: ComputeCallError
+        }
+        err.computeCallError = validation.error
+        throw err
+      }
+      validatedResources = validation.request
+      resourceRequestString = Object.keys(validation.request).length
+        ? serializeResourceRequest(validation.request)
+        : undefined
+    }
+    // Reference validatedResources so it is retained for future driver consumption (Issue 02) while
+    // the serialized snapshot is what this slice persists. Without this the unused-var check fires.
+    void validatedResources
 
     // Validate timeout bounds.
     const rawTimeout = options.timeoutSeconds
@@ -1226,6 +1334,9 @@ export class ComputeService {
       command_preview: commandPreview,
       command_full: command,
       inputs_summary: inputsSummary || undefined,
+      // The resolved resource request (audit snapshot) + resolved driver (design.md §5 / cross-cutting:
+      // resources and backend selection must appear in the approval snapshot).
+      resources: resourceRequestString,
       timeout_seconds: timeoutSeconds,
       remote_workdir: remoteWorkdir
     }
@@ -1263,7 +1374,8 @@ export class ComputeService {
         command,
         commandHash,
         environment: options.environment,
-        resourceRequest: options.resourceRequest,
+        resourceRequest: resourceRequestString,
+        driver: resolvedDriver,
         inputManifest,
         outputManifest: options.outputManifest,
         harvestConfig: options.harvestConfig,

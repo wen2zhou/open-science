@@ -12,6 +12,7 @@ const createRow = (overrides: Record<string, unknown> = {}): Record<string, unkn
   scratchRoot: null,
   scratchPinned: false,
   concurrencyLimit: null,
+  executionBackend: null,
   probeResult: null,
   detailsDoc: '',
   detailsUpdatedAt: null,
@@ -23,13 +24,14 @@ const createRow = (overrides: Record<string, unknown> = {}): Record<string, unkn
 
 // Builds a mock computeHost delegate; each method is a spy the tests can assert against.
 const createMockClient = (
-  methods: Partial<Record<'findMany' | 'findUnique' | 'create' | 'delete', unknown>>
+  methods: Partial<Record<'findMany' | 'findUnique' | 'create' | 'delete' | 'update', unknown>>
 ): { client: ComputeHostClient; computeHost: Record<string, ReturnType<typeof vi.fn>> } => {
   const computeHost = {
     findMany: vi.fn(methods.findMany as never),
     findUnique: vi.fn(methods.findUnique as never),
     create: vi.fn(methods.create as never),
-    delete: vi.fn(methods.delete as never)
+    delete: vi.fn(methods.delete as never),
+    update: vi.fn(methods.update as never)
   }
 
   return { client: { computeHost } as unknown as ComputeHostClient, computeHost }
@@ -53,6 +55,7 @@ describe('compute host repository', () => {
         scratchRoot: undefined,
         scratchPinned: false,
         concurrencyLimit: undefined,
+        executionBackend: 'auto',
         probeResult: undefined,
         detailsDoc: '',
         detailsUpdatedAt: undefined,
@@ -201,5 +204,55 @@ describe('compute host repository', () => {
     await repository.delete('ssh:biowulf')
 
     expect(computeHost.delete).toHaveBeenCalledWith({ where: { providerId: 'ssh:biowulf' } })
+  })
+
+  it('normalizes a null executionBackend to auto (legacy existing-host default, design §10)', async () => {
+    const { client } = createMockClient({
+      findUnique: () => Promise.resolve(createRow({ executionBackend: null }))
+    })
+    const repository = new ComputeHostRepository(() => Promise.resolve(client))
+    const host = await repository.get('ssh:biowulf')
+    expect(host?.executionBackend).toBe('auto')
+  })
+
+  it('normalizes a corrupt executionBackend to auto rather than throwing (design §10)', async () => {
+    const { client } = createMockClient({
+      findUnique: () => Promise.resolve(createRow({ executionBackend: 'kubernetes' }))
+    })
+    const repository = new ComputeHostRepository(() => Promise.resolve(client))
+    const host = await repository.get('ssh:biowulf')
+    expect(host?.executionBackend).toBe('auto')
+  })
+
+  it('passes a persisted backend through unchanged', async () => {
+    const { client } = createMockClient({
+      findUnique: () => Promise.resolve(createRow({ executionBackend: 'slurm' }))
+    })
+    const repository = new ComputeHostRepository(() => Promise.resolve(client))
+    const host = await repository.get('ssh:biowulf')
+    expect(host?.executionBackend).toBe('slurm')
+  })
+
+  it('defaults a newly-created host to executionBackend=auto', async () => {
+    const { client, computeHost } = createMockClient({
+      findUnique: () => Promise.resolve(null),
+      create: () => Promise.resolve(createRow())
+    })
+    const repository = new ComputeHostRepository(() => Promise.resolve(client))
+    await repository.create({ sshAlias: 'biowulf' })
+    const call = computeHost.create.mock.calls[0]![0] as { data: Record<string, unknown> }
+    expect(call.data.executionBackend).toBe('auto')
+  })
+
+  it('persists the execution backend override via update', async () => {
+    const { client, computeHost } = createMockClient({
+      update: () => Promise.resolve(createRow({ executionBackend: 'direct' }))
+    })
+    const repository = new ComputeHostRepository(() => Promise.resolve(client))
+    await repository.updateExecutionBackend('ssh:biowulf', 'direct')
+    expect(computeHost.update).toHaveBeenCalledWith({
+      where: { providerId: 'ssh:biowulf' },
+      data: { executionBackend: 'direct' }
+    })
   })
 })

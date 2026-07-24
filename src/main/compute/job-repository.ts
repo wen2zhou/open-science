@@ -41,6 +41,12 @@ const toJob = (row: PrismaComputeJob): ComputeJob => ({
   stdout_tail: row.stdoutTail ?? undefined,
   stderr_tail: row.stderrTail ?? undefined,
   error_code: row.errorCode ?? undefined,
+  // Resolved driver + scheduler diagnostics (design.md §4.1 / §4.4). All optional / nullable so legacy
+  // rows (and partially-migrated DBs) stay fully readable (design.md §10).
+  driver: row.driver === 'direct' || row.driver === 'slurm' ? row.driver : undefined,
+  remote_state: row.remoteState ?? undefined,
+  queue_reason: row.queueReason ?? undefined,
+  scheduler_diagnostic: row.schedulerDiagnostic ?? undefined,
   last_poll_error: row.lastPollError ?? undefined,
   // Phase 3b harvest fields
   harvest_error: row.harvestError ?? undefined,
@@ -71,6 +77,8 @@ export type CreateJobRequest = {
   timeoutSeconds?: number
   remoteWorkdir?: string
   initialStatus?: ComputeJobStatus
+  // Resolved driver snapshotted at submit time (design.md §4.1). Optional; omitted on legacy rows.
+  driver?: 'direct' | 'slurm'
 }
 
 export type UpdateJobRequest = {
@@ -95,6 +103,11 @@ export type UpdateJobRequest = {
   leftOnRemote?: string | null
   notifiedAt?: Date | null
   notificationConsumedAt?: Date | null
+  // Scheduler diagnostics (design.md §4.4). All optional / nullable so a poll update can clear or set
+  // any of them without touching the cross-provider state machine.
+  remoteState?: string | null
+  queueReason?: string | null
+  schedulerDiagnostic?: string | null
 }
 
 // Owns ComputeJob reads/writes. Follows the same lazy-provider pattern as ComputeHostRepository.
@@ -122,6 +135,7 @@ export class ComputeJobRepository {
         harvestConfig: request.harvestConfig,
         timeoutSeconds: request.timeoutSeconds,
         remoteWorkdir: request.remoteWorkdir,
+        driver: request.driver,
         submittedAt: initialStatus === 'submitted' ? new Date() : undefined
       }
     })
@@ -206,6 +220,10 @@ export class ComputeJobRepository {
     if ('notifiedAt' in updates) data.notifiedAt = updates.notifiedAt
     if ('notificationConsumedAt' in updates)
       data.notificationConsumedAt = updates.notificationConsumedAt
+    // Scheduler diagnostics (design.md §4.4).
+    if ('remoteState' in updates) data.remoteState = updates.remoteState
+    if ('queueReason' in updates) data.queueReason = updates.queueReason
+    if ('schedulerDiagnostic' in updates) data.schedulerDiagnostic = updates.schedulerDiagnostic
 
     const row = await client.computeJob.update({ where: { id: jobId }, data })
     return toJob(row)

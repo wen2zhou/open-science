@@ -113,6 +113,7 @@ const createHost = (overrides: Partial<ComputeHost> = {}): ComputeHost => ({
   scratchRoot: undefined,
   scratchPinned: false,
   concurrencyLimit: undefined,
+  executionBackend: 'auto',
   probeResult: undefined,
   detailsDoc: '',
   detailsUpdatedAt: undefined,
