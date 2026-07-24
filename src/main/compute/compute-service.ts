@@ -42,6 +42,7 @@ import {
 import type { ComputeJobRepository } from './job-repository'
 import { computeRemoteWorkdir, dispatchJob, hashCommand } from './job-dispatcher'
 import type { StagedInputEntry } from './job-dispatcher'
+import { sharedComputeDriverRegistry } from './compute-driver'
 import { getJobHarvestDir } from './harvest-engine'
 import { getNotebookSessionRoot } from '../notebook/repository'
 import type { ConcurrencyManager, SessionStatus } from './concurrency-manager'
@@ -1408,6 +1409,7 @@ export class ComputeService {
         scpRunner: this.scpRunner,
         hostRepository: this.repository,
         jobRepository: this.jobRepository,
+        driverRegistry: sharedComputeDriverRegistry,
         onJobUpdated: this.onJobUpdated
       })
     }

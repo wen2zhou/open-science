@@ -35,6 +35,7 @@ import { readSshConfigHostAliases } from './ssh-config'
 import { SystemSshRunner } from './ssh-runner'
 import { SystemScpRunner } from './scp-runner'
 import { dispatchJob } from './job-dispatcher'
+import { sharedComputeDriverRegistry } from './compute-driver'
 import { EnabledComputeHostsRegistry, enabledComputeHostsRegistry } from './enabled-hosts-registry'
 import { getJobHarvestDir } from './harvest-engine'
 
@@ -247,6 +248,7 @@ const createComputeHandlers = (
           scpRunner,
           hostRepository: repository,
           jobRepository,
+          driverRegistry: sharedComputeDriverRegistry,
           onJobUpdated: onJobUpdatedWithDrain
         })
       )

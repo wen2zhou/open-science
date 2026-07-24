@@ -258,22 +258,27 @@ describe('dispatchJob', () => {
     expect(tracker.has('job-1')).toBe(false) // cleared in finally
   })
 
-  it('clears the in-flight tracker even when dispatch throws', async () => {
+  it('clears the in-flight tracker even when the driver throws mid-dispatch', async () => {
     const job = makeJob()
     const tracker = new DispatchTracker()
-    // A runner that throws simulates an unexpected error mid-dispatch.
+    // A runner that rejects simulates an unexpected error mid-dispatch. The Direct driver surfaces it
+    // as a thrown DirectDispatchError, which the dispatcher maps to dispatch_failed job status (it
+    // no longer rethrows — the in-flight tracker must still be cleared).
     const runner: SshRunner = { run: vi.fn(() => Promise.reject(new Error('boom'))) }
-    const { repo } = makeJobRepo(job)
+    const { repo, update } = makeJobRepo(job)
 
-    await expect(
-      dispatchJob(job.job_id, {
-        runner,
-        hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
-        jobRepository: repo as unknown as ComputeJobRepository,
-        dispatchTracker: tracker
-      })
-    ).rejects.toThrow('boom')
+    await dispatchJob(job.job_id, {
+      runner,
+      hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository,
+      dispatchTracker: tracker
+    })
 
+    // The unexpected error becomes a dispatch_failed status, not a rethrown exception.
+    expect(update).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({ status: 'error', errorCode: 'dispatch_failed' })
+    )
     expect(tracker.has('job-1')).toBe(false)
   })
 

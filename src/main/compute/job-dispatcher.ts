@@ -9,15 +9,13 @@ import type { ScpRunner } from './scp-runner'
 import { SystemScpRunner, runScpUpload } from './scp-runner'
 import { shellSingleQuote } from './scp-runner'
 import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
+import { DirectDriver, DirectDispatchError } from './direct-driver'
+import { resolveJobDriver } from './compute-driver'
 
-// Maximum number of bytes for the per-job dispatch SSH command (enough for base64 of large scripts).
-const DISPATCH_MAX_OUTPUT_BYTES = 4 * 1024
-
-// Timeout for the dispatch SSH connection (mkdir + write files + launch). Generous to accommodate
-// slow cluster file systems; the job itself runs detached so the connection can close after.
-const DISPATCH_TIMEOUT_MS = 120_000
-
-// Remote handle stored in the DB once the job is launched.
+// Remote handle stored in the DB once the job is launched. This is the LEGACY unversioned shape the
+// pre-refactor Direct dispatcher wrote. New jobs now store a versioned RemoteHandleV1 (written by the
+// Direct driver), but this type stays exported because the poller's historical `_parseHandle` path
+// and existing tests still reference it. parseRemoteHandle (src/shared/remote-handle.ts) accepts both.
 export type RemoteHandle = {
   pid: number
   exit_code_path: string
@@ -115,6 +113,10 @@ export type DispatcherDeps = {
   // Tracks this dispatch as in-flight so the poller won't mistake a job that is still staging
   // inputs for a restart-orphaned one. Defaults to the process-wide shared tracker.
   dispatchTracker?: DispatchTracker
+  // The compute driver registry used to resolve the job's snapshotted driver (design.md §4.2).
+  // When omitted the dispatcher builds a per-call DirectDriver from `runner` — the only driver that
+  // existed before this seam — so legacy callers and tests keep working unchanged.
+  driverRegistry?: import('./compute-driver').ComputeDriverRegistry
 }
 
 // Dispatches one job to its remote host asynchronously (not awaited by submit_job RPC).
@@ -217,44 +219,37 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     }
   }
 
-  // Build scripts.
-  const commandScript = job.command // raw command content written to command.sh
-  const launcherScript = buildLauncherScript(timeoutSecs)
+  // Resolve the job's snapshotted driver (design.md §4.1). A job is always dispatched by the driver
+  // resolved at submit time; later host re-probes never change it. When no registry is wired (legacy
+  // callers / tests), fall back to a DirectDriver built from the runner — the only driver that
+  // existed before this seam.
+  const driver =
+    resolveJobDriver(job, deps.driverRegistry) ??
+    new DirectDriver({ runner })
 
-  // Encode to base64 to avoid all shell quoting/injection issues.
-  const commandB64 = toBase64(commandScript)
-  const launcherB64 = toBase64(launcherScript)
-
-  // One SSH command: mkdir workdir, write scripts via base64 pipes, launch detached, echo pid.
-  // Stdout = the pid (we echo it last).
-  const quotedWorkdir = quoteRemotePath(workdir)
-  const dispatchCmd = [
-    `mkdir -p ${quotedWorkdir}`,
-    `cd ${quotedWorkdir}`,
-    // Write command.sh and launcher.sh via base64 to avoid heredoc/quoting issues.
-    `printf '%s' ${JSON.stringify(commandB64)} | base64 -d > command.sh`,
-    `printf '%s' ${JSON.stringify(launcherB64)} | base64 -d > launcher.sh`,
-    `chmod +x command.sh launcher.sh`,
-    // Detached launch: nohup + setsid so the process survives SSH disconnect.
-    `nohup setsid bash launcher.sh >/dev/null 2>&1 &`,
-    // Write pid to file AND echo it so we can read it back in this round-trip.
-    `LAUNCHED_PID=$!`,
-    `echo $LAUNCHED_PID > job.pid`,
-    `echo $LAUNCHED_PID`
-  ].join('\n')
-
-  const runResult = await runner.run(target, dispatchCmd, {
-    timeoutMs: DISPATCH_TIMEOUT_MS,
-    loginShell: false,
-    maxOutputBytes: DISPATCH_MAX_OUTPUT_BYTES
-  })
-
-  // Connection-level failure.
-  if (runResult.timedOut || runResult.exitCode === 255) {
-    const tail = runResult.stderr || 'SSH connection failed'
+  // Delegate remote launch to the driver. The driver builds the scripts, transfers them, launches the
+  // detached process, and returns a versioned handle. Connection/launch failures surface as a
+  // DirectDispatchError carrying the job error_code; the dispatcher maps them to job status. Any other
+  // thrown error is treated as an unexpected infrastructure failure (dispatch_failed).
+  let versionedHandle
+  try {
+    versionedHandle = await driver.dispatch({
+      target,
+      workdir,
+      command: job.command,
+      timeoutSeconds: timeoutSecs,
+      jobId
+    })
+  } catch (err) {
+    let errorCode = 'dispatch_failed'
+    let tail = err instanceof Error ? err.message : String(err)
+    if (err instanceof DirectDispatchError) {
+      errorCode = err.code
+      tail = err.detail
+    }
     const updated = await jobRepository.update(jobId, {
       status: 'error',
-      errorCode: 'host_unreachable',
+      errorCode,
       stderrTail: tail,
       finishedAt: new Date()
     })
@@ -262,44 +257,12 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     return
   }
 
-  // Non-connection failure (mkdir, base64, etc.)
-  if (runResult.exitCode !== 0) {
-    const tail = runResult.stderr || `exit code ${runResult.exitCode ?? 'null'}`
-    const updated = await jobRepository.update(jobId, {
-      status: 'error',
-      errorCode: 'dispatch_failed',
-      stderrTail: tail,
-      finishedAt: new Date()
-    })
-    onJobUpdated?.(updated)
-    return
-  }
-
-  // Parse pid from stdout (last non-empty line).
-  const pid = Number.parseInt(runResult.stdout.trim().split('\n').pop() ?? '', 10)
-  if (!Number.isFinite(pid) || pid <= 0) {
-    const updated = await jobRepository.update(jobId, {
-      status: 'error',
-      errorCode: 'dispatch_failed',
-      stderrTail: `Could not read pid from dispatch output: ${JSON.stringify(runResult.stdout)}`,
-      finishedAt: new Date()
-    })
-    onJobUpdated?.(updated)
-    return
-  }
-
-  // Build the remote handle JSON.
-  const handle: RemoteHandle = {
-    pid,
-    exit_code_path: `${workdir}/exit_code`,
-    stdout_path: `${workdir}/stdout`,
-    stderr_path: `${workdir}/stderr`,
-    workdir
-  }
-
+  // Persist the versioned handle. The driver returns a direct-v1 handle; legacy readers still parse
+  // it (parseRemoteHandle accepts both). The stored string IS the audit/recovery handle the poller
+  // and restart recovery consume (design.md §4.3).
   const updated = await jobRepository.update(jobId, {
     status: 'running',
-    remoteHandle: JSON.stringify(handle),
+    remoteHandle: JSON.stringify(versionedHandle),
     startedAt: new Date()
   })
   onJobUpdated?.(updated)

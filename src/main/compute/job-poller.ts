@@ -1,37 +1,24 @@
-import { randomBytes } from 'node:crypto'
-
 import type { ComputeJob, JobSummary } from '../../shared/compute'
 import type { ComputeJobRepository } from './job-repository'
 import type { ComputeHostRepository } from './repository'
 import type { SshRunner } from './ssh-runner'
 import { resolveSshTarget } from './ssh-runner'
-import { quoteRemotePath, type RemoteHandle } from './job-dispatcher'
+import { parseRemoteHandle, type ParsedRemoteHandle } from '../../shared/remote-handle'
 import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
 import { emitJobNotification } from './job-notifier'
+import {
+  resolveJobDriver,
+  type ComputeDriverRegistry,
+  type DriverJob,
+  type RemoteObservation
+} from './compute-driver'
+import { DirectDriver } from './direct-driver'
 
 // Polling interval: 15 seconds (design.md §8).
 export const POLL_INTERVAL_MS = 15_000
 
-// Maximum bytes to capture per stream tail (64 KiB per design.md §8).
-const TAIL_MAX_BYTES = 65536
-
 // Consecutive ticks without exit_code before declaring process_vanished (design.md §8 §3).
 const PROCESS_VANISHED_TICKS = 2
-
-// Timeout for the per-host poll SSH command.
-const POLL_TIMEOUT_MS = 30_000
-
-// Per-job output budget for a poll: two tails (stdout+stderr) plus marker/pid/exit-code lines.
-// The 1 KiB pad covers the seven nonce-prefixed marker lines and the exit-code/alive output.
-const PER_JOB_POLL_BYTES = TAIL_MAX_BYTES * 2 + 1024
-
-// Maximum jobs polled in a single SSH round-trip. All non-terminal jobs for one provider used to be
-// batched into ONE ssh call sized for a single job, so a provider with N running jobs overflowed the
-// output cap and the trailing jobs' sections were silently dropped (truncation keeps the head). We
-// now poll in sub-batches of at most this many jobs, sizing the output cap to the sub-batch, which
-// bounds peak memory per call (~POLL_BATCH_MAX_JOBS × PER_JOB_POLL_BYTES ≈ 1 MiB) while guaranteeing
-// every job's section fits.
-const POLL_BATCH_MAX_JOBS = 8
 
 // Grace period added to timeout_seconds before the poller forcibly kills a still-running job
 // (design.md §10). This gives the remote `timeout` command time to deliver SIGTERM+SIGKILL
@@ -57,8 +44,10 @@ export type JobPollerDeps = {
   // Injectable timer for tests (defaults to global setInterval/clearInterval).
   setInterval?: (fn: () => void, ms: number) => ReturnType<typeof setInterval>
   clearInterval?: (handle: ReturnType<typeof setInterval>) => void
-  // Injectable nonce generator for tests (defaults to a random per-tick hex string).
-  makeNonce?: () => string
+  // The compute driver registry used to resolve each job's snapshotted driver for batched polling
+  // (design.md §4.2). When omitted the poller builds a per-provider DirectDriver from `runner` —
+  // the only driver that existed before this seam — so legacy callers and tests keep working.
+  driverRegistry?: ComputeDriverRegistry
   // Shared with the dispatcher so the poller can tell a job that is still actively dispatching
   // (in-flight in this process) from one orphaned by an app restart. Defaults to the shared tracker.
   dispatchTracker?: DispatchTracker
@@ -93,8 +82,10 @@ export class JobPoller {
   // Injectable timers (tests override to control ticks synchronously).
   private readonly setIntervalFn: (fn: () => void, ms: number) => ReturnType<typeof setInterval>
   private readonly clearIntervalFn: (handle: ReturnType<typeof setInterval>) => void
-  // Injectable nonce generator (tests override for deterministic marker matching).
-  private readonly makeNonceFn: () => string
+  // Per-provider driver cache so a poll tick reuses one DirectDriver instance rather than rebuilding
+  // it for every provider when no registry is wired. Drivers are stateless across calls (the nonce is
+  // generated per call), so caching is safe.
+  private readonly directDriverCache = new Map<string, DirectDriver>()
   // Shared dispatch tracker (see JobPollerDeps.dispatchTracker).
   private readonly dispatchTracker: DispatchTracker
   // Optional injectable harvest function (design §3).
@@ -114,7 +105,6 @@ export class JobPoller {
   constructor(private readonly deps: JobPollerDeps) {
     this.setIntervalFn = deps.setInterval ?? ((fn, ms) => setInterval(fn, ms))
     this.clearIntervalFn = deps.clearInterval ?? ((h) => clearInterval(h))
-    this.makeNonceFn = deps.makeNonce ?? (() => randomBytes(12).toString('hex') + '_')
     this.dispatchTracker = deps.dispatchTracker ?? sharedDispatchTracker
     this.harvestFn = deps.harvestFn
   }
@@ -296,94 +286,101 @@ export class JobPoller {
       return
     }
 
-    // Poll in sub-batches so the SSH output cap always fits every job's section. Each sub-batch is
-    // one SSH round-trip; batches for the same provider run sequentially to reuse one connection and
-    // avoid a fan-out of concurrent ssh processes per provider.
-    for (let i = 0; i < withHandle.length; i += POLL_BATCH_MAX_JOBS) {
-      const batch = withHandle.slice(i, i + POLL_BATCH_MAX_JOBS)
-      await this._pollBatch(batch, target)
+    // Group by driver instance, then poll each driver's jobs in one batched call (design.md §4.2). A
+    // job is always polled by the driver snapshotted at submit time; the Direct driver sub-batches
+    // internally. Mixing drivers for one provider becomes possible once Slurm lands (Issue 03) — each
+    // driver gets its own pollMany call sharing the resolved target.
+    const driverGroups = new Map<DirectDriver | undefined, { job: ComputeJob; handle: ParsedRemoteHandle }[]>()
+    for (const job of withHandle) {
+      const handle = parseRemoteHandle(job.remote_handle)
+      if (!handle) continue // corrupt handle: leave non-terminal, re-polled next tick (design.md §10)
+      const key = this._driverFor(job)
+      const list = driverGroups.get(key) ?? []
+      list.push({ job, handle })
+      driverGroups.set(key, list)
+    }
+
+    for (const [driver, entries] of driverGroups) {
+      await this._pollDriverGroup(driver, entries, target)
     }
   }
 
-  // Polls one sub-batch of jobs (all with handles) in a single SSH round-trip, sizing the output cap
-  // to the batch so no job's section is truncated away.
-  private async _pollBatch(
-    jobs: ComputeJob[],
+  // Resolves the driver instance to poll a job. Returns the registered driver for the job's
+  // snapshotted kind, or a cached per-provider DirectDriver when no registry is wired (legacy path),
+  // or undefined if no driver is registered for a non-direct kind (Slurm before Issue 03).
+  private _driverFor(job: ComputeJob): DirectDriver | undefined {
+    const resolved = resolveJobDriver(job, this.deps.driverRegistry)
+    if (resolved instanceof DirectDriver) return resolved
+    if (resolved) return resolved as DirectDriver
+    // No registry / no driver for this kind. Only 'direct' is supported without a registry.
+    if (job.driver && job.driver !== 'direct') return undefined
+    const cached = this.directDriverCache.get(job.provider_id)
+    if (cached) return cached
+    const fresh = new DirectDriver({ runner: this.deps.runner })
+    this.directDriverCache.set(job.provider_id, fresh)
+    return fresh
+  }
+
+  // Polls one driver's jobs for one provider in a single batched call, then applies the state machine
+  // per observed job. Driver connectivity failures become lastPollError with NO status flip
+  // (design.md §8 boundary 2).
+  private async _pollDriverGroup(
+    driver: DirectDriver | undefined,
+    entries: { job: ComputeJob; handle: ParsedRemoteHandle }[],
     target: import('./ssh-runner').ResolvedSshTarget
   ): Promise<void> {
-    // Per-tick random nonce prefixed onto every structural marker. Job stdout/stderr tails are
-    // interleaved into the same stream, so bare markers (JOB_START:/alive:/STDOUT_END:/...) printed
-    // by the job could otherwise hijack section splitting or field parsing. An unpredictable nonce
-    // the job cannot know makes such collisions effectively impossible.
-    const nonce = this.makeNonceFn()
+    if (!driver || entries.length === 0) return
 
-    // Build per-job check commands, batched into one SSH round-trip.
-    // Format per job (each marker carries the nonce prefix):
-    //   echo "<nonce>JOB_START:<jobId>"
-    //   kill -0 <pid> 2>/dev/null && echo "<nonce>alive:1" || echo "<nonce>alive:0"
-    //   test -f <exit_code_path> && cat <exit_code_path> || echo ""
-    //   tail -c 65536 <stdout_path> 2>/dev/null || true
-    //   echo "<nonce>STDOUT_END:<jobId>"
-    //   tail -c 65536 <stderr_path> 2>/dev/null || true
-    //   echo "<nonce>STDERR_END:<jobId>"
-    const parts: string[] = []
-    const batched: ComputeJob[] = []
-    for (const job of jobs) {
-      const handle = this._parseHandle(job.remote_handle)
-      if (!handle) continue
-      batched.push(job)
-
-      parts.push(
-        `echo "${nonce}JOB_START:${job.job_id}"`,
-        `kill -0 ${handle.pid} 2>/dev/null && echo "${nonce}alive:1" || echo "${nonce}alive:0"`,
-        `if [ -f ${quoteRemotePath(handle.exit_code_path)} ]; then cat ${quoteRemotePath(handle.exit_code_path)}; else echo ""; fi`,
-        `tail -c ${TAIL_MAX_BYTES} ${quoteRemotePath(handle.stdout_path)} 2>/dev/null || true`,
-        `echo "${nonce}STDOUT_END:${job.job_id}"`,
-        `tail -c ${TAIL_MAX_BYTES} ${quoteRemotePath(handle.stderr_path)} 2>/dev/null || true`,
-        `echo "${nonce}STDERR_END:${job.job_id}"`
-      )
+    const driverJobs: DriverJob[] = entries.map((e) => ({ jobId: e.job.job_id, handle: e.handle }))
+    // Use the first job's workdir as the driver context workdir. The Direct driver does not read
+    // workdir from the context for polling (it reads per-job handle paths), so any workdir suffices;
+    // the field exists for forward-compat with future drivers.
+    const context = {
+      target,
+      workdir: entries[0]!.job.remote_workdir ?? entries[0]!.handle.paths.workdir
     }
 
-    if (parts.length === 0) return
-
-    // Size the output cap to this batch: one PER_JOB_POLL_BYTES budget per job that emits a section.
-    const maxOutputBytes = batched.length * PER_JOB_POLL_BYTES
-    const pollCmd = parts.join('\n')
-    let runResult
+    let result
     try {
-      runResult = await this.deps.runner.run(target, pollCmd, {
-        timeoutMs: POLL_TIMEOUT_MS,
-        loginShell: false,
-        maxOutputBytes
-      })
+      result = await driver.pollMany(context, driverJobs)
     } catch (err) {
-      // SSH threw — record lastPollError for each job but do NOT flip status (design.md §8 boundary 2).
+      // Unexpected driver throw — record lastPollError per job, do NOT flip status (design.md §8 b2).
       const msg = err instanceof Error ? err.message : String(err)
-      await this._recordPollError(batched, msg)
+      await this._recordPollError(
+        entries.map((e) => e.job),
+        msg
+      )
       return
     }
 
-    if (runResult.timedOut || runResult.exitCode === 255) {
-      // Host unreachable — record error per job but do NOT flip status (design.md §8 boundary 2).
-      const msg =
-        runResult.stderr || (runResult.timedOut ? 'SSH connection timed out' : 'SSH exit 255')
-      await this._recordPollError(batched, msg)
+    if (result.kind === 'unreachable') {
+      // Whole batch unreachable — record per-job lastPollError, flip NO status.
+      await this._recordPollError(
+        entries.map((e) => e.job),
+        result.message
+      )
       return
     }
 
-    // Parse the batched output using nonce-prefixed markers. Pass target for poller fallback kill.
-    // A truncated result should be impossible now that the cap is sized to the batch, but if it ever
-    // happens the head is kept, so leading jobs still parse; any job whose section was dropped simply
-    // stays non-terminal and is re-polled next tick (its remote exit_code file persists).
-    await this._parsePollOutput(runResult.stdout, batched, nonce, target)
-  }
+    // Apply the state machine per observed job. Pass the driver + context so the fallback-kill path
+    // can delegate to driver.cancel (process-group semantics).
+    for (const { job } of entries) {
+      const obs = result.observations.get(job.job_id)
+      if (!obs) continue // not observed this tick — leave non-terminal, re-poll next tick
+      await this._applyPollResult(job, obs, driver, context)
+    }
 
-  private _parseHandle(raw: string | undefined): RemoteHandle | null {
-    if (!raw) return null
-    try {
-      return JSON.parse(raw) as RemoteHandle
-    } catch {
-      return null
+    // Per-job transient errors (partial unreachable within the batch) → lastPollError, no flip.
+    if (result.errors) {
+      for (const { job } of entries) {
+        const msg = result.errors.get(job.job_id)
+        if (!msg) continue
+        const updated = await this.deps.jobRepository.update(job.job_id, {
+          lastPollError: msg,
+          retryAfterUserAction: true
+        })
+        this.deps.onJobUpdated?.(updated)
+      }
     }
   }
 
@@ -399,77 +396,11 @@ export class JobPoller {
     }
   }
 
-  // Parses the batched poll output and updates each job accordingly. All structural markers carry
-  // the per-tick `nonce` prefix so adversarial job tail content cannot collide with them.
-  // `target` is threaded through so _applyPollResult can issue the poller-fallback kill command.
-  private async _parsePollOutput(
-    output: string,
-    jobs: ComputeJob[],
-    nonce: string,
-    target: import('./ssh-runner').ResolvedSshTarget
-  ): Promise<void> {
-    // Split output into per-job sections by the nonce-prefixed JOB_START marker.
-    const escapedNonce = nonce.replace(/[.*+?^${}()|[\]\\]/g, '\\$&')
-    const sections = output.split(new RegExp(`^${escapedNonce}JOB_START:`, 'm'))
-
-    for (const section of sections) {
-      if (!section.trim()) continue
-      const firstNewline = section.indexOf('\n')
-      if (firstNewline === -1) continue
-      const jobId = section.slice(0, firstNewline).trim()
-      const body = section.slice(firstNewline + 1)
-
-      const job = jobs.find((j) => j.job_id === jobId)
-      if (!job) continue
-
-      // Extract alive line (nonce-prefixed).
-      const aliveMatch = body.match(new RegExp(`^${escapedNonce}alive:([01])`, 'm'))
-      const alive = aliveMatch?.[1] === '1'
-
-      // Extract exit code (line after the nonce-prefixed alive line).
-      const alivePrefix = `${nonce}alive:`
-      const lines = body.split('\n')
-      let exitCodeRaw = ''
-      for (let i = 0; i < lines.length; i++) {
-        if (lines[i]?.startsWith(alivePrefix)) {
-          exitCodeRaw = lines[i + 1]?.trim() ?? ''
-          break
-        }
-      }
-      const exitCode = exitCodeRaw.trim() === '' ? null : Number.parseInt(exitCodeRaw.trim(), 10)
-      const hasExitCode = exitCode !== null && Number.isFinite(exitCode)
-
-      // Extract stdout tail (between the third line after JOB_START and STDOUT_END marker).
-      const stdoutEndMarker = `${nonce}STDOUT_END:${jobId}`
-      const stderrEndMarker = `${nonce}STDERR_END:${jobId}`
-      const stdoutStart = body.indexOf('\n', body.indexOf('\n', body.indexOf('\n') + 1) + 1) + 1
-      const stdoutEnd = body.indexOf(stdoutEndMarker)
-      const stdoutTail =
-        stdoutEnd > stdoutStart ? body.slice(stdoutStart, stdoutEnd).replace(/\n$/, '') : ''
-
-      const stderrStart = body.indexOf('\n', stdoutEnd + stdoutEndMarker.length) + 1
-      const stderrEnd = body.indexOf(stderrEndMarker)
-      const stderrTail =
-        stderrEnd > stderrStart ? body.slice(stderrStart, stderrEnd).replace(/\n$/, '') : ''
-
-      await this._applyPollResult(
-        job,
-        { alive, exitCode, hasExitCode, stdoutTail, stderrTail },
-        target
-      )
-    }
-  }
-
   private async _applyPollResult(
     job: ComputeJob,
-    result: {
-      alive: boolean
-      exitCode: number | null
-      hasExitCode: boolean
-      stdoutTail: string
-      stderrTail: string
-    },
-    target: import('./ssh-runner').ResolvedSshTarget
+    result: RemoteObservation,
+    driver: DirectDriver | undefined,
+    context: { target: import('./ssh-runner').ResolvedSshTarget; workdir: string }
   ): Promise<void> {
     const { alive, exitCode, hasExitCode, stdoutTail, stderrTail } = result
 
@@ -545,28 +476,18 @@ export class JobPoller {
     this.vanishCounters.delete(job.job_id)
 
     // Poller fallback: if job is still alive past startedAt + timeout + grace, the remote `timeout`
-    // command may have been absent or hung. Kill the pid and mark as timeout (design.md §10).
+    // command may have been absent or hung. Cancel via the driver (process-group kill) and mark as
+    // timeout (design.md §10). The pre-refactor path sent a bare `kill pid`; the driver uses the
+    // process group (setsid pgid == pid), which is the testable cancel semantics (acceptance criterion).
     const startedAt = job.started_at
     const timeoutSecs = job.timeout_seconds ?? 86400
     if (startedAt) {
       const elapsedSecs = (Date.now() - startedAt) / 1000
       if (elapsedSecs >= timeoutSecs + POLLER_KILL_GRACE_SECONDS) {
-        const handle = this._parseHandle(job.remote_handle)
-        if (handle) {
-          // Best-effort kill; ignore errors (process may have already exited).
-          try {
-            await this.deps.runner.run(
-              target,
-              `kill ${handle.pid} 2>/dev/null; kill -9 ${handle.pid} 2>/dev/null; true`,
-              {
-                timeoutMs: 10_000,
-                loginShell: false,
-                maxOutputBytes: 64
-              }
-            )
-          } catch {
-            // Ignore kill errors — the job is marked terminal regardless.
-          }
+        const handle = parseRemoteHandle(job.remote_handle)
+        if (handle && handle.kind !== 'legacy-direct') {
+          // driver.cancel owns the kill command + swallows connectivity errors.
+          await driver?.cancel(context, { ...handle.raw })
         }
         const updated = await this.deps.jobRepository.update(job.job_id, {
           status: 'timeout',
