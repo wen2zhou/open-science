@@ -11,6 +11,7 @@ import { shellSingleQuote } from './scp-runner'
 import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
 import { DirectDriver, DirectDispatchError } from './direct-driver'
 import { resolveJobDriver } from './compute-driver'
+import { ResourceRequestSchema, type ResourceRequest } from '../../shared/compute-resources'
 
 // Remote handle stored in the DB once the job is launched. This is the LEGACY unversioned shape the
 // pre-refactor Direct dispatcher wrote. New jobs now store a versioned RemoteHandleV1 (written by the
@@ -133,6 +134,19 @@ export async function dispatchJob(jobId: string, deps: DispatcherDeps): Promise<
   }
 }
 
+// Re-hydrates a validated resource snapshot from the stored JSON string. The value was validated at
+// the RPC boundary before it was stored (design.md §5); this re-validates defensively so a corrupted or
+// legacy row degrades to an empty request rather than crashing dispatch (design.md §10).
+const parseStoredResourceRequest = (stored: string | undefined): ResourceRequest => {
+  if (!stored) return {}
+  try {
+    const parsed = ResourceRequestSchema.safeParse(JSON.parse(stored))
+    return parsed.success ? parsed.data : {}
+  } catch {
+    return {}
+  }
+}
+
 async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<void> {
   const { runner, hostRepository, jobRepository, onJobUpdated } = deps
   const scpRunner = deps.scpRunner ?? new SystemScpRunner()
@@ -223,9 +237,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
   // resolved at submit time; later host re-probes never change it. When no registry is wired (legacy
   // callers / tests), fall back to a DirectDriver built from the runner — the only driver that
   // existed before this seam.
-  const driver =
-    resolveJobDriver(job, deps.driverRegistry) ??
-    new DirectDriver({ runner })
+  const driver = resolveJobDriver(job, deps.driverRegistry) ?? new DirectDriver({ runner })
 
   // Delegate remote launch to the driver. The driver builds the scripts, transfers them, launches the
   // detached process, and returns a versioned handle. Connection/launch failures surface as a
@@ -238,7 +250,11 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
       workdir,
       command: job.command,
       timeoutSeconds: timeoutSecs,
-      jobId
+      jobId,
+      // Re-hydrate the validated resource snapshot for the driver. The stored string was already
+      // validated at the RPC boundary (design.md §5); a malformed/missing value degrades to an empty
+      // request so dispatch never crashes (design.md §10 — a bad row must not break loading).
+      resources: parseStoredResourceRequest(job.resource_request)
     })
   } catch (err) {
     let errorCode = 'dispatch_failed'

@@ -8,6 +8,7 @@ import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
 import { emitJobNotification } from './job-notifier'
 import {
   resolveJobDriver,
+  type ComputeDriver,
   type ComputeDriverRegistry,
   type DriverJob,
   type RemoteObservation
@@ -290,7 +291,10 @@ export class JobPoller {
     // job is always polled by the driver snapshotted at submit time; the Direct driver sub-batches
     // internally. Mixing drivers for one provider becomes possible once Slurm lands (Issue 03) — each
     // driver gets its own pollMany call sharing the resolved target.
-    const driverGroups = new Map<DirectDriver | undefined, { job: ComputeJob; handle: ParsedRemoteHandle }[]>()
+    const driverGroups = new Map<
+      ComputeDriver | undefined,
+      { job: ComputeJob; handle: ParsedRemoteHandle }[]
+    >()
     for (const job of withHandle) {
       const handle = parseRemoteHandle(job.remote_handle)
       if (!handle) continue // corrupt handle: leave non-terminal, re-polled next tick (design.md §10)
@@ -307,11 +311,10 @@ export class JobPoller {
 
   // Resolves the driver instance to poll a job. Returns the registered driver for the job's
   // snapshotted kind, or a cached per-provider DirectDriver when no registry is wired (legacy path),
-  // or undefined if no driver is registered for a non-direct kind (Slurm before Issue 03).
-  private _driverFor(job: ComputeJob): DirectDriver | undefined {
+  // or undefined if no driver is registered for a non-direct kind.
+  private _driverFor(job: ComputeJob): ComputeDriver | undefined {
     const resolved = resolveJobDriver(job, this.deps.driverRegistry)
-    if (resolved instanceof DirectDriver) return resolved
-    if (resolved) return resolved as DirectDriver
+    if (resolved) return resolved
     // No registry / no driver for this kind. Only 'direct' is supported without a registry.
     if (job.driver && job.driver !== 'direct') return undefined
     const cached = this.directDriverCache.get(job.provider_id)
@@ -325,7 +328,7 @@ export class JobPoller {
   // per observed job. Driver connectivity failures become lastPollError with NO status flip
   // (design.md §8 boundary 2).
   private async _pollDriverGroup(
-    driver: DirectDriver | undefined,
+    driver: ComputeDriver | undefined,
     entries: { job: ComputeJob; handle: ParsedRemoteHandle }[],
     target: import('./ssh-runner').ResolvedSshTarget
   ): Promise<void> {
@@ -399,10 +402,19 @@ export class JobPoller {
   private async _applyPollResult(
     job: ComputeJob,
     result: RemoteObservation,
-    driver: DirectDriver | undefined,
+    driver: ComputeDriver | undefined,
     context: { target: import('./ssh-runner').ResolvedSshTarget; workdir: string }
   ): Promise<void> {
-    const { alive, exitCode, hasExitCode, stdoutTail, stderrTail } = result
+    const {
+      alive,
+      exitCode,
+      hasExitCode,
+      stdoutTail,
+      stderrTail,
+      remoteState,
+      queueReason,
+      schedulerDiagnostic
+    } = result
 
     // Terminal: exit_code file exists — this is authoritative.
     if (hasExitCode && exitCode !== null) {
@@ -440,6 +452,11 @@ export class JobPoller {
         stdoutTail: stdoutTail || null,
         stderrTail: stderrTail || null,
         errorCode: errorCode ?? null,
+        // Persist scheduler diagnostics alongside the terminal status (design.md §4.4 — remote state
+        // and a detailed diagnostic are kept separate from the cross-provider status).
+        remoteState: remoteState ?? null,
+        queueReason: null,
+        schedulerDiagnostic: schedulerDiagnostic ?? null,
         finishedAt: new Date()
       })
       this.deps.onJobUpdated?.(updated)
@@ -494,6 +511,8 @@ export class JobPoller {
           errorCode: 'timeout',
           stdoutTail: stdoutTail || null,
           stderrTail: stderrTail || null,
+          remoteState: remoteState ?? null,
+          schedulerDiagnostic: schedulerDiagnostic ?? null,
           finishedAt: new Date()
         })
         this.deps.onJobUpdated?.(updated)
@@ -503,23 +522,36 @@ export class JobPoller {
       }
     }
 
-    if (job.status !== 'running') {
-      // Transition to running if still in submitted (shouldn't happen but guard).
-      // Clear any stale lastPollError: a successful poll proves connectivity is healthy again
-      // (schema.prisma: "Cleared on the next successful poll").
+    // Still alive — reset vanish counter, then apply the scheduler-aware non-terminal mapping below.
+    this.vanishCounters.delete(job.job_id)
+
+    // Scheduler-aware non-terminal mapping (design.md §4.4). For a Slurm job the driver surfaces the
+    // scheduler-native state in `remoteState`: PENDING keeps the app status `submitted`; RUNNING
+    // promotes it to `running`. Direct jobs have no remoteState and follow the original behavior
+    // (alive → running). The scheduler state is always persisted alongside, separate from `status`.
+    const isSchedulerPending = remoteState === 'PENDING'
+    const desiredStatus: 'submitted' | 'running' = isSchedulerPending ? 'submitted' : 'running'
+
+    if (job.status !== desiredStatus) {
       const updated = await this.deps.jobRepository.update(job.job_id, {
-        status: 'running',
+        status: desiredStatus,
         stdoutTail: stdoutTail || null,
         stderrTail: stderrTail || null,
+        remoteState: remoteState ?? null,
+        queueReason: queueReason ?? null,
+        schedulerDiagnostic: null,
         lastPollError: null
       })
       this.deps.onJobUpdated?.(updated)
     } else {
-      // Just update tails. Also clear any stale lastPollError now that this poll succeeded, so a
-      // transient SSH blip's error banner does not stick to a healthy running job forever.
+      // Just update tails + scheduler diagnostics. Clear any stale lastPollError now that this poll
+      // succeeded, so a transient SSH blip's error banner does not stick to a healthy job forever.
       const updated = await this.deps.jobRepository.update(job.job_id, {
         stdoutTail: stdoutTail || null,
         stderrTail: stderrTail || null,
+        remoteState: remoteState ?? null,
+        queueReason: queueReason ?? null,
+        schedulerDiagnostic: null,
         lastPollError: null
       })
       this.deps.onJobUpdated?.(updated)

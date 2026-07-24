@@ -14,6 +14,7 @@ import {
 import { attachEnabledComputeHosts } from './compute/enabled-hosts-registry'
 import { JobPoller } from './compute/job-poller'
 import { DirectDriver } from './compute/direct-driver'
+import { SlurmDriver } from './compute/slurm-driver'
 import { sharedComputeDriverRegistry } from './compute/compute-driver'
 import { SystemSshRunner } from './compute/ssh-runner'
 import { SystemScpRunner } from './compute/scp-runner'
@@ -391,9 +392,10 @@ const registerIpcHandlers = async ({
   // wire the compute_done notification emitter for all three terminal outcomes (issue 06).
   const sshRunner = new SystemSshRunner()
   const scpRunner = new SystemScpRunner()
-  // Register the Direct SSH driver once (design.md §4.2). The dispatcher/poller resolve it per job
-  // via the registry; Slurm (Issue 03) registers itself here too when it lands.
+  // Register the Direct SSH and Slurm drivers once (design.md §4.2). The dispatcher/poller resolve
+  // them per job via the registry by the driver snapshotted at submit time (design.md §4.1).
   sharedComputeDriverRegistry.register(new DirectDriver({ runner: sshRunner }))
+  sharedComputeDriverRegistry.register(new SlurmDriver({ runner: sshRunner }))
   // Poller-observed terminal transitions (success/failed/timeout of originally-submitted jobs) must
   // both broadcast to the renderer AND wake the ConcurrencyManager so the next queued job dispatches
   // when a slot frees. Compose the broadcaster with computeService.notifyJobCompleted (a no-op for

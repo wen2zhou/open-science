@@ -12,6 +12,7 @@
 
 import type { JobPaths, ParsedRemoteHandle, RemoteHandleV1 } from '../../shared/remote-handle'
 import type { ComputeJob } from '../../shared/compute'
+import type { ResourceRequest } from '../../shared/compute-resources'
 import type { ResolvedSshTarget } from './ssh-runner'
 
 // A resolved driver kind. Mirrors the discriminated union on `RemoteHandleV1.driver` so the registry
@@ -48,6 +49,10 @@ export type DispatchContext = DriverContext & {
   timeoutSeconds: number
   // The jobId, so the driver can stamp per-job files (job.pid etc.) if it needs them.
   jobId: string
+  // The validated structured resource request (design.md §5). The Direct driver ignores it; the Slurm
+  // driver renders it to #SBATCH directives. Always defined for new jobs (defaults to an empty request
+  // when the caller supplied no resources).
+  resources: ResourceRequest
 }
 
 // One job handed to `pollMany`, in the normalized form the poller already parsed. The driver consumes
@@ -61,8 +66,20 @@ export type DriverJob = {
 }
 
 // A single job's observed state, as the poller's state machine consumes it. This is the provider-neutral
-// projection of "is it alive, did it exit, what do the tail buffers say" — scheduler-specific state
-// names (Slurm PENDING, etc.) stay inside the driver and are NOT surfaced here (design.md §4.4).
+// projection of "is it alive, did it exit, what do the tail buffers say". The provider-neutral `alive` /
+// `exitCode` / tails fields drive the cross-provider state machine; the optional scheduler diagnostics
+// (`remoteState`, `queueReason`, `schedulerDiagnostic`) carry scheduler-specific detail that the poller
+// persists SEPARATELY from `status` so provider state names never leak into the state machine
+// (design.md §4.4 — "remoteState, queueReason, and a detailed error code ... prevent scheduler-specific
+// state names from leaking").
+//
+// NOTE (Issue 03 design decision): design.md §4.2 said scheduler-specific names "stay inside the driver
+// and are NOT surfaced here". That was the Issue 02 baseline. Issue 03 (this PR) is the Slurm slice and
+// §4.4 requires `remoteState`/`queueReason` to be PERSISTED on the job row. Rather than have the driver
+// touch job status (forbidden — design.md §3 invariant 2), we extend `RemoteObservation` with OPTIONAL
+// scheduler diagnostics that the poller records alongside `status`. This keeps the driver owning only
+// remote mechanics while letting scheduler detail reach the DB through the frozen observation shape.
+// This is the last PR allowed to evolve this shape (design.md §12 — freeze after PR3).
 export type RemoteObservation = {
   // Whether the launched process/scheduler-job is still alive (kill -0 success / squeue present).
   alive: boolean
@@ -74,6 +91,13 @@ export type RemoteObservation = {
   // The captured stdout/stderr tails (bounded). The driver owns the capture size (design.md §8: 64KiB).
   stdoutTail: string
   stderrTail: string
+  // Optional scheduler-native state name (e.g. Slurm "PENDING"/"RUNNING"/"COMPLETED"/"FAILED"). The
+  // poller records this as remote_state WITHOUT letting it drive `status` for non-terminal jobs.
+  remoteState?: string
+  // Optional scheduler queue/pending reason (e.g. Slurm "Priority"/"Resources"). Recorded separately.
+  queueReason?: string
+  // Optional free-form scheduler diagnostic (e.g. a non-zero sacct-derived note). Recorded verbatim.
+  schedulerDiagnostic?: string
 }
 
 // The result of `pollMany`. Two disjoint outcomes so the poller can implement design.md §8 boundary 2

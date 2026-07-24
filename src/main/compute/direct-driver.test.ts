@@ -2,10 +2,7 @@ import { describe, expect, it, vi } from 'vitest'
 
 import type { ComputeJob } from '../../shared/compute'
 import type { SshRunner, ResolvedSshTarget } from './ssh-runner'
-import {
-  DirectDriver,
-  DirectDispatchError
-} from './direct-driver'
+import { DirectDriver, DirectDispatchError } from './direct-driver'
 import { parseRemoteHandle } from '../../shared/remote-handle'
 import type { DriverJob, PollManyResult } from './compute-driver'
 
@@ -98,7 +95,8 @@ describe('DirectDriver.dispatch', () => {
       workdir: '~/.openscience/jobs/job-1',
       command: 'echo hello',
       timeoutSeconds: 3600,
-      jobId: 'job-1'
+      jobId: 'job-1',
+      resources: {}
     })
 
     expect(handle).toMatchObject({ version: 1, driver: 'direct', pid: 12345 })
@@ -130,7 +128,8 @@ describe('DirectDriver.dispatch', () => {
       workdir: '~/.openscience/jobs/job-1',
       command: 'echo hi',
       timeoutSeconds: 3600,
-      jobId: 'job-1'
+      jobId: 'job-1',
+      resources: {}
     })
 
     const cmd = (runner.run as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string
@@ -154,7 +153,8 @@ describe('DirectDriver.dispatch', () => {
         workdir: '~/.openscience/jobs/job-1',
         command: 'echo hi',
         timeoutSeconds: 3600,
-        jobId: 'job-1'
+        jobId: 'job-1',
+        resources: {}
       })
     ).rejects.toMatchObject({ code: 'host_unreachable', detail: 'connection refused' })
   })
@@ -175,7 +175,8 @@ describe('DirectDriver.dispatch', () => {
         workdir: '~/.openscience/jobs/job-1',
         command: 'echo hi',
         timeoutSeconds: 3600,
-        jobId: 'job-1'
+        jobId: 'job-1',
+        resources: {}
       })
     ).rejects.toMatchObject({ code: 'host_unreachable' })
   })
@@ -196,7 +197,8 @@ describe('DirectDriver.dispatch', () => {
         workdir: '~/.openscience/jobs/job-1',
         command: 'echo hi',
         timeoutSeconds: 3600,
-        jobId: 'job-1'
+        jobId: 'job-1',
+        resources: {}
       })
     ).rejects.toMatchObject({ code: 'dispatch_failed', detail: 'mkdir failed' })
   })
@@ -217,7 +219,8 @@ describe('DirectDriver.dispatch', () => {
         workdir: '~/.openscience/jobs/job-1',
         command: 'echo hi',
         timeoutSeconds: 3600,
-        jobId: 'job-1'
+        jobId: 'job-1',
+        resources: {}
       })
     ).rejects.toBeInstanceOf(DirectDispatchError)
   })
@@ -246,7 +249,9 @@ describe('DirectDriver.pollMany', () => {
     })
     const driver = new DirectDriver({ runner, makeNonce: () => NONCE })
 
-    const result = await driver.pollMany({ target, workdir: 'w' }, [driverJob('job-1', directV1Handle('job-1'))])
+    const result = await driver.pollMany({ target, workdir: 'w' }, [
+      driverJob('job-1', directV1Handle('job-1'))
+    ])
 
     expect(result.kind).toBe('ok')
     const obs = (result as Extract<PollManyResult, { kind: 'ok' }>).observations.get('job-1')!
@@ -271,7 +276,9 @@ describe('DirectDriver.pollMany', () => {
     })
     const driver = new DirectDriver({ runner, makeNonce: () => NONCE })
 
-    const result = await driver.pollMany({ target, workdir: 'w' }, [driverJob('job-1', directV1Handle('job-1'))])
+    const result = await driver.pollMany({ target, workdir: 'w' }, [
+      driverJob('job-1', directV1Handle('job-1'))
+    ])
     const obs = (result as Extract<PollManyResult, { kind: 'ok' }>).observations.get('job-1')!
     expect(obs).toMatchObject({ alive: false, exitCode: 3, hasExitCode: true })
   })
@@ -297,7 +304,9 @@ describe('DirectDriver.pollMany', () => {
     })
     const driver = new DirectDriver({ runner, makeNonce: () => NONCE })
 
-    const result = await driver.pollMany({ target, workdir: 'w' }, [driverJob('job-1', directV1Handle('job-1'))])
+    const result = await driver.pollMany({ target, workdir: 'w' }, [
+      driverJob('job-1', directV1Handle('job-1'))
+    ])
     const obs = (result as Extract<PollManyResult, { kind: 'ok' }>).observations.get('job-1')!
     expect(obs.exitCode).toBe(0)
     expect(obs.alive).toBe(true)
@@ -307,7 +316,9 @@ describe('DirectDriver.pollMany', () => {
     const runner: SshRunner = { run: vi.fn(() => Promise.reject(new Error('ssh broke'))) }
     const driver = new DirectDriver({ runner, makeNonce: () => NONCE })
 
-    const result = await driver.pollMany({ target, workdir: 'w' }, [driverJob('job-1', directV1Handle('job-1'))])
+    const result = await driver.pollMany({ target, workdir: 'w' }, [
+      driverJob('job-1', directV1Handle('job-1'))
+    ])
     expect(result).toMatchObject({ kind: 'unreachable', message: 'ssh broke' })
   })
 
@@ -321,7 +332,9 @@ describe('DirectDriver.pollMany', () => {
     })
     const driver = new DirectDriver({ runner, makeNonce: () => NONCE })
 
-    const result = await driver.pollMany({ target, workdir: 'w' }, [driverJob('job-1', directV1Handle('job-1'))])
+    const result = await driver.pollMany({ target, workdir: 'w' }, [
+      driverJob('job-1', directV1Handle('job-1'))
+    ])
     expect(result.kind).toBe('unreachable')
   })
 
@@ -335,7 +348,9 @@ describe('DirectDriver.pollMany', () => {
     })
     const driver = new DirectDriver({ runner, makeNonce: () => NONCE })
 
-    const result = await driver.pollMany({ target, workdir: 'w' }, [driverJob('job-1', directV1Handle('job-1'))])
+    const result = await driver.pollMany({ target, workdir: 'w' }, [
+      driverJob('job-1', directV1Handle('job-1'))
+    ])
     expect(result.kind).toBe('unreachable')
   })
 
@@ -357,10 +372,9 @@ describe('DirectDriver.pollMany', () => {
     })
     const driver = new DirectDriver({ runner, makeNonce: () => NONCE })
 
-    const result = await driver.pollMany(
-      { target, workdir: 'w' },
-      [driverJob('legacy', legacyHandle('legacy', 9999))]
-    )
+    const result = await driver.pollMany({ target, workdir: 'w' }, [
+      driverJob('legacy', legacyHandle('legacy', 9999))
+    ])
     const obs = (result as Extract<PollManyResult, { kind: 'ok' }>).observations.get('legacy')!
     expect(obs).toMatchObject({ alive: false, exitCode: 0, hasExitCode: true })
   })
@@ -390,10 +404,10 @@ describe('DirectDriver.pollMany', () => {
     })
     const driver = new DirectDriver({ runner, makeNonce: () => NONCE })
 
-    const result = await driver.pollMany(
-      { target, workdir: 'w' },
-      [driverJob('job-1', directV1Handle('job-1', 1)), driverJob('job-2', directV1Handle('job-2', 2))]
-    )
+    const result = await driver.pollMany({ target, workdir: 'w' }, [
+      driverJob('job-1', directV1Handle('job-1', 1)),
+      driverJob('job-2', directV1Handle('job-2', 2))
+    ])
     const obs = (result as Extract<PollManyResult, { kind: 'ok' }>).observations
     // Exactly one SSH call for the whole batch (sub-batching only kicks in past POLL_BATCH_MAX_JOBS).
     expect(runner.run).toHaveBeenCalledTimes(1)
@@ -409,15 +423,7 @@ describe('DirectDriver.pollMany', () => {
       const id = `job-${i}`
       jobs.push(driverJob(id, directV1Handle(id, 100 + i)))
       sections.push(
-        ...[
-          'JOB_START:' + id,
-          'alive:0',
-          '0',
-          '',
-          'STDOUT_END:' + id,
-          '',
-          'STDERR_END:' + id
-        ]
+        ...['JOB_START:' + id, 'alive:0', '0', '', 'STDOUT_END:' + id, '', 'STDERR_END:' + id]
       )
     }
     const runner = makeSshRunner({
@@ -457,7 +463,13 @@ describe('DirectDriver.cancel', () => {
 
     await driver.cancel(
       { target, workdir: 'w' },
-      { version: 1, driver: 'direct', pid: 4242, pgid: 4242, paths: { workdir: 'w', stdout: 's', stderr: 'e', exitCode: 'x' } }
+      {
+        version: 1,
+        driver: 'direct',
+        pid: 4242,
+        pgid: 4242,
+        paths: { workdir: 'w', stdout: 's', stderr: 'e', exitCode: 'x' }
+      }
     )
 
     const cmd = (runner.run as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string
@@ -473,7 +485,13 @@ describe('DirectDriver.cancel', () => {
     await expect(
       driver.cancel(
         { target, workdir: 'w' },
-        { version: 1, driver: 'direct', pid: 1, pgid: 1, paths: { workdir: 'w', stdout: 's', stderr: 'e', exitCode: 'x' } }
+        {
+          version: 1,
+          driver: 'direct',
+          pid: 1,
+          pgid: 1,
+          paths: { workdir: 'w', stdout: 's', stderr: 'e', exitCode: 'x' }
+        }
       )
     ).resolves.toBeUndefined()
   })
@@ -486,7 +504,13 @@ describe('DirectDriver.cancel', () => {
 describe('ComputeDriverRegistry / resolveJobDriver', () => {
   it('resolves a direct job to the registered direct driver', async () => {
     const { ComputeDriverRegistry, resolveJobDriver } = await import('./compute-driver')
-    const runner = makeSshRunner({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })
+    const runner = makeSshRunner({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
     const direct = new DirectDriver({ runner })
     const registry = new ComputeDriverRegistry()
     registry.register(direct)
@@ -503,7 +527,13 @@ describe('ComputeDriverRegistry / resolveJobDriver', () => {
 
   it('falls back to direct for legacy rows with no driver column', async () => {
     const { ComputeDriverRegistry, resolveJobDriver } = await import('./compute-driver')
-    const runner = makeSshRunner({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })
+    const runner = makeSshRunner({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
     const direct = new DirectDriver({ runner })
     const registry = new ComputeDriverRegistry()
     registry.register(direct)

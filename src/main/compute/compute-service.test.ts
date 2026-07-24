@@ -1733,6 +1733,7 @@ const makeJobRepo = (
       harvest_config: request.harvestConfig,
       timeout_seconds: request.timeoutSeconds,
       remote_workdir: request.remoteWorkdir,
+      driver: request.driver,
       remote_handle: undefined,
       exit_code: undefined,
       stdout_tail: undefined,
@@ -1984,6 +1985,7 @@ describe('ComputeService.submitJob — resource + driver contract', () => {
     service: ComputeService
     createCalls: ReturnType<typeof vi.fn>
     requestWithContext: ReturnType<typeof vi.fn>
+    jobRepository: import('./job-repository').ComputeJobRepository
   } => {
     const { repo } = makeRepo(host)
     const { repo: jobRepo, createCalls } = makeJobRepo()
@@ -1994,7 +1996,7 @@ describe('ComputeService.submitJob — resource + driver contract', () => {
       respond: vi.fn()
     } as unknown as ComputeApprovalBroker
     const service = new ComputeService(okRunner(), repo, broker, undefined, undefined, jobRepo)
-    return { service, createCalls, requestWithContext }
+    return { service, createCalls, requestWithContext, jobRepository: jobRepo }
   }
 
   it('rejects unknown resource fields BEFORE approval with a structured invalid_resources error', async () => {
@@ -2077,17 +2079,21 @@ describe('ComputeService.submitJob — resource + driver contract', () => {
     expect(request.driver).toBe('direct')
   })
 
-  it('rejects an explicit slurm preference before approval (Slurm not enabled in this slice)', async () => {
-    const { service, requestWithContext } = buildService(sampleHost({ executionBackend: 'slurm' }))
-    const err = await service
-      .submitJob('ssh:biowulf', 't', 'echo', {}, { sessionId: 's1', projectId: 'p1' })
-      .catch((e) => e)
-    expect(err.computeCallError?.error_code).toBe('host_unreachable')
-    expect(requestWithContext).not.toHaveBeenCalled()
+  it('resolves an explicit slurm preference to the slurm driver (snapshotted onto the job)', async () => {
+    const { service, requestWithContext, jobRepository } = buildService(
+      sampleHost({ executionBackend: 'slurm' })
+    )
+    const res = await service.submitJob('ssh:biowulf', 't', 'echo', {}, {
+      sessionId: 's1',
+      projectId: 'p1'
+    })
+    expect(requestWithContext).toHaveBeenCalled() // reaches the approval gate, not pre-rejected
+    const row = await jobRepository.get(res.job_id)
+    expect(row?.driver).toBe('slurm')
   })
 
-  it('rejects auto when the probe detected Slurm (Slurm not enabled in this slice)', async () => {
-    const { service } = buildService(
+  it('resolves auto+detected-slurm to the slurm driver', async () => {
+    const { service, jobRepository } = buildService(
       sampleHost({
         executionBackend: 'auto',
         probeResult: {
@@ -2099,10 +2105,32 @@ describe('ComputeService.submitJob — resource + driver contract', () => {
         }
       })
     )
+    const res = await service.submitJob('ssh:biowulf', 't', 'echo', {}, {
+      sessionId: 's1',
+      projectId: 'p1'
+    })
+    const row = await jobRepository.get(res.job_id)
+    expect(row?.driver).toBe('slurm')
+  })
+
+  it('rejects auto when the probe detected an unsupported scheduler (PBS) before approval', async () => {
+    const { service, requestWithContext } = buildService(
+      sampleHost({
+        executionBackend: 'auto',
+        probeResult: {
+          ok: true,
+          probedAt: '2026-01-01T00:00:00Z',
+          exitCode: 0,
+          errorTail: null,
+          detectedScheduler: 'pbs'
+        }
+      })
+    )
     const err = await service
       .submitJob('ssh:biowulf', 't', 'echo', {}, { sessionId: 's1', projectId: 'p1' })
       .catch((e) => e)
     expect(err.computeCallError?.error_code).toBe('host_unreachable')
+    expect(requestWithContext).not.toHaveBeenCalled()
   })
 
   it('includes the resolved resources in the approval snapshot', async () => {

@@ -1127,35 +1127,27 @@ export class ComputeService {
   // a probe actually detected it; it never silently re-dispatches an auto host as slurm based on a
   // stale/default. `direct`/`slurm` are explicit user overrides.
   //
-  // This baseline slice does NOT ship a Slurm driver, so slurm resolution returns 'slurm_disabled'
-  // (a structured error) rather than silently dispatching via the Direct path — the job fails fast
-  // with a clear message instead of running on the wrong backend (design.md §3 invariant 7).
+  // An explicit `slurm` preference (and `auto`+detected-Slurm) resolves to the Slurm driver now that
+  // it is registered (Issue 03). Detected-but-unsupported schedulers (PBS/LSF) are NOT executable in
+  // V1 and return a structured error rather than silently falling back to Direct (design.md §3 inv 7,
+  // §2 "must render as detected-but-not-executable").
   private _resolveDriver(
     host: ComputeHost
   ): { ok: true; driver: 'direct' | 'slurm' } | { ok: false; error: ComputeCallError } {
     const preference = host.executionBackend ?? 'auto'
     if (preference === 'direct') return { ok: true, driver: 'direct' }
-    if (preference === 'slurm') {
-      // Explicit slurm selection is rejected until the Slurm driver lands (Issue 03).
-      return {
-        ok: false,
-        error: {
-          error_code: 'host_unreachable',
-          message:
-            'Slurm execution is not enabled on this host yet. Select "Direct SSH" or "Auto" in Compute settings.',
-          retry_after_user_action: true
-        }
-      }
-    }
+    if (preference === 'slurm') return { ok: true, driver: 'slurm' }
     // auto: resolve from the probe. Only slurm detection routes to slurm; everything else is direct.
     const detected = host.probeResult?.detectedScheduler
-    if (detected === 'slurm') {
+    if (detected === 'slurm') return { ok: true, driver: 'slurm' }
+    if (detected === 'pbs' || detected === 'lsf') {
+      // Detected but not executable in V1 (design.md §2). Fail fast with a clear message so we never
+      // silently dispatch via the wrong backend.
       return {
         ok: false,
         error: {
           error_code: 'host_unreachable',
-          message:
-            'A Slurm scheduler was detected on this host, but Slurm execution is not enabled yet. Select "Direct SSH" in Compute settings to run jobs now.',
+          message: `A ${detected.toUpperCase()} scheduler was detected on this host, but ${detected.toUpperCase()} execution is not supported yet. Select "Direct SSH" in Compute settings to run jobs now.`,
           retry_after_user_action: true
         }
       }
