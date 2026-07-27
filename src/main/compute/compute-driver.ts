@@ -165,6 +165,20 @@ export class ComputeDriverRegistry {
 // startup; tests inject their own registry with a fake driver for isolation.
 export const sharedComputeDriverRegistry = new ComputeDriverRegistry()
 
+// A structured dispatch failure raised by a driver. Both DirectDispatchError and SlurmDispatchError
+// implement this shape: `code` becomes the job's error_code and `detail` its stderr_tail.
+//
+// The dispatcher matches on this STRUCTURE rather than on either concrete class. It used to
+// `instanceof DirectDispatchError`, so every SlurmDispatchError fell through to the generic branch and
+// was flattened to `dispatch_failed` — a Slurm host that was simply unreachable reported the wrong code
+// and lost the `retry_after_user_action` affordance that `host_unreachable` carries.
+export type DispatchErrorLike = Error & { code: string; detail: string }
+
+export const isDispatchErrorLike = (err: unknown): err is DispatchErrorLike =>
+  err instanceof Error &&
+  typeof (err as { code?: unknown }).code === 'string' &&
+  typeof (err as { detail?: unknown }).detail === 'string'
+
 // Resolves the driver for a job. Falls back to 'direct' for legacy rows that predate the `driver`
 // column (design.md §10 — legacy rows keep working without a rewrite). Returns undefined when the
 // snapshotted driver kind has no registered driver (Slurm before Issue 03), so the caller can fail

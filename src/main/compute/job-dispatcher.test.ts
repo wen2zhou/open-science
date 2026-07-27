@@ -16,6 +16,7 @@ import {
 } from './job-dispatcher'
 import { DispatchTracker } from './dispatch-tracker'
 import { ComputeDriverRegistry } from './compute-driver'
+import { SlurmDispatchError } from './slurm-driver'
 
 // Mock resolveSshTarget at module level so all tests bypass the real ssh -G call.
 vi.mock('./ssh-runner', async (importOriginal) => {
@@ -255,6 +256,45 @@ describe('dispatchJob', () => {
     )
     // Nothing was launched remotely.
     expect(runner.run).not.toHaveBeenCalled()
+  })
+
+  // Regression: the dispatcher matched only `instanceof DirectDispatchError`, so every SlurmDriver
+  // failure fell through to the generic branch and was recorded as `dispatch_failed` — an unreachable
+  // Slurm host reported the wrong code and lost the retry-after-user-action affordance.
+  it('preserves the error code a non-Direct driver reports', async () => {
+    const job = makeJob({ driver: 'slurm' })
+    const { repo, update } = makeJobRepo(job)
+    const registry = new ComputeDriverRegistry()
+    registry.register({
+      kind: 'slurm',
+      dispatch: async () => {
+        throw new SlurmDispatchError('host_unreachable', 'ssh: connect to host: no route')
+      },
+      pollMany: async () => ({ kind: 'ok' as const, observations: new Map() }),
+      cancel: async () => {}
+    })
+
+    await dispatchJob(job.job_id, {
+      runner: makeSshRunner({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      }),
+      hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository,
+      driverRegistry: registry
+    })
+
+    expect(update).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({
+        status: 'error',
+        errorCode: 'host_unreachable',
+        stderrTail: 'ssh: connect to host: no route'
+      })
+    )
   })
 
   it('marks the job in-flight in the tracker during dispatch and clears it afterward', async () => {

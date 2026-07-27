@@ -9,8 +9,8 @@ import type { ScpRunner } from './scp-runner'
 import { SystemScpRunner, runScpUpload } from './scp-runner'
 import { shellSingleQuote } from './scp-runner'
 import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
-import { DirectDriver, DirectDispatchError } from './direct-driver'
-import { resolveJobDriver } from './compute-driver'
+import { DirectDriver } from './direct-driver'
+import { resolveJobDriver, isDispatchErrorLike } from './compute-driver'
 import { ResourceRequestSchema, type ResourceRequest } from '../../shared/compute-resources'
 import {
   ComputeEnvironmentResolutionSchema,
@@ -301,7 +301,11 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
   } catch (err) {
     let errorCode = 'dispatch_failed'
     let tail = err instanceof Error ? err.message : String(err)
-    if (err instanceof DirectDispatchError) {
+    // Structural match, not `instanceof DirectDispatchError`: SlurmDriver throws its own
+    // SlurmDispatchError with the same {code, detail} shape, and an instanceof check on the Direct
+    // class silently flattened every Slurm failure to `dispatch_failed` (losing host_unreachable and
+    // invalid_directives).
+    if (isDispatchErrorLike(err)) {
       errorCode = err.code
       tail = err.detail
     }

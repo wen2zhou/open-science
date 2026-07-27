@@ -237,6 +237,13 @@ export type JobStatusResult = {
   stdout_tail: string | undefined
   stderr_tail: string | undefined
   remote_workdir: string | undefined
+  // Scheduler-native state and pending reason (design.md §4.4). Already persisted on the job row by
+  // the poller; surfaced here because `status` alone cannot distinguish "queued behind other work"
+  // from "stuck" — a job sitting at `submitted` with queue_reason 'Resources' is waiting for a slot,
+  // which is the single most common Slurm surprise (an unset --mem claims the whole node on many
+  // clusters, serializing jobs that were meant to run concurrently). Undefined for Direct SSH jobs.
+  remote_state?: string | undefined
+  queue_reason?: string | undefined
 }
 
 // Full job result shape returned by attach_job().result() (spec §11.4, design §9).
@@ -276,6 +283,9 @@ export type ComputeJobErrorCode =
   | 'approval_denied'
   | 'host_unreachable'
   | 'dispatch_failed'
+  // Scheduler script rejected before any SSH: a reserved/conflicting #SBATCH directive, or a command
+  // that itself submits to the scheduler (nested sbatch/salloc).
+  | 'invalid_directives'
   | 'job_failed'
   | 'timeout'
   | 'process_vanished'

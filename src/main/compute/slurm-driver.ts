@@ -29,6 +29,7 @@ import type { SshRunner } from './ssh-runner'
 import { quoteRemotePath, toBase64 } from './job-dispatcher'
 import { buildSbatchWrapper } from './slurm-wrapper'
 import { parseAllowedDirectives } from './slurm-directives'
+import { findNestedSubmission } from './slurm-nested-submit'
 import { applyEnvironmentPreamble } from './environment-preamble'
 
 // Output cap for sbatch submission (the job id is short).
@@ -85,6 +86,14 @@ export class SlurmDriver implements ComputeDriver {
     const directiveCheck = parseAllowedDirectives(command, resources)
     if (!directiveCheck.ok) {
       throw new SlurmDispatchError('invalid_directives', directiveCheck.reason)
+    }
+
+    // Reject a command that submits to the scheduler itself (nested sbatch/salloc). Also before SSH:
+    // the wrapper would otherwise submit, exit in under a second, and take the job's status, harvest,
+    // and cancel with it while the real work ran unobserved. See slurm-nested-submit.ts.
+    const nested = findNestedSubmission(command)
+    if (!nested.ok) {
+      throw new SlurmDispatchError('invalid_directives', nested.reason)
     }
 
     // Apply the resolved environment preamble so activation precedes the workload (design.md §8.2 /

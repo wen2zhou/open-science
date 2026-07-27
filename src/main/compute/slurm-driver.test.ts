@@ -129,6 +129,52 @@ describe('SlurmDriver.dispatch', () => {
     expect(runner.commands).toHaveLength(0)
   })
 
+  // Regression: a command that submits its own job made the tracked wrapper terminate in under a
+  // second, which took status, harvest, and cancel with it while the real work ran unobserved.
+  it('rejects a nested sbatch submission before any SSH', async () => {
+    const runner = makeScriptedRunner([])
+    const driver = new SlurmDriver({ runner })
+    const err = await driver
+      .dispatch({
+        target,
+        workdir: '~/.openscience/jobs/j2b',
+        command: 'sbatch -c 1 --mem=500M -p debug --wrap "python3 work.py"',
+        timeoutSeconds: 300,
+        jobId: 'j2b',
+        resources: {}
+      })
+      .catch((e: unknown) => e)
+    expect(err).toBeInstanceOf(SlurmDispatchError)
+    expect((err as SlurmDispatchError).code).toBe('invalid_directives')
+    expect((err as SlurmDispatchError).detail).toContain('resources')
+    expect(runner.commands).toHaveLength(0)
+  })
+
+  it('still dispatches a command that uses srun inside the allocation', async () => {
+    const runner = makeScriptedRunner([
+      {
+        match: /sbatch/,
+        result: () => ({
+          exitCode: 0,
+          stdout: '777\n',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      }
+    ])
+    const driver = new SlurmDriver({ runner })
+    const handle = await driver.dispatch({
+      target,
+      workdir: '~/.openscience/jobs/j2c',
+      command: 'srun -n 4 ./solver',
+      timeoutSeconds: 300,
+      jobId: 'j2c',
+      resources: { tasks: 4 }
+    })
+    expect(handle).toMatchObject({ driver: 'slurm', schedulerJobId: '777' })
+  })
+
   it('rejects a directive conflicting with structured resources before SSH', async () => {
     const runner = makeScriptedRunner([])
     const driver = new SlurmDriver({ runner })
