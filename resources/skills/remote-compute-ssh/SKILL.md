@@ -127,7 +127,7 @@ conversation — the conversation is NOT locked while the job runs, so the user 
 
 **On a Slurm host, `submit_job` already wraps your command in an `#SBATCH` script and submits it.**
 Pass the workload as `command` and request resources through the structured `resources` option. A
-`command` that calls `sbatch` or `salloc` itself is **rejected at submit** with
+`command` that calls `sbatch` or `salloc` itself is **rejected before it reaches the cluster** with
 `invalid_directives` — it would create a second, untracked job (see below).
 
 | field | type | maps to |
@@ -160,7 +160,10 @@ Why nesting is refused rather than merely discouraged: the job the app holds a h
 the *wrapper*, which exits the moment `sbatch` returns. Its status would report the submission, not
 your work; harvest would run against outputs that do not exist yet; and cancelling would kill the
 wrapper while the real job kept running. Self-submitting workflow managers (Nextflow / Snakemake
-Slurm executors) are refused for the same reason — a V1 limitation.
+Slurm executors) are unsupported for the same reason — a V1 limitation. The wrapper also puts
+rejecting shims for `sbatch`, `salloc`, and `swarm` first on `PATH`, so ordinary staged shell scripts
+cannot create an untracked child job either. Do not use absolute scheduler binary paths or dynamically
+constructed scheduler commands; that workflow is outside the one-job tracking contract.
 
 **`srun` is fine** — it launches a step inside the allocation the wrapper already holds.
 

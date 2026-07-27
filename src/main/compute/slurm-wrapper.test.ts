@@ -37,6 +37,23 @@ describe('buildSbatchWrapper', () => {
     expect(script).toMatch(/mv exit_code\.tmp exit_code/)
   })
 
+  it('places nested scheduler command shims ahead of PATH while preserving srun', () => {
+    const script = buildSbatchWrapper({
+      command: 'bash run-workflow.sh',
+      timeoutSeconds: 60,
+      resources: {},
+      allowedDirectives: []
+    })
+    expect(script).toContain('guard_dir="$(mktemp -d')
+    expect(script).toContain('openscience-no-submit.XXXXXX")" || exit 70')
+    expect(script).toContain('"$guard_dir/sbatch"')
+    expect(script).toContain('"$guard_dir/salloc"')
+    expect(script).toContain('"$guard_dir/swarm"')
+    expect(script).toContain('export PATH="$guard_dir:$PATH"')
+    expect(script).not.toContain('"$guard_dir/srun"')
+    expect(script).toContain('rm -rf "$guard_dir"')
+  })
+
   it('propagates the workload exit code as the script exit code so sacct sees the real result', () => {
     // The Slurm poller reads sacct's ExitCode, not the exit_code file. If the wrapper's last command
     // were the `echo/mv` (exit 0), sacct would report 0:0 even for a non-zero workload and the job

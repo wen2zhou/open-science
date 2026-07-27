@@ -80,8 +80,9 @@ console.info(formatSlurmGateLine(GATE))
 // Active only when the full CPU-suite config is present.
 const describeIf = SUITE_ENABLED ? describe : describe.skip
 
-// Per-job workdirs created across tests; cleaned up in afterAll ONLY.
+// Per-job workdirs and transient cache witnesses created across tests; cleaned up in afterAll ONLY.
 const remoteWorkdirs: string[] = []
+const remoteCacheWitnesses: string[] = []
 let storageRoot: string
 let disconnect: () => Promise<void>
 
@@ -94,17 +95,19 @@ beforeAll(async () => {
 })
 
 afterAll(async () => {
-  // Cleanup ONLY the test job workdirs we created. Never touch caches, images, weights, or other jobs.
-  if (remoteWorkdirs.length > 0 && HOST) {
+  // Cleanup ONLY exact paths created by this run. Cache witnesses are test-owned throwaways, unlike
+  // product caches/images/weights, and must not accumulate on the real gate host.
+  const cleanupPaths = [...remoteWorkdirs, ...remoteCacheWitnesses]
+  if (cleanupPaths.length > 0 && HOST) {
     const runner = new SystemSshRunner()
     try {
       const target = await resolveSshTarget(HOST, undefined)
       // quoteRemotePath, not JSON.stringify: these workdirs are `~/`-relative and double quotes
       // suppress tilde expansion, so the cleanup silently removed nothing and left them behind.
-      const rmCmds = remoteWorkdirs.map((d) => `rm -rf ${quoteRemotePath(d)}`).join('; ')
+      const rmCmds = cleanupPaths.map((d) => `rm -rf ${quoteRemotePath(d)}`).join('; ')
       await runner.run(target, rmCmds, { timeoutMs: 60_000, loginShell: false })
       console.info(
-        `[slurm-e2e] cleanup removed ${remoteWorkdirs.length} test workdir(s) under ${WORKDIR_ROOT}`
+        `[slurm-e2e] cleanup removed ${cleanupPaths.length} test-owned path(s) under ${WORKDIR_ROOT}`
       )
     } catch (err) {
       // Best-effort; a cleanup failure must not fail the suite (the workdirs are under a test root).
@@ -446,6 +449,7 @@ describeIf('Real SSH + Slurm release gate (SLURM_TEST_HOST gated)', () => {
     // + validation approval + slurmWitnessSubmitter wiring) is exercised by the provisioning-workflow
     // unit tests; this gate proves the runtime read contract on the target execution shape.
     const cachePath = `${WORKDIR_ROOT}/e2e-cache-${Date.now()}`
+    remoteCacheWitnesses.push(cachePath)
     const marker = `e2e-marker-${Date.now()}`
     const target = await resolveSshTarget(HOST, undefined)
     // WORKDIR_ROOT defaults to a `~/`-relative path, so quote it the way the dispatcher does:
@@ -539,26 +543,32 @@ describeIf('Real SSH + Slurm release gate (SLURM_TEST_HOST gated)', () => {
       await new Promise((r) => setTimeout(r, 3_000))
     }
 
-    // A cluster whose partition has fewer than 3 free CPUs cannot show 3 at once; report rather than
-    // fail, so a small test cluster does not produce a false red. The concurrency claim is only
-    // EVIDENCED when this reaches 3.
-    if (maxConcurrent >= 3) {
-      console.info(
-        `[slurm-e2e] PASS concurrency host=${HOST} partition=${PARTITION} concurrent=3 ` +
-          `jobs=${submitted.map((r) => r.job_id.slice(0, 8)).join(',')}`
-      )
-    } else {
-      console.warn(
-        `[slurm-e2e] INCONCLUSIVE concurrency host=${HOST} partition=${PARTITION} ` +
-          `max_concurrent=${maxConcurrent} (need >=3 free CPUs and >=768 MiB); ` +
-          `concurrency remains unwitnessed — record this in the release checklist`
+    if (maxConcurrent !== 3) {
+      // Do not leave CPU burners behind when the gate fails because the partition lacks capacity.
+      await Promise.all(submitted.map((job) => service.cancelJob(job.job_id)))
+      throw new Error(
+        `Concurrency gate failed: observed at most ${maxConcurrent}/3 running jobs on ${PARTITION}. ` +
+          'The release host must provide three concurrent CPU slots and 768 MiB for this gate.'
       )
     }
+
+    // The scheduler has just confirmed all three tracked job names are RUNNING. Poll the app state at
+    // this exact point so a regression cannot report success while the scheduler still runs the work.
+    await poller.tick()
+    const statusSnapshot = await Promise.all(submitted.map((job) => service.getJobStatus(job.job_id)))
+    for (const status of statusSnapshot) {
+      expect(status.status).toBe('running')
+      expect(status.remote_state).toBe('RUNNING')
+    }
+    console.info(
+      `[slurm-e2e] PASS concurrency host=${HOST} partition=${PARTITION} concurrent=3 ` +
+        `jobs=${submitted.map((r) => r.job_id.slice(0, 8)).join(',')}`
+    )
 
     for (const r of submitted) {
       await pollUntilTerminal(poller, service, r.job_id)
     }
-    expect(maxConcurrent).toBeGreaterThanOrEqual(1)
+    expect(maxConcurrent).toBe(3)
   }, 600_000)
 
   // A command that submits its own job used to be accepted: the tracked wrapper terminated in under a

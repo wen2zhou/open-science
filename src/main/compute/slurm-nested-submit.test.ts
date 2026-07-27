@@ -50,6 +50,12 @@ describe('findNestedSubmission', () => {
     expect(rejects('id=`sbatch --parsable run.sh`')).toBe('sbatch')
   })
 
+  it('rejects a literal command passed through a child shell or eval', () => {
+    expect(rejects("bash -c 'sbatch run.sh'")).toBe('sbatch')
+    expect(rejects('sh -c "salloc -N1 bash"')).toBe('salloc')
+    expect(rejects("eval 'swarm -f commands.txt'")).toBe('swarm')
+  })
+
   it('rejects a submission behind a transparent prefix or env assignment', () => {
     expect(rejects('nohup sbatch run.sh')).toBe('sbatch')
     expect(rejects('SLURM_CONF=/etc/slurm.conf sbatch run.sh')).toBe('sbatch')
@@ -76,6 +82,7 @@ describe('findNestedSubmission', () => {
     accepts('python analyze.py --note "use sbatch for the next stage"')
     accepts('man sbatch > help.txt')
     accepts('grep -c sbatch notes.md')
+    accepts('echo "try bash -c \'sbatch run.sh\' later"')
   })
 
   it('accepts a whole-line comment mentioning a submission', () => {

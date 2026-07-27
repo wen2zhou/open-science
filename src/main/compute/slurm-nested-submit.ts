@@ -47,6 +47,10 @@ const TRANSPARENT_PREFIXES = new Set([
   '!'
 ])
 
+const SHELL_COMMAND_PREFIX = /\b(?:bash|sh|zsh|dash|ksh)\s+(?:-[A-Za-z]*\s+)*-c\s+/gi
+const EVAL_PREFIX = /\beval\s+/gi
+const CHILD_SHELLS = new Set(['bash', 'sh', 'zsh', 'dash', 'ksh', 'eval'])
+
 export type NestedSubmitCheck = { ok: true } | { ok: false; command: string; reason: string }
 
 // Splits a script into "command position" segments: the text right after a shell construct that starts
@@ -156,10 +160,60 @@ const stripFullLineComments = (script: string): string =>
     .filter((line) => !line.trim().startsWith('#'))
     .join('\n')
 
+// Reads a single shell-quoted literal starting at `start`. This is deliberately limited to literals:
+// dynamically constructed commands cannot be classified before running and remain unsupported by the
+// one-job tracking contract.
+const readQuotedLiteral = (script: string, start: number): { value: string; end: number } | undefined => {
+  const quote = script[start]
+  if (quote !== "'" && quote !== '"') return undefined
+  let value = ''
+  for (let i = start + 1; i < script.length; i++) {
+    const ch = script[i]!
+    if (ch === quote) return { value, end: i + 1 }
+    if (quote === '"' && ch === '\\' && i + 1 < script.length) {
+      value += script[i + 1]
+      i++
+      continue
+    }
+    value += ch
+  }
+  return undefined
+}
+
+// Finds literal command bodies passed to a child shell or eval. A nested `bash -c 'sbatch ...'` used
+// to evade the command-position scanner because the submission was inside a quoted argument.
+const literalNestedBodies = (script: string): string[] => {
+  const bodies: string[] = []
+  // Only inspect a segment when it ACTUALLY invokes a child shell/eval. Searching the raw script
+  // would reject harmless text such as `echo "try bash -c 'sbatch ...'"`.
+  for (const segment of splitCommandPositions(script)) {
+    const word = commandWordOf(segment)
+    // `commandWordOf` intentionally strips eval as a transparent prefix, so retain its direct
+    // command-position spelling separately rather than treating every textual `eval` as executable.
+    const evalAtCommandPosition = /^\s*eval\s+/i.test(segment)
+    if (!CHILD_SHELLS.has(word) && !evalAtCommandPosition) continue
+    const pattern = evalAtCommandPosition ? EVAL_PREFIX : SHELL_COMMAND_PREFIX
+    pattern.lastIndex = 0
+    while (pattern.exec(segment)) {
+      const literal = readQuotedLiteral(segment, pattern.lastIndex)
+      if (!literal) continue
+      bodies.push(literal.value)
+      pattern.lastIndex = literal.end
+    }
+  }
+  return bodies
+}
+
 // Scans a command body for a nested scheduler submission. Returns the offending command word so the
 // caller can name it in the rejection message.
 export const findNestedSubmission = (command: string): NestedSubmitCheck => {
-  const segments = splitCommandPositions(stripFullLineComments(command))
+  const stripped = stripFullLineComments(command)
+  for (const body of literalNestedBodies(stripped)) {
+    const nested = findNestedSubmission(body)
+    if (!nested.ok) return nested
+  }
+
+  const segments = splitCommandPositions(stripped)
   for (const segment of segments) {
     const word = commandWordOf(segment)
     if (word && SUBMITTING_COMMANDS.has(word)) {

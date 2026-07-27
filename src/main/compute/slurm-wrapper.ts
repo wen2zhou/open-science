@@ -61,9 +61,25 @@ export const buildSbatchWrapper = (input: SbatchWrapperInput): string => {
   // exit with the workload's captured code — otherwise a trailing `echo/mv` (exit 0) would make sacct
   // report 0:0 for every job and a non-zero workload would be misreported as success. We still write the
   // exit_code marker file (parity with Direct + a diagnostic the harvest can surface) before exiting.
+  // Keep normal scheduler submission commands from escaping through a staged shell script or a workflow
+  // manager. The static validator catches literals before SSH; these shims cover ordinary child shells
+  // that inherit PATH. Put them in a temporary directory rather than the workdir so harvest never sees
+  // runner internals as user output. `srun` remains available because it launches a step in this allocation.
+  const nestedSubmissionGuard = [
+    'guard_dir="$(mktemp -d \"${TMPDIR:-/tmp}/openscience-no-submit.XXXXXX\")" || exit 70',
+    "printf '%s\\n' '#!/usr/bin/env bash' 'echo \"Nested scheduler submission is unsupported by Open Science. Pass the workload directly to submit_job.\" >&2' 'exit 64' > \"$guard_dir/sbatch\"",
+    'test -s "$guard_dir/sbatch" || exit 70',
+    'cp "$guard_dir/sbatch" "$guard_dir/salloc" || exit 70',
+    'cp "$guard_dir/sbatch" "$guard_dir/swarm" || exit 70',
+    'chmod 700 "$guard_dir/sbatch" "$guard_dir/salloc" "$guard_dir/swarm" || exit 70',
+    'export PATH="$guard_dir:$PATH"'
+  ]
+
   const body = [
+    ...nestedSubmissionGuard,
     `timeout -s TERM -k 30s ${timeoutSeconds} bash -lc ${shellSingleQuote(command)} > stdout 2> stderr`,
     'code=$?',
+    'rm -rf "$guard_dir"',
     'echo "$code" > exit_code.tmp && mv exit_code.tmp exit_code',
     'exit "$code"'
   ].join('\n')
