@@ -149,6 +149,20 @@ export type ComputeApprovalRequest = {
   // Resolved environment summary (issue 05 / design.md §8.3) — e.g. "ml (conda)". Undefined for
   // plain command jobs. The full resolution snapshot is persisted on the job row for audit.
   environment?: string
+  // The compute operation this approval authorizes (issue 06). Distinct grant scopes:
+  //   'call_command' | 'download' | 'submit_job' | 'environment_provisioning'
+  // A provisioning grant NEVER authorizes an ordinary job and vice versa (design.md §3 invariant 6).
+  operation?: string
+  // environment_provisioning fields (issue 06 / design.md §9). Present only for
+  // operation='environment_provisioning'. The approval card renders provider, env name, build/validation
+  // script summaries, resources, cache/weight paths and known egress domains. All plain data; no secrets.
+  build_script_summary?: string
+  validation_script_summary?: string
+  cache_path?: string
+  weight_paths?: string[]
+  // Bare hostnames the build/validation is known to contact (conda.anaconda.org, huggingface.co, ...).
+  // Documentation for the reviewer; never credential-bearing URLs (design.md §3 invariant 8).
+  egress_domains?: string[]
 }
 
 // The job status values for the Phase 3a state machine. 'queued' is reserved for Phase 3c.

@@ -80,6 +80,15 @@ type NotebookLocalRpcServerOptions = {
     // that predate issue 04 still satisfy the shape (matches the optional-computeService pattern).
     cancelJob?(jobId: string): Promise<void>
     cleanupJob?(jobId: string): Promise<void>
+    // Environment registry reads (issue 06): list environments for a provider, read one by id. No SSH.
+    environmentsList?(providerId: string): Promise<unknown>
+    environmentGet?(environmentId: string): Promise<unknown>
+    // The DISTINCT environment provisioning operation (issue 06 / design.md §9). Approval fires under
+    // operation `environment_provisioning`; witnesses run where the stack must be usable.
+    provisionEnvironmentFromPayload?(
+      params: Record<string, unknown>,
+      context?: { sessionId?: string; projectId?: string }
+    ): Promise<unknown>
   }
   skillImporter?: Pick<ConversationSkillImporter, 'request'>
 }
@@ -428,6 +437,37 @@ class NotebookLocalRpcServer {
         const jobId = typeof params.job_id === 'string' ? params.job_id : ''
         await this.computeService.cleanupJob(jobId)
         return { ok: true }
+      }
+
+      // op='environments_list' — agent-facing list of registered environments (issue 06). No SSH.
+      if (op === 'environments_list') {
+        if (!this.computeService.environmentsList)
+          throw new Error('environments_list is not supported.')
+        const providerId = typeof params.provider_id === 'string' ? params.provider_id : ''
+        return this.computeService.environmentsList(providerId)
+      }
+
+      // op='environment_get' — agent-facing read of one environment + its validation evidence.
+      if (op === 'environment_get') {
+        if (!this.computeService.environmentGet)
+          throw new Error('environment_get is not supported.')
+        const environmentId = typeof params.environment_id === 'string' ? params.environment_id : ''
+        return this.computeService.environmentGet(environmentId)
+      }
+
+      // op='environment_provision' — the DISTINCT environment provisioning operation (issue 06 /
+      // design.md §9). Approval fires under operation `environment_provisioning` with its own grant
+      // scope; witnesses run where the stack must be usable. A skill cannot disguise this as a job.
+      if (op === 'environment_provision') {
+        if (!this.computeService.provisionEnvironmentFromPayload) {
+          throw new Error('environment_provision is not supported.')
+        }
+        const sessionId = typeof params.session_id === 'string' ? params.session_id : undefined
+        const projectId = typeof params.project_id === 'string' ? params.project_id : undefined
+        return this.computeService.provisionEnvironmentFromPayload(
+          params as Record<string, unknown>,
+          sessionId && projectId ? { sessionId, projectId } : undefined
+        )
       }
 
       throw new Error(`Unknown computeCall op: ${op}`)

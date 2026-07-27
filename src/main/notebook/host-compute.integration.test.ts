@@ -102,4 +102,45 @@ gate('repl kernel host.compute', () => {
     expect(stub.received().params?.session_id).toBe('session-7')
     expect(stub.received().params?.project_id).toBe('proj-x')
   })
+
+  it('environment_provision routes to the environment_provisioning computeCall op', async () => {
+    const stub = await startStub()
+    const exec = makeExecutor()
+    const result = await exec.execute(
+      baseRequest({
+        code: `await host.compute.environment_provision({
+            provider_id: 'ssh:biowulf',
+            name: 'ml',
+            driver: 'direct',
+            spec: { runtime: 'conda', packages: ['numpy'] },
+            resolution: { kind: 'conda', envName: 'ml', activation: 'conda activate ml' }
+          }); console.log('done')`,
+        mcpRpcEndpoint: stub.endpoint,
+        mcpRpcToken: 'tok'
+      })
+    )
+    await exec.shutdown()
+    stub.close()
+    expect(result.status).toBe('completed')
+    expect(stub.received().params?.op).toBe('environment_provision')
+    expect(stub.received().params?.provider_id).toBe('ssh:biowulf')
+    expect(stub.received().params?.name).toBe('ml')
+  })
+
+  it('environments_list routes to the environments_list computeCall op', async () => {
+    const stub = await startStub()
+    const exec = makeExecutor()
+    const result = await exec.execute(
+      baseRequest({
+        code: "await host.compute.environments_list('ssh:biowulf'); console.log('done')",
+        mcpRpcEndpoint: stub.endpoint,
+        mcpRpcToken: 'tok'
+      })
+    )
+    await exec.shutdown()
+    stub.close()
+    expect(result.status).toBe('completed')
+    expect(stub.received().params?.op).toBe('environments_list')
+    expect(stub.received().params?.provider_id).toBe('ssh:biowulf')
+  })
 })

@@ -23,6 +23,11 @@ import {
 import type { DirListing, DownloadDest, LocalFile, RemoteFsError } from '../../shared/remote-fs'
 import { classifyRemoteError, parseFindListing } from '../../shared/remote-fs'
 import type { ComputeApprovalBroker } from './compute-approval-broker'
+import { ProvisioningWorkflow } from './provisioning-workflow'
+import {
+  validateEnvironmentSpec,
+  validateEnvironmentResolution
+} from '../../shared/compute-environment'
 import type { ComputeHostRepository } from './repository'
 import type { SshRunner } from './ssh-runner'
 import { resolveSshTarget } from './ssh-runner'
@@ -295,6 +300,23 @@ const JOB_MAX_TIMEOUT_SECONDS = 7 * 24 * 3600
 // Default timeout when not specified (24 hours).
 const JOB_DEFAULT_TIMEOUT_SECONDS = 24 * 3600
 
+// Derives the witness shape for a provisioning plan (design.md §8.3). Slurm GPU envs must witness on a
+// compute node; weight-bearing Direct envs read the configured cache path; otherwise a Direct
+// activation + CLI/import smoke is the minimum.
+const deriveWitnessShape = (
+  driver: 'direct' | 'slurm',
+  spec: import('../../shared/compute-environment').EnvironmentSpec,
+  resources: import('../../shared/compute-resources').ResourceRequest
+): import('./provisioning-workflow').WitnessShape => {
+  if (driver === 'slurm' || (resources.gpus && resources.gpus > 0)) {
+    return { kind: 'slurm-gpu' }
+  }
+  if (spec.cachePath || spec.weights.length > 0) {
+    return { kind: 'direct-gpu' }
+  }
+  return { kind: 'direct-import' }
+}
+
 // ComputeService owns probe logic. It is injected with a SshRunner (for testability) and a
 // repository (for persistence). It does NOT write detailsDoc — only probeResult, shape, and
 // scratchRoot (when applicable). See design.md §4 for the probe/Details distinction.
@@ -321,7 +343,10 @@ export class ComputeService {
     private readonly concurrencyManager?: ConcurrencyManager,
     // Optional: the provider-scoped environment registry. When omitted, submit_job with an environment
     // name throws a clear error (no resolution authority). Plain command jobs work without it.
-    private readonly environmentRepository?: ComputeEnvironmentRepository
+    private readonly environmentRepository?: ComputeEnvironmentRepository,
+    // Optional: submits a one-shot Slurm witness job to a compute node (issue 06). Production wires
+    // this to a short sbatch job; when omitted, Slurm provisioning throws a clear error.
+    private readonly slurmWitnessSubmitter?: import('./provisioning-workflow').SlurmWitnessSubmitter
   ) {
     this.scpRunner = scpRunner ?? new SystemScpRunner()
   }
@@ -1791,6 +1816,212 @@ export class ComputeService {
         `Failed to delete remote workdir "${workdir}" for job "${jobId}": ${result.stderr || `exit ${result.exitCode}`}`
       )
     }
+  }
+
+  // Provisions an environment from the raw REPL `environment_provision` payload (issue 06). Validates
+  // spec/resolution/resources at this boundary, registers a draft row when no `environment_id` is
+  // supplied (or reuses an existing row by name), then runs the provisioning workflow. This is the
+  // entry point behind the `compute-env-setup` skill's `host.compute.environment_provision` API.
+  async provisionEnvironmentFromPayload(
+    params: Record<string, unknown>,
+    context?: { sessionId?: string; projectId?: string }
+  ): Promise<
+    import('./provisioning-workflow').ProvisioningResult & {
+      environment_id?: string
+      status?: import('../../shared/compute-environment').ComputeEnvironmentStatus
+      validation?: import('../../shared/compute-environment').EnvironmentValidationEvidence
+    }
+  > {
+    if (!this.environmentRepository) {
+      throw new Error('ComputeEnvironmentRepository is required to provision an environment.')
+    }
+    const providerId = typeof params.provider_id === 'string' ? params.provider_id : ''
+    const name = typeof params.name === 'string' ? params.name : ''
+    if (!providerId || !name) {
+      throw new Error('environment_provision requires provider_id and name.')
+    }
+    const host = await this.repository.get(providerId)
+    if (!host) {
+      throw new Error(`No compute host found with provider id "${providerId}".`)
+    }
+
+    // Validate spec + resolution at the boundary (mirrors the IPC create handler). Reject unknown
+    // fields / unsafe values before any approval or SSH.
+    const specValidation = validateEnvironmentSpec(params.spec)
+    if (!specValidation.ok) {
+      const err = new Error(specValidation.error.message) as Error & {
+        computeCallError: ComputeCallError
+      }
+      err.computeCallError = {
+        error_code: 'invalid_resources',
+        message: specValidation.error.message,
+        retry_after_user_action: specValidation.error.retry_after_user_action
+      }
+      throw err
+    }
+    const resolutionValidation = validateEnvironmentResolution(params.resolution)
+    if (!resolutionValidation.ok) {
+      const err = new Error(resolutionValidation.error.message) as Error & {
+        computeCallError: ComputeCallError
+      }
+      err.computeCallError = {
+        error_code: 'invalid_resources',
+        message: resolutionValidation.error.message,
+        retry_after_user_action: resolutionValidation.error.retry_after_user_action
+      }
+      throw err
+    }
+
+    // Validate resources (reuse the submit-path validator) so the witness resource shape is sound.
+    let resources: import('../../shared/compute-resources').ResourceRequest = {}
+    if (params.resources !== undefined) {
+      const v = validateResourceRequest(params.resources)
+      if (!v.ok) {
+        const err = new Error(v.error.message) as Error & { computeCallError: ComputeCallError }
+        err.computeCallError = v.error
+        throw err
+      }
+      resources = v.request
+    }
+
+    // Resolve or register the row. An explicit environment_id reuses it; otherwise upsert by name. We
+    // avoid a blind create+delete race by reading first.
+    const existing = (await this.environmentRepository.listByProvider(providerId)).find(
+      (e) => e.name === name
+    )
+    let environmentId: string
+    if (typeof params.environment_id === 'string' && params.environment_id) {
+      environmentId = params.environment_id
+    } else if (existing) {
+      environmentId = existing.id
+      // Refresh spec/resolution if the caller changed them; a spec/resolution change auto-stales a
+      // ready row (registry invariant) so re-provisioning re-validates.
+      await this.environmentRepository.update(environmentId, {
+        spec: specValidation.spec,
+        resolution: resolutionValidation.resolution
+      })
+    } else {
+      const created = await this.environmentRepository.create({
+        providerId,
+        name,
+        spec: specValidation.spec,
+        resolution: resolutionValidation.resolution,
+        initialStatus: 'draft'
+      })
+      environmentId = created.id
+    }
+
+    const driver = params.driver === 'slurm' ? 'slurm' : 'direct'
+    const witnessShape = deriveWitnessShape(driver, specValidation.spec, resources)
+
+    const plan: import('./provisioning-workflow').ProvisioningPlan = {
+      providerId,
+      environmentId,
+      environmentName: name,
+      driver,
+      buildScriptSummary:
+        typeof params.build_script_summary === 'string' ? params.build_script_summary : '',
+      validationScriptSummary:
+        typeof params.validation_script_summary === 'string'
+          ? params.validation_script_summary
+          : (specValidation.spec.smokeChecks[0]?.command ?? ''),
+      resources,
+      cachePath: specValidation.spec.cachePath,
+      weightPaths: specValidation.spec.weights.map((w) => w.name),
+      egressDomains: Array.isArray(params.egress_domains)
+        ? (params.egress_domains as string[]).filter((d) => typeof d === 'string')
+        : [],
+      witnessShape
+    }
+
+    const result = await this.provisionEnvironment(plan, context)
+    const final = await this.environmentRepository.get(environmentId)
+    return {
+      ...result,
+      environment_id: environmentId,
+      status: final?.status,
+      validation: final?.validation
+    }
+  }
+
+  // Lists registered environments for a provider (agent-facing, design.md §8). Returns the full
+  // record so the agent can see status, validation and resolution. No SSH.
+  async environmentsList(
+    providerId: string
+  ): Promise<import('../../shared/compute-environment').ComputeEnvironment[]> {
+    if (!this.environmentRepository) {
+      throw new Error('ComputeEnvironmentRepository is required to list environments.')
+    }
+    return this.environmentRepository.listByProvider(providerId)
+  }
+
+  // Reads a single registered environment by id (agent-facing). No SSH.
+  async environmentGet(
+    environmentId: string
+  ): Promise<import('../../shared/compute-environment').ComputeEnvironment | null> {
+    if (!this.environmentRepository) {
+      throw new Error('ComputeEnvironmentRepository is required to read an environment.')
+    }
+    return this.environmentRepository.get(environmentId)
+  }
+
+  // Provisions (builds + validates) a registered environment and records validation evidence
+  // (issue 06 / design.md §9). This is the service-level entry point behind the `environment_provision`
+  // computeCall op and the `compute-env-setup` skill. It is a DISTINCT operation from submit_job: the
+  // approval fires under operation `environment_provisioning` with its own grant scope, and the
+  // witnesses run where the stack must be usable (Direct on the host shell; Slurm GPU on a compute
+  // node). Weight-bearing witnesses read the configured cache path.
+  //
+  // The Direct SSH witness resolves the host's SSH target once and runs the activation preamble +
+  // smoke command. The Slurm witness is delegated to an injected submitter (production wires this to a
+  // one-shot compute-node job); when absent, Slurm provisioning throws a clear error.
+  async provisionEnvironment(
+    plan: import('./provisioning-workflow').ProvisioningPlan,
+    context?: { sessionId?: string; projectId?: string }
+  ): Promise<import('./provisioning-workflow').ProvisioningResult> {
+    if (!this.environmentRepository) {
+      throw new Error('ComputeEnvironmentRepository is required to provision an environment.')
+    }
+    if (!this.approvalBroker) {
+      throw new Error('ComputeApprovalBroker is required to provision an environment.')
+    }
+    const host = await this.repository.get(plan.providerId)
+    if (!host) {
+      throw new Error(`No compute host found with provider id "${plan.providerId}".`)
+    }
+
+    // Resolve the SSH target once for the Direct witness so the workflow's runner has a real target.
+    // For Slurm, the witness is submitted as a job (no direct SSH target needed for the witness).
+    let boundRunner: SshRunner = this.runner
+    if (plan.driver === 'direct') {
+      const target = await resolveSshTarget(host.sshAlias, host.sshOverrides)
+      const underlying = this.runner
+      boundRunner = {
+        run: (_ignored, command, opts) => underlying.run(target, command, opts)
+      }
+    }
+
+    // Build the broker context. The provisioning operation is session/project-scoped like the other
+    // compute operations, but keyed under `environment_provisioning` so its grants never collide with
+    // submit_job grants.
+    const brokerContext = {
+      sessionId: context?.sessionId ?? 'provisioning',
+      projectId: context?.projectId ?? plan.providerId,
+      operation: 'environment_provisioning'
+    }
+
+    const workflow = new ProvisioningWorkflow(
+      this.environmentRepository,
+      boundRunner,
+      // Adapt the ComputeApprovalBroker (which carries session-grant state) into the workflow's
+      // broker surface, pinning the operation to environment_provisioning.
+      {
+        requestWithContext: (info) => this.approvalBroker!.requestWithContext(info, brokerContext)
+      },
+      undefined,
+      this.slurmWitnessSubmitter ? { submitSlurmWitness: this.slurmWitnessSubmitter } : undefined
+    )
+    return workflow.run(plan)
   }
 
   // Internal callback wrapper: when a job transitions to a terminal state, notify ConcurrencyManager

@@ -218,6 +218,32 @@ const hostCompute = {
       text: options.text,
       old_text: options.old_text
     })
+  },
+
+  // List registered environments for a provider (issue 06 / design.md §8). No SSH.
+  async environments_list(providerId) {
+    return computeRpc({ op: 'environments_list', provider_id: providerId })
+  },
+
+  // Read one registered environment + its validation evidence by id. No SSH.
+  async environment_get(environmentId) {
+    return computeRpc({ op: 'environment_get', environment_id: environmentId })
+  },
+
+  // The DISTINCT environment provisioning operation (issue 06 / design.md §9). Approval fires under
+  // operation `environment_provisioning` with its own grant scope; this is NOT submit_job. The plan
+  // carries provider, env name, build/validation script summaries, resources, cache/weight paths and
+  // known egress domains into the approval card. Witnesses run where the stack must be usable.
+  //
+  // params: { provider_id, name, driver?, spec, resolution, build_script_summary?,
+  //           validation_script_summary?, resources?, egress_domains?, environment_id? }
+  async environment_provision(params = {}) {
+    return computeRpc({
+      op: 'environment_provision',
+      session_id: COMPUTE_SESSION_ID,
+      project_id: COMPUTE_PROJECT_NAME,
+      ...params
+    })
   }
 }
 
