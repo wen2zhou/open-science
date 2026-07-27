@@ -70,6 +70,10 @@ requires a `GATE=ENABLED ... required=1` line plus the seven case lines.
 Cleanup: the suite removes ONLY the per-test remote workdirs under `SLURM_TEST_WORKDIR_ROOT`
 (default `~/.openscience/e2e`). It never touches shared caches, images, weights, or other jobs.
 
+Setup walkthrough for a local single-node Slurm VM (Multipass), including SSH alias
+requirements and what such a VM still cannot cover:
+[`compute-e2e-multipass-guide.md`](./compute-e2e-multipass-guide.md).
+
 ### Per-release record
 
 > Copy this block per release and fill in the non-sensitive identifiers + the PASS/SKIP line each case
