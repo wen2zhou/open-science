@@ -15,6 +15,7 @@ import {
   quoteRemotePath
 } from './job-dispatcher'
 import { DispatchTracker } from './dispatch-tracker'
+import { ComputeDriverRegistry } from './compute-driver'
 
 // Mock resolveSshTarget at module level so all tests bypass the real ssh -G call.
 vi.mock('./ssh-runner', async (importOriginal) => {
@@ -223,6 +224,37 @@ describe('dispatchJob', () => {
     const handle = JSON.parse(updateCall.remoteHandle as string)
     expect(handle.pid).toBe(12345)
     expect(onJobUpdated).toHaveBeenCalled()
+  })
+
+  // Regression: a slurm-snapshotted job used to fall back to the Direct driver when no Slurm driver was
+  // registered. It then ran over plain SSH while the poller looked it up by its snapshotted 'slurm'
+  // kind, could not match the direct-v1 handle, and left it at `running` forever (design.md §3
+  // invariant 7 — an unregistered backend is "not enabled", never "use another backend").
+  it('refuses to dispatch a slurm job via the Direct driver when no slurm driver is registered', async () => {
+    const job = makeJob({ driver: 'slurm' })
+    const runner = makeSshRunner({
+      exitCode: 0,
+      stdout: '12345\n',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const { repo, update } = makeJobRepo(job)
+
+    await dispatchJob(job.job_id, {
+      runner,
+      hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository,
+      // Empty registry: 'slurm' resolves to undefined.
+      driverRegistry: new ComputeDriverRegistry()
+    })
+
+    expect(update).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({ status: 'error', errorCode: 'dispatch_failed' })
+    )
+    // Nothing was launched remotely.
+    expect(runner.run).not.toHaveBeenCalled()
   })
 
   it('marks the job in-flight in the tracker during dispatch and clears it afterward', async () => {

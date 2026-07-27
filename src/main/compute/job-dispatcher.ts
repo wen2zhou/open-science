@@ -257,7 +257,26 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
   // resolved at submit time; later host re-probes never change it. When no registry is wired (legacy
   // callers / tests), fall back to a DirectDriver built from the runner — the only driver that
   // existed before this seam.
-  const driver = resolveJobDriver(job, deps.driverRegistry) ?? new DirectDriver({ runner })
+  //
+  // The fallback applies ONLY to jobs whose snapshotted kind IS direct (or legacy rows with no kind).
+  // A 'slurm' job must never be launched over plain SSH just because no Slurm driver is registered
+  // (design.md §3 invariant 7 — "treat undefined as this backend is not enabled rather than silently
+  // falling back"): the poller would then look the job up by its snapshotted kind, find a handle the
+  // Slurm driver does not recognize, and leave it at `running` forever.
+  const resolvedDriver = resolveJobDriver(job, deps.driverRegistry)
+  if (!resolvedDriver && job.driver && job.driver !== 'direct') {
+    const updated = await jobRepository.update(jobId, {
+      status: 'error',
+      errorCode: 'dispatch_failed',
+      stderrTail:
+        `No '${job.driver}' compute driver is registered, so this job cannot be dispatched. ` +
+        `Refusing to fall back to direct SSH execution.`,
+      finishedAt: new Date()
+    })
+    onJobUpdated?.(updated)
+    return
+  }
+  const driver = resolvedDriver ?? new DirectDriver({ runner })
 
   // Delegate remote launch to the driver. The driver builds the scripts, transfers them, launches the
   // detached process, and returns a versioned handle. Connection/launch failures surface as a
