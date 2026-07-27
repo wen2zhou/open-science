@@ -387,6 +387,217 @@ describe('SlurmDriver.pollMany state mapping', () => {
     const res = await driver.pollMany({ target, workdir: '~/.openscience/jobs/x' }, [])
     expect(res.kind).toBe('ok')
   })
+
+  // Regression: squeue has no --parsable2 flag. Passing one made real squeue exit 1 printing nothing,
+  // which looked identical to "every job left the queue" and terminated live jobs off a sacct row.
+  it('builds a squeue command real slurm accepts (--format, never --parsable2)', async () => {
+    const runner = makeScriptedRunner([])
+    const driver = new SlurmDriver({ runner })
+    await driver.pollMany({ target, workdir: '~/.openscience/jobs/x' }, [
+      driverJob('a', slurmV1Handle('a', '888'))
+    ])
+    const squeue = runner.commands.find((c) => c.includes('squeue'))!
+    expect(squeue).not.toContain('--parsable2')
+    expect(squeue).toContain("--format='%i|%T|%r'")
+  })
+})
+
+// ---------------------------------------------------------------------------
+// pollMany — sacct state gating (regression: "sleep 300" reported done in seconds)
+// ---------------------------------------------------------------------------
+
+describe('SlurmDriver.pollMany sacct state gating', () => {
+  // sacct answers for jobs that are STILL QUEUED OR RUNNING. Reading such a row as terminal reported a
+  // `sleep 300` job as succeeded with exit 0 and empty output seconds after submission.
+  const nonTerminal = ['PENDING', 'RUNNING', 'SUSPENDED', 'COMPLETING', 'REQUEUED', 'RESIZING']
+  for (const state of nonTerminal) {
+    it(`keeps a job alive when sacct reports ${state}`, async () => {
+      const runner = makeScriptedRunner([
+        {
+          match: /squeue/,
+          result: () => ({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })
+        },
+        {
+          match: /sacct/,
+          result: () => ({
+            exitCode: 0,
+            stdout: `901|${state}|0:0\n901.batch|${state}|0:0\n`,
+            stderr: '',
+            truncated: false,
+            timedOut: false
+          })
+        }
+      ])
+      const driver = new SlurmDriver({ runner })
+      const res = await driver.pollMany({ target, workdir: '~/.openscience/jobs/x' }, [
+        driverJob('a', slurmV1Handle('a', '901'))
+      ])
+      expect(res.kind).toBe('ok')
+      if (res.kind !== 'ok') return
+      const a = res.observations.get('a')!
+      expect(a.alive).toBe(true)
+      expect(a.hasExitCode).toBe(false)
+      expect(a.exitCode).toBeNull()
+      expect(a.remoteState).toBe(state)
+      // No tail batch: the job is still writing to stdout/stderr.
+      expect(runner.commands.some((c) => c.includes('TAIL_START'))).toBe(false)
+    })
+  }
+
+  // Regression: `--states=all` keeps reporting a FINISHED job for MinJobAge (default 300s) with its
+  // terminal state. Treating "present in squeue" as alive parked completed jobs at `running` for five
+  // minutes, so the e2e gate timed out waiting for a terminal status.
+  it('terminates a job squeue still reports with a terminal state (MinJobAge window)', async () => {
+    const runner = makeScriptedRunner([
+      {
+        match: /squeue/,
+        result: () => ({
+          exitCode: 0,
+          stdout: '905|FAILED|NonZeroExitCode\n',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      },
+      {
+        match: /sacct/,
+        result: () => ({
+          exitCode: 0,
+          stdout: '905|FAILED|3:0\n905.batch|FAILED|3:0\n',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      }
+    ])
+    const driver = new SlurmDriver({ runner })
+    const res = await driver.pollMany({ target, workdir: '~/.openscience/jobs/x' }, [
+      driverJob('a', slurmV1Handle('a', '905'))
+    ])
+    expect(res.kind).toBe('ok')
+    if (res.kind !== 'ok') return
+    const a = res.observations.get('a')!
+    expect(a.alive).toBe(false)
+    expect(a.hasExitCode).toBe(true)
+    expect(a.exitCode).toBe(3)
+    expect(a.remoteState).toBe('FAILED')
+  })
+
+  it('keeps a COMPLETING job in squeue alive (it is not terminal yet)', async () => {
+    const runner = makeScriptedRunner([
+      {
+        match: /squeue/,
+        result: () => ({
+          exitCode: 0,
+          stdout: '906|COMPLETING|None\n',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      }
+    ])
+    const driver = new SlurmDriver({ runner })
+    const res = await driver.pollMany({ target, workdir: '~/.openscience/jobs/x' }, [
+      driverJob('a', slurmV1Handle('a', '906'))
+    ])
+    expect(res.kind).toBe('ok')
+    if (res.kind !== 'ok') return
+    expect(res.observations.get('a')!.alive).toBe(true)
+    expect(runner.commands.some((c) => c.includes('sacct'))).toBe(false)
+  })
+
+  it('normalizes "CANCELLED by <uid>" so the poller classifies it as cancelled', async () => {
+    const runner = makeScriptedRunner([
+      {
+        match: /squeue/,
+        result: () => ({ exitCode: 0, stdout: '', stderr: '', truncated: false, timedOut: false })
+      },
+      {
+        match: /sacct/,
+        result: () => ({
+          exitCode: 0,
+          stdout: '902|CANCELLED by 1000|0:0\n902.batch|CANCELLED|0:15\n',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      }
+    ])
+    const driver = new SlurmDriver({ runner })
+    const res = await driver.pollMany({ target, workdir: '~/.openscience/jobs/x' }, [
+      driverJob('a', slurmV1Handle('a', '902'))
+    ])
+    expect(res.kind).toBe('ok')
+    if (res.kind !== 'ok') return
+    const a = res.observations.get('a')!
+    expect(a.hasExitCode).toBe(true)
+    expect(a.remoteState).toBe('CANCELLED')
+  })
+
+  it('reports unreachable when squeue fails for a non-benign reason', async () => {
+    const runner = makeScriptedRunner([
+      {
+        match: /squeue/,
+        result: () => ({
+          exitCode: 1,
+          stdout: '',
+          stderr: "squeue: unrecognized option '--bogus'",
+          truncated: false,
+          timedOut: false
+        })
+      },
+      {
+        match: /sacct/,
+        result: () => ({
+          exitCode: 0,
+          stdout: '903|COMPLETED|0:0\n',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      }
+    ])
+    const driver = new SlurmDriver({ runner })
+    const res = await driver.pollMany({ target, workdir: '~/.openscience/jobs/x' }, [
+      driverJob('a', slurmV1Handle('a', '903'))
+    ])
+    // A broken squeue must not be read as "the job left the queue" — no sacct, no terminal flip.
+    expect(res.kind).toBe('unreachable')
+    expect(runner.commands.some((c) => c.includes('sacct'))).toBe(false)
+  })
+
+  it('treats squeue exit 1 with "Invalid job id" as "all ids left the queue"', async () => {
+    const runner = makeScriptedRunner([
+      {
+        match: /squeue/,
+        result: () => ({
+          exitCode: 1,
+          stdout: '',
+          stderr: 'slurm_load_jobs error: Invalid job id specified',
+          truncated: false,
+          timedOut: false
+        })
+      },
+      {
+        match: /sacct/,
+        result: () => ({
+          exitCode: 0,
+          stdout: '904|COMPLETED|0:0\n',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      }
+    ])
+    const driver = new SlurmDriver({ runner })
+    const res = await driver.pollMany({ target, workdir: '~/.openscience/jobs/x' }, [
+      driverJob('a', slurmV1Handle('a', '904'))
+    ])
+    expect(res.kind).toBe('ok')
+    if (res.kind !== 'ok') return
+    expect(res.observations.get('a')!.hasExitCode).toBe(true)
+    expect(res.observations.get('a')!.remoteState).toBe('COMPLETED')
+  })
 })
 
 // ---------------------------------------------------------------------------

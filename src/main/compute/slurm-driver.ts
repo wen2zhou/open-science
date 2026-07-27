@@ -164,13 +164,13 @@ export class SlurmDriver implements ComputeDriver {
 
     const observations = new Map<string, RemoteObservation>()
 
-    // Step 1: squeue for active jobs (one call). Format: JobID|State|Reason (--noheader, parsable2).
+    // Step 1: squeue for active jobs (one call). Format: JobID|State|Reason via --format (squeue has
+    // NO --parsable2 flag; passing one makes it exit 1 with "unrecognized option" and print nothing,
+    // which used to look exactly like "every job left the queue"). stderr is kept so the caller can
+    // tell "these ids are gone from the queue" (exit 1 + "Invalid job id") apart from a real failure.
     const ids = slurmJobs.map((j) => j.handle.schedulerJobId)
     const idList = ids.join(',')
-    const squeueCmd = [
-      `squeue --noheader --states=all --parsable2 -j ${shellToken(idList)} ` +
-        `--format='%i|%T|%r' 2>/dev/null || true`
-    ].join('\n')
+    const squeueCmd = `squeue --noheader --states=all -j ${shellToken(idList)} --format='%i|%T|%r'`
 
     let squeueResult
     try {
@@ -186,28 +186,40 @@ export class SlurmDriver implements ComputeDriver {
     if (squeueResult.timedOut || squeueResult.exitCode === 255) {
       return { kind: 'unreachable', message: squeueResult.stderr || 'SSH unreachable' }
     }
+    // A non-zero squeue that is NOT the benign "ids no longer in the queue" case (bad flag, missing
+    // binary, controller down) must NOT be read as "all jobs left the queue" — that would send every
+    // job to sacct and terminate it on the first accounting row. Treat it as a batch-level failure.
+    if (squeueResult.exitCode !== 0 && !isBenignSqueueFailure(squeueResult.stderr)) {
+      return {
+        kind: 'unreachable',
+        message: squeueResult.stderr.trim() || `squeue exited ${squeueResult.exitCode ?? 'null'}`
+      }
+    }
 
-    // Parse active jobs. Map schedulerJobId → {state, reason}.
-    const active = new Map<string, { state: string; reason: string }>()
+    // Parse the queue rows. Map schedulerJobId → {state, reason}.
+    const queued = new Map<string, { state: string; reason: string }>()
     for (const line of squeueResult.stdout.split('\n')) {
       const trimmed = line.trim()
       if (!trimmed) continue
       const [sid, state, reason] = trimmed.split('|')
       if (!sid || !state) continue
-      active.set(sid, { state, reason: reason ?? '' })
+      queued.set(sid, { state: normalizeSlurmState(state), reason: reason ?? '' })
     }
 
-    // Jobs still in the queue: map to alive/non-terminal observations.
+    // Presence in `squeue` does NOT mean alive: `--states=all` keeps reporting a finished job for
+    // MinJobAge (default 300s) with its terminal state, so a completed job would sit at `running` for
+    // five minutes. Only a non-terminal queue state is an alive observation; a terminal one goes to
+    // sacct for the authoritative exit code, same as a job that already aged out of the queue.
     const terminalCandidates: SlurmDriverJob[] = []
     for (const job of slurmJobs) {
       const sid = job.handle.schedulerJobId
-      const a = active.get(sid)
-      if (!a) {
-        // Not in squeue → possibly terminal. Confirm via sacct.
+      const q = queued.get(sid)
+      if (!q || isTerminalSlurmState(q.state)) {
+        // Absent from squeue, or present with a terminal state → confirm the exit code via sacct.
         terminalCandidates.push(job)
         continue
       }
-      observations.set(job.jobId, this._observeActive(sid, a.state, a.reason))
+      observations.set(job.jobId, this._observeActive(sid, q.state, q.reason))
     }
 
     // Step 2: sacct for jobs that left the queue (accounting-delay tolerant). If sacct has no record,
@@ -236,15 +248,21 @@ export class SlurmDriver implements ComputeDriver {
           const code = Number.parseInt((exitStr ?? '').split(':')[0] ?? '', 10)
           // Keep the first row per raw id (the parent job row, not .batch/.ext).
           if (!termByRaw.has(rawId)) {
-            termByRaw.set(rawId, { state, exit: Number.isFinite(code) ? code : 0 })
+            termByRaw.set(rawId, {
+              state: normalizeSlurmState(state),
+              exit: Number.isFinite(code) ? code : 0
+            })
           }
         }
       }
 
       // Read tails for terminal jobs in one batched call (nonce-prefixed, like the Direct driver).
-      const observedTerminal = terminalCandidates.filter((j) =>
-        termByRaw.has(j.handle.schedulerJobId)
-      )
+      // Only genuinely terminal rows qualify: a job sacct still reports as RUNNING keeps streaming, and
+      // its tails are read on the tick that actually terminates it.
+      const observedTerminal = terminalCandidates.filter((j) => {
+        const row = termByRaw.get(j.handle.schedulerJobId)
+        return row !== undefined && isTerminalSlurmState(row.state)
+      })
       const tails =
         observedTerminal.length > 0 ? await this._readTails(target, observedTerminal) : new Map()
 
@@ -252,6 +270,13 @@ export class SlurmDriver implements ComputeDriver {
         const sid = job.handle.schedulerJobId
         const t = termByRaw.get(sid)
         if (!t) continue // accounting delay — leave non-terminal (not observed this tick)
+        // sacct answers for ANY known job, including one still PENDING/RUNNING/COMPLETING. Only a
+        // genuinely terminal state may produce a terminal observation; anything else stays alive so a
+        // long-running job is never reported done with an empty exit code.
+        if (!isTerminalSlurmState(t.state)) {
+          observations.set(job.jobId, this._observeActive(sid, t.state, ''))
+          continue
+        }
         const tail = tails.get(job.jobId)
         observations.set(job.jobId, {
           alive: false,
@@ -365,6 +390,49 @@ export class SlurmDriver implements ComputeDriver {
       // Best-effort: a failing cancel (host down) must not wedge a terminal transition.
     }
   }
+}
+
+// Slurm states that mean "this job will never run again" — the only ones allowed to produce a terminal
+// observation. `sacct` answers for jobs that are still PENDING/RUNNING/COMPLETING/SUSPENDED too, and
+// treating those rows as terminal reports a long-running job as finished seconds after submission.
+const TERMINAL_SLURM_STATES = new Set([
+  'COMPLETED',
+  'FAILED',
+  'CANCELLED',
+  'TIMEOUT',
+  'OUT_OF_MEMORY',
+  'NODE_FAIL',
+  'BOOT_FAIL',
+  'PREEMPTED',
+  'DEADLINE',
+  'REVOKED',
+  'SPECIAL_EXIT'
+])
+
+// Normalizes a scheduler-reported state to its bare name so downstream exact-match classification
+// works: sacct renders a user cancel as `CANCELLED by 1000` and truncates long names to `CANCELLED+`.
+export const normalizeSlurmState = (state: string): string =>
+  state
+    .trim()
+    .replace(/\s+by\s+\d+$/i, '')
+    .replace(/\+$/, '')
+
+/** True when a (raw or normalized) Slurm state means the job has finished for good. */
+export const isTerminalSlurmState = (state: string): boolean =>
+  TERMINAL_SLURM_STATES.has(normalizeSlurmState(state).toUpperCase())
+
+// `squeue -j <ids>` exits 1 once every id has been purged from the controller's queue — that is the
+// expected "they all left the queue, ask sacct" signal, not a failure. Any OTHER non-zero exit (bad
+// flag, squeue missing, controller unreachable) must be surfaced instead of silently emptying the
+// active set. Matched on stderr because the exit code alone cannot tell the two apart.
+const BENIGN_SQUEUE_STDERR = /invalid job id|invalid user id|no jobs? in the system/i
+
+export const isBenignSqueueFailure = (stderr: string): boolean => {
+  const text = stderr.trim()
+  // No diagnostic at all: fall through to sacct rather than wedging the batch. Safe now that only a
+  // genuinely terminal sacct state can terminate a job.
+  if (text === '') return true
+  return BENIGN_SQUEUE_STDERR.test(text)
 }
 
 // Parses sbatch --parsable output (a bare job id, possibly with an array-task suffix) or the default
