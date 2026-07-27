@@ -18,11 +18,27 @@ export const jobElapsedMs = (job: JobSummary, now: number): number => {
 // A terminal diagnostic the UI can render distinctly (issue 04 cross-cutting: failure hints must be
 // actionable, not collapsed into one generic error). `tone` drives colour; `title` is the short label;
 // `detail` is a one-line human explanation the job detail view shows below the status.
+// `info` is the one NON-terminal tone: a scheduler job that is queued and has told us why. It is not
+// a failure, so it must not read like one, but leaving it silent is what made a queued job
+// indistinguishable from a stuck one.
 export type JobDiagnostic = {
-  tone: 'success' | 'failed' | 'timeout' | 'cancelled' | 'error' | 'neutral'
+  tone: 'success' | 'failed' | 'timeout' | 'cancelled' | 'error' | 'info' | 'neutral'
   title: string
   detail: string
 }
+
+// Slurm pending reasons that mean "waiting for capacity" rather than "something is wrong with the
+// request". These get the resource-sizing hint, because the usual cause is a request the partition
+// cannot grant — most often an unset memory request, which claims a whole node on many clusters and
+// silently serializes jobs that were meant to run concurrently.
+const CAPACITY_WAIT_REASONS = new Set([
+  'RESOURCES',
+  'PRIORITY',
+  'NODES_REQUIRED_FOR_JOB',
+  'REQNODENOTAVAIL',
+  'PARTITION_NODE_LIMIT',
+  'PARTITION_TIME_LIMIT'
+])
 
 // Maps a job's status + error_code + scheduler remote_state to a distinct, actionable diagnostic.
 //
@@ -121,6 +137,14 @@ export const jobDiagnostic = (job: JobSummary): JobDiagnostic => {
             'The job could not be submitted to the backend. No trustworthy remote result exists. Check the host configuration and retry.'
         }
       }
+      if (job.error_code === 'invalid_directives') {
+        return {
+          tone: 'error',
+          title: 'Script rejected',
+          detail:
+            'The job was refused before it reached the cluster: a scheduler directive the runner owns, one that duplicates a structured resource, or a command that submits its own job. Read stderr for which, then fix the command and resubmit.'
+        }
+      }
       if (job.error_code === 'process_vanished') {
         return {
           tone: 'error',
@@ -136,9 +160,23 @@ export const jobDiagnostic = (job: JobSummary): JobDiagnostic => {
           'Dispatch, persistence, or recovery failed before a trustworthy remote result existed. Retry the job.'
       }
 
-    default:
-      // Non-terminal states (queued / submitted / running) have no terminal diagnostic.
+    default: {
+      // Non-terminal states (queued / submitted / running) have no terminal diagnostic — but a
+      // scheduler job parked in the queue does have something to say. Without this the UI showed a
+      // motionless `submitted` badge whether the job was waiting its turn or genuinely wedged.
+      const reason = job.queue_reason?.trim()
+      if (reason && job.status !== 'running') {
+        const capacity = CAPACITY_WAIT_REASONS.has(reason.toUpperCase())
+        return {
+          tone: 'info',
+          title: 'Queued — waiting for resources.',
+          detail: capacity
+            ? 'The cluster has not allocated a slot yet. If this persists, the request may be larger than the partition can grant — an unset memory request claims the whole node on many clusters.'
+            : 'The scheduler is holding this job. See the reason below; it usually points at a partition, account, or QOS limit.'
+        }
+      }
       return { tone: 'neutral', title: '', detail: '' }
+    }
   }
 }
 

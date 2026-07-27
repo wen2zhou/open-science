@@ -2235,6 +2235,58 @@ describe('ComputeService.getJobStatus', () => {
     expect((runner.run as ReturnType<typeof vi.fn>).mock.calls.length).toBe(0)
   })
 
+  // A Slurm job queued behind a resource limit looks identical to a stuck one through `status` alone;
+  // queue_reason is the only way the agent can tell. It was persisted but never surfaced.
+  it('surfaces the scheduler state and queue reason for a pending slurm job', async () => {
+    const runner = makeFakeRunner({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const jobs = new Map<string, import('../../shared/compute').ComputeJob>()
+    jobs.set('job-43', {
+      job_id: 'job-43',
+      provider_id: 'ssh:hpc-dev',
+      shape: 'slurm',
+      session_id: 'sess-1',
+      project_id: 'proj-1',
+      status: 'submitted',
+      intent: 'cpu burn',
+      command: 'python3 burn.py',
+      command_hash: 'abc',
+      environment: undefined,
+      resource_request: undefined,
+      input_manifest: undefined,
+      output_manifest: undefined,
+      harvest_config: undefined,
+      timeout_seconds: 300,
+      remote_workdir: '~/.openscience/jobs/job-43',
+      remote_handle: undefined,
+      exit_code: undefined,
+      stdout_tail: undefined,
+      stderr_tail: undefined,
+      error_code: undefined,
+      driver: 'slurm',
+      remote_state: 'PENDING',
+      queue_reason: 'Resources',
+      created_at: 1,
+      submitted_at: 1,
+      started_at: undefined,
+      finished_at: undefined,
+      harvested_at: undefined
+    })
+    const { repo: jobRepo } = makeJobRepo(jobs)
+    const { repo } = makeRepo()
+    const service = new ComputeService(runner, repo, undefined, undefined, undefined, jobRepo)
+
+    const status = await service.getJobStatus('job-43')
+    expect(status.status).toBe('submitted')
+    expect(status.remote_state).toBe('PENDING')
+    expect(status.queue_reason).toBe('Resources')
+  })
+
   it('throws when job not found', async () => {
     const runner = makeFakeRunner({
       exitCode: 0,

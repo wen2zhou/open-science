@@ -205,6 +205,8 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
     timeout: 'bg-red-50 text-red-800 border-red-200',
     cancelled: 'bg-slate-50 text-slate-700 border-slate-200',
     error: 'bg-red-50 text-red-800 border-red-200',
+    // Non-terminal "queued, and here is why" — informational, deliberately not a failure colour.
+    info: 'bg-blue-50 text-blue-800 border-blue-200',
     neutral: ''
   }
 
@@ -264,7 +266,10 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
           <span className="ml-1.5 opacity-90">{diagnostic.detail}</span>
           {latestJob.remote_state && (
             <span className="ml-1.5 font-mono text-[10.5px] opacity-70">
-              (scheduler state: {latestJob.remote_state})
+              (scheduler state: {latestJob.remote_state}
+              {/* The pending reason is the actionable half for a queued job: PENDING alone does not
+                  say whether it is waiting its turn or asking for more than the partition can grant. */}
+              {latestJob.queue_reason ? ` · reason: ${latestJob.queue_reason}` : ''})
             </span>
           )}
         </div>

@@ -47,6 +47,17 @@ export function RemoteJobRow({ job, onOpen }: RemoteJobRowProps): React.JSX.Elem
       <span className="flex-1 min-w-0 truncate text-[12px] text-secondary-foreground">
         {intentDisplay}
       </span>
+      {/* Why a scheduler job has not started yet, inline so reading it costs no click. Only present
+          for a scheduler job still waiting; a running job has nothing to explain. */}
+      {job.queue_reason && job.status !== 'running' && (
+        <span
+          data-testid="remote-job-queue-reason"
+          className="shrink-0 rounded border border-blue-200 bg-blue-50 px-1.5 py-px text-[10.5px] text-blue-800"
+          title={`The scheduler is holding this job: ${job.queue_reason}`}
+        >
+          {job.queue_reason}
+        </span>
+      )}
       <span className="text-[11px] shrink-0" style={{ color: 'var(--session-waiting)' }}>
         {job.status === 'submitted' ? 'queued' : 'running'} · {elapsedStr}
       </span>

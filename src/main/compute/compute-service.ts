@@ -1501,7 +1501,11 @@ export class ComputeService {
       exit_code: job.exit_code,
       stdout_tail: job.stdout_tail,
       stderr_tail: job.stderr_tail,
-      remote_workdir: job.remote_workdir
+      remote_workdir: job.remote_workdir,
+      // Scheduler detail the poller already persists. Without these the agent sees a job parked at
+      // `submitted` with no way to learn it is queued behind a resource limit rather than broken.
+      remote_state: job.remote_state,
+      queue_reason: job.queue_reason
     }
   }
 
