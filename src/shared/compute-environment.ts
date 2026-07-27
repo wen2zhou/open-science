@@ -215,6 +215,26 @@ const packageLine = z
   .max(512)
   .refine((s) => !hasControlChar(s), { message: 'must not contain control characters' })
 
+// A remote cache directory (e.g. `/scratch/proj-01/.cache/hf`). Reaches rendered shell text through
+// the weight-bearing provisioning witness, so it is a denylist of shell-active characters rather than
+// a length cap. The witness single-quotes the path (quoteRemotePath), but this schema is the second
+// layer: a future caller that forgets to quote must not be able to re-open the injection hole.
+//
+// Deliberately permissive about what real HPC paths look like: slashes, dots, dashes, underscores,
+// `+`, `=`, a leading `~`, and spaces all pass (`/scratch/proj-01/.cache/hf`, `/lustre/home/user/envs`,
+// `~/.cache/huggingface`). Only characters that are ACTIVE to a shell are rejected — command
+// substitution (`$`, backtick), separators/chaining (`;`, `|`, `&`, newline),
+// redirection (`<`, `>`), subshells (`(`, `)`) and quote characters that could break out of a
+// quoted context. Glob characters (`*`, `?`, `[`) are NOT rejected: they are inert inside quotes and
+// legitimate (if rare) in a directory name, and this field is never used as an scp remote spec.
+const cachePathToken = z
+  .string()
+  .min(1)
+  .max(2048)
+  .refine((s) => !hasControlChar(s) && !/[`$;|&<>()'"]/.test(s), {
+    message: 'must not contain shell metacharacters'
+  })
+
 const weightSpec = z
   .object({
     name: z.string().min(1).max(256),
@@ -244,7 +264,7 @@ export const ComputeEnvironmentSpecSchema = z
       })
       .default({}),
     weights: z.array(weightSpec).max(256).default([]),
-    cachePath: z.string().max(2048).optional(),
+    cachePath: cachePathToken.optional(),
     smokeChecks: z.array(smokeCheck).max(64).default([])
   })
   .strict()

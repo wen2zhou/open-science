@@ -328,3 +328,40 @@ describe('ComputeEnvironmentRepository — reserveForProvisioning (atomic build 
     }
   })
 })
+
+describe('ComputeEnvironmentRepository — legacy rows failing spec validation', () => {
+  it('degrades a stored cachePath with shell metacharacters to an undefined spec', async () => {
+    // A row written before cachePath was hardened can hold a shell-active path. Reading it back must
+    // stay a structured degrade (spec: undefined) so the UI and the poller keep working, and must
+    // never surface the unvalidated value where it could reach a rendered command.
+    const created = await repo.create({
+      providerId: 'ssh:legacy',
+      name: 'ml-legacy',
+      spec: SPEC_V1,
+      resolution: CONDA_READY,
+      initialStatus: 'ready'
+    })
+    const client = createProjectDbClient(storageRoot!)
+    try {
+      await client.computeEnvironment.update({
+        where: { id: created.id },
+        data: { specJson: JSON.stringify({ ...SPEC_V1, cachePath: '/data/$(id)' }) }
+      })
+    } finally {
+      await client.$disconnect()
+    }
+
+    const fetched = await repo.get(created.id)
+    expect(fetched).not.toBeNull()
+    expect(fetched?.spec).toBeUndefined()
+    // The rest of the row still reads back intact, so list views and the poller are unaffected.
+    expect(fetched?.name).toBe('ml-legacy')
+    expect(fetched?.status).toBe('ready')
+    expect(fetched?.resolution?.kind).toBe('conda')
+
+    // Listing the provider must not throw either.
+    const listed = await repo.listByProvider('ssh:legacy')
+    expect(listed).toHaveLength(1)
+    expect(listed[0]!.spec).toBeUndefined()
+  })
+})
