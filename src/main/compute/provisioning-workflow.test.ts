@@ -284,6 +284,53 @@ describe('ProvisioningWorkflow — lifecycle state machine', () => {
     expect(evidence.resourceShape).toMatchObject({ gpus: 1, gpuType: 'a100' })
   })
 
+  it('shell-quotes the cache path in the weight-bearing witness (no injection)', async () => {
+    // A cache path is user/spec-supplied and must never be bare-interpolated into the witness shell
+    // command — `; rm -rf ~` would otherwise execute as a separate command. quoteRemotePath wraps a
+    // non-tilde path in single quotes so metacharacters stay literal.
+    const malicious = '/data/cache; rm -rf ~'
+    const spec: EnvironmentSpec = {
+      runtime: 'conda',
+      packages: ['torch'],
+      variables: {},
+      weights: [{ name: 'resnet50', uri: 'hf:resnet50' }],
+      cachePath: malicious,
+      smokeChecks: [{ command: 'python -c "import torch"', kind: 'gpu' }]
+    }
+    const env = await repo.create({
+      providerId: 'ssh:gpu',
+      name: 'torch',
+      spec,
+      resolution: { kind: 'conda', envName: 'torch', activation: 'conda activate torch' },
+      initialStatus: 'draft'
+    })
+    const { runner, commands } = makeRunner()
+    const { broker } = makeBroker()
+    const wf = new ProvisioningWorkflow(repo, runner, broker, () => new Date(0))
+
+    const result = await wf.run({
+      providerId: env.providerId,
+      environmentId: env.id,
+      environmentName: env.name,
+      driver: 'direct',
+      buildScriptSummary: 'conda env create -n torch',
+      validationScriptSummary: spec.smokeChecks![0]!.command,
+      resources: { gpus: 1 },
+      cachePath: malicious,
+      weightPaths: ['resnet50'],
+      egressDomains: [],
+      witnessShape: { kind: 'direct-gpu' }
+    })
+    expect(result.ok).toBe(true)
+
+    const ran = commands.join('\n')
+    // The malicious path is single-quoted in full...
+    expect(ran).toContain(`'${malicious}'`)
+    // ...and never appears bare (unquoted) after `test -d` / `ls`, which would be command injection.
+    expect(ran).not.toMatch(/test -d \/data\/cache; rm/)
+    expect(ran).not.toMatch(/ls \/data\/cache; rm/)
+  })
+
   it('Slurm GPU provisioning dispatches a compute-node GPU witness', async () => {
     const spec: EnvironmentSpec = {
       runtime: 'module',

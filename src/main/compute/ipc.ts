@@ -422,6 +422,15 @@ const createComputeHandlers = (
       if (!environmentRepository) {
         throw new Error('ComputeEnvironmentRepository is required to create an environment.')
       }
+      // `ready` can only come from provisioning validation (environmentRecordValidation), never from a
+      // direct registration — otherwise the Settings UI could persist a ready row with no validation
+      // evidence, bypassing the provisioning approval gate and the resolver's ready-only submit guard
+      // (issue 06 invariant 6). A fresh registration is always draft; provisioning flips it to ready.
+      if (request.initialStatus === 'ready') {
+        throw new Error(
+          'A ready environment cannot be registered directly; run provisioning validation to establish ready.'
+        )
+      }
       const spec = validateSpecOrThrow(request.spec)
       const resolution = validateResolutionOrThrow(request.resolution)
       return environmentRepository.create({

@@ -31,6 +31,7 @@ import type { EnvironmentValidationEvidence } from '../../shared/compute-environ
 import { renderEnvironmentPreamble } from '../../shared/compute-environment'
 import type { ResourceRequest } from '../../shared/compute-resources'
 import type { ComputeEnvironmentRepository } from './environment-repository'
+import { quoteRemotePath } from './job-dispatcher'
 import type { SshRunner } from './ssh-runner'
 
 // The driver a provisioning plan targets. Slurm witnesses run on a compute node; Direct witnesses run
@@ -111,21 +112,21 @@ export class ProvisioningWorkflow {
   // provisioning outcome (denial, validation failure, concurrent build): those return a structured
   // `ok: false`. Only infrastructure errors throw.
   async run(plan: ProvisioningPlan): Promise<ProvisioningResult> {
-    // ── RESERVE: reject a concurrent build for the same (providerId, name) ──────────
-    // A row already in building/validating means another provisioning is in flight. We do not queue:
-    // the second caller must wait for the first to reach a terminal state (design.md §8.3 — concurrent
-    // builds for the same provider/name are rejected or safely serialized).
+    // ── RESERVE: atomically reject a concurrent build for the same (providerId, name) ──────────
+    // Capture the pre-reservation state first (it drives the denial revert and the evidence specHash),
+    // then reserve with a single conditional updateMany. That update IS the lock — there is no read-
+    // then-write window, so two concurrent run() calls cannot both pass the guard and cross-run their
+    // witnesses (design.md §8.3 — concurrent builds for the same provider/name are rejected or safely
+    // serialized). Reserve flips the row to `building`, replacing the separate BUILDING update.
     const current = await this.repository.get(plan.environmentId)
-    if (current && (current.status === 'building' || current.status === 'validating')) {
+    const reserved = await this.repository.reserveForProvisioning(plan.environmentId)
+    if (!reserved) {
       return {
         ok: false,
         reason: 'concurrent',
-        message: `Environment "${plan.environmentName}" is already ${current.status}; wait for it to reach a terminal state before re-provisioning.`
+        message: `Environment "${plan.environmentName}" is already building or validating; wait for it to reach a terminal state before re-provisioning.`
       }
     }
-
-    // ── BUILDING ──────────────────────────────────────────────────────────────────
-    await this.repository.update(plan.environmentId, { status: 'building' })
 
     // ── APPROVAL: the distinct environment_provisioning operation ──────────────────
     // The plan detail is carried in the approval info so the card can render provider, env name,
@@ -220,7 +221,11 @@ export class ProvisioningWorkflow {
     const validationCommand = plan.validationScriptSummary
     // A weight-bearing witness reads the configured cache path, proving layout + completion markers
     // are valid (design.md §8.3). Appended to the smoke command so the same witness proves both.
-    const cacheRead = plan.cachePath ? ` && test -d ${plan.cachePath} && ls ${plan.cachePath}` : ''
+    // The path is shell-quoted: cachePath comes from the spec and must never be bare-interpolated, or
+    // a value like `/x; rm -rf ~` would inject a second command into the approved witness.
+    const cacheRead = plan.cachePath
+      ? ` && test -d ${quoteRemotePath(plan.cachePath)} && ls ${quoteRemotePath(plan.cachePath)}`
+      : ''
 
     if (plan.driver === 'slurm') {
       if (!this.deps?.submitSlurmWitness) {

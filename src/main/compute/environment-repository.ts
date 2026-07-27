@@ -234,6 +234,21 @@ export class ComputeEnvironmentRepository {
     return toEnvironment(row)
   }
 
+  // Atomically reserves an environment for provisioning: flips status to `building` ONLY when it is
+  // not already building/validating. Returns true when this caller won the reservation, false when
+  // another provisioning is in flight. The conditional updateMany IS the lock — there is no
+  // read-then-write race window, so two concurrent provisioning runs for the same environment cannot
+  // both proceed (design.md §8.3: concurrent builds for the same provider/name are rejected or safely
+  // serialized). Terminal/initial states (draft/ready/failed/stale) are all reservable.
+  async reserveForProvisioning(id: string): Promise<boolean> {
+    const client = await this.getClient()
+    const result = await client.computeEnvironment.updateMany({
+      where: { id, status: { notIn: ['building', 'validating'] } },
+      data: { status: 'building' }
+    })
+    return result.count > 0
+  }
+
   async delete(id: string): Promise<void> {
     const client = await this.getClient()
     await client.computeEnvironment.delete({ where: { id } })

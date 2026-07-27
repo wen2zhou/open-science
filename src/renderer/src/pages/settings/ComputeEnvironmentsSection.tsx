@@ -263,7 +263,9 @@ function EnvironmentEditDialog({
   const [specJson, setSpecJson] = useState(state.specJson)
   const [resolutionJson, setResolutionJson] = useState(state.resolutionJson)
   const [detailsDoc, setDetailsDoc] = useState(state.detailsDoc)
-  const [initialStatus, setInitialStatus] = useState<ComputeEnvironmentStatus>(state.initialStatus)
+  // initialStatus is not editable: a fresh registration is always draft (the IPC boundary rejects
+  // 'ready'). Only provisioning validation can flip a row to ready.
+  const initialStatus = state.initialStatus
   const [localError, setLocalError] = useState<string | undefined>(undefined)
 
   const submit = async (): Promise<void> => {
@@ -356,19 +358,9 @@ function EnvironmentEditDialog({
         </div>
 
         {isNew ? (
-          <div className="mb-3">
-            <label className="mb-1 block text-xs font-semibold">Status</label>
-            <select
-              className="w-full rounded-md border border-border px-2 py-1.5 text-sm"
-              value={initialStatus}
-              onChange={(e) => setInitialStatus(e.target.value as ComputeEnvironmentStatus)}
-            >
-              <option value="draft">Draft</option>
-              <option value="ready">Ready (validated / pre-existing)</option>
-            </select>
-            <div className="mt-1 text-[11px] text-muted-foreground">
-              Use Ready only for an already-validated environment.
-            </div>
+          <div className="mb-3 rounded-md border border-border bg-muted/30 p-2 text-[11px] leading-relaxed text-muted-foreground">
+            New environments start as <strong>Draft</strong>. Run provisioning validation to flip an
+            environment to <strong>Ready</strong> — only a Ready environment can be named in a job.
           </div>
         ) : null}
 

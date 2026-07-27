@@ -277,3 +277,54 @@ describe('ComputeEnvironmentRepository — compat with host table', () => {
     }
   })
 })
+
+describe('ComputeEnvironmentRepository — reserveForProvisioning (atomic build lock)', () => {
+  it('reserves a non-building environment and flips it to building', async () => {
+    const env = await repo.create({
+      providerId: 'ssh:a',
+      name: 'ml',
+      spec: SPEC_V1,
+      resolution: CONDA_READY,
+      initialStatus: 'draft'
+    })
+    const won = await repo.reserveForProvisioning(env.id)
+    expect(won).toBe(true)
+    expect((await repo.get(env.id))?.status).toBe('building')
+  })
+
+  it('refuses an environment already building or validating (no state change)', async () => {
+    const building = await repo.create({
+      providerId: 'ssh:a',
+      name: 'b',
+      spec: SPEC_V1,
+      resolution: CONDA_READY,
+      initialStatus: 'building'
+    })
+    expect(await repo.reserveForProvisioning(building.id)).toBe(false)
+    expect((await repo.get(building.id))?.status).toBe('building')
+
+    const validating = await repo.create({
+      providerId: 'ssh:a',
+      name: 'v',
+      spec: SPEC_V1,
+      resolution: CONDA_READY,
+      initialStatus: 'validating'
+    })
+    expect(await repo.reserveForProvisioning(validating.id)).toBe(false)
+    expect((await repo.get(validating.id))?.status).toBe('validating')
+  })
+
+  it('can reserve a previously-terminal environment (ready/failed/stale/draft)', async () => {
+    for (const status of ['ready', 'failed', 'stale', 'draft'] as const) {
+      const env = await repo.create({
+        providerId: 'ssh:a',
+        name: `e-${status}`,
+        spec: SPEC_V1,
+        resolution: CONDA_READY,
+        initialStatus: status
+      })
+      expect(await repo.reserveForProvisioning(env.id)).toBe(true)
+      expect((await repo.get(env.id))?.status).toBe('building')
+    }
+  })
+})
