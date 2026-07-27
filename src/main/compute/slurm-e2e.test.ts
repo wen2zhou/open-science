@@ -55,7 +55,8 @@ import { ComputeHostRepository } from './repository'
 import { ComputeJobRepository } from './job-repository'
 import { JobPoller } from './job-poller'
 import { SystemSshRunner, resolveSshTarget } from './ssh-runner'
-import { ComputeDriverRegistry } from './compute-driver'
+import { quoteRemotePath } from './job-dispatcher'
+import { ComputeDriverRegistry, sharedComputeDriverRegistry } from './compute-driver'
 import { DirectDriver } from './direct-driver'
 import { SlurmDriver } from './slurm-driver'
 import { formatSlurmGateLine, resolveSlurmGate } from './slurm-gate'
@@ -98,7 +99,9 @@ afterAll(async () => {
     const runner = new SystemSshRunner()
     try {
       const target = await resolveSshTarget(HOST, undefined)
-      const rmCmds = remoteWorkdirs.map((d) => `rm -rf ${JSON.stringify(d)}`).join('; ')
+      // quoteRemotePath, not JSON.stringify: these workdirs are `~/`-relative and double quotes
+      // suppress tilde expansion, so the cleanup silently removed nothing and left them behind.
+      const rmCmds = remoteWorkdirs.map((d) => `rm -rf ${quoteRemotePath(d)}`).join('; ')
       await runner.run(target, rmCmds, { timeoutMs: 60_000, loginShell: false })
       console.info(
         `[slurm-e2e] cleanup removed ${remoteWorkdirs.length} test workdir(s) under ${WORKDIR_ROOT}`
@@ -148,6 +151,11 @@ const makeStack = (
   const registry = new ComputeDriverRegistry()
   registry.register(new DirectDriver({ runner }))
   registry.register(new SlurmDriver({ runner }))
+  // `submitJob` dispatches through the PROCESS-WIDE registry (production wires it in ipc.ts at
+  // startup), not through the one handed to the poller. Without this the Slurm kind is unregistered at
+  // dispatch time and the job never reaches sbatch — the exact gap that made every case here hang.
+  sharedComputeDriverRegistry.register(new DirectDriver({ runner }))
+  sharedComputeDriverRegistry.register(new SlurmDriver({ runner }))
   const service = new ComputeService(
     runner,
     hostRepo,
@@ -188,6 +196,23 @@ const pollUntilTerminal = async (
     await new Promise((r) => setTimeout(r, POLL_PAUSE_MS))
   }
   return status
+}
+
+// Waits until the background dispatcher has persisted the remote handle (or the job went terminal with a
+// dispatch error, which the caller's assertions then report). Dispatch is fire-and-forget, so no amount
+// of poller ticks guarantees the handle exists yet.
+const HANDLE_WAIT_MS = 60_000
+const waitForRemoteHandle = async (
+  jobRepo: ComputeJobRepository,
+  jobId: string
+): Promise<Awaited<ReturnType<ComputeJobRepository['get']>>> => {
+  const start = Date.now()
+  let job = await jobRepo.get(jobId)
+  while (!job?.remote_handle && job?.status !== 'error' && Date.now() - start < HANDLE_WAIT_MS) {
+    await new Promise((r) => setTimeout(r, 500))
+    job = await jobRepo.get(jobId)
+  }
+  return job
 }
 
 // Seeds a slurm-execution host row so submitJob's _resolveDriver selects Slurm deterministically.
@@ -390,11 +415,15 @@ describeIf('Real SSH + Slurm release gate (SLURM_TEST_HOST gated)', () => {
     )
     remoteWorkdirs.push(result.remote_workdir)
 
-    // One tick from the original poller, then DROP it (simulate app restart).
-    await poller.tick()
-    const persisted = await jobRepo.get(result.job_id)
+    // `submitJob` fires dispatch in the BACKGROUND (compute-service.ts: `void dispatchJob(...)`), so it
+    // returns before sbatch has run and the handle has been persisted. Wait for the handle to land —
+    // that is the very thing this case restarts across — instead of racing a single poller tick.
+    const persisted = await waitForRemoteHandle(jobRepo, result.job_id)
     expect(persisted?.driver).toBe('slurm')
     expect(persisted?.remote_handle).toBeTruthy()
+
+    // One tick from the original poller, then DROP it (simulate app restart).
+    await poller.tick()
 
     // Fresh poller, fresh registry — recovers from persisted handle only.
     const { poller: poller2 } = makeStack('appr-restart-2')
@@ -419,9 +448,13 @@ describeIf('Real SSH + Slurm release gate (SLURM_TEST_HOST gated)', () => {
     const cachePath = `${WORKDIR_ROOT}/e2e-cache-${Date.now()}`
     const marker = `e2e-marker-${Date.now()}`
     const target = await resolveSshTarget(HOST, undefined)
+    // WORKDIR_ROOT defaults to a `~/`-relative path, so quote it the way the dispatcher does:
+    // JSON.stringify wraps it in DOUBLE quotes, which suppresses tilde expansion and creates a
+    // directory literally named `~` that the compute node then cannot read.
+    const readyPath = quoteRemotePath(`${cachePath}/.ready`)
     await runner.run(
       target,
-      `mkdir -p ${JSON.stringify(cachePath)} && echo ${marker} > ${JSON.stringify(`${cachePath}/.ready`)}`,
+      `mkdir -p ${quoteRemotePath(cachePath)} && echo ${marker} > ${readyPath}`,
       {
         timeoutMs: 30_000,
         loginShell: false
@@ -431,7 +464,7 @@ describeIf('Real SSH + Slurm release gate (SLURM_TEST_HOST gated)', () => {
     const result = await service.submitJob(
       providerId,
       'slurm e2e ready-env cache witness',
-      `test -f ${JSON.stringify(`${cachePath}/.ready`)} && cat ${JSON.stringify(`${cachePath}/.ready`)}`,
+      `test -f ${readyPath} && cat ${readyPath}`,
       {
         resources: {
           partition: PARTITION,
