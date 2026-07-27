@@ -222,6 +222,18 @@ describe('WorkspaceSidebar accessible render', () => {
     expect(withPin.indexOf('>Pinned<')).toBeLessThan(withPin.indexOf('>Active<'))
   })
 
+  it('lists active sessions newest-first by updatedAt regardless of input order', async () => {
+    // The store can advance a session's updatedAt without reordering its array (e.g. streaming a
+    // reply), so the sidebar must sort by recency at render time — the most recently active
+    // conversation floats to the top even when it arrives behind an older one.
+    const html = await renderSidebar([
+      createSession({ id: 'older', title: 'Older conversation', updatedAt: 1_000 }),
+      createSession({ id: 'newer', title: 'Newer conversation', updatedAt: 9_000 })
+    ])
+
+    expect(html.indexOf('Newer conversation')).toBeLessThan(html.indexOf('Older conversation'))
+  })
+
   it('shows Pin for an unpinned session and Unpin for a pinned one, wired to the session', async () => {
     const { WorkspaceSidebar } = await import('./WorkspaceSidebar')
     const sessions = [

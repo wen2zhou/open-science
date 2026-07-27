@@ -84,9 +84,14 @@ const WorkspaceSidebar = ({
   onDeleteSession,
   onOpenSettings
 }: WorkspaceSidebarProps): React.JSX.Element => {
-  // Partition sessions into pinned and unpinned groups; each group preserves the incoming order.
-  const pinnedSessions = sessions.filter((s) => s.pinned)
-  const activeSessions = sessions.filter((s) => !s.pinned)
+  // Sort newest-first by last activity (updatedAt desc), then partition into pinned/unpinned groups.
+  // The store keeps sessions ordered on hydrate and on main-process upserts, but local update actions
+  // (e.g. streaming an agent reply) advance a session's updatedAt without reordering the array — so the
+  // most recently active conversation would otherwise stay where it was. Sorting at render time
+  // guarantees each group lists by recency regardless of which store action touched it.
+  const ordered = [...sessions].sort((a, b) => b.updatedAt - a.updatedAt)
+  const pinnedSessions = ordered.filter((s) => s.pinned)
+  const activeSessions = ordered.filter((s) => !s.pinned)
 
   // Build section descriptors so the list renders with a labelled header per group.
   const sections: Array<{ label: string; items: typeof sessions }> = []
