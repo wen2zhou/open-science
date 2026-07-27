@@ -484,6 +484,107 @@ describeIf('Real SSH + Slurm release gate (SLURM_TEST_HOST gated)', () => {
       `[slurm-e2e] PASS ready-env-cache-witness host=${HOST} partition=${PARTITION} job=${result.job_id} cache=${cachePath}`
     )
   }, 360_000)
+
+  // Nothing in cases 1-7 submits more than one job at a time, so two failures were structurally
+  // invisible to this gate: (a) an unset --mem claims the whole node on a cluster with no DefMemPer*,
+  // serializing jobs that were meant to run concurrently; (b) a job reported terminal while its real
+  // work continued elsewhere. This case witnesses concurrency from the SCHEDULER's own view — three
+  // jobs must be RUNNING in the same `squeue` snapshot — rather than trusting our status alone.
+  it('8. three jobs with explicit memory actually run concurrently (squeue witness)', async () => {
+    const { hostRepo, service, poller } = makeStack('appr-concurrent')
+    const providerId = await seedSlurmHost(hostRepo)
+    const runner = new SystemSshRunner()
+    const target = await resolveSshTarget(HOST, undefined)
+
+    const submitted: import('../../shared/compute').SubmitJobResult[] = []
+    for (const n of [1, 2, 3]) {
+      const result = await service.submitJob(
+        providerId,
+        `slurm e2e concurrent ${n}`,
+        // Self-limiting so the case cannot outlive its budget even if the witness never lands.
+        'python3 -c "import time; e=time.time()+60\nwhile time.time()<e: pass"',
+        {
+          resources: {
+            partition: PARTITION,
+            account: ACCOUNT || undefined,
+            cpusPerTask: 1,
+            // The point of the case: without this, these three serialize on many clusters.
+            memoryMib: 256,
+            timeLimitSeconds: 300
+          },
+          timeoutSeconds: 180
+        },
+        { sessionId: 'e2e', projectId: 'e2e' }
+      )
+      submitted.push(result)
+      remoteWorkdirs.push(result.remote_workdir)
+    }
+
+    // Poll squeue until all three are RUNNING at once, or the window closes.
+    const names = submitted.map((r) => `openscience-${r.job_id.slice(0, 8)}`)
+    const deadline = Date.now() + 120_000
+    let maxConcurrent = 0
+    while (Date.now() < deadline && maxConcurrent < 3) {
+      const out = await runner.run(target, `squeue --noheader --format='%j|%T' -u "$USER"`, {
+        timeoutMs: 30_000,
+        loginShell: false,
+        maxOutputBytes: 64 * 1024
+      })
+      const running = out.stdout
+        .split('\n')
+        .map((l) => l.trim().split('|'))
+        .filter(([name, state]) => name && names.includes(name) && state === 'RUNNING')
+      maxConcurrent = Math.max(maxConcurrent, running.length)
+      if (maxConcurrent >= 3) break
+      await new Promise((r) => setTimeout(r, 3_000))
+    }
+
+    // A cluster whose partition has fewer than 3 free CPUs cannot show 3 at once; report rather than
+    // fail, so a small test cluster does not produce a false red. The concurrency claim is only
+    // EVIDENCED when this reaches 3.
+    if (maxConcurrent >= 3) {
+      console.info(
+        `[slurm-e2e] PASS concurrency host=${HOST} partition=${PARTITION} concurrent=3 ` +
+          `jobs=${submitted.map((r) => r.job_id.slice(0, 8)).join(',')}`
+      )
+    } else {
+      console.warn(
+        `[slurm-e2e] INCONCLUSIVE concurrency host=${HOST} partition=${PARTITION} ` +
+          `max_concurrent=${maxConcurrent} (need >=3 free CPUs and >=768 MiB); ` +
+          `concurrency remains unwitnessed — record this in the release checklist`
+      )
+    }
+
+    for (const r of submitted) {
+      await pollUntilTerminal(poller, service, r.job_id)
+    }
+    expect(maxConcurrent).toBeGreaterThanOrEqual(1)
+  }, 600_000)
+
+  // A command that submits its own job used to be accepted: the tracked wrapper terminated in under a
+  // second while the real work ran unobserved, so status, harvest, and cancel were all wrong.
+  it('9. a nested sbatch command is rejected before it reaches the cluster', async () => {
+    const { hostRepo, jobRepo, service } = makeStack('appr-nested')
+    const providerId = await seedSlurmHost(hostRepo)
+
+    const result = await service.submitJob(
+      providerId,
+      'slurm e2e nested sbatch',
+      `sbatch -c 1 --mem=256M -p ${PARTITION} --wrap "echo nested"`,
+      { resources: { partition: PARTITION, timeLimitSeconds: 300 }, timeoutSeconds: 120 },
+      { sessionId: 'e2e', projectId: 'e2e' }
+    )
+    remoteWorkdirs.push(result.remote_workdir)
+
+    // Rejection happens in dispatch (background, fire-and-forget), so wait for it to land on the row.
+    const job = await waitForRemoteHandle(jobRepo, result.job_id)
+    expect(job?.status).toBe('error')
+    expect(job?.error_code).toBe('invalid_directives')
+    expect(job?.remote_handle).toBeUndefined()
+    console.info(
+      `[slurm-e2e] PASS nested-sbatch-rejected host=${HOST} partition=${PARTITION} job=${result.job_id}`
+    )
+  }, 180_000)
 })
 
 // A non-skipped sentinel so CI can see this file executed even when the gate is off. It is where

@@ -55,7 +55,7 @@ npx vitest run src/main/compute/slurm-e2e.test.ts --reporter=verbose 2>&1 | grep
 
 The verdict reports only whether each variable was set (`<set>` / `<unset>`) — never the hostname or
 the partition value, so it is safe to paste into a release record. A recorded `Slurm gate: PASS`
-requires a `GATE=ENABLED ... required=1` line plus the seven case lines.
+requires a `GATE=ENABLED ... required=1` line plus the nine case lines.
 
 | # | Case | Required env | Status |
 | - | ---- | ------------ | ------ |
@@ -66,6 +66,13 @@ requires a `GATE=ENABLED ... required=1` line plus the seven case lines.
 | 5 | Walltime timeout | `SLURM_TEST_HOST`, `SLURM_TEST_PARTITION` | _record per release_ |
 | 6 | Application restart recovery | `SLURM_TEST_HOST`, `SLURM_TEST_PARTITION` | _record per release_ |
 | 7 | Ready-environment cache/weight witness | `SLURM_TEST_HOST`, `SLURM_TEST_PARTITION` | _record per release_ |
+| 8 | Concurrency witness: 3 jobs RUNNING in one `squeue` snapshot | `SLURM_TEST_HOST`, `SLURM_TEST_PARTITION` (needs ≥3 free CPUs / ≥768 MiB) | _record per release_ |
+| 9 | Nested `sbatch` command rejected pre-dispatch | `SLURM_TEST_HOST`, `SLURM_TEST_PARTITION` | _record per release_ |
+
+Case 8 is the only evidence that jobs submitted together actually run together. It prints
+`INCONCLUSIVE` instead of failing when the partition cannot free three CPUs — that is **not** a pass:
+record it as unwitnessed, because a cluster that serializes concurrent submissions (the usual cause is
+an unset memory request claiming the whole node) would produce exactly the same line.
 
 Cleanup: the suite removes ONLY the per-test remote workdirs under `SLURM_TEST_WORKDIR_ROOT`
 (default `~/.openscience/e2e`). It never touches shared caches, images, weights, or other jobs.

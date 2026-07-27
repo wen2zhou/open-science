@@ -89,9 +89,15 @@ const activeHosts = await host.compute.list_compute()
 const c = host.compute.create('ssh:<alias>')
 const job = await c.submit_job(
   '<one-line intent for the approval card>',  // shown in the approval card
-  '<shell command>',                           // command to run remotely
+  '<shell command>',                           // the WORKLOAD itself — never an sbatch/salloc call
   {
     timeout_seconds: 3600,  // optional; default 24 h, max 7 days
+    resources: {            // optional — scheduler resources; see "Requesting resources" below
+      partition: 'debug',
+      cpusPerTask: 1,
+      memoryMib: 500,
+      timeLimitSeconds: 300
+    },
     inputs: [
       { src: 'in.dat', dst_filename: 'in.dat' },          // stage a workspace file
       { remote_path: 'ssh:<alias>/<abs_path>' }            // link a remote file (no transfer)
@@ -117,6 +123,55 @@ print(job.job_id)   // end the cell — kernel never blocks on compute
 background. When the job finishes, the app automatically starts a new analysis turn in this
 conversation — the conversation is NOT locked while the job runs, so the user can keep chatting.
 
+### Requesting resources — never write `sbatch` yourself
+
+**On a Slurm host, `submit_job` already wraps your command in an `#SBATCH` script and submits it.**
+Pass the workload as `command` and request resources through the structured `resources` option. A
+`command` that calls `sbatch` or `salloc` itself is **rejected at submit** with
+`invalid_directives` — it would create a second, untracked job (see below).
+
+| field | type | maps to |
+|-------|------|---------|
+| `partition` | string | `--partition` |
+| `account` | string | `--account` |
+| `qos` | string | `--qos` |
+| `nodes` | int | `--nodes` |
+| `tasks` | int | `--ntasks` |
+| `cpusPerTask` | int | `--cpus-per-task` |
+| `memoryMib` | int (MiB) | `--mem` |
+| `gpus` | int | `--gres=gpu:N` |
+| `gpuType` | string | `--gres=gpu:<type>:N` |
+| `timeLimitSeconds` | int (≤ 7 d) | `--time` |
+
+Unknown fields are rejected, so a typo surfaces as an error instead of being silently dropped.
+
+```javascript
+// CORRECT — the workload is the command; the scheduler flags are structured
+await c.submit_job('prime sieve to 5e6', 'python3 sieve.py 5000000', {
+  resources: { partition: 'debug', cpusPerTask: 1, memoryMib: 500, timeLimitSeconds: 300 },
+  outputs: ['primes.txt']
+})
+
+// WRONG — rejected: this submits a second job the app cannot see
+await c.submit_job('prime sieve', 'sbatch -c 1 --mem=500M --wrap "python3 sieve.py"')
+```
+
+Why nesting is refused rather than merely discouraged: the job the app holds a handle for would be
+the *wrapper*, which exits the moment `sbatch` returns. Its status would report the submission, not
+your work; harvest would run against outputs that do not exist yet; and cancelling would kill the
+wrapper while the real job kept running. Self-submitting workflow managers (Nextflow / Snakemake
+Slurm executors) are refused for the same reason — a V1 limitation.
+
+**`srun` is fine** — it launches a step inside the allocation the wrapper already holds.
+
+**To request N jobs that actually run concurrently, set `memoryMib`.** Many clusters default an
+unspecified `--mem` to the node's entire memory, so N jobs each implicitly claim the whole node and
+the scheduler runs them one at a time. If jobs sit at `submitted` longer than expected, read
+`queue_reason` from `status()` — `Resources` or `Priority` there is the tell.
+
+**Multi-line scripts:** stage the script as an input instead of packing it into one shell line —
+`inputs: [{ src: 'run.py', dst_filename: 'run.py' }]` with `command: 'python3 run.py'`.
+
 ### Behavior boundaries
 
 - **While the job runs:** the conversation is open. The user can send messages; you can handle
@@ -133,9 +188,18 @@ conversation — the conversation is NOT locked while the job runs, so the user 
 // Non-blocking DB read — no SSH. Use if you need a status snapshot mid-conversation.
 const handle = c.attach_job(job.job_id)
 const s = await handle.status()
-// s → { job_id, status, exit_code, stdout_tail, stderr_tail, remote_workdir }
+// s → { job_id, status, exit_code, stdout_tail, stderr_tail, remote_workdir,
+//       remote_state, queue_reason }
 // status: 'submitted' | 'running' | 'success' | 'failed' | 'timeout' | 'error'
+// remote_state: scheduler-native state (Slurm: PENDING/RUNNING/COMPLETED/TIMEOUT/OUT_OF_MEMORY/...)
+// queue_reason: why a pending job is not running yet (Slurm: Resources, Priority, QOSMaxJobs, ...)
 ```
+
+On a Slurm host, `status` is the app's own lifecycle and `remote_state` is what the scheduler says.
+A job stuck at `submitted` with `queue_reason: 'Resources'` is queued, not broken — check whether
+`memoryMib` is set (see "Requesting resources"). `status` reflects **your** job, so if it reports
+terminal while you believe work is still running on the cluster, the command submitted something the
+app is not tracking.
 
 ### submit_job status values
 
@@ -146,7 +210,12 @@ const s = await handle.status()
 | `success` | exit code 0 |
 | `failed` | non-zero exit (`job_failed`) or process vanished (`process_vanished`) |
 | `timeout` | exceeded `timeout_seconds` |
-| `error` | never reached the remote host (`host_unreachable` / `dispatch_failed`) |
+| `error` | never reached the remote host (`host_unreachable` / `dispatch_failed` / `invalid_directives`) |
+
+`invalid_directives` means the script was refused before any SSH: a reserved `#SBATCH` directive
+(`--job-name`, `--output`, `--error`, `--chdir`, `--array`, `--wrap`, `--wait` — the runner owns
+these), a directive that duplicates a structured `resources` field, or a nested `sbatch`/`salloc`.
+Read `stderr_tail` for which one, fix the command, resubmit.
 
 ## Workflow: the analysis turn
 

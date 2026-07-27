@@ -21,9 +21,15 @@
 | 5 | 超墙钟（请求 30s，`sleep 600`）→ `timeout` 或 `failed` | CPU 分区 |
 | 6 | 重启恢复：新建 poller 从持久化 handle 接续 | CPU 分区 |
 | 7 | ready 环境 cache 见证：计算节点读取配置的 cache 路径 | CPU 分区 + 可写的 `SLURM_TEST_WORKDIR_ROOT` |
+| 8 | 并行见证：3 个作业在同一次 `squeue` 快照里同时 RUNNING | CPU 分区，且能同时空出 3 CPU / 768 MiB |
+| 9 | 嵌套 `sbatch` 命令在 dispatch 前被拒 | CPU 分区 |
 
 只有用例 2 需要 GPU。Multipass 上没有 GPU，它会单独跳过——这不算失败，但意味着 GPU 路径
 仍然未验证，发布时要如实记录。
+
+用例 8 想在 Multipass 上真的跑出证据，虚机至少要 4 个 CPU（`slurm.conf` 里 `CPUs` 不要超过
+`multipass launch -c` 给的数）。空不出 3 个 CPU 时它打 `INCONCLUSIVE` 而不是失败——这不是通过：
+一个会把并发提交串行化的集群打出来的是同一行。
 
 每个通过的用例会打印 `[slurm-e2e] PASS <case> host=... partition=... job=...`，这些行就是
 你要贴进 checklist 的证据。
