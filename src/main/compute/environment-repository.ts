@@ -11,9 +11,9 @@ import type {
 } from '../../shared/compute-environment'
 import {
   ComputeEnvironmentResolutionSchema,
-  ComputeEnvironmentSpecSchema,
-  computeSpecHash
+  ComputeEnvironmentSpecSchema
 } from '../../shared/compute-environment'
+import { computeSpecHash } from './spec-hash'
 
 // Only the computeEnvironment delegate is needed; typing to this subset keeps the repository unit-
 // testable with a lightweight mock (aligns with the host/job repositories).
@@ -142,12 +142,14 @@ export class ComputeEnvironmentRepository {
     return row ? toEnvironment(row) : null
   }
 
-  // Lists environments for a provider, newest-first (updatedAt desc).
+  // Lists environments for a provider, newest-first (createdAt desc). The id (cuid, timestamp-prefixed
+  // and monotonically increasing) is the tiebreaker so two environments created within the same second
+  // still list in creation order — matching job-repository's newest-first ordering.
   async listByProvider(providerId: string): Promise<ComputeEnvironment[]> {
     const client = await this.getClient()
     const rows = await client.computeEnvironment.findMany({
       where: { providerId },
-      orderBy: { updatedAt: 'desc' }
+      orderBy: [{ createdAt: 'desc' }, { id: 'desc' }]
     })
     return rows.map(toEnvironment)
   }
