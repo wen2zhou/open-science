@@ -2,14 +2,25 @@
 //
 // This is the AUTHORITATIVE gate that must pass before the app or docs claim Slurm is production-ready.
 // It is credential-gated: it runs ONLY when the operator exports connection configuration via environment
-// variables (never committed, never logged). When the config is absent (the default in CI and in AFK
-// worktrees) the whole suite SKIPS with a readable reason — it does NOT fail and it does NOT claim the
-// gate passed.
+// variables (never committed, never logged).
+//
+// Gate decision (pure function in `slurm-gate.ts`, unit-tested in `slurm-gate.test.ts`):
+//   - config absent, REQUIRE_SLURM_GATE unset (the default in CI and AFK worktrees): the suite SKIPS.
+//     It does NOT fail and does NOT claim the gate passed.
+//   - config absent, REQUIRE_SLURM_GATE=1: the run HARD-FAILS with the missing variable names. Release
+//     builds MUST use this so a green log can never be misread as "the real cluster path was verified".
+//   - config present: the suite runs.
+//
+// Every run prints exactly ONE machine-readable verdict line, greppable by release automation:
+//   [slurm-e2e] GATE=<ENABLED|SKIPPED|FAILED> reason=<configured|missing-config> \
+//     host=<set|unset> partition=<set|unset> required=<0|1>
+// It reports only whether each variable was SET — never the hostname or partition value.
 //
 // Required env to run:
 //   SLURM_TEST_HOST         ssh alias (in ~/.ssh/config) of a host whose `sbatch`/`squeue`/`sacct` work.
 //   SLURM_TEST_PARTITION    a CPU partition the test account can submit to.
 // Optional env:
+//   REQUIRE_SLURM_GATE      1|true|yes|on to turn a missing config into a hard failure (release builds).
 //   SLURM_TEST_ACCOUNT      account to charge (default: let the cluster default).
 //   SLURM_TEST_GPU_PARTITION a partition with GPUs, for the compute-node GPU witness. When unset, the
 //                            GPU-witness test is skipped individually (NOT the whole suite).
@@ -47,6 +58,7 @@ import { SystemSshRunner, resolveSshTarget } from './ssh-runner'
 import { ComputeDriverRegistry } from './compute-driver'
 import { DirectDriver } from './direct-driver'
 import { SlurmDriver } from './slurm-driver'
+import { formatSlurmGateLine, resolveSlurmGate } from './slurm-gate'
 import type { ComputeJobStatus } from '../../shared/compute'
 
 const HOST = process.env['SLURM_TEST_HOST'] ?? ''
@@ -55,17 +67,14 @@ const ACCOUNT = process.env['SLURM_TEST_ACCOUNT'] ?? ''
 const GPU_PARTITION = process.env['SLURM_TEST_GPU_PARTITION'] ?? ''
 const WORKDIR_ROOT = process.env['SLURM_TEST_WORKDIR_ROOT'] ?? '~/.openscience/e2e'
 
-const SUITE_ENABLED = HOST !== '' && PARTITION !== ''
+// The gate decision lives in `slurm-gate.ts` (a pure function, unit-tested in `slurm-gate.test.ts`).
+// This file only consumes the verdict.
+const GATE = resolveSlurmGate(process.env)
+const SUITE_ENABLED = GATE.enabled
 
-// Emit a clear, parseable skip reason when credentials are absent. This is the signal a maintainer reads
-// to understand why the real gate did not run.
-if (!SUITE_ENABLED) {
-  console.info(
-    `[slurm-e2e] SKIPPED — real SSH+Slurm gate requires SLURM_TEST_HOST and SLURM_TEST_PARTITION. ` +
-      `Got host=${HOST ? '<set>' : '<empty>'}, partition=${PARTITION ? '<set>' : '<empty>'}. ` +
-      `Mock/fixture tests still run; this is NOT a pass of the real gate.`
-  )
-}
+// Exactly one machine-readable verdict line per run so release automation can grep it instead of
+// reading prose. Values are never printed — only whether each variable was set.
+console.info(formatSlurmGateLine(GATE))
 
 // Active only when the full CPU-suite config is present.
 const describeIf = SUITE_ENABLED ? describe : describe.skip
@@ -444,19 +453,22 @@ describeIf('Real SSH + Slurm release gate (SLURM_TEST_HOST gated)', () => {
   }, 360_000)
 })
 
-// A non-skipped sentinel so CI can see this file executed even when the gate is off: it asserts the gate
-// is OFF (credentials absent) OR fully configured, never half-configured. This keeps the skip reason
-// load-bearing in the test log.
+// A non-skipped sentinel so CI can see this file executed even when the gate is off. It is where
+// REQUIRE_SLURM_GATE turns into an actual test failure: a release build must not be able to report a
+// green run while the real-cluster path never executed.
 describe('Real SSH + Slurm gate configuration sanity', () => {
+  it('fails the run when REQUIRE_SLURM_GATE demands the real gate but it is unconfigured', () => {
+    if (GATE.failure) throw new Error(GATE.failure)
+    expect(GATE.failure).toBeNull()
+  })
+
   it('is either fully configured (host+partition) or fully absent — never partial', () => {
-    const hasHost = HOST !== ''
-    const hasPartition = PARTITION !== ''
-    expect(hasHost).toBe(hasPartition)
+    expect(GATE.missing.length === 0 || GATE.missing.length === 2).toBe(true)
     if (!SUITE_ENABLED) {
-      // Re-state the skip reason inside the test body so `npm test` output always carries it.
+      // Re-state the verdict inside the test body so `npm test` output always carries it.
       console.info(
-        `[slurm-e2e] gate OFF (host=${hasHost}, partition=${hasPartition}). ` +
-          `Real cluster gate not exercised — see docs/compute-release-checklist.md for the authoritative pass record.`
+        `${formatSlurmGateLine(GATE)} — real cluster gate not exercised; see ` +
+          `docs/compute-release-checklist.md for the authoritative pass record.`
       )
     }
   })
@@ -466,6 +478,11 @@ describe('Real SSH + Slurm gate configuration sanity', () => {
 // this file. Not used at runtime by the app.
 export const SLURM_E2E_GATE = {
   required: ['SLURM_TEST_HOST', 'SLURM_TEST_PARTITION'],
-  optional: ['SLURM_TEST_ACCOUNT', 'SLURM_TEST_GPU_PARTITION', 'SLURM_TEST_WORKDIR_ROOT'],
+  optional: [
+    'REQUIRE_SLURM_GATE',
+    'SLURM_TEST_ACCOUNT',
+    'SLURM_TEST_GPU_PARTITION',
+    'SLURM_TEST_WORKDIR_ROOT'
+  ],
   enabled: SUITE_ENABLED
 }
