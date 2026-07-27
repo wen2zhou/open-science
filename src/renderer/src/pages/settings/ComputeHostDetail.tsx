@@ -721,6 +721,25 @@ export function ComputeHostDetail({
               )
             })}
           </div>
+          {/* PBS/LSF detected-but-not-executable notice (design.md §2, Issue 07). The probe may surface a
+              PBS or LSF scheduler; V1 executes only Direct and Slurm. The notice makes the boundary
+              explicit so a user never expects a PBS/LSF job to dispatch. Backend selection itself is
+              unchanged (PBS/LSF never appear as selectable buttons). */}
+          {probed?.detectedScheduler === 'pbs' || probed?.detectedScheduler === 'lsf' ? (
+            <p
+              role="note"
+              className="rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-800 dark:border-amber-900/60 dark:bg-amber-950/30 dark:text-amber-200"
+            >
+              <span className="font-semibold">
+                {probed.detectedScheduler.toUpperCase()} detected, not yet supported for execution.
+              </span>{' '}
+              Open Science V1 can execute <span className="font-semibold">Direct SSH</span> and{' '}
+              <span className="font-semibold">Slurm</span> jobs.{' '}
+              {probed.detectedScheduler.toUpperCase()} is detected so you know what is on the host,
+              but it cannot be selected as an execution backend in this release. Choose{' '}
+              <span className="font-semibold">Direct SSH</span> to run jobs now.
+            </p>
+          ) : null}
           {backendError ? (
             <p role="alert" className="text-xs text-destructive">
               {backendError}

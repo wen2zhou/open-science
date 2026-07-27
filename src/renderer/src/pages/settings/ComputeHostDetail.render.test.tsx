@@ -172,6 +172,60 @@ describe('ComputeHostDetail', () => {
     expect(pressed?.textContent).toContain('Direct SSH')
   })
 
+  it('shows the PBS detected-but-not-supported notice when probe detected pbs', () => {
+    useComputeStore.setState({
+      hosts: [
+        host({
+          shape: 'scheduler_cluster',
+          executionBackend: 'auto',
+          probeResult: {
+            ok: true,
+            probedAt: new Date().toISOString(),
+            exitCode: 0,
+            errorTail: null,
+            detectedScheduler: 'pbs'
+          }
+        })
+      ],
+      isLoaded: true
+    })
+
+    act(() => {
+      root.render(<ComputeHostDetail providerId="ssh:biowulf" onRemoved={vi.fn()} />)
+    })
+
+    expect(container.textContent).toContain('PBS detected, not yet supported for execution')
+    // The selectable backends are still only Auto / Direct SSH / Slurm (PBS never selectable).
+    const backendButtons = Array.from(container.querySelectorAll('button')).filter((b) =>
+      ['Auto', 'Direct SSH', 'Slurm'].includes(b.textContent?.trim() ?? '')
+    )
+    expect(backendButtons.length).toBe(3)
+  })
+
+  it('does not show the not-supported notice when probe detected slurm', () => {
+    useComputeStore.setState({
+      hosts: [
+        host({
+          shape: 'scheduler_cluster',
+          probeResult: {
+            ok: true,
+            probedAt: new Date().toISOString(),
+            exitCode: 0,
+            errorTail: null,
+            detectedScheduler: 'slurm'
+          }
+        })
+      ],
+      isLoaded: true
+    })
+
+    act(() => {
+      root.render(<ComputeHostDetail providerId="ssh:biowulf" onRemoved={vi.fn()} />)
+    })
+
+    expect(container.textContent).not.toContain('not yet supported for execution')
+  })
+
   it('calls saveDetails with author=user when Save is clicked in details editor', async () => {
     const saveDetails = vi.fn(() => Promise.resolve())
     useComputeStore.setState({ hosts: [host()], isLoaded: true, saveDetails })

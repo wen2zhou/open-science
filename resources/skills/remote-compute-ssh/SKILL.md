@@ -8,6 +8,12 @@ This skill covers remote compute over SSH: listing hosts, creating handles, runn
 remote commands (call_command), reading/writing host knowledge docs, and the full async
 job lifecycle — submit → harvest → analysis turn → publish artifacts.
 
+**V1 execution backends (what can actually run jobs):** Open Science V1 can EXECUTE jobs via
+**Direct SSH** and **Slurm**. The probe may DETECT PBS or LSF on a host, but those are not executable
+backends in this release — submitting a job to a PBS/LSF-detected host fails fast with a clear message
+asking the user to select Direct SSH. Do not promise a user that a PBS/LSF job will run. See
+`docs/compute-release-checklist.md` for the production-ready boundary per release.
+
 **Where host.compute runs:** `host.compute` lives ONLY on the control-plane REPL kernel — run
 every example below with the `repl_execute` tool (JavaScript), the same kernel that hosts
 `host.mcp`. The `python`/`r` data kernels have NO `host.compute` (SSH and approvals stay outside
