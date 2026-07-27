@@ -11,7 +11,7 @@
 | Backend | Executable in V1? | Evidence basis |
 | ------- | ----------------- | -------------- |
 | **Direct SSH** | Yes | Real SSH integration gate (`compute-jobs.integration.test.ts`, `RUN_COMPUTE_JOBS=1`) + driver conformance kit. |
-| **Slurm** | **Only after the real gate below passes.** Until then Slurm is shipped behind the same gate as a preview and the app/docs do NOT claim production-ready. | `slurm-e2e.test.ts` (`SLURM_TEST_HOST` gated) + fake-scheduler conformance (`slurm-conformance.test.ts`). |
+| **Slurm** | **Only after the real gate below passes.** Until then Slurm is shipped behind the same gate as a preview and the app/docs do NOT claim production-ready. As of this writing the real gate has NOT run on any cluster. | `slurm-e2e.test.ts` (`SLURM_TEST_HOST` gated, `REQUIRE_SLURM_GATE=1` for release runs) + fake-scheduler conformance (`slurm-conformance.test.ts`). |
 | **PBS** | No (detection + fixtures only) | `pbs-lsf-fixture.test.ts` parses `qsub`/`qstat`/`qdel` output and maps state. No registered driver. |
 | **LSF** | No (detection + fixtures only) | `pbs-lsf-fixture.test.ts` parses `bsub`/`bjobs`/`bkill` output and maps state. No registered driver. |
 
@@ -26,9 +26,36 @@ environments).
 Suite: `src/main/compute/slurm-e2e.test.ts`
 Command: `SLURM_TEST_HOST=<alias> SLURM_TEST_PARTITION=<cpu-part> [SLURM_TEST_ACCOUNT=...] [SLURM_TEST_GPU_PARTITION=...] npx vitest run src/main/compute/slurm-e2e.test.ts`
 
-When `SLURM_TEST_HOST` / `SLURM_TEST_PARTITION` are absent the suite SKIPS with a readable reason and
-does NOT count as a pass. Each case logs a `PASS <case> host=<alias> partition=<non-sensitive-id> ...`
-line on success; paste those lines into the per-release record below.
+When `SLURM_TEST_HOST` / `SLURM_TEST_PARTITION` are absent the suite SKIPS and does NOT count as a
+pass. Each case logs a `PASS <case> host=<alias> partition=<non-sensitive-id> ...` line on success;
+paste those lines into the per-release record below.
+
+### 1a. Mandatory pre-release gate check (`REQUIRE_SLURM_GATE=1`)
+
+A skipped suite still reports green. **A green `npm test` is therefore NOT evidence that the real
+cluster path ran.** Before tagging a release, run the gate with the guard armed so a missing config
+becomes a hard failure instead of a silent skip:
+
+```
+REQUIRE_SLURM_GATE=1 SLURM_TEST_HOST=<alias> SLURM_TEST_PARTITION=<cpu-part> \
+  npx vitest run src/main/compute/slurm-e2e.test.ts
+```
+
+Every run prints exactly one machine-readable verdict line. Confirm it by grepping the run log:
+
+```
+npx vitest run src/main/compute/slurm-e2e.test.ts --reporter=verbose 2>&1 | grep '\[slurm-e2e\] GATE='
+```
+
+| Verdict | Meaning | Release action |
+| ------- | ------- | -------------- |
+| `GATE=ENABLED reason=configured host=<set> partition=<set> required=1` | Real cluster path executed under the release guard. | Proceed; record the case PASS lines below. |
+| `GATE=SKIPPED reason=missing-config ... required=0` | Guard not armed and config absent — nothing was verified. | **Not releasable as Slurm-ready.** Re-run with `REQUIRE_SLURM_GATE=1`. |
+| `GATE=FAILED reason=missing-config ... required=1` | Guard armed but config missing; the run fails and names the missing variables. | Fix the env per `.env.example`, then re-run. |
+
+The verdict reports only whether each variable was set (`<set>` / `<unset>`) — never the hostname or
+the partition value, so it is safe to paste into a release record. A recorded `Slurm gate: PASS`
+requires a `GATE=ENABLED ... required=1` line plus the seven case lines.
 
 | # | Case | Required env | Status |
 | - | ---- | ------------ | ------ |
@@ -57,6 +84,9 @@ GPU partition (non-sensitive): <e.g. gpu> or <not exercised>
 Account (non-sensitive): <e.g. lab-xyz> or <cluster default>
 Operator: <name>
 
+Gate verdict line (must be GATE=ENABLED ... required=1 for a PASS):
+<paste the [slurm-e2e] GATE= line here>
+
 Case results (paste the [slurm-e2e] PASS/SKIP lines emitted by the run):
 1. ...
 2. ...
@@ -75,6 +105,8 @@ every release regardless of Slurm status. Record the host alias + PASS/SKIP per 
 
 These run unconditionally in `npm test` and must be green on every PR:
 
+- `slurm-gate.test.ts` — gate decision (skip / hard-fail under `REQUIRE_SLURM_GATE` / run) and the
+  machine-readable `GATE=` verdict line. Runs without a cluster.
 - `slurm-conformance.test.ts` — fake-cluster Slurm driver + poller state machine.
 - `scheduler-conformance-kit.test.ts` — reusable driver conformance kit (handle/submit/observe/state-map/cancel).
 - `pbs-lsf-fixture.test.ts` — PBS/LSF command-output parsing + state mapping (NON-production).
