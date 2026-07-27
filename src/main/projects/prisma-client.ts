@@ -181,6 +181,7 @@ const COMPUTE_JOB_TABLE_DDL = `CREATE TABLE IF NOT EXISTS "ComputeJob" (
     "command" TEXT NOT NULL,
     "commandHash" TEXT NOT NULL,
     "environment" TEXT,
+    "environmentSnapshot" TEXT,
     "resourceRequest" TEXT,
     "inputManifest" TEXT,
     "outputManifest" TEXT,
@@ -232,11 +233,42 @@ const COMPUTE_JOB_ADD_REMOTE_STATE_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "r
 const COMPUTE_JOB_ADD_QUEUE_REASON_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "queueReason" TEXT`
 const COMPUTE_JOB_ADD_SCHEDULER_DIAGNOSTIC_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "schedulerDiagnostic" TEXT`
 
+// Migration guard (issue 05): add the environment snapshot column to ComputeJob for DBs created before
+// this issue. Nullable; existing rows read back as null (plain command jobs). Idempotent (catch swallows
+// the duplicate-column error).
+const COMPUTE_JOB_ADD_ENVIRONMENT_SNAPSHOT_DDL = `ALTER TABLE "ComputeJob" ADD COLUMN "environmentSnapshot" TEXT`
+
 // Indexes for ComputeJob: by providerId (per-host poller queries), sessionId (UI list), status
 // (finding non-terminal jobs on restart). IF NOT EXISTS makes re-runs idempotent.
 const COMPUTE_JOB_PROVIDER_INDEX_DDL = `CREATE INDEX IF NOT EXISTS "ComputeJob_providerId_idx" ON "ComputeJob"("providerId")`
 const COMPUTE_JOB_SESSION_INDEX_DDL = `CREATE INDEX IF NOT EXISTS "ComputeJob_sessionId_idx" ON "ComputeJob"("sessionId")`
 const COMPUTE_JOB_STATUS_INDEX_DDL = `CREATE INDEX IF NOT EXISTS "ComputeJob_status_idx" ON "ComputeJob"("status")`
+
+// Compute environments (issue 05 / design.md §8). Provider-scoped, reusable across projects. Pure-
+// additive table: references nothing, nothing references it, so it is safe to add to any existing DB
+// (CLAUDE.md schema-compat requirement). Security: no credentials are ever stored in spec/resolution.
+const COMPUTE_ENVIRONMENT_TABLE_DDL = `CREATE TABLE IF NOT EXISTS "ComputeEnvironment" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "providerId" TEXT NOT NULL,
+    "name" TEXT NOT NULL,
+    "visibility" TEXT NOT NULL DEFAULT 'provider',
+    "specJson" TEXT NOT NULL,
+    "specHash" TEXT NOT NULL,
+    "resolutionJson" TEXT NOT NULL,
+    "status" TEXT NOT NULL DEFAULT 'draft',
+    "buildJobId" TEXT,
+    "validationJson" TEXT,
+    "validatedAt" DATETIME,
+    "detailsDoc" TEXT NOT NULL DEFAULT '',
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL
+)`
+
+// Unique (providerId, name) — the registry uniqueness key (design.md §8.1). Same name is allowed on
+// different providers. IF NOT EXISTS makes the ensure idempotent.
+const COMPUTE_ENVIRONMENT_PROVIDER_NAME_INDEX_DDL = `CREATE UNIQUE INDEX IF NOT EXISTS "ComputeEnvironment_providerId_name_key" ON "ComputeEnvironment"("providerId", "name")`
+
+const COMPUTE_ENVIRONMENT_PROVIDER_STATUS_INDEX_DDL = `CREATE INDEX IF NOT EXISTS "ComputeEnvironment_providerId_status_idx" ON "ComputeEnvironment"("providerId", "status")`
 
 // Builds a client bound to the SQLite file under the given storage root. Not a singleton, so tests can
 // point separate clients at temp directories. Backslashes are normalized so the file: URL is valid on
@@ -309,6 +341,15 @@ const ensureProjectSchema = async (client: PrismaClient): Promise<void> => {
   await client.$executeRawUnsafe(COMPUTE_JOB_ADD_REMOTE_STATE_DDL).catch(() => undefined)
   await client.$executeRawUnsafe(COMPUTE_JOB_ADD_QUEUE_REASON_DDL).catch(() => undefined)
   await client.$executeRawUnsafe(COMPUTE_JOB_ADD_SCHEDULER_DIAGNOSTIC_DDL).catch(() => undefined)
+
+  // Migration guard (issue 05): add the environment snapshot column for DBs created before this issue.
+  await client.$executeRawUnsafe(COMPUTE_JOB_ADD_ENVIRONMENT_SNAPSHOT_DDL).catch(() => undefined)
+
+  // Compute environments (issue 05 / design.md §8): pure-additive table + its unique (providerId,name)
+  // index and its (providerId,status) lookup index. IF NOT EXISTS makes each safe to re-run on any DB.
+  await client.$executeRawUnsafe(COMPUTE_ENVIRONMENT_TABLE_DDL)
+  await client.$executeRawUnsafe(COMPUTE_ENVIRONMENT_PROVIDER_NAME_INDEX_DDL)
+  await client.$executeRawUnsafe(COMPUTE_ENVIRONMENT_PROVIDER_STATUS_INDEX_DDL)
 }
 
 let clientPromise: Promise<PrismaClient> | undefined

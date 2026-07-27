@@ -53,6 +53,10 @@ export type DispatchContext = DriverContext & {
   // driver renders it to #SBATCH directives. Always defined for new jobs (defaults to an empty request
   // when the caller supplied no resources).
   resources: ResourceRequest
+  // The deterministic environment preamble (design.md §8.2 / cross-cutting: Direct SSH and Slurm
+  // consume the SAME resolved preamble). Undefined for plain command jobs. The driver prepends it to
+  // the job command so activation runs BEFORE the workload, identically for both backends.
+  environmentPreamble?: string
 }
 
 // One job handed to `pollMany`, in the normalized form the poller already parsed. The driver consumes

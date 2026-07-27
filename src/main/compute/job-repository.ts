@@ -31,6 +31,7 @@ const toJob = (row: PrismaComputeJob): ComputeJob => ({
   command: row.command,
   command_hash: row.commandHash,
   environment: row.environment ?? undefined,
+  environment_snapshot: row.environmentSnapshot ?? undefined,
   resource_request: row.resourceRequest ?? undefined,
   input_manifest: row.inputManifest ?? undefined,
   output_manifest: row.outputManifest ?? undefined,
@@ -71,6 +72,8 @@ export type CreateJobRequest = {
   command: string
   commandHash: string
   environment?: string
+  // Snapshot of the resolved environment (design.md §8.3): JSON string of EnvironmentSnapshot.
+  environmentSnapshot?: string
   resourceRequest?: string
   inputManifest?: string
   outputManifest?: string
@@ -130,6 +133,7 @@ export class ComputeJobRepository {
         command: request.command,
         commandHash: request.commandHash,
         environment: request.environment,
+        environmentSnapshot: request.environmentSnapshot,
         resourceRequest: request.resourceRequest,
         inputManifest: request.inputManifest,
         outputManifest: request.outputManifest,

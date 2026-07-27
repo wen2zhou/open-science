@@ -43,6 +43,8 @@ import type { ComputeJobRepository } from './job-repository'
 import { computeRemoteWorkdir, dispatchJob, hashCommand } from './job-dispatcher'
 import type { StagedInputEntry } from './job-dispatcher'
 import { sharedComputeDriverRegistry } from './compute-driver'
+import type { ComputeEnvironmentRepository } from './environment-repository'
+import { resolveEnvironmentForSubmit } from './environment-resolver'
 import { getJobHarvestDir } from './harvest-engine'
 import { getNotebookSessionRoot } from '../notebook/repository'
 import type { ConcurrencyManager, SessionStatus } from './concurrency-manager'
@@ -316,7 +318,10 @@ export class ComputeService {
     private readonly onJobUpdated?: (job: import('../../shared/compute').ComputeJob) => void,
     private readonly artifactResolver?: ArtifactResolver,
     private readonly storageRoot?: string,
-    private readonly concurrencyManager?: ConcurrencyManager
+    private readonly concurrencyManager?: ConcurrencyManager,
+    // Optional: the provider-scoped environment registry. When omitted, submit_job with an environment
+    // name throws a clear error (no resolution authority). Plain command jobs work without it.
+    private readonly environmentRepository?: ComputeEnvironmentRepository
   ) {
     this.scpRunner = scpRunner ?? new SystemScpRunner()
   }
@@ -1209,6 +1214,41 @@ export class ComputeService {
     }
     const resolvedDriver = driverResolution.driver
 
+    // ── RESOLVE ENVIRONMENT (before approval / SSH; design.md §8.3) ────────────────
+    // A named environment is resolved into a deterministic preamble + audit snapshot here, BEFORE the
+    // approval gate, so unknown/building/failed/stale environments fail fast with a readable error and
+    // NEVER trigger SSH. Only a `ready` environment resolves. The snapshot is persisted on the job row
+    // and shown in the approval card; the dispatcher re-renders the preamble from it.
+    let environmentSnapshotJson: string | undefined
+    let environmentSummary: string | undefined
+    if (options.environment) {
+      if (!this.environmentRepository) {
+        throw new Error(
+          'ComputeEnvironmentRepository is required to submit a job with an environment name.'
+        )
+      }
+      const resolved = await resolveEnvironmentForSubmit(
+        this.environmentRepository,
+        host.providerId,
+        options.environment
+      )
+      if (resolved && !resolved.ok) {
+        const err = new Error(resolved.error.message) as Error & {
+          computeCallError: ComputeCallError
+        }
+        err.computeCallError = {
+          error_code: 'environment_not_ready',
+          message: resolved.error.message,
+          retry_after_user_action: true
+        }
+        throw err
+      }
+      if (resolved && resolved.ok) {
+        environmentSnapshotJson = JSON.stringify(resolved.snapshot)
+        environmentSummary = `${resolved.snapshot.name} (${resolved.snapshot.resolution.kind})`
+      }
+    }
+
     // ── VALIDATE RESOURCES (RPC boundary; design.md §5) ────────────────────────────
     // Rejects unknown fields, invalid numbers, and unsafe scheduler strings BEFORE approval/SSH with a
     // structured error. The validated request is the audit snapshot the approval card and the driver
@@ -1332,7 +1372,10 @@ export class ComputeService {
       resources: resourceRequestString,
       driver: resolvedDriver,
       timeout_seconds: timeoutSeconds,
-      remote_workdir: remoteWorkdir
+      remote_workdir: remoteWorkdir,
+      // The resolved environment shown in the approval card (design.md §8.3 — approval saves the
+      // selected environment / spec hash / resolution snapshot). Undefined for plain command jobs.
+      environment: environmentSummary
     }
 
     const decision = await this.approvalBroker.requestWithContext(approvalInfo, {
@@ -1368,6 +1411,7 @@ export class ComputeService {
         command,
         commandHash,
         environment: options.environment,
+        environmentSnapshot: environmentSnapshotJson,
         resourceRequest: resourceRequestString,
         driver: resolvedDriver,
         inputManifest,

@@ -144,6 +144,11 @@ model ComputeJob {
   command         String
   commandHash     String
   environment     String?
+  // Snapshot of the resolved compute environment used by this job (issue 05 / design.md §8.3): JSON of
+  // { id, name, providerId, specHash, resolution, validatedAt }. Written once at submit time so a later
+  // spec/resolution change on the registry row cannot retroactively change how this job ran. Null for
+  // plain command jobs (no environment named) and legacy rows. No secrets.
+  environmentSnapshot String?
   resourceRequest String?
   inputManifest   String?
   outputManifest  String?
@@ -187,6 +192,37 @@ model ComputeJob {
   @@index([providerId])
   @@index([sessionId])
   @@index([status])
+}
+
+// A registered remote compute environment (design.md §8). Provider-scoped and reusable across
+// projects: a project records the environment snapshot used by a job, but does not own or delete the
+// underlying remote environment (design.md §8.1). Pure-additive table — references nothing and nothing
+// references it, so adding it is safe against any pre-existing DB (CLAUDE.md schema-compat requirement).
+//
+// Security: no secrets ever land here (design.md §3 invariant 8). specJson + resolutionJson are the
+// validated portable spec + machine-readable resolution; detailsDoc is human-readable only and is
+// NEVER parsed into a command or resolution. specHash is the canonical content hash of specJson so a
+// changed spec makes the environment stale rather than silently reused (design.md §8.2 / §8.3).
+model ComputeEnvironment {
+  id              String   @id @default(cuid())
+  providerId      String // "ssh:<alias>" — the owning provider. NOT a FK so deleting a host keeps the
+  // environment row readable for audit (the host-delete guard still blocks while active jobs reference
+  // a ready env indirectly; this slice does not introduce a hard FK).
+  name            String // unique within (providerId)
+  visibility      String   @default("provider") // provider | project
+  specJson        String // canonical JSON of the portable spec
+  specHash        String // sha256 of specJson (stale-detection key)
+  resolutionJson  String // canonical JSON of the EnvironmentResolution
+  status          String   @default("draft") // draft|building|validating|ready|failed|stale
+  buildJobId      String? // optional link to the provisioning job (issue 06)
+  validationJson  String? // JSON validation evidence (spec hash, driver, command, exit, tails, time)
+  validatedAt     DateTime?
+  detailsDoc      String   @default("") // human-readable notes; NEVER parsed into a resolution
+  createdAt       DateTime @default(now())
+  updatedAt       DateTime @updatedAt
+
+  @@unique([providerId, name])
+  @@index([providerId, status])
 }
 
 // A registered remote SSH compute host (Compute settings tab). Phase 1 (issue 01) manages the record

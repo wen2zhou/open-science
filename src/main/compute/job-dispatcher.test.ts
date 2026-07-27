@@ -520,3 +520,68 @@ describe('dispatchJob — staging integration', () => {
     )
   })
 })
+
+describe('dispatchJob — environment preamble injection', () => {
+  it('re-renders the environment preamble from the stored snapshot and injects it into command.sh', async () => {
+    // Snapshot of a resolved conda environment, as submitJob would persist it.
+    const snapshot = JSON.stringify({
+      id: 'env-1',
+      name: 'ml',
+      providerId: 'ssh:biowulf',
+      specHash: 'h'.repeat(64),
+      resolution: { kind: 'conda', envName: 'ml', activation: 'conda activate ml' },
+      validatedAt: 1788000000000
+    })
+    const job = makeJob({
+      command: 'python train.py',
+      environment: 'ml',
+      environment_snapshot: snapshot
+    })
+    const runner = makeSshRunner({
+      exitCode: 0,
+      stdout: '12345\n',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const { repo } = makeJobRepo(job)
+
+    await dispatchJob(job.job_id, {
+      runner,
+      hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository
+    })
+
+    // The dispatch SSH command wrote command.sh via base64. Decode it and confirm the preamble precedes
+    // the workload (cross-cutting: Direct SSH consumes the resolved preamble).
+    const dispatchCmd = vi.mocked(runner.run).mock.calls[0]![1] as string
+    const b64Match = dispatchCmd.match(/printf '%s' "([A-Za-z0-9+/=]+)" \| base64 -d > command\.sh/)
+    expect(b64Match).not.toBeNull()
+    const commandSh = Buffer.from(b64Match![1], 'base64').toString('utf8')
+    expect(commandSh).toBe('conda activate ml\npython train.py')
+  })
+
+  it('dispatches a plain command job unchanged when no snapshot is stored', async () => {
+    const job = makeJob({ command: 'echo hello' })
+    const runner = makeSshRunner({
+      exitCode: 0,
+      stdout: '12345\n',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const { repo } = makeJobRepo(job)
+
+    await dispatchJob(job.job_id, {
+      runner,
+      hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository
+    })
+
+    const dispatchCmd = vi.mocked(runner.run).mock.calls[0]![1] as string
+    const b64Match = dispatchCmd.match(/printf '%s' "([A-Za-z0-9+/=]+)" \| base64 -d > command\.sh/)
+    expect(b64Match).not.toBeNull()
+    const commandSh = Buffer.from(b64Match![1], 'base64').toString('utf8')
+    expect(commandSh).toBe('echo hello')
+  })
+})

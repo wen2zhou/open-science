@@ -24,6 +24,7 @@ import type {
 } from './compute-driver'
 import type { SshRunner } from './ssh-runner'
 import { buildLauncherScript, quoteRemotePath, toBase64 } from './job-dispatcher'
+import { applyEnvironmentPreamble } from './environment-preamble'
 
 // Maximum bytes for the per-job dispatch SSH command (enough for base64 of large scripts).
 const DISPATCH_MAX_OUTPUT_BYTES = 4 * 1024
@@ -73,7 +74,10 @@ export class DirectDriver implements ComputeDriver {
     if (!target) throw new Error('DirectDriver.dispatch requires a resolved SSH target')
 
     const launcherScript = buildLauncherScript(timeoutSeconds)
-    const commandB64 = toBase64(command)
+    // Apply the resolved environment preamble so activation precedes the workload (design.md §8.2 /
+    // cross-cutting: Direct SSH and Slurm consume the SAME resolved preamble).
+    const commandWithPreamble = applyEnvironmentPreamble(context.environmentPreamble, command)
+    const commandB64 = toBase64(commandWithPreamble)
     const launcherB64 = toBase64(launcherScript)
 
     const quotedWorkdir = quoteRemotePath(workdir)

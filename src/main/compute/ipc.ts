@@ -16,6 +16,18 @@ import type {
   ProbeResult
 } from '../../shared/compute'
 import type {
+  ComputeEnvironment,
+  ComputeEnvironmentStatus,
+  ComputeEnvironmentVisibility,
+  EnvironmentResolution,
+  EnvironmentSpec,
+  EnvironmentValidationEvidence
+} from '../../shared/compute-environment'
+import {
+  validateEnvironmentResolution,
+  validateEnvironmentSpec
+} from '../../shared/compute-environment'
+import type {
   DirListing,
   DownloadDest,
   LocalFile,
@@ -31,6 +43,7 @@ import { ComputeService, type ArtifactResolver } from './compute-service'
 import { ConcurrencyManager } from './concurrency-manager'
 import { ComputeHostRepository } from './repository'
 import { ComputeJobRepository } from './job-repository'
+import { ComputeEnvironmentRepository } from './environment-repository'
 import { readSshConfigHostAliases } from './ssh-config'
 import { SystemSshRunner } from './ssh-runner'
 import { SystemScpRunner } from './scp-runner'
@@ -42,6 +55,21 @@ import { getJobHarvestDir } from './harvest-engine'
 // IPC channel names for the renderer job feed (Phase 3d, issue 05).
 export const COMPUTE_JOBS_LIST_CHANNEL = 'compute:jobs:list'
 export const COMPUTE_JOB_UPDATED_CHANNEL = 'compute:job-updated'
+
+// Validates a portable spec at the IPC boundary and throws a readable Error on failure (so the
+// renderer surfaces a structured message instead of a raw Prisma/zod error). Returns the typed spec.
+const validateSpecOrThrow = (input: unknown): EnvironmentSpec => {
+  const result = validateEnvironmentSpec(input)
+  if (!result.ok) throw new Error(result.error.message)
+  return result.spec
+}
+
+// Validates a machine-readable resolution at the IPC boundary and throws a readable Error on failure.
+const validateResolutionOrThrow = (input: unknown): EnvironmentResolution => {
+  const result = validateEnvironmentResolution(input)
+  if (!result.ok) throw new Error(result.error.message)
+  return result.resolution
+}
 
 // Recursive readdir helper (returns absolute paths of all files).
 const readdirRecursive = async (dir: string): Promise<string[]> => {
@@ -185,6 +213,42 @@ type ComputeHandlers = {
   cancelJob: (jobId: string) => Promise<void>
   // Cleans up the remote workdir of a terminal+harvested job (issue 04). Safety-guarded.
   cleanupJob: (jobId: string) => Promise<void>
+  // ── Environment registry (issue 05 / design.md §8) ──────────────────────────────
+  // Lists environments for a provider (Settings > Compute host). Returns the full record so the UI can
+  // show status, validation, and resolution summary.
+  environmentsList: (providerId: string) => Promise<ComputeEnvironment[]>
+  // Creates a registry record. spec + resolution are validated at the IPC boundary.
+  environmentCreate: (
+    providerId: string,
+    request: {
+      name: string
+      visibility?: ComputeEnvironmentVisibility
+      spec: unknown
+      resolution: unknown
+      detailsDoc?: string
+      initialStatus?: ComputeEnvironmentStatus
+    }
+  ) => Promise<ComputeEnvironment>
+  // Edits a registry record. spec/resolution changes auto-stale a ready row.
+  environmentUpdate: (
+    id: string,
+    updates: {
+      name?: string
+      visibility?: ComputeEnvironmentVisibility
+      spec?: unknown
+      resolution?: unknown
+      status?: ComputeEnvironmentStatus
+      buildJobId?: string | null
+      detailsDoc?: string
+    }
+  ) => Promise<ComputeEnvironment>
+  // Records validation evidence (issue 06 uses this to flip a row to ready/failed).
+  environmentRecordValidation: (
+    id: string,
+    evidence: EnvironmentValidationEvidence
+  ) => Promise<void>
+  // Deletes a registry record.
+  environmentDelete: (id: string) => Promise<void>
 }
 
 // Adapts a repository into thin handlers.
@@ -197,7 +261,8 @@ const createComputeHandlers = (
   jobRepository?: ComputeJobRepository,
   onJobUpdated?: (job: ComputeJob) => void,
   artifactResolver?: ArtifactResolver,
-  storageRoot?: string
+  storageRoot?: string,
+  environmentRepository?: ComputeEnvironmentRepository
 ): ComputeHandlers => {
   // The broadcast function sends approval requests to all renderer windows. In tests, callers
   // inject a fake broker so this function is never called directly.
@@ -276,7 +341,8 @@ const createComputeHandlers = (
       onJobUpdatedWithDrain,
       artifactResolver,
       storageRoot,
-      concurrencyManager
+      concurrencyManager,
+      environmentRepository
     )
   }
 
@@ -345,6 +411,57 @@ const createComputeHandlers = (
     },
     cleanupJob: async (jobId) => {
       await service.cleanupJob(jobId)
+    },
+    // Environment registry (issue 05). All ops validate at the IPC boundary so a bad spec/resolution
+    // never reaches the repository. When no environmentRepository is wired (tests), these throw.
+    environmentsList: async (providerId) => {
+      if (!environmentRepository) return []
+      return environmentRepository.listByProvider(providerId)
+    },
+    environmentCreate: async (_providerId, request) => {
+      if (!environmentRepository) {
+        throw new Error('ComputeEnvironmentRepository is required to create an environment.')
+      }
+      const spec = validateSpecOrThrow(request.spec)
+      const resolution = validateResolutionOrThrow(request.resolution)
+      return environmentRepository.create({
+        providerId: _providerId,
+        name: request.name,
+        visibility: request.visibility,
+        spec,
+        resolution,
+        detailsDoc: request.detailsDoc,
+        initialStatus: request.initialStatus
+      })
+    },
+    environmentUpdate: async (id, updates) => {
+      if (!environmentRepository) {
+        throw new Error('ComputeEnvironmentRepository is required to update an environment.')
+      }
+      const spec = updates.spec !== undefined ? validateSpecOrThrow(updates.spec) : undefined
+      const resolution =
+        updates.resolution !== undefined ? validateResolutionOrThrow(updates.resolution) : undefined
+      return environmentRepository.update(id, {
+        name: updates.name,
+        visibility: updates.visibility,
+        spec,
+        resolution,
+        status: updates.status,
+        buildJobId: updates.buildJobId,
+        detailsDoc: updates.detailsDoc
+      })
+    },
+    environmentRecordValidation: async (id, evidence) => {
+      if (!environmentRepository) {
+        throw new Error('ComputeEnvironmentRepository is required to record validation.')
+      }
+      await environmentRepository.recordValidation(id, evidence)
+    },
+    environmentDelete: async (id) => {
+      if (!environmentRepository) {
+        throw new Error('ComputeEnvironmentRepository is required to delete an environment.')
+      }
+      await environmentRepository.delete(id)
     }
   }
 }
@@ -357,6 +474,9 @@ const createDefaultComputeHostRepository = (): ComputeHostRepository =>
 
 const createDefaultComputeJobRepository = (): ComputeJobRepository =>
   new ComputeJobRepository(() => getProjectDbClient(resolveStorageRoot()))
+
+const createDefaultComputeEnvironmentRepository = (): ComputeEnvironmentRepository =>
+  new ComputeEnvironmentRepository(() => getProjectDbClient(resolveStorageRoot()))
 
 // Broadcasts a job summary to all renderer windows. Called by the JobPoller onJobUpdated hook
 // and by the job dispatcher on status transitions (Phase 3d, design.md §9).
@@ -393,11 +513,13 @@ const registerComputeIpcHandlers = (
   // Test seam: when supplied, the IPC handlers are wired to this service instead of the production
   // one constructed by createComputeHandlers. Lets the renderer-callable error wrapper around
   // `compute:list-dir` / `compute:download` be exercised end-to-end against a fake service.
-  injectedService?: ComputeService
+  injectedService?: ComputeService,
+  environmentRepository = createDefaultComputeEnvironmentRepository()
 ): {
   computeService: ComputeService
   jobRepository: ComputeJobRepository
   hostRepository: ComputeHostRepository
+  environmentRepository: ComputeEnvironmentRepository
   enabledComputeHostsRegistry: EnabledComputeHostsRegistry
 } => {
   const storageRoot = resolveStorageRoot()
@@ -417,7 +539,8 @@ const registerComputeIpcHandlers = (
     jobRepository,
     onJobUpdated,
     artifactResolver,
-    storageRoot
+    storageRoot,
+    environmentRepository
   )
 
   ipcMain.handle('compute:list', () => handlers.list())
@@ -526,10 +649,35 @@ const registerComputeIpcHandlers = (
     }
   )
 
+  // ── Environment registry (issue 05 / design.md §8) ──────────────────────────────
+  // Settings > Compute host consumes these to list/register/edit environments.
+  ipcMain.handle('compute:environments:list', (_event, providerId: string) =>
+    handlers.environmentsList(providerId)
+  )
+  ipcMain.handle(
+    'compute:environment:create',
+    (_event, providerId: string, request: Parameters<typeof handlers.environmentCreate>[1]) =>
+      handlers.environmentCreate(providerId, request)
+  )
+  ipcMain.handle(
+    'compute:environment:update',
+    (_event, id: string, updates: Parameters<typeof handlers.environmentUpdate>[1]) =>
+      handlers.environmentUpdate(id, updates)
+  )
+  ipcMain.handle(
+    'compute:environment:record-validation',
+    (_event, id: string, evidence: EnvironmentValidationEvidence) =>
+      handlers.environmentRecordValidation(id, evidence)
+  )
+  ipcMain.handle('compute:environment:delete', (_event, id: string) =>
+    handlers.environmentDelete(id)
+  )
+
   return {
     computeService: handlers.computeService,
     jobRepository,
     hostRepository: repository,
+    environmentRepository,
     enabledComputeHostsRegistry
   }
 }
@@ -538,6 +686,7 @@ export {
   createComputeHandlers,
   createDefaultComputeHostRepository,
   createDefaultComputeJobRepository,
+  createDefaultComputeEnvironmentRepository,
   registerComputeIpcHandlers,
   enabledComputeHostsRegistry
 }

@@ -107,7 +107,12 @@ export type ExecResult = {
 // schema validation at the RPC boundary, before approval/SSH (design.md §5).
 export type ComputeCallError = {
   error_code:
-    'host_unreachable' | 'timeout' | 'approval_denied' | 'queue_full' | 'invalid_resources'
+    | 'host_unreachable'
+    | 'timeout'
+    | 'approval_denied'
+    | 'queue_full'
+    | 'invalid_resources'
+    | 'environment_not_ready'
   message: string
   retry_after_user_action: boolean
 }
@@ -141,6 +146,9 @@ export type ComputeApprovalRequest = {
   // Resolved driver (direct | slurm) shown in the approval card so the user knows which backend
   // will execute the job (issue 04 design discrepancy #4 fix).
   driver?: 'direct' | 'slurm'
+  // Resolved environment summary (issue 05 / design.md §8.3) — e.g. "ml (conda)". Undefined for
+  // plain command jobs. The full resolution snapshot is persisted on the job row for audit.
+  environment?: string
 }
 
 // The job status values for the Phase 3a state machine. 'queued' is reserved for Phase 3c.
@@ -162,6 +170,10 @@ export type ComputeJob = {
   command: string
   command_hash: string
   environment: string | undefined
+  // Snapshot of the resolved compute environment used by this job (issue 05 / design.md §8.3): JSON
+  // string of { id, name, providerId, specHash, resolution, validatedAt }. Written once at submit time.
+  // Undefined for plain command jobs and legacy rows. Parsed to EnvironmentSnapshot at the boundary.
+  environment_snapshot?: string | undefined
   resource_request: string | undefined
   input_manifest: string | undefined
   output_manifest: string | undefined

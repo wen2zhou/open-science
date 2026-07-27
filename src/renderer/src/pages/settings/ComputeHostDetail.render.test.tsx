@@ -30,12 +30,13 @@ const host = (overrides: Partial<ComputeHost> = {}): ComputeHost => ({
   ...overrides
 })
 
-// Stub window.api.compute.detailsGet so the component does not hit real IPC.
+// Stub window.api.compute.detailsGet + environmentsList so the component does not hit real IPC.
 const stubDetailsGet = (doc: string, isSkeleton = false): void => {
   ;(globalThis as unknown as { window: { api: { compute: Record<string, unknown> } } }).window = {
     api: {
       compute: {
-        detailsGet: vi.fn().mockResolvedValue({ doc, isSkeleton })
+        detailsGet: vi.fn().mockResolvedValue({ doc, isSkeleton }),
+        environmentsList: vi.fn().mockResolvedValue([])
       }
     }
   } as never

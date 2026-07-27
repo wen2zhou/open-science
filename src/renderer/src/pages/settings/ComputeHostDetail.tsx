@@ -17,6 +17,7 @@ import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { cn } from '@/lib/utils'
 import { useComputeStore } from '@/stores/compute-store'
+import { ComputeEnvironmentsSection } from './ComputeEnvironmentsSection'
 
 type ComputeHostDetailProps = {
   providerId: string
@@ -727,6 +728,9 @@ export function ComputeHostDetail({
           ) : null}
         </div>
       </div>
+
+      {/* Environments registry (issue 05 / design.md §8). Provider-scoped, reusable across projects. */}
+      <ComputeEnvironmentsSection providerId={providerId} />
     </div>
   )
 }

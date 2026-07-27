@@ -29,6 +29,7 @@ import type { SshRunner } from './ssh-runner'
 import { quoteRemotePath, toBase64 } from './job-dispatcher'
 import { buildSbatchWrapper } from './slurm-wrapper'
 import { parseAllowedDirectives } from './slurm-directives'
+import { applyEnvironmentPreamble } from './environment-preamble'
 
 // Output cap for sbatch submission (the job id is short).
 const DISPATCH_MAX_OUTPUT_BYTES = 4 * 1024
@@ -86,8 +87,12 @@ export class SlurmDriver implements ComputeDriver {
       throw new SlurmDispatchError('invalid_directives', directiveCheck.reason)
     }
 
+    // Apply the resolved environment preamble so activation precedes the workload (design.md §8.2 /
+    // cross-cutting: Direct SSH and Slurm consume the SAME resolved preamble). Done AFTER directive
+    // validation so the preamble never interferes with the leading #SBATCH block parsing.
+    const commandWithPreamble = applyEnvironmentPreamble(context.environmentPreamble, command)
     const wrapper = buildSbatchWrapper({
-      command,
+      command: commandWithPreamble,
       timeoutSeconds,
       resources,
       allowedDirectives: directiveCheck.directives,

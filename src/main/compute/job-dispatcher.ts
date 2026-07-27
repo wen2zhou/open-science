@@ -12,6 +12,10 @@ import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
 import { DirectDriver, DirectDispatchError } from './direct-driver'
 import { resolveJobDriver } from './compute-driver'
 import { ResourceRequestSchema, type ResourceRequest } from '../../shared/compute-resources'
+import {
+  ComputeEnvironmentResolutionSchema,
+  renderEnvironmentPreamble
+} from '../../shared/compute-environment'
 
 // Remote handle stored in the DB once the job is launched. This is the LEGACY unversioned shape the
 // pre-refactor Direct dispatcher wrote. New jobs now store a versioned RemoteHandleV1 (written by the
@@ -147,6 +151,22 @@ const parseStoredResourceRequest = (stored: string | undefined): ResourceRequest
   }
 }
 
+// Re-renders the deterministic environment preamble from the snapshot persisted on the job row
+// (design.md §8.3 — the job audit snapshot carries the chosen environment / spec hash / resolution
+// snapshot, and the dispatcher reproduces the exact preamble the submit path resolved). Degrades to
+// undefined when no snapshot is stored (plain command job) or the stored JSON is corrupt.
+const parseStoredEnvironmentPreamble = (stored: string | undefined): string | undefined => {
+  if (!stored) return undefined
+  try {
+    const snapshot = JSON.parse(stored) as { resolution?: unknown }
+    if (!snapshot.resolution) return undefined
+    const parsed = ComputeEnvironmentResolutionSchema.safeParse(snapshot.resolution)
+    return parsed.success ? renderEnvironmentPreamble(parsed.data) : undefined
+  } catch {
+    return undefined
+  }
+}
+
 async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<void> {
   const { runner, hostRepository, jobRepository, onJobUpdated } = deps
   const scpRunner = deps.scpRunner ?? new SystemScpRunner()
@@ -254,7 +274,10 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
       // Re-hydrate the validated resource snapshot for the driver. The stored string was already
       // validated at the RPC boundary (design.md §5); a malformed/missing value degrades to an empty
       // request so dispatch never crashes (design.md §10 — a bad row must not break loading).
-      resources: parseStoredResourceRequest(job.resource_request)
+      resources: parseStoredResourceRequest(job.resource_request),
+      // Re-render the deterministic environment preamble from the snapshot so both drivers consume the
+      // exact activation the submit path resolved (design.md §8.3 / cross-cutting requirement).
+      environmentPreamble: parseStoredEnvironmentPreamble(job.environment_snapshot)
     })
   } catch (err) {
     let errorCode = 'dispatch_failed'

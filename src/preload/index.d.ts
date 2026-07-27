@@ -38,6 +38,12 @@ import type {
   JobSummary,
   ProbeResult
 } from '../shared/compute'
+import type {
+  ComputeEnvironment,
+  ComputeEnvironmentStatus,
+  ComputeEnvironmentVisibility,
+  EnvironmentValidationEvidence
+} from '../shared/compute-environment'
 import type { DirListing, DownloadDest, LocalFile } from '../shared/remote-fs'
 import type { OpenLogFileResult, RevealLogFileResult } from '../shared/logs'
 import type { OpenSessionFromNotificationRequest } from '../shared/notifications'
@@ -429,6 +435,33 @@ interface OpenScienceAPI {
     // the main-process registry is the runtime cache for list_compute RPC ops.
     enabledHostsGet(sessionId: string): Promise<string[]>
     enabledHostsSet(sessionId: string, providerIds: string[]): Promise<void>
+    // ── Environment registry (issue 05 / design.md §8) ──────────────────────────────
+    environmentsList(providerId: string): Promise<ComputeEnvironment[]>
+    environmentCreate(
+      providerId: string,
+      request: {
+        name: string
+        visibility?: ComputeEnvironmentVisibility
+        spec: unknown
+        resolution: unknown
+        detailsDoc?: string
+        initialStatus?: ComputeEnvironmentStatus
+      }
+    ): Promise<ComputeEnvironment>
+    environmentUpdate(
+      id: string,
+      updates: {
+        name?: string
+        visibility?: ComputeEnvironmentVisibility
+        spec?: unknown
+        resolution?: unknown
+        status?: ComputeEnvironmentStatus
+        buildJobId?: string | null
+        detailsDoc?: string
+      }
+    ): Promise<ComputeEnvironment>
+    environmentRecordValidation(id: string, evidence: EnvironmentValidationEvidence): Promise<void>
+    environmentDelete(id: string): Promise<void>
   }
   preview: {
     load(request: LoadPreviewStateRequest): Promise<PersistedPreviewState | null>

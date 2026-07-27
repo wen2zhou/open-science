@@ -40,6 +40,12 @@ import type {
   JobSummary,
   ProbeResult
 } from '../shared/compute'
+import type {
+  ComputeEnvironment,
+  ComputeEnvironmentStatus,
+  ComputeEnvironmentVisibility,
+  EnvironmentValidationEvidence
+} from '../shared/compute-environment'
 import type { DirListing, DownloadDest, LocalFile } from '../shared/remote-fs'
 import type { OpenLogFileResult, RevealLogFileResult } from '../shared/logs'
 import type { OpenSessionFromNotificationRequest } from '../shared/notifications'
@@ -471,6 +477,42 @@ type OpenScienceAPI = {
     // the main-process registry is the runtime cache for list_compute RPC ops.
     enabledHostsGet: (sessionId: string) => Promise<string[]>
     enabledHostsSet: (sessionId: string, providerIds: string[]) => Promise<void>
+    // ── Environment registry (issue 05 / design.md §8) ──────────────────────────────
+    // Lists environments for a provider (Settings > Compute host). Returns the full record so the UI
+    // can show status, validation evidence, and a resolution summary.
+    environmentsList: (providerId: string) => Promise<ComputeEnvironment[]>
+    // Creates a registry record. spec + resolution are validated in the main process before persist.
+    environmentCreate: (
+      providerId: string,
+      request: {
+        name: string
+        visibility?: ComputeEnvironmentVisibility
+        spec: unknown
+        resolution: unknown
+        detailsDoc?: string
+        initialStatus?: ComputeEnvironmentStatus
+      }
+    ) => Promise<ComputeEnvironment>
+    // Edits a registry record. spec/resolution changes auto-stale a ready row.
+    environmentUpdate: (
+      id: string,
+      updates: {
+        name?: string
+        visibility?: ComputeEnvironmentVisibility
+        spec?: unknown
+        resolution?: unknown
+        status?: ComputeEnvironmentStatus
+        buildJobId?: string | null
+        detailsDoc?: string
+      }
+    ) => Promise<ComputeEnvironment>
+    // Records validation evidence (issue 06 flips a row to ready/failed through this).
+    environmentRecordValidation: (
+      id: string,
+      evidence: EnvironmentValidationEvidence
+    ) => Promise<void>
+    // Deletes a registry record.
+    environmentDelete: (id: string) => Promise<void>
   }
   preview: {
     load: (request: LoadPreviewStateRequest) => Promise<PersistedPreviewState | null>
@@ -1017,7 +1059,21 @@ const api: OpenScienceAPI = {
     enabledHostsGet: (sessionId) =>
       ipcRenderer.invoke('compute:enabled-hosts:get', sessionId) as Promise<string[]>,
     enabledHostsSet: (sessionId, providerIds) =>
-      ipcRenderer.invoke('compute:enabled-hosts:set', sessionId, providerIds) as Promise<void>
+      ipcRenderer.invoke('compute:enabled-hosts:set', sessionId, providerIds) as Promise<void>,
+    // ── Environment registry (issue 05 / design.md §8) ──────────────────────────────
+    environmentsList: (providerId) =>
+      ipcRenderer.invoke('compute:environments:list', providerId) as Promise<ComputeEnvironment[]>,
+    environmentCreate: (providerId, request) =>
+      ipcRenderer.invoke(
+        'compute:environment:create',
+        providerId,
+        request
+      ) as Promise<ComputeEnvironment>,
+    environmentUpdate: (id, updates) =>
+      ipcRenderer.invoke('compute:environment:update', id, updates) as Promise<ComputeEnvironment>,
+    environmentRecordValidation: (id, evidence) =>
+      ipcRenderer.invoke('compute:environment:record-validation', id, evidence) as Promise<void>,
+    environmentDelete: (id) => ipcRenderer.invoke('compute:environment:delete', id) as Promise<void>
   },
   preview: {
     // Per-project preview panel state, persisted alongside projects in SQLite.
