@@ -6,6 +6,38 @@ import { codexFramework } from './codex'
 import { opencodeFramework } from './opencode'
 
 describe('claudeCodeFramework', () => {
+  it('sends skills: [] when skillWhitelist is an empty array (zero-skill specialist)', () => {
+    const setup = claudeCodeFramework.buildSessionSetup({
+      systemPromptAppends: [],
+      skillWhitelist: [] // bound zero-skill specialist — must be sent explicitly
+    })
+    expect((setup.meta as { claudeCode: { options: unknown } }).claudeCode.options).toMatchObject({
+      settingSources: ['user'],
+      skills: []
+    })
+  })
+
+  it('sends skills with names when skillWhitelist is a non-empty array', () => {
+    const setup = claudeCodeFramework.buildSessionSetup({
+      systemPromptAppends: [],
+      skillWhitelist: ['RNA-seq', 'Chemistry']
+    })
+    expect((setup.meta as { claudeCode: { options: unknown } }).claudeCode.options).toMatchObject({
+      settingSources: ['user'],
+      skills: ['RNA-seq', 'Chemistry']
+    })
+  })
+
+  it('omits skills field entirely when skillWhitelist is undefined (None binding)', () => {
+    const setup = claudeCodeFramework.buildSessionSetup({
+      systemPromptAppends: [],
+      skillWhitelist: undefined // None — no whitelist at all
+    })
+    const options = (setup.meta as { claudeCode: { options: Record<string, unknown> } })
+      .claudeCode.options
+    expect(options).not.toHaveProperty('skills')
+  })
+
   it('injects resolved settings and local plugins into Claude session options', () => {
     const sessionOptions = {
       settings: '/app/claude/settings.json',
