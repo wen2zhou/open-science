@@ -23,15 +23,23 @@ afterEach(() => {
 
 const renderCard = async (
   preview: SpecialistMutationPreview,
-  handlers: { onApprove?: () => void; onDecline?: () => void; pending?: boolean } = {}
+  handlers: {
+    onApprove?: () => void
+    onDecline?: () => void
+    onReload?: () => void
+    pending?: boolean
+    conflict?: { message?: string }
+  } = {}
 ): Promise<void> => {
   await act(async () => {
     root.render(
       <SpecialistMutationApprovalCard
         preview={preview}
         pending={handlers.pending}
+        conflict={handlers.conflict}
         onApprove={handlers.onApprove ?? vi.fn()}
         onDecline={handlers.onDecline ?? vi.fn()}
+        onReload={handlers.onReload}
       />
     )
     await Promise.resolve()
@@ -131,5 +139,28 @@ describe('SpecialistMutationApprovalCard (approve)', () => {
     expect(approveBtn?.disabled).toBe(true)
     expect(declineBtn?.disabled).toBe(true)
     expect(approveBtn?.textContent).toContain('Approving')
+  })
+})
+
+describe('SpecialistMutationApprovalCard (concurrent-edit conflict)', () => {
+  it('renders the conflict in chat, hides approve/decline, and reload preserves newer data', async () => {
+    const onApprove = vi.fn()
+    const onDecline = vi.fn()
+    const onReload = vi.fn()
+    await renderCard(createPreview, { onApprove, onDecline, onReload, conflict: {} })
+
+    // The conflict is rendered in the card.
+    expect(document.body.querySelector('[data-testid="approval-conflict"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('changed in Settings')
+    // Approve/Decline are hidden during a conflict so the stale mutation cannot be force-applied;
+    // the newer editor data is therefore preserved.
+    expect(document.body.querySelector('[data-testid="approval-approve"]')).toBeNull()
+    expect(document.body.querySelector('[data-testid="approval-decline"]')).toBeNull()
+
+    // Reload picks up the latest stored Specialist.
+    const reloadBtn = document.body.querySelector<HTMLButtonElement>('[data-testid="approval-reload"]')
+    act(() => reloadBtn?.click())
+    expect(onReload).toHaveBeenCalledTimes(1)
+    expect(onApprove).not.toHaveBeenCalled()
   })
 })

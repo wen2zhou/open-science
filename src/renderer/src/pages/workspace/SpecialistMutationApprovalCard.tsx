@@ -29,17 +29,25 @@ type SpecialistMutationApprovalCardProps = {
   preview: SpecialistMutationPreview
   // True while the confirmation call is in flight; disables both buttons.
   pending?: boolean
+  // When set, the card renders a concurrent-edit conflict instead of the approve/decline actions.
+  // The newer editor data is preserved (the stale mutation is never force-applied); Reload lets the
+  // user pick up the latest stored Specialist, mirroring the Settings editor's conflict UX.
+  conflict?: { message?: string }
   // Approving routes the stored mutationId through the management MCP to execute exactly once.
   onApprove: () => void
   // Declining cancels the staged mutation with no side effects.
   onDecline: () => void
+  // Reload after a conflict so the card reflects the newer stored Specialist.
+  onReload?: () => void
 }
 
 export const SpecialistMutationApprovalCard = ({
   preview,
   pending = false,
+  conflict,
   onApprove,
-  onDecline
+  onDecline,
+  onReload
 }: SpecialistMutationApprovalCardProps): React.JSX.Element => {
   const isDelete = preview.action === 'delete'
   const isDisable = preview.action === 'disable'
@@ -51,6 +59,7 @@ export const SpecialistMutationApprovalCard = ({
     <div
       data-testid="specialist-mutation-approval"
       data-action={preview.action}
+      data-conflict={conflict ? 'true' : 'false'}
       className="overflow-hidden rounded-xl border border-border bg-bg-000"
     >
       <div className="flex items-start gap-3 border-b border-border px-4 py-3">
@@ -146,28 +155,52 @@ export const SpecialistMutationApprovalCard = ({
         ) : null}
       </dl>
 
-      <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
-        <Button
-          variant="ghost"
-          size="sm"
-          disabled={pending}
-          onClick={onDecline}
-          data-testid="approval-decline"
+      {conflict ? (
+        <div
+          data-testid="approval-conflict"
+          className="flex items-start gap-3 border-t border-border bg-amber-50 px-4 py-3 dark:bg-amber-950/20"
         >
-          <X className="size-4" aria-hidden="true" />
-          Decline
-        </Button>
-        <Button
-          size="sm"
-          disabled={pending}
-          onClick={onApprove}
-          data-testid="approval-approve"
-          className={destructive ? 'bg-rose-600 text-white hover:bg-rose-700' : undefined}
-        >
-          <Check className="size-4" aria-hidden="true" />
-          {pending ? 'Approving…' : 'Approve'}
-        </Button>
-      </div>
+          <ShieldAlert
+            className="mt-0.5 size-4 shrink-0 text-amber-600 dark:text-amber-400"
+            aria-hidden="true"
+          />
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium text-amber-800 dark:text-amber-200">
+              This Specialist changed in Settings
+            </p>
+            <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-300">
+              {conflict.message ??
+                'The newer version is preserved. Reload to pick up the latest Specialist before approving.'}
+            </p>
+          </div>
+          <Button variant="outline" size="sm" onClick={() => onReload?.()} data-testid="approval-reload">
+            Reload
+          </Button>
+        </div>
+      ) : (
+        <div className="flex items-center justify-end gap-2 border-t border-border px-4 py-3">
+          <Button
+            variant="ghost"
+            size="sm"
+            disabled={pending}
+            onClick={onDecline}
+            data-testid="approval-decline"
+          >
+            <X className="size-4" aria-hidden="true" />
+            Decline
+          </Button>
+          <Button
+            size="sm"
+            disabled={pending}
+            onClick={onApprove}
+            data-testid="approval-approve"
+            className={destructive ? 'bg-rose-600 text-white hover:bg-rose-700' : undefined}
+          >
+            <Check className="size-4" aria-hidden="true" />
+            {pending ? 'Approving…' : 'Approve'}
+          </Button>
+        </div>
+      )}
     </div>
   )
 }
