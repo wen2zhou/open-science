@@ -136,6 +136,16 @@ import {
   specialistAppendFor,
   type SessionSpecialistRuntime
 } from '../specialists/session-specialist-runtime'
+import {
+  resolveSessionCapabilities,
+  type GlobalCapabilityCatalogs
+} from '../specialists/resolve-session-capabilities'
+import { frameworkEnforcementStrength } from '../specialists/effective-capabilities'
+import type {
+  EffectiveCapabilities,
+  GlobalConnectorEntry,
+  GlobalSkillEntry
+} from '../specialists/effective-capabilities'
 import type { StoredSpecialist } from '../settings/types'
 import { REVIEWER_MCP_SERVER_NAME, REVIEWER_MCP_TOOLS } from '../../shared/reviewer'
 import {
@@ -214,6 +224,14 @@ type AcpRuntimeOptions = {
       custom: StoredSpecialist[]
       builtins: StoredSpecialist[]
     }>
+    // Global skill catalog for the effective-capability resolver: each entry's frameworkName is the
+    // name the Claude Code skill tool accepts, and `enabled` reflects the latest stored disabled set.
+    // Refreshed before every execution so the whitelist mirrors current settings, not a snapshot.
+    getGlobalSkillCatalog?: () => Promise<GlobalSkillEntry[]>
+    // Global connector catalog (stable bundled ids + custom MCP server UUIDs) with current enabled
+    // state, so a Specialist that references a now-disabled connector surfaces as unavailable exactly
+    // as the ConnectorService gate sees it. Refreshed before every execution.
+    getGlobalConnectorCatalog?: () => Promise<GlobalConnectorEntry[]>
   }
 }
 
@@ -754,6 +772,11 @@ class AcpRuntime {
   // runtime resolves the bound id against current settings rather than the connect-time catalog.
   private specialistCatalog:
     { custom: StoredSpecialist[]; builtins: StoredSpecialist[] } | undefined
+  // Latest global skill/connector catalogs for the effective-capability resolver. Refreshed alongside
+  // the Specialist catalog before every execution so the Claude Code skill whitelist and the guidance
+  // text mirror current settings rather than a connect-time snapshot.
+  private globalSkillCatalog: GlobalSkillEntry[] | undefined
+  private globalConnectorCatalog: GlobalConnectorEntry[] | undefined
   // The latest configOptions each session reported — seeded from session/new and refreshed after a
   // model switch (effort rungs are model-dependent, so the original set goes stale). The live effort
   // path resolves against this, never against the possibly-outdated session/new response.
@@ -3917,7 +3940,26 @@ class AcpRuntime {
     // (unavailable is fail-closed). Resolved against the LATEST settings so a freshly disabled
     // Specialist takes effect immediately rather than from a stale hydration snapshot.
     const specialistAppend = this.specialistAppendForSession(sessionId, createRequestSpecialistId)
-    return specialistAppend ? [...base, specialistAppend] : base
+    const withSpecialist = specialistAppend ? [...base, specialistAppend] : base
+    // Frameworks without native skill filtering (Codex/OpenCode) receive a soft allowed-skill guidance
+    // append instead of a hard whitelist. Claude Code is filtered natively (see buildSessionMetaArg) and
+    // must NOT receive this text — it would be misleading since the model is already hard-restricted.
+    // The guidance must never claim native enforcement (it is a configuration preference, not a gate).
+    const guidance = this.specialistSkillGuidanceForSession(sessionId, createRequestSpecialistId)
+    return guidance ? [...withSpecialist, guidance] : withSpecialist
+  }
+
+  // Returns the soft allowed-skill guidance text for Codex/OpenCode when a Specialist is bound with at
+  // least one effective skill; undefined for Claude Code (native whitelist), None (no restriction),
+  // unavailable (fail-closed, no skills), or a bound zero-skill Specialist (nothing to list).
+  private specialistSkillGuidanceForSession(
+    sessionId?: string,
+    createRequestSpecialistId?: string
+  ): string | undefined {
+    if (this.framework.id === 'claude-code') return undefined
+    const capabilities = this.resolveCapabilitiesForSession(sessionId, createRequestSpecialistId)
+    if (!capabilities || capabilities.kind !== 'bound') return undefined
+    return frameworkEnforcementStrength(this.framework.id, capabilities.skillNames).guidanceText
   }
 
   // Refreshes the cached Specialist catalog from settings. Called before every prompt and resume so
@@ -3928,6 +3970,22 @@ class AcpRuntime {
     if (!this.specialists) return
     try {
       this.specialistCatalog = await this.specialists.getSpecialistCatalog()
+      // Refresh the global catalogs in parallel so the effective-capability resolver sees the latest
+      // enablement alongside the latest Specialist definitions. Each is optional on the seam; a missing
+      // accessor leaves the previous snapshot (or undefined), which the capability builder treats as
+      // "no global catalog" — degrading to None-equivalent behaviour rather than expanding capability.
+      const [skills, connectors] = await Promise.all([
+        this.specialists.getGlobalSkillCatalog?.().catch((error) => {
+          log.warn('global skill catalog refresh failed', errorLogFields(error))
+          return undefined
+        }),
+        this.specialists.getGlobalConnectorCatalog?.().catch((error) => {
+          log.warn('global connector catalog refresh failed', errorLogFields(error))
+          return undefined
+        })
+      ])
+      if (skills) this.globalSkillCatalog = skills
+      if (connectors) this.globalConnectorCatalog = connectors
     } catch (error) {
       log.warn('specialist catalog refresh failed', errorLogFields(error))
     }
@@ -3965,6 +4023,35 @@ class AcpRuntime {
     return specialistAppendFor(resolved)
   }
 
+  // Resolves the effective capabilities for a session against the LATEST catalogs. Same binding
+  // channel as specialistAppendForSession — including the first-turn create path — so the skill
+  // whitelist rides the SAME _meta channel as the prompt append and there is no turn-one fail-open
+  // window (02c fixed first-turn binding; this gate rides that channel). Returns undefined when the
+  // specialists seam is absent OR when no global skill catalog is available, in which case callers
+  // leave skillWhitelist unset (None-equivalent: the SDK keeps its default catalog).
+  private resolveCapabilitiesForSession(
+    sessionId?: string,
+    createRequestSpecialistId?: string
+  ): EffectiveCapabilities | undefined {
+    if (!this.specialists) return undefined
+    // Without a global skill catalog the resolver cannot produce a whitelist; degrade to undefined so
+    // the field is omitted and no spurious guidance is appended (never expand capability).
+    if (!this.globalSkillCatalog) return undefined
+
+    const specialistId = sessionId
+      ? this.specialists.getBoundSpecialistId(sessionId)
+      : createRequestSpecialistId
+    const specialists = {
+      custom: this.specialistCatalog?.custom ?? [],
+      builtins: this.specialistCatalog?.builtins ?? []
+    }
+    const catalogs: GlobalCapabilityCatalogs = {
+      skills: this.globalSkillCatalog,
+      connectors: this.globalConnectorCatalog ?? []
+    }
+    return resolveSessionCapabilities(specialistId, specialists, catalogs)
+  }
+
   private getTurnPromptReminders(): string[] {
     return this.activityGroupOptions && this.framework.acceptsStdioMcp
       ? [ACTIVITY_GROUP_TURN_PROMPT_REMINDER]
@@ -3978,9 +4065,29 @@ class AcpRuntime {
     sessionId?: string,
     createRequestSpecialistId?: string
   ): { _meta?: Record<string, unknown> } {
+    const capabilities = this.resolveCapabilitiesForSession(sessionId, createRequestSpecialistId)
+    // skillWhitelist is forwarded to the framework's session setup. undefined (None or no specialists
+    // seam) omits the SDK skills field entirely; [] (bound zero-skill Specialist, or unavailable) is a
+    // truthy empty array forwarded verbatim so the model's catalog is emptied. Only Claude Code has a
+    // native channel for this — the buildSessionSetup for Codex/OpenCode ignores it (they get guidance
+    // text via systemPromptAppends instead).
+    let skillWhitelist =
+      capabilities && capabilities.kind !== 'none' ? capabilities.skillWhitelist : undefined
+    // An effective connector contributes an `mcp-<id>` description skill that progressively discloses
+    // the connector to the model. Add those framework skill names to the whitelist WITHOUT counting
+    // them as UI/domain skills, so a bound Specialist can still use its allowed connectors while a
+    // disallowed connector's description stays out of the catalog. Only effective (allowed + globally
+    // enabled) connectors contribute; the resolver already intersected those.
+    if (skillWhitelist !== undefined && capabilities?.kind === 'bound') {
+      skillWhitelist = [
+        ...skillWhitelist,
+        ...capabilities.connectorIds.map((id) => `mcp-${id}`)
+      ]
+    }
     const setup = this.framework.buildSessionSetup({
       systemPromptAppends: this.getSystemPromptAppends(sessionId, createRequestSpecialistId),
-      sessionOptions: this.pendingSessionOptions
+      sessionOptions: this.pendingSessionOptions,
+      ...(skillWhitelist !== undefined ? { skillWhitelist } : {})
     })
 
     return setup.meta ? { _meta: setup.meta } : {}

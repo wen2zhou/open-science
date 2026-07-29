@@ -212,6 +212,10 @@ import { sanitizeCustomMcpServer } from './repository'
 import { validateSpecialistDraft } from '../../shared/specialist-validation'
 import { CONNECTOR_CATALOG } from '../connectors/catalog'
 import { getConnectorTools } from '../connectors/registry'
+import type {
+  GlobalConnectorEntry,
+  GlobalSkillEntry
+} from '../specialists/effective-capabilities'
 import { renderConnectorInstructions } from '../connectors/skill-doc'
 import { syncConnectorSkillDocs } from '../connectors/provision'
 import { SkillRegistry, type BundledSkill } from '../skills/registry'
@@ -1060,6 +1064,43 @@ class SettingsService {
       custom: [...(settings.specialists ?? [])],
       builtins: [this.customizeSpecialist(settings), this.reviewerSpecialist()]
     }
+  }
+
+  // Global skill catalog for the effective-capability resolver: each entry's frameworkName is the
+  // skill's SKILL name (the name the Claude Code skill tool accepts), and enabled reflects the latest
+  // stored disabled set. The runtime re-reads this before every execution so the whitelist mirrors
+  // current settings rather than a connect-time snapshot. Featured skills use their id as the name
+  // (matching the materialized skill doc); user skills use their display name — same convention as
+  // the skill-doc sync (see resolveConnectorSkillDocs / skill provisioning).
+  async getGlobalSkillCatalog(): Promise<GlobalSkillEntry[]> {
+    const [skills, settings] = await Promise.all([
+      this.skillCatalog(),
+      this.repository.getSettings()
+    ])
+    const disabled = new Set(settings.disabledSkillIds ?? [])
+    return skills.map((skill) => ({
+      id: skill.id,
+      frameworkName: skill.source === 'featured' ? skill.id : skill.name,
+      enabled: !disabled.has(skill.id)
+    }))
+  }
+
+  // Global connector catalog (stable bundled ids + custom MCP server UUIDs) with current enabled
+  // state, for the effective-capability resolver. A Specialist referencing a now-disabled connector
+  // therefore surfaces as unavailable — matching exactly what the ConnectorService gate sees. Bundled
+  // connectors are enabled unless explicitly opted out; custom servers carry their own enabled flag.
+  async getGlobalConnectorCatalog(): Promise<GlobalConnectorEntry[]> {
+    const settings = await this.repository.getSettings()
+    const disabled = new Set(settings.connectors?.disabledConnectorIds ?? [])
+    const bundled = CONNECTOR_CATALOG.map((meta) => ({
+      id: meta.id,
+      enabled: !disabled.has(meta.id)
+    }))
+    const custom = (settings.connectors?.customMcpServers ?? []).map((server) => ({
+      id: server.id,
+      enabled: server.enabled
+    }))
+    return [...bundled, ...custom]
   }
 
   // Projects the Customize built-in constant into its stored shape. `enabled` is derived from

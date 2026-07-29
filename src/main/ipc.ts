@@ -24,6 +24,7 @@ import { createMoleculePreviewHandler } from './connectors/molecule-preview'
 import { ALL_CONNECTOR_IDS } from './connectors/registry'
 import { ConnectorService } from './connectors/service'
 import { syncConnectorSkillDocs, syncCustomServerSkillDocs } from './connectors/provision'
+import { resolveSessionCapabilities } from './specialists/resolve-session-capabilities'
 import { registerFileSaveHandlers } from './file-save'
 import { registerCliInstallIpcHandlers } from './cli-install/ipc'
 import { registerGithubIpcHandlers } from './github-ipc'
@@ -331,6 +332,12 @@ const registerIpcHandlers = async ({
   const runtimeRef: { current: ReturnType<typeof registerAcpIpcHandlers> | undefined } = {
     current: undefined
   }
+  // Late-bound Specialist registry. The Coordinator (created below) owns the single shared registry the
+  // runtime seam reads; the connector gate needs the same map so an agent connector call resolves the
+  // SAME binding the skill whitelist resolved. Set once the runtime exists, before any prompt can run.
+  const specialistRegistryRef: {
+    current: ReturnType<ReturnType<typeof registerAcpIpcHandlers>['getSpecialistRegistry']> | undefined
+  } = { current: undefined }
   const skillImportApprovalBroker = new SkillImportApprovalBroker({
     generateId: () => randomUUID(),
     broadcast: (request) => broadcastToRenderers('skills:conversation-import-request', request),
@@ -365,7 +372,35 @@ const registerIpcHandlers = async ({
         argsPreview: previewArgs(args),
         ...(sessionId ? { sessionId } : {})
       }),
-    localToolHandlers: { 'molecule/preview_molecule': moleculePreviewHandler }
+    localToolHandlers: { 'molecule/preview_molecule': moleculePreviewHandler },
+    // Specialist gate for agent-origin connector calls. Resolves the session binding against the
+    // coordinator-owned registry and the LATEST settings catalogs, returning the allowed stable
+    // connector ids (intersection) or { unavailable: true } for a fail-closed binding. Reads settings
+    // fresh on every call — never a hydration-time verdict. Returns [] for a None binding so the gate
+    // is a no-op (no restriction) only when explicitly unbound, matching the PRD.
+    getEffectiveConnectorIds: async (sessionId) => {
+      const registry = specialistRegistryRef.current
+      // If the registry is not yet wired (before the first runtime is constructed), fail closed so no
+      // agent call can slip through the gate during startup. This is unreachable in normal flow because
+      // the runtime is constructed before any session exists, but failing closed is the safe default.
+      if (!registry) return { unavailable: true }
+      const specialistId = registry.get(sessionId).kind === 'bound'
+        ? (registry.get(sessionId) as { kind: 'bound'; specialistId: string }).specialistId
+        : undefined
+      const [specialists, skills, connectors] = await Promise.all([
+        settingsService.getSpecialistCatalog(),
+        settingsService.getGlobalSkillCatalog(),
+        settingsService.getGlobalConnectorCatalog()
+      ])
+      const capabilities = resolveSessionCapabilities(
+        specialistId,
+        specialists,
+        { skills, connectors }
+      )
+      if (capabilities.kind === 'unavailable') return { unavailable: true }
+      if (capabilities.kind === 'none') return [] // no specialist restriction
+      return capabilities.connectorIds
+    }
   })
   // Register compute IPC handlers early so computeService can be wired into the notebook RPC server.
   // The approval broker in compute/ipc.ts broadcasts via BrowserWindow.getAllWindows(), which requires
@@ -512,6 +547,9 @@ const registerIpcHandlers = async ({
     initializationBarrier: initialConnectorSkillsReady
   })
   runtimeRef.current = runtime
+  // Share the coordinator-owned Specialist registry with the connector gate so an agent connector
+  // call resolves exactly the binding the skill whitelist resolved.
+  specialistRegistryRef.current = runtime.getSpecialistRegistry()
   // Single shared teardown owner for both the before-quit handler (index.ts) and the pre-update-install
   // gate. Built here because it needs the runtime, which does not exist when update IPC is registered
   // above — so the gate is injected via a late-bound closure rather than at strategy construction.

@@ -1094,6 +1094,240 @@ describe('ACP runtime session management', () => {
     expect(meta).not.toContain('First choice guidance.')
   })
 
+  describe('specialist capability runtime wiring (skill whitelist + guidance)', () => {
+    // A specialist that owns two skills and two connectors (one allowed+enabled, one disallowed).
+    const buildSpecialists = () => ({
+      custom: [
+        {
+          id: 'spec-genomics',
+          agentId: 'spec-genomics',
+          name: 'Genomics',
+          instructions: 'Prefer reproducible pipelines.',
+          skillIds: ['skill-rnaseq', 'skill-hidden'],
+          connectorIds: ['chemistry', 'pubmed'],
+          enabled: true,
+          revision: 1
+        }
+      ],
+      builtins: []
+    })
+
+    // Global catalogs: rnaseq enabled, hidden disabled; chemistry enabled, pubmed disabled globally.
+    const globalSkills = [
+      { id: 'skill-rnaseq', frameworkName: 'RNA-seq', enabled: true },
+      { id: 'skill-hidden', frameworkName: 'Hidden', enabled: false },
+      { id: 'skill-other', frameworkName: 'Proteomics', enabled: true }
+    ]
+    const globalConnectors = [
+      { id: 'chemistry', enabled: true },
+      { id: 'pubmed', enabled: false }
+    ]
+
+    const metaSkills = (session: { _meta?: unknown }): unknown =>
+      ((session as { _meta?: { claudeCode?: { options?: { skills?: unknown } } } })._meta?.claudeCode
+        ?.options?.skills)
+
+    it('Claude Code _meta carries exactly the effective skill names plus effective connector description skills', async () => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['cap-bound'])
+      const runtime = new AcpRuntime({
+        appVersion: '0.2.0',
+        defaultCwd: '/workspace',
+        spawnAgent: () => asAgentProcess(process),
+        specialists: {
+          getBoundSpecialistId: () => 'spec-genomics',
+          setBoundSpecialistId: () => undefined,
+          getSpecialistCatalog: async () => buildSpecialists(),
+          getGlobalSkillCatalog: async () => globalSkills,
+          getGlobalConnectorCatalog: async () => globalConnectors
+        }
+      })
+
+      await runtime.createSession({ cwd: '/workspace', specialistId: 'spec-genomics' })
+
+      // Effective skills: RNA-seq (hidden is disabled, excluded). mcp-chemistry is added because
+      // chemistry is effective; mcp-pubmed is absent because pubmed is globally disabled.
+      expect(metaSkills(fakeAgent.newSessions[0])).toEqual(['RNA-seq', 'mcp-chemistry'])
+    })
+
+    it('Claude Code omits skills entirely for a None binding', async () => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['cap-none'])
+      const runtime = new AcpRuntime({
+        appVersion: '0.2.0',
+        defaultCwd: '/workspace',
+        spawnAgent: () => asAgentProcess(process),
+        specialists: {
+          getBoundSpecialistId: () => undefined,
+          setBoundSpecialistId: () => undefined,
+          getSpecialistCatalog: async () => buildSpecialists(),
+          getGlobalSkillCatalog: async () => globalSkills,
+          getGlobalConnectorCatalog: async () => globalConnectors
+        }
+      })
+
+      await runtime.createSession({ cwd: '/workspace' })
+
+      // None: the skills field must be absent (undefined omits it).
+      expect(metaSkills(fakeAgent.newSessions[0])).toBeUndefined()
+    })
+
+    it('Claude Code sends skills: [] for a bound zero-skill specialist', async () => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['cap-zero'])
+      const runtime = new AcpRuntime({
+        appVersion: '0.2.0',
+        defaultCwd: '/workspace',
+        spawnAgent: () => asAgentProcess(process),
+        specialists: {
+          getBoundSpecialistId: () => 'spec-empty',
+          setBoundSpecialistId: () => undefined,
+          getSpecialistCatalog: async () => ({
+            custom: [
+              {
+                id: 'spec-empty',
+                agentId: 'spec-empty',
+                name: 'Empty',
+                instructions: '',
+                skillIds: [],
+                connectorIds: [],
+                enabled: true,
+                revision: 1
+              }
+            ],
+            builtins: []
+          }),
+          getGlobalSkillCatalog: async () => globalSkills,
+          getGlobalConnectorCatalog: async () => globalConnectors
+        }
+      })
+
+      await runtime.createSession({ cwd: '/workspace', specialistId: 'spec-empty' })
+
+      // [] is truthy and must reach the SDK verbatim so the model's catalog is emptied.
+      expect(metaSkills(fakeAgent.newSessions[0])).toEqual([])
+    })
+
+    it('Claude Code does NOT receive guidance text (native enforcement only)', async () => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['cap-no-guidance'])
+      const runtime = new AcpRuntime({
+        appVersion: '0.2.0',
+        defaultCwd: '/workspace',
+        spawnAgent: () => asAgentProcess(process),
+        specialists: {
+          getBoundSpecialistId: () => 'spec-genomics',
+          setBoundSpecialistId: () => undefined,
+          getSpecialistCatalog: async () => buildSpecialists(),
+          getGlobalSkillCatalog: async () => globalSkills,
+          getGlobalConnectorCatalog: async () => globalConnectors
+        }
+      })
+
+      await runtime.createSession({ cwd: '/workspace', specialistId: 'spec-genomics' })
+
+      expect(JSON.stringify(fakeAgent.newSessions[0]._meta)).not.toContain(
+        'specialist_skill_guidance'
+      )
+    })
+
+    it('Codex receives guidance text listing the effective skills, without claiming hard enforcement', async () => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['cap-codex'], {
+        modes: {
+          currentModeId: 'agent',
+          availableModes: ['read-only', 'agent', 'agent-full-access'].map((id) => ({
+            id,
+            name: id
+          }))
+        }
+      })
+      const runtime = new AcpRuntime({
+        appVersion: '0.2.0',
+        defaultCwd: '/workspace',
+        framework: codexFramework,
+        spawnAgent: () => asAgentProcess(process),
+        specialists: {
+          getBoundSpecialistId: () => 'spec-genomics',
+          setBoundSpecialistId: () => undefined,
+          getSpecialistCatalog: async () => buildSpecialists(),
+          getGlobalSkillCatalog: async () => globalSkills,
+          getGlobalConnectorCatalog: async () => globalConnectors
+        }
+      })
+
+      const session = await runtime.createSession({
+        cwd: '/workspace',
+        specialistId: 'spec-genomics'
+      })
+      // Codex carries appends as a per-turn prompt prefix, so the guidance reaches the agent via the
+      // prompt content, not the session create params. Send a prompt to observe it.
+      await runtime.sendPrompt({ sessionId: session.sessionId, text: 'analyze' })
+
+      const body = fakeAgent.prompts[0].text
+      expect(body).toContain('specialist_skill_guidance')
+      expect(body).toContain('- RNA-seq')
+      expect(body).not.toContain('- Hidden')
+      expect(body).toContain('configuration preference')
+    })
+
+    it('OpenCode receives guidance text for a bound specialist', async () => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['cap-opencode'], {
+        modes: {
+          currentModeId: 'agent',
+          availableModes: ['read-only', 'agent', 'agent-full-access'].map((id) => ({
+            id,
+            name: id
+          }))
+        }
+      })
+      const runtime = new AcpRuntime({
+        appVersion: '0.2.0',
+        defaultCwd: '/workspace',
+        framework: opencodeFramework,
+        spawnAgent: () => asAgentProcess(process),
+        specialists: {
+          getBoundSpecialistId: () => 'spec-genomics',
+          setBoundSpecialistId: () => undefined,
+          getSpecialistCatalog: async () => buildSpecialists(),
+          getGlobalSkillCatalog: async () => globalSkills,
+          getGlobalConnectorCatalog: async () => globalConnectors
+        }
+      })
+
+      const session = await runtime.createSession({
+        cwd: '/workspace',
+        specialistId: 'spec-genomics'
+      })
+      await runtime.sendPrompt({ sessionId: session.sessionId, text: 'analyze' })
+
+      expect(fakeAgent.prompts[0].text).toContain('specialist_skill_guidance')
+    })
+
+    it('the FIRST turn of a new session is gated identically to later turns (carry selection)', async () => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['cap-first-turn'])
+      const runtime = new AcpRuntime({
+        appVersion: '0.2.0',
+        defaultCwd: '/workspace',
+        spawnAgent: () => asAgentProcess(process),
+        specialists: {
+          getBoundSpecialistId: () => undefined,
+          setBoundSpecialistId: () => undefined,
+          getSpecialistCatalog: async () => buildSpecialists(),
+          getGlobalSkillCatalog: async () => globalSkills,
+          getGlobalConnectorCatalog: async () => globalConnectors
+        }
+      })
+
+      // Pre-selected before the first message — turn one must receive the same whitelist as later turns.
+      await runtime.createSession({ cwd: '/workspace', specialistId: 'spec-genomics' })
+
+      expect(metaSkills(fakeAgent.newSessions[0])).toEqual(['RNA-seq', 'mcp-chemistry'])
+    })
+  })
+
   it('applies native Full access before the first prompt', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['full-session'], {
