@@ -85,6 +85,10 @@ export type ChatSession = Omit<
   // Transient: latest agent status/stderr line for the in-flight turn, shown in the waiting indicator
   // so a long silent wait (e.g. the agent retrying a slow request) isn't a blank spinner. Not persisted.
   agentStatus?: string
+  // Transient: true after the user changes this session's Specialist while a turn is active, so the UI
+  // shows "Switching after this response…" until the active turn ends. Cleared by clearSpecialistSwitching
+  // when the turn settles. The persisted specialistId itself takes effect on the next turn regardless.
+  specialistSwitching?: boolean
 }
 
 type SessionStoreData = {
@@ -227,6 +231,14 @@ type SessionStore = SessionStoreData & {
   // Sets or clears the per-session fix loop active flag. When true, the composer send button is
   // disabled for this session; when false (loop ended or cancelled), send is re-enabled.
   setFixLoopActive: (sessionId: string, active: boolean) => void
+  // Binds (or clears, when specialistId is undefined) the Specialist for one session. The persisted
+  // specialistId round-trips through the session file; this updates the in-memory field and sets the
+  // transient `specialistSwitching` flag when the session is mid-turn. The caller syncs the main-process
+  // registry via the acp:set-session-specialist IPC.
+  setSessionSpecialist: (sessionId: string, specialistId: string | undefined) => void
+  // Clears the transient specialistSwitching flag once the active turn settles (idle/error). No-op while
+  // the session is still running, so an in-turn switch keeps its "takes effect next turn" banner.
+  clearSpecialistSwitching: (sessionId: string) => void
   renameSession: (sessionId: string, title: string) => void
   deleteSession: (sessionId: string) => void
   removeSessionsForProject: (projectId: string) => void
@@ -262,6 +274,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
     fixLoopActive,
     compacting,
     agentStatus,
+    specialistSwitching,
     messages,
     ...persistedSession
   } = session
@@ -271,6 +284,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
   void fixLoopActive
   void compacting
   void agentStatus
+  void specialistSwitching
 
   // Persist a bounded projection of tool activities so the transcript survives restarts.
   const persistedActivities = activities
@@ -1284,6 +1298,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           compacting: undefined,
           error: keepArtifactError ? session.error : undefined,
           errorReportable: keepArtifactError ? session.errorReportable : undefined,
+          // The active turn settled, so an in-turn Specialist switch is now live — clear its banner.
+          specialistSwitching: false,
           messages: completeStreamingMessages(session.messages),
           activities: completeOpenActivities(session.activities),
           activityGroups: completeOpenActivityGroups(session.activityGroups, Date.now()),
@@ -1315,6 +1331,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
               compacting: undefined,
               error: message,
               errorReportable,
+              // The turn ended (in error), so an in-turn Specialist switch is now live — clear its banner.
+              specialistSwitching: false,
               messages: failStreamingMessages(session.messages),
               activities: failOpenActivities(session.activities),
               activityGroups: completeOpenActivityGroups(session.activityGroups, Date.now()),
@@ -1614,6 +1632,41 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
               fixLoopActive: active,
               updatedAt: Date.now()
             }
+          : session
+      )
+    }))
+  },
+
+  // Binds (or clears) this session's Specialist. specialistId round-trips via PersistedChatSession so the
+  // store saver persists it; specialistSwitching is transient and only set while a turn is active so the
+  // UI can surface "Switching after this response…". Switching to None (undefined) clears both fields.
+  setSessionSpecialist: (sessionId, specialistId) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              specialistId,
+              // Only flag switching while a turn is actually in flight; an idle switch takes effect on
+              // the next message with no banner needed.
+              specialistSwitching:
+                specialistId !== undefined && session.status === 'running' ? true : false,
+              updatedAt: Date.now()
+            }
+          : session
+      )
+    }))
+  },
+
+  // Resets the switching flag once the active turn settles. No-op while still running so the banner
+  // stays up until the turn the user interrupted actually completes.
+  clearSpecialistSwitching: (sessionId) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId && session.specialistSwitching && session.status !== 'running'
+          ? { ...session, specialistSwitching: false }
           : session
       )
     }))

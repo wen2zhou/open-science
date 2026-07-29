@@ -279,6 +279,13 @@ type OpenScienceAPI = {
     deleteSession: (request: AcpDeleteSessionRequest) => Promise<AcpStateSnapshot>
     respondToPermission: (response: AcpPermissionResponse) => Promise<AcpStateSnapshot>
     setPermissionProfile: (request: AcpSetPermissionProfileRequest) => Promise<AcpStateSnapshot>
+    // Updates the Specialist bound to one session. The persisted selection lives in the session file
+    // (written by the renderer); this keeps the runtime registry in sync so the next turn/resume resolves
+    // the new Specialist against current settings. Pass specialistId undefined to clear (None).
+    setSessionSpecialist: (request: {
+      sessionId: string
+      specialistId: string | undefined
+    }) => Promise<void>
     revokePermissionGrant: (request: AcpRevokePermissionGrantRequest) => Promise<AcpStateSnapshot>
     onState: (listener: AcpListener<AcpStateSnapshot>) => RemoveListener
     onEvent: (listener: AcpListener<AcpRuntimeEvent>) => RemoveListener
@@ -710,6 +717,8 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke('acp:respond-permission', response) as Promise<AcpStateSnapshot>,
     setPermissionProfile: (request) =>
       ipcRenderer.invoke('acp:set-permission-profile', request) as Promise<AcpStateSnapshot>,
+    setSessionSpecialist: (request) =>
+      ipcRenderer.invoke('acp:set-session-specialist', request) as Promise<void>,
     revokePermissionGrant: (request) =>
       ipcRenderer.invoke('acp:revoke-permission-grant', request) as Promise<AcpStateSnapshot>,
     onState: (listener) => onIpcMessage('acp:state', listener),

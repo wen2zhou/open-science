@@ -1801,3 +1801,120 @@ describe('truncateSessionFromMessage', () => {
     expect(useSessionStore.getState().sessions[0]).toBe(before)
   })
 })
+
+describe('session specialist binding', () => {
+  const hydrateWithSpecialist = (
+    id: string,
+    overrides: Partial<PersistedChatSession> = {}
+  ): void => {
+    useSessionStore.getState().hydrateSessions(
+      [
+        {
+          id,
+          projectId: 'default',
+          title: 'Specialist session',
+          cwd: '/workspace',
+          status: 'idle',
+          messages: [],
+          createdAt: 1,
+          updatedAt: 2,
+          ...overrides
+        }
+      ],
+      { version: SESSION_MANIFEST_VERSION, lastSessionId: id }
+    )
+  }
+
+  it('preserves a persisted specialistId through hydration and re-serialization', () => {
+    hydrateWithSpecialist('sp-session', { specialistId: 'sp-1' })
+
+    const session = useSessionStore.getState().sessions[0]
+    expect(session.specialistId).toBe('sp-1')
+    expect(toPersistedSession(session).specialistId).toBe('sp-1')
+  })
+
+  it('setSessionSpecialist binds an enabled id, persists it, and flags switching', () => {
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'switch-session',
+      content: 'Hello'
+    })
+
+    useSessionStore.getState().setSessionSpecialist('switch-session', 'sp-1')
+
+    const session = useSessionStore.getState().sessions[0]
+    expect(session.specialistId).toBe('sp-1')
+    expect(session.specialistSwitching).toBe(true)
+    expect(toPersistedSession(session).specialistId).toBe('sp-1')
+    // switching is transient — never persisted.
+    expect(toPersistedSession(session)).not.toHaveProperty('specialistSwitching')
+  })
+
+  it('setSessionSpecialist with undefined clears the binding (None) and clears switching', () => {
+    hydrateWithSpecialist('clear-session', { specialistId: 'sp-1' })
+    // Simulate a prior switch in flight.
+    useSessionStore.getState().setSessionSpecialist('clear-session', 'sp-1')
+
+    useSessionStore.getState().setSessionSpecialist('clear-session', undefined)
+
+    const session = useSessionStore.getState().sessions[0]
+    expect(session.specialistId).toBeUndefined()
+    expect(session.specialistSwitching).toBe(false)
+    expect(toPersistedSession(session).specialistId).toBeUndefined()
+  })
+
+  it('clearSpecialistSwitching resets the switching flag when a turn ends', () => {
+    hydrateWithSpecialist('switch-session', { status: 'idle' })
+    // Manually arm the switching flag (as an in-turn switch would), then clear it once settled.
+    useSessionStore.setState({
+      sessions: useSessionStore
+        .getState()
+        .sessions.map((session) =>
+          session.id === 'switch-session' ? { ...session, specialistSwitching: true } : session
+        )
+    })
+
+    useSessionStore.getState().clearSpecialistSwitching('switch-session')
+    expect(useSessionStore.getState().sessions[0].specialistSwitching).toBe(false)
+  })
+
+  it('clearSpecialistSwitching is a no-op while the session is still running', () => {
+    hydrateWithSpecialist('running-session', { status: 'running' })
+    useSessionStore.setState({
+      sessions: useSessionStore
+        .getState()
+        .sessions.map((session) =>
+          session.id === 'running-session' ? { ...session, specialistSwitching: true } : session
+        )
+    })
+
+    useSessionStore.getState().clearSpecialistSwitching('running-session')
+    expect(useSessionStore.getState().sessions[0].specialistSwitching).toBe(true)
+  })
+
+  it('finishRun clears an in-turn Specialist switch once the turn settles', () => {
+    hydrateWithSpecialist('finishing-session', { status: 'running' })
+    useSessionStore.getState().setSessionSpecialist('finishing-session', 'sp-1')
+    expect(useSessionStore.getState().sessions[0].specialistSwitching).toBe(true)
+
+    useSessionStore.getState().finishRun('finishing-session')
+    expect(useSessionStore.getState().sessions[0].specialistSwitching).toBe(false)
+    expect(useSessionStore.getState().sessions[0].specialistId).toBe('sp-1')
+  })
+
+  it('setSessionSpecialist targets only one session (cross-session isolation)', () => {
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'a',
+      content: 'A'
+    })
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'b',
+      content: 'B'
+    })
+
+    useSessionStore.getState().setSessionSpecialist('a', 'sp-1')
+
+    const sessions = useSessionStore.getState().sessions
+    expect(sessions.find((s) => s.id === 'a')?.specialistId).toBe('sp-1')
+    expect(sessions.find((s) => s.id === 'b')?.specialistId).toBeUndefined()
+  })
+})
