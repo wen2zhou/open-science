@@ -4034,9 +4034,6 @@ class AcpRuntime {
     createRequestSpecialistId?: string
   ): EffectiveCapabilities | undefined {
     if (!this.specialists) return undefined
-    // Without a global skill catalog the resolver cannot produce a whitelist; degrade to undefined so
-    // the field is omitted and no spurious guidance is appended (never expand capability).
-    if (!this.globalSkillCatalog) return undefined
 
     const specialistId = sessionId
       ? this.specialists.getBoundSpecialistId(sessionId)
@@ -4045,6 +4042,19 @@ class AcpRuntime {
       custom: this.specialistCatalog?.custom ?? [],
       builtins: this.specialistCatalog?.builtins ?? []
     }
+    // If the global skill catalog refresh failed, never expand capability. A bound Specialist fails
+    // CLOSED: an empty skills catalog resolves to an empty whitelist, which empties the model's skill
+    // catalog rather than leaving it with its full defaults. None stays omit-equivalent — with no
+    // Specialist to restrict the field is left unset (returning undefined yields the same omit
+    // behaviour in buildSessionMetaArg as a 'none' resolution would).
+    if (!this.globalSkillCatalog) {
+      if (!specialistId) return undefined
+      return resolveSessionCapabilities(specialistId, specialists, {
+        skills: [],
+        connectors: this.globalConnectorCatalog ?? []
+      })
+    }
+
     const catalogs: GlobalCapabilityCatalogs = {
       skills: this.globalSkillCatalog,
       connectors: this.globalConnectorCatalog ?? []

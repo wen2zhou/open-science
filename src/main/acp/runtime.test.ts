@@ -1208,6 +1208,49 @@ describe('ACP runtime session management', () => {
       expect(metaSkills(fakeAgent.newSessions[0])).toEqual([])
     })
 
+    it('fails closed (skills: []) for a bound specialist when the global skill catalog refresh fails', async () => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['cap-failclosed'])
+      const runtime = new AcpRuntime({
+        appVersion: '0.2.0',
+        defaultCwd: '/workspace',
+        spawnAgent: () => asAgentProcess(process),
+        specialists: {
+          getBoundSpecialistId: () => 'spec-bound',
+          setBoundSpecialistId: () => undefined,
+          getSpecialistCatalog: async () => ({
+            custom: [
+              {
+                id: 'spec-bound',
+                agentId: 'spec-bound',
+                name: 'Bound',
+                instructions: '',
+                skillIds: ['skill-rnaseq'],
+                connectorIds: [],
+                enabled: true,
+                revision: 1
+              }
+            ],
+            builtins: []
+          }),
+          // Settings read fails: the global catalogs never populate, so the resolver cannot compute a
+          // whitelist from real data. A bound specialist must fail CLOSED (empty whitelist empties the
+          // model's catalog) rather than omitting the field, which would leave its full default skills.
+          getGlobalSkillCatalog: async () => {
+            throw new Error('skill catalog read failed')
+          },
+          getGlobalConnectorCatalog: async () => {
+            throw new Error('connector catalog read failed')
+          }
+        }
+      })
+
+      await runtime.createSession({ cwd: '/workspace', specialistId: 'spec-bound' })
+
+      // Fail-closed: [] (not undefined). The model is restricted to nothing, not expanded to defaults.
+      expect(metaSkills(fakeAgent.newSessions[0])).toEqual([])
+    })
+
     it('Claude Code does NOT receive guidance text (native enforcement only)', async () => {
       const process = new FakeAgentProcess()
       const fakeAgent = startFakeAgent(process, ['cap-no-guidance'])

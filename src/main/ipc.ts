@@ -26,6 +26,7 @@ import { ConnectorService } from './connectors/service'
 import { syncConnectorSkillDocs, syncCustomServerSkillDocs } from './connectors/provision'
 import { resolveSessionCapabilities } from './specialists/resolve-session-capabilities'
 import { SpecialistManagementBridge } from './specialists/management-bridge'
+import { boundSpecialistId } from './specialists/session-specialist-registry'
 import { registerFileSaveHandlers } from './file-save'
 import { registerCliInstallIpcHandlers } from './cli-install/ipc'
 import { registerGithubIpcHandlers } from './github-ipc'
@@ -385,9 +386,7 @@ const registerIpcHandlers = async ({
       // agent call can slip through the gate during startup. This is unreachable in normal flow because
       // the runtime is constructed before any session exists, but failing closed is the safe default.
       if (!registry) return { unavailable: true }
-      const specialistId = registry.get(sessionId).kind === 'bound'
-        ? (registry.get(sessionId) as { kind: 'bound'; specialistId: string }).specialistId
-        : undefined
+      const specialistId = boundSpecialistId(registry.get(sessionId))
       const [specialists, skills, connectors] = await Promise.all([
         settingsService.getSpecialistCatalog(),
         settingsService.getGlobalSkillCatalog(),
