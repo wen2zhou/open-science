@@ -1799,16 +1799,14 @@ describe('SettingsPage Codex framework', () => {
     expect(document.body.textContent).toContain('Customize')
     expect(document.body.textContent).toContain('Reviewer')
     expect(document.body.textContent).toContain('All (2)')
-    await act(async () =>
-      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-        .find((button) => button.textContent?.trim() === 'Add specialist')
-        ?.click()
+    const addTrigger = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent?.trim() === 'Add specialist'
     )
-    await act(async () =>
-      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
-        .find((button) => button.textContent?.trim() === 'Write from scratch')
-        ?.click()
-    )
+    openRadixMenu(addTrigger)
+    const writeFromScratch = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    ).find((item) => item.textContent?.includes('Write from scratch'))
+    clickRadixMenuItem(writeFromScratch)
 
     const inputs = document.body.querySelectorAll<HTMLInputElement>(
       '[data-testid="specialist-editor"] input'

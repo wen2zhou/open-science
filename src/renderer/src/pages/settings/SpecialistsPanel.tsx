@@ -1,4 +1,20 @@
-import { Plus, Search, Trash2, X } from 'lucide-react'
+import {
+  ArrowLeft,
+  Beaker,
+  BookOpen,
+  Brain,
+  ChevronDown,
+  Copy,
+  FlaskConical,
+  Microscope,
+  MoreHorizontal,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  X
+} from 'lucide-react'
+import type { LucideIcon } from 'lucide-react'
 import { useEffect, useMemo, useState } from 'react'
 
 import type {
@@ -10,15 +26,77 @@ import type {
 } from '../../../../shared/settings'
 import { validateSpecialistDraft } from '../../../../shared/specialist-validation'
 import { Button } from '@/components/ui/button'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuSeparator,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { Textarea } from '@/components/ui/textarea'
+import { cn } from '@/lib/utils'
+import { SettingsToggle } from './SettingsLayout'
 
 type Filter = 'all' | 'custom' | 'builtin'
 type CapabilityState = 'available' | 'disabled' | 'missing'
 type Capability = { id: string; label: string; state: CapabilityState }
+type CapabilityKind = 'skills' | 'connectors'
 
-const COLORS = ['blue', 'green', 'orange', 'pink', 'purple', 'red', 'slate']
-const ICONS = ['beaker', 'book-open', 'brain', 'flask-conical', 'microscope', 'search']
+const FILTER_LABELS: Record<Filter, string> = {
+  all: 'All',
+  custom: 'Custom',
+  builtin: 'Built-in'
+}
+
+const COLOR_OPTIONS: ReadonlyArray<{ key: string; label: string; className: string }> = [
+  { key: 'blue', label: 'Blue', className: 'bg-blue-100 text-blue-700' },
+  { key: 'green', label: 'Green', className: 'bg-emerald-100 text-emerald-700' },
+  { key: 'orange', label: 'Orange', className: 'bg-orange-100 text-orange-700' },
+  { key: 'pink', label: 'Pink', className: 'bg-pink-100 text-pink-700' },
+  { key: 'purple', label: 'Purple', className: 'bg-violet-100 text-violet-700' },
+  { key: 'red', label: 'Red', className: 'bg-rose-100 text-rose-700' },
+  { key: 'slate', label: 'Slate', className: 'bg-slate-100 text-slate-700' }
+]
+
+const ICON_OPTIONS: ReadonlyArray<{ key: string; label: string; Icon: LucideIcon }> = [
+  { key: 'brain', label: 'Brain', Icon: Brain },
+  { key: 'beaker', label: 'Beaker', Icon: Beaker },
+  { key: 'book-open', label: 'Book', Icon: BookOpen },
+  { key: 'flask-conical', label: 'Flask', Icon: FlaskConical },
+  { key: 'microscope', label: 'Microscope', Icon: Microscope },
+  { key: 'search', label: 'Search', Icon: Search }
+]
+
+const GROUPS: ReadonlyArray<{
+  key: Exclude<Filter, 'all'>
+  label: string
+  subtitle: string
+  empty: string
+  match: (item: SpecialistView) => boolean
+}> = [
+  {
+    key: 'custom',
+    label: 'Custom',
+    subtitle: 'Created by you.',
+    empty: 'No custom specialists yet.',
+    match: (item) => item.kind === 'custom'
+  },
+  {
+    key: 'builtin',
+    label: 'Built-in',
+    subtitle: 'Shipped with the app · can be disabled, not deleted.',
+    empty: 'No built-in specialists.',
+    match: (item) => item.kind !== 'custom'
+  }
+]
+
+const colorClassName = (key?: string): string =>
+  COLOR_OPTIONS.find((option) => option.key === key)?.className ?? COLOR_OPTIONS[4].className
+
+const iconOption = (key?: string): { key: string; label: string; Icon: LucideIcon } =>
+  ICON_OPTIONS.find((option) => option.key === key) ?? ICON_OPTIONS[0]
 
 const blankDraft = (): SpecialistDraft => ({
   agentId: '',
@@ -28,7 +106,8 @@ const blankDraft = (): SpecialistDraft => ({
   colorKey: 'purple',
   iconKey: 'brain',
   skillIds: [],
-  connectorIds: []
+  connectorIds: [],
+  enabled: true
 })
 
 const draftFor = (item: SpecialistView): SpecialistDraft => ({
@@ -49,6 +128,25 @@ const isConflict = (error: unknown): boolean =>
 const capabilityLabel = (capability: Capability): string =>
   `${capability.label}${capability.state === 'available' ? '' : ` (${capability.state})`}`
 
+type AvatarProps = { iconKey?: string; colorKey?: string; variant?: 'row' | 'head' }
+
+const Avatar = ({ iconKey, colorKey, variant = 'row' }: AvatarProps): React.JSX.Element => {
+  const { Icon } = iconOption(iconKey)
+  const large = variant === 'head'
+  return (
+    <span
+      aria-hidden="true"
+      className={cn(
+        'inline-flex shrink-0 items-center justify-center rounded-lg',
+        large ? 'size-10 rounded-xl' : 'size-7',
+        colorClassName(colorKey)
+      )}
+    >
+      <Icon className={large ? 'size-5' : 'size-3.5'} strokeWidth={2} />
+    </span>
+  )
+}
+
 // Settings CRUD surface. The renderer validates only for immediate field feedback. The main
 // process repeats the exact validation and owns capability authorization and revisions.
 export const SpecialistsPanel = (): React.JSX.Element => {
@@ -58,13 +156,14 @@ export const SpecialistsPanel = (): React.JSX.Element => {
   const [customServers, setCustomServers] = useState<CustomServerView[]>([])
   const [filter, setFilter] = useState<Filter>('all')
   const [query, setQuery] = useState('')
+  const [collapsed, setCollapsed] = useState<Partial<Record<Exclude<Filter, 'all'>, boolean>>>({})
   const [editing, setEditing] = useState<SpecialistView | undefined>()
   const [creating, setCreating] = useState(false)
-  const [addMenuOpen, setAddMenuOpen] = useState(false)
   const [draft, setDraft] = useState<SpecialistDraft>(blankDraft)
   const [saving, setSaving] = useState(false)
   const [error, setError] = useState<string>()
   const [conflicted, setConflicted] = useState(false)
+  const [capTab, setCapTab] = useState<CapabilityKind>('skills')
 
   const load = async (): Promise<void> => {
     const [nextSpecialists, nextSkills, nextConnectors] = await Promise.all([
@@ -149,9 +248,9 @@ export const SpecialistsPanel = (): React.JSX.Element => {
   const beginCreate = (): void => {
     setEditing(undefined)
     setCreating(true)
-    setAddMenuOpen(false)
     setError(undefined)
     setConflicted(false)
+    setCapTab('skills')
     // Connector defaults are an explicit fixed snapshot, not an implicit "all" mode.
     setDraft({
       ...blankDraft(),
@@ -165,6 +264,7 @@ export const SpecialistsPanel = (): React.JSX.Element => {
     setCreating(false)
     setError(undefined)
     setConflicted(false)
+    setCapTab('skills')
     setDraft(draftFor(item))
   }
   const close = (): void => {
@@ -180,6 +280,51 @@ export const SpecialistsPanel = (): React.JSX.Element => {
     }))
   const addCapability = (kind: 'skillIds' | 'connectorIds', id: string): void =>
     setDraft((current) => ({ ...current, [kind]: [...(current[kind] ?? []), id] }))
+
+  const toggleEnabled = async (item: SpecialistView): Promise<void> => {
+    try {
+      await window.api.settings.setSpecialistEnabled({
+        id: item.id,
+        expectedRevision: item.revision,
+        enabled: !item.enabled
+      })
+      await load()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not update specialist.')
+    }
+  }
+  const duplicateActive = async (): Promise<void> => {
+    if (!editing) return
+    try {
+      setSaving(true)
+      await window.api.settings.duplicateSpecialist({
+        id: editing.id,
+        expectedRevision: editing.revision
+      })
+      await load()
+      close()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not duplicate specialist.')
+    } finally {
+      setSaving(false)
+    }
+  }
+  const deleteActive = async (): Promise<void> => {
+    if (!editing) return
+    try {
+      setSaving(true)
+      await window.api.settings.deleteSpecialist({
+        id: editing.id,
+        expectedRevision: editing.revision
+      })
+      await load()
+      close()
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not delete specialist.')
+    } finally {
+      setSaving(false)
+    }
+  }
 
   const save = async (): Promise<void> => {
     try {
@@ -251,201 +396,336 @@ export const SpecialistsPanel = (): React.JSX.Element => {
   }
 
   if (editing !== undefined || creating) {
-    const readOnly = editing?.kind !== undefined && editing.kind !== 'custom'
+    const readOnly = editing !== undefined && editing.kind !== 'custom'
+    const editorTitle = editing ? editing.name : 'New specialist'
+    const badgeLabel = creating || editing?.kind === 'custom' ? 'Custom' : 'Built-in'
+    const showOverflow = editing !== undefined && editing.kind !== 'builtin-reviewer'
+    const canDelete = editing?.kind === 'custom'
     const selectableSkills = skills.filter(
       (skill) => skill.enabled && !(draft.skillIds ?? []).includes(skill.id)
     )
     const selectableConnectors = [...connectors, ...customServers].filter(
       (item) => item.enabled && !(draft.connectorIds ?? []).includes(item.id)
     )
+    const hasUnavailable =
+      skillCapabilities.some((item) => item.state !== 'available') ||
+      connectorCapabilities.some((item) => item.state !== 'available')
+
     return (
-      <div className="space-y-5 p-5" data-testid="specialist-editor">
-        <div className="flex items-center justify-between">
-          <div>
-            <h2 className="text-lg font-semibold">{editing ? editing.name : 'New specialist'}</h2>
-            {editing?.kind === 'builtin-customize' ? (
-              <p className="text-sm text-muted-foreground">Built-in specialist</p>
-            ) : null}
-          </div>
-          <Button variant="ghost" onClick={close}>
-            Back
+      <div className="flex min-h-full flex-col" data-testid="specialist-editor">
+        <div className="flex h-12 items-center gap-1 border-b border-border px-3">
+          <Button variant="ghost" size="icon-sm" aria-label="Back to specialists" onClick={close}>
+            <ArrowLeft className="size-4" aria-hidden="true" />
           </Button>
+          <nav className="flex items-center gap-1 text-sm" aria-label="Breadcrumb">
+            <button type="button" className="text-muted-foreground hover:underline" onClick={close}>
+              Specialists
+            </button>
+            <span className="text-muted-foreground" aria-hidden="true">
+              /
+            </span>
+            <span className="font-semibold">{editorTitle}</span>
+          </nav>
         </div>
 
-        <section className="space-y-3" aria-labelledby="specialist-identity">
-          <h3 id="specialist-identity" className="font-medium">
-            Identity
-          </h3>
-          <label className="block text-sm font-medium">
-            Name
-            <Input
-              disabled={readOnly}
-              value={draft.name}
-              onChange={(event) => setDraft({ ...draft, name: event.target.value })}
-            />
-          </label>
-          <label className="block text-sm font-medium">
-            Agent ID
-            <Input
-              disabled={readOnly}
-              value={draft.agentId}
-              onChange={(event) => setDraft({ ...draft, agentId: event.target.value })}
-            />
-          </label>
-          <label className="block text-sm font-medium">
-            Description
-            <Input
-              disabled={readOnly}
-              value={draft.description ?? ''}
-              onChange={(event) => setDraft({ ...draft, description: event.target.value })}
-            />
-          </label>
-          <div className="grid grid-cols-2 gap-3">
-            <label className="text-sm font-medium">
-              Color
-              <select
-                aria-label="Color"
+        <div className="flex-1 overflow-y-auto p-5">
+          <div className="mx-auto max-w-2xl">
+            <div className="mb-5 flex items-center gap-3 border-b border-border pb-4">
+              <Avatar iconKey={draft.iconKey} colorKey={draft.colorKey} variant="head" />
+              <div className="flex min-w-0 items-center gap-2">
+                <span className="truncate text-base font-semibold">
+                  {draft.name || 'New specialist'}
+                </span>
+                <span className="shrink-0 rounded-full bg-muted px-2 py-0.5 text-[10px] font-medium text-muted-foreground">
+                  {badgeLabel}
+                </span>
+              </div>
+              <div className="ml-auto flex items-center gap-2">
+                {!readOnly ? (
+                  <>
+                    <span className="text-xs text-muted-foreground">
+                      {draft.enabled ? 'Enabled' : 'Disabled'}
+                    </span>
+                    <SettingsToggle
+                      enabled={draft.enabled ?? true}
+                      aria-label={`Toggle ${editorTitle}`}
+                      onToggle={() => setDraft({ ...draft, enabled: !(draft.enabled ?? true) })}
+                    />
+                  </>
+                ) : null}
+                {showOverflow ? (
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <Button
+                        variant="ghost"
+                        size="icon-sm"
+                        aria-label={`Actions for ${editorTitle}`}
+                      >
+                        <MoreHorizontal className="size-4" aria-hidden="true" />
+                      </Button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent align="end">
+                      <DropdownMenuItem
+                        className="gap-2"
+                        disabled={saving}
+                        onSelect={() => void duplicateActive()}
+                      >
+                        <Copy className="size-4" aria-hidden="true" />
+                        Duplicate
+                      </DropdownMenuItem>
+                      {canDelete ? (
+                        <>
+                          <DropdownMenuSeparator />
+                          <DropdownMenuItem
+                            className="gap-2 text-destructive focus:text-destructive"
+                            disabled={saving}
+                            onSelect={() => void deleteActive()}
+                          >
+                            <Trash2 className="size-4" aria-hidden="true" />
+                            Delete
+                          </DropdownMenuItem>
+                        </>
+                      ) : null}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+                ) : null}
+              </div>
+            </div>
+
+            <section className="mb-5 space-y-3" aria-labelledby="specialist-identity">
+              <div>
+                <h3 id="specialist-identity" className="text-sm font-semibold">
+                  Identity
+                </h3>
+                <p className="text-[13px] text-muted-foreground">
+                  How this specialist appears in the registry and delegation menus.
+                </p>
+              </div>
+              <label className="block text-sm font-medium">
+                Name
+                <Input
+                  disabled={readOnly}
+                  className="mt-1"
+                  value={draft.name}
+                  onChange={(event) => setDraft({ ...draft, name: event.target.value })}
+                />
+              </label>
+              <label className="block text-sm font-medium">
+                Agent ID
+                <Input
+                  disabled={readOnly}
+                  className="mt-1 font-mono"
+                  value={draft.agentId}
+                  onChange={(event) => setDraft({ ...draft, agentId: event.target.value })}
+                />
+                <span className="mt-1 block text-xs text-muted-foreground">
+                  Used in logs and delegation. Auto-derived from the name; editable.
+                </span>
+              </label>
+              <label className="block text-sm font-medium">
+                Description
+                <Input
+                  disabled={readOnly}
+                  className="mt-1"
+                  value={draft.description ?? ''}
+                  onChange={(event) => setDraft({ ...draft, description: event.target.value })}
+                />
+              </label>
+              <div className="grid grid-cols-2 gap-3">
+                <label className="block text-sm font-medium">
+                  Color
+                  <select
+                    aria-label="Color"
+                    disabled={readOnly}
+                    value={draft.colorKey ?? ''}
+                    onChange={(event) => setDraft({ ...draft, colorKey: event.target.value })}
+                    className="mt-1 h-9 w-full rounded-md border border-border bg-background px-2"
+                  >
+                    {COLOR_OPTIONS.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+                <label className="block text-sm font-medium">
+                  Icon
+                  <select
+                    aria-label="Icon"
+                    disabled={readOnly}
+                    value={draft.iconKey ?? ''}
+                    onChange={(event) => setDraft({ ...draft, iconKey: event.target.value })}
+                    className="mt-1 h-9 w-full rounded-md border border-border bg-background px-2"
+                  >
+                    {ICON_OPTIONS.map((option) => (
+                      <option key={option.key} value={option.key}>
+                        {option.label}
+                      </option>
+                    ))}
+                  </select>
+                </label>
+              </div>
+              <div>
+                <span className="block text-sm font-medium">Preview</span>
+                <div className="mt-1 flex items-center gap-2 rounded-lg border border-border px-3 py-2">
+                  <Avatar iconKey={draft.iconKey} colorKey={draft.colorKey} />
+                  <span className="text-sm font-medium">{draft.name || 'Specialist'}</span>
+                </div>
+              </div>
+            </section>
+
+            <section className="mb-5 space-y-2" aria-labelledby="specialist-instructions">
+              <div>
+                <h3 id="specialist-instructions" className="text-sm font-semibold">
+                  Instructions
+                </h3>
+                <p className="text-[13px] text-muted-foreground">
+                  Appended to the framework&apos;s base prompt — it does not replace it. Optional.
+                </p>
+              </div>
+              <Textarea
+                aria-label="Instructions"
                 disabled={readOnly}
-                value={draft.colorKey ?? ''}
-                onChange={(event) => setDraft({ ...draft, colorKey: event.target.value })}
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2"
-              >
-                {COLORS.map((value) => (
-                  <option key={value}>{value}</option>
+                placeholder="Optional — leave empty to use the base prompt as-is."
+                className="min-h-32"
+                value={draft.instructions ?? ''}
+                onChange={(event) => setDraft({ ...draft, instructions: event.target.value })}
+              />
+            </section>
+
+            <section className="space-y-3" aria-labelledby="specialist-capabilities">
+              <div>
+                <h3 id="specialist-capabilities" className="text-sm font-semibold">
+                  Capabilities
+                </h3>
+                <p className="text-[13px] text-muted-foreground">
+                  Skills and connectors this specialist can use. Anything not listed stays invisible
+                  and unreachable in its sessions, even when enabled globally.
+                </p>
+              </div>
+              <div className="inline-flex gap-0.5 rounded-lg bg-muted p-0.5" role="tablist">
+                {(['skills', 'connectors'] as const).map((tab) => (
+                  <button
+                    key={tab}
+                    type="button"
+                    role="tab"
+                    aria-selected={capTab === tab}
+                    onClick={() => setCapTab(tab)}
+                    className={cn(
+                      'h-7 rounded-md px-3 text-xs',
+                      capTab === tab
+                        ? 'bg-background font-medium text-foreground shadow-sm'
+                        : 'text-muted-foreground'
+                    )}
+                  >
+                    {tab === 'skills'
+                      ? `Skills ${effectiveSkillCount}`
+                      : `Connectors ${effectiveConnectorCount}`}
+                  </button>
                 ))}
-              </select>
-            </label>
-            <label className="text-sm font-medium">
-              Icon
-              <select
-                aria-label="Icon"
-                disabled={readOnly}
-                value={draft.iconKey ?? ''}
-                onChange={(event) => setDraft({ ...draft, iconKey: event.target.value })}
-                className="mt-1 h-9 w-full rounded-md border bg-background px-2"
+              </div>
+
+              {/* Both panes stay mounted; the inactive one is hidden so stale capability state
+                  remains inspectable and the tab switch is a visibility toggle, like the prototype. */}
+              <div className={cn(capTab !== 'skills' && 'hidden')}>
+                <CapabilityPane
+                  singular="skill"
+                  capabilities={skillCapabilities}
+                  choices={selectableSkills.map((skill) => ({ id: skill.id, label: skill.name }))}
+                  readOnly={readOnly}
+                  empty="No skills added yet."
+                  hint="Skills start empty and must be added. Skills not listed here are hidden from this specialist, and Skill calls to them are rejected."
+                  onAdd={(id) => addCapability('skillIds', id)}
+                  onRemove={(id) => removeCapability('skillIds', id)}
+                />
+              </div>
+              <div className={cn(capTab !== 'connectors' && 'hidden')}>
+                <CapabilityPane
+                  singular="connector"
+                  capabilities={connectorCapabilities}
+                  choices={selectableConnectors.map((item) => ({
+                    id: item.id,
+                    label: 'displayName' in item ? item.displayName : item.name
+                  }))}
+                  readOnly={readOnly}
+                  empty="No connectors added yet."
+                  hint="New specialists start with every enabled connector. Removing one blocks it at runtime for this specialist's sessions."
+                  onAdd={(id) => addCapability('connectorIds', id)}
+                  onRemove={(id) => removeCapability('connectorIds', id)}
+                />
+              </div>
+
+              {hasUnavailable ? (
+                <p className="text-xs text-muted-foreground">
+                  Unavailable references are retained safely and excluded from effective counts.
+                  Disabled capabilities recover automatically when re-enabled; missing capabilities
+                  can be removed.
+                </p>
+              ) : null}
+            </section>
+
+            {error ? (
+              <p role="alert" className="mt-4 text-sm text-destructive">
+                {error}
+              </p>
+            ) : null}
+          </div>
+        </div>
+
+        <div className="flex h-14 items-center gap-2 border-t border-border px-5">
+          {conflicted ? (
+            <div className="flex gap-2" aria-label="Revision conflict actions">
+              <Button
+                variant="outline"
+                disabled={saving}
+                onClick={() => void reloadAfterConflict()}
               >
-                {ICONS.map((value) => (
-                  <option key={value}>{value}</option>
-                ))}
-              </select>
-            </label>
+                Reload
+              </Button>
+              <Button
+                variant="outline"
+                disabled={saving}
+                onClick={() => void duplicateDraftAfterConflict()}
+              >
+                Duplicate draft
+              </Button>
+            </div>
+          ) : null}
+          <div className="ml-auto flex gap-2">
+            <Button variant="ghost" onClick={close}>
+              Cancel
+            </Button>
+            {!readOnly ? (
+              <Button disabled={saving} onClick={() => void save()}>
+                {saving ? 'Saving…' : editing ? 'Save changes' : 'Create specialist'}
+              </Button>
+            ) : null}
           </div>
-        </section>
-
-        <section className="space-y-2" aria-labelledby="specialist-instructions">
-          <h3 id="specialist-instructions" className="font-medium">
-            Instructions
-          </h3>
-          <p className="text-sm text-muted-foreground">
-            These instructions are appended to the framework’s base prompt; they do not replace it.
-          </p>
-          <Textarea
-            aria-label="Instructions"
-            disabled={readOnly}
-            value={draft.instructions ?? ''}
-            onChange={(event) => setDraft({ ...draft, instructions: event.target.value })}
-          />
-        </section>
-
-        <CapabilityEditor
-          title="Skills"
-          addLabel="Add a skill…"
-          capabilities={skillCapabilities}
-          choices={selectableSkills.map((skill) => ({ id: skill.id, label: skill.name }))}
-          readOnly={readOnly}
-          onAdd={(id) => addCapability('skillIds', id)}
-          onRemove={(id) => removeCapability('skillIds', id)}
-        />
-        <CapabilityEditor
-          title="Connectors"
-          addLabel="Add a connector…"
-          capabilities={connectorCapabilities}
-          choices={selectableConnectors.map((item) => ({
-            id: item.id,
-            label: 'displayName' in item ? item.displayName : item.name
-          }))}
-          readOnly={readOnly}
-          onAdd={(id) => addCapability('connectorIds', id)}
-          onRemove={(id) => removeCapability('connectorIds', id)}
-        />
-
-        <section className="rounded-md border p-3" aria-label="Specialist preview">
-          <h3 className="font-medium">Preview</h3>
-          <p className="text-sm text-muted-foreground">
-            {draft.name || 'Specialist'} · {effectiveSkillCount} effective skills ·{' '}
-            {effectiveConnectorCount} effective connectors
-          </p>
-          {skillCapabilities.some((item) => item.state !== 'available') ||
-          connectorCapabilities.some((item) => item.state !== 'available') ? (
-            <p className="mt-1 text-xs text-muted-foreground">
-              Unavailable references are retained safely and excluded from effective counts.
-              Disabled capabilities recover automatically when re-enabled; missing capabilities can
-              be removed.
-            </p>
-          ) : null}
-        </section>
-        {error ? (
-          <p role="alert" className="text-sm text-destructive">
-            {error}
-          </p>
-        ) : null}
-        {conflicted ? (
-          <div className="flex gap-2" aria-label="Revision conflict actions">
-            <Button variant="outline" disabled={saving} onClick={() => void reloadAfterConflict()}>
-              Reload
-            </Button>
-            <Button
-              variant="outline"
-              disabled={saving}
-              onClick={() => void duplicateDraftAfterConflict()}
-            >
-              Duplicate draft
-            </Button>
-          </div>
-        ) : null}
-        <div className="flex gap-2">
-          {!readOnly ? (
-            <Button disabled={saving} onClick={() => void save()}>
-              {saving ? 'Saving…' : editing ? 'Save changes' : 'Create specialist'}
-            </Button>
-          ) : null}
-          {editing?.kind !== 'builtin-reviewer' ? (
-            <Button
-              variant="outline"
-              disabled={saving}
-              onClick={() =>
-                void (async () => {
-                  try {
-                    setSaving(true)
-                    await window.api.settings.duplicateSpecialist({
-                      id: editing?.id ?? '',
-                      expectedRevision: editing?.revision ?? 1
-                    })
-                    await load()
-                    close()
-                  } catch (cause) {
-                    setError(
-                      cause instanceof Error ? cause.message : 'Could not duplicate specialist.'
-                    )
-                  } finally {
-                    setSaving(false)
-                  }
-                })()
-              }
-            >
-              Duplicate
-            </Button>
-          ) : null}
         </div>
       </div>
     )
   }
 
   return (
-    <div className="p-5">
-      <div className="mb-4 flex gap-2">
+    <div className="p-5" data-testid="specialists-list">
+      <div className="mb-4 flex items-center gap-2">
+        <Select value={filter} onValueChange={(value) => setFilter(value as Filter)}>
+          <SelectTrigger aria-label="Filter specialists" className="w-40">
+            <span>
+              {FILTER_LABELS[filter]} ({counts[filter]})
+            </span>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All ({counts.all})</SelectItem>
+            <SelectItem value="custom">Custom ({counts.custom})</SelectItem>
+            <SelectItem value="builtin">Built-in ({counts.builtin})</SelectItem>
+          </SelectContent>
+        </Select>
         <div className="relative flex-1">
-          <Search className="pointer-events-none absolute left-2 top-2.5 size-4 text-muted-foreground" />
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
           <Input
             aria-label="Search specialists"
             className="pl-8"
@@ -454,100 +734,109 @@ export const SpecialistsPanel = (): React.JSX.Element => {
             onChange={(event) => setQuery(event.target.value)}
           />
         </div>
-        <Button aria-expanded={addMenuOpen} onClick={() => setAddMenuOpen(!addMenuOpen)}>
-          <Plus data-icon="inline-start" />
-          Add specialist
-        </Button>
+        <DropdownMenu>
+          <DropdownMenuTrigger asChild>
+            <Button className="shrink-0">
+              <Plus data-icon="inline-start" aria-hidden="true" />
+              Add specialist
+              <ChevronDown data-icon="inline-end" className="opacity-70" aria-hidden="true" />
+            </Button>
+          </DropdownMenuTrigger>
+          <DropdownMenuContent align="end">
+            <DropdownMenuItem className="gap-2.5" onSelect={beginCreate}>
+              <Pencil className="size-4 shrink-0" aria-hidden="true" />
+              <span className="flex flex-col">
+                <span>Write from scratch</span>
+                <span className="text-xs text-muted-foreground">
+                  Configure identity, skills, and connectors
+                </span>
+              </span>
+            </DropdownMenuItem>
+            {/* "Chat with agent" is delivered in issue04 (customize-agent-management-flow). */}
+          </DropdownMenuContent>
+        </DropdownMenu>
       </div>
-      {addMenuOpen ? (
-        <div className="mb-4 rounded-md border p-2">
-          <Button variant="ghost" className="w-full justify-start" onClick={beginCreate}>
-            Write from scratch
-          </Button>
-        </div>
-      ) : null}
-      <div className="mb-4 flex gap-2">
-        {(['all', 'custom', 'builtin'] as const).map((item) => (
-          <Button
-            key={item}
-            variant={filter === item ? 'secondary' : 'ghost'}
-            onClick={() => setFilter(item)}
-          >
-            {item === 'all' ? 'All' : item === 'custom' ? 'Custom' : 'Built-in'} ({counts[item]})
-          </Button>
-        ))}
-      </div>
-      <div className="divide-y rounded-lg border">
-        {visible.map((item) => (
-          <div key={item.id} className="flex items-center gap-3 p-3">
-            <button
-              type="button"
-              disabled={item.kind === 'builtin-reviewer'}
-              className="min-w-0 flex-1 text-left disabled:cursor-default"
-              onClick={() => open(item)}
-            >
-              <div className="font-medium">
-                {item.name}{' '}
-                {item.kind !== 'custom' ? (
-                  <span className="text-xs text-muted-foreground">Built-in</span>
-                ) : null}
-              </div>
-              <div className="text-sm text-muted-foreground">
-                {item.kind === 'builtin-reviewer'
-                  ? 'Used by Auto-review'
-                  : `${item.description ?? item.agentId} · ${item.effectiveSkillCount} skills · ${item.effectiveConnectorCount} connectors`}
-              </div>
-            </button>
-            {item.kind !== 'builtin-reviewer' ? (
-              <input
-                aria-label={`Enable ${item.name}`}
-                type="checkbox"
-                checked={item.enabled}
-                onChange={() =>
-                  void (async () => {
-                    try {
-                      await window.api.settings.setSpecialistEnabled({
-                        id: item.id,
-                        expectedRevision: item.revision,
-                        enabled: !item.enabled
-                      })
-                      await load()
-                    } catch (cause) {
-                      setError(
-                        cause instanceof Error ? cause.message : 'Could not update specialist.'
-                      )
-                    }
-                  })()
-                }
-              />
-            ) : null}
-            {item.kind === 'custom' ? (
-              <Button
-                variant="ghost"
-                size="icon-sm"
-                aria-label={`Delete ${item.name}`}
-                onClick={() =>
-                  void (async () => {
-                    try {
-                      await window.api.settings.deleteSpecialist({
-                        id: item.id,
-                        expectedRevision: item.revision
-                      })
-                      await load()
-                    } catch (cause) {
-                      setError(
-                        cause instanceof Error ? cause.message : 'Could not delete specialist.'
-                      )
-                    }
-                  })()
-                }
+
+      <div className="flex flex-col gap-4">
+        {GROUPS.filter((group) => filter === 'all' || filter === group.key).map((group) => {
+          const rows = visible.filter(group.match)
+          const expanded = !collapsed[group.key]
+          return (
+            <div key={group.key}>
+              <button
+                type="button"
+                aria-expanded={expanded}
+                onClick={() => setCollapsed((prev) => ({ ...prev, [group.key]: !prev[group.key] }))}
+                className="flex w-full flex-col items-start gap-0.5 text-left"
               >
-                <Trash2 className="size-4" />
-              </Button>
-            ) : null}
-          </div>
-        ))}
+                <span className="flex items-center gap-1 text-sm font-semibold text-foreground">
+                  {group.label}
+                  <ChevronDown
+                    className={cn(
+                      'size-4 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none',
+                      expanded ? '' : '-rotate-90'
+                    )}
+                    aria-hidden="true"
+                  />
+                </span>
+                <span className="text-xs text-muted-foreground">{group.subtitle}</span>
+              </button>
+
+              {expanded ? (
+                rows.length > 0 ? (
+                  <ul className="mt-2 flex flex-col divide-y divide-border rounded-lg border border-border">
+                    {rows.map((item) => (
+                      <li
+                        key={item.id}
+                        className="flex min-h-14 items-center gap-3 px-3 py-2.5"
+                        data-testid={`specialist-row-${item.id}`}
+                      >
+                        <Avatar iconKey={item.iconKey} colorKey={item.colorKey} />
+                        <button
+                          type="button"
+                          disabled={item.kind === 'builtin-reviewer'}
+                          onClick={() => open(item)}
+                          className="min-w-0 flex-1 text-left disabled:cursor-default"
+                        >
+                          <span className="flex items-center gap-2 text-sm font-medium text-foreground">
+                            <span className="truncate">{item.name}</span>
+                            {item.kind !== 'custom' ? (
+                              <span className="shrink-0 rounded-full bg-muted px-1.5 py-0.5 text-[10px] font-medium text-muted-foreground">
+                                Built-in
+                              </span>
+                            ) : null}
+                          </span>
+                          <span className="block truncate text-xs text-muted-foreground">
+                            {item.kind === 'builtin-reviewer'
+                              ? 'Used by Auto-review'
+                              : (item.description ?? item.agentId)}
+                          </span>
+                          {item.kind !== 'builtin-reviewer' ? (
+                            <span className="mt-0.5 block text-[11px] text-muted-foreground">
+                              {item.effectiveSkillCount} skills · {item.effectiveConnectorCount}{' '}
+                              connectors
+                            </span>
+                          ) : null}
+                        </button>
+                        {item.kind !== 'builtin-reviewer' ? (
+                          <SettingsToggle
+                            enabled={item.enabled}
+                            aria-label={`Toggle ${item.name}`}
+                            onToggle={() => void toggleEnabled(item)}
+                          />
+                        ) : null}
+                      </li>
+                    ))}
+                  </ul>
+                ) : (
+                  <p className="mt-2 py-2 text-xs text-muted-foreground">{group.empty}</p>
+                )
+              ) : null}
+            </div>
+          )
+        })}
       </div>
+
       {error ? (
         <p role="alert" className="mt-3 text-sm text-destructive">
           {error}
@@ -557,70 +846,76 @@ export const SpecialistsPanel = (): React.JSX.Element => {
   )
 }
 
-function CapabilityEditor({
-  title,
-  addLabel,
-  capabilities,
-  choices,
-  readOnly,
-  onAdd,
-  onRemove
-}: {
-  title: string
-  addLabel: string
+type CapabilityPaneProps = {
+  singular: string
   capabilities: Capability[]
   choices: Array<{ id: string; label: string }>
   readOnly: boolean
+  empty: string
+  hint: string
   onAdd: (id: string) => void
   onRemove: (id: string) => void
-}): React.JSX.Element {
-  return (
-    <section className="space-y-2" aria-label={title}>
-      <h3 className="font-medium">{title}</h3>
-      <div className="flex flex-wrap gap-2">
-        {capabilities.length === 0 ? (
-          <span className="text-sm text-muted-foreground">None selected</span>
-        ) : (
-          capabilities.map((capability) => (
-            <span
-              key={capability.id}
-              className="inline-flex items-center gap-1 rounded-full border px-2 py-1 text-xs"
-              data-capability-state={capability.state}
-            >
-              {capabilityLabel(capability)}{' '}
-              {!readOnly ? (
-                <button
-                  type="button"
-                  aria-label={`Remove ${capability.label}`}
-                  onClick={() => onRemove(capability.id)}
-                >
-                  <X className="size-3" />
-                </button>
-              ) : null}
-            </span>
-          ))
-        )}
-      </div>
-      {!readOnly && choices.length > 0 ? (
-        <select
-          aria-label={addLabel}
-          defaultValue=""
-          onChange={(event) => {
-            if (event.target.value) {
-              onAdd(event.target.value)
-              event.currentTarget.value = ''
-            }
-          }}
-          className="h-9 rounded-md border bg-background px-2"
-        >
-          <option value="">{addLabel}</option>
-          {choices.map((choice) => (
-            <option key={choice.id} value={choice.id}>
-              {choice.label}
-            </option>
-          ))}
-        </select>
-      ) : null}
-    </section>
-  )
 }
+
+const CapabilityPane = ({
+  singular,
+  capabilities,
+  choices,
+  readOnly,
+  empty,
+  hint,
+  onAdd,
+  onRemove
+}: CapabilityPaneProps): React.JSX.Element => (
+  <div className="space-y-2" data-capability-pane={singular}>
+    <div className="overflow-hidden rounded-lg border border-border">
+      {capabilities.length === 0 ? (
+        <div className="px-3 py-3 text-sm text-muted-foreground">{empty}</div>
+      ) : (
+        capabilities.map((capability) => (
+          <div
+            key={capability.id}
+            data-capability-state={capability.state}
+            className="flex items-center gap-2 border-b border-border px-3 py-2 last:border-b-0"
+          >
+            <div className="min-w-0 flex-1">
+              <span className="block truncate font-mono text-xs text-foreground">
+                {capabilityLabel(capability)}
+              </span>
+            </div>
+            {!readOnly ? (
+              <button
+                type="button"
+                aria-label={`Remove ${capability.id}`}
+                className="shrink-0 rounded-md p-1 text-muted-foreground hover:bg-muted hover:text-destructive"
+                onClick={() => onRemove(capability.id)}
+              >
+                <X className="size-3.5" aria-hidden="true" />
+              </button>
+            ) : null}
+          </div>
+        ))
+      )}
+    </div>
+    {!readOnly && choices.length > 0 ? (
+      <DropdownMenu>
+        <DropdownMenuTrigger asChild>
+          <Button variant="outline" size="sm">
+            ＋ Add a {singular}…
+          </Button>
+        </DropdownMenuTrigger>
+        <DropdownMenuContent align="start">
+          {choices.map((choice) => (
+            <DropdownMenuItem key={choice.id} onSelect={() => onAdd(choice.id)}>
+              {choice.label}
+            </DropdownMenuItem>
+          ))}
+        </DropdownMenuContent>
+      </DropdownMenu>
+    ) : null}
+    <p className="flex gap-2 rounded-md bg-muted p-2 text-[11.5px] leading-relaxed text-muted-foreground">
+      <span aria-hidden="true">ⓘ</span>
+      <span>{hint}</span>
+    </p>
+  </div>
+)
