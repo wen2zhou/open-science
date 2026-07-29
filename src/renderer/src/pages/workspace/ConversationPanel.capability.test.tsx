@@ -111,7 +111,8 @@ const session = (framework: ChatSession['agentFrameworkId']): ChatSession =>
   }) as unknown as ChatSession
 
 const baseProps = {
-  activeSession: undefined,
+  // Widen from the literal `undefined` so Partial<typeof baseProps> accepts a real ChatSession override.
+  activeSession: undefined as ChatSession | undefined,
   draftDoc: emptyDoc,
   canSendMessage: true,
   canEditDraft: true,
