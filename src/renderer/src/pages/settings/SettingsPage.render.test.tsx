@@ -185,7 +185,7 @@ describe('SettingsPage layout', () => {
     expect(dialog?.getAttribute('data-slot')).toBe('settings-surface')
     expect(dialog?.className).toContain('overscroll-contain')
 
-    // Left navigation grouped as Capabilities (Skills, Connectors, Compute, Network) and Workspace
+    // Left navigation grouped as Capabilities (Skills, Specialists, Connectors, Compute, Network) and Workspace
     // (Model with its Agent sub-item, Runtimes, Storage, General).
     const nav = document.body.querySelector('nav[aria-label="Settings"]')
     expect(nav).not.toBeNull()
@@ -194,16 +194,17 @@ describe('SettingsPage layout', () => {
     expect(nav?.textContent).toContain('Capabilities')
     expect(nav?.textContent).toContain('Workspace')
     const navItems = nav?.querySelectorAll('li') ?? []
-    expect(navItems).toHaveLength(9)
+    expect(navItems).toHaveLength(10)
     expect(navItems[0]?.textContent).toContain('Skills')
-    expect(navItems[1]?.textContent).toContain('Connectors')
-    expect(navItems[2]?.textContent).toContain('Compute')
-    expect(navItems[3]?.textContent).toContain('Network')
-    expect(navItems[4]?.textContent).toContain('Model')
-    expect(navItems[5]?.textContent).toContain('Agent')
-    expect(navItems[6]?.textContent).toContain('Runtimes')
-    expect(navItems[7]?.textContent).toContain('Storage')
-    expect(navItems[8]?.textContent).toContain('General')
+    expect(navItems[1]?.textContent).toContain('Specialists')
+    expect(navItems[2]?.textContent).toContain('Connectors')
+    expect(navItems[3]?.textContent).toContain('Compute')
+    expect(navItems[4]?.textContent).toContain('Network')
+    expect(navItems[5]?.textContent).toContain('Model')
+    expect(navItems[6]?.textContent).toContain('Agent')
+    expect(navItems[7]?.textContent).toContain('Runtimes')
+    expect(navItems[8]?.textContent).toContain('Storage')
+    expect(navItems[9]?.textContent).toContain('General')
     // Model is the default active panel.
     expect(nav?.querySelector('[aria-current="page"]')?.textContent).toContain('Model')
 

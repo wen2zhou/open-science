@@ -180,7 +180,13 @@ import type {
   RespondApprovalRequest,
   UpsertProviderRequest,
   ValidateProviderRequest,
-  ValidateProviderResult
+  ValidateProviderResult,
+  SpecialistView,
+  CreateSpecialistRequest,
+  UpdateSpecialistRequest,
+  DuplicateSpecialistRequest,
+  SetSpecialistEnabledRequest,
+  DeleteSpecialistRequest
 } from '../shared/settings'
 import type { PackageMirror } from '../shared/mirror'
 import type {
@@ -290,6 +296,12 @@ type OpenScienceAPI = {
   settings: {
     getPreflight: () => Promise<Preflight>
     getSettings: () => Promise<SettingsSnapshot>
+    listSpecialists: () => Promise<SpecialistView[]>
+    createSpecialist: (request: CreateSpecialistRequest) => Promise<SpecialistView>
+    updateSpecialist: (request: UpdateSpecialistRequest) => Promise<SpecialistView>
+    duplicateSpecialist: (request: DuplicateSpecialistRequest) => Promise<SpecialistView>
+    setSpecialistEnabled: (request: SetSpecialistEnabledRequest) => Promise<SpecialistView>
+    deleteSpecialist: (request: DeleteSpecialistRequest) => Promise<void>
     isEncryptionAvailable: () => Promise<boolean>
     isNpmAvailable: () => Promise<boolean>
     checkEnvironment: () => Promise<EnvironmentCheckResult>
@@ -723,6 +735,18 @@ const api: OpenScienceAPI = {
     // Model-settings/onboarding surface: secrets stay in main, the renderer only sees masked views.
     getPreflight: () => ipcRenderer.invoke('settings:get-preflight') as Promise<Preflight>,
     getSettings: () => ipcRenderer.invoke('settings:get-settings') as Promise<SettingsSnapshot>,
+    listSpecialists: () =>
+      ipcRenderer.invoke('settings:list-specialists') as Promise<SpecialistView[]>,
+    createSpecialist: (request) =>
+      ipcRenderer.invoke('settings:create-specialist', request) as Promise<SpecialistView>,
+    updateSpecialist: (request) =>
+      ipcRenderer.invoke('settings:update-specialist', request) as Promise<SpecialistView>,
+    duplicateSpecialist: (request) =>
+      ipcRenderer.invoke('settings:duplicate-specialist', request) as Promise<SpecialistView>,
+    setSpecialistEnabled: (request) =>
+      ipcRenderer.invoke('settings:set-specialist-enabled', request) as Promise<SpecialistView>,
+    deleteSpecialist: (request) =>
+      ipcRenderer.invoke('settings:delete-specialist', request) as Promise<void>,
     isEncryptionAvailable: () =>
       ipcRenderer.invoke('settings:encryption-available') as Promise<boolean>,
     isNpmAvailable: () => ipcRenderer.invoke('settings:npm-available') as Promise<boolean>,

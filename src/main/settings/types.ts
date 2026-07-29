@@ -117,6 +117,22 @@ export type StoredCodexInfo = CodexInfo & {
   nativePath?: string
 }
 
+// A user-authored, durable specialist. Its UUID is intentionally separate from the editable Agent ID
+// so session bindings survive a rename. Built-ins are defined at runtime and never live in this array.
+export type StoredSpecialist = {
+  id: string
+  agentId: string
+  name: string
+  description?: string
+  instructions?: string
+  colorKey?: string
+  iconKey?: string
+  skillIds: string[]
+  connectorIds: string[]
+  enabled: boolean
+  revision: number
+}
+
 // The whole settings.json document.
 export type StoredSettings = {
   version: typeof SETTINGS_FILE_VERSION
@@ -153,6 +169,10 @@ export type StoredSettings = {
   // (default-on), so new bundled skills are enabled automatically.
   disabledSkillIds?: string[]
   connectors?: StoredConnectors
+  // Optional for backward compatibility: an absent array means no Custom specialists.
+  specialists?: StoredSpecialist[]
+  // Only the selectable Customize built-in may be disabled. Reviewer is always controlled by Auto-review.
+  disabledBuiltinSpecialistIds?: Array<'customize'>
   // Non-secret package-mirror overrides (conda/pypi/cran). Absent means public hosts.
   packageMirror?: PackageMirror
   // Absolute path of the relocatable data root (artifacts/notebooks/runtime/uploads). Absent means

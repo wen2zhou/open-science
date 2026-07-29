@@ -64,6 +64,12 @@ import type {
   SkillImportPreviewContent,
   ScanRepoRequest,
   ScanRepoResult,
+  SpecialistView,
+  CreateSpecialistRequest,
+  UpdateSpecialistRequest,
+  DuplicateSpecialistRequest,
+  SetSpecialistEnabledRequest,
+  DeleteSpecialistRequest,
   UpdateSkillRequest,
   UpsertProviderRequest,
   ValidateProviderRequest,
@@ -198,6 +204,7 @@ import {
 import { NativeResponsesCompatibilityProxy } from './native-responses-compatibility'
 import { SettingsRepository } from './repository'
 import { sanitizeCustomMcpServer } from './repository'
+import { validateSpecialistDraft } from '../../shared/specialist-validation'
 import { CONNECTOR_CATALOG } from '../connectors/catalog'
 import { getConnectorTools } from '../connectors/registry'
 import { renderConnectorInstructions } from '../connectors/skill-doc'
@@ -227,6 +234,7 @@ import type {
   StoredCodexInfo,
   StoredCustomMcpServer,
   StoredProvider,
+  StoredSpecialist,
   StoredSettings
 } from './types'
 import { classifyStatus, validateProvider } from './validate'
@@ -1004,6 +1012,192 @@ class SettingsService {
     const disabled = new Set(settings.disabledSkillIds ?? [])
 
     return skills.map((skill) => this.toSkillView(skill, disabled))
+  }
+
+  // The Settings-facing specialist catalog. Built-ins are projected here rather than persisted so
+  // Custom records can never impersonate or overwrite them.
+  async listSpecialists(): Promise<SpecialistView[]> {
+    const [settings, skills] = await Promise.all([
+      this.repository.getSettings(),
+      this.skillCatalog()
+    ])
+    const availableSkillIds = new Set(
+      skills
+        .filter((skill) => !(settings.disabledSkillIds ?? []).includes(skill.id))
+        .map((skill) => skill.id)
+    )
+    const availableConnectorIds = this.availableSpecialistConnectorIds(settings)
+    const view = (specialist: StoredSpecialist, kind: SpecialistView['kind']): SpecialistView => ({
+      ...specialist,
+      skillIds: [...specialist.skillIds],
+      connectorIds: [...specialist.connectorIds],
+      kind,
+      effectiveSkillCount: specialist.skillIds.filter((id) => availableSkillIds.has(id)).length,
+      effectiveConnectorCount: specialist.connectorIds.filter((id) => availableConnectorIds.has(id))
+        .length
+    })
+    const customizeDisabled = settings.disabledBuiltinSpecialistIds?.includes('customize') ?? false
+    const customize: StoredSpecialist = {
+      id: 'customize',
+      agentId: 'customize',
+      name: 'Customize',
+      description: 'Create and refine reusable specialists.',
+      instructions: 'Help the user create or refine a specialist configuration.',
+      skillIds: ['customize'],
+      connectorIds: [],
+      enabled: !customizeDisabled,
+      revision: 1,
+      colorKey: 'purple',
+      iconKey: 'brain'
+    }
+    const reviewer: StoredSpecialist = {
+      id: 'reviewer',
+      agentId: 'reviewer',
+      name: 'Reviewer',
+      description: 'Used by Auto-review.',
+      skillIds: [],
+      connectorIds: [],
+      enabled: true,
+      revision: 1,
+      colorKey: 'slate',
+      iconKey: 'search'
+    }
+    return [
+      ...(settings.specialists ?? []).map((specialist) => view(specialist, 'custom')),
+      view(customize, 'builtin-customize'),
+      view(reviewer, 'builtin-reviewer')
+    ]
+  }
+
+  async createSpecialist(request: CreateSpecialistRequest): Promise<SpecialistView> {
+    const settings = await this.repository.getSettings()
+    const connectorIds = request.connectorIds ?? [...this.availableSpecialistConnectorIds(settings)]
+    const draft = await this.validateSpecialistRequest({ ...request, connectorIds }, settings)
+    const specialist = await this.repository.createSpecialist({
+      ...draft,
+      enabled: draft.enabled ?? true
+    })
+    return this.getSpecialistView(specialist.id)
+  }
+
+  async updateSpecialist(request: UpdateSpecialistRequest): Promise<SpecialistView> {
+    if (request.id === 'customize' || request.id === 'reviewer')
+      throw new Error('Built-in specialists cannot be edited.')
+    const settings = await this.repository.getSettings()
+    const existing = (settings.specialists ?? []).find((item) => item.id === request.id)
+    if (!existing) throw new Error('Specialist not found.')
+    const draft = await this.validateSpecialistRequest(request, settings, existing)
+    const replacement: StoredSpecialist = {
+      id: existing.id,
+      revision: existing.revision + 1,
+      enabled: draft.enabled ?? existing.enabled,
+      ...draft,
+      skillIds: [...draft.skillIds],
+      connectorIds: [...draft.connectorIds]
+    }
+    await this.repository.replaceSpecialist(existing.id, request.expectedRevision, replacement)
+    return this.getSpecialistView(existing.id)
+  }
+
+  async duplicateSpecialist(request: DuplicateSpecialistRequest): Promise<SpecialistView> {
+    const settings = await this.repository.getSettings()
+    const source = (await this.listSpecialists()).find((item) => item.id === request.id)
+    if (!source || source.kind === 'builtin-reviewer')
+      throw new Error('Specialist cannot be duplicated.')
+    if (source.kind === 'custom' && source.revision !== request.expectedRevision) {
+      throw new Error('Specialist was changed elsewhere. Reload or Duplicate your draft.')
+    }
+    const agentIds = new Set([
+      ...(settings.specialists ?? []).map((item) => item.agentId),
+      'customize'
+    ])
+    const agentId = this.nextSpecialistCopyAgentId(source.agentId, agentIds)
+    const created = await this.repository.createSpecialist({
+      agentId,
+      name: `${source.name} copy`,
+      description: source.description,
+      instructions: source.instructions,
+      colorKey: source.colorKey,
+      iconKey: source.iconKey,
+      skillIds: [...source.skillIds],
+      connectorIds: [...source.connectorIds],
+      enabled: source.enabled
+    })
+    return this.getSpecialistView(created.id)
+  }
+
+  async setSpecialistEnabled(request: SetSpecialistEnabledRequest): Promise<SpecialistView> {
+    if (request.id === 'reviewer') throw new Error('Reviewer is controlled by Auto-review.')
+    if (request.id === 'customize') {
+      await this.repository.setBuiltinSpecialistDisabled('customize', !request.enabled)
+      return this.getSpecialistView('customize')
+    }
+    if (request.expectedRevision === undefined) throw new Error('Expected revision is required.')
+    const settings = await this.repository.getSettings()
+    const existing = (settings.specialists ?? []).find((item) => item.id === request.id)
+    if (!existing) throw new Error('Specialist not found.')
+    const replacement = {
+      ...existing,
+      enabled: request.enabled,
+      revision: existing.revision + 1,
+      skillIds: [...existing.skillIds],
+      connectorIds: [...existing.connectorIds]
+    }
+    await this.repository.replaceSpecialist(existing.id, request.expectedRevision, replacement)
+    return this.getSpecialistView(existing.id)
+  }
+
+  async deleteSpecialist(request: DeleteSpecialistRequest): Promise<void> {
+    if (request.id === 'customize' || request.id === 'reviewer')
+      throw new Error('Built-in specialists cannot be deleted.')
+    await this.repository.deleteSpecialist(request.id, request.expectedRevision)
+  }
+
+  private availableSpecialistConnectorIds(settings: StoredSettings): Set<string> {
+    const bundled = this.enabledConnectorIds(settings.connectors)
+    const custom = (settings.connectors?.customMcpServers ?? [])
+      .filter((server) => server.enabled)
+      .map((server) => server.id)
+    return new Set([...bundled, ...custom])
+  }
+
+  private async validateSpecialistRequest(
+    request: CreateSpecialistRequest | UpdateSpecialistRequest,
+    settings: StoredSettings,
+    existing?: StoredSpecialist
+  ): Promise<ReturnType<typeof validateSpecialistDraft>> {
+    const skills = await this.skillCatalog()
+    return validateSpecialistDraft(
+      {
+        ...request,
+        skillIds: request.skillIds ?? existing?.skillIds ?? [],
+        connectorIds: request.connectorIds ?? existing?.connectorIds ?? []
+      },
+      {
+        agentIds: [
+          ...(settings.specialists ?? [])
+            .filter((item) => item.id !== existing?.id)
+            .map((item) => item.agentId),
+          'customize'
+        ],
+        skillIds: skills.map((skill) => skill.id),
+        connectorIds: this.availableSpecialistConnectorIds(settings),
+        retainedSkillIds: existing?.skillIds,
+        retainedConnectorIds: existing?.connectorIds
+      }
+    )
+  }
+
+  private nextSpecialistCopyAgentId(source: string, used: ReadonlySet<string>): string {
+    let candidate = `${source}-copy`
+    for (let index = 2; used.has(candidate); index += 1) candidate = `${source}-copy-${index}`
+    return candidate
+  }
+
+  private async getSpecialistView(id: string): Promise<SpecialistView> {
+    const specialist = (await this.listSpecialists()).find((item) => item.id === id)
+    if (!specialist) throw new Error('Specialist not found.')
+    return specialist
   }
 
   // Returns the subset of forced ids that are currently disabled in settings — i.e. the picks that need
