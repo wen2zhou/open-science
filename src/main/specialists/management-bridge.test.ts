@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import type { SpecialistView, CreateSpecialistRequest } from '../../../shared/settings'
+import type { SpecialistView, CreateSpecialistRequest } from '../../shared/settings'
 
 import { SpecialistManagementBridge } from './management-bridge'
 
@@ -33,7 +33,9 @@ const makeSettings = (initial: SpecialistView[] = []) => {
         connectorIds: request.connectorIds ?? [],
         enabled: request.enabled ?? true,
         revision: 1,
-        kind: 'custom'
+        kind: 'custom',
+        effectiveSkillCount: request.skillIds?.length ?? 0,
+        effectiveConnectorCount: request.connectorIds?.length ?? 0
       }
       stored.set(created.id, created)
       return created
@@ -70,7 +72,6 @@ describe('SpecialistManagementBridge', () => {
     const refresh = vi.fn()
     const registry = { set: vi.fn() }
     const bridge = new SpecialistManagementBridge({
-      // @ts-expect-error partial stub is intentionally narrower than the full service
       settings,
       registry,
       broadcastSettingsRefresh: refresh
@@ -98,7 +99,6 @@ describe('SpecialistManagementBridge', () => {
     const settings = makeSettings()
     const refresh = vi.fn()
     const bridge = new SpecialistManagementBridge({
-      // @ts-expect-error partial stub
       settings: settings,
       registry: { set: vi.fn() },
       broadcastSettingsRefresh: refresh
@@ -119,7 +119,6 @@ describe('SpecialistManagementBridge', () => {
     const settings = makeSettings()
     const refresh = vi.fn()
     const bridge = new SpecialistManagementBridge({
-      // @ts-expect-error partial stub
       settings: settings,
       registry: { set: vi.fn() },
       broadcastSettingsRefresh: refresh
@@ -140,7 +139,6 @@ describe('SpecialistManagementBridge', () => {
     const settings = makeSettings()
     const refresh = vi.fn()
     const bridge = new SpecialistManagementBridge({
-      // @ts-expect-error partial stub
       settings: settings,
       registry: { set: vi.fn() },
       broadcastSettingsRefresh: refresh
@@ -163,7 +161,6 @@ describe('SpecialistManagementBridge', () => {
     const refresh = vi.fn()
     const registry = { set: vi.fn() }
     const bridge = new SpecialistManagementBridge({
-      // @ts-expect-error partial stub
       settings: settings,
       registry,
       broadcastSettingsRefresh: refresh
@@ -189,7 +186,6 @@ describe('SpecialistManagementBridge', () => {
     const refresh = vi.fn()
     const registry = { set: vi.fn() }
     const bridge = new SpecialistManagementBridge({
-      // @ts-expect-error partial stub
       settings: settings,
       registry,
       broadcastSettingsRefresh: refresh
@@ -214,12 +210,13 @@ describe('SpecialistManagementBridge', () => {
         connectorIds: [],
         enabled: true,
         revision: 1,
-        kind: 'custom'
+        kind: 'custom',
+        effectiveSkillCount: 0,
+        effectiveConnectorCount: 0
       }
     ])
     const refresh = vi.fn()
     const bridge = new SpecialistManagementBridge({
-      // @ts-expect-error partial stub
       settings: settings,
       registry: { set: vi.fn() },
       broadcastSettingsRefresh: refresh

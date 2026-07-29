@@ -1268,6 +1268,13 @@ class SettingsService {
     return specialist
   }
 
+  // Public read of one Specialist by stable id. The app-owned management MCP (issue 04a) and its runtime
+  // bridge (04b) read back the actual post-mutation state through this seam, so confirmation returns the
+  // authoritative stored record — never a stale draft. Throws when the id no longer resolves (deleted).
+  async getSpecialist(id: string): Promise<SpecialistView> {
+    return this.getSpecialistView(id)
+  }
+
   // Returns the subset of forced ids that are currently disabled in settings — i.e. the picks that need
   // a respawn to materialize. Enabled picks are already present and need no reconnect.
   async skillsNeedingForceLoad(forcedIds: string[]): Promise<string[]> {
