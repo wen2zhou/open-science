@@ -515,7 +515,10 @@ describe('conversation composer editor integration', () => {
     expect(conversationPanelSource).toContain(
       "import { ComposerEditor } from './composer/ComposerEditor'"
     )
-    expect(conversationPanelSource).toContain('onSendMessage(docToSkillIds(draftDoc))')
+    // The submit path derives forced skill ids from the doc, validates them against the effective
+    // specialist allowlist at send time, then forwards to onSendMessage.
+    expect(conversationPanelSource).toContain('const forcedSkillIds = docToSkillIds(draftDoc)')
+    expect(conversationPanelSource).toContain('onSendMessage(forcedSkillIds)')
     expect(conversationPanelSource).toContain('onSubmit={handleSubmit}')
     expect(conversationPanelSource).toContain('onDocChange={onDraftDocChange}')
   })

@@ -20,6 +20,10 @@ type SkillMentionPopupProps = {
   query: string
   onSelect: (skill: SkillView) => void
   onClose: () => void
+  // When set, the picker offers only these skill ids — the effective allowlist for the bound
+  // specialist (computed by the shared effective-capability resolver). Undefined/omitted keeps
+  // today's unfiltered behaviour (None specialist).
+  allowedSkillIds?: Set<string>
 }
 
 // Human-readable badge label per skill source.
@@ -32,17 +36,29 @@ const SOURCE_LABELS: Record<SkillSource, string> = {
 export const SkillMentionPopup = ({
   query,
   onSelect,
-  onClose
+  onClose,
+  allowedSkillIds
 }: SkillMentionPopupProps): React.JSX.Element | null => {
-  const skills = useSettingsStore((state) => state.skills)
+  const allSkills = useSettingsStore((state) => state.skills)
   const loadSkills = useSettingsStore((state) => state.loadSkills)
   const listboxId = useId()
 
   // The skill list is loaded lazily by the Settings panel; the composer may open before that ever ran,
   // so hydrate it here when empty. Cheap and idempotent — the store keeps the result after the first load.
   useEffect(() => {
-    if (skills.length === 0) void loadSkills()
-  }, [skills.length, loadSkills])
+    if (allSkills.length === 0) void loadSkills()
+  }, [allSkills.length, loadSkills])
+
+  // When a specialist is bound, constrain the candidate pool to the effective allowlist (the same
+  // set the runtime gate enforces). Undefined keeps today's unfiltered None behaviour. An empty set
+  // (bound zero-skill specialist) offers nothing.
+  const skills = useMemo(
+    () =>
+      allowedSkillIds === undefined
+        ? allSkills
+        : allSkills.filter((skill) => allowedSkillIds.has(skill.id)),
+    [allSkills, allowedSkillIds]
+  )
 
   // Rank the query best-first: fuzzy subsequence against the name (so "cg" finds "clinical-genomics"),
   // falling back to a plain substring in the description. Names always outrank description-only hits;

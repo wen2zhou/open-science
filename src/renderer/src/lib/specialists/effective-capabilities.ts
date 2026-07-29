@@ -36,8 +36,7 @@ const toGlobalConnectorEntries = (connectorIds: string[]): GlobalConnectorEntry[
 // `none` and `unavailable` map directly; `bound` carries the SpecialistView (which satisfies the
 // resolver's capability-bearing contract).
 const toBinding = (
-  resolution: SessionSpecialistResolution,
-  globalConnectors: GlobalConnectorEntry[]
+  resolution: SessionSpecialistResolution
 ): EffectiveCapabilityBinding<SpecialistView> => {
   if (resolution.kind === 'none') return { kind: 'none' }
   if (resolution.kind === 'unavailable') {
@@ -61,7 +60,7 @@ export const resolveRendererCapabilities = (
 ): EffectiveCapabilities => {
   const globalSkills = input.skills.map(toGlobalSkillEntry)
   const globalConnectors = toGlobalConnectorEntries(input.enabledConnectorIds ?? [])
-  const binding = toBinding(input.resolution, globalConnectors)
+  const binding = toBinding(input.resolution)
   return resolveEffectiveCapabilities(binding, globalSkills, globalConnectors)
 }
 
