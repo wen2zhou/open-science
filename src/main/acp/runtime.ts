@@ -131,6 +131,11 @@ import type { UploadedAttachment } from '../../shared/uploads'
 import type { ArtifactFile, FileReference } from '../../shared/artifacts'
 import { isMediaOverflowError } from '../../shared/media-overflow'
 import type { AcpRuntimeActivity, AcpRuntimeActivityOptions } from './runtime-activity'
+import {
+  resolveSessionSpecialist,
+  specialistAppendFor,
+  type SessionSpecialistRuntime
+} from '../specialists/session-specialist-runtime'
 import { REVIEWER_MCP_SERVER_NAME, REVIEWER_MCP_TOOLS } from '../../shared/reviewer'
 import {
   buildImageContentData,
@@ -191,6 +196,11 @@ type AcpRuntimeOptions = {
   // Per-session cumulative inlined-image budget in base64 bytes. Defaults to MAX_SESSION_INLINE_IMAGE_BYTES;
   // injectable so tests can drive the degrade-to-file path with small fixtures.
   inlineImageBudgetBytes?: number
+  // Per-session Specialist resolution seam. Optional so tests that build the runtime without
+  // specialists are unaffected; every usage guards on presence. When provided, the runtime resolves
+  // the bound Specialist against the LATEST settings before every execution (not the connect-time
+  // snapshot) and appends its instructions through the framework-appropriate prompt path.
+  specialists?: SessionSpecialistRuntime
 }
 
 // Turn-scoped skill force-load hooks, wired from the settings service. Optional so tests that construct
@@ -702,6 +712,8 @@ class AcpRuntime {
   private readonly callbacks: AcpRuntimeCallbacks
   private readonly spawnAgent: (() => ChildProcessWithoutNullStreams) | undefined
   private readonly skillsHooks: AcpRuntimeSkillsOptions | undefined
+  // Per-session Specialist seam; undefined in tests that build the runtime without specialists.
+  private readonly specialists: SessionSpecialistRuntime | undefined
   // Mutable: refreshed from resolveBackend on each connect so a framework switch applies on reconnect.
   private framework: AgentFramework
   private backendId: string | undefined
@@ -777,6 +789,7 @@ class AcpRuntime {
     this.callbacks = options.callbacks ?? {}
     this.spawnAgent = options.spawnAgent
     this.skillsHooks = options.skills
+    this.specialists = options.specialists
     this.framework = options.framework ?? claudeCodeFramework
     this.mcpHttpHost = options.mcpHttpHost
     this.resumeTimeoutMs = options.resumeTimeoutMs ?? 30_000
@@ -1765,7 +1778,7 @@ class AcpRuntime {
         sessionId: request.sessionId,
         cwd: sessionCwd,
         mcpServers,
-        ...this.buildSessionMetaArg()
+        ...this.buildSessionMetaArg(request.sessionId)
       })
     } catch (error) {
       if (!isUnresumableSessionError(error)) throw error
@@ -1852,7 +1865,7 @@ class AcpRuntime {
       .buildSession({
         cwd: sessionCwd,
         mcpServers,
-        ...this.buildSessionMetaArg()
+        ...this.buildSessionMetaArg(request.sessionId)
       })
       .start()
 
@@ -2527,7 +2540,7 @@ class AcpRuntime {
       // session _meta but repeats the short activity declaration reminder here; frameworks without a
       // session preset carry the complete guidance as a prompt prefix.
       const { promptPrefix } = this.framework.buildSessionSetup({
-        systemPromptAppends: this.getSystemPromptAppends(),
+        systemPromptAppends: this.getSystemPromptAppends(request.sessionId),
         turnPromptReminders: this.getTurnPromptReminders(),
         sessionOptions: this.pendingSessionOptions
       })
@@ -3843,10 +3856,10 @@ class AcpRuntime {
     )
   }
 
-  private getSystemPromptAppends(): string[] {
+  private getSystemPromptAppends(sessionId?: string): string[] {
     // Each append names MCP tools that only exist when that tooling is actually wired for this session;
     // omit it otherwise so the agent isn't told to use tools it wasn't given.
-    return [
+    const base = [
       TURN_CONTINUITY_SYSTEM_PROMPT_APPEND,
       LARGE_DATA_FILE_SYSTEM_PROMPT_APPEND,
       ...this.pendingSystemPromptAppends,
@@ -3857,6 +3870,23 @@ class AcpRuntime {
       ...(this.notebookToolingAvailable() ? [NOTEBOOK_SYSTEM_PROMPT_APPEND] : []),
       ...(this.skillImportToolingAvailable() ? [SKILL_IMPORT_SYSTEM_PROMPT_APPEND] : [])
     ]
+    // Specialist instructions are append-only: a bound Specialist contributes its guidance on top of
+    // the framework/base identity, safety rules, and tool docs. None and unavailable add nothing
+    // (unavailable is fail-closed). Resolved against the LATEST settings so a freshly disabled
+    // Specialist takes effect immediately rather than from a stale hydration snapshot.
+    const specialistAppend = this.specialistAppendForSession(sessionId)
+    return specialistAppend ? [...base, specialistAppend] : base
+  }
+
+  // Resolves the bound Specialist for a session and returns its trimmed instructions as a prompt
+  // append, or '' (no append) when unbound, unavailable, or when the seam is absent. Empty/whitespace
+  // instructions also yield no append so a bound Specialist with no guidance leaves the base prompt
+  // untouched. sessionId is undefined on fresh session creation; in that case there is no persisted
+  // binding yet, so the append is correctly empty.
+  private specialistAppendForSession(sessionId?: string): string {
+    if (!this.specialists || !sessionId) return ''
+    const resolved = resolveSessionSpecialist(this.specialists, sessionId)
+    return specialistAppendFor(resolved)
   }
 
   private getTurnPromptReminders(): string[] {
@@ -3868,9 +3898,9 @@ class AcpRuntime {
   // Builds the ACP `_meta` argument for session/new and session/resume, delegating the framework-specific
   // shape to the active framework. Claude applies its settingSources restriction, resolved backend
   // options, and system-prompt appends; opencode returns no meta and uses a prompt prefix instead.
-  private buildSessionMetaArg(): { _meta?: Record<string, unknown> } {
+  private buildSessionMetaArg(sessionId?: string): { _meta?: Record<string, unknown> } {
     const setup = this.framework.buildSessionSetup({
-      systemPromptAppends: this.getSystemPromptAppends(),
+      systemPromptAppends: this.getSystemPromptAppends(sessionId),
       sessionOptions: this.pendingSessionOptions
     })
 
