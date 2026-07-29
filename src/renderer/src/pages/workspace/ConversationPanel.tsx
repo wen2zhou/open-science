@@ -26,6 +26,7 @@ import {
   Loader2,
   PanelRight,
   Plus,
+  RotateCcw,
   ScanEye,
   Square,
   UserCircle2,
@@ -125,12 +126,17 @@ type ConversationPanelProps = {
   sessionSpecialistResolution: SessionSpecialistResolution
   // True when the user changed the specialist while a turn was active; shows a switching banner.
   specialistSwitching: boolean
+  // Transient: present when the last Specialist registry sync rejected. Shows a retryable error and
+  // blocks sending until the sync succeeds or the user picks another Specialist.
+  specialistSyncError?: string
   // Full specialist catalog loaded from settings; passed to ComposerAgentControlsMenu submenu.
   specialists: SpecialistView[]
   // Navigates to Settings › Specialists from the "Create new…" submenu item.
   onOpenSpecialistsSettings: () => void
   // Binds (or clears, when specialistId is undefined) the specialist for the active session.
   onSpecialistChange: (specialistId: string | undefined) => void
+  // Re-issues the failed Specialist registry sync for the active session.
+  onRetrySpecialistSync?: () => void
   onDraftDocChange: (doc: ComposerDoc) => void
   onSendMessage: (forcedSkillIds: string[]) => void
   onStageAttachmentFiles: (files: File[]) => void
@@ -184,9 +190,11 @@ const ConversationPanel = ({
   autoReviewEnabled,
   sessionSpecialistResolution,
   specialistSwitching,
+  specialistSyncError,
   specialists,
   onOpenSpecialistsSettings,
   onSpecialistChange,
+  onRetrySpecialistSync,
   onDraftDocChange,
   onSendMessage,
   onStageAttachmentFiles,
@@ -395,6 +403,28 @@ const ConversationPanel = ({
                   >
                     <Loader2 className="size-3.5 animate-spin" strokeWidth={2} aria-hidden="true" />
                     Switching after this response…
+                  </div>
+                ) : null}
+
+                {/* Specialist sync error: the registry sync for the latest switch rejected. The persisted
+                    selection is kept; sending stays blocked until the user retries (re-issues the same
+                    sync) or picks another Specialist from the menu. */}
+                {specialistSyncError ? (
+                  <div
+                    data-testid="specialist-sync-error"
+                    className="mb-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-5 text-amber-800 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-200"
+                  >
+                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                    <span className="min-0 flex-1 break-words">{specialistSyncError}</span>
+                    <button
+                      type="button"
+                      onClick={onRetrySpecialistSync ?? (() => undefined)}
+                      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-amber-300 bg-amber-100/70 px-2 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-700/60 dark:bg-amber-900/40 dark:text-amber-100 dark:hover:bg-amber-900/60"
+                      aria-label="Retry Specialist switch"
+                    >
+                      <RotateCcw className="size-3" strokeWidth={2.2} aria-hidden="true" />
+                      Retry
+                    </button>
                   </div>
                 ) : null}
 

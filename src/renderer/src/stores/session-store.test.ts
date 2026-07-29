@@ -1918,3 +1918,94 @@ describe('session specialist binding', () => {
     expect(sessions.find((s) => s.id === 'b')?.specialistId).toBeUndefined()
   })
 })
+
+describe('specialist sync error handling', () => {
+  const hydrateOne = (id: string, overrides: Partial<PersistedChatSession> = {}): void => {
+    useSessionStore.getState().hydrateSessions(
+      [
+        {
+          id,
+          projectId: 'default',
+          title: 'Test session',
+          cwd: '/workspace',
+          status: 'idle',
+          messages: [],
+          createdAt: 1,
+          updatedAt: 2,
+          ...overrides
+        }
+      ],
+      { version: SESSION_MANIFEST_VERSION, lastSessionId: id }
+    )
+  }
+
+  beforeEach(() => {
+    useSessionStore.setState(createInitialSessionState())
+  })
+
+  it('recordSpecialistSyncError records an error and keeps specialistId intact', () => {
+    hydrateOne('s1', { specialistId: 'sp-new' })
+    useSessionStore.getState().recordSpecialistSyncError('s1', 'Registry sync failed')
+
+    const session = useSessionStore.getState().sessions.find((s) => s.id === 's1')!
+    expect(session.specialistSyncError).toBe('Registry sync failed')
+    expect(session.specialistId).toBe('sp-new')
+  })
+
+  it('reject-then-retry-success: specialistId stays as new value throughout', () => {
+    hydrateOne('s1', { specialistId: 'sp-old' })
+    useSessionStore.getState().setSessionSpecialist('s1', 'sp-new')
+    useSessionStore.getState().recordSpecialistSyncError('s1', 'IPC rejected')
+
+    let session = useSessionStore.getState().sessions.find((s) => s.id === 's1')!
+    expect(session.specialistId).toBe('sp-new')
+    expect(session.specialistSyncError).toBe('IPC rejected')
+
+    // Retry succeeds — clear the error
+    useSessionStore.getState().clearSpecialistSyncError('s1')
+
+    session = useSessionStore.getState().sessions.find((s) => s.id === 's1')!
+    expect(session.specialistSyncError).toBeUndefined()
+    expect(session.specialistId).toBe('sp-new')
+  })
+
+  it('reject-then-explicit-reselect: setSessionSpecialist clears specialistSyncError', () => {
+    hydrateOne('s1', { specialistId: 'sp-1' })
+    useSessionStore.getState().recordSpecialistSyncError('s1', 'Prior failure')
+    useSessionStore.getState().setSessionSpecialist('s1', 'sp-2')
+
+    const session = useSessionStore.getState().sessions.find((s) => s.id === 's1')!
+    expect(session.specialistSyncError).toBeUndefined()
+    expect(session.specialistId).toBe('sp-2')
+  })
+
+  it('setSessionSpecialist to None clears specialistSyncError', () => {
+    hydrateOne('s1', { specialistId: 'sp-1' })
+    useSessionStore.getState().recordSpecialistSyncError('s1', 'Sync error')
+    useSessionStore.getState().setSessionSpecialist('s1', undefined)
+
+    const session = useSessionStore.getState().sessions.find((s) => s.id === 's1')!
+    expect(session.specialistSyncError).toBeUndefined()
+    expect(session.specialistId).toBeUndefined()
+  })
+
+  it('specialistSyncError is transient — not persisted via toPersistedSession', () => {
+    hydrateOne('s1', { specialistId: 'sp-1' })
+    useSessionStore.getState().recordSpecialistSyncError('s1', 'Transient error')
+
+    const session = useSessionStore.getState().sessions.find((s) => s.id === 's1')!
+    expect(session.specialistSyncError).toBe('Transient error')
+    expect(toPersistedSession(session)).not.toHaveProperty('specialistSyncError')
+  })
+
+  it('recordSpecialistSyncError targets only the affected session', () => {
+    hydrateOne('s1', { specialistId: 'sp-1' })
+    // Add second session directly via appendUserMessage to avoid overwriting hydrated state
+    useSessionStore.getState().appendUserMessage({ sessionId: 's2', content: 'hi' })
+    useSessionStore.getState().recordSpecialistSyncError('s1', 'Error for s1 only')
+
+    const sessions = useSessionStore.getState().sessions
+    expect(sessions.find((s) => s.id === 's1')?.specialistSyncError).toBe('Error for s1 only')
+    expect(sessions.find((s) => s.id === 's2')?.specialistSyncError).toBeUndefined()
+  })
+})

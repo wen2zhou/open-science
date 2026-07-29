@@ -89,6 +89,10 @@ export type ChatSession = Omit<
   // shows "Switching after this response…" until the active turn ends. Cleared by clearSpecialistSwitching
   // when the turn settles. The persisted specialistId itself takes effect on the next turn regardless.
   specialistSwitching?: boolean
+  // Transient: set when the acp:set-session-specialist IPC rejected the latest switch. The persisted
+  // specialistId is kept (never reverted), sending is blocked, and the composer shows a retryable error.
+  // Cleared on a successful retry or when the user picks another Specialist / None. Never persisted.
+  specialistSyncError?: string
 }
 
 type SessionStoreData = {
@@ -239,6 +243,11 @@ type SessionStore = SessionStoreData & {
   // Clears the transient specialistSwitching flag once the active turn settles (idle/error). No-op while
   // the session is still running, so an in-turn switch keeps its "takes effect next turn" banner.
   clearSpecialistSwitching: (sessionId: string) => void
+  // Records a per-session sync error after the acp:set-session-specialist IPC rejected a switch. Keeps
+  // the persisted specialistId so the user can retry the same sync or pick another Specialist.
+  recordSpecialistSyncError: (sessionId: string, message: string) => void
+  // Clears the per-session sync error after a successful retry or a new explicit selection.
+  clearSpecialistSyncError: (sessionId: string) => void
   renameSession: (sessionId: string, title: string) => void
   deleteSession: (sessionId: string) => void
   removeSessionsForProject: (projectId: string) => void
@@ -275,6 +284,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
     compacting,
     agentStatus,
     specialistSwitching,
+    specialistSyncError,
     messages,
     ...persistedSession
   } = session
@@ -285,6 +295,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
   void compacting
   void agentStatus
   void specialistSwitching
+  void specialistSyncError
 
   // Persist a bounded projection of tool activities so the transcript survives restarts.
   const persistedActivities = activities
@@ -1639,7 +1650,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
 
   // Binds (or clears) this session's Specialist. specialistId round-trips via PersistedChatSession so the
   // store saver persists it; specialistSwitching is transient and only set while a turn is active so the
-  // UI can surface "Switching after this response…". Switching to None (undefined) clears both fields.
+  // UI can surface "Switching after this response…". A new explicit selection (or None) supersedes any
+  // prior sync error, so the transient specialistSyncError is cleared here as well.
   setSessionSpecialist: (sessionId, specialistId) => {
     if (!sessionId) return
     set((state) => ({
@@ -1652,6 +1664,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
               // the next message with no banner needed.
               specialistSwitching:
                 specialistId !== undefined && session.status === 'running' ? true : false,
+              // A fresh selection clears a prior failed-sync error; the caller re-issues the IPC.
+              specialistSyncError: undefined,
               updatedAt: Date.now()
             }
           : session
@@ -1667,6 +1681,30 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       sessions: state.sessions.map((session) =>
         session.id === sessionId && session.specialistSwitching && session.status !== 'running'
           ? { ...session, specialistSwitching: false }
+          : session
+      )
+    }))
+  },
+
+  // Records that the latest Specialist switch IPC rejected for this session. The persisted specialistId
+  // is intentionally left intact so the user can retry the exact same sync; only the transient error is
+  // surfaced. Targets just the affected session.
+  recordSpecialistSyncError: (sessionId, message) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId ? { ...session, specialistSyncError: message } : session
+      )
+    }))
+  },
+
+  // Clears the sync error after a successful retry so sending is restored.
+  clearSpecialistSyncError: (sessionId) => {
+    if (!sessionId) return
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId && session.specialistSyncError !== undefined
+          ? { ...session, specialistSyncError: undefined }
           : session
       )
     }))
