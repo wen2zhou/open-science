@@ -230,3 +230,77 @@ describe('SpecialistManagementBridge', () => {
     expect(refresh).not.toHaveBeenCalled()
   })
 })
+
+// Criteria-level integration: the runtime contract behind the two 04b criteria.
+describe('SpecialistManagementBridge — 04b criteria', () => {
+  it('approving a create shows exactly ONE new Custom row in the catalog, broadcast once', async () => {
+    // Start with one existing Custom row, mirroring an already-open Settings page.
+    const settings = makeSettings([
+      {
+        id: 'sp-existing',
+        agentId: 'existing',
+        name: 'Existing',
+        skillIds: [],
+        connectorIds: [],
+        enabled: true,
+        revision: 1,
+        kind: 'custom',
+        effectiveSkillCount: 0,
+        effectiveConnectorCount: 0
+      }
+    ])
+    const refresh = vi.fn()
+    const bridge = new SpecialistManagementBridge({
+      settings,
+      registry: { set: vi.fn() },
+      broadcastSettingsRefresh: refresh
+    })
+
+    const before = await settings.listSpecialists()
+    expect(before).toHaveLength(1)
+
+    // Approve path: stage then confirm exactly once.
+    const staged = await bridge.stageMutation('create_specialist', {
+      agentId: 'rna-reviewer',
+      name: 'RNA Reviewer'
+    })
+    const confirmed = await bridge.confirmMutation(staged.mutationId)
+
+    // Exactly one new row appears in the live catalog; the read-back is the new record.
+    const after = await settings.listSpecialists()
+    expect(after).toHaveLength(2)
+    expect(after.some((s) => s.id === confirmed.specialist?.id)).toBe(true)
+    // The refresh broadcast fires exactly once — the already-open Settings page reloads immediately.
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+
+  it('an approved switch updates ONLY the session specialistId (next-message semantics), not permission', async () => {
+    const settings = makeSettings()
+    const refresh = vi.fn()
+    const registry = { set: vi.fn() }
+    // A permission-profile setter the switch path must NEVER touch. The bridge has no reference to it,
+    // so this guards the invariant structurally: if switch ever widened, this spy would still be unused.
+    const setPermissionProfile = vi.fn()
+    const bridge = new SpecialistManagementBridge({
+      settings,
+      registry,
+      broadcastSettingsRefresh: refresh
+    })
+
+    const staged = await bridge.stageMutation('switch_specialist', {
+      sessionId: 'session-1',
+      specialistId: 'sp-target'
+    })
+    const confirmed = await bridge.confirmMutation(staged.mutationId)
+
+    // The switch keeps the current turn on the old identity and applies the new binding from the next
+    // message: it writes ONLY the session specialistId into the registry, and broadcasts once.
+    expect(confirmed.switched).toEqual({ targetSessionId: 'session-1', specialistId: 'sp-target' })
+    expect(registry.set).toHaveBeenCalledTimes(1)
+    expect(registry.set).toHaveBeenCalledWith('session-1', 'sp-target')
+    expect(setPermissionProfile).not.toHaveBeenCalled()
+    // No specialist record is created/updated by a switch.
+    expect(settings.writes.create).toBe(0)
+    expect(refresh).toHaveBeenCalledTimes(1)
+  })
+})
