@@ -125,9 +125,6 @@ const draftFor = (item: SpecialistView): SpecialistDraft => ({
 const isConflict = (error: unknown): boolean =>
   error instanceof Error && /reload or duplicate/i.test(error.message)
 
-const capabilityLabel = (capability: Capability): string =>
-  `${capability.label}${capability.state === 'available' ? '' : ` (${capability.state})`}`
-
 type AvatarProps = { iconKey?: string; colorKey?: string; variant?: 'row' | 'head' }
 
 const Avatar = ({ iconKey, colorKey, variant = 'row' }: AvatarProps): React.JSX.Element => {
@@ -604,25 +601,36 @@ export const SpecialistsPanel = (): React.JSX.Element => {
                 </p>
               </div>
               <div className="inline-flex gap-0.5 rounded-lg bg-muted p-0.5" role="tablist">
-                {(['skills', 'connectors'] as const).map((tab) => (
-                  <button
-                    key={tab}
-                    type="button"
-                    role="tab"
-                    aria-selected={capTab === tab}
-                    onClick={() => setCapTab(tab)}
-                    className={cn(
-                      'h-7 rounded-md px-3 text-xs',
-                      capTab === tab
-                        ? 'bg-background font-medium text-foreground shadow-sm'
-                        : 'text-muted-foreground'
-                    )}
-                  >
-                    {tab === 'skills'
-                      ? `Skills ${effectiveSkillCount}`
-                      : `Connectors ${effectiveConnectorCount}`}
-                  </button>
-                ))}
+                {(['skills', 'connectors'] as const).map((tab) => {
+                  const storedCount =
+                    tab === 'skills'
+                      ? skillCapabilities.length
+                      : connectorCapabilities.length
+                  const effectiveCount =
+                    tab === 'skills' ? effectiveSkillCount : effectiveConnectorCount
+                  const countLabel =
+                    storedCount !== effectiveCount
+                      ? `${effectiveCount} / ${storedCount}`
+                      : `${effectiveCount}`
+                  return (
+                    <button
+                      key={tab}
+                      type="button"
+                      role="tab"
+                      data-tab={tab}
+                      aria-selected={capTab === tab}
+                      onClick={() => setCapTab(tab)}
+                      className={cn(
+                        'h-7 rounded-md px-3 text-xs',
+                        capTab === tab
+                          ? 'bg-background font-medium text-foreground shadow-sm'
+                          : 'text-muted-foreground'
+                      )}
+                    >
+                      {tab === 'skills' ? `Skills ${countLabel}` : `Connectors ${countLabel}`}
+                    </button>
+                  )
+                })}
               </div>
 
               {/* Both panes stay mounted; the inactive one is hidden so stale capability state
@@ -880,8 +888,17 @@ const CapabilityPane = ({
           >
             <div className="min-w-0 flex-1">
               <span className="block truncate font-mono text-xs text-foreground">
-                {capabilityLabel(capability)}
+                {capability.label}
               </span>
+              {capability.state === 'missing' ? (
+                <span className="mt-0.5 block text-[10px] font-medium text-destructive">
+                  missing — deleted or never installed
+                </span>
+              ) : capability.state === 'disabled' ? (
+                <span className="mt-0.5 block text-[10px] text-muted-foreground">
+                  disabled globally — will restore when re-enabled
+                </span>
+              ) : null}
             </div>
             {!readOnly ? (
               <button
