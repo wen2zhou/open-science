@@ -31,6 +31,9 @@ const makeApi = (overrides?: Record<string, unknown>) => ({
     deleteSpecialist: vi.fn().mockResolvedValue({}),
     setSpecialistEnabled: vi.fn().mockResolvedValue({}),
     ...overrides
+  },
+  specialists: {
+    onChanged: vi.fn().mockReturnValue(() => undefined)
   }
 })
 

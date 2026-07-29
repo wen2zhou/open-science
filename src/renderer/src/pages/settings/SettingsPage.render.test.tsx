@@ -129,6 +129,9 @@ const installApi = (): void => {
       onState: vi.fn().mockReturnValue(() => {}),
       cancel: vi.fn()
     },
+    specialists: {
+      onChanged: vi.fn().mockReturnValue(() => {})
+    },
     logs: {
       getPath: vi.fn().mockResolvedValue('/Users/x/Library/Logs/Open Science/main.log'),
       openFile: vi.fn().mockResolvedValue({ opened: true }),
