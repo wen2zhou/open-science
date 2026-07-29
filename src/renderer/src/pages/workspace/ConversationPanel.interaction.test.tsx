@@ -873,6 +873,8 @@ describe('ConversationPanel — Specialist binding UI', () => {
       specialists?: SpecialistView[]
       canSendMessage?: boolean
       session?: ChatSession | undefined
+      syncError?: string
+      onRetrySpecialistSync?: () => void
     } = {}
   ): void => {
     act(() => {
@@ -896,9 +898,11 @@ describe('ConversationPanel — Specialist binding UI', () => {
           canChangePermissionProfile
           sessionSpecialistResolution={resolution}
           specialistSwitching={opts.switching ?? false}
+          specialistSyncError={opts.syncError}
           specialists={opts.specialists ?? []}
           onOpenSpecialistsSettings={vi.fn()}
           onSpecialistChange={vi.fn()}
+          onRetrySpecialistSync={opts.onRetrySpecialistSync}
           onDraftDocChange={vi.fn()}
           onSendMessage={vi.fn()}
           onStageAttachmentFiles={vi.fn()}
@@ -979,6 +983,39 @@ describe('ConversationPanel — Specialist binding UI', () => {
     renderWithSpecialist({ kind: 'none' }, { switching: false })
 
     expect(container.querySelector('[data-testid="specialist-switching-banner"]')).toBeNull()
+  })
+
+  it('shows a retryable sync error banner when specialistSyncError is set', () => {
+    renderWithSpecialist(
+      { kind: 'bound', specialist: makeSpecialist({ id: 'sp-new', name: 'Reviewer' }) },
+      { syncError: "Couldn't apply Specialist \"sp-new\" to this session. Retry." }
+    )
+
+    const banner = container.querySelector('[data-testid="specialist-sync-error"]')
+    expect(banner).not.toBeNull()
+    expect(banner?.textContent).toContain('sp-new')
+    expect(banner?.textContent).toContain('Retry')
+  })
+
+  it('re-issues the sync when the Retry button is pressed', () => {
+    const onRetrySpecialistSync = vi.fn()
+    renderWithSpecialist(
+      { kind: 'bound', specialist: makeSpecialist({ id: 'sp-new' }) },
+      { syncError: 'sync failed', onRetrySpecialistSync }
+    )
+
+    const retry = container.querySelector<HTMLButtonElement>(
+      '[data-testid="specialist-sync-error"] button[aria-label="Retry Specialist switch"]'
+    )
+    expect(retry).not.toBeNull()
+    act(() => retry?.click())
+    expect(onRetrySpecialistSync).toHaveBeenCalledTimes(1)
+  })
+
+  it('hides the sync error banner when specialistSyncError is cleared', () => {
+    renderWithSpecialist({ kind: 'none' }, { syncError: undefined })
+
+    expect(container.querySelector('[data-testid="specialist-sync-error"]')).toBeNull()
   })
 
   it('disables Send when resolution is unavailable', () => {

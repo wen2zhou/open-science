@@ -123,6 +123,8 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   const setEnabledComputeHosts = useSessionStore((state) => state.setEnabledComputeHosts)
   const setFixLoopActive = useSessionStore((state) => state.setFixLoopActive)
   const setSessionSpecialist = useSessionStore((state) => state.setSessionSpecialist)
+  const recordSpecialistSyncError = useSessionStore((state) => state.recordSpecialistSyncError)
+  const clearSpecialistSyncError = useSessionStore((state) => state.clearSpecialistSyncError)
 
   // Specialist catalog: lazy-loaded from settings; refreshed after mutations.
   const specialists = useSettingsStore((state) => state.specialists)
@@ -333,7 +335,10 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     !activeSession?.fixLoopActive &&
     // Auto-recovery drops the session to idle while it resets context and replays the transcript; block
     // sends in that window so a manual prompt can't race the recovery resend into the same session.
-    !activeSession?.compacting
+    !activeSession?.compacting &&
+    // A failed Specialist registry sync means the target identity hasn't taken effect; block sends so a
+    // turn can never run under a stale identity while the user retries or picks another Specialist.
+    !activeSession?.specialistSyncError
   // Re-editing a sent prompt is allowed under the same settled-run conditions as sending, so the
   // resent prompt can never overlap an in-flight turn, permission wait, fix loop, or compaction.
   const canEditMessage =
@@ -1115,10 +1120,29 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     upsertAndActivatePreviewItem(createProjectFilesPreviewItem())
   }
 
+  // Re-issues the target session's Specialist registry sync. On success the transient sync error is
+  // cleared and sending is restored; on rejection the persisted id is kept and the error is refreshed.
+  // Only the stable specialist id is carried — never instruction content.
+  const syncSpecialist = useCallback(
+    async (sessionId: string, specialistId: string | undefined): Promise<void> => {
+      try {
+        await window.api.acp.setSessionSpecialist({ sessionId, specialistId })
+        clearSpecialistSyncError(sessionId)
+      } catch {
+        const message =
+          specialistId !== undefined
+            ? `Couldn't apply Specialist "${specialistId}" to this session. Retry, or choose another Specialist.`
+            : "Couldn't clear the Specialist for this session. Retry."
+        recordSpecialistSyncError(sessionId, message)
+      }
+    },
+    [clearSpecialistSyncError, recordSpecialistSyncError]
+  )
+
   // Binds (or clears) the Specialist for the active session. Updates the store for immediate UI
-  // feedback, then calls the IPC so main-process reconfigures the target ACP session. If the IPC
-  // rejects, the persisted selection is kept and an error surfaces via actionError — the user must
-  // retry explicitly; we never fall back to the previous Specialist or None.
+  // feedback (which also clears any prior sync error), then syncs the main-process registry. If the
+  // IPC rejects the persisted selection is kept and a retryable error surfaces — the user must retry
+  // or pick another Specialist; we never fall back to the previous Specialist or None.
   const handleSpecialistChange = (specialistId: string | undefined): void => {
     if (!activeSession) return
 
@@ -1126,8 +1150,14 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     // when the session is mid-turn. The persisted id is round-tripped via session serialization.
     setSessionSpecialist(activeSession.id, specialistId)
 
-    // Fire-and-forget IPC; errors are surfaced by the workspace action-error pathway.
-    void window.api.acp.setSessionSpecialist({ sessionId: activeSession.id, specialistId })
+    void syncSpecialist(activeSession.id, specialistId)
+  }
+
+  // Retries the failed sync for the currently persisted Specialist id, re-issuing only this session's
+  // registry sync.
+  const retrySpecialistSync = (): void => {
+    if (!activeSession) return
+    void syncSpecialist(activeSession.id, activeSession.specialistId)
   }
 
   // Navigates to Settings › Specialists so the user can create or manage specialists.
@@ -1183,9 +1213,11 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
             autoReviewEnabled={activeAutoReviewEnabled}
             sessionSpecialistResolution={activeSessionSpecialistResolution}
             specialistSwitching={activeSpecialistSwitching}
+            specialistSyncError={activeSession?.specialistSyncError}
             specialists={specialists}
             onOpenSpecialistsSettings={openSpecialistsSettings}
             onSpecialistChange={handleSpecialistChange}
+            onRetrySpecialistSync={retrySpecialistSync}
             onDraftDocChange={setDraftDoc}
             onSendMessage={sendCurrentMessage}
             onStageAttachmentFiles={stageAttachmentFiles}
