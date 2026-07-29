@@ -340,6 +340,21 @@ export const SpecialistsPanel = ({ onChatWithAgent }: SpecialistsPanelProps): Re
       setError(cause instanceof Error ? cause.message : 'Could not update specialist.')
     }
   }
+  const toggleEnabledInEditor = async (): Promise<void> => {
+    if (!editing) return
+    try {
+      const updated = await window.api.settings.setSpecialistEnabled({
+        id: editing.id,
+        expectedRevision: editing.revision,
+        enabled: !draft.enabled
+      })
+      await load()
+      setEditing(updated)
+      setDraft(draftFor(updated))
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not update specialist.')
+    }
+  }
   const duplicateActive = async (): Promise<void> => {
     if (!editing) return
     try {
@@ -496,7 +511,7 @@ export const SpecialistsPanel = ({ onChatWithAgent }: SpecialistsPanelProps): Re
                     <SettingsToggle
                       enabled={draft.enabled ?? true}
                       aria-label={`Toggle ${editorTitle}`}
-                      onToggle={() => setDraft({ ...draft, enabled: !(draft.enabled ?? true) })}
+                      onToggle={() => void toggleEnabledInEditor()}
                     />
                   </>
                 ) : null}
