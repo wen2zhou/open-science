@@ -102,6 +102,11 @@ import {
   CLAUDE_EXECUTABLE_MISSING_MESSAGE,
   NO_ACTIVE_PROVIDER_MESSAGE
 } from '../../shared/run-error-classification'
+import {
+  CUSTOMIZE_SPECIALIST,
+  REVIEWER_SPECIALIST,
+  type BuiltinSpecialistDefinition
+} from '../../shared/specialist-builtin'
 import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement, RuntimeSelection } from '../../shared/notebook-runtime'
 import {
@@ -1036,32 +1041,8 @@ class SettingsService {
       effectiveConnectorCount: specialist.connectorIds.filter((id) => availableConnectorIds.has(id))
         .length
     })
-    const customizeDisabled = settings.disabledBuiltinSpecialistIds?.includes('customize') ?? false
-    const customize: StoredSpecialist = {
-      id: 'customize',
-      agentId: 'customize',
-      name: 'Customize',
-      description: 'Create and refine reusable specialists.',
-      instructions: 'Help the user create or refine a specialist configuration.',
-      skillIds: ['customize'],
-      connectorIds: [],
-      enabled: !customizeDisabled,
-      revision: 1,
-      colorKey: 'purple',
-      iconKey: 'brain'
-    }
-    const reviewer: StoredSpecialist = {
-      id: 'reviewer',
-      agentId: 'reviewer',
-      name: 'Reviewer',
-      description: 'Used by Auto-review.',
-      skillIds: [],
-      connectorIds: [],
-      enabled: true,
-      revision: 1,
-      colorKey: 'slate',
-      iconKey: 'search'
-    }
+    const customize: StoredSpecialist = this.customizeSpecialist(settings)
+    const reviewer: StoredSpecialist = this.reviewerSpecialist()
     return [
       ...(settings.specialists ?? []).map((specialist) => view(specialist, 'custom')),
       view(customize, 'builtin-customize'),
@@ -1075,36 +1056,43 @@ class SettingsService {
   // closed (it backs Auto-review and must never become an ordinary session binding).
   async getSpecialistCatalog(): Promise<{ custom: StoredSpecialist[]; builtins: StoredSpecialist[] }> {
     const settings = await this.repository.getSettings()
-    const customizeDisabled = settings.disabledBuiltinSpecialistIds?.includes('customize') ?? false
     return {
       custom: [...(settings.specialists ?? [])],
-      builtins: [
-        {
-          id: 'customize',
-          agentId: 'customize',
-          name: 'Customize',
-          description: 'Create and refine reusable specialists.',
-          instructions: 'Help the user create or refine a specialist configuration.',
-          skillIds: ['customize'],
-          connectorIds: [],
-          enabled: !customizeDisabled,
-          revision: 1,
-          colorKey: 'purple',
-          iconKey: 'brain'
-        },
-        {
-          id: 'reviewer',
-          agentId: 'reviewer',
-          name: 'Reviewer',
-          description: 'Used by Auto-review.',
-          skillIds: [],
-          connectorIds: [],
-          enabled: true,
-          revision: 1,
-          colorKey: 'slate',
-          iconKey: 'search'
-        }
-      ]
+      builtins: [this.customizeSpecialist(settings), this.reviewerSpecialist()]
+    }
+  }
+
+  // Projects the Customize built-in constant into its stored shape. `enabled` is derived from
+  // `disabledBuiltinSpecialistIds`; everything else (identity, Skill/Connector allowlists, append
+  // instructions) comes from the shared application constant so it cannot drift from the Settings view
+  // and runtime catalog.
+  private customizeSpecialist(settings: StoredSettings): StoredSpecialist {
+    const customizeDisabled = settings.disabledBuiltinSpecialistIds?.includes('customize') ?? false
+    return this.builtinToStored(CUSTOMIZE_SPECIALIST, !customizeDisabled)
+  }
+
+  // Reviewer is always enabled and always controlled by Auto-review; its definition comes from the
+  // shared application constant for parity with the Customize projection.
+  private reviewerSpecialist(): StoredSpecialist {
+    return this.builtinToStored(REVIEWER_SPECIALIST, true)
+  }
+
+  private builtinToStored(
+    definition: BuiltinSpecialistDefinition,
+    enabled: boolean
+  ): StoredSpecialist {
+    return {
+      id: definition.id,
+      agentId: definition.agentId,
+      name: definition.name,
+      description: definition.description,
+      instructions: definition.instructions,
+      colorKey: definition.colorKey,
+      iconKey: definition.iconKey,
+      skillIds: [...definition.skillIds],
+      connectorIds: [...definition.connectorIds],
+      enabled,
+      revision: 1
     }
   }
 
