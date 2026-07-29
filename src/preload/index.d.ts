@@ -179,6 +179,7 @@ import type {
   SetSpecialistEnabledRequest,
   DeleteSpecialistRequest
 } from '../shared/settings'
+import type { SpecialistMutationPreview } from '../shared/specialist-preview'
 import type { PackageMirror } from '../shared/mirror'
 import type {
   ActiveSessionInfo,
@@ -348,6 +349,27 @@ interface OpenScienceAPI {
     respondSkillImportApproval(response: ConversationSkillImportApprovalResponse): Promise<void>
     respondConnectorApproval(request: RespondApprovalRequest): Promise<void>
     onInstallLog(listener: AcpListener<ClaudeInstallEvent>): RemoveListener
+  }
+  specialists: {
+    stageMutation(request: {
+      toolName: string
+      args?: Record<string, unknown>
+    }): Promise<{ mutationId: string; preview: SpecialistMutationPreview }>
+    confirmMutation(request: {
+      mutationId: string
+    }): Promise<{
+      specialist?: SpecialistView
+      switched?: { targetSessionId: string; specialistId?: string }
+    }>
+    cancelMutation(request: { mutationId: string }): Promise<void>
+    callTool(request: {
+      toolName: string
+      args?: Record<string, unknown>
+    }): Promise<{
+      isError?: boolean
+      content: Array<{ type: 'text'; text: string }>
+    }>
+    onChanged(listener: AcpListener<unknown>): RemoveListener
   }
   logs: {
     getPath(): Promise<string | null>
