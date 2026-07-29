@@ -155,7 +155,12 @@ const createRuntime = ({
           // sessionId exists, so per-turn prefix / resume resolution sees the same binding on turn one.
           setBoundSpecialistId: (sessionId, specialistId) =>
             specialistRegistry.set(sessionId, specialistId),
-          getSpecialistCatalog: () => settingsService.getSpecialistCatalog()
+          getSpecialistCatalog: () => settingsService.getSpecialistCatalog(),
+          // Global skill/connector catalogs for the effective-capability resolver. Read fresh on every
+          // execution so the Claude Code skill whitelist and guidance text mirror current settings,
+          // never a connect-time snapshot.
+          getGlobalSkillCatalog: () => settingsService.getGlobalSkillCatalog(),
+          getGlobalConnectorCatalog: () => settingsService.getGlobalConnectorCatalog()
         },
         artifacts: {
           configRoot,

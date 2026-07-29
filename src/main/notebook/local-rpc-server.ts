@@ -10,6 +10,7 @@ import type {
 } from '../../shared/notebook'
 import type { NotebookRpcConnection } from './mcp-server'
 import type { NotebookRuntimeService } from './runtime-service'
+import type { ConnectorCallContext } from '../connectors/service'
 import type {
   ConversationSkillImporter,
   ConversationSkillImportRequest
@@ -23,7 +24,7 @@ type NotebookLocalRpcServerOptions = {
       server: string,
       method: string,
       args: Record<string, unknown>,
-      context?: { sessionId?: string }
+      context?: ConnectorCallContext
     ): Promise<unknown>
   }
   computeService?: {
@@ -243,7 +244,13 @@ class NotebookLocalRpcServer {
       const toolMethod = typeof params.method === 'string' ? params.method : ''
       const args = isRecord(params.args) ? params.args : {}
       const sessionId = typeof params.sessionId === 'string' ? params.sessionId : undefined
-      return this.connectorService.call(server, toolMethod, args, { sessionId })
+      // mcpCall is the agent RPC path (host.mcp()), so declare its origin explicitly. A sessionId-less
+      // agent call fails closed at the specialist gate; internal context-free callers use a different
+      // path and declare origin:'internal'.
+      return this.connectorService.call(server, toolMethod, args, {
+        origin: 'agent',
+        sessionId
+      })
     }
 
     // computeCall routes compute API operations to ComputeService (design.md §2). The `op` field
