@@ -86,6 +86,40 @@ const installApi = (): void => {
         customServers: [],
         ncbi: { hasApiKey: false }
       }),
+      listSpecialists: vi.fn().mockResolvedValue([
+        {
+          id: 'customize',
+          agentId: 'customize',
+          name: 'Customize',
+          description: 'Create specialists.',
+          instructions: 'Help create specialists.',
+          skillIds: ['customize'],
+          connectorIds: [],
+          enabled: true,
+          revision: 1,
+          kind: 'builtin-customize',
+          effectiveSkillCount: 0,
+          effectiveConnectorCount: 0
+        },
+        {
+          id: 'reviewer',
+          agentId: 'reviewer',
+          name: 'Reviewer',
+          description: 'Used by Auto-review.',
+          skillIds: [],
+          connectorIds: [],
+          enabled: true,
+          revision: 1,
+          kind: 'builtin-reviewer',
+          effectiveSkillCount: 0,
+          effectiveConnectorCount: 0
+        }
+      ]),
+      createSpecialist: vi.fn(),
+      updateSpecialist: vi.fn(),
+      duplicateSpecialist: vi.fn(),
+      setSpecialistEnabled: vi.fn(),
+      deleteSpecialist: vi.fn(),
       getPackageMirror: vi.fn().mockResolvedValue({}),
       setPackageMirror: vi.fn().mockResolvedValue({})
     },
@@ -185,7 +219,7 @@ describe('SettingsPage layout', () => {
     expect(dialog?.getAttribute('data-slot')).toBe('settings-surface')
     expect(dialog?.className).toContain('overscroll-contain')
 
-    // Left navigation grouped as Capabilities (Skills, Connectors, Compute, Network) and Workspace
+    // Left navigation grouped as Capabilities (Skills, Specialists, Connectors, Compute, Network) and Workspace
     // (Model with its Agent sub-item, Runtimes, Storage, General).
     const nav = document.body.querySelector('nav[aria-label="Settings"]')
     expect(nav).not.toBeNull()
@@ -194,16 +228,17 @@ describe('SettingsPage layout', () => {
     expect(nav?.textContent).toContain('Capabilities')
     expect(nav?.textContent).toContain('Workspace')
     const navItems = nav?.querySelectorAll('li') ?? []
-    expect(navItems).toHaveLength(9)
+    expect(navItems).toHaveLength(10)
     expect(navItems[0]?.textContent).toContain('Skills')
-    expect(navItems[1]?.textContent).toContain('Connectors')
-    expect(navItems[2]?.textContent).toContain('Compute')
-    expect(navItems[3]?.textContent).toContain('Network')
-    expect(navItems[4]?.textContent).toContain('Model')
-    expect(navItems[5]?.textContent).toContain('Agent')
-    expect(navItems[6]?.textContent).toContain('Runtimes')
-    expect(navItems[7]?.textContent).toContain('Storage')
-    expect(navItems[8]?.textContent).toContain('General')
+    expect(navItems[1]?.textContent).toContain('Specialists')
+    expect(navItems[2]?.textContent).toContain('Connectors')
+    expect(navItems[3]?.textContent).toContain('Compute')
+    expect(navItems[4]?.textContent).toContain('Network')
+    expect(navItems[5]?.textContent).toContain('Model')
+    expect(navItems[6]?.textContent).toContain('Agent')
+    expect(navItems[7]?.textContent).toContain('Runtimes')
+    expect(navItems[8]?.textContent).toContain('Storage')
+    expect(navItems[9]?.textContent).toContain('General')
     // Model is the default active panel.
     expect(nav?.querySelector('[aria-current="page"]')?.textContent).toContain('Model')
 
@@ -1743,6 +1778,161 @@ describe('SettingsPage Codex framework', () => {
 
     expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(
       'The Codex adapter failed to spawn.'
+    )
+  })
+
+  it('drives the rendered Specialists page through invalid and valid write-from-scratch creation', async () => {
+    const api = (
+      window as unknown as { api: { settings: Record<string, ReturnType<typeof vi.fn>> } }
+    ).api
+    const create = vi.fn().mockResolvedValue({ id: 'new-id', revision: 1 })
+    api.settings.createSpecialist = create
+
+    await act(async () => {
+      root.render(<SettingsPage open onClose={vi.fn()} />)
+    })
+    await act(async () => navButton('Specialists')?.click())
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+
+    expect(document.body.textContent).toContain('Customize')
+    expect(document.body.textContent).toContain('Reviewer')
+    expect(document.body.textContent).toContain('All (2)')
+    await act(async () =>
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.trim() === 'Add specialist')
+        ?.click()
+    )
+    await act(async () =>
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.trim() === 'Write from scratch')
+        ?.click()
+    )
+
+    const inputs = document.body.querySelectorAll<HTMLInputElement>(
+      '[data-testid="specialist-editor"] input'
+    )
+    const name = inputs[0]
+    const agentId = inputs[1]
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
+        name,
+        'RNA review'
+      )
+      name?.dispatchEvent(new Event('input', { bubbles: true }))
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
+        agentId,
+        'Not valid'
+      )
+      agentId?.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () =>
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.trim() === 'Create specialist')
+        ?.click()
+    )
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toMatch(/agent id/i)
+    expect(name?.value).toBe('RNA review')
+
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
+        agentId,
+        'rna-review'
+      )
+      agentId?.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    await act(async () =>
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.trim() === 'Create specialist')
+        ?.click()
+    )
+    expect(create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        agentId: 'rna-review',
+        name: 'RNA review',
+        skillIds: [],
+        connectorIds: ['chemistry']
+      })
+    )
+  })
+
+  it('marks disabled and missing capability references distinctly and keeps them removable', async () => {
+    const api = (
+      window as unknown as { api: { settings: Record<string, ReturnType<typeof vi.fn>> } }
+    ).api
+    api.settings.listSpecialists = vi.fn().mockResolvedValue([
+      {
+        id: 'custom-1',
+        agentId: 'rna-review',
+        name: 'RNA review',
+        skillIds: ['alpha', 'removed-skill'],
+        connectorIds: ['chemistry', 'gone-connector'],
+        enabled: true,
+        revision: 1,
+        kind: 'custom',
+        effectiveSkillCount: 0,
+        effectiveConnectorCount: 0
+      }
+    ])
+    api.settings.listSkills = vi.fn().mockResolvedValue([
+      {
+        id: 'alpha',
+        name: 'Alpha',
+        description: 'Disabled globally',
+        source: 'featured',
+        updatedAt: '2026-07-08T00:00:00.000Z',
+        enabled: false
+      }
+    ])
+    api.settings.listConnectors = vi.fn().mockResolvedValue({
+      connectors: [
+        {
+          id: 'chemistry',
+          displayName: 'Chemistry',
+          description: 'Disabled globally',
+          sources: [],
+          requiresNcbi: false,
+          enabled: false,
+          autoAllow: false
+        }
+      ],
+      customServers: [],
+      ncbi: { hasApiKey: false }
+    })
+    const update = vi.fn().mockResolvedValue(undefined)
+    api.settings.updateSpecialist = update
+
+    await act(async () => {
+      root.render(<SettingsPage open onClose={vi.fn()} />)
+    })
+    await act(async () => navButton('Specialists')?.click())
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+    await act(async () =>
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('RNA review'))
+        ?.click()
+    )
+
+    expect(
+      document.body.querySelector('[data-capability-state="disabled"]')?.textContent
+    ).toContain('Alpha (disabled)')
+    expect(document.body.querySelectorAll('[data-capability-state="missing"]')).toHaveLength(2)
+    await act(async () =>
+      document.body.querySelector<HTMLButtonElement>('[aria-label="Remove removed-skill"]')?.click()
+    )
+    await act(async () =>
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.trim() === 'Save changes')
+        ?.click()
+    )
+    expect(update).toHaveBeenCalledWith(
+      expect.objectContaining({
+        skillIds: ['alpha'],
+        connectorIds: ['chemistry', 'gone-connector']
+      })
     )
   })
 })

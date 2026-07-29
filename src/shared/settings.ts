@@ -400,6 +400,51 @@ export type SettingsSnapshot = {
   appIconVariant: AppIconVariant
 }
 
+// --- Specialists --------------------------------------------------------------------------------
+
+export type SpecialistKind = 'custom' | 'builtin-customize' | 'builtin-reviewer'
+
+// Renderer-safe specialist projection. Capability ids are retained even if unavailable so the
+// editor can show and remove stale references; effective counts only include currently available ids.
+export type SpecialistView = {
+  id: string
+  agentId: string
+  name: string
+  description?: string
+  instructions?: string
+  colorKey?: string
+  iconKey?: string
+  skillIds: string[]
+  connectorIds: string[]
+  enabled: boolean
+  revision: number
+  kind: SpecialistKind
+  effectiveSkillCount: number
+  effectiveConnectorCount: number
+}
+
+export type SpecialistDraft = {
+  agentId: string
+  name: string
+  description?: string
+  instructions?: string
+  colorKey?: string
+  iconKey?: string
+  skillIds?: string[]
+  connectorIds?: string[]
+  enabled?: boolean
+}
+
+export type CreateSpecialistRequest = SpecialistDraft
+export type UpdateSpecialistRequest = SpecialistDraft & { id: string; expectedRevision: number }
+export type DuplicateSpecialistRequest = { id: string; expectedRevision: number }
+export type SetSpecialistEnabledRequest = {
+  id: string
+  expectedRevision?: number
+  enabled: boolean
+}
+export type DeleteSpecialistRequest = { id: string; expectedRevision: number }
+
 // Request to set (or clear, via omitted fields) the package-mirror configuration.
 export type SetPackageMirrorRequest = PackageMirror
 

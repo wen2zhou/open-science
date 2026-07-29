@@ -45,7 +45,12 @@ import {
   type SetToolPermissionRequest,
   type UpdateSkillRequest,
   type UpsertProviderRequest,
-  type ValidateProviderRequest
+  type ValidateProviderRequest,
+  type CreateSpecialistRequest,
+  type UpdateSpecialistRequest,
+  type DuplicateSpecialistRequest,
+  type SetSpecialistEnabledRequest,
+  type DeleteSpecialistRequest
 } from '../../shared/settings'
 import type { ResolvedReasoningEffort } from '../../shared/reasoning-effort'
 import { createDefaultSettingsService, SettingsService } from './service'
@@ -115,6 +120,23 @@ const registerSettingsIpcHandlers = ({
 
   ipcMain.handle('settings:get-preflight', () => service.getPreflight())
   ipcMain.handle('settings:get-settings', () => service.getSettingsView())
+  ipcMain.handle('settings:list-specialists', () => service.listSpecialists())
+  ipcMain.handle('settings:create-specialist', (_event, request: CreateSpecialistRequest) =>
+    service.createSpecialist(request)
+  )
+  ipcMain.handle('settings:update-specialist', (_event, request: UpdateSpecialistRequest) =>
+    service.updateSpecialist(request)
+  )
+  ipcMain.handle('settings:duplicate-specialist', (_event, request: DuplicateSpecialistRequest) =>
+    service.duplicateSpecialist(request)
+  )
+  ipcMain.handle(
+    'settings:set-specialist-enabled',
+    (_event, request: SetSpecialistEnabledRequest) => service.setSpecialistEnabled(request)
+  )
+  ipcMain.handle('settings:delete-specialist', (_event, request: DeleteSpecialistRequest) =>
+    service.deleteSpecialist(request)
+  )
   ipcMain.handle('settings:encryption-available', () => service.isEncryptionAvailable())
   ipcMain.handle('settings:npm-available', () => service.isNpmAvailable())
   ipcMain.handle('settings:check-environment', () => service.checkEnvironment())

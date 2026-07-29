@@ -1,4 +1,5 @@
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 import { isAbsolute, join, normalize, parse } from 'node:path'
 import { isDeepStrictEqual } from 'node:util'
 
@@ -44,6 +45,7 @@ import {
   type StoredCodexInfo,
   type StoredCustomMcpServer,
   type StoredProvider,
+  type StoredSpecialist,
   type StoredSettings
 } from './types'
 
@@ -87,6 +89,62 @@ const asStringArray = (value: unknown): string[] =>
 
 const asBoolean = (value: unknown): boolean | undefined =>
   typeof value === 'boolean' ? value : undefined
+
+const SPECIALIST_AGENT_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
+const SPECIALIST_COLOR_KEYS = new Set(['blue', 'green', 'orange', 'pink', 'purple', 'red', 'slate'])
+const SPECIALIST_ICON_KEYS = new Set([
+  'beaker',
+  'book-open',
+  'brain',
+  'flask-conical',
+  'microscope',
+  'search'
+])
+
+const uniqueStrings = (value: unknown): string[] =>
+  Array.isArray(value)
+    ? [...new Set(value.filter((entry): entry is string => typeof entry === 'string'))]
+    : []
+
+// Keeps only complete, structurally safe specialist records. Capability ids are intentionally not
+// resolved here: legacy/missing ids must remain visible to the editor and only new writes are gated.
+const sanitizeSpecialist = (value: unknown): StoredSpecialist | undefined => {
+  if (!isRecord(value)) return undefined
+  const id = asString(value.id)
+  const agentId = asString(value.agentId)
+  const name = asString(value.name)?.trim()
+  const enabled = asBoolean(value.enabled)
+  const revision = asNumber(value.revision)
+  if (
+    !id ||
+    !agentId ||
+    !SPECIALIST_AGENT_ID.test(agentId) ||
+    !name ||
+    enabled === undefined ||
+    !revision ||
+    revision < 1
+  ) {
+    return undefined
+  }
+  const specialist: StoredSpecialist = {
+    id,
+    agentId,
+    name: name.slice(0, 80),
+    skillIds: uniqueStrings(value.skillIds),
+    connectorIds: uniqueStrings(value.connectorIds),
+    enabled,
+    revision: Math.floor(revision)
+  }
+  const description = asString(value.description)
+  const instructions = asString(value.instructions)
+  const colorKey = asString(value.colorKey)
+  const iconKey = asString(value.iconKey)
+  if (description) specialist.description = description.slice(0, 500)
+  if (instructions) specialist.instructions = instructions.slice(0, 20_000)
+  if (colorKey && SPECIALIST_COLOR_KEYS.has(colorKey)) specialist.colorKey = colorKey
+  if (iconKey && SPECIALIST_ICON_KEYS.has(iconKey)) specialist.iconKey = iconKey
+  return specialist
+}
 
 // Rebuilds a record<string,string>, dropping any key whose value isn't a string. Returns undefined
 // for a non-record input or when nothing survives.
@@ -428,6 +486,20 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
     version: SETTINGS_FILE_VERSION,
     providers
   }
+  if (Array.isArray(value.specialists)) {
+    const specialists = value.specialists
+      .map(sanitizeSpecialist)
+      .filter((entry): entry is StoredSpecialist => !!entry)
+    if (specialists.length !== value.specialists.length)
+      log.warn('dropping malformed stored specialist')
+    if (specialists.length) settings.specialists = specialists
+  }
+  if (
+    Array.isArray(value.disabledBuiltinSpecialistIds) &&
+    value.disabledBuiltinSpecialistIds.includes('customize')
+  ) {
+    settings.disabledBuiltinSpecialistIds = ['customize']
+  }
   const claudeSubscriptionProviderId = asString(value.claudeSubscriptionProviderId)
 
   if (
@@ -710,6 +782,60 @@ class SettingsRepository {
     } catch {
       return createEmptySettings()
     }
+  }
+
+  async createSpecialist(
+    input: Omit<StoredSpecialist, 'id' | 'revision' | 'enabled'> & { enabled?: boolean }
+  ): Promise<StoredSpecialist> {
+    const specialist: StoredSpecialist = {
+      ...input,
+      id: randomUUID(),
+      revision: 1,
+      enabled: input.enabled ?? true,
+      skillIds: [...input.skillIds],
+      connectorIds: [...input.connectorIds]
+    }
+    await this.mutate((settings) => ({
+      ...settings,
+      specialists: [...(settings.specialists ?? []), specialist]
+    }))
+    return specialist
+  }
+
+  async replaceSpecialist(
+    id: string,
+    expectedRevision: number,
+    replacement: StoredSpecialist
+  ): Promise<StoredSpecialist> {
+    await this.mutate((settings) => {
+      const specialists = settings.specialists ?? []
+      const index = specialists.findIndex((entry) => entry.id === id)
+      if (index < 0) throw new Error('Specialist not found.')
+      if (specialists[index].revision !== expectedRevision)
+        throw new Error('Specialist was changed elsewhere. Reload or Duplicate your draft.')
+      const next = [...specialists]
+      next[index] = replacement
+      return { ...settings, specialists: next }
+    })
+    return replacement
+  }
+
+  async deleteSpecialist(id: string, expectedRevision: number): Promise<void> {
+    await this.mutate((settings) => {
+      const specialists = settings.specialists ?? []
+      const target = specialists.find((entry) => entry.id === id)
+      if (!target) throw new Error('Specialist not found.')
+      if (target.revision !== expectedRevision)
+        throw new Error('Specialist was changed elsewhere. Reload or Duplicate your draft.')
+      return { ...settings, specialists: specialists.filter((entry) => entry.id !== id) }
+    })
+  }
+
+  async setBuiltinSpecialistDisabled(_id: 'customize', disabled: boolean): Promise<void> {
+    await this.mutate((settings) => ({
+      ...settings,
+      disabledBuiltinSpecialistIds: disabled ? ['customize'] : undefined
+    }))
   }
 
   // Inserts or replaces a provider by id, then returns the persisted document. An existing provider is

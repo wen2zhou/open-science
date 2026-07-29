@@ -171,7 +171,13 @@ import type {
   RespondApprovalRequest,
   UpsertProviderRequest,
   ValidateProviderRequest,
-  ValidateProviderResult
+  ValidateProviderResult,
+  SpecialistView,
+  CreateSpecialistRequest,
+  UpdateSpecialistRequest,
+  DuplicateSpecialistRequest,
+  SetSpecialistEnabledRequest,
+  DeleteSpecialistRequest
 } from '../shared/settings'
 import type { PackageMirror } from '../shared/mirror'
 import type {
@@ -255,6 +261,12 @@ interface OpenScienceAPI {
   settings: {
     getPreflight(): Promise<Preflight>
     getSettings(): Promise<SettingsSnapshot>
+    listSpecialists(): Promise<SpecialistView[]>
+    createSpecialist(request: CreateSpecialistRequest): Promise<SpecialistView>
+    updateSpecialist(request: UpdateSpecialistRequest): Promise<SpecialistView>
+    duplicateSpecialist(request: DuplicateSpecialistRequest): Promise<SpecialistView>
+    setSpecialistEnabled(request: SetSpecialistEnabledRequest): Promise<SpecialistView>
+    deleteSpecialist(request: DeleteSpecialistRequest): Promise<void>
     isEncryptionAvailable(): Promise<boolean>
     isNpmAvailable(): Promise<boolean>
     checkEnvironment(): Promise<EnvironmentCheckResult>

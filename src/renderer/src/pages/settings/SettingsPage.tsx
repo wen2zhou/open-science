@@ -6,6 +6,7 @@ import {
   Maximize2,
   Minimize2,
   ScrollText,
+  UsersRound,
   Settings2,
   SlidersHorizontal,
   TerminalSquare,
@@ -33,6 +34,7 @@ import { NetworkPanel } from './NetworkPanel'
 import { StoragePanel } from './StoragePanel'
 import { RuntimesPanel } from './RuntimesPanel'
 import { SkillsPanel, type SkillsView } from './SkillsPanel'
+import { SpecialistsPanel } from './SpecialistsPanel'
 import { ConnectorsPanel, type ConnectorsView } from './ConnectorsPanel'
 import { ConnectorDetailView } from './ConnectorDetailView'
 import { ConnectorAddForm } from './ConnectorAddForm'
@@ -119,6 +121,7 @@ const SETTINGS_GROUPS: ReadonlyArray<{ label: string; panels: ReadonlyArray<Sett
     label: 'Capabilities',
     panels: [
       { id: 'skills', label: 'Skills', Icon: ScrollText },
+      { id: 'specialists', label: 'Specialists', Icon: UsersRound },
       { id: 'connectors', label: 'Connectors', Icon: ConnectorsNavIcon },
       { id: 'compute', label: 'Compute', Icon: Zap },
       { id: 'network', label: 'Network', Icon: Globe }
@@ -751,6 +754,8 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
                     onNavigate={navigateSkills}
                     canImportInstalledSkills={canImportInstalledSkills}
                   />
+                ) : activePanel === 'specialists' ? (
+                  <SpecialistsPanel />
                 ) : activePanel === 'connectors' ? (
                   connectorsView.kind === 'detail' ? (
                     <ConnectorDetailView id={connectorsView.id} />
