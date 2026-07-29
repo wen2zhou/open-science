@@ -131,6 +131,12 @@ import type { UploadedAttachment } from '../../shared/uploads'
 import type { ArtifactFile, FileReference } from '../../shared/artifacts'
 import { isMediaOverflowError } from '../../shared/media-overflow'
 import type { AcpRuntimeActivity, AcpRuntimeActivityOptions } from './runtime-activity'
+import {
+  resolveSessionSpecialist,
+  specialistAppendFor,
+  type SessionSpecialistRuntime
+} from '../specialists/session-specialist-runtime'
+import type { StoredSpecialist } from '../settings/types'
 import { REVIEWER_MCP_SERVER_NAME, REVIEWER_MCP_TOOLS } from '../../shared/reviewer'
 import {
   buildImageContentData,
@@ -191,6 +197,18 @@ type AcpRuntimeOptions = {
   // Per-session cumulative inlined-image budget in base64 bytes. Defaults to MAX_SESSION_INLINE_IMAGE_BYTES;
   // injectable so tests can drive the degrade-to-file path with small fixtures.
   inlineImageBudgetBytes?: number
+  // Per-session Specialist resolution inputs. Optional so tests that build the runtime without
+  // specialists are unaffected; every usage guards on presence. getBoundSpecialistId points at the
+  // coordinator-owned registry (tracks persisted selection); getSpecialistCatalog reads the latest
+  // settings catalog. The runtime refreshes the catalog before every execution so a Specialist
+  // mutation takes effect immediately, never from a connect-time snapshot.
+  specialists?: {
+    getBoundSpecialistId: (sessionId: string) => string | undefined
+    getSpecialistCatalog: () => Promise<{
+      custom: StoredSpecialist[]
+      builtins: StoredSpecialist[]
+    }>
+  }
 }
 
 // Turn-scoped skill force-load hooks, wired from the settings service. Optional so tests that construct
@@ -702,6 +720,16 @@ class AcpRuntime {
   private readonly callbacks: AcpRuntimeCallbacks
   private readonly spawnAgent: (() => ChildProcessWithoutNullStreams) | undefined
   private readonly skillsHooks: AcpRuntimeSkillsOptions | undefined
+  // Per-session Specialist seam; undefined in tests that build the runtime without specialists.
+  private readonly specialists:
+    | {
+        getBoundSpecialistId: (sessionId: string) => string | undefined
+        getSpecialistCatalog: () => Promise<{
+          custom: StoredSpecialist[]
+          builtins: StoredSpecialist[]
+        }>
+      }
+    | undefined
   // Mutable: refreshed from resolveBackend on each connect so a framework switch applies on reconnect.
   private framework: AgentFramework
   private backendId: string | undefined
@@ -724,6 +752,10 @@ class AcpRuntime {
   private pendingSessionEffort: ModelReasoningEffort | undefined
   private pendingSessionOptions: Record<string, unknown> | undefined
   private pendingSystemPromptAppends: string[] = []
+  // Latest Specialist catalog snapshot for the seam. Refreshed before every prompt and resume so the
+  // runtime resolves the bound id against current settings rather than the connect-time catalog.
+  private specialistCatalog:
+    { custom: StoredSpecialist[]; builtins: StoredSpecialist[] } | undefined
   // The latest configOptions each session reported — seeded from session/new and refreshed after a
   // model switch (effort rungs are model-dependent, so the original set goes stale). The live effort
   // path resolves against this, never against the possibly-outdated session/new response.
@@ -777,6 +809,7 @@ class AcpRuntime {
     this.callbacks = options.callbacks ?? {}
     this.spawnAgent = options.spawnAgent
     this.skillsHooks = options.skills
+    this.specialists = options.specialists
     this.framework = options.framework ?? claudeCodeFramework
     this.mcpHttpHost = options.mcpHttpHost
     this.resumeTimeoutMs = options.resumeTimeoutMs ?? 30_000
@@ -1447,6 +1480,10 @@ class AcpRuntime {
   private async resumeSessionOperation(
     request: AcpResumeSessionRequest
   ): Promise<AcpCreateSessionResponse> {
+    // Reissue this session's _meta against the latest Specialist catalog so a binding changed (or a
+    // Specialist disabled) while the app was closed resolves to the current state, not the persisted
+    // snapshot's assumptions. Guarded so runtimes without specialists incur no microtask yield.
+    if (this.specialists) await this.refreshSpecialistCatalog()
     const sessionCwd = resolve(request.cwd || this.cwd || this.options.defaultCwd)
     const projectName = this.normalizeProjectName(request.projectName)
 
@@ -1765,7 +1802,7 @@ class AcpRuntime {
         sessionId: request.sessionId,
         cwd: sessionCwd,
         mcpServers,
-        ...this.buildSessionMetaArg()
+        ...this.buildSessionMetaArg(request.sessionId)
       })
     } catch (error) {
       if (!isUnresumableSessionError(error)) throw error
@@ -1852,7 +1889,7 @@ class AcpRuntime {
       .buildSession({
         cwd: sessionCwd,
         mcpServers,
-        ...this.buildSessionMetaArg()
+        ...this.buildSessionMetaArg(request.sessionId)
       })
       .start()
 
@@ -2377,6 +2414,10 @@ class AcpRuntime {
     request: AcpPromptRequest,
     promptAttemptId?: string
   ): Promise<PromptResponse> {
+    // Resolve the Specialist catalog against the latest settings before this turn so a switch or a
+    // disablement that happened since the last turn takes effect now (the append builder is sync).
+    // Guarded so runtimes without specialists incur no microtask yield, preserving prompt timing.
+    if (this.specialists) await this.refreshSpecialistCatalog()
     let activeSession = this.sessions.get(request.sessionId)
 
     if (!activeSession) {
@@ -2527,7 +2568,7 @@ class AcpRuntime {
       // session _meta but repeats the short activity declaration reminder here; frameworks without a
       // session preset carry the complete guidance as a prompt prefix.
       const { promptPrefix } = this.framework.buildSessionSetup({
-        systemPromptAppends: this.getSystemPromptAppends(),
+        systemPromptAppends: this.getSystemPromptAppends(request.sessionId),
         turnPromptReminders: this.getTurnPromptReminders(),
         sessionOptions: this.pendingSessionOptions
       })
@@ -3843,10 +3884,10 @@ class AcpRuntime {
     )
   }
 
-  private getSystemPromptAppends(): string[] {
+  private getSystemPromptAppends(sessionId?: string): string[] {
     // Each append names MCP tools that only exist when that tooling is actually wired for this session;
     // omit it otherwise so the agent isn't told to use tools it wasn't given.
-    return [
+    const base = [
       TURN_CONTINUITY_SYSTEM_PROMPT_APPEND,
       LARGE_DATA_FILE_SYSTEM_PROMPT_APPEND,
       ...this.pendingSystemPromptAppends,
@@ -3857,6 +3898,41 @@ class AcpRuntime {
       ...(this.notebookToolingAvailable() ? [NOTEBOOK_SYSTEM_PROMPT_APPEND] : []),
       ...(this.skillImportToolingAvailable() ? [SKILL_IMPORT_SYSTEM_PROMPT_APPEND] : [])
     ]
+    // Specialist instructions are append-only: a bound Specialist contributes its guidance on top of
+    // the framework/base identity, safety rules, and tool docs. None and unavailable add nothing
+    // (unavailable is fail-closed). Resolved against the LATEST settings so a freshly disabled
+    // Specialist takes effect immediately rather than from a stale hydration snapshot.
+    const specialistAppend = this.specialistAppendForSession(sessionId)
+    return specialistAppend ? [...base, specialistAppend] : base
+  }
+
+  // Refreshes the cached Specialist catalog from settings. Called before every prompt and resume so
+  // the synchronous append builder resolves against current settings, not a stale snapshot. Failures
+  // are swallowed and logged with the session/specialist ids only (never instruction contents); the
+  // runtime keeps whatever catalog it last had, which is still more recent than the connect-time one.
+  private async refreshSpecialistCatalog(): Promise<void> {
+    if (!this.specialists) return
+    try {
+      this.specialistCatalog = await this.specialists.getSpecialistCatalog()
+    } catch (error) {
+      log.warn('specialist catalog refresh failed', errorLogFields(error))
+    }
+  }
+
+  // Resolves the bound Specialist for a session and returns its trimmed instructions as a prompt
+  // append, or '' (no append) when unbound, unavailable, or when the seam is absent. Empty/whitespace
+  // instructions also yield no append so a bound Specialist with no guidance leaves the base prompt
+  // untouched. sessionId is undefined on fresh session creation; in that case there is no persisted
+  // binding yet, so the append is correctly empty.
+  private specialistAppendForSession(sessionId?: string): string {
+    if (!this.specialists || !sessionId) return ''
+    const runtime: SessionSpecialistRuntime = {
+      getBoundSpecialistId: this.specialists.getBoundSpecialistId,
+      getCustomSpecialists: () => this.specialistCatalog?.custom ?? [],
+      getBuiltinSpecialists: () => this.specialistCatalog?.builtins ?? []
+    }
+    const resolved = resolveSessionSpecialist(runtime, sessionId)
+    return specialistAppendFor(resolved)
   }
 
   private getTurnPromptReminders(): string[] {
@@ -3868,9 +3944,9 @@ class AcpRuntime {
   // Builds the ACP `_meta` argument for session/new and session/resume, delegating the framework-specific
   // shape to the active framework. Claude applies its settingSources restriction, resolved backend
   // options, and system-prompt appends; opencode returns no meta and uses a prompt prefix instead.
-  private buildSessionMetaArg(): { _meta?: Record<string, unknown> } {
+  private buildSessionMetaArg(sessionId?: string): { _meta?: Record<string, unknown> } {
     const setup = this.framework.buildSessionSetup({
-      systemPromptAppends: this.getSystemPromptAppends(),
+      systemPromptAppends: this.getSystemPromptAppends(sessionId),
       sessionOptions: this.pendingSessionOptions
     })
 

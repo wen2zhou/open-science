@@ -1373,3 +1373,65 @@ describe('AcpRuntimeCoordinator', () => {
     })
   })
 })
+
+describe('AcpRuntimeCoordinator Specialist registry', () => {
+  it('updates the per-session Specialist binding without touching other sessions', async () => {
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1', 'session-2'],
+        callbacks
+      })
+      return fake.runtime
+    })
+    const sessionA = await coordinator.createSession()
+    const sessionB = await coordinator.createSession()
+    const registry = coordinator.getSpecialistRegistry()
+
+    coordinator.setSessionSpecialist(sessionA.sessionId, 'spec-a')
+    coordinator.setSessionSpecialist(sessionB.sessionId, 'spec-b')
+
+    expect(registry.get(sessionA.sessionId)).toEqual({ kind: 'bound', specialistId: 'spec-a' })
+    expect(registry.get(sessionB.sessionId)).toEqual({ kind: 'bound', specialistId: 'spec-b' })
+  })
+
+  it('clears the binding when the session is deleted', async () => {
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1'],
+        callbacks
+      })
+      return fake.runtime
+    })
+    const session = await coordinator.createSession()
+    const registry = coordinator.getSpecialistRegistry()
+    coordinator.setSessionSpecialist(session.sessionId, 'spec-a')
+    expect(registry.get(session.sessionId)).toEqual({ kind: 'bound', specialistId: 'spec-a' })
+
+    await coordinator.deleteSession({ sessionId: session.sessionId })
+
+    expect(registry.get(session.sessionId)).toEqual({ kind: 'none' })
+  })
+
+  it('switching a session to None does not affect a different bound session', async () => {
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1', 'session-2'],
+        callbacks
+      })
+      return fake.runtime
+    })
+    const sessionA = await coordinator.createSession()
+    const sessionB = await coordinator.createSession()
+    const registry = coordinator.getSpecialistRegistry()
+    coordinator.setSessionSpecialist(sessionA.sessionId, 'spec-a')
+    coordinator.setSessionSpecialist(sessionB.sessionId, 'spec-b')
+
+    coordinator.setSessionSpecialist(sessionA.sessionId, undefined)
+
+    expect(registry.get(sessionA.sessionId)).toEqual({ kind: 'none' })
+    expect(registry.get(sessionB.sessionId)).toEqual({ kind: 'bound', specialistId: 'spec-b' })
+  })
+})

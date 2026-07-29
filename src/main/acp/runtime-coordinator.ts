@@ -19,6 +19,7 @@ import type { ResolvedReasoningEffort } from '../../shared/reasoning-effort'
 import { AcpRuntime, type AcpRuntimeCallbacks } from './runtime'
 import type { AcpRuntimeActivity, AcpRuntimeActivityOptions } from './runtime-activity'
 import { ConversationPermissionGrantStore } from './permission-broker'
+import { SessionSpecialistRegistry } from '../specialists/session-specialist-registry'
 
 const MAX_EVENTS = 500
 
@@ -73,10 +74,29 @@ class AcpRuntimeCoordinator {
     private readonly initializationBarrier?: Promise<unknown>,
     private readonly onDisconnected?: () => void,
     private readonly onSessionUnavailable?: (sessionId: string) => void,
-    private readonly teardownCallbacks: AcpRuntimeCoordinatorTeardownCallbacks = {}
+    private readonly teardownCallbacks: AcpRuntimeCoordinatorTeardownCallbacks = {},
+    // Shared per-session Specialist registry. When omitted the coordinator owns a private instance,
+    // so existing tests are unaffected. The runtime reads it through its specialists seam, which
+    // resolves the bound id against the latest settings before every execution (not the hydration
+    // snapshot), keeping persisted and runtime selection synchronized without a stale-cache escape.
+    private readonly specialistRegistry: SessionSpecialistRegistry = new SessionSpecialistRegistry()
   ) {
     this.activeRuntime = this.addRuntime()
     this.lastRuntime = this.activeRuntime
+  }
+
+  // Exposes the shared registry so IPC handlers and the runtime seam resolve against the same map.
+  getSpecialistRegistry(): SessionSpecialistRegistry {
+    return this.specialistRegistry
+  }
+
+  // Updates the persisted Specialist binding for one session WITHOUT global skills reload or runtime
+  // retirement: the runtime resolves the new id against current settings on the next turn/resume, so
+  // an in-flight turn keeps its old configuration and only later turns pick up the new Specialist
+  // (target-session reconfigure per the PRD). The persisted selection is kept even if a later resume
+  // fails; recovery never downgrades to None or the old Specialist.
+  setSessionSpecialist(sessionId: string, specialistId: string | undefined): void {
+    this.specialistRegistry.set(sessionId, specialistId)
   }
 
   getSnapshot(): AcpStateSnapshot {
@@ -301,6 +321,8 @@ class AcpRuntimeCoordinator {
       this.sessionRuntimes.delete(request.sessionId)
       this.sessionConnectionStatuses.delete(request.sessionId)
       this.onSessionUnavailable?.(request.sessionId)
+      // Drop the Specialist binding so a reused id can never inherit a deleted session's identity.
+      this.specialistRegistry.clear(request.sessionId)
     }
     return this.getSnapshot()
   }
@@ -610,6 +632,9 @@ class AcpRuntimeCoordinator {
         this.sessionConnectionStatuses.delete(sessionId)
       }
       this.onSessionUnavailable?.(sessionId)
+      // A session that has left this runtime is gone for good: drop its Specialist binding so a
+      // reused id can never inherit a departed session's identity.
+      this.specialistRegistry.clear(sessionId)
     }
     return attached
   }

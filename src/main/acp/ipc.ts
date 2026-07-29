@@ -34,6 +34,10 @@ import { NotebookRuntimeService } from '../notebook/runtime-service'
 import { resolveConfigRoot, resolveDataRoot } from '../storage-root'
 import type { SettingsService } from '../settings/service'
 import type { UploadRepository } from '../uploads/repository'
+import {
+  boundSpecialistId,
+  SessionSpecialistRegistry
+} from '../specialists/session-specialist-registry'
 import { broadcastToRenderers } from '../renderer-broadcast'
 import { withDataRootWrite } from '../storage/migration-state'
 import { createLogger, errorLogFields } from '../logger'
@@ -104,6 +108,9 @@ const createRuntime = ({
   const configRoot = resolveConfigRoot()
   const dataRoot = resolveDataRoot()
   const defaultCwd = homedir()
+  // One registry per process, shared by every runtime generation and the IPC layer. Created here so
+  // the runtime factory closure can capture it before the coordinator is constructed.
+  const specialistRegistry = new SessionSpecialistRegistry()
   const callbacks: AcpRuntimeCallbacks = {
     onStateChanged: (state: AcpStateSnapshot) => broadcast('acp:state', state),
     onEvent: (event: AcpRuntimeEvent) => {
@@ -138,6 +145,13 @@ const createRuntime = ({
           descriptorsForIds: (ids, codexHome) =>
             settingsService.codexSkillDescriptorsForIds(ids, codexHome),
           catalogForCodexHome: (codexHome) => settingsService.codexSkillCatalog(codexHome)
+        },
+        // Specialist resolution: the bound id comes from the coordinator-owned registry (kept in sync
+        // with persisted sessions); the catalog is read fresh from settings on every prompt/resume so
+        // a switch or disablement takes effect immediately.
+        specialists: {
+          getBoundSpecialistId: (sessionId) => boundSpecialistId(specialistRegistry.get(sessionId)),
+          getSpecialistCatalog: () => settingsService.getSpecialistCatalog()
         },
         artifacts: {
           configRoot,
@@ -179,7 +193,8 @@ const createRuntime = ({
       onSkillImportAttachmentEligible,
       onSessionCancellationRequested,
       onAllSessionsCancellationRequested
-    }
+    },
+    specialistRegistry
   )
 }
 
@@ -224,6 +239,16 @@ const registerAcpIpcHandlers = (options: AcpIpcOptions): AcpRuntimeCoordinator =
   )
   ipcMain.handle('acp:reset-session-context', (_event, request: AcpResumeSessionRequest) =>
     runtime.resetSessionContext(request)
+  )
+  // Updates the Specialist bound to one session. Persisted selection lives in the session file (written
+  // by the renderer); this keeps the runtime registry in sync so the next turn/resume resolves the new
+  // Specialist against current settings. Target-session only: no global skills reload or retirement.
+  ipcMain.handle(
+    'acp:set-session-specialist',
+    (_event, request: { sessionId: string; specialistId: string | undefined }) => {
+      runtime.setSessionSpecialist(request.sessionId, request.specialistId)
+      return undefined
+    }
   )
   ipcMain.handle('acp:compact-session', (_event, request: AcpCompactSessionRequest) =>
     runtime.compactSession(request)

@@ -891,6 +891,61 @@ describe('ACP runtime session management', () => {
       )
     }
   )
+  it('appends a bound Specialist instructions to the resumed session meta (Claude Code)', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['resumed-specialist-session'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.2.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      specialists: {
+        getBoundSpecialistId: () => 'spec-rnaseq',
+        getSpecialistCatalog: async () => ({
+          custom: [
+            {
+              id: 'spec-rnaseq',
+              agentId: 'spec-rnaseq',
+              name: 'RNA-seq reviewer',
+              instructions: 'Always check batch confounders before differential expression.',
+              skillIds: [],
+              connectorIds: [],
+              enabled: true,
+              revision: 1
+            }
+          ],
+          builtins: []
+        })
+      }
+    })
+
+    // Resume carries the persisted app session id, so the runtime can resolve the Specialist against
+    // the latest settings and append its instructions into the session _meta (Claude Code path).
+    await runtime.resumeSession({ sessionId: 'resumed-specialist-session', cwd: '/workspace' })
+
+    expect(JSON.stringify(fakeAgent.resumedSessions[0]._meta)).toContain(
+      'Always check batch confounders before differential expression.'
+    )
+  })
+
+  it('appends no Specialist instructions for an unavailable binding (fail closed)', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['resumed-unavailable-session'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.2.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      specialists: {
+        // Bound to an id that no longer resolves (deleted) — must fail closed, adding nothing.
+        getBoundSpecialistId: () => 'spec-gone',
+        getSpecialistCatalog: async () => ({ custom: [], builtins: [] })
+      }
+    })
+
+    await runtime.resumeSession({ sessionId: 'resumed-unavailable-session', cwd: '/workspace' })
+
+    expect(JSON.stringify(fakeAgent.resumedSessions[0]._meta)).not.toContain('spec-gone')
+  })
+
   it('applies native Full access before the first prompt', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['full-session'], {

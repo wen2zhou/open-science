@@ -431,3 +431,33 @@ describe('normalizeSessionFile with activities', () => {
     expect(noError?.errorReportable).toBeUndefined()
   })
 })
+
+describe('specialistId persistence', () => {
+  const base = { ...createSessionWithActivity(undefined), activities: undefined }
+
+  it('round-trips a valid specialist id through the file envelope', () => {
+    const restored = normalizeSessionFile({ ...base, specialistId: 'spec-uuid-1' })
+
+    expect(restored?.specialistId).toBe('spec-uuid-1')
+  })
+
+  it('omits the field for legacy sessions that never carried one', () => {
+    const legacy = normalizeSessionFile({ ...base })
+
+    expect(legacy?.specialistId).toBeUndefined()
+  })
+
+  it('drops an empty string so it resolves to None rather than a phantom binding', () => {
+    const empty = normalizeSessionFile({ ...base, specialistId: '' })
+
+    expect(empty?.specialistId).toBeUndefined()
+  })
+
+  it('drops a non-string value so corrupt data never produces a phantom binding', () => {
+    const number = normalizeSessionFile({ ...base, specialistId: 12345 })
+    const record = normalizeSessionFile({ ...base, specialistId: { id: 'spec-1' } })
+
+    expect(number?.specialistId).toBeUndefined()
+    expect(record?.specialistId).toBeUndefined()
+  })
+})
