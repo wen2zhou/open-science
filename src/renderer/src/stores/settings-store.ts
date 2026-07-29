@@ -63,7 +63,8 @@ import type {
   AddCustomServerRequest,
   UpdateCustomServerRequest,
   ConnectorApprovalRequest,
-  ApprovalDecision
+  ApprovalDecision,
+  SpecialistView
 } from '../../../shared/settings'
 
 // Result of the combined onboarding save flow (create/edit -> validate -> activate).
@@ -104,6 +105,9 @@ type SettingsStoreData = {
   opencodeManaged: boolean
   codexManaged: boolean
   onboardingCompletedAt: number | undefined
+  // Specialist catalog loaded lazily when the composer menu opens. The composer uses this to
+  // render the Specialist submenu and resolve the per-session badge / Send-gate state.
+  specialists: SpecialistView[]
   // Bundled skills with their enabled state, loaded lazily when the Skills panel opens.
   skills: SkillView[]
   // Bundled connectors with their enabled/auto-allow state, loaded lazily when the Connectors panel opens.
@@ -238,6 +242,9 @@ type SettingsStore = SettingsStoreData & {
   consumePendingSettingsPanel: () => void
   // Clears the pending skill once its detail view has been seeded, so a later open starts fresh.
   consumePendingSkill: () => void
+  // Loads the Specialist catalog from the main process. Called when the composer menu opens so
+  // the submenu is populated; re-called after any CRUD mutation to keep the list fresh.
+  loadSpecialists: () => Promise<void>
   // Loads the bundled-skill list (enabled state included) from the main process.
   loadSkills: () => Promise<void>
   // Toggles one skill; optimistic, then reconciled with the authoritative list from main.
@@ -341,6 +348,8 @@ export const createInitialSettingsState = (): SettingsStoreData => ({
   opencodeManaged: false,
   codexManaged: false,
   onboardingCompletedAt: undefined,
+  specialists: [],
+  // Bundled skills with their enabled state, loaded lazily when the Skills panel opens.
   skills: [],
   connectors: [],
   customServers: [],
@@ -1062,6 +1071,11 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   consumePendingSettingsPanel: () => set({ pendingSettingsPanel: undefined }),
 
   consumePendingSkill: () => set({ pendingSkillId: undefined }),
+
+  loadSpecialists: async () => {
+    const specialists = await window.api.settings.listSpecialists()
+    set({ specialists })
+  },
 
   loadSkills: async () => {
     const skills = await window.api.settings.listSkills()

@@ -136,6 +136,11 @@ const renderPanel = (props: Partial<Parameters<typeof ConversationPanel>[0]> = {
         onClearPermissionGrants={vi.fn()}
         autoReviewEnabled={true}
         onAutoReviewToggle={vi.fn()}
+        sessionSpecialistResolution={{ kind: 'none' }}
+        specialistSwitching={false}
+        specialists={[]}
+        onOpenSpecialistsSettings={vi.fn()}
+        onSpecialistChange={vi.fn()}
         enabledComputeHosts={[]}
         onComputeHostToggle={vi.fn()}
         onRequestReview={vi.fn()}

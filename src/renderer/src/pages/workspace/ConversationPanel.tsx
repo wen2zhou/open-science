@@ -8,13 +8,16 @@ import type {
   PermissionProfileId,
   SessionPermissionProfileState
 } from '../../../../shared/permission-profiles'
+import type { SpecialistView } from '../../../../shared/settings'
 import {
   MAX_UPLOAD_FILE_BYTES,
   formatUploadSizeLimit,
   type UploadedAttachment
 } from '../../../../shared/uploads'
 import { isReportableRunFailure } from '../../../../shared/run-error-classification'
+import type { SessionSpecialistResolution } from '@/lib/specialists/resolve-session-specialist'
 import {
+  AlertTriangle,
   ArrowUp,
   BookOpen,
   FileText,
@@ -25,6 +28,7 @@ import {
   Plus,
   ScanEye,
   Square,
+  UserCircle2,
   X
 } from 'lucide-react'
 import { useRef, useState } from 'react'
@@ -117,6 +121,16 @@ type ConversationPanelProps = {
   canChangePermissionProfile: boolean
   // Auto-review toggle: whether the current session has auto-review enabled (default false).
   autoReviewEnabled: boolean
+  // Specialist binding state for the active session: none / bound / unavailable.
+  sessionSpecialistResolution: SessionSpecialistResolution
+  // True when the user changed the specialist while a turn was active; shows a switching banner.
+  specialistSwitching: boolean
+  // Full specialist catalog loaded from settings; passed to ComposerAgentControlsMenu submenu.
+  specialists: SpecialistView[]
+  // Navigates to Settings › Specialists from the "Create new…" submenu item.
+  onOpenSpecialistsSettings: () => void
+  // Binds (or clears, when specialistId is undefined) the specialist for the active session.
+  onSpecialistChange: (specialistId: string | undefined) => void
   onDraftDocChange: (doc: ComposerDoc) => void
   onSendMessage: (forcedSkillIds: string[]) => void
   onStageAttachmentFiles: (files: File[]) => void
@@ -168,6 +182,11 @@ const ConversationPanel = ({
   onCompactContext,
   canChangePermissionProfile,
   autoReviewEnabled,
+  sessionSpecialistResolution,
+  specialistSwitching,
+  specialists,
+  onOpenSpecialistsSettings,
+  onSpecialistChange,
   onDraftDocChange,
   onSendMessage,
   onStageAttachmentFiles,
@@ -272,6 +291,25 @@ const ConversationPanel = ({
           <h1 className="min-w-0 flex-1 truncate text-[13px] font-semibold text-text-000">
             {activeSession?.title ?? 'New conversation'}
           </h1>
+          {/* Specialist badge: bound shows icon + name; unavailable shows a warning; none is hidden. */}
+          {sessionSpecialistResolution.kind === 'bound' ? (
+            <span
+              data-testid="specialist-badge-bound"
+              className="flex items-center gap-1.5 rounded-full bg-bg-300 px-2 py-0.5 text-[11.5px] text-text-100"
+            >
+              <UserCircle2 className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+              {sessionSpecialistResolution.specialist.name}
+            </span>
+          ) : sessionSpecialistResolution.kind === 'unavailable' ? (
+            <span
+              data-testid="specialist-badge-unavailable"
+              className="flex items-center gap-1.5 rounded-full bg-amber-100 px-2 py-0.5 text-[11.5px] text-amber-700 dark:bg-amber-950/40 dark:text-amber-300"
+              title="The bound Specialist is unavailable. Select an enabled Specialist or None to continue."
+            >
+              <AlertTriangle className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+              Specialist unavailable
+            </span>
+          ) : null}
           {/* The conversation title row is the stable place to manually expand or collapse preview. */}
           <button
             type="button"
@@ -345,6 +383,18 @@ const ConversationPanel = ({
                         ) : null}
                       </div>
                     ) : null}
+                  </div>
+                ) : null}
+
+                {/* Specialist switching banner: shown while a turn is active and the user changed
+                    the Specialist. Clears automatically when the current turn settles. */}
+                {specialistSwitching ? (
+                  <div
+                    data-testid="specialist-switching-banner"
+                    className="mb-2 flex items-center gap-2 rounded-lg border border-border-200 bg-bg-200 px-3 py-2 text-[12px] leading-5 text-text-300"
+                  >
+                    <Loader2 className="size-3.5 animate-spin" strokeWidth={2} aria-hidden="true" />
+                    Switching after this response…
                   </div>
                 ) : null}
 
@@ -604,6 +654,14 @@ const ConversationPanel = ({
                           onAutoReviewChange={onAutoReviewToggle}
                           onRevokeGrant={onRevokePermissionGrant}
                           onClearGrants={onClearPermissionGrants}
+                          sessionSpecialistId={
+                            sessionSpecialistResolution.kind === 'bound'
+                              ? sessionSpecialistResolution.specialist.id
+                              : activeSession?.specialistId
+                          }
+                          specialists={specialists}
+                          onSpecialistChange={onSpecialistChange}
+                          onOpenSpecialistsSettings={onOpenSpecialistsSettings}
                         />
 
                         <div className="flex-1" />
@@ -642,7 +700,7 @@ const ConversationPanel = ({
                           <button
                             type="button"
                             onClick={handleSubmit}
-                            disabled={!canSendMessage}
+                            disabled={!canSendMessage || sessionSpecialistResolution.kind === 'unavailable'}
                             className={composerSendButtonClassName}
                             aria-label="Send message"
                           >

@@ -22,6 +22,7 @@ import {
 import type { ChatSession } from '@/stores/session-store'
 import { useSessionStore } from '@/stores/session-store'
 import { useReviewStore } from '@/stores/review-store'
+import { resolveSessionSpecialistView } from '@/lib/specialists/resolve-session-specialist'
 import {
   assembleReviewRunRequest,
   suppressNextAutoReview,
@@ -121,6 +122,11 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   const setAutoReviewEnabled = useSessionStore((state) => state.setAutoReviewEnabled)
   const setEnabledComputeHosts = useSessionStore((state) => state.setEnabledComputeHosts)
   const setFixLoopActive = useSessionStore((state) => state.setFixLoopActive)
+  const setSessionSpecialist = useSessionStore((state) => state.setSessionSpecialist)
+
+  // Specialist catalog: lazy-loaded from settings; refreshed after mutations.
+  const specialists = useSettingsStore((state) => state.specialists)
+  const openSettingsToPanel = useSettingsStore((state) => state.openSettingsToPanel)
   // Only sessions belonging to the active project are shown in this workspace.
   const sessions = useMemo(
     () => allSessions.filter((session) => session.projectId === scopedProjectId),
@@ -267,6 +273,12 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   const activeEnabledComputeHosts = activeSession
     ? (activeSession.enabledComputeHosts ?? [])
     : newConversationEnabledComputeHosts
+  // Specialist binding for the active session: resolved fail-closed from the persisted id + live catalog.
+  const activeSessionSpecialistResolution = useMemo(
+    () => resolveSessionSpecialistView(activeSession?.specialistId, specialists),
+    [activeSession?.specialistId, specialists]
+  )
+  const activeSpecialistSwitching = activeSession?.specialistSwitching === true
   // True while any review for the active session is in the 'running' lifecycle.
   // Using a shallow comparison via reviewsBySession to avoid new array reference on every render.
   const activeSessionId = activeSession?.id
@@ -1103,6 +1115,26 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     upsertAndActivatePreviewItem(createProjectFilesPreviewItem())
   }
 
+  // Binds (or clears) the Specialist for the active session. Updates the store for immediate UI
+  // feedback, then calls the IPC so main-process reconfigures the target ACP session. If the IPC
+  // rejects, the persisted selection is kept and an error surfaces via actionError — the user must
+  // retry explicitly; we never fall back to the previous Specialist or None.
+  const handleSpecialistChange = (specialistId: string | undefined): void => {
+    if (!activeSession) return
+
+    // Update the renderer store first (optimistic); specialistSwitching is set inside the action
+    // when the session is mid-turn. The persisted id is round-tripped via session serialization.
+    setSessionSpecialist(activeSession.id, specialistId)
+
+    // Fire-and-forget IPC; errors are surfaced by the workspace action-error pathway.
+    void window.api.acp.setSessionSpecialist({ sessionId: activeSession.id, specialistId })
+  }
+
+  // Navigates to Settings › Specialists so the user can create or manage specialists.
+  const openSpecialistsSettings = (): void => {
+    openSettingsToPanel('specialists')
+  }
+
   return (
     <main className="h-screen overflow-hidden bg-bg-10 p-[10px] text-[13px] leading-normal text-text-000">
       <div className="flex h-full gap-2">
@@ -1149,6 +1181,11 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
             onCompactContext={compactActiveContext}
             canChangePermissionProfile={canChangePermissionProfile}
             autoReviewEnabled={activeAutoReviewEnabled}
+            sessionSpecialistResolution={activeSessionSpecialistResolution}
+            specialistSwitching={activeSpecialistSwitching}
+            specialists={specialists}
+            onOpenSpecialistsSettings={openSpecialistsSettings}
+            onSpecialistChange={handleSpecialistChange}
             onDraftDocChange={setDraftDoc}
             onSendMessage={sendCurrentMessage}
             onStageAttachmentFiles={stageAttachmentFiles}

@@ -6,6 +6,10 @@
 // current permission level as a borderless colored capsule (ask = neutral, auto = blue,
 // full = warning amber); picking a level lives in a submenu. SSH hosts are appended below
 // auto-review, reading from the global compute store like ComposerModelPicker.
+//
+// The Specialist submenu appears at the top of the menu. Items are: None (always first),
+// then all enabled Custom and Customize specialists, then "Create new…". Reviewer and
+// disabled specialists never appear. The currently bound item shows a checkmark.
 
 import {
   DEFAULT_PERMISSION_PROFILE,
@@ -13,6 +17,7 @@ import {
   type SessionPermissionProfileState
 } from '../../../../shared/permission-profiles'
 import type { AcpPermissionGrant } from '../../../../shared/acp'
+import type { SpecialistView } from '../../../../shared/settings'
 import {
   AlertTriangle,
   Check,
@@ -23,6 +28,7 @@ import {
   ShieldAlert,
   ShieldCheck,
   SlidersHorizontal,
+  UserCircle2,
   X
 } from 'lucide-react'
 import { useState } from 'react'
@@ -78,6 +84,13 @@ type ComposerAgentControlsMenuProps = {
   // renders without a compute binding (e.g. in isolation tests); the composer passes both.
   enabledComputeHosts?: string[]
   onComputeHostToggle?: (providerId: string, enabled: boolean) => void
+  // Specialist binding: the currently selected specialist ID (undefined = None). The submenu
+  // renders None, enabled Custom/Customize items, and "Create new…". Changing a specialist
+  // calls onSpecialistChange with the new ID (or undefined for None).
+  sessionSpecialistId?: string
+  specialists?: SpecialistView[]
+  onSpecialistChange?: (specialistId: string | undefined) => void
+  onOpenSpecialistsSettings?: () => void
 }
 
 const permissionProfiles: Array<{
@@ -132,7 +145,11 @@ const ComposerAgentControlsMenu = ({
   onRevokeGrant,
   onClearGrants,
   enabledComputeHosts,
-  onComputeHostToggle
+  onComputeHostToggle,
+  sessionSpecialistId,
+  specialists = [],
+  onSpecialistChange,
+  onOpenSpecialistsSettings
 }: ComposerAgentControlsMenuProps): React.JSX.Element => {
   const [confirmFullAccess, setConfirmFullAccess] = useState(false)
   const selectedProfile = permissionProfiles.find((candidate) => candidate.id === profile)!
@@ -160,12 +177,31 @@ const ComposerAgentControlsMenu = ({
   const isLoaded = useComputeStore((state) => state.isLoaded)
   const loadHosts = useComputeStore((state) => state.loadHosts)
   const openSettingsToCompute = useSettingsStore((state) => state.openSettingsToCompute)
+  const loadSpecialists = useSettingsStore((state) => state.loadSpecialists)
 
   const sshHosts = hosts.filter((host) => host.sshAlias)
+
+  // Selecteable specialists: enabled Custom + Customize only; Reviewer never appears.
+  const selectableSpecialists = specialists.filter(
+    (s) => s.enabled && s.kind !== 'builtin-reviewer'
+  )
+  // Resolve the name of the currently bound specialist for the submenu trigger label.
+  const boundSpecialist = sessionSpecialistId
+    ? specialists.find((s) => s.id === sessionSpecialistId)
+    : undefined
+
+  const handleSpecialistSelect = (specialistId: string | undefined): void => {
+    onSpecialistChange?.(specialistId)
+  }
 
   const handleOpenChange = (open: boolean): void => {
     if (open && !isLoaded) {
       void loadHosts()
+    }
+    if (open) {
+      // Refresh the specialist catalog on every open so a recently enabled/disabled specialist
+      // is reflected immediately without requiring a full settings reload.
+      void loadSpecialists()
     }
   }
 
@@ -207,6 +243,86 @@ const ComposerAgentControlsMenu = ({
           </button>
         </DropdownMenuTrigger>
         <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-72 p-1">
+          {/* Specialist submenu: None, enabled Custom + Customize specialists, then Create new…
+              Reviewer and disabled specialists never appear. Selecting changes the binding for the
+              current session only; the new selection takes effect on the next message. */}
+          <DropdownMenuSub>
+            <DropdownMenuSubTrigger
+              className="items-center gap-2 px-2 py-1.5"
+              data-testid="specialist-subtrigger"
+            >
+              <UserCircle2
+                className="size-4 shrink-0 text-text-200"
+                strokeWidth={2}
+                aria-hidden="true"
+              />
+              <span className="min-w-0 flex-1">
+                <span className="block text-[13px] font-medium leading-5">Specialist</span>
+                <span className="block text-[11px] leading-4 text-text-300">
+                  Takes effect on your next message
+                </span>
+              </span>
+              <span
+                data-testid="specialist-capsule"
+                className="flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full bg-bg-200 px-2 py-0.5 text-[11px] font-medium leading-4 text-text-100"
+              >
+                {boundSpecialist ? boundSpecialist.name : 'None'}
+                <ChevronRight
+                  className="size-3 shrink-0 opacity-60"
+                  strokeWidth={2}
+                  aria-hidden="true"
+                />
+              </span>
+            </DropdownMenuSubTrigger>
+            <DropdownMenuSubContent className="w-60 p-1">
+              {/* None: clears the binding; always first */}
+              <DropdownMenuItem
+                className="items-center gap-2 px-2 py-1.5"
+                onSelect={() => handleSpecialistSelect(undefined)}
+                data-testid="specialist-item-none"
+              >
+                <span className="inline-flex size-[22px] shrink-0 items-center justify-center rounded-md bg-bg-300 text-[11px] text-text-200">
+                  —
+                </span>
+                <span className="min-w-0 flex-1 text-[13px]">None</span>
+                {!sessionSpecialistId ? (
+                  <Check className="size-4 shrink-0" strokeWidth={2} aria-hidden="true" />
+                ) : null}
+              </DropdownMenuItem>
+              {/* Enabled Custom and Customize specialists */}
+              {selectableSpecialists.map((specialist) => (
+                <DropdownMenuItem
+                  key={specialist.id}
+                  className="items-center gap-2 px-2 py-1.5"
+                  onSelect={() => handleSpecialistSelect(specialist.id)}
+                  data-testid={`specialist-item-${specialist.id}`}
+                >
+                  <span className="inline-flex size-[22px] shrink-0 items-center justify-center rounded-md bg-bg-200 text-[11px]">
+                    <UserCircle2 className="size-3.5" strokeWidth={2} aria-hidden="true" />
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[13px]">{specialist.name}</span>
+                  {sessionSpecialistId === specialist.id ? (
+                    <Check className="size-4 shrink-0" strokeWidth={2} aria-hidden="true" />
+                  ) : null}
+                </DropdownMenuItem>
+              ))}
+              {selectableSpecialists.length > 0 ? <DropdownMenuSeparator /> : null}
+              {/* Create new: navigates to Specialists settings */}
+              <DropdownMenuItem
+                className="items-center gap-2 px-2 py-1.5 text-text-200"
+                onSelect={() => onOpenSpecialistsSettings?.()}
+                data-testid="specialist-item-create-new"
+              >
+                <span className="inline-flex size-[22px] shrink-0 items-center justify-center rounded-md bg-bg-200 text-[11px]">
+                  +
+                </span>
+                <span className="min-w-0 flex-1 text-[13px]">Create new…</span>
+              </DropdownMenuItem>
+            </DropdownMenuSubContent>
+          </DropdownMenuSub>
+
+          <DropdownMenuSeparator />
+
           {/* Permission row mirrors the auto-review row: icon + label + description, with the
               current level shown as a colored capsule on the right; levels live in the submenu. */}
           <DropdownMenuSub>
