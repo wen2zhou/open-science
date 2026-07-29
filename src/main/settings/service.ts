@@ -1069,6 +1069,45 @@ class SettingsService {
     ]
   }
 
+  // Raw Specialist catalog (Custom from settings + runtime built-ins) for runtime resolution. The
+  // ACP runtime re-reads this on every execution so a Specialist mutation takes effect immediately
+  // rather than from a stale hydration snapshot. Reviewer is included so the resolver can fail it
+  // closed (it backs Auto-review and must never become an ordinary session binding).
+  async getSpecialistCatalog(): Promise<{ custom: StoredSpecialist[]; builtins: StoredSpecialist[] }> {
+    const settings = await this.repository.getSettings()
+    const customizeDisabled = settings.disabledBuiltinSpecialistIds?.includes('customize') ?? false
+    return {
+      custom: [...(settings.specialists ?? [])],
+      builtins: [
+        {
+          id: 'customize',
+          agentId: 'customize',
+          name: 'Customize',
+          description: 'Create and refine reusable specialists.',
+          instructions: 'Help the user create or refine a specialist configuration.',
+          skillIds: ['customize'],
+          connectorIds: [],
+          enabled: !customizeDisabled,
+          revision: 1,
+          colorKey: 'purple',
+          iconKey: 'brain'
+        },
+        {
+          id: 'reviewer',
+          agentId: 'reviewer',
+          name: 'Reviewer',
+          description: 'Used by Auto-review.',
+          skillIds: [],
+          connectorIds: [],
+          enabled: true,
+          revision: 1,
+          colorKey: 'slate',
+          iconKey: 'search'
+        }
+      ]
+    }
+  }
+
   async createSpecialist(request: CreateSpecialistRequest): Promise<SpecialistView> {
     const settings = await this.repository.getSettings()
     const connectorIds = request.connectorIds ?? [...this.availableSpecialistConnectorIds(settings)]
