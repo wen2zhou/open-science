@@ -146,6 +146,9 @@ type SettingsStoreData = {
   pendingSettingsPanel?: SettingsPanelId
   // Skill to land on when the dialog opens from a skill mention; consumed once its detail is seeded.
   pendingSkillId?: string
+  // A Customize "Chat with agent" session requested from Settings. The workspace consumes it on
+  // open to create a persisted session bound to Customize with a pre-filled composer (nothing sent).
+  pendingCustomizeChat?: { specialistId: string }
   // Configured package mirror (conda/pip); undefined means public hosts (unconfigured).
   packageMirror?: PackageMirror
   // Reasoning-effort preference applied to agent requests; 'default' leaves the agent's own default.
@@ -242,6 +245,11 @@ type SettingsStore = SettingsStoreData & {
   consumePendingSettingsPanel: () => void
   // Clears the pending skill once its detail view has been seeded, so a later open starts fresh.
   consumePendingSkill: () => void
+  // Requests a Customize "Chat with agent" session: closes Settings and queues a pre-filled chat
+  // for the workspace to open as a new persisted session bound to Customize.
+  openCustomizeChat: (specialistId: string) => void
+  // Clears the pending Customize chat once the workspace has opened the session.
+  consumePendingCustomizeChat: () => void
   // Loads the Specialist catalog from the main process. Called when the composer menu opens so
   // the submenu is populated; re-called after any CRUD mutation to keep the list fresh.
   loadSpecialists: () => Promise<void>
@@ -374,6 +382,7 @@ export const createInitialSettingsState = (): SettingsStoreData => ({
   isSettingsOpen: false,
   pendingSettingsPanel: undefined,
   pendingSkillId: undefined,
+  pendingCustomizeChat: undefined,
   packageMirror: undefined,
   reasoningEffort: DEFAULT_REASONING_EFFORT,
   notificationsEnabled: DEFAULT_NOTIFICATIONS_ENABLED,
@@ -1059,7 +1068,12 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
 
   // Clearing the pending skill on close stops a later normal open from jumping back to a stale skill.
   closeSettings: () =>
-    set({ isSettingsOpen: false, pendingSkillId: undefined, pendingSettingsPanel: undefined }),
+    set({
+      isSettingsOpen: false,
+      pendingSkillId: undefined,
+      pendingSettingsPanel: undefined,
+      pendingCustomizeChat: undefined
+    }),
 
   openSettingsToSkill: (skillId) =>
     set({ isSettingsOpen: true, pendingSkillId: skillId, pendingSettingsPanel: undefined }),
@@ -1071,6 +1085,17 @@ export const useSettingsStore = create<SettingsStore>((set, get) => ({
   consumePendingSettingsPanel: () => set({ pendingSettingsPanel: undefined }),
 
   consumePendingSkill: () => set({ pendingSkillId: undefined }),
+
+  // Closes the Settings dialog and queues a pre-filled Customize chat for the workspace to open.
+  openCustomizeChat: (specialistId) =>
+    set({
+      isSettingsOpen: false,
+      pendingSettingsPanel: undefined,
+      pendingSkillId: undefined,
+      pendingCustomizeChat: { specialistId }
+    }),
+
+  consumePendingCustomizeChat: () => set({ pendingCustomizeChat: undefined }),
 
   loadSpecialists: async () => {
     const specialists = await window.api.settings.listSpecialists()

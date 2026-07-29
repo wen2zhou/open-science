@@ -129,6 +129,103 @@ describe('SpecialistsPanel (list)', () => {
   })
 })
 
+describe('SpecialistsPanel (chat with agent entry)', () => {
+  const customize = (overrides: Partial<Record<string, unknown>> = {}) => ({
+    id: 'customize',
+    agentId: 'customize',
+    name: 'Customize',
+    description: 'Create and refine reusable specialists.',
+    instructions: 'Help the user create or refine a specialist configuration.',
+    colorKey: 'purple',
+    iconKey: 'brain',
+    skillIds: ['customize'],
+    connectorIds: [],
+    enabled: true,
+    revision: 1,
+    kind: 'builtin-customize',
+    effectiveSkillCount: 1,
+    effectiveConnectorCount: 0,
+    ...overrides
+  })
+
+  const renderPanel = async (
+    specialists: ReturnType<typeof customize>[],
+    onChatWithAgent?: (specialistId: string) => void
+  ): Promise<void> => {
+    ;(window as unknown as { api: unknown }).api = makeApi({
+      listSpecialists: vi.fn().mockResolvedValue(specialists)
+    })
+    await act(async () => {
+      root.render(<SpecialistsPanel onChatWithAgent={onChatWithAgent} />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+  }
+
+  it('offers Chat with agent and opens the pre-filled chat when Customize is enabled', async () => {
+    const onChat = vi.fn()
+    await renderPanel([customize({ enabled: true })], onChat)
+
+    const trigger = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+      (btn) => btn.textContent?.includes('Add specialist')
+    )
+    openRadixMenu(trigger)
+
+    const chatItem = document.body.querySelector<HTMLElement>('[data-testid="add-chat-with-agent"]')
+    expect(chatItem?.textContent).toContain('Chat with agent')
+    clickRadixMenuItem(chatItem)
+
+    // Nothing was forced; the entry hands the Customize specialist id to the caller.
+    expect(onChat).toHaveBeenCalledWith('customize')
+    // No disabled banner is shown for an enabled Customize.
+    expect(document.body.querySelector('[data-testid="customize-chat-blocked"]')).toBeNull()
+  })
+
+  it('shows the disabled state and an enable action when Customize is disabled (no bypass)', async () => {
+    const onChat = vi.fn()
+    const enableSpy = vi.fn().mockResolvedValue({})
+    ;(window as unknown as { api: unknown }).api = makeApi({
+      listSpecialists: vi.fn().mockResolvedValue([customize({ enabled: false })]),
+      setSpecialistEnabled: enableSpy
+    })
+    await act(async () => {
+      root.render(<SpecialistsPanel onChatWithAgent={onChat} />)
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    await act(async () => {
+      await new Promise((resolve) => window.setTimeout(resolve, 0))
+    })
+
+    const trigger = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+      (btn) => btn.textContent?.includes('Add specialist')
+    )
+    openRadixMenu(trigger)
+    const chatItem = document.body.querySelector<HTMLElement>('[data-testid="add-chat-with-agent"]')
+    clickRadixMenuItem(chatItem)
+
+    // The disabled state is surfaced rather than bypassed; the chat callback is NOT invoked.
+    expect(document.body.querySelector('[data-testid="customize-chat-blocked"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('Customize is disabled')
+    expect(onChat).not.toHaveBeenCalled()
+
+    // The enable action re-enables Customize and then opens the pre-filled chat.
+    const enableBtn = Array.from(
+      document.body.querySelectorAll<HTMLButtonElement>('button')
+    ).find((btn) => btn.textContent?.includes('Enable Customize'))
+    await act(async () => {
+      enableBtn?.click()
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    expect(enableSpy).toHaveBeenCalledWith(expect.objectContaining({ id: 'customize', enabled: true }))
+    expect(onChat).toHaveBeenCalledWith('customize')
+  })
+})
+
 describe('SpecialistsPanel (capability tabs)', () => {
   it('shows the skills tab by default when opening an editor', async () => {
     await openEditorFor(makeSpecialist())

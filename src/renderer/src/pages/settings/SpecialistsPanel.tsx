@@ -11,6 +11,7 @@ import {
   Pencil,
   Plus,
   Search,
+  Sparkles,
   Trash2,
   X
 } from 'lucide-react'
@@ -25,6 +26,10 @@ import type {
   SpecialistView
 } from '../../../../shared/settings'
 import { validateSpecialistDraft } from '../../../../shared/specialist-validation'
+import {
+  CUSTOMIZE_CHAT_SPECIALIST_ID,
+  resolveCustomizeChatEntry
+} from '../../lib/specialists/customize-chat'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -146,7 +151,16 @@ const Avatar = ({ iconKey, colorKey, variant = 'row' }: AvatarProps): React.JSX.
 
 // Settings CRUD surface. The renderer validates only for immediate field feedback. The main
 // process repeats the exact validation and owns capability authorization and revisions.
-export const SpecialistsPanel = (): React.JSX.Element => {
+//
+// `onChatWithAgent` opens a persisted session bound to the Built-in Customize Specialist with the
+// composer pre-filled (the Customize Skill chip and the editable request). It is invoked only when
+// Customize is enabled; a disabled Customize surfaces an inline enable action instead, so the entry
+// never bypasses the disabled state through a forced Skill.
+type SpecialistsPanelProps = {
+  onChatWithAgent?: (specialistId: string) => void
+}
+
+export const SpecialistsPanel = ({ onChatWithAgent }: SpecialistsPanelProps): React.JSX.Element => {
   const [specialists, setSpecialists] = useState<SpecialistView[]>([])
   const [skills, setSkills] = useState<SkillView[]>([])
   const [connectors, setConnectors] = useState<ConnectorView[]>([])
@@ -161,6 +175,11 @@ export const SpecialistsPanel = (): React.JSX.Element => {
   const [error, setError] = useState<string>()
   const [conflicted, setConflicted] = useState(false)
   const [capTab, setCapTab] = useState<CapabilityKind>('skills')
+  // Banner shown when the user picks "Chat with agent" while Customize is disabled. The entry must
+  // not bypass the disabled state, so instead of opening a forced-Skill chat we explain and offer an
+  // explicit enable action.
+  const [customizeChatBlocked, setCustomizeChatBlocked] = useState(false)
+  const [enablingCustomize, setEnablingCustomize] = useState(false)
 
   const load = async (): Promise<void> => {
     const [nextSpecialists, nextSkills, nextConnectors] = await Promise.all([
@@ -255,6 +274,37 @@ export const SpecialistsPanel = (): React.JSX.Element => {
         .filter((item) => item.enabled)
         .map((item) => item.id)
     })
+  }
+  // Chat with agent: opens a persisted session bound to enabled Customize, pre-filled with the
+  // Customize Skill chip and the editable request. A disabled Customize never bypasses its state —
+  // the entry surfaces an enable action instead of a forced-Skill chat.
+  const beginChatWithAgent = (): void => {
+    const entry = resolveCustomizeChatEntry(specialists)
+    if (entry.kind === 'ready') {
+      setCustomizeChatBlocked(false)
+      onChatWithAgent?.(entry.specialistId)
+    } else {
+      setCustomizeChatBlocked(true)
+    }
+  }
+  const enableCustomizeForChat = async (): Promise<void> => {
+    const customize = specialists.find((item) => item.id === CUSTOMIZE_CHAT_SPECIALIST_ID)
+    if (!customize) return
+    try {
+      setEnablingCustomize(true)
+      await window.api.settings.setSpecialistEnabled({
+        id: customize.id,
+        enabled: true
+      })
+      await load()
+      // After enabling, open the pre-filled chat (Customize is now selectable).
+      setCustomizeChatBlocked(false)
+      onChatWithAgent?.(customize.id)
+    } catch (cause) {
+      setError(cause instanceof Error ? cause.message : 'Could not enable Customize.')
+    } finally {
+      setEnablingCustomize(false)
+    }
   }
   const open = (item: SpecialistView): void => {
     setEditing(item)
@@ -760,10 +810,49 @@ export const SpecialistsPanel = (): React.JSX.Element => {
                 </span>
               </span>
             </DropdownMenuItem>
-            {/* "Chat with agent" is delivered in issue04 (customize-agent-management-flow). */}
+            <DropdownMenuItem
+              className="gap-2.5"
+              data-testid="add-chat-with-agent"
+              onSelect={beginChatWithAgent}
+            >
+              <Sparkles className="size-4 shrink-0" aria-hidden="true" />
+              <span className="flex flex-col">
+                <span>Chat with agent</span>
+                <span className="text-xs text-muted-foreground">
+                  Open a new session and let Customize guide you
+                </span>
+              </span>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
+
+      {customizeChatBlocked ? (
+        <div
+          role="alert"
+          data-testid="customize-chat-blocked"
+          className="mb-4 flex items-start gap-3 rounded-lg border border-border bg-muted p-3"
+        >
+          <span className="flex size-7 shrink-0 items-center justify-center rounded-md bg-muted text-muted-foreground">
+            <Sparkles className="size-4" aria-hidden="true" />
+          </span>
+          <div className="min-w-0 flex-1">
+            <p className="text-sm font-medium">Customize is disabled</p>
+            <p className="mt-0.5 text-xs text-muted-foreground">
+              Chat with agent needs the built-in Customize Specialist. Enable it to start a guided
+              session — the disabled state is never bypassed with a forced Skill.
+            </p>
+          </div>
+          <div className="flex shrink-0 items-center gap-2">
+            <Button variant="ghost" size="sm" onClick={() => setCustomizeChatBlocked(false)}>
+              Dismiss
+            </Button>
+            <Button size="sm" disabled={enablingCustomize} onClick={() => void enableCustomizeForChat()}>
+              {enablingCustomize ? 'Enabling…' : 'Enable Customize'}
+            </Button>
+          </div>
+        </div>
+      ) : null}
 
       <div className="flex flex-col gap-4">
         {GROUPS.filter((group) => filter === 'all' || filter === group.key).map((group) => {
