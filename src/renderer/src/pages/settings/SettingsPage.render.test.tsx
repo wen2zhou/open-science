@@ -1914,9 +1914,9 @@ describe('SettingsPage Codex framework', () => {
         ?.click()
     )
 
-    expect(
-      document.body.querySelector('[data-capability-state="disabled"]')?.textContent
-    ).toContain('Alpha (disabled)')
+    const disabledRow = document.body.querySelector('[data-capability-state="disabled"]')
+    expect(disabledRow?.textContent).toContain('Alpha')
+    expect(disabledRow?.textContent).toContain('disabled globally')
     expect(document.body.querySelectorAll('[data-capability-state="missing"]')).toHaveLength(2)
     await act(async () =>
       document.body.querySelector<HTMLButtonElement>('[aria-label="Remove removed-skill"]')?.click()
