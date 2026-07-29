@@ -244,6 +244,10 @@ interface OpenScienceAPI {
     deleteSession(request: AcpDeleteSessionRequest): Promise<AcpStateSnapshot>
     respondToPermission(response: AcpPermissionResponse): Promise<AcpStateSnapshot>
     setPermissionProfile(request: AcpSetPermissionProfileRequest): Promise<AcpStateSnapshot>
+    setSessionSpecialist(request: {
+      sessionId: string
+      specialistId: string | undefined
+    }): Promise<void>
     revokePermissionGrant(request: AcpRevokePermissionGrantRequest): Promise<AcpStateSnapshot>
     onState(listener: AcpListener<AcpStateSnapshot>): RemoveListener
     onEvent(listener: AcpListener<AcpRuntimeEvent>): RemoveListener
