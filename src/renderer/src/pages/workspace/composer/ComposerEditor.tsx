@@ -35,6 +35,9 @@ type ComposerEditorProps = {
   placeholder: string
   className?: string
   ariaLabel: string
+  // Effective skill allowlist for a bound specialist, used to constrain the skill picker.
+  // Undefined keeps today's unfiltered (None) behaviour.
+  allowedSkillIds?: Set<string>
 }
 
 // Structural equality over doc nodes; used to decide whether the incoming prop diverges from what
@@ -121,7 +124,8 @@ export const ComposerEditor = ({
   disabled = false,
   placeholder,
   className,
-  ariaLabel
+  ariaLabel,
+  allowedSkillIds
 }: ComposerEditorProps): React.JSX.Element => {
   const editorRef = useRef<HTMLDivElement>(null)
   // Tracks IME composition so Enter never submits mid-composition.
@@ -249,6 +253,7 @@ export const ComposerEditor = ({
           query={mention.query}
           onSelect={handleSelectSkill}
           onClose={mention.cancel}
+          allowedSkillIds={allowedSkillIds}
         />
       ) : null}
       {artifactMention.active ? (

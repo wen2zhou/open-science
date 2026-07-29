@@ -192,4 +192,48 @@ describe('SkillMentionPopup', () => {
     expect(marks).toHaveLength(1)
     expect(marks[0].textContent?.toLowerCase()).toBe('lit')
   })
+
+  describe('specialist allowlist filtering', () => {
+    it('offers only the allowed skills when allowedSkillIds is set (bound specialist)', () => {
+      act(() => {
+        root.render(
+          <SkillMentionPopup
+            query=""
+            onSelect={vi.fn()}
+            onClose={vi.fn()}
+            allowedSkillIds={new Set(['mpnn'])}
+          />
+        )
+      })
+
+      // Only the ProteinMPNN skill is in the effective allowlist.
+      const rendered = options()
+      expect(rendered).toHaveLength(1)
+      expect(document.body.textContent).toContain('ProteinMPNN')
+      expect(document.body.textContent).not.toContain('Literature Review')
+    })
+
+    it('offers nothing when allowedSkillIds is empty (bound zero-skill specialist / unavailable)', () => {
+      act(() => {
+        root.render(
+          <SkillMentionPopup
+            query=""
+            onSelect={vi.fn()}
+            onClose={vi.fn()}
+            allowedSkillIds={new Set<string>()}
+          />
+        )
+      })
+
+      expect(options()).toHaveLength(0)
+    })
+
+    it('stays unfiltered when allowedSkillIds is omitted (None specialist)', () => {
+      act(() => {
+        root.render(<SkillMentionPopup query="" onSelect={vi.fn()} onClose={vi.fn()} />)
+      })
+
+      expect(options()).toHaveLength(3)
+    })
+  })
 })

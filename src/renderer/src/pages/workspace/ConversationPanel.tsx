@@ -17,6 +17,11 @@ import {
 import { isReportableRunFailure } from '../../../../shared/run-error-classification'
 import type { SessionSpecialistResolution } from '@/lib/specialists/resolve-session-specialist'
 import {
+  resolvePickerSkills,
+  validateForcedSkillChips,
+  resolveFrameworkStrengthLabel
+} from '@/lib/specialists/effective-capabilities'
+import {
   AlertTriangle,
   ArrowUp,
   BookOpen,
@@ -32,7 +37,7 @@ import {
   UserCircle2,
   X
 } from 'lucide-react'
-import { useRef, useState } from 'react'
+import { useMemo, useRef, useState } from 'react'
 
 import { FileDropOverlay } from '@/components/FileDropOverlay'
 import { RemoteJobBadge } from '@/components/RemoteJobBadge'
@@ -48,6 +53,7 @@ import { useFileDropZone } from '@/hooks/useFileDropZone'
 import { cn } from '@/lib/utils'
 import type { ChatSession } from '@/stores/session-store'
 import { useSessionJobStore } from '@/stores/session-job-store'
+import { useSettingsStore } from '@/stores/settings-store'
 
 import { ComposerEditor } from './composer/ComposerEditor'
 import type { ComposerUploadTransfer } from './composer-upload-transfer'
@@ -240,6 +246,40 @@ const ConversationPanel = ({
   const isRunErrorReportable =
     activeSession?.errorReportable ?? isReportableRunFailure(activeSession?.error)
 
+  // Skills come from the same settings store the SkillMentionPopup reads, so the picker and the
+  // send-time validation see one catalog. The capability projection delegates to the single shared
+  // resolver used by the runtime gate — there is no second calculation in the renderer.
+  const skills = useSettingsStore((state) => state.skills)
+  const capabilityInput = useMemo(
+    () => ({ resolution: sessionSpecialistResolution, skills }),
+    [sessionSpecialistResolution, skills]
+  )
+  const pickerSkills = useMemo(
+    () => resolvePickerSkills(capabilityInput),
+    [capabilityInput]
+  )
+  // The picker is constrained only when a specialist is bound (None stays unfiltered). An empty
+  // allowlist or unavailable binding yields an empty picker.
+  const allowedSkillIds = useMemo(
+    () =>
+      pickerSkills.filtered ? new Set(pickerSkills.skills.map((s) => s.id)) : undefined,
+    [pickerSkills]
+  )
+
+  // Framework enforcement strength label for the badge area. Claude Code is hard-enforced; Codex
+  // and OpenCode are guidance-only and must never read as a security boundary.
+  const frameworkStrength = useMemo(
+    () =>
+      activeSession?.agentFrameworkId
+        ? resolveFrameworkStrengthLabel(activeSession.agentFrameworkId, capabilityInput)
+        : null,
+    [activeSession?.agentFrameworkId, capabilityInput]
+  )
+
+  // Forced-skill send rejection: validate every chip at SEND time (not only pick time) because a
+  // chip can go stale when the specialist is edited in Settings while the chip stays in the composer.
+  const [forcedSkillError, setForcedSkillError] = useState<string | null>(null)
+
   // Re-attaches the interrupted session; on success the banner unmounts, so guard the state update.
   const handleResume = async (): Promise<void> => {
     if (isResuming) return
@@ -258,10 +298,20 @@ const ConversationPanel = ({
     onFiles: onStageAttachmentFiles
   })
 
-  // Submits the current doc, passing the ids of any skills picked as inline chips.
+  // Submits the current doc, passing the ids of any skills picked as inline chips. Forced-skill
+  // chips are validated at send time against the effective allowlist: a stale chip (the specialist
+  // was edited in Settings while the chip stayed in the composer) is rejected with the stable reason
+  // and the turn never starts.
   const handleSubmit = (): void => {
     if (!canEditDraft) return
-    onSendMessage(docToSkillIds(draftDoc))
+    const forcedSkillIds = docToSkillIds(draftDoc)
+    const validation = validateForcedSkillChips(forcedSkillIds, capabilityInput)
+    if (!validation.allowed) {
+      setForcedSkillError(validation.reason)
+      return
+    }
+    setForcedSkillError(null)
+    onSendMessage(forcedSkillIds)
   }
 
   // Converts the hidden file input selection into the shared staging callback.
@@ -301,12 +351,34 @@ const ConversationPanel = ({
           </h1>
           {/* Specialist badge: bound shows icon + name; unavailable shows a warning; none is hidden. */}
           {sessionSpecialistResolution.kind === 'bound' ? (
-            <span
-              data-testid="specialist-badge-bound"
-              className="flex items-center gap-1.5 rounded-full bg-bg-300 px-2 py-0.5 text-[11.5px] text-text-100"
-            >
-              <UserCircle2 className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
-              {sessionSpecialistResolution.specialist.name}
+            <span className="flex items-center gap-1.5">
+              <span
+                data-testid="specialist-badge-bound"
+                className="flex items-center gap-1.5 rounded-full bg-bg-300 px-2 py-0.5 text-[11.5px] text-text-100"
+              >
+                <UserCircle2 className="size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                {sessionSpecialistResolution.specialist.name}
+              </span>
+              {/* Framework enforcement strength: Claude Code is hard-enforced; Codex/OpenCode are
+                  guidance-only and never presented as a security boundary. */}
+              {frameworkStrength ? (
+                <span
+                  data-testid="specialist-enforcement-label"
+                  data-enforcement={frameworkStrength.isNative ? 'hard' : 'guidance'}
+                  className={`rounded-full px-2 py-0.5 text-[10.5px] font-medium leading-4 ${
+                    frameworkStrength.isNative
+                      ? 'bg-emerald-500/10 text-emerald-700 dark:text-emerald-300'
+                      : 'bg-bg-300 text-text-300'
+                  }`}
+                  title={
+                    frameworkStrength.isNative
+                      ? 'Skills not allowed by this specialist are hidden and blocked at runtime.'
+                      : 'This framework cannot hard-enforce skills; treat the allowlist as guidance, not a security boundary.'
+                  }
+                >
+                  {frameworkStrength.label}
+                </span>
+              ) : null}
             </span>
           ) : sessionSpecialistResolution.kind === 'unavailable' ? (
             <span
@@ -391,6 +463,28 @@ const ConversationPanel = ({
                         ) : null}
                       </div>
                     ) : null}
+                  </div>
+                ) : null}
+
+                {/* Forced-skill send rejection: a chip (possibly stale after a Settings edit) fell
+                    outside the effective allowlist. The turn never started; show the stable reason so
+                    the user can remove the chip or switch the specialist. Clears on a successful send. */}
+                {forcedSkillError ? (
+                  <div
+                    data-testid="forced-skill-error"
+                    className="mb-2 flex items-start gap-2 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-[12px] leading-5 text-amber-800 dark:border-amber-800/50 dark:bg-amber-950/30 dark:text-amber-200"
+                  >
+                    <AlertTriangle className="mt-0.5 size-3.5 shrink-0" strokeWidth={2} aria-hidden="true" />
+                    <span className="min-w-0 flex-1 break-words">{forcedSkillError}</span>
+                    <button
+                      type="button"
+                      onClick={() => setForcedSkillError(null)}
+                      className="inline-flex h-6 shrink-0 items-center gap-1 rounded-md border border-amber-300 bg-amber-100/70 px-2 font-medium text-amber-800 hover:bg-amber-100 dark:border-amber-700/60 dark:bg-amber-900/40 dark:text-amber-100 dark:hover:bg-amber-900/60"
+                      aria-label="Dismiss skill error"
+                    >
+                      <X className="size-3" strokeWidth={2.2} aria-hidden="true" />
+                      Dismiss
+                    </button>
                   </div>
                 ) : null}
 
@@ -615,6 +709,7 @@ const ConversationPanel = ({
                           disabled={!canEditDraft}
                           placeholder="Ask anything — / for skills, @ for files"
                           ariaLabel="Ask anything"
+                          allowedSkillIds={allowedSkillIds}
                         />
                       </div>
 
