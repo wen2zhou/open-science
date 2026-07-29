@@ -40,14 +40,17 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenuItem: ({
     children,
     disabled,
-    onSelect
+    onSelect,
+    'data-testid': testId
   }: PropsWithChildren<{
     disabled?: boolean
     onSelect?: (event: { preventDefault: () => void }) => void
+    'data-testid'?: string
   }>): React.JSX.Element => (
     <button
       type="button"
       disabled={disabled}
+      data-testid={testId}
       onClick={() => {
         const event = {
           prevented: false,
@@ -675,5 +678,205 @@ describe('ComposerAgentControlsMenu', () => {
     })
 
     expect(findButton('cluster-1').disabled).toBe(true)
+  })
+
+  describe('Specialist submenu', () => {
+    const makeSpecialist = (
+      overrides: Partial<import('../../../../shared/settings').SpecialistView> = {}
+    ): import('../../../../shared/settings').SpecialistView => ({
+      id: 'sp-1',
+      agentId: 'agent-sp-1',
+      name: 'Research helper',
+      enabled: true,
+      kind: 'custom',
+      revision: 1,
+      skillIds: [],
+      connectorIds: [],
+      effectiveSkillCount: 0,
+      effectiveConnectorCount: 0,
+      ...overrides
+    })
+
+    it('always renders None as the first item', () => {
+      act(() => {
+        root.render(
+          <ComposerAgentControlsMenu
+            profile="ask"
+            autoReviewEnabled={false}
+            onProfileChange={vi.fn()}
+            onAutoReviewChange={vi.fn()}
+            specialists={[]}
+          />
+        )
+      })
+      expect(container.querySelector('[data-testid="specialist-item-none"]')).not.toBeNull()
+    })
+
+    it('renders enabled custom and customize specialists but excludes reviewer and disabled', () => {
+      const specialists = [
+        makeSpecialist({ id: 'sp-custom', kind: 'custom', name: 'Custom', enabled: true }),
+        makeSpecialist({
+          id: 'sp-customize',
+          kind: 'builtin-customize',
+          name: 'Customize',
+          enabled: true
+        }),
+        makeSpecialist({
+          id: 'sp-reviewer',
+          kind: 'builtin-reviewer',
+          name: 'Reviewer',
+          enabled: true
+        }),
+        makeSpecialist({ id: 'sp-disabled', kind: 'custom', name: 'Disabled', enabled: false })
+      ]
+
+      act(() => {
+        root.render(
+          <ComposerAgentControlsMenu
+            profile="ask"
+            autoReviewEnabled={false}
+            onProfileChange={vi.fn()}
+            onAutoReviewChange={vi.fn()}
+            specialists={specialists}
+          />
+        )
+      })
+
+      // Custom and Customize appear
+      expect(
+        container.querySelector('[data-testid="specialist-item-sp-custom"]')
+      ).not.toBeNull()
+      expect(
+        container.querySelector('[data-testid="specialist-item-sp-customize"]')
+      ).not.toBeNull()
+      // Reviewer and disabled never appear
+      expect(container.querySelector('[data-testid="specialist-item-sp-reviewer"]')).toBeNull()
+      expect(container.querySelector('[data-testid="specialist-item-sp-disabled"]')).toBeNull()
+      // Create new… always present
+      expect(container.querySelector('[data-testid="specialist-item-create-new"]')).not.toBeNull()
+    })
+
+    it('shows a checkmark on the bound specialist item and not on others', () => {
+      const specialists = [
+        makeSpecialist({ id: 'sp-a', name: 'Alpha', enabled: true }),
+        makeSpecialist({ id: 'sp-b', name: 'Beta', enabled: true })
+      ]
+
+      act(() => {
+        root.render(
+          <ComposerAgentControlsMenu
+            profile="ask"
+            autoReviewEnabled={false}
+            onProfileChange={vi.fn()}
+            onAutoReviewChange={vi.fn()}
+            specialists={specialists}
+            sessionSpecialistId="sp-a"
+          />
+        )
+      })
+
+      // The capsule should show the bound specialist name
+      expect(
+        container.querySelector('[data-testid="specialist-capsule"]')?.textContent
+      ).toContain('Alpha')
+      // The bound item has a Check icon (svg inside the button)
+      const boundItem = container.querySelector('[data-testid="specialist-item-sp-a"]')
+      expect(boundItem?.querySelector('svg')).not.toBeNull()
+    })
+
+    it('shows None selected when no specialist is bound', () => {
+      act(() => {
+        root.render(
+          <ComposerAgentControlsMenu
+            profile="ask"
+            autoReviewEnabled={false}
+            onProfileChange={vi.fn()}
+            onAutoReviewChange={vi.fn()}
+            specialists={[makeSpecialist({ id: 'sp-1', name: 'Alpha', enabled: true })]}
+          />
+        )
+      })
+
+      const capsule = container.querySelector('[data-testid="specialist-capsule"]')
+      expect(capsule?.textContent).toContain('None')
+      // None item has a Check icon when selected
+      const noneItem = container.querySelector('[data-testid="specialist-item-none"]')
+      expect(noneItem?.querySelector('svg')).not.toBeNull()
+    })
+
+    it('calls onSpecialistChange with the specialist id when an item is selected', () => {
+      const onSpecialistChange = vi.fn()
+      const specialists = [makeSpecialist({ id: 'sp-x', name: 'Xray', enabled: true })]
+
+      act(() => {
+        root.render(
+          <ComposerAgentControlsMenu
+            profile="ask"
+            autoReviewEnabled={false}
+            onProfileChange={vi.fn()}
+            onAutoReviewChange={vi.fn()}
+            specialists={specialists}
+            onSpecialistChange={onSpecialistChange}
+          />
+        )
+      })
+
+      act(() =>
+        container
+          .querySelector<HTMLButtonElement>('[data-testid="specialist-item-sp-x"]')
+          ?.click()
+      )
+
+      expect(onSpecialistChange).toHaveBeenCalledWith('sp-x')
+    })
+
+    it('calls onSpecialistChange with undefined when None is selected', () => {
+      const onSpecialistChange = vi.fn()
+
+      act(() => {
+        root.render(
+          <ComposerAgentControlsMenu
+            profile="ask"
+            autoReviewEnabled={false}
+            onProfileChange={vi.fn()}
+            onAutoReviewChange={vi.fn()}
+            specialists={[makeSpecialist({ id: 'sp-1', enabled: true })]}
+            sessionSpecialistId="sp-1"
+            onSpecialistChange={onSpecialistChange}
+          />
+        )
+      })
+
+      act(() =>
+        container.querySelector<HTMLButtonElement>('[data-testid="specialist-item-none"]')?.click()
+      )
+
+      expect(onSpecialistChange).toHaveBeenCalledWith(undefined)
+    })
+
+    it('calls onOpenSpecialistsSettings when Create new… is selected', () => {
+      const onOpenSpecialistsSettings = vi.fn()
+
+      act(() => {
+        root.render(
+          <ComposerAgentControlsMenu
+            profile="ask"
+            autoReviewEnabled={false}
+            onProfileChange={vi.fn()}
+            onAutoReviewChange={vi.fn()}
+            specialists={[]}
+            onOpenSpecialistsSettings={onOpenSpecialistsSettings}
+          />
+        )
+      })
+
+      act(() =>
+        container
+          .querySelector<HTMLButtonElement>('[data-testid="specialist-item-create-new"]')
+          ?.click()
+      )
+
+      expect(onOpenSpecialistsSettings).toHaveBeenCalledTimes(1)
+    })
   })
 })

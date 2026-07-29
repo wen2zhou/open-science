@@ -8,6 +8,8 @@ import { ConversationPanel } from './ConversationPanel'
 import { emptyDoc } from './composer/composer-doc'
 
 import type { ChatSession } from '@/stores/session-store'
+import type { SessionSpecialistResolution } from '@/lib/specialists/resolve-session-specialist'
+import type { SpecialistView } from '../../../../shared/settings'
 
 // React's act() refuses to run unless the environment opts in to act-aware scheduling.
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -121,6 +123,11 @@ const renderPanel = (props: Partial<Parameters<typeof ConversationPanel>[0]> = {
         permissionGrants={[]}
         contextUsage={undefined}
         canChangePermissionProfile
+        sessionSpecialistResolution={{ kind: 'none' }}
+        specialistSwitching={false}
+        specialists={[]}
+        onOpenSpecialistsSettings={vi.fn()}
+        onSpecialistChange={vi.fn()}
         onDraftDocChange={vi.fn()}
         onSendMessage={vi.fn()}
         onStageAttachmentFiles={onStageAttachmentFiles}
@@ -136,11 +143,6 @@ const renderPanel = (props: Partial<Parameters<typeof ConversationPanel>[0]> = {
         onClearPermissionGrants={vi.fn()}
         autoReviewEnabled={true}
         onAutoReviewToggle={vi.fn()}
-        sessionSpecialistResolution={{ kind: 'none' }}
-        specialistSwitching={false}
-        specialists={[]}
-        onOpenSpecialistsSettings={vi.fn()}
-        onSpecialistChange={vi.fn()}
         enabledComputeHosts={[]}
         onComputeHostToggle={vi.fn()}
         onRequestReview={vi.fn()}
@@ -825,5 +827,185 @@ describe('ConversationPanel error box + report affordance', () => {
       }
     })
     expect(reportButton()).not.toBeNull()
+  })
+})
+
+describe('ConversationPanel — Specialist binding UI', () => {
+  let container: HTMLDivElement
+  let root: ReturnType<typeof import('react-dom/client').createRoot>
+
+  const makeSpecialist = (
+    overrides: Partial<SpecialistView> = {}
+  ): SpecialistView => ({
+    id: 'sp-1',
+    agentId: 'agent-sp-1',
+    name: 'Research helper',
+    enabled: true,
+    kind: 'custom' as const,
+    revision: 1,
+    skillIds: [],
+    connectorIds: [],
+    effectiveSkillCount: 0,
+    effectiveConnectorCount: 0,
+    ...overrides
+  })
+
+  const makeRunningSession = (overrides: Partial<ChatSession> = {}): ChatSession => ({
+    id: 'sess-1',
+    title: 'Session',
+    projectId: 'proj-1',
+    status: 'running',
+    messages: [],
+    pinnedAt: undefined,
+    agentFrameworkId: undefined,
+    agentBackendId: undefined,
+    agentModel: undefined,
+    permissionProfile: 'ask',
+    autoReviewEnabled: false,
+    enabledComputeHosts: [],
+    ...overrides
+  } as ChatSession)
+
+  const renderWithSpecialist = (
+    resolution: SessionSpecialistResolution,
+    opts: {
+      switching?: boolean
+      specialists?: SpecialistView[]
+      canSendMessage?: boolean
+      session?: ChatSession | undefined
+    } = {}
+  ): void => {
+    act(() => {
+      root.render(
+        <ConversationPanel
+          activeSession={opts.session}
+          draftDoc={emptyDoc}
+          canSendMessage={opts.canSendMessage ?? true}
+          canEditDraft
+          actionError={null}
+          isPreviewPanelCollapsed={false}
+          attachments={[]}
+          attachmentTransfers={[]}
+          isUploadingAttachments={false}
+          notebookReference={undefined}
+          pendingPermissions={[]}
+          permissionProfile="ask"
+          permissionProfileState={undefined}
+          permissionGrants={[]}
+          contextUsage={undefined}
+          canChangePermissionProfile
+          sessionSpecialistResolution={resolution}
+          specialistSwitching={opts.switching ?? false}
+          specialists={opts.specialists ?? []}
+          onOpenSpecialistsSettings={vi.fn()}
+          onSpecialistChange={vi.fn()}
+          onDraftDocChange={vi.fn()}
+          onSendMessage={vi.fn()}
+          onStageAttachmentFiles={vi.fn()}
+          onRemoveAttachment={vi.fn()}
+          onCancelAttachmentTransfer={vi.fn()}
+          onCancelRun={vi.fn()}
+          onResumeSession={vi.fn().mockResolvedValue(undefined)}
+          onOpenNotebook={vi.fn()}
+          onTogglePreviewPanel={vi.fn()}
+          onRespondToPermission={vi.fn()}
+          onPermissionProfileChange={vi.fn()}
+          onRevokePermissionGrant={vi.fn()}
+          onClearPermissionGrants={vi.fn()}
+          autoReviewEnabled={false}
+          onAutoReviewToggle={vi.fn()}
+          enabledComputeHosts={[]}
+          onComputeHostToggle={vi.fn()}
+          onRequestReview={vi.fn()}
+          isRequestReviewDisabled={false}
+          canEditMessage={true}
+          onSendEditedMessage={vi.fn()}
+        />
+      )
+    })
+  }
+
+  beforeEach(() => {
+    const { createRoot: cr } = require('react-dom/client') as typeof import('react-dom/client')
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = cr(container)
+  })
+
+  afterEach(() => {
+    act(() => root.unmount())
+    container.remove()
+  })
+
+  it('renders the bound badge with icon and name when resolution is bound', () => {
+    const sp = makeSpecialist({ id: 'sp-a', name: 'Code reviewer' })
+    renderWithSpecialist({ kind: 'bound', specialist: sp }, { specialists: [sp] })
+
+    const badge = container.querySelector('[data-testid="specialist-badge-bound"]')
+    expect(badge).not.toBeNull()
+    expect(badge?.textContent).toContain('Code reviewer')
+    expect(container.querySelector('[data-testid="specialist-badge-unavailable"]')).toBeNull()
+  })
+
+  it('renders the unavailable warning badge when resolution is unavailable', () => {
+    renderWithSpecialist({ kind: 'unavailable', specialistId: 'sp-gone' })
+
+    expect(container.querySelector('[data-testid="specialist-badge-unavailable"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="specialist-badge-bound"]')).toBeNull()
+  })
+
+  it('renders no badge when resolution is none', () => {
+    renderWithSpecialist({ kind: 'none' })
+
+    expect(container.querySelector('[data-testid="specialist-badge-bound"]')).toBeNull()
+    expect(container.querySelector('[data-testid="specialist-badge-unavailable"]')).toBeNull()
+  })
+
+  it('shows the Switching after this response… banner when specialistSwitching is true', () => {
+    renderWithSpecialist(
+      { kind: 'bound', specialist: makeSpecialist() },
+      {
+        switching: true,
+        session: makeRunningSession()
+      }
+    )
+
+    const banner = container.querySelector('[data-testid="specialist-switching-banner"]')
+    expect(banner).not.toBeNull()
+    expect(banner?.textContent).toContain('Switching after this response')
+  })
+
+  it('hides the switching banner when specialistSwitching is false', () => {
+    renderWithSpecialist({ kind: 'none' }, { switching: false })
+
+    expect(container.querySelector('[data-testid="specialist-switching-banner"]')).toBeNull()
+  })
+
+  it('disables Send when resolution is unavailable', () => {
+    renderWithSpecialist(
+      { kind: 'unavailable', specialistId: 'sp-gone' },
+      { canSendMessage: true }
+    )
+
+    const sendButton = container.querySelector('[aria-label="Send message"]') as HTMLButtonElement
+    expect(sendButton).not.toBeNull()
+    expect(sendButton.disabled).toBe(true)
+  })
+
+  it('enables Send when resolution is none and canSendMessage is true', () => {
+    renderWithSpecialist({ kind: 'none' }, { canSendMessage: true })
+
+    const sendButton = container.querySelector('[aria-label="Send message"]') as HTMLButtonElement
+    expect(sendButton).not.toBeNull()
+    expect(sendButton.disabled).toBe(false)
+  })
+
+  it('enables Send when resolution is bound and canSendMessage is true', () => {
+    const sp = makeSpecialist()
+    renderWithSpecialist({ kind: 'bound', specialist: sp }, { canSendMessage: true })
+
+    const sendButton = container.querySelector('[aria-label="Send message"]') as HTMLButtonElement
+    expect(sendButton).not.toBeNull()
+    expect(sendButton.disabled).toBe(false)
   })
 })
