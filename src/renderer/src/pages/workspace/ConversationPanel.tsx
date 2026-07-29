@@ -386,6 +386,18 @@ const ConversationPanel = ({
                   </div>
                 ) : null}
 
+                {/* Specialist switching banner: shown while a turn is active and the user changed
+                    the Specialist. Clears automatically when the current turn settles. */}
+                {specialistSwitching ? (
+                  <div
+                    data-testid="specialist-switching-banner"
+                    className="mb-2 flex items-center gap-2 rounded-lg border border-border-200 bg-bg-200 px-3 py-2 text-[12px] leading-5 text-text-300"
+                  >
+                    <Loader2 className="size-3.5 animate-spin" strokeWidth={2} aria-hidden="true" />
+                    Switching after this response…
+                  </div>
+                ) : null}
+
                 {/* Permission controls are already filtered to the visible session by the page. */}
                 <PermissionApprovalControls
                   requests={pendingPermissions}
@@ -642,6 +654,14 @@ const ConversationPanel = ({
                           onAutoReviewChange={onAutoReviewToggle}
                           onRevokeGrant={onRevokePermissionGrant}
                           onClearGrants={onClearPermissionGrants}
+                          sessionSpecialistId={
+                            sessionSpecialistResolution.kind === 'bound'
+                              ? sessionSpecialistResolution.specialist.id
+                              : activeSession?.specialistId
+                          }
+                          specialists={specialists}
+                          onSpecialistChange={onSpecialistChange}
+                          onOpenSpecialistsSettings={onOpenSpecialistsSettings}
                         />
 
                         <div className="flex-1" />
@@ -680,7 +700,7 @@ const ConversationPanel = ({
                           <button
                             type="button"
                             onClick={handleSubmit}
-                            disabled={!canSendMessage}
+                            disabled={!canSendMessage || sessionSpecialistResolution.kind === 'unavailable'}
                             className={composerSendButtonClassName}
                             aria-label="Send message"
                           >

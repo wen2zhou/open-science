@@ -177,6 +177,7 @@ const ComposerAgentControlsMenu = ({
   const isLoaded = useComputeStore((state) => state.isLoaded)
   const loadHosts = useComputeStore((state) => state.loadHosts)
   const openSettingsToCompute = useSettingsStore((state) => state.openSettingsToCompute)
+  const loadSpecialists = useSettingsStore((state) => state.loadSpecialists)
 
   const sshHosts = hosts.filter((host) => host.sshAlias)
 
@@ -196,6 +197,11 @@ const ComposerAgentControlsMenu = ({
   const handleOpenChange = (open: boolean): void => {
     if (open && !isLoaded) {
       void loadHosts()
+    }
+    if (open) {
+      // Refresh the specialist catalog on every open so a recently enabled/disabled specialist
+      // is reflected immediately without requiring a full settings reload.
+      void loadSpecialists()
     }
   }
 
