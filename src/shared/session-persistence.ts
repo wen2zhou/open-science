@@ -145,6 +145,10 @@ export type PersistedChatSession = {
   // Pins the conversation to a dedicated section at the top of the sidebar. Absent (older files) or
   // non-true restores as unpinned; only an explicit true keeps it pinned across restarts.
   pinned?: boolean
+  // Immutable Specialist UUID bound to this session (see StoredSpecialist.id). Absent (older files),
+  // empty, or non-string resolves to None at runtime; a present id is re-resolved against the latest
+  // settings on every execution so a stale binding can never silently expand capability.
+  specialistId?: string
   messages: PersistedChatMessage[]
   activities?: PersistedToolActivity[]
   activityGroups?: PersistedActivityGroup[]
@@ -761,6 +765,10 @@ const sanitizeSession = (session: unknown): PersistedChatSession | undefined => 
   if (agentModel) sanitized.agentModel = agentModel
   // Restore the pin only from an explicit true so malformed or legacy files stay unpinned.
   if (session.pinned === true) sanitized.pinned = true
+  // Only a non-empty string survives: an absent/empty/corrupt field resolves to None at runtime
+  // rather than leaving a dangling id that the fail-closed resolver would treat as unavailable.
+  const specialistId = asString(session.specialistId)
+  if (specialistId) sanitized.specialistId = specialistId
   if (artifacts.length > 0) sanitized.artifacts = artifacts
   const filesRevision = asNumber(session.filesRevision)
   if (filesRevision !== undefined && Number.isInteger(filesRevision) && filesRevision >= 0) {
