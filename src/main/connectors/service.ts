@@ -5,6 +5,9 @@ import type { CustomMcpServerConfig } from './mcp-client-manager'
 import type { ConnectorCredentials, ToolDescriptor } from './types'
 import type { StoredConnectors } from '../settings/types'
 import type { ApprovalDecision } from '../../shared/settings'
+import { createLogger } from '../logger'
+
+const log = createLogger('connector-gate')
 
 type McpClientManagerLike = {
   call(
@@ -39,13 +42,24 @@ type ConnectorServiceDeps = {
     string,
     (args: Record<string, unknown>, context: ConnectorCallContext) => Promise<unknown>
   >
+  // Specialist gate: resolves effective connector ids for a session. Returns an array of allowed stable
+  // ids (bundled catalog ids or custom MCP server UUIDs), or { unavailable: true } when the bound
+  // specialist is unavailable (fail-closed). Absent: no specialist gate is applied (legacy/tests).
+  // Called only for agent-origin calls with a sessionId; internal calls bypass the specialist gate.
+  getEffectiveConnectorIds?: (
+    sessionId: string
+  ) => Promise<string[] | { unavailable: true }>
 }
 
-// Optional routing context for a connector call. Present for calls that originate inside a session
-// (e.g. notebook host.mcp); absent for context-free callers.
-export type ConnectorCallContext = {
-  sessionId?: string
-}
+// Routing context for a connector call. Every agent-originated call MUST supply origin:'agent' and
+// sessionId so the specialist gate can run. Context-free internal callers MUST declare origin:'internal'
+// explicitly — never omit origin on an internal call, as omission is treated the same as absent context
+// (no specialist gate for backward compatibility with legacy call sites that predate this field).
+// Agent calls without sessionId fail closed when a specialist gate is wired.
+export type ConnectorCallContext =
+  | { origin: 'agent'; sessionId?: string }
+  | { origin: 'internal' }
+  | { sessionId?: string } // legacy form: no origin declared (backward compat, no specialist gate)
 
 // Agent-agnostic gate: enforces enabled state + per-tool policy, prompts for approval on un-trusted
 // calls, injects credentials, and dispatches each call to either the bundled ParserEngine or a
@@ -69,13 +83,68 @@ export class ConnectorService {
   ): Promise<unknown> {
     const descriptor = getDescriptor(connector, method)
     const isBundled = descriptor !== undefined || ALL_CONNECTOR_IDS.includes(connector)
-    if (isBundled) return this.callBundled(connector, method, args, descriptor, context)
+
+    if (isBundled) {
+      // For bundled connectors, the stable catalog id equals the connector parameter.
+      await this.enforceSpecialistGate(connector, context)
+      return this.callBundled(connector, method, args, descriptor, context)
+    }
 
     const custom = (this.deps.getConnectors()?.customMcpServers ?? []).find(
       (s) => s.name === connector
     )
     if (!custom) throw new Error(`connector not enabled: ${connector}`)
+    // For custom MCP servers, the stable id is the UUID — use that for the specialist gate.
+    await this.enforceSpecialistGate(custom.id, context)
     return this.callCustom(custom, method, args, context)
+  }
+
+  // Specialist gate: runs BEFORE connector recognition, approval prompts, and network dispatch.
+  // Ordering: global enabled? → session binding available? → connector in effectiveConnectors?
+  // → tool-level blocked/ask/auto-allow → dispatch
+  // The gate is only applied for agent-origin calls; internal calls explicitly bypass it.
+  // Missing agent session context fails closed when a specialist gate is wired.
+  private async enforceSpecialistGate(
+    connectorId: string,
+    context: ConnectorCallContext
+  ): Promise<void> {
+    if (!this.deps.getEffectiveConnectorIds) return // no specialist gate wired
+
+    const origin = 'origin' in context ? context.origin : undefined
+
+    // Internal callers explicitly declare their origin — they bypass the specialist gate.
+    if (origin === 'internal') return
+
+    // Agent origin requires sessionId. Missing context fails closed.
+    const sessionId = 'sessionId' in context ? context.sessionId : undefined
+    if (origin === 'agent' && !sessionId) {
+      throw new Error(
+        'Agent session context (sessionId) is required for connector calls with a specialist gate.'
+      )
+    }
+
+    // Legacy callers (no origin field) without sessionId: no specialist gate — backward compat.
+    if (!sessionId) return
+
+    const effectiveResult = await this.deps.getEffectiveConnectorIds(sessionId)
+
+    // Unavailable binding: fail closed — reject all connector calls.
+    if (!Array.isArray(effectiveResult)) {
+      log.warn('connector call rejected: specialist unavailable', {
+        connectorId,
+        sessionId
+      })
+      throw new Error(`connector not enabled for specialist: ${connectorId}`)
+    }
+
+    // Not in effective allowlist: reject before any approval or network dispatch.
+    if (!effectiveResult.includes(connectorId)) {
+      log.warn('connector call rejected: not in specialist allowlist', {
+        connectorId,
+        sessionId
+      })
+      throw new Error(`connector not enabled for specialist: ${connectorId}`)
+    }
   }
 
   private async callBundled(
@@ -91,7 +160,8 @@ export class ConnectorService {
     if (this.isBlocked(connector, method)) {
       throw new Error(`tool blocked by policy: ${connector}/${method}`)
     }
-    await this.ensureApproved(connector, method, args, context.sessionId)
+    const sessionId = 'sessionId' in context ? context.sessionId : undefined
+    await this.ensureApproved(connector, method, args, sessionId)
 
     // Bundled tools that need privileged local behavior run here, after the same gate, instead of the
     // read-only HTTP engine.
@@ -112,7 +182,8 @@ export class ConnectorService {
       throw new Error(`tool blocked by policy: ${custom.name}/${method}`)
     }
     if (!this.deps.mcpClientManager) throw new Error('connector runtime not configured')
-    await this.ensureApproved(custom.name, method, args, context.sessionId)
+    const sessionId = 'sessionId' in context ? context.sessionId : undefined
+    await this.ensureApproved(custom.name, method, args, sessionId)
 
     return this.deps.mcpClientManager.call(toCustomMcpConfig(custom), method, args)
   }

@@ -83,9 +83,16 @@ export const claudeCodeFramework: AgentFramework = {
   buildSessionSetup(ctx: SessionSetupContext): SessionSetup {
     // settingSources:['user'] excludes workspace settings that could override the active provider.
     // Shared mode adds app-owned settings/plugins at the SDK flag layer via sessionOptions.
+    // A bound specialist narrows the session to its effective skills. `undefined` means None, so the
+    // field is omitted and the SDK keeps its default catalog; `[]` is a bound zero-skill specialist and
+    // must reach the SDK verbatim (an empty array is truthy, so it is forwarded rather than dropped).
     const meta: Record<string, unknown> = {
       claudeCode: {
-        options: { ...ctx.sessionOptions, settingSources: ['user'] }
+        options: {
+          ...ctx.sessionOptions,
+          settingSources: ['user'],
+          ...(ctx.skillWhitelist ? { skills: ctx.skillWhitelist } : {})
+        }
       }
     }
 

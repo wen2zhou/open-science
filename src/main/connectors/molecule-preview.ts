@@ -1,4 +1,5 @@
 import { renderMoleculeStructure } from './descriptors/molecule'
+import type { ConnectorCallContext } from './service'
 
 // Minimal view of the app runtime's artifact writer, so the handler stays testable with a fake. The
 // session id routes the write to the run of the session that invoked the tool.
@@ -20,17 +21,19 @@ const MOLFILE_MIME = 'chemical/x-mdl-molfile'
 // auto-opened in the preview panel by the renderer (workspace-events), so no extra IPC is needed.
 export const createMoleculePreviewHandler =
   (writer: MoleculeArtifactWriter) =>
-  async (args: Record<string, unknown>, context: { sessionId?: string } = {}): Promise<unknown> => {
+  async (args: Record<string, unknown>, context: ConnectorCallContext = {}): Promise<unknown> => {
+    // Only the session id matters here; the internal-origin variant carries none, which fails closed below.
+    const sessionId = 'sessionId' in context ? context.sessionId : undefined
     const result = await renderMoleculeStructure(args)
     if (!result.valid) return result
 
     // The artifact must attach to the calling session's run; without a session id it would fall back to
     // a global "current" run and could land on a parallel session, so fail closed instead.
-    if (!context.sessionId) {
+    if (!sessionId) {
       throw new Error('molecule preview requires an active session to attach the structure to.')
     }
 
-    const artifact = await writer.writeArtifactForCurrentRun(context.sessionId, {
+    const artifact = await writer.writeArtifactForCurrentRun(sessionId, {
       filename: result.filename_suggestion,
       content: result.molfile,
       mimeType: MOLFILE_MIME

@@ -88,6 +88,12 @@ export type SessionSetupContext = {
   // Framework-native options resolved with the active backend and applied to every session created
   // on that connection. Claude uses this to inject app-owned settings/plugins into shared auth mode.
   sessionOptions?: Record<string, unknown>
+  // Resolved framework skill names for a bound Specialist's effective skill allowlist.
+  // undefined = None binding: omit the skills field entirely (no whitelist, use global policy).
+  // [] = bound zero-skill Specialist: must be sent explicitly as skills: [] to hide all skills.
+  // string[] = bound non-empty Specialist: deliver native whitelist for Claude Code;
+  //            generate guidance-only text for Codex/OpenCode (not a security boundary).
+  skillWhitelist?: string[]
 }
 
 // Framework-specific session configuration returned to the runtime. `meta` becomes the ACP `_meta`
