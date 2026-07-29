@@ -29,14 +29,14 @@ describe('mcpCall RPC', () => {
     })
   })
 
-  it('forwards the caller session id as call context so writes attribute to the right session', async () => {
-    let seenContext: { sessionId?: string } | undefined
+  it('forwards the caller session id as agent-origin call context so writes attribute to the right session', async () => {
+    let seenContext: { origin?: string; sessionId?: string } | undefined
     const capturing = {
       call: async (
         _s: string,
         _m: string,
         _a: Record<string, unknown>,
-        context?: { sessionId?: string }
+        context?: { origin?: string; sessionId?: string }
       ) => {
         seenContext = context
         return { ok: true }
@@ -54,7 +54,9 @@ describe('mcpCall RPC', () => {
         params: { server: 'molecule', method: 'preview_molecule', args: {}, sessionId: 's-42' }
       })
     })
-    expect(seenContext).toEqual({ sessionId: 's-42' })
+    // mcpCall is the agent RPC path, so the specialist gate receives an explicit agent origin plus the
+    // session id (the gate fails closed when an agent call omits sessionId).
+    expect(seenContext).toEqual({ origin: 'agent', sessionId: 's-42' })
   })
 })
 
