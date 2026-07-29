@@ -237,6 +237,46 @@ beforeEach(async () => {
   await writeFile(join(userCodexDir, 'auth.json'), '{"tokens":{"access_token":"test"}}')
 })
 
+describe('SettingsService: specialists', () => {
+  it('duplicates into independent arrays and lets a stale editor preserve its draft on the copy', async () => {
+    const service = createService()
+    const original = await service.createSpecialist({
+      agentId: 'rna-review',
+      name: 'RNA review',
+      skillIds: [],
+      connectorIds: []
+    })
+    const newer = await service.updateSpecialist({
+      id: original.id,
+      expectedRevision: original.revision,
+      agentId: original.agentId,
+      name: 'Newer original',
+      skillIds: [],
+      connectorIds: []
+    })
+
+    const copy = await service.duplicateSpecialist({
+      id: original.id,
+      expectedRevision: original.revision
+    })
+    const preservedDraft = await service.updateSpecialist({
+      id: copy.id,
+      expectedRevision: copy.revision,
+      agentId: copy.agentId,
+      name: 'My retained draft',
+      skillIds: [],
+      connectorIds: []
+    })
+
+    expect(copy).toMatchObject({ agentId: 'rna-review-copy', revision: 1 })
+    expect(copy.id).not.toBe(original.id)
+    expect(preservedDraft.name).toBe('My retained draft')
+    expect((await service.listSpecialists()).find((item) => item.id === original.id)).toMatchObject(
+      { name: newer.name, revision: newer.revision }
+    )
+  })
+})
+
 afterEach(async () => {
   vi.unstubAllGlobals()
   await rm(storageRoot, { recursive: true, force: true })

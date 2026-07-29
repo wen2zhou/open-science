@@ -1104,9 +1104,9 @@ class SettingsService {
     const source = (await this.listSpecialists()).find((item) => item.id === request.id)
     if (!source || source.kind === 'builtin-reviewer')
       throw new Error('Specialist cannot be duplicated.')
-    if (source.kind === 'custom' && source.revision !== request.expectedRevision) {
-      throw new Error('Specialist was changed elsewhere. Reload or Duplicate your draft.')
-    }
+    // Duplication is deliberately safe from a stale editor: it never changes the source, and lets
+    // the renderer preserve a conflicted local draft by applying it to the new independent copy.
+    // Other source mutations still require an exact expected revision.
     const agentIds = new Set([
       ...(settings.specialists ?? []).map((item) => item.agentId),
       'customize'
