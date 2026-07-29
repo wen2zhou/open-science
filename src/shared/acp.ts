@@ -244,6 +244,12 @@ export type AcpCreateSessionRequest = {
   // Scopes generated artifacts / notebooks to a project's storage subtree. Defaults per runtime.
   projectName?: string
   permissionProfile?: PermissionProfileId
+  // The Specialist id to bind to this session for its very first turn. The app sessionId is only
+  // RETURNED by createSession, so a pre-selected Specialist cannot be resolved from the registry at
+  // _meta-build time (which runs inside buildSession, before the id exists). Carrying the selection
+  // here lets the first-turn _meta / per-turn prefix resolve it directly, with no extra turn and no
+  // restart. Absent/undefined means None (no Specialist), which stays a no-op exactly as today.
+  specialistId?: string
 }
 
 export type AcpCreateSessionResponse = {

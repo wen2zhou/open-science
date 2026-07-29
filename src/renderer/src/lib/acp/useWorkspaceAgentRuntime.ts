@@ -50,6 +50,10 @@ type SendWorkspaceMessageInput = {
   agentModel?: string
   // Skills the user picked in the composer; force-loaded and nudged for this turn only.
   forcedSkillIds?: string[]
+  // Specialist selected before the first message of a new conversation. Carried into createSession so
+  // it applies to turn one (no extra turn, no restart). Existing sessions resolve their Specialist via
+  // the registry, so this is only meaningful for the pending-session create path.
+  specialistId?: string
   // Existing files referenced via `@` mentions; attached to the prompt as content blocks.
   referencedArtifacts?: FileReference[]
   // Structured mention segments of the draft, persisted so the sent bubble renders styled pills.
@@ -346,13 +350,20 @@ const startPendingSessionPrompt = (
   projectName: string | undefined,
   permissionProfile: PermissionProfileId,
   forcedSkillIds: string[] | undefined,
-  referencedArtifacts: FileReference[] | undefined
+  referencedArtifacts: FileReference[] | undefined,
+  specialistId: string | undefined
 ): void => {
   void (async () => {
     let createdSession
 
     try {
-      createdSession = await runtime.createSession(cwd, projectName, permissionProfile)
+      // Carry the pre-selected Specialist so it applies to the very first turn.
+      createdSession = await runtime.createSession(
+        cwd,
+        projectName,
+        permissionProfile,
+        specialistId
+      )
     } catch (error) {
       // Unwrap the IPC wrapper so an app-authored setup failure (model-incompat / no provider / Codex
       // bridge / missing executable) is recognized by the classifier and hides the report button.
@@ -430,6 +441,7 @@ const sendWorkspaceMessage = async (
     agentBackendId,
     agentModel,
     forcedSkillIds,
+    specialistId,
     referencedArtifacts,
     parts,
     forceHistoryReplay,
@@ -490,7 +502,8 @@ const sendWorkspaceMessage = async (
         sessionProjectName,
         currentSession.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
         forcedSkillIds,
-        referencedArtifacts
+        referencedArtifacts,
+        currentSession.specialistId
       )
       return appended
     }
@@ -671,7 +684,8 @@ const sendWorkspaceMessage = async (
     projectName,
     permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
     forcedSkillIds,
-    referencedArtifacts
+    referencedArtifacts,
+    specialistId
   )
 
   return pending

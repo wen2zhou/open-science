@@ -204,6 +204,12 @@ type AcpRuntimeOptions = {
   // mutation takes effect immediately, never from a connect-time snapshot.
   specialists?: {
     getBoundSpecialistId: (sessionId: string) => string | undefined
+    // Registers the Specialist binding for a session into the coordinator-owned registry. Used at
+    // create time: the app sessionId only exists AFTER buildSession returns, so a Specialist carried
+    // on the create request cannot be resolved from the registry while _meta is being built. The
+    // runtime builds first-turn _meta directly from the carried id (see specialistAppendForSession)
+    // and then persists it here so later per-turn prefix / resume resolution sees the same binding.
+    setBoundSpecialistId?: (sessionId: string, specialistId: string | undefined) => void
     getSpecialistCatalog: () => Promise<{
       custom: StoredSpecialist[]
       builtins: StoredSpecialist[]
@@ -721,15 +727,7 @@ class AcpRuntime {
   private readonly spawnAgent: (() => ChildProcessWithoutNullStreams) | undefined
   private readonly skillsHooks: AcpRuntimeSkillsOptions | undefined
   // Per-session Specialist seam; undefined in tests that build the runtime without specialists.
-  private readonly specialists:
-    | {
-        getBoundSpecialistId: (sessionId: string) => string | undefined
-        getSpecialistCatalog: () => Promise<{
-          custom: StoredSpecialist[]
-          builtins: StoredSpecialist[]
-        }>
-      }
-    | undefined
+  private readonly specialists: AcpRuntimeOptions['specialists']
   // Mutable: refreshed from resolveBackend on each connect so a framework switch applies on reconnect.
   private framework: AgentFramework
   private backendId: string | undefined
@@ -1381,13 +1379,26 @@ class AcpRuntime {
         projectName
       })
       log.info('createSession: buildSession', { mcpServersCount: mcpServers.length })
+      // Refresh the Specialist catalog so the carried create-time selection resolves against the
+      // LATEST settings (not a stale or absent connect-time snapshot) when first-turn _meta is built.
+      if (this.specialists) await this.refreshSpecialistCatalog()
       const session = await connection.agent
         .buildSession({
           cwd: sessionCwd,
           mcpServers,
-          ...this.buildSessionMetaArg()
+          // Carry the create-time Specialist selection into the first-turn _meta directly: the app
+          // sessionId does not exist yet, so the registry cannot resolve it here. See buildSessionMetaArg.
+          ...this.buildSessionMetaArg(undefined, request.specialistId)
         })
         .start()
+
+      // Now that the app sessionId exists, persist the carried Specialist binding into the coordinator
+      // registry so the per-turn prefix (Codex/OpenCode) and later resume resolve the same Specialist.
+      // Absent selection (None) is written as undefined to keep it a no-op. This never triggers a global
+      // skills reload — it only updates this session's binding, matching the per-session reconfigure rule.
+      if (this.specialists?.setBoundSpecialistId) {
+        this.specialists.setBoundSpecialistId(session.sessionId, request.specialistId)
+      }
 
       log.info('createSession: configurePermissionProfile', { sessionId: session.sessionId })
       try {
@@ -3884,7 +3895,10 @@ class AcpRuntime {
     )
   }
 
-  private getSystemPromptAppends(sessionId?: string): string[] {
+  private getSystemPromptAppends(
+    sessionId?: string,
+    createRequestSpecialistId?: string
+  ): string[] {
     // Each append names MCP tools that only exist when that tooling is actually wired for this session;
     // omit it otherwise so the agent isn't told to use tools it wasn't given.
     const base = [
@@ -3902,7 +3916,7 @@ class AcpRuntime {
     // the framework/base identity, safety rules, and tool docs. None and unavailable add nothing
     // (unavailable is fail-closed). Resolved against the LATEST settings so a freshly disabled
     // Specialist takes effect immediately rather than from a stale hydration snapshot.
-    const specialistAppend = this.specialistAppendForSession(sessionId)
+    const specialistAppend = this.specialistAppendForSession(sessionId, createRequestSpecialistId)
     return specialistAppend ? [...base, specialistAppend] : base
   }
 
@@ -3922,10 +3936,26 @@ class AcpRuntime {
   // Resolves the bound Specialist for a session and returns its trimmed instructions as a prompt
   // append, or '' (no append) when unbound, unavailable, or when the seam is absent. Empty/whitespace
   // instructions also yield no append so a bound Specialist with no guidance leaves the base prompt
-  // untouched. sessionId is undefined on fresh session creation; in that case there is no persisted
-  // binding yet, so the append is correctly empty.
-  private specialistAppendForSession(sessionId?: string): string {
-    if (!this.specialists || !sessionId) return ''
+  // untouched. sessionId is undefined on fresh session creation; in that case a Specialist carried on
+  // the create request (createRequestSpecialistId) is resolved directly so it applies to the very
+  // first turn. Unavailable bindings still resolve to no append (fail-closed).
+  private specialistAppendForSession(
+    sessionId?: string,
+    createRequestSpecialistId?: string
+  ): string {
+    if (!this.specialists) return ''
+    // On a brand-new session the app sessionId does not exist yet, so the registry cannot answer.
+    // Resolve the carried selection directly against the latest catalog instead.
+    if (!sessionId) {
+      if (createRequestSpecialistId === undefined) return ''
+      const runtime: SessionSpecialistRuntime = {
+        getBoundSpecialistId: () => createRequestSpecialistId,
+        getCustomSpecialists: () => this.specialistCatalog?.custom ?? [],
+        getBuiltinSpecialists: () => this.specialistCatalog?.builtins ?? []
+      }
+      const resolved = resolveSessionSpecialist(runtime, '__create__')
+      return specialistAppendFor(resolved)
+    }
     const runtime: SessionSpecialistRuntime = {
       getBoundSpecialistId: this.specialists.getBoundSpecialistId,
       getCustomSpecialists: () => this.specialistCatalog?.custom ?? [],
@@ -3944,9 +3974,12 @@ class AcpRuntime {
   // Builds the ACP `_meta` argument for session/new and session/resume, delegating the framework-specific
   // shape to the active framework. Claude applies its settingSources restriction, resolved backend
   // options, and system-prompt appends; opencode returns no meta and uses a prompt prefix instead.
-  private buildSessionMetaArg(sessionId?: string): { _meta?: Record<string, unknown> } {
+  private buildSessionMetaArg(
+    sessionId?: string,
+    createRequestSpecialistId?: string
+  ): { _meta?: Record<string, unknown> } {
     const setup = this.framework.buildSessionSetup({
-      systemPromptAppends: this.getSystemPromptAppends(sessionId),
+      systemPromptAppends: this.getSystemPromptAppends(sessionId, createRequestSpecialistId),
       sessionOptions: this.pendingSessionOptions
     })
 

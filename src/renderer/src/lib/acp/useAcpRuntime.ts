@@ -45,7 +45,8 @@ const useAcpRuntime = (): {
   createSession: (
     cwd?: string,
     projectName?: string,
-    permissionProfile?: PermissionProfileId
+    permissionProfile?: PermissionProfileId,
+    specialistId?: string
   ) => Promise<AcpCreateSessionResponse>
   resumeSession: (
     sessionId: AcpResumeSessionRequest['sessionId'],
@@ -206,11 +207,18 @@ const useAcpRuntime = (): {
     [runSnapshotAction]
   )
 
-  // Creates a protocol session and returns the runtime-provided id.
+  // Creates a protocol session and returns the runtime-provided id. The optional specialistId carries a
+  // Specialist selected before the first message so it applies to the very first turn (no extra turn,
+  // no restart) — the runtime builds first-turn _meta from it directly.
   const createSession = useCallback(
-    (cwd?: string, projectName?: string, permissionProfile?: PermissionProfileId) =>
+    (
+      cwd?: string,
+      projectName?: string,
+      permissionProfile?: PermissionProfileId,
+      specialistId?: string
+    ) =>
       runValueAction(setIsConnecting, () =>
-        window.api.acp.createSession({ cwd, projectName, permissionProfile })
+        window.api.acp.createSession({ cwd, projectName, permissionProfile, specialistId })
       ),
     [runValueAction]
   )

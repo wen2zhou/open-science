@@ -299,7 +299,7 @@ describe('workspace agent message sending', () => {
       agentModel: 'model-used-by-run'
     })
 
-    expect(runtime.createSession).toHaveBeenCalledWith('/workspace/project', undefined, 'ask')
+    expect(runtime.createSession).toHaveBeenCalledWith('/workspace/project', undefined, 'ask', undefined)
     expect(runtime.sendPrompt).not.toHaveBeenCalled()
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
       id: sent?.sessionId,
@@ -361,7 +361,35 @@ describe('workspace agent message sending', () => {
       projectName: 'project-1'
     })
 
-    expect(runtime.createSession).toHaveBeenCalledWith(undefined, 'project-1', 'ask')
+    expect(runtime.createSession).toHaveBeenCalledWith(undefined, 'project-1', 'ask', undefined)
+  })
+
+  it('carries a pre-selected Specialist into createSession for a new conversation', async () => {
+    const runtime = {
+      state: { ...createSnapshot(), cwd: '/home/user' },
+      createSession: vi.fn().mockResolvedValue({
+        sessionId: 'transport-session-1',
+        cwd: '/home/user/ws'
+      }),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt: vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
+    }
+
+    await sendWorkspaceMessage(runtime, {
+      text: 'Plan a RNA-seq run',
+      cwd: '/home/user/ws',
+      projectName: 'project-1',
+      specialistId: 'spec-rnaseq'
+    })
+
+    // The Specialist chosen before the first message is passed to createSession so turn one resolves it.
+    expect(runtime.createSession).toHaveBeenCalledWith(
+      '/home/user/ws',
+      'project-1',
+      'ask',
+      'spec-rnaseq'
+    )
   })
 
   it('does not persist the runtime home when managed session creation omits cwd', async () => {
@@ -717,8 +745,8 @@ describe('workspace agent message sending', () => {
       projectName: 'project-1'
     })
 
-    expect(runtime.createSession).toHaveBeenNthCalledWith(1, undefined, 'project-1', 'ask')
-    expect(runtime.createSession).toHaveBeenNthCalledWith(2, undefined, 'project-1', 'ask')
+    expect(runtime.createSession).toHaveBeenNthCalledWith(1, undefined, 'project-1', 'ask', undefined)
+    expect(runtime.createSession).toHaveBeenNthCalledWith(2, undefined, 'project-1', 'ask', undefined)
   })
 
   it('does not submit another prompt for a session that already owns a run', async () => {

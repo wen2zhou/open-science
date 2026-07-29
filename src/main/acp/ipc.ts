@@ -151,6 +151,10 @@ const createRuntime = ({
         // a switch or disablement takes effect immediately.
         specialists: {
           getBoundSpecialistId: (sessionId) => boundSpecialistId(specialistRegistry.get(sessionId)),
+          // Persists the create-time Specialist selection into the shared registry once the app
+          // sessionId exists, so per-turn prefix / resume resolution sees the same binding on turn one.
+          setBoundSpecialistId: (sessionId, specialistId) =>
+            specialistRegistry.set(sessionId, specialistId),
           getSpecialistCatalog: () => settingsService.getSpecialistCatalog()
         },
         artifacts: {

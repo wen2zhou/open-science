@@ -946,6 +946,154 @@ describe('ACP runtime session management', () => {
     expect(JSON.stringify(fakeAgent.resumedSessions[0]._meta)).not.toContain('spec-gone')
   })
 
+  it('applies a pre-selected Specialist to the FIRST turn via createSession _meta (Claude Code)', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['new-specialist-session'])
+    const registryCalls: Array<{ sessionId: string; specialistId: string | undefined }> = []
+    const runtime = new AcpRuntime({
+      appVersion: '0.2.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      specialists: {
+        getBoundSpecialistId: () => undefined,
+        setBoundSpecialistId: (sessionId, specialistId) =>
+          registryCalls.push({ sessionId, specialistId }),
+        getSpecialistCatalog: async () => ({
+          custom: [
+            {
+              id: 'spec-rnaseq',
+              agentId: 'spec-rnaseq',
+              name: 'RNA-seq reviewer',
+              instructions: 'Always check batch confounders before differential expression.',
+              skillIds: [],
+              connectorIds: [],
+              enabled: true,
+              revision: 1
+            }
+          ],
+          builtins: []
+        })
+      }
+    })
+
+    // A Specialist selected before the first message is carried on the create request; the runtime
+    // resolves it against the latest catalog and appends it into the very first turn's session _meta
+    // even though no app sessionId exists yet.
+    const session = await runtime.createSession({ cwd: '/workspace', specialistId: 'spec-rnaseq' })
+
+    expect(JSON.stringify(fakeAgent.newSessions[0]._meta)).toContain(
+      'Always check batch confounders before differential expression.'
+    )
+    // The carried binding is persisted into the registry once the app sessionId exists, so later
+    // per-turn prefix / resume resolution sees the same Specialist.
+    expect(registryCalls).toEqual([{ sessionId: session.sessionId, specialistId: 'spec-rnaseq' }])
+  })
+
+  it('adds no Specialist append when a new session carries no selection (None)', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['new-none-session'])
+    const registryCalls: Array<{ sessionId: string; specialistId: string | undefined }> = []
+    const runtime = new AcpRuntime({
+      appVersion: '0.2.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      specialists: {
+        getBoundSpecialistId: () => undefined,
+        setBoundSpecialistId: (sessionId, specialistId) =>
+          registryCalls.push({ sessionId, specialistId }),
+        getSpecialistCatalog: async () => ({
+          custom: [
+            {
+              id: 'spec-rnaseq',
+              agentId: 'spec-rnaseq',
+              name: 'RNA-seq reviewer',
+              instructions: 'Always check batch confounders before differential expression.',
+              skillIds: [],
+              connectorIds: [],
+              enabled: true,
+              revision: 1
+            }
+          ],
+          builtins: []
+        })
+      }
+    })
+
+    // No selection on a brand-new session is None: no append, exactly as today.
+    const session = await runtime.createSession({ cwd: '/workspace' })
+
+    expect(JSON.stringify(fakeAgent.newSessions[0]._meta)).not.toContain(
+      'Always check batch confounders'
+    )
+    expect(registryCalls).toEqual([{ sessionId: session.sessionId, specialistId: undefined }])
+  })
+
+  it('stays fail-closed on the first turn when a new session carries an unavailable binding', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['new-unavailable-session'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.2.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      specialists: {
+        getBoundSpecialistId: () => undefined,
+        setBoundSpecialistId: () => undefined,
+        // Bound to an id that no longer resolves (deleted) — must fail closed on turn one.
+        getSpecialistCatalog: async () => ({ custom: [], builtins: [] })
+      }
+    })
+
+    await runtime.createSession({ cwd: '/workspace', specialistId: 'spec-gone' })
+
+    expect(JSON.stringify(fakeAgent.newSessions[0]._meta)).not.toContain('spec-gone')
+  })
+
+  it('uses the final selection when createSession is called after a re-selection', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['new-reselected-session'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.2.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      specialists: {
+        getBoundSpecialistId: () => undefined,
+        setBoundSpecialistId: () => undefined,
+        getSpecialistCatalog: async () => ({
+          custom: [
+            {
+              id: 'spec-first',
+              agentId: 'spec-first',
+              name: 'First',
+              instructions: 'First choice guidance.',
+              skillIds: [],
+              connectorIds: [],
+              enabled: true,
+              revision: 1
+            },
+            {
+              id: 'spec-final',
+              agentId: 'spec-final',
+              name: 'Final',
+              instructions: 'Final choice guidance.',
+              skillIds: [],
+              connectorIds: [],
+              enabled: true,
+              revision: 1
+            }
+          ],
+          builtins: []
+        })
+      }
+    })
+
+    // Switching again before sending carries the FINAL selection into the create request.
+    await runtime.createSession({ cwd: '/workspace', specialistId: 'spec-final' })
+
+    const meta = JSON.stringify(fakeAgent.newSessions[0]._meta)
+    expect(meta).toContain('Final choice guidance.')
+    expect(meta).not.toContain('First choice guidance.')
+  })
+
   it('applies native Full access before the first prompt', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['full-session'], {
