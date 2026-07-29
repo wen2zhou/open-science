@@ -188,6 +188,7 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
   const refreshProviderModels = useSettingsStore((state) => state.refreshProviderModels)
   const pendingSkillId = useSettingsStore((state) => state.pendingSkillId)
   const consumePendingSkill = useSettingsStore((state) => state.consumePendingSkill)
+  const openCustomizeChat = useSettingsStore((state) => state.openCustomizeChat)
   const pendingSettingsPanel = useSettingsStore((state) => state.pendingSettingsPanel)
   const consumePendingSettingsPanel = useSettingsStore((state) => state.consumePendingSettingsPanel)
   const canImportInstalledSkills =
@@ -755,7 +756,9 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
                     canImportInstalledSkills={canImportInstalledSkills}
                   />
                 ) : activePanel === 'specialists' ? (
-                  <SpecialistsPanel />
+                  <SpecialistsPanel
+                    onChatWithAgent={(specialistId) => openCustomizeChat(specialistId)}
+                  />
                 ) : activePanel === 'connectors' ? (
                   connectorsView.kind === 'detail' ? (
                     <ConnectorDetailView id={connectorsView.id} />

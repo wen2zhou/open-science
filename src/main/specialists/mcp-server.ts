@@ -9,6 +9,7 @@
 // The server is deps-driven so the tool surface is unit-testable without the Electron IPC stack.
 
 import { validateSpecialistDraft } from '../../shared/specialist-validation'
+import type { SpecialistMutationPreview as SpecialistMutationPreviewShared } from '../../shared/specialist-preview'
 import type {
   SpecialistView,
   CreateSpecialistRequest,
@@ -58,20 +59,8 @@ export type SpecialistMcpCallResult = {
   requiresConfirmation?: { mutationId: string }
 }
 
-export type SpecialistMutationPreview = {
-  action: string
-  identity: { id?: string; agentId: string; name: string }
-  // Summary only — never the raw instruction text, so failures/previews cannot leak it.
-  instructionsSummary: { changed: boolean; length: number }
-  // The COMPLETE target Skill and Connector id sets after the mutation, not just the diff.
-  skills: string[]
-  connectors: string[]
-  expectedRevision?: number
-  // Whether existing bound sessions stay available after the change.
-  affectedSessions?: { available: boolean }
-  // Present for switch mutations.
-  targetSessionId?: string
-}
+// Re-exported so existing main-process imports keep working; the shared type is the single source.
+export type SpecialistMutationPreview = SpecialistMutationPreviewShared
 
 // A staged mutation awaiting explicit confirmation. Each holds enough to execute exactly once.
 type PendingMutation =
