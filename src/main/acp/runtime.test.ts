@@ -900,19 +900,21 @@ describe('ACP runtime session management', () => {
       spawnAgent: () => asAgentProcess(process),
       specialists: {
         getBoundSpecialistId: () => 'spec-rnaseq',
-        getCustomSpecialists: () => [
-          {
-            id: 'spec-rnaseq',
-            agentId: 'spec-rnaseq',
-            name: 'RNA-seq reviewer',
-            instructions: 'Always check batch confounders before differential expression.',
-            skillIds: [],
-            connectorIds: [],
-            enabled: true,
-            revision: 1
-          }
-        ],
-        getBuiltinSpecialists: () => []
+        getSpecialistCatalog: async () => ({
+          custom: [
+            {
+              id: 'spec-rnaseq',
+              agentId: 'spec-rnaseq',
+              name: 'RNA-seq reviewer',
+              instructions: 'Always check batch confounders before differential expression.',
+              skillIds: [],
+              connectorIds: [],
+              enabled: true,
+              revision: 1
+            }
+          ],
+          builtins: []
+        })
       }
     })
 
@@ -935,8 +937,7 @@ describe('ACP runtime session management', () => {
       specialists: {
         // Bound to an id that no longer resolves (deleted) — must fail closed, adding nothing.
         getBoundSpecialistId: () => 'spec-gone',
-        getCustomSpecialists: () => [],
-        getBuiltinSpecialists: () => []
+        getSpecialistCatalog: async () => ({ custom: [], builtins: [] })
       }
     })
 
