@@ -25,6 +25,7 @@ import { ALL_CONNECTOR_IDS } from './connectors/registry'
 import { ConnectorService } from './connectors/service'
 import { syncConnectorSkillDocs, syncCustomServerSkillDocs } from './connectors/provision'
 import { resolveSessionCapabilities } from './specialists/resolve-session-capabilities'
+import { SpecialistManagementBridge } from './specialists/management-bridge'
 import { registerFileSaveHandlers } from './file-save'
 import { registerCliInstallIpcHandlers } from './cli-install/ipc'
 import { registerGithubIpcHandlers } from './github-ipc'
@@ -550,6 +551,29 @@ const registerIpcHandlers = async ({
   // Share the coordinator-owned Specialist registry with the connector gate so an agent connector
   // call resolves exactly the binding the skill whitelist resolved.
   specialistRegistryRef.current = runtime.getSpecialistRegistry()
+  // Instantiate the app-owned Specialist management MCP (issue 04a) and bridge it to the live settings
+  // service, the shared session-specialist registry, and the renderer settings refresh broadcast. This is
+  // the Customize chat's confirm path: stageMutation renders the approval card, confirmMutation applies
+  // the mutation exactly once and broadcasts `specialists:changed` so an open Settings page reloads, and
+  // cancelMutation is the decline path with no side effects. The switch path writes ONLY the session
+  // specialistId (matching the issue-02 next-message semantics) and never the permission profile.
+  const specialistManagement = new SpecialistManagementBridge({
+    settings: settingsService,
+    registry: runtime.getSpecialistRegistry(),
+    broadcastSettingsRefresh: () => broadcastToRenderers('specialists:changed', undefined)
+  })
+  ipcMain.handle('specialists:stage-mutation', async (_event, request) =>
+    specialistManagement.stageMutation(request.toolName, request.args ?? {})
+  )
+  ipcMain.handle('specialists:confirm-mutation', (_event, request) =>
+    specialistManagement.confirmMutation(request.mutationId)
+  )
+  ipcMain.handle('specialists:cancel-mutation', (_event, request) =>
+    specialistManagement.cancelMutation(request.mutationId)
+  )
+  ipcMain.handle('specialists:call-tool', (_event, request) =>
+    specialistManagement.callTool(request.toolName, request.args ?? {})
+  )
   // Single shared teardown owner for both the before-quit handler (index.ts) and the pre-update-install
   // gate. Built here because it needs the runtime, which does not exist when update IPC is registered
   // above — so the gate is injected via a late-bound closure rather than at strategy construction.

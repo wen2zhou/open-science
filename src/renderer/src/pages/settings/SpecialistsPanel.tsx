@@ -196,6 +196,13 @@ export const SpecialistsPanel = ({ onChatWithAgent }: SpecialistsPanelProps): Re
     const timer = window.setTimeout(() => void load(), 0)
     return () => window.clearTimeout(timer)
   }, [])
+  // Live-reload when a Specialist mutation is applied from anywhere — the Settings editor itself or the
+  // Customize chat approval card. The main process broadcasts 'specialists:changed' after each confirmed
+  // mutation, so an already-open Settings page shows the new/updated row immediately without a restart.
+  useEffect(() => {
+    const unsubscribe = window.api.specialists.onChanged(() => void load())
+    return unsubscribe
+  }, [])
 
   const skillCapabilities = useMemo<Capability[]>(() => {
     const known = new Map(

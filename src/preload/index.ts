@@ -188,6 +188,7 @@ import type {
   SetSpecialistEnabledRequest,
   DeleteSpecialistRequest
 } from '../shared/settings'
+import type { SpecialistMutationPreview } from '../shared/specialist-preview'
 import type { PackageMirror } from '../shared/mirror'
 import type {
   ActiveSessionInfo,
@@ -388,6 +389,27 @@ type OpenScienceAPI = {
     respondSkillImportApproval: (response: ConversationSkillImportApprovalResponse) => Promise<void>
     respondConnectorApproval: (request: RespondApprovalRequest) => Promise<void>
     onInstallLog: (listener: AcpListener<ClaudeInstallEvent>) => RemoveListener
+  }
+  specialists: {
+    stageMutation: (request: {
+      toolName: string
+      args?: Record<string, unknown>
+    }) => Promise<{ mutationId: string; preview: SpecialistMutationPreview }>
+    confirmMutation: (request: {
+      mutationId: string
+    }) => Promise<{
+      specialist?: SpecialistView
+      switched?: { targetSessionId: string; specialistId?: string }
+    }>
+    cancelMutation: (request: { mutationId: string }) => Promise<void>
+    callTool: (request: {
+      toolName: string
+      args?: Record<string, unknown>
+    }) => Promise<{
+      isError?: boolean
+      content: Array<{ type: 'text'; text: string }>
+    }>
+    onChanged: (listener: AcpListener<unknown>) => RemoveListener
   }
   logs: {
     getPath: () => Promise<string | null>
@@ -925,6 +947,37 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke('connectors:approval-respond', request) as Promise<void>,
     // Streams live installer output while a one-click install runs.
     onInstallLog: (listener) => onIpcMessage('settings:install-log', listener)
+  },
+  specialists: {
+    // Customize chat confirm bridge: stages a Specialist management mutation (returns the structured
+    // preview rendered as the approval card). Nothing is persisted until confirmMutation is called.
+    stageMutation: (request: {
+      toolName: string
+      args?: Record<string, unknown>
+    }) =>
+      ipcRenderer.invoke('specialists:stage-mutation', request) as Promise<{
+        mutationId: string
+        preview: SpecialistMutationPreview
+      }>,
+    // Approves a staged mutation exactly once; applies it, reads back actual state, and broadcasts the
+    // settings refresh so an open Settings page shows the new row immediately.
+    confirmMutation: (request: { mutationId: string }) =>
+      ipcRenderer.invoke('specialists:confirm-mutation', request) as Promise<{
+        specialist?: SpecialistView
+        switched?: { targetSessionId: string; specialistId?: string }
+      }>,
+    // Decline path: cancels a staged mutation with no side effects.
+    cancelMutation: (request: { mutationId: string }) =>
+      ipcRenderer.invoke('specialists:cancel-mutation', request) as Promise<void>,
+    // Routes a read-only management tool (list/get/catalogs) through the management MCP without staging.
+    callTool: (request: { toolName: string; args?: Record<string, unknown> }) =>
+      ipcRenderer.invoke('specialists:call-tool', request) as Promise<{
+        isError?: boolean
+        content: Array<{ type: 'text'; text: string }>
+      }>,
+    // Refresh signal the main process broadcasts after a Specialist mutation (from Settings or the
+    // Customize chat). The Settings page subscribes so it reloads without a restart.
+    onChanged: (listener) => onIpcMessage('specialists:changed', listener)
   },
   logs: {
     getPath: () => ipcRenderer.invoke('logs:get-path') as Promise<string | null>,
