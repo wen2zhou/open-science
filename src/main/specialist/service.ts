@@ -174,11 +174,9 @@ export class ProfileService {
     const existingNames = doc.specialists.map((s) => s.name)
     const existingIds = new Map(doc.specialists.map((s) => [s.name, s.id]))
 
+    // validateCreateSpecialistInput now applies the public-name format rule when
+    // displayName is present, so create and update share one symmetric rule set.
     const errors = validateCreateSpecialistInput(input, existingNames, existingIds)
-    if (input.displayName !== undefined) {
-      const publicNameError = validateSpecialistPublicName(input.name)
-      if (publicNameError) errors.push({ field: 'name', message: publicNameError })
-    }
     if (errors.length > 0) {
       throw new Error(errors.map((e) => e.message).join('; '))
     }
@@ -200,7 +198,6 @@ export class ProfileService {
       revision: 1
     }
 
-    // systemPrompt is user content, not a secret — no logging concern here.
     // Do NOT log systemPrompt content per cross-cutting requirement.
     log.info('creating specialist', { id: stored.id, name: stored.name })
 
@@ -265,6 +262,7 @@ export class ProfileService {
     name: string
     expectedRevision?: number
   }): Promise<SpecialistProfileView> {
+    // Use the same relaxed public-name validator as create() for consistency.
     const nameError = validateSpecialistPublicName(input.name)
     if (nameError) throw new Error(nameError)
     const current = await this.getById(input.id)
@@ -280,16 +278,18 @@ export class ProfileService {
   async duplicate(id: string): Promise<Omit<CreateSpecialistInput, 'name'> & { name: string }> {
     const source = await this.getById(id)
     const names = new Set((await this.list()).map((profile) => profile.name))
-    const base = `${source.name}_COPY`
-    let name = base.slice(0, 32)
+    // Use the display name (which equals name in the single-name model) as the base.
+    const sourceName = source.displayName ?? source.name
+    const base = `${sourceName} Copy`
+    let name = base.slice(0, 80)
     let suffix = 2
     while (names.has(name)) {
-      const tail = `_${suffix++}`
-      name = `${base.slice(0, 32 - tail.length)}${tail}`
+      const tail = ` ${suffix++}`
+      name = `${base.slice(0, 80 - tail.length)}${tail}`
     }
     return {
       name,
-      displayName: `${source.displayName ?? source.name} Copy`,
+      displayName: name,
       description: source.description,
       systemPrompt: source.systemPrompt,
       iconKey: source.iconKey,

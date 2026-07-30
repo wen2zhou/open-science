@@ -43,6 +43,10 @@ type FormState = {
   selectedSkillIds: string[]
   excludedConnectorIds: string[]
   connectorIds: string[]
+  // Pinned at mount from editSpecialist.revision; updated only on a successful save
+  // or explicit Reload. Never updated by prop changes — that would silently defeat
+  // the optimistic concurrency guard.
+  baseRevision: number
 }
 
 type ConnectorRow = {
@@ -108,7 +112,10 @@ const SpecialistEditor = ({
           excludedSkillIds: editSpecialist.fullAccess.excludedSkillIds,
           selectedSkillIds: editSpecialist.selectedCapabilities.skillIds,
           excludedConnectorIds: editSpecialist.fullAccess.excludedConnectorIds,
-          connectorIds: editSpecialist.selectedCapabilities.connectorIds
+          connectorIds: editSpecialist.selectedCapabilities.connectorIds,
+          // Pin base revision at mount so concurrent remote writes do not silently
+          // refresh it. Only a successful save or an explicit Reload may update it.
+          baseRevision: editSpecialist.revision
         }
       : {
           name: initialInput?.name ?? '',
@@ -120,7 +127,8 @@ const SpecialistEditor = ({
           excludedSkillIds: initialInput?.fullAccess?.excludedSkillIds ?? [],
           selectedSkillIds: initialInput?.selectedCapabilities?.skillIds ?? [],
           excludedConnectorIds: initialInput?.fullAccess?.excludedConnectorIds ?? [],
-          connectorIds: initialInput?.selectedCapabilities?.connectorIds ?? []
+          connectorIds: initialInput?.selectedCapabilities?.connectorIds ?? [],
+          baseRevision: 0
         }
   )
   const [fieldErrors, setFieldErrors] = useState<SpecialistFieldError[]>([])
@@ -354,22 +362,35 @@ const SpecialistEditor = ({
         colorKey: form.colorKey,
         capabilityMode: form.capabilityMode,
         fullAccess: {
-          ...(editSpecialist?.fullAccess ?? { excludedSkillIds: [], connectorTools: [] }),
+          ...(editSpecialist?.fullAccess ?? {
+            excludedSkillIds: [],
+            excludedConnectorIds: [],
+            connectorTools: []
+          }),
           excludedSkillIds: form.excludedSkillIds,
           excludedConnectorIds: form.excludedConnectorIds
         },
         selectedCapabilities: {
-          ...(editSpecialist?.selectedCapabilities ?? { skillIds: [], connectorTools: [] }),
+          ...(editSpecialist?.selectedCapabilities ?? {
+            skillIds: [],
+            connectorIds: [],
+            connectorTools: []
+          }),
           skillIds: form.selectedSkillIds,
           connectorIds: form.connectorIds
         }
       }
       if (editSpecialist) {
+        // Send the base revision pinned at mount (or last successful save / reload),
+        // not the current prop revision, which may have been refreshed by a remote
+        // write and would silently defeat the optimistic concurrency guard.
         await onSaveEdit?.({
           id: editSpecialist.id,
-          revision: editSpecialist.revision,
+          revision: form.baseRevision,
           ...trimmed
         })
+        // Advance the base revision only after a confirmed save.
+        setForm((prev) => ({ ...prev, baseRevision: prev.baseRevision + 1 }))
       } else {
         await onSave(trimmed)
       }
@@ -392,17 +413,33 @@ const SpecialistEditor = ({
     }
   }
 
-  // Reloads the latest revision from the store, replacing the saved identity bar.
-  // Local form edits are discarded — the user confirmed "Reload" to get the
-  // server version, accepting the loss of unsaved changes.
+  // Reloads the latest revision from the store. The caller is expected to return the
+  // fresh profile. When it does, form state (including baseRevision) is reset from the
+  // fresh data so the user's stale edits are fully replaced. The conflict banner is
+  // cleared and Save is re-enabled only after this reset completes.
   const handleReload = async (): Promise<void> => {
     if (!onReload) return
     setIsReloading(true)
     try {
-      await onReload()
+      const fresh = await onReload()
+      if (fresh) {
+        setForm({
+          name: fresh.name,
+          description: fresh.description,
+          systemPrompt: fresh.systemPrompt,
+          iconKey: fresh.iconKey ?? 'brain',
+          colorKey: fresh.colorKey ?? 'purple',
+          capabilityMode: fresh.capabilityMode,
+          excludedSkillIds: fresh.fullAccess.excludedSkillIds,
+          selectedSkillIds: fresh.selectedCapabilities.skillIds,
+          excludedConnectorIds: fresh.fullAccess.excludedConnectorIds,
+          connectorIds: fresh.selectedCapabilities.connectorIds,
+          baseRevision: fresh.revision
+        })
+        setHasConflict(false)
+      }
     } finally {
       setIsReloading(false)
-      setHasConflict(false)
     }
   }
 
