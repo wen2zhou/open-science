@@ -92,6 +92,8 @@ import { tryDecryptKey } from './settings/crypto'
 import { registerSettingsIpcHandlers } from './settings/ipc'
 import { getAppClaudeConfigDir } from './settings/provider-env'
 import { createDefaultSettingsService, type SettingsService } from './settings/service'
+import { createProfileService } from './specialist/service'
+import { registerSpecialistIpcHandlers } from './specialist/ipc'
 import type { StoredConnectors } from './settings/types'
 import type { AppIconPreview, AppIconVariant } from '../shared/settings'
 import { registerStorageIpcHandlers } from './storage/ipc'
@@ -615,6 +617,7 @@ const registerIpcHandlers = async ({
     listAppIconPreviews
   })
   registerNotebookIpcHandlers(notebookService)
+  registerSpecialistIpcHandlers(createProfileService(resolveStorageRoot()))
   // Runtime selection UI (Settings/Onboarding): survey managed+external per language, persist the
   // choice, and pick an interpreter file. The runtime root MUST match the executor/service's
   // (getRuntimeRoot(<dataRoot>)); read lazily so a data-root switch is reflected without re-register.

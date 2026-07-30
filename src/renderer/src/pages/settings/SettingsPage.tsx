@@ -9,6 +9,7 @@ import {
   Settings2,
   SlidersHorizontal,
   TerminalSquare,
+  Users,
   X,
   Zap
 } from 'lucide-react'
@@ -34,6 +35,7 @@ import { StoragePanel } from './StoragePanel'
 import { RuntimesPanel } from './RuntimesPanel'
 import { SkillsPanel, type SkillsView } from './SkillsPanel'
 import { ConnectorsPanel, type ConnectorsView } from './ConnectorsPanel'
+import { SpecialistsPanel, type SpecialistsView } from './SpecialistsPanel'
 import { ConnectorDetailView } from './ConnectorDetailView'
 import { ConnectorAddForm } from './ConnectorAddForm'
 import { ConnectorsNavIcon } from './connector-icons'
@@ -119,6 +121,7 @@ const SETTINGS_GROUPS: ReadonlyArray<{ label: string; panels: ReadonlyArray<Sett
     label: 'Capabilities',
     panels: [
       { id: 'skills', label: 'Skills', Icon: ScrollText },
+      { id: 'specialists', label: 'Specialists', Icon: Users },
       { id: 'connectors', label: 'Connectors', Icon: ConnectorsNavIcon },
       { id: 'compute', label: 'Compute', Icon: Zap },
       { id: 'network', label: 'Network', Icon: Globe }
@@ -154,6 +157,7 @@ type NavLocation = {
   connectors?: ConnectorsView
   network?: NetworkView
   compute?: ComputeView
+  specialists?: SpecialistsView
 }
 
 const INITIAL_LOCATION: NavLocation = {
@@ -162,7 +166,8 @@ const INITIAL_LOCATION: NavLocation = {
   model: { kind: 'list' },
   connectors: { kind: 'list' },
   network: { kind: 'list' },
-  compute: { kind: 'list' }
+  compute: { kind: 'list' },
+  specialists: { kind: 'list' }
 }
 
 // App-level model settings surface. Reuses the onboarding cards/form; manages providers (CRUD +
@@ -295,6 +300,7 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
   const connectorsView: ConnectorsView = currentLocation.connectors ?? { kind: 'list' }
   const networkView: NetworkView = currentLocation.network ?? { kind: 'list' }
   const computeView: ComputeView = currentLocation.compute ?? { kind: 'list' }
+  const specialistsView: SpecialistsView = currentLocation.specialists ?? { kind: 'list' }
   const canGoBack = historyIndex > 0
   const canGoForward = historyIndex < history.length - 1
 
@@ -336,6 +342,10 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
   // Navigates within the connectors panel (list/detail/add/edit) as a history entry.
   const navigateConnectors = (connectors: ConnectorsView): void =>
     navigate({ panel: 'connectors', skills: skillsView, model: modelView, connectors })
+
+  // Navigates within the specialists panel (list/create) as a history entry.
+  const navigateSpecialists = (specialists: SpecialistsView): void =>
+    navigate({ panel: 'specialists', skills: skillsView, model: modelView, specialists })
 
   // Navigates within the network panel (package-mirror list vs. configure) as a history entry, so the
   // configure form gets a proper "Network / Package mirror" breadcrumb + back/forward.
@@ -442,6 +452,18 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
           compute: { kind: 'list' }
         },
         leaf
+      }
+    }
+    if (activePanel === 'specialists' && specialistsView.kind !== 'list') {
+      return {
+        rootLabel: 'Specialists',
+        rootTo: {
+          panel: 'specialists',
+          skills: currentLocation.skills,
+          model: currentLocation.model,
+          specialists: { kind: 'list' }
+        },
+        leaf: 'New specialist'
       }
     }
     return null
@@ -751,6 +773,8 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
                     onNavigate={navigateSkills}
                     canImportInstalledSkills={canImportInstalledSkills}
                   />
+                ) : activePanel === 'specialists' ? (
+                  <SpecialistsPanel view={specialistsView} onNavigate={navigateSpecialists} />
                 ) : activePanel === 'connectors' ? (
                   connectorsView.kind === 'detail' ? (
                     <ConnectorDetailView id={connectorsView.id} />
