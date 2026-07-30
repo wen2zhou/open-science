@@ -56,7 +56,10 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     revision: number
     name: string
   } | null>(null)
-  const customItems = items.filter((i) => i.kind === 'custom')
+  const [deleteError, setDeleteError] = useState<string | undefined>()
+
+  // Memoised so visibleCustomItems' memo can reference a stable value.
+  const customItems = useMemo(() => items.filter((i) => i.kind === 'custom'), [items])
 
   useEffect(() => {
     void load()
@@ -107,6 +110,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     if (specialist && specialist.kind === 'custom') {
       return (
         <SpecialistEditor
+          key={`${specialist.id}:${specialist.revision}`}
           editSpecialist={specialist}
           existingNames={customItems.filter((item) => item.id !== view.id).map((item) => item.name)}
           onCancel={() => onNavigate({ kind: 'list' })}
@@ -116,12 +120,13 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
             onNavigate({ kind: 'list' })
           }}
           onReload={async () => {
+            // Load the fresh list and read the result from the store directly —
+            // not from the render closure, which captured the pre-load items.
             await load()
-            const refreshed = items.find((item) => item.kind === 'custom' && item.id === view.id)
-            if (refreshed && refreshed.kind === 'custom') {
-              // Re-navigate to reload the editor with the freshest profile data.
-              onNavigate({ kind: 'edit', id: view.id })
-            }
+            const refreshed = useSpecialistStore
+              .getState()
+              .items.find((item) => item.kind === 'custom' && item.id === view.id)
+            if (refreshed && refreshed.kind === 'custom') return refreshed
             return undefined
           }}
         />
@@ -346,7 +351,10 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
       <AlertDialog.Root
         open={deletingItem !== null}
         onOpenChange={(open) => {
-          if (!open) setDeletingItem(null)
+          if (!open) {
+            setDeletingItem(null)
+            setDeleteError(undefined)
+          }
         }}
       >
         <AlertDialog.Portal>
@@ -359,26 +367,45 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
               This will permanently remove this specialist and all its configurations. This action
               cannot be undone.
             </AlertDialog.Description>
+            {deleteError ? (
+              <p
+                role="alert"
+                className="mt-3 rounded-lg border border-amber-200 bg-amber-50 px-3 py-2 text-xs text-amber-900 dark:border-amber-900 dark:bg-amber-950 dark:text-amber-100"
+              >
+                {deleteError}
+              </p>
+            ) : null}
             <div className="mt-6 flex justify-end gap-2">
               <AlertDialog.Cancel asChild>
                 <Button type="button" variant="outline">
                   Cancel
                 </Button>
               </AlertDialog.Cancel>
-              <AlertDialog.Action asChild>
-                <Button
-                  type="button"
-                  variant="destructive"
-                  onClick={() => {
-                    if (deletingItem) {
-                      void deleteSpecialist(deletingItem.id, deletingItem.revision)
+              <Button
+                type="button"
+                variant="destructive"
+                onClick={() => {
+                  if (!deletingItem) return
+                  const item = deletingItem
+                  void (async () => {
+                    try {
+                      await deleteSpecialist(item.id, item.revision)
                       setDeletingItem(null)
+                      setDeleteError(undefined)
+                    } catch (err) {
+                      // Reload the list so a retry picks up the current revision.
+                      void load()
+                      setDeleteError(
+                        err instanceof Error
+                          ? err.message
+                          : 'This specialist changed — review and try again.'
+                      )
                     }
-                  }}
-                >
-                  Delete
-                </Button>
-              </AlertDialog.Action>
+                  })()
+                }}
+              >
+                Delete
+              </Button>
             </div>
           </AlertDialog.Content>
         </AlertDialog.Portal>

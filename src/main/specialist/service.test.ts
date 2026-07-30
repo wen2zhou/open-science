@@ -328,20 +328,20 @@ describe('ProfileService.subscribe', () => {
 
 describe('ProfileService lifecycle mutations', () => {
   it('keeps UUID stable across public rename and rejects a stale delete', async () => {
-    const created = await service.create({ name: 'RNA_REVIEWER', displayName: 'RNA reviewer' })
+    const created = await service.create({ name: 'RNA Reviewer', displayName: 'RNA reviewer' })
     const renamed = await service.rename({
       id: created.id,
-      name: 'RNA_AUDITOR',
+      name: 'RNA Auditor',
       expectedRevision: created.revision
     })
-    expect(renamed).toMatchObject({ id: created.id, name: 'RNA_AUDITOR' })
+    expect(renamed).toMatchObject({ id: created.id, name: 'RNA Auditor' })
     await expect(service.delete(created.id, created.revision)).rejects.toThrow(/revision conflict/i)
-    expect(await service.getById(created.id)).toMatchObject({ name: 'RNA_AUDITOR' })
+    expect(await service.getById(created.id)).toMatchObject({ name: 'RNA Auditor' })
   })
 
   it('duplicates deeply without persisting until the caller creates it', async () => {
     const created = await service.create({
-      name: 'CHEMIST',
+      name: 'Chemist',
       displayName: 'Chemist',
       selectedCapabilities: {
         skillIds: ['chemistry'],
@@ -350,7 +350,8 @@ describe('ProfileService lifecycle mutations', () => {
       }
     })
     const draft = await service.duplicate(created.id)
-    expect(draft).toMatchObject({ name: 'CHEMIST_COPY', displayName: 'Chemist Copy' })
+    // New single-name model: duplicate returns a free-form "Copy" suffix name.
+    expect(draft).toMatchObject({ name: 'Chemist Copy', displayName: 'Chemist Copy' })
     expect(await service.list()).toHaveLength(1)
     draft.selectedCapabilities?.skillIds.push('other')
     expect((await service.getById(created.id)).selectedCapabilities.skillIds).toEqual(['chemistry'])

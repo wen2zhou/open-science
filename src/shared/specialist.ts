@@ -256,10 +256,16 @@ export const validateSpecialistName = (
   return undefined
 }
 
-export const validateSpecialistPublicName = (name: string): string | undefined =>
-  /^[\p{L}0-9_]{2,32}$/u.test(name)
-    ? undefined
-    : 'Name must be 2-32 letters, numbers, or underscores.'
+// Validates the public-facing name. Allows letters, digits, spaces, hyphens, and underscores;
+// minimum 2 non-whitespace characters after trimming; maximum 80 to match the field maxLength.
+export const validateSpecialistPublicName = (name: string): string | undefined => {
+  const trimmed = name.trim()
+  if (trimmed.length < 2) return 'Name must be at least 2 characters.'
+  if (trimmed.length > 80) return 'Name must be 80 characters or fewer.'
+  if (!/^[\p{L}0-9 _-]+$/u.test(trimmed))
+    return 'Name may only contain letters, digits, spaces, hyphens, and underscores.'
+  return undefined
+}
 
 export const validateSpecialistDisplayName = (displayName: string): string | undefined => {
   if (!displayName.trim()) return 'Display name is required.'
@@ -294,9 +300,12 @@ export const validateCreateSpecialistInput = (
   const nameError = validateSpecialistName(input.name, existingNames, undefined, existingIds)
   if (nameError) errors.push({ field: 'name', message: nameError })
 
+  // Apply public-name format rules when a displayName is sent (i.e. via the editor
+  // which always sends displayName). This ensures the error surfaces on the field,
+  // not after a round-trip to main.
   if (input.displayName !== undefined) {
-    const displayNameError = validateSpecialistDisplayName(input.displayName)
-    if (displayNameError) errors.push({ field: 'name', message: displayNameError })
+    const publicNameError = validateSpecialistPublicName(input.name)
+    if (publicNameError) errors.push({ field: 'name', message: publicNameError })
   }
 
   if (input.description !== undefined) {
@@ -320,11 +329,13 @@ export const validateUpdateSpecialistInput = (
   if (input.name !== undefined) {
     const nameError = validateSpecialistName(input.name, existingNames, input.id, existingIds)
     if (nameError) errors.push({ field: 'name', message: nameError })
-  }
 
-  if (input.displayName !== undefined) {
-    const displayNameError = validateSpecialistDisplayName(input.displayName)
-    if (displayNameError) errors.push({ field: 'name', message: displayNameError })
+    // Apply same public-name format rules when displayName is present, keeping
+    // create and update symmetric.
+    if (input.displayName !== undefined) {
+      const publicNameError = validateSpecialistPublicName(input.name)
+      if (publicNameError) errors.push({ field: 'name', message: publicNameError })
+    }
   }
 
   if (input.description !== undefined) {
