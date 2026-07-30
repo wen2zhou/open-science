@@ -295,6 +295,7 @@ const SpecialistEditor = ({
     try {
       const trimmed = {
         name: form.name.trim(),
+        displayName: form.name.trim(),
         description: form.description.trim() || undefined,
         systemPrompt: form.systemPrompt.trim() || undefined,
         iconKey: form.iconKey,

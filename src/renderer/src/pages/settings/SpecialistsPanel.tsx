@@ -1,6 +1,13 @@
 import { useEffect, useMemo, useState } from 'react'
 import { ChevronDown, Copy, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import { AlertDialog } from 'radix-ui'
 import { Button } from '@/components/ui/button'
+import {
+  dialogDescriptionClassName,
+  dialogOverlayClassName,
+  dialogPanelClassName,
+  dialogTitleClassName
+} from '@/components/ui/dialog-chrome'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -44,6 +51,11 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const duplicateSpecialist = useSpecialistStore((s) => s.duplicate)
   const [filter, setFilter] = useState<CategoryFilter>('all')
   const [query, setQuery] = useState('')
+  const [deletingItem, setDeletingItem] = useState<{
+    id: string
+    revision: number
+    name: string
+  } | null>(null)
   const customItems = items.filter((i) => i.kind === 'custom')
 
   useEffect(() => {
@@ -258,19 +270,26 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                           </DropdownMenuTrigger>
                           <DropdownMenuContent align="end">
                             <DropdownMenuItem
+                              className="gap-2 text-xs"
                               onSelect={() =>
                                 void duplicateSpecialist(item.id).then((draft) =>
                                   onNavigate({ kind: 'create', draft })
                                 )
                               }
                             >
-                              <Copy className="size-4" aria-hidden="true" /> Duplicate
+                              <Copy className="size-3.5" aria-hidden="true" /> Duplicate
                             </DropdownMenuItem>
                             <DropdownMenuItem
-                              className="text-destructive"
-                              onSelect={() => void deleteSpecialist(item.id, item.revision)}
+                              className="gap-2 text-xs text-destructive"
+                              onSelect={() =>
+                                setDeletingItem({
+                                  id: item.id,
+                                  revision: item.revision,
+                                  name: item.displayName ?? item.name
+                                })
+                              }
                             >
-                              <Trash2 className="size-4" aria-hidden="true" /> Delete
+                              <Trash2 className="size-3.5" aria-hidden="true" /> Delete
                             </DropdownMenuItem>
                           </DropdownMenuContent>
                         </DropdownMenu>
@@ -322,6 +341,48 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
           ) : null}
         </div>
       )}
+
+      {/* Delete confirmation dialog */}
+      <AlertDialog.Root
+        open={deletingItem !== null}
+        onOpenChange={(open) => {
+          if (!open) setDeletingItem(null)
+        }}
+      >
+        <AlertDialog.Portal>
+          <AlertDialog.Overlay className={dialogOverlayClassName} />
+          <AlertDialog.Content className={dialogPanelClassName('w-[min(440px,calc(100vw-2rem))]')}>
+            <AlertDialog.Title className={dialogTitleClassName}>
+              Delete {deletingItem?.name}?
+            </AlertDialog.Title>
+            <AlertDialog.Description className={dialogDescriptionClassName}>
+              This will permanently remove this specialist and all its configurations. This action
+              cannot be undone.
+            </AlertDialog.Description>
+            <div className="mt-6 flex justify-end gap-2">
+              <AlertDialog.Cancel asChild>
+                <Button type="button" variant="outline">
+                  Cancel
+                </Button>
+              </AlertDialog.Cancel>
+              <AlertDialog.Action asChild>
+                <Button
+                  type="button"
+                  variant="destructive"
+                  onClick={() => {
+                    if (deletingItem) {
+                      void deleteSpecialist(deletingItem.id, deletingItem.revision)
+                      setDeletingItem(null)
+                    }
+                  }}
+                >
+                  Delete
+                </Button>
+              </AlertDialog.Action>
+            </div>
+          </AlertDialog.Content>
+        </AlertDialog.Portal>
+      </AlertDialog.Root>
     </div>
   )
 }
