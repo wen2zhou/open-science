@@ -416,11 +416,9 @@ const ComposerAgentControlsMenu = ({
               />
               <span className="min-w-0 flex-1">
                 <span className="block text-[13px] font-medium leading-5">Compute</span>
-                {sshHosts.length === 0 ? (
-                  <span className="block text-[11px] leading-4 text-text-300">
-                    Run jobs on a remote SSH host, or manage hosts.
-                  </span>
-                ) : null}
+                <span className="block text-[11px] leading-4 text-text-300">
+                  Run jobs on a remote SSH host, or manage hosts.
+                </span>
               </span>
               <ChevronRight
                 className="size-4 shrink-0 opacity-60"
