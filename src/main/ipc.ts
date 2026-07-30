@@ -331,6 +331,8 @@ const registerIpcHandlers = async ({
   // Read fresh on every call so a future connectors-settings mutation (Plan 2 UI) only needs to call
   // refreshConnectorSkillDocs again to take effect, without reconstructing the connector service.
   let connectorsSnapshot: StoredConnectors | undefined
+  // Resolved lazily per connector call so dispatch always sees the latest persisted Specialist profile.
+  const profileService = createProfileService(resolveStorageRoot())
   // Desktop notifications for finished/failed agent tasks and approval waits. Delivery is
   // Electron's Notification (Notification Center on macOS, toasts on Windows, libnotify on Linux);
   // the service itself stays Electron-free so its filtering rules are unit-testable. The click
@@ -411,6 +413,13 @@ const registerIpcHandlers = async ({
         argsPreview: previewArgs(args),
         ...(sessionId ? { sessionId } : {})
       }),
+    resolveSpecialistProfile: async (specialistId) => {
+      try {
+        return await profileService.getById(specialistId)
+      } catch {
+        return undefined
+      }
+    },
     localToolHandlers: { 'molecule/preview_molecule': moleculePreviewHandler }
   })
   // Register compute IPC handlers early so computeService can be wired into the notebook RPC server.
@@ -552,7 +561,6 @@ const registerIpcHandlers = async ({
   startUpdateScheduler(updateService)
   // ACP identity resolution and the Specialist settings IPC must use the same service instance.
   // Creating it only for settings leaves create-session unable to resolve a selected UUID.
-  const profileService = createProfileService(resolveStorageRoot())
   const runtime = registerAcpIpcHandlers({
     mcpEntryPath: mainEntryPath,
     repository: artifactRepository,

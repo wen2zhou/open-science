@@ -298,6 +298,7 @@ type AcpRuntimeNotebookOptions = {
   mcpCommand?: string
   getRpcConnection?: () => Promise<NotebookRpcConnection>
   registerSessionAlias?: (aliasSessionId: string, sessionId: string) => void
+  registerSessionSpecialist?: (sessionId: string, specialistId: string | undefined) => void
   setArtifactProvenanceContext?: (
     sessionId: string,
     context: import('../../shared/notebook').NotebookRunProvenanceContext | undefined
@@ -1518,6 +1519,7 @@ class AcpRuntime {
       if (this.backendId) this.sessionBackendIds.set(session.sessionId, this.backendId)
       this.rememberArtifactSession(session.sessionId, artifactSessionId)
       this.rememberNotebookSession(session.sessionId, notebookSessionId)
+      this.notebookOptions?.registerSessionSpecialist?.(session.sessionId, request.specialistId)
       this.rememberSkillImportSession(session.sessionId, skillImportSessionId)
       this.currentSessionId = session.sessionId
       this.cwd = sessionCwd

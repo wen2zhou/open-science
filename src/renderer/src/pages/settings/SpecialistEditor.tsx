@@ -1,4 +1,4 @@
-import { useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -14,6 +14,7 @@ import {
 } from '../../../../shared/specialist'
 import { SpecialistAvatar } from './specialist-avatar'
 import { AVATAR_COLORS, AVATAR_ICONS } from './specialist-icons'
+import { useSettingsStore } from '@/stores/settings-store'
 
 type SpecialistEditorProps = {
   onCancel: () => void
@@ -33,6 +34,9 @@ type FormState = {
   systemPrompt: string
   iconKey: string
   colorKey: string
+  capabilityMode: 'full' | 'selected'
+  excludedConnectorIds: string[]
+  connectorIds: string[]
   // Whether name was manually edited (if so, stop auto-deriving)
   nameTouched: boolean
 }
@@ -63,6 +67,9 @@ const SpecialistEditor = ({
   editSpecialist
 }: SpecialistEditorProps): React.JSX.Element => {
   const isEdit = editSpecialist !== undefined
+  const connectors = useSettingsStore((state) => state.connectors)
+  const customServers = useSettingsStore((state) => state.customServers)
+  const loadConnectors = useSettingsStore((state) => state.loadConnectors)
   const [form, setForm] = useState<FormState>(() =>
     editSpecialist
       ? {
@@ -72,6 +79,9 @@ const SpecialistEditor = ({
           systemPrompt: editSpecialist.systemPrompt,
           iconKey: editSpecialist.iconKey ?? 'brain',
           colorKey: editSpecialist.colorKey ?? 'purple',
+          capabilityMode: editSpecialist.capabilityMode,
+          excludedConnectorIds: editSpecialist.fullAccess.excludedConnectorIds,
+          connectorIds: editSpecialist.selectedCapabilities.connectorIds,
           // Don't auto-derive the name from the display name while editing.
           nameTouched: true
         }
@@ -82,12 +92,45 @@ const SpecialistEditor = ({
           systemPrompt: '',
           iconKey: 'brain',
           colorKey: 'purple',
+          capabilityMode: 'full',
+          excludedConnectorIds: [],
+          connectorIds: [],
           nameTouched: false
         }
   )
   const [fieldErrors, setFieldErrors] = useState<SpecialistFieldError[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>()
+
+  useEffect(() => {
+    void loadConnectors()
+  }, [loadConnectors])
+
+  // Persist references to unavailable entries so a temporarily missing connector is visible and
+  // cannot silently broaden the profile when it returns. Main-disabled installed connectors remain
+  // selectable: Main's toggle is not a Specialist capability limit.
+  const connectorRows = useMemo(() => {
+    const known = [
+      ...connectors.map((connector) => ({
+        id: connector.id,
+        name: connector.displayName,
+        mainEnabled: connector.enabled,
+        available: true
+      })),
+      ...customServers.map((server) => ({
+        id: server.name,
+        name: server.name,
+        mainEnabled: server.enabled,
+        available: server.availability === undefined,
+        availability: server.availability
+      }))
+    ]
+    const ids = new Set(known.map((row) => row.id))
+    for (const id of [...form.excludedConnectorIds, ...form.connectorIds]) {
+      if (!ids.has(id)) known.push({ id, name: id, mainEnabled: false, available: false })
+    }
+    return known.sort((a, b) => a.name.localeCompare(b.name))
+  }, [connectors, customServers, form.connectorIds, form.excludedConnectorIds])
 
   // Derived during render: the name follows displayName until manually edited.
   const effectiveName = form.nameTouched ? form.name : deriveSpecialistName(form.displayName)
@@ -120,7 +163,16 @@ const SpecialistEditor = ({
         description: form.description.trim() || undefined,
         systemPrompt: form.systemPrompt.trim() || undefined,
         iconKey: form.iconKey,
-        colorKey: form.colorKey
+        colorKey: form.colorKey,
+        capabilityMode: form.capabilityMode,
+        fullAccess: {
+          ...(editSpecialist?.fullAccess ?? { excludedSkillIds: [], connectorTools: [] }),
+          excludedConnectorIds: form.excludedConnectorIds
+        },
+        selectedCapabilities: {
+          ...(editSpecialist?.selectedCapabilities ?? { skillIds: [], connectorTools: [] }),
+          connectorIds: form.connectorIds
+        }
       }
       if (editSpecialist) {
         await onSaveEdit?.({
@@ -273,7 +325,9 @@ const SpecialistEditor = ({
                       style={{ background: AVATAR_COLORS[form.colorKey] }}
                       aria-hidden="true"
                     />
-                    <span>{COLOR_OPTIONS.find((option) => option.key === form.colorKey)?.label}</span>
+                    <span>
+                      {COLOR_OPTIONS.find((option) => option.key === form.colorKey)?.label}
+                    </span>
                   </span>
                 </SelectTrigger>
                 <SelectContent>
@@ -316,14 +370,97 @@ const SpecialistEditor = ({
           </div>
         </section>
 
-        {/* Capabilities section (mode only — detail config deferred) */}
+        {/* Capabilities */}
         <section className="border-t border-border pt-5">
           <h3 className="mb-1 text-base font-semibold text-foreground">Capabilities</h3>
-          <p className="text-[13px] leading-5 text-muted-foreground">
-            This specialist will start with <strong>Full access</strong> — all current and future
-            Skills and Connectors included by default. You can configure exclusions and per-tool
-            rules after saving.
+          <p className="mb-4 text-[13px] leading-5 text-muted-foreground">
+            Connector access is enforced before dispatch. Main Agent connector settings do not limit
+            this specialist.
           </p>
+          <div
+            className="mb-4 flex rounded-lg border border-border p-1"
+            role="radiogroup"
+            aria-label="Capability mode"
+          >
+            {(
+              [
+                ['full', 'Full access'],
+                ['selected', 'Selected capabilities']
+              ] as const
+            ).map(([mode, label]) => (
+              <button
+                key={mode}
+                type="button"
+                role="radio"
+                aria-checked={form.capabilityMode === mode}
+                onClick={() => setForm((current) => ({ ...current, capabilityMode: mode }))}
+                className={cn(
+                  'flex-1 rounded-md px-3 py-1.5 text-xs font-medium',
+                  form.capabilityMode === mode
+                    ? 'bg-muted text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                )}
+              >
+                {label}
+              </button>
+            ))}
+          </div>
+          <p className="mb-2 text-xs text-muted-foreground">
+            {form.capabilityMode === 'full'
+              ? 'All installed connectors are allowed unless excluded below.'
+              : 'Only selected installed connectors are allowed.'}
+          </p>
+          <div className="divide-y rounded-lg border border-border">
+            {connectorRows.map((connector) => {
+              const checked =
+                form.capabilityMode === 'full'
+                  ? !form.excludedConnectorIds.includes(connector.id)
+                  : form.connectorIds.includes(connector.id)
+              const toggle = (): void => {
+                if (!connector.available) return
+                setForm((current) => {
+                  if (current.capabilityMode === 'full') {
+                    const excludedConnectorIds = checked
+                      ? [...current.excludedConnectorIds, connector.id]
+                      : current.excludedConnectorIds.filter((id) => id !== connector.id)
+                    return { ...current, excludedConnectorIds }
+                  }
+                  const connectorIds = checked
+                    ? current.connectorIds.filter((id) => id !== connector.id)
+                    : [...current.connectorIds, connector.id]
+                  return { ...current, connectorIds }
+                })
+              }
+              return (
+                <label
+                  key={connector.id}
+                  className={cn(
+                    'flex items-center gap-3 px-3 py-2 text-sm',
+                    connector.available ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+                  )}
+                >
+                  <input
+                    type="checkbox"
+                    aria-label={`${form.capabilityMode === 'full' ? 'Allow' : 'Include'} ${connector.name}`}
+                    checked={checked}
+                    disabled={!connector.available}
+                    onChange={toggle}
+                  />
+                  <span className="min-w-0 flex-1 truncate">{connector.name}</span>
+                  <span className="text-[11px] text-muted-foreground">
+                    {!connector.available
+                      ? `Unavailable — ${connector.availability ?? 'not installed'}`
+                      : connector.mainEnabled
+                        ? 'Available'
+                        : 'Main disabled · available here'}
+                  </span>
+                </label>
+              )
+            })}
+            {connectorRows.length === 0 ? (
+              <p className="px-3 py-2 text-xs text-muted-foreground">Loading connectors…</p>
+            ) : null}
+          </div>
         </section>
 
         {/* Save error */}
@@ -343,7 +480,13 @@ const SpecialistEditor = ({
             onClick={() => void handleSave()}
             disabled={isSaving || !form.displayName.trim()}
           >
-            {isSaving ? (isEdit ? 'Saving…' : 'Creating…') : isEdit ? 'Save changes' : 'Create specialist'}
+            {isSaving
+              ? isEdit
+                ? 'Saving…'
+                : 'Creating…'
+              : isEdit
+                ? 'Save changes'
+                : 'Create specialist'}
           </Button>
         </div>
       </div>

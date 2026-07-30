@@ -17,6 +17,60 @@ import {
   emptySelectedConfig
 } from '../../shared/specialist'
 
+const isStringArray = (value: unknown): value is string[] =>
+  Array.isArray(value) && value.every((item) => typeof item === 'string')
+
+const isConnectorToolRuleArray = (value: unknown): boolean =>
+  Array.isArray(value) &&
+  value.every(
+    (rule) =>
+      rule &&
+      typeof rule === 'object' &&
+      typeof (rule as { connectorId?: unknown }).connectorId === 'string' &&
+      (
+        [
+          (rule as { includedMethods?: unknown }).includedMethods,
+          (rule as { excludedMethods?: unknown }).excludedMethods
+        ] as unknown[]
+      ).every((methods) => methods === undefined || isStringArray(methods)) &&
+      [
+        (rule as { includeToolsPattern?: unknown }).includeToolsPattern,
+        (rule as { excludeToolsPattern?: unknown }).excludeToolsPattern
+      ].every((pattern) => pattern === undefined || typeof pattern === 'string')
+  )
+
+const assertCapabilityConfigShape = (
+  input: Pick<UpdateSpecialistInput, 'capabilityMode' | 'fullAccess' | 'selectedCapabilities'>
+): void => {
+  if (
+    input.capabilityMode !== undefined &&
+    input.capabilityMode !== 'full' &&
+    input.capabilityMode !== 'selected'
+  ) {
+    throw new Error('Capability mode must be "full" or "selected".')
+  }
+  if (input.fullAccess !== undefined) {
+    const config = input.fullAccess
+    if (
+      !isStringArray(config.excludedSkillIds) ||
+      !isStringArray(config.excludedConnectorIds) ||
+      !isConnectorToolRuleArray(config.connectorTools)
+    ) {
+      throw new Error('Full access capability configuration is invalid.')
+    }
+  }
+  if (input.selectedCapabilities !== undefined) {
+    const config = input.selectedCapabilities
+    if (
+      !isStringArray(config.skillIds) ||
+      !isStringArray(config.connectorIds) ||
+      !isConnectorToolRuleArray(config.connectorTools)
+    ) {
+      throw new Error('Selected capabilities configuration is invalid.')
+    }
+  }
+}
+
 const log = createLogger('specialist.service')
 
 // ---------------------------------------------------------------------------
@@ -63,6 +117,7 @@ const assertCreateInputShape = (input: CreateSpecialistInput): void => {
   ) {
     throw new Error('Capability mode must be "full" or "selected".')
   }
+  assertCapabilityConfigShape(input)
 }
 
 // ---------------------------------------------------------------------------
@@ -129,8 +184,8 @@ export class ProfileService {
       colorKey: input.colorKey,
       enabled: true,
       capabilityMode: input.capabilityMode ?? 'full',
-      fullAccess: emptyFullAccessConfig(),
-      selectedCapabilities: emptySelectedConfig(),
+      fullAccess: input.fullAccess ?? emptyFullAccessConfig(),
+      selectedCapabilities: input.selectedCapabilities ?? emptySelectedConfig(),
       revision: 1
     }
 
@@ -160,6 +215,7 @@ export class ProfileService {
     if (!input || typeof input.id !== 'string' || typeof input.revision !== 'number') {
       throw new Error('Update requires id and revision.')
     }
+    assertCapabilityConfigShape(input)
 
     const doc = await this.repo.getAll()
     const existingNames = doc.specialists.map((s) => s.name)
@@ -177,6 +233,11 @@ export class ProfileService {
     if (input.systemPrompt !== undefined) patch.systemPrompt = input.systemPrompt
     if (input.iconKey !== undefined) patch.iconKey = input.iconKey
     if (input.colorKey !== undefined) patch.colorKey = input.colorKey
+    if (input.capabilityMode !== undefined) patch.capabilityMode = input.capabilityMode
+    if (input.fullAccess !== undefined) patch.fullAccess = input.fullAccess
+    if (input.selectedCapabilities !== undefined) {
+      patch.selectedCapabilities = input.selectedCapabilities
+    }
 
     log.info('updating specialist', { id: input.id, name: patch.name })
 

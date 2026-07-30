@@ -60,6 +60,26 @@ describe('ProfileService.create', () => {
     expect(view.selectedCapabilities.skillIds).toEqual([])
   })
 
+  it('persists connector settings supplied by the editor when creating a specialist', async () => {
+    const view = await service.create({
+      displayName: 'Connector Bot',
+      capabilityMode: 'selected',
+      fullAccess: {
+        excludedSkillIds: [],
+        excludedConnectorIds: ['pubmed'],
+        connectorTools: []
+      },
+      selectedCapabilities: {
+        skillIds: [],
+        connectorIds: ['chemistry'],
+        connectorTools: []
+      }
+    })
+    expect(view.capabilityMode).toBe('selected')
+    expect(view.fullAccess.excludedConnectorIds).toEqual(['pubmed'])
+    expect(view.selectedCapabilities.connectorIds).toEqual(['chemistry'])
+  })
+
   it('sets enabled=true by default', async () => {
     const view = await service.create({ displayName: 'My Bot' })
     expect(view.enabled).toBe(true)
@@ -171,6 +191,53 @@ describe('ProfileService.update', () => {
     expect(found.name).toBe('MY_BOT')
   })
 
+  it('persists connector exclusions and inclusions independently across mode switches', async () => {
+    const created = await service.create({ displayName: 'Connector Bot' })
+    const full = await service.update({
+      id: created.id,
+      revision: created.revision,
+      fullAccess: {
+        excludedSkillIds: ['skill-a'],
+        excludedConnectorIds: ['pubmed'],
+        connectorTools: []
+      }
+    })
+    const selected = await service.update({
+      id: created.id,
+      revision: full.revision,
+      capabilityMode: 'selected',
+      selectedCapabilities: {
+        skillIds: ['skill-b'],
+        connectorIds: ['chemistry'],
+        connectorTools: []
+      }
+    })
+
+    expect(selected.capabilityMode).toBe('selected')
+    expect(selected.fullAccess.excludedConnectorIds).toEqual(['pubmed'])
+    expect(selected.selectedCapabilities.connectorIds).toEqual(['chemistry'])
+
+    const switchedBack = await service.update({
+      id: created.id,
+      revision: selected.revision,
+      capabilityMode: 'full'
+    })
+    expect(switchedBack.fullAccess.excludedConnectorIds).toEqual(['pubmed'])
+    expect(switchedBack.selectedCapabilities.connectorIds).toEqual(['chemistry'])
+  })
+
+  it('rejects malformed capability patches before persistence', async () => {
+    const created = await service.create({ displayName: 'Connector Bot' })
+    await expect(
+      service.update({
+        id: created.id,
+        revision: created.revision,
+        fullAccess: { excludedSkillIds: [], excludedConnectorIds: [42], connectorTools: [] }
+      } as never)
+    ).rejects.toThrow(/capability configuration/i)
+    expect((await service.getById(created.id)).revision).toBe(created.revision)
+  })
+
   it('keeps the immutable id and supports renaming', async () => {
     const created = await service.create({ displayName: 'My Bot' })
     const updated = await service.update({
@@ -219,9 +286,7 @@ describe('ProfileService.update', () => {
 
   it('rejects an update missing revision', async () => {
     const created = await service.create({ displayName: 'My Bot' })
-    await expect(
-      service.update({ id: created.id } as never)
-    ).rejects.toThrow(/id and revision/i)
+    await expect(service.update({ id: created.id } as never)).rejects.toThrow(/id and revision/i)
   })
 })
 

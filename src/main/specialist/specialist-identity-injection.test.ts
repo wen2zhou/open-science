@@ -194,6 +194,7 @@ describe('specialist identity injection — Claude Code', () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['session-sp1'])
     const profile = makeProfile()
+    const registerSessionSpecialist = vi.fn()
 
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
@@ -207,6 +208,12 @@ describe('specialist identity injection — Claude Code', () => {
         expect(specialistId).toBe('uuid-sp1')
         expect(frameworkId).toBe('claude-code')
         return { append: buildSpecialistIdentityAppend(profile), prefix: '' }
+      },
+      notebook: {
+        projectName: 'test',
+        mcpEntryPath: '/test/mcp.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1', token: 'test' }),
+        registerSessionSpecialist
       }
     })
 
@@ -215,6 +222,7 @@ describe('specialist identity injection — Claude Code', () => {
     const metaStr = JSON.stringify(fakeAgent.newSessions[0]._meta)
     expect(metaStr).toContain(SPECIALIST_IDENTITY_TAG)
     expect(metaStr).toContain('RNA-seq Reviewer')
+    expect(registerSessionSpecialist).toHaveBeenCalledWith('session-sp1', 'uuid-sp1')
   })
 
   it('does NOT inject specialist tag when specialistId is absent', async () => {
@@ -290,6 +298,7 @@ describe('specialist identity injection — Codex', () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgentWithModes(process, ['session-codex-sp1'], CODEX_MODES)
     const profile = makeProfile()
+    const registerSessionSpecialist = vi.fn()
 
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
@@ -303,6 +312,12 @@ describe('specialist identity injection — Codex', () => {
       resolveSpecialistIdentity: async (_id, frameworkId) => {
         expect(frameworkId).toBe('codex')
         return { append: '', prefix: buildSpecialistIdentityPrefix(profile) }
+      },
+      notebook: {
+        projectName: 'test',
+        mcpEntryPath: '/test/mcp.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1', token: 'test' }),
+        registerSessionSpecialist
       }
     })
 
@@ -311,6 +326,7 @@ describe('specialist identity injection — Codex', () => {
 
     expect(fakeAgent.prompts[0].text).toContain(SPECIALIST_IDENTITY_TAG)
     expect(fakeAgent.prompts[0].text).toContain('RNA-seq Reviewer')
+    expect(registerSessionSpecialist).toHaveBeenCalledWith('session-codex-sp1', 'uuid-sp1')
   })
 
   it('does NOT inject specialist tag for Codex when no specialistId', async () => {
@@ -347,6 +363,7 @@ describe('specialist identity injection — OpenCode', () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['session-opencode-sp1'])
     const profile = makeProfile()
+    const registerSessionSpecialist = vi.fn()
 
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
@@ -360,6 +377,12 @@ describe('specialist identity injection — OpenCode', () => {
       resolveSpecialistIdentity: async (_id, frameworkId) => {
         expect(frameworkId).toBe('opencode')
         return { append: '', prefix: buildSpecialistIdentityPrefix(profile) }
+      },
+      notebook: {
+        projectName: 'test',
+        mcpEntryPath: '/test/mcp.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1', token: 'test' }),
+        registerSessionSpecialist
       }
     })
 
@@ -367,6 +390,7 @@ describe('specialist identity injection — OpenCode', () => {
     await runtime.sendPrompt({ sessionId: 'session-opencode-sp1', text: 'Hello' })
 
     expect(fakeAgent.prompts[0].text).toContain(SPECIALIST_IDENTITY_TAG)
+    expect(registerSessionSpecialist).toHaveBeenCalledWith('session-opencode-sp1', 'uuid-sp1')
   })
 })
 

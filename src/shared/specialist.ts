@@ -70,12 +70,14 @@ export type CreateSpecialistInput = {
   iconKey?: string
   colorKey?: string
   capabilityMode?: SpecialistCapabilityMode
+  fullAccess?: SpecialistFullAccessConfig
+  selectedCapabilities?: SpecialistSelectedConfig
 }
 
-// Input for updating an existing specialist's identity/instructions.
-// Identity-only for now — capability-mode and config editing are deferred to a
-// later issue and will broaden this patch type (a strict superset change).
-// `revision` enables optimistic concurrency (must match the stored record).
+// Input for updating an existing specialist. Both capability configurations are
+// deliberately independent of the active mode: switching modes must never throw
+// away the other mode's connector (or skill) selection. `revision` enables
+// optimistic concurrency (must match the stored record).
 export type UpdateSpecialistInput = {
   id: string
   revision: number
@@ -85,6 +87,9 @@ export type UpdateSpecialistInput = {
   systemPrompt?: string
   iconKey?: string
   colorKey?: string
+  capabilityMode?: SpecialistCapabilityMode
+  fullAccess?: SpecialistFullAccessConfig
+  selectedCapabilities?: SpecialistSelectedConfig
 }
 
 // Request / response types for IPC.

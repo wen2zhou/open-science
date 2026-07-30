@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SpecialistEditor } from './SpecialistEditor'
 import { clickRadixMenuItem, openRadixMenu } from './test-utils'
+import { useSettingsStore } from '@/stores/settings-store'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -31,6 +32,93 @@ afterEach(() => {
 })
 
 describe('SpecialistEditor', () => {
+  it('persists Full exclusions and Selected inclusions without losing either mode', async () => {
+    const onSaveEdit = vi.fn().mockResolvedValue(undefined)
+    useSettingsStore.setState({
+      connectors: [
+        {
+          id: 'chemistry',
+          displayName: 'Chemistry',
+          description: '',
+          sources: [],
+          requiresNcbi: false,
+          enabled: true,
+          autoAllow: false,
+          group: 'featured'
+        },
+        {
+          id: 'pubmed',
+          displayName: 'PubMed',
+          description: '',
+          sources: [],
+          requiresNcbi: true,
+          enabled: false,
+          autoAllow: false,
+          group: 'directory'
+        }
+      ],
+      customServers: [
+        {
+          id: 'broken-server',
+          name: 'Broken Server',
+          transport: 'stdio',
+          enabled: true,
+          availability: 'unavailable'
+        }
+      ],
+      loadConnectors: vi.fn().mockResolvedValue(undefined)
+    })
+    await act(async () => {
+      root.render(
+        <SpecialistEditor
+          editSpecialist={{
+            id: 'connector-bot',
+            name: 'CONNECTOR_BOT',
+            displayName: 'Connector Bot',
+            description: '',
+            systemPrompt: '',
+            enabled: true,
+            capabilityMode: 'full',
+            fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+            selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+            revision: 1
+          }}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          onSaveEdit={onSaveEdit}
+        />
+      )
+    })
+    expect(document.body.textContent).toContain('Broken Server')
+    expect(document.body.textContent).toContain('Unavailable — unavailable')
+    expect(
+      document.body.querySelector<HTMLInputElement>('[aria-label="Allow Broken Server"]')?.disabled
+    ).toBe(true)
+    await act(async () => {
+      fireEvent.click(document.body.querySelector<HTMLInputElement>('[aria-label="Allow PubMed"]')!)
+      fireEvent.click(
+        Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
+          (button) => button.textContent === 'Selected capabilities'
+        )!
+      )
+    })
+    await act(async () => {
+      fireEvent.click(
+        document.body.querySelector<HTMLInputElement>('[aria-label="Include Chemistry"]')!
+      )
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Save changes')
+        ?.click()
+    })
+    expect(onSaveEdit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilityMode: 'selected',
+        fullAccess: expect.objectContaining({ excludedConnectorIds: ['pubmed'] }),
+        selectedCapabilities: expect.objectContaining({ connectorIds: ['chemistry'] })
+      })
+    )
+  })
+
   it('saves the icon and color selected for a new specialist', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined)
     await act(async () => {
@@ -129,9 +217,9 @@ describe('SpecialistEditor', () => {
     })
 
     // Prefilled identity.
-    expect(
-      document.body.querySelector<HTMLInputElement>('#sp-display-name')?.value
-    ).toBe('RNA Reviewer')
+    expect(document.body.querySelector<HTMLInputElement>('#sp-display-name')?.value).toBe(
+      'RNA Reviewer'
+    )
     expect(document.body.querySelector<HTMLInputElement>('#sp-name')?.value).toBe('RNA_REVIEWER')
 
     // Edit mode uses the "Save changes" button and routes through onSaveEdit.

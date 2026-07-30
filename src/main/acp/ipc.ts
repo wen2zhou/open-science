@@ -178,6 +178,8 @@ const createRuntime = ({
           getRpcConnection: () => notebookRpcServer.ensureStarted(),
           registerSessionAlias: (aliasSessionId, sessionId) =>
             notebookRpcServer.registerSessionAlias(aliasSessionId, sessionId),
+          registerSessionSpecialist: (sessionId, specialistId) =>
+            notebookRpcServer.registerSessionSpecialist(sessionId, specialistId),
           setArtifactProvenanceContext: (sessionId, context) =>
             notebookRpcServer.setArtifactProvenanceContext(sessionId, context),
           registerTurnInputs: (request) => notebookRpcServer.registerNotebookTurnInputs(request)

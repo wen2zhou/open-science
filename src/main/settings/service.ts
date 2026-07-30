@@ -3216,16 +3216,21 @@ class SettingsService {
   // Projects stored custom MCP servers into renderer views (no secret env/header values).
   private toCustomServerViews(connectors: StoredConnectors | undefined): CustomServerView[] {
     return (connectors?.customMcpServers ?? [])
-      .map((s) => ({
-        id: s.id,
-        name: s.name,
-        description: s.description,
-        transport: s.transport,
-        enabled: s.enabled,
-        command: s.command,
-        args: s.args,
-        url: s.url
-      }))
+      .map((s) => {
+        const unavailable =
+          (s.transport === 'stdio' && !s.command) || (s.transport !== 'stdio' && !s.url)
+        return {
+          id: s.id,
+          name: s.name,
+          description: s.description,
+          transport: s.transport,
+          enabled: s.enabled,
+          command: s.command,
+          args: s.args,
+          url: s.url,
+          ...(unavailable ? { availability: 'unavailable' as const } : {})
+        }
+      })
       .sort((a, b) => a.name.localeCompare(b.name))
   }
 
