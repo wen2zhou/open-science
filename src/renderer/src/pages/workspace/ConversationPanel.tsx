@@ -151,13 +151,10 @@ type ConversationPanelProps = {
   onOpenJobList?: (sessionId: string) => void
   // Specialist picker. For new conversations: undefined = None. For existing sessions: always shown.
   specialistId?: string
-  // The currently-effective specialist when a pending switch is in progress (shown in the badge).
-  specialistEffectiveId?: string
   specialistUnavailable?: boolean
   // True when the user has selected a different specialist while the current turn is still running.
   specialistHasPendingSwitch?: boolean
   onSpecialistChange?: (specialistId: string | undefined) => void
-  specialistReadOnly?: boolean
   // Reconfigure failure recovery callbacks.
   reconfigureError?: { sessionId: string; specialistName: string; message: string } | null
   onReconfigureRetry?: () => void
@@ -212,7 +209,6 @@ const ConversationPanel = ({
   specialistUnavailable = false,
   specialistHasPendingSwitch = false,
   onSpecialistChange,
-  specialistReadOnly = false,
   reconfigureError,
   onReconfigureRetry,
   onReconfigureChooseOther,
@@ -711,7 +707,6 @@ const ConversationPanel = ({
                           }
                           specialistId={specialistId}
                           specialistUnavailable={specialistUnavailable}
-                          specialistReadOnly={specialistReadOnly}
                           onSpecialistChange={onSpecialistChange}
                         />
 

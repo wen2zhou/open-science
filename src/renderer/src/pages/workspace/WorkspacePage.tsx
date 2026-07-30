@@ -211,6 +211,13 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     specialistName: string
     message: string
   } | null>(null)
+  // Per-session set of session IDs currently running the reconfigure barrier (async send in flight).
+  // The Set is reactive (drives canSendMessage) so a second Enter press disables send after the first
+  // barrier starts. The ref mirrors it for synchronous reads inside the event handler itself.
+  const [barrierInFlightSessions, setBarrierInFlightSessions] = useState<ReadonlySet<string>>(
+    new Set()
+  )
+  const barrierInFlightRef = useRef<Set<string>>(new Set())
   // Unsent composer state (rich doc + staged attachments) is kept per session (and per new conversation)
   // so switching away and back restores it. The active key's state is live; this map holds inactive keys.
   const composerDraftsRef = useRef<
@@ -365,7 +372,10 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     !activeSession?.conversationGraphSyncBlocked &&
     // Auto-recovery drops the session to idle while it resets context and replays the transcript; block
     // sends in that window so a manual prompt can't race the recovery resend into the same session.
-    !activeSession?.compacting
+    !activeSession?.compacting &&
+    // Block while the reconfigure barrier is running (async, between Enter and sendMessage). This
+    // prevents a second Enter press from racing the first one through the same pending-switch barrier.
+    !barrierInFlightSessions.has(activeSession?.id ?? '')
   // Re-editing a sent prompt is allowed under the same settled-run conditions as sending, so the
   // resent prompt can never overlap an in-flight turn, permission wait, fix loop, or compaction.
   const canEditMessage =
@@ -912,9 +922,13 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   // ConversationPanel owns preventDefault and passes the skills picked as inline chips.
   // For existing sessions with a pending specialist switch, the reconfigure barrier runs first:
   // dispose + resume the Claude ACP session with the new specialist identity. On failure, the
-  // draft is preserved, no user turn is created, and a recovery banner is shown.
+  // draft is preserved, no user turn is created, and a recovery banner is shown (fail-closed —
+  // never silently fall back to Main Agent).
   const sendCurrentMessage = (forcedSkillIds: string[]): void => {
     if (!canSendMessage) return
+    // Secondary synchronous guard: blocks a second Enter press that arrives before the state update
+    // from the first barrier start triggers a re-render and disables canSendMessage.
+    if (activeSession && barrierInFlightRef.current.has(activeSession.id)) return
     if (
       supportsImageInput !== true &&
       attachments.some((attachment) => attachment.mimeType?.startsWith('image/'))
@@ -927,22 +941,34 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
       return
     }
     // Block send for existing sessions when the bound specialist is unavailable (fail-closed).
-    if (
-      activeSession?.specialistId !== undefined &&
-      !pendingSessionSpecialist[activeSession.id] &&
-      specialistCatalogLoaded &&
-      !specialistItems.some(
-        (item) => item.kind === 'custom' && item.enabled && item.id === activeSession.specialistId
-      )
-    ) {
-      return
+    // Hole A fix: use Object.hasOwn to distinguish "no pending entry" from "pending entry whose
+    // value is None (undefined)" — a falsy check would skip the guard for any pending switch.
+    // Hole B fix: treat an unloaded catalog as blocking (kick off the load so the next attempt
+    // succeeds). Gating on specialistCatalogLoaded=true would skip the guard before catalog
+    // resolves; the submenu only loads on open, so isLoaded is plausibly false on a fresh workspace.
+    if (activeSession?.specialistId !== undefined) {
+      if (!specialistCatalogLoaded) {
+        void loadSpecialists()
+        return
+      }
+      if (
+        !Object.hasOwn(pendingSessionSpecialist, activeSession.id) &&
+        !specialistItems.some(
+          (item) => item.kind === 'custom' && item.enabled && item.id === activeSession.specialistId
+        )
+      ) {
+        return
+      }
     }
 
     const doc = draftDoc
     const attachmentsForSend = attachments
+    // Capture new-conversation intent before send: auto-review defaults off, so only an explicit
+    // "on" needs to be stamped onto the created session (absent = off downstream).
     const wasNewConversation = !activeSession
     const draftAutoReviewEnabled = newConversationAutoReviewEnabled
     const draftEnabledComputeHosts = newConversationEnabledComputeHosts
+    // Capture the final specialist selection (last change wins before first send).
     const draftSpecialistId = wasNewConversation ? newConversationSpecialistId : undefined
     // Capture pending specialist for existing sessions (last change wins).
     const pendingSpecialistId = activeSession
@@ -950,119 +976,135 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
       : undefined
     const hasPendingSwitch = activeSession !== undefined && pendingSpecialistId !== undefined
 
-    // If there is a pending specialist switch for an existing session, run the reconfigure barrier
-    // BEFORE appending the user turn. The barrier is strictly ordered: reconfigure must succeed
-    // before any message is sent. On failure, the draft is restored, no user turn is created, and
-    // the recovery banner is shown (fail-closed — never silently fall back to Main Agent).
-    if (hasPendingSwitch) {
-      void (async (): Promise<void> => {
-        const sessionId = activeSession.id
-        try {
-          // Apply the pending binding to main process (validates the UUID is still available, then
-          // hot-switches the live agent session). contextReset signals the agent session was replaced
-          // (Claude bakes identity into the session at creation) so history must be replayed below.
-          const switchResult = await window.api?.specialist?.setSessionSpecialist?.({
-            sessionId,
-            specialistId: pendingSpecialistId
-          })
-          if (switchResult?.contextReset) {
-            markSpecialistSwitchResetRequired(sessionId)
-          }
-        } catch (err: unknown) {
-          // Reconfigure failed — preserve draft, do not send, show banner.
-          const pendingProfile = specialistItems.find(
-            (item) => item.kind === 'custom' && item.id === pendingSpecialistId
-          )
-          const name =
-            pendingProfile?.kind === 'custom'
-              ? (pendingProfile.displayName ?? pendingProfile.name)
-              : (pendingSpecialistId ?? 'specialist')
-          setReconfigureError({
-            sessionId,
-            specialistName: name,
-            message: err instanceof Error ? err.message : String(err)
-          })
+    // Dispatches the final send after draft/attachment state has been cleared.
+    // Shared by the normal send path and the Retry recovery action so the logic stays in sync.
+    const dispatchSend = (sessionId: string | undefined): void => {
+      void sendMessage({
+        sessionId,
+        text: docToText(doc),
+        attachments: attachmentsForSend,
+        // Existing files the user referenced via `@`; the runtime attaches each as a content block.
+        referencedArtifacts: docToArtifactRefs(doc),
+        // Persist the draft's structural segments so the sent bubble renders styled mention pills.
+        parts: doc.nodes,
+        cwd: activeSession?.cwd,
+        projectId: activeSession?.projectId ?? scopedProjectId,
+        projectName: activeSession?.projectId ?? scopedProjectId,
+        permissionProfile: activePermissionProfile,
+        forcedSkillIds,
+        // New-conversation only: the UUID is forwarded to createSession; main process reads latest Profile.
+        specialistId: draftSpecialistId
+      }).then((result) => {
+        if (!result) {
+          setDraftDoc(doc)
+          setAttachments(attachmentsForSend)
           return
         }
 
-        // Reconfigure succeeded: update the session's persisted specialist binding,
-        // clear the pending state, and proceed to send.
-        // Updating the session store's specialistId here ensures the next sendMessage
-        // call (which reads currentSession.specialistId for resumeSession) uses the
-        // new UUID — triggering the ACP dispose+resume that re-injects the new identity.
-        setSessionSpecialistId(sessionId, pendingSpecialistId)
-        setPendingSessionSpecialist((prev) => {
-          const next = { ...prev }
-          delete next[sessionId]
+        // Carry the composer's auto-review choice onto the freshly created session. bindPendingSession
+        // preserves the field, so stamping the (pending) session id here survives the durable-id swap.
+        if (wasNewConversation && draftAutoReviewEnabled) {
+          setAutoReviewEnabled(result.sessionId, true)
+        }
+        // Carry the draft compute host selection onto the newly created session.
+        if (wasNewConversation && draftEnabledComputeHosts.length > 0) {
+          setEnabledComputeHosts(result.sessionId, draftEnabledComputeHosts)
+          void window.api.compute
+            .enabledHostsSet(result.sessionId, draftEnabledComputeHosts)
+            .catch((err: unknown) => {
+              console.warn('Failed to sync draft compute hosts to registry for new session', err)
+            })
+        }
+        setNewConversationAutoReviewEnabled(false)
+        setNewConversationEnabledComputeHosts([])
+        setNewConversationSpecialistId(undefined)
+      })
+    }
+
+    // Runs the reconfigure barrier then dispatches the send on success. Extracted so that both the
+    // initial send path and the Retry recovery action can invoke the same ordered sequence.
+    const runBarrierAndSend = async (sessionId: string, specialistId: string): Promise<void> => {
+      // Mark the barrier as in-flight synchronously (ref) and reactively (state). The ref allows
+      // the sendCurrentMessage guard to block a second call before the state re-render fires;
+      // the state drives canSendMessage so the Send button also disables on the next render.
+      barrierInFlightRef.current.add(sessionId)
+      setBarrierInFlightSessions((prev) => new Set(prev).add(sessionId))
+      try {
+        // Apply the pending binding to main process (validates the UUID is still available, then
+        // hot-switches the live agent session). contextReset signals the agent session was replaced
+        // (Claude bakes identity into the session at creation) so history must be replayed below.
+        const switchResult = await window.api?.specialist?.setSessionSpecialist?.({
+          sessionId,
+          specialistId
+        })
+        if (switchResult?.contextReset) {
+          markSpecialistSwitchResetRequired(sessionId)
+        }
+      } catch (err: unknown) {
+        // Reconfigure failed — preserve draft (pendingSessionSpecialist is intentionally left set
+        // so Retry has the specialist to re-attempt), do not send, show the recovery banner.
+        const pendingProfile = specialistItems.find(
+          (item) => item.kind === 'custom' && item.id === specialistId
+        )
+        const name =
+          pendingProfile?.kind === 'custom' ? pendingProfile.name : 'the selected specialist'
+        setReconfigureError({
+          sessionId,
+          specialistName: name,
+          message: err instanceof Error ? err.message : String(err)
+        })
+        barrierInFlightRef.current.delete(sessionId)
+        setBarrierInFlightSessions((prev) => {
+          const next = new Set(prev)
+          next.delete(sessionId)
           return next
         })
-        setDraftDoc(emptyDoc)
-        delete composerDraftsRef.current[sessionId]
-        setAttachments([])
-        setAttachmentError(null)
-        setReconfigureError(null)
+        return
+      }
 
-        void sendMessage({
-          sessionId,
-          text: docToText(doc),
-          attachments: attachmentsForSend,
-          referencedArtifacts: docToArtifactRefs(doc),
-          parts: doc.nodes,
-          cwd: activeSession.cwd,
-          projectId: activeSession.projectId,
-          projectName: activeSession.projectId,
-          permissionProfile: activePermissionProfile,
-          forcedSkillIds
-        }).then((result) => {
-          if (!result) {
-            setDraftDoc(doc)
-            setAttachments(attachmentsForSend)
-          }
-        })
-      })()
+      // Reconfigure succeeded: update the session's persisted specialist binding,
+      // clear the pending state, and proceed to send.
+      // Updating the session store's specialistId here ensures the next sendMessage
+      // call (which reads currentSession.specialistId for resumeSession) uses the
+      // new UUID — triggering the ACP dispose+resume that re-injects the new identity.
+      setSessionSpecialistId(sessionId, specialistId)
+      setPendingSessionSpecialist((prev) => {
+        const next = { ...prev }
+        delete next[sessionId]
+        return next
+      })
+      setDraftDoc(emptyDoc)
+      delete composerDraftsRef.current[sessionId]
+      setAttachments([])
+      setAttachmentError(null)
+      setReconfigureError(null)
+
+      barrierInFlightRef.current.delete(sessionId)
+      setBarrierInFlightSessions((prev) => {
+        const next = new Set(prev)
+        next.delete(sessionId)
+        return next
+      })
+      dispatchSend(sessionId)
+    }
+
+    // If there is a pending specialist switch for an existing session, run the reconfigure barrier
+    // BEFORE appending the user turn. The barrier is strictly ordered: reconfigure must succeed
+    // before any message is sent. On failure, the draft is restored, no user turn is created, and
+    // the recovery banner is shown.
+    if (hasPendingSwitch) {
+      void runBarrierAndSend(activeSession.id, pendingSpecialistId)
       return
     }
 
     // No pending switch: proceed with the normal send path.
     setDraftDoc(emptyDoc)
+    // Drop the stored draft for this key so a sent message never lingers as a restorable draft.
     delete composerDraftsRef.current[selectedSessionId ?? NEW_CONVERSATION_DRAFT_KEY]
     setAttachments([])
     setAttachmentError(null)
 
-    void sendMessage({
-      sessionId: activeSession?.id,
-      text: docToText(doc),
-      attachments: attachmentsForSend,
-      referencedArtifacts: docToArtifactRefs(doc),
-      parts: doc.nodes,
-      cwd: activeSession?.cwd,
-      projectId: activeSession?.projectId ?? scopedProjectId,
-      projectName: activeSession?.projectId ?? scopedProjectId,
-      permissionProfile: activePermissionProfile,
-      forcedSkillIds,
-      specialistId: draftSpecialistId
-    }).then((result) => {
-      if (!result) {
-        setDraftDoc(doc)
-        setAttachments(attachmentsForSend)
-        return
-      }
-
-      if (wasNewConversation && draftAutoReviewEnabled) {
-        setAutoReviewEnabled(result.sessionId, true)
-      }
-      if (wasNewConversation && draftEnabledComputeHosts.length > 0) {
-        setEnabledComputeHosts(result.sessionId, draftEnabledComputeHosts)
-        void window.api.compute
-          .enabledHostsSet(result.sessionId, draftEnabledComputeHosts)
-          .catch((err: unknown) => {
-            console.warn('Failed to sync draft compute hosts to registry for new session', err)
-          })
-      }
-      setNewConversationAutoReviewEnabled(false)
-      setNewConversationEnabledComputeHosts([])
-      setNewConversationSpecialistId(undefined)
-    })
+    dispatchSend(activeSession?.id)
   }
 
   // Opens the rename dialog with the current title prefilled.
@@ -1384,20 +1426,16 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
             onSendEditedMessage={sendEditedMessage}
             onOpenJobList={(sessionId) => setJobListModal({ open: true, sessionId })}
             specialistId={
-              // For existing sessions: show the effective specialist (session binding).
-              // Pending switch overrides the display during a running turn.
-              activeSession
-                ? pendingSessionSpecialist[activeSession.id] !== undefined
-                  ? pendingSessionSpecialist[activeSession.id]
-                  : activeSession.specialistId
-                : newConversationSpecialistId
+              // For existing sessions: badge shows the currently-effective specialist (session
+              // binding). A pending switch is signalled by the chip, not by overriding the badge.
+              activeSession ? activeSession.specialistId : newConversationSpecialistId
             }
             specialistUnavailable={
               activeSession
                 ? specialistCatalogLoaded &&
                   activeSession.specialistId !== undefined &&
                   // A pending switch overrides: the new selection is checked for availability.
-                  pendingSessionSpecialist[activeSession.id] === undefined &&
+                  !Object.hasOwn(pendingSessionSpecialist, activeSession.id) &&
                   !specialistItems.some(
                     (item) =>
                       item.kind === 'custom' &&
@@ -1405,12 +1443,6 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
                       item.id === activeSession.specialistId
                   )
                 : newConversationSpecialistUnavailable
-            }
-            // The effective (pre-switch) specialist when a pending switch is in progress.
-            specialistEffectiveId={
-              activeSession && pendingSessionSpecialist[activeSession.id] !== undefined
-                ? activeSession.specialistId
-                : undefined
             }
             specialistHasPendingSwitch={
               activeSession !== undefined &&
@@ -1421,11 +1453,29 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
               reconfigureError?.sessionId === activeSession?.id ? reconfigureError : null
             }
             onReconfigureRetry={() => {
-              if (reconfigureError) setReconfigureError(null)
+              // Re-run the full barrier: clears the banner first, then re-attempts the switch
+              // and, on success, dispatches the send — identical to the original send path.
+              if (!reconfigureError || !activeSession) return
+              const pendingId = pendingSessionSpecialist[reconfigureError.sessionId]
+              if (pendingId === undefined) {
+                setReconfigureError(null)
+                return
+              }
+              setReconfigureError(null)
+              sendCurrentMessage(docToSkillIds(draftDoc))
             }}
             onReconfigureChooseOther={() => {
-              // Keep the draft and open the specialist picker by clearing the reconfigure error.
-              if (reconfigureError) setReconfigureError(null)
+              // Clear the failed pending selection so the picker reflects the currently-effective
+              // specialist. The user can then pick a new one from the menu and send again.
+              // No mechanism exists to programmatically open the picker, so we note it here.
+              if (activeSession && reconfigureError) {
+                setPendingSessionSpecialist((prev) => {
+                  const next = { ...prev }
+                  delete next[activeSession.id]
+                  return next
+                })
+                setReconfigureError(null)
+              }
             }}
             onReconfigureUseNone={() => {
               if (activeSession && reconfigureError) {
@@ -1448,7 +1498,6 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
                 ? handleExistingSessionSpecialistChange
                 : handleNewConversationSpecialistChange
             }
-            specialistReadOnly={false}
           />
 
           <ResizableHandle
