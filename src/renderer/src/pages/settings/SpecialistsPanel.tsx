@@ -65,7 +65,13 @@ const getAvatarStyle = (colorKey?: string): React.CSSProperties => ({
   background: colorKey ? (AVATAR_COLORS[colorKey] ?? DEFAULT_AVATAR_COLOR) : DEFAULT_AVATAR_COLOR
 })
 
-const SpecialistAvatar = ({ iconKey, colorKey }: { iconKey?: string; colorKey?: string }) => {
+const SpecialistAvatar = ({
+  iconKey,
+  colorKey
+}: {
+  iconKey?: string
+  colorKey?: string
+}): React.JSX.Element => {
   const Icon = iconKey ? (AVATAR_ICONS[iconKey] ?? Brain) : Brain
   return (
     <span
