@@ -19,14 +19,16 @@ import {
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
 import { Input } from '@/components/ui/input'
-import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { SettingsToggle } from './SettingsLayout'
 import { useSpecialistStore } from '@/stores/specialist-store'
 import type { CreateSpecialistInput } from '../../../../shared/specialist'
 import { SpecialistEditor } from './SpecialistEditor'
 
 // Sub-view for the Specialists panel (parallels SkillsView).
-export type SpecialistsView = { kind: 'list' } | { kind: 'create' }
+export type SpecialistsView =
+  | { kind: 'list' }
+  | { kind: 'create' }
+  | { kind: 'edit'; id: string }
 
 type CategoryFilter = 'all' | 'custom' | 'builtin'
 
@@ -65,7 +67,13 @@ const getAvatarStyle = (colorKey?: string): React.CSSProperties => ({
   background: colorKey ? (AVATAR_COLORS[colorKey] ?? DEFAULT_AVATAR_COLOR) : DEFAULT_AVATAR_COLOR
 })
 
-const SpecialistAvatar = ({ iconKey, colorKey }: { iconKey?: string; colorKey?: string }) => {
+const SpecialistAvatar = ({
+  iconKey,
+  colorKey
+}: {
+  iconKey?: string
+  colorKey?: string
+}): React.JSX.Element => {
   const Icon = iconKey ? (AVATAR_ICONS[iconKey] ?? Brain) : Brain
   return (
     <span
@@ -84,6 +92,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const load = useSpecialistStore((s) => s.load)
   const setEnabled = useSpecialistStore((s) => s.setEnabled)
   const createSpecialist = useSpecialistStore((s) => s.create)
+  const updateSpecialist = useSpecialistStore((s) => s.update)
   const [filter, setFilter] = useState<CategoryFilter>('all')
   const [query, setQuery] = useState('')
   const customItems = items.filter((i) => i.kind === 'custom')
@@ -129,20 +138,63 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     )
   }
 
+  if (view.kind === 'edit') {
+    // Reuse the create editor prefilled from the stored profile. Capabilities
+    // stay informational; only identity/instructions are editable here.
+    const specialist = customItems.find((item) => item.kind === 'custom' && item.id === view.id)
+    if (specialist && specialist.kind === 'custom') {
+      return (
+        <SpecialistEditor
+          editSpecialist={specialist}
+          existingNames={customItems.filter((item) => item.id !== view.id).map((item) => item.name)}
+          onCancel={() => onNavigate({ kind: 'list' })}
+          onSave={async () => onNavigate({ kind: 'list' })}
+          onSaveEdit={async (input) => {
+            await updateSpecialist(input)
+            onNavigate({ kind: 'list' })
+          }}
+        />
+      )
+    }
+    // Profile no longer exists (deleted/stale) — fall through to the list.
+  }
+
   return (
     <div className="p-5">
       {/* Toolbar */}
       <div className="mb-4 flex items-center gap-2">
-        <Select value={filter} onValueChange={(value) => setFilter(value as CategoryFilter)}>
-          <SelectTrigger aria-label="Filter specialists by category" className="w-32">
-            <span>{FILTER_LABELS[filter]}</span>
-          </SelectTrigger>
-          <SelectContent>
-            <SelectItem value="all">All</SelectItem>
-            <SelectItem value="custom">Custom</SelectItem>
-            <SelectItem value="builtin">Built-in</SelectItem>
-          </SelectContent>
-        </Select>
+        <div
+          className="flex items-center gap-0.5 rounded-lg border border-border bg-muted/40 p-0.5"
+          role="tablist"
+          aria-label="Filter specialists by category"
+        >
+          {(['all', 'custom', 'builtin'] as const).map((key) => {
+            const count =
+              key === 'all'
+                ? items.length
+                : key === 'custom'
+                  ? customItems.length
+                  : reviewerItems.length
+            const active = filter === key
+            return (
+              <button
+                key={key}
+                type="button"
+                role="tab"
+                aria-selected={active}
+                onClick={() => setFilter(key)}
+                className={`inline-flex items-center gap-1 rounded-md px-2.5 py-1 text-xs font-medium transition-colors motion-reduce:transition-none ${
+                  active
+                    ? 'bg-muted text-foreground'
+                    : 'text-muted-foreground hover:text-foreground'
+                }`}
+              >
+                {FILTER_LABELS[key]}
+                <span className="tabular-nums text-muted-foreground">({count})</span>
+              </button>
+            )
+          })}
+        </div>
         <div className="relative flex-1">
           <Search
             className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
@@ -201,30 +253,38 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                         data-slot="settings-list-row"
                         className="flex min-h-14 items-center gap-2 py-2.5"
                       >
-                        {/* Avatar */}
-                        <SpecialistAvatar iconKey={item.iconKey} colorKey={item.colorKey} />
+                        {/* Click the row body to open the editor (prefilled) */}
+                        <button
+                          type="button"
+                          onClick={() => onNavigate({ kind: 'edit', id: item.id })}
+                          aria-label={`Edit ${item.displayName}`}
+                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                        >
+                          {/* Avatar */}
+                          <SpecialistAvatar iconKey={item.iconKey} colorKey={item.colorKey} />
 
-                        {/* Body: displayName + subtle UPPER_SNAKE name + description */}
-                        <div className="min-w-0 flex-1">
-                          <div className="flex items-center gap-1.5">
-                            <span className="truncate text-sm text-foreground">
-                              {item.displayName}
-                            </span>
-                            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                              {item.name}
+                          {/* Body: displayName + subtle UPPER_SNAKE name + description */}
+                          <div className="min-w-0 flex-1">
+                            <div className="flex items-center gap-1.5">
+                              <span className="truncate text-sm text-foreground">
+                                {item.displayName}
+                              </span>
+                              <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                                {item.name}
+                              </span>
+                            </div>
+                            {item.description ? (
+                              <span className="block truncate text-xs text-muted-foreground">
+                                {item.description}
+                              </span>
+                            ) : null}
+                            <span className="block text-[11px] text-muted-foreground">
+                              {item.capabilityMode === 'full'
+                                ? 'Full access'
+                                : 'Selected capabilities'}
                             </span>
                           </div>
-                          {item.description ? (
-                            <span className="block truncate text-xs text-muted-foreground">
-                              {item.description}
-                            </span>
-                          ) : null}
-                          <span className="block text-[11px] text-muted-foreground">
-                            {item.capabilityMode === 'full'
-                              ? 'Full access'
-                              : 'Selected capabilities'}
-                          </span>
-                        </div>
+                        </button>
 
                         {/* Enabled toggle */}
                         <SettingsToggle

@@ -215,6 +215,7 @@ import type {
 } from '../shared/reviewer'
 import type {
   CreateSpecialistRequest,
+  UpdateSpecialistRequest,
   SetSpecialistEnabledRequest,
   SpecialistListItem,
   SpecialistProfileView
@@ -354,6 +355,7 @@ interface OpenScienceAPI {
   specialist: {
     list(): Promise<SpecialistListItem[]>
     create(request: CreateSpecialistRequest): Promise<SpecialistProfileView>
+    update(request: UpdateSpecialistRequest): Promise<SpecialistProfileView>
     setEnabled(request: SetSpecialistEnabledRequest): Promise<SpecialistProfileView>
     onCatalogChanged(listener: () => void): RemoveListener
   }

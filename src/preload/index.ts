@@ -225,6 +225,7 @@ import type {
 import { REVIEWER_IPC } from '../shared/reviewer'
 import type {
   CreateSpecialistRequest,
+  UpdateSpecialistRequest,
   SetSpecialistEnabledRequest,
   SpecialistListItem,
   SpecialistProfileView
@@ -392,6 +393,7 @@ type OpenScienceAPI = {
   specialist: {
     list: () => Promise<SpecialistListItem[]>
     create: (request: CreateSpecialistRequest) => Promise<SpecialistProfileView>
+    update: (request: UpdateSpecialistRequest) => Promise<SpecialistProfileView>
     setEnabled: (request: SetSpecialistEnabledRequest) => Promise<SpecialistProfileView>
     onCatalogChanged: (listener: () => void) => RemoveListener
   }
@@ -937,6 +939,8 @@ const api: OpenScienceAPI = {
     list: () => ipcRenderer.invoke(SPECIALIST_IPC.LIST) as Promise<SpecialistListItem[]>,
     create: (request: CreateSpecialistRequest) =>
       ipcRenderer.invoke(SPECIALIST_IPC.CREATE, request) as Promise<SpecialistProfileView>,
+    update: (request: UpdateSpecialistRequest) =>
+      ipcRenderer.invoke(SPECIALIST_IPC.UPDATE, request) as Promise<SpecialistProfileView>,
     setEnabled: (request: SetSpecialistEnabledRequest) =>
       ipcRenderer.invoke(SPECIALIST_IPC.SET_ENABLED, request) as Promise<SpecialistProfileView>,
     onCatalogChanged: (listener: () => void) =>

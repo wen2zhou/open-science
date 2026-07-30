@@ -141,6 +141,90 @@ describe('ProfileService.setEnabled', () => {
   })
 })
 
+describe('ProfileService.update', () => {
+  it('updates identity fields and bumps revision', async () => {
+    const created = await service.create({ displayName: 'RNA-seq Reviewer' })
+    const updated = await service.update({
+      id: created.id,
+      revision: created.revision,
+      displayName: 'RNA-seq Auditor',
+      description: 'Updated description.',
+      systemPrompt: 'Be rigorous.'
+    })
+    expect(updated.id).toBe(created.id)
+    expect(updated.displayName).toBe('RNA-seq Auditor')
+    expect(updated.description).toBe('Updated description.')
+    expect(updated.systemPrompt).toBe('Be rigorous.')
+    expect(updated.revision).toBe(created.revision + 1)
+  })
+
+  it('persists changes and leaves unmentioned fields intact', async () => {
+    const created = await service.create({ displayName: 'My Bot' })
+    await service.update({
+      id: created.id,
+      revision: created.revision,
+      displayName: 'Renamed Bot'
+    })
+    const found = await service.getById(created.id)
+    expect(found.displayName).toBe('Renamed Bot')
+    // name not provided → unchanged
+    expect(found.name).toBe('MY_BOT')
+  })
+
+  it('keeps the immutable id and supports renaming', async () => {
+    const created = await service.create({ displayName: 'My Bot' })
+    const updated = await service.update({
+      id: created.id,
+      revision: created.revision,
+      name: 'CUSTOM_RENAMED'
+    })
+    expect(updated.id).toBe(created.id)
+    expect(updated.name).toBe('CUSTOM_RENAMED')
+  })
+
+  it('allows keeping the same public name (self excluded from uniqueness)', async () => {
+    const created = await service.create({ displayName: 'My Bot' })
+    const updated = await service.update({
+      id: created.id,
+      revision: created.revision,
+      name: created.name
+    })
+    expect(updated.name).toBe(created.name)
+  })
+
+  it('rejects a name that collides with another specialist', async () => {
+    const first = await service.create({ displayName: 'Alpha Bot' })
+    const second = await service.create({ displayName: 'Beta Bot' })
+    await expect(
+      service.update({ id: second.id, revision: second.revision, name: first.name })
+    ).rejects.toThrow(/already in use/i)
+
+    expect(await service.list()).toHaveLength(2)
+  })
+
+  it('rejects a stale revision (optimistic concurrency conflict)', async () => {
+    const created = await service.create({ displayName: 'My Bot' })
+    await expect(
+      service.update({ id: created.id, revision: created.revision + 1, displayName: 'X' })
+    ).rejects.toThrow(/revision conflict/i)
+  })
+
+  it('notifies listeners after a successful update', async () => {
+    const created = await service.create({ displayName: 'My Bot' })
+    const listener = vi.fn()
+    service.subscribe(listener)
+    await service.update({ id: created.id, revision: created.revision, description: 'new' })
+    expect(listener).toHaveBeenCalledOnce()
+  })
+
+  it('rejects an update missing revision', async () => {
+    const created = await service.create({ displayName: 'My Bot' })
+    await expect(
+      service.update({ id: created.id } as never)
+    ).rejects.toThrow(/id and revision/i)
+  })
+})
+
 describe('ProfileService.listForSettings', () => {
   it('includes custom specialists', async () => {
     await service.create({ displayName: 'My Bot' })

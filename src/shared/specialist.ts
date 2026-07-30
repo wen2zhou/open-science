@@ -5,6 +5,7 @@
 export const SPECIALIST_IPC = {
   LIST: 'specialist:list',
   CREATE: 'specialist:create',
+  UPDATE: 'specialist:update',
   SET_ENABLED: 'specialist:set-enabled',
   CATALOG_CHANGED: 'specialist:catalog-changed'
 } as const
@@ -71,8 +72,24 @@ export type CreateSpecialistInput = {
   capabilityMode?: SpecialistCapabilityMode
 }
 
+// Input for updating an existing specialist's identity/instructions.
+// Identity-only for now — capability-mode and config editing are deferred to a
+// later issue and will broaden this patch type (a strict superset change).
+// `revision` enables optimistic concurrency (must match the stored record).
+export type UpdateSpecialistInput = {
+  id: string
+  revision: number
+  displayName?: string
+  name?: string
+  description?: string
+  systemPrompt?: string
+  iconKey?: string
+  colorKey?: string
+}
+
 // Request / response types for IPC.
 export type CreateSpecialistRequest = CreateSpecialistInput
+export type UpdateSpecialistRequest = UpdateSpecialistInput
 
 export type SetSpecialistEnabledRequest = {
   id: string
@@ -152,6 +169,28 @@ export const validateCreateSpecialistInput = (
   const name = input.name ?? deriveSpecialistName(input.displayName)
   const nameError = validateSpecialistName(name, existingNames, undefined, existingIds)
   if (nameError) errors.push({ field: 'name', message: nameError })
+
+  return errors
+}
+
+// Validate the provided (partial) fields for an UpdateSpecialistInput.
+// Only fields that are present are validated. Name uniqueness skips the
+// specialist's own id (`input.id`) so self-rename is allowed.
+export const validateUpdateSpecialistInput = (
+  input: UpdateSpecialistInput,
+  existingNames: string[],
+  existingIds?: Map<string, string>
+): SpecialistFieldError[] => {
+  const errors: SpecialistFieldError[] = []
+
+  if (input.displayName !== undefined) {
+    const displayNameError = validateDisplayName(input.displayName)
+    if (displayNameError) errors.push({ field: 'displayName', message: displayNameError })
+  }
+  if (input.name !== undefined) {
+    const nameError = validateSpecialistName(input.name, existingNames, input.id, existingIds)
+    if (nameError) errors.push({ field: 'name', message: nameError })
+  }
 
   return errors
 }

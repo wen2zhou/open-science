@@ -8,13 +8,20 @@ import {
   deriveSpecialistName,
   validateCreateSpecialistInput,
   type CreateSpecialistInput,
-  type SpecialistFieldError
+  type UpdateSpecialistInput,
+  type SpecialistFieldError,
+  type SpecialistProfileView
 } from '../../../../shared/specialist'
 
 type SpecialistEditorProps = {
   onCancel: () => void
   onSave: (input: CreateSpecialistInput) => Promise<void>
   existingNames?: string[]
+  // Edit mode: when provided, the form is prefilled from this profile and Save
+  // calls onSaveEdit (with id + revision for optimistic concurrency) instead of
+  // onSave. The capabilities section stays informational either way.
+  editSpecialist?: SpecialistProfileView
+  onSaveEdit?: (input: UpdateSpecialistInput) => Promise<void>
 }
 
 type FormState = {
@@ -49,17 +56,33 @@ const COLOR_OPTIONS = [
 const SpecialistEditor = ({
   onCancel,
   onSave,
-  existingNames = []
+  onSaveEdit,
+  existingNames = [],
+  editSpecialist
 }: SpecialistEditorProps): React.JSX.Element => {
-  const [form, setForm] = useState<FormState>({
-    displayName: '',
-    name: '',
-    description: '',
-    systemPrompt: '',
-    iconKey: 'brain',
-    colorKey: 'purple',
-    nameTouched: false
-  })
+  const isEdit = editSpecialist !== undefined
+  const [form, setForm] = useState<FormState>(() =>
+    editSpecialist
+      ? {
+          displayName: editSpecialist.displayName,
+          name: editSpecialist.name,
+          description: editSpecialist.description,
+          systemPrompt: editSpecialist.systemPrompt,
+          iconKey: editSpecialist.iconKey ?? 'brain',
+          colorKey: editSpecialist.colorKey ?? 'purple',
+          // Don't auto-derive the name from the display name while editing.
+          nameTouched: true
+        }
+      : {
+          displayName: '',
+          name: '',
+          description: '',
+          systemPrompt: '',
+          iconKey: 'brain',
+          colorKey: 'purple',
+          nameTouched: false
+        }
+  )
   const [fieldErrors, setFieldErrors] = useState<SpecialistFieldError[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>()
@@ -89,7 +112,7 @@ const SpecialistEditor = ({
     setIsSaving(true)
     setSaveError(undefined)
     try {
-      const input: CreateSpecialistInput = {
+      const trimmed = {
         displayName: form.displayName.trim(),
         name: effectiveName.trim() || undefined,
         description: form.description.trim() || undefined,
@@ -97,9 +120,23 @@ const SpecialistEditor = ({
         iconKey: form.iconKey,
         colorKey: form.colorKey
       }
-      await onSave(input)
+      if (editSpecialist) {
+        await onSaveEdit?.({
+          id: editSpecialist.id,
+          revision: editSpecialist.revision,
+          ...trimmed
+        })
+      } else {
+        await onSave(trimmed)
+      }
     } catch (error) {
-      setSaveError(error instanceof Error ? error.message : 'Could not create specialist.')
+      setSaveError(
+        error instanceof Error
+          ? error.message
+          : isEdit
+            ? 'Could not save changes.'
+            : 'Could not create specialist.'
+      )
     } finally {
       setIsSaving(false)
     }
@@ -271,7 +308,7 @@ const SpecialistEditor = ({
             onClick={() => void handleSave()}
             disabled={isSaving || !form.displayName.trim()}
           >
-            {isSaving ? 'Creating…' : 'Create specialist'}
+            {isSaving ? (isEdit ? 'Saving…' : 'Creating…') : isEdit ? 'Save changes' : 'Create specialist'}
           </Button>
         </div>
       </div>

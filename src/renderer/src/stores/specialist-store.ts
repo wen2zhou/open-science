@@ -2,7 +2,8 @@ import { create } from 'zustand'
 import type {
   SpecialistListItem,
   SpecialistProfileView,
-  CreateSpecialistInput
+  CreateSpecialistInput,
+  UpdateSpecialistInput
 } from '../../../shared/specialist'
 
 type SpecialistStoreData = {
@@ -13,6 +14,7 @@ type SpecialistStoreData = {
 type SpecialistStoreActions = {
   load: () => Promise<void>
   create: (input: CreateSpecialistInput) => Promise<SpecialistProfileView>
+  update: (input: UpdateSpecialistInput) => Promise<SpecialistProfileView>
   setEnabled: (id: string, enabled: boolean) => Promise<void>
 }
 
@@ -29,6 +31,14 @@ const useSpecialistStore = create<SpecialistStore>((set) => ({
 
   create: async (input: CreateSpecialistInput) => {
     const view = await window.api.specialist.create(input)
+    // Reload the full list so Reviewer and ordering stay consistent.
+    const items = await window.api.specialist.list()
+    set({ items })
+    return view
+  },
+
+  update: async (input: UpdateSpecialistInput) => {
+    const view = await window.api.specialist.update(input)
     // Reload the full list so Reviewer and ordering stay consistent.
     const items = await window.api.specialist.list()
     set({ items })
