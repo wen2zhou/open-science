@@ -36,6 +36,33 @@ const toView = (s: StoredSpecialist): SpecialistProfileView => ({
   revision: s.revision
 })
 
+const assertCreateInputShape = (input: CreateSpecialistInput): void => {
+  if (!input || typeof input !== 'object' || typeof input.displayName !== 'string') {
+    throw new Error('Display name must be a string.')
+  }
+
+  const optionalTextFields = [
+    ['name', input.name],
+    ['description', input.description],
+    ['system prompt', input.systemPrompt],
+    ['icon', input.iconKey],
+    ['color', input.colorKey]
+  ] as const
+  for (const [label, value] of optionalTextFields) {
+    if (value !== undefined && typeof value !== 'string') {
+      throw new Error(`${label[0].toUpperCase()}${label.slice(1)} must be a string.`)
+    }
+  }
+
+  if (
+    input.capabilityMode !== undefined &&
+    input.capabilityMode !== 'full' &&
+    input.capabilityMode !== 'selected'
+  ) {
+    throw new Error('Capability mode must be "full" or "selected".')
+  }
+}
+
 // ---------------------------------------------------------------------------
 // ProfileService
 // ---------------------------------------------------------------------------
@@ -77,6 +104,8 @@ export class ProfileService {
   }
 
   async create(input: CreateSpecialistInput): Promise<SpecialistProfileView> {
+    assertCreateInputShape(input)
+
     const doc = await this.repo.getAll()
     const existingNames = doc.specialists.map((s) => s.name)
     const existingIds = new Map(doc.specialists.map((s) => [s.name, s.id]))

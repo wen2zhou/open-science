@@ -2,6 +2,7 @@ import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import {
   deriveSpecialistName,
@@ -13,6 +14,7 @@ import {
 type SpecialistEditorProps = {
   onCancel: () => void
   onSave: (input: CreateSpecialistInput) => Promise<void>
+  existingNames?: string[]
 }
 
 type FormState = {
@@ -20,16 +22,42 @@ type FormState = {
   name: string
   description: string
   systemPrompt: string
+  iconKey: string
+  colorKey: string
   // Whether name was manually edited (if so, stop auto-deriving)
   nameTouched: boolean
 }
 
-const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JSX.Element => {
+const ICON_OPTIONS = [
+  { key: 'brain', label: 'Brain' },
+  { key: 'beaker', label: 'Beaker' },
+  { key: 'book-open', label: 'Book' },
+  { key: 'flask-conical', label: 'Flask' },
+  { key: 'microscope', label: 'Microscope' },
+  { key: 'search', label: 'Search' }
+] as const
+
+const COLOR_OPTIONS = [
+  { key: 'blue', label: 'Blue' },
+  { key: 'green', label: 'Green' },
+  { key: 'teal', label: 'Teal' },
+  { key: 'amber', label: 'Amber' },
+  { key: 'purple', label: 'Purple' },
+  { key: 'slate', label: 'Slate' }
+] as const
+
+const SpecialistEditor = ({
+  onCancel,
+  onSave,
+  existingNames = []
+}: SpecialistEditorProps): React.JSX.Element => {
   const [form, setForm] = useState<FormState>({
     displayName: '',
     name: '',
     description: '',
     systemPrompt: '',
+    iconKey: 'brain',
+    colorKey: 'purple',
     nameTouched: false
   })
   const [fieldErrors, setFieldErrors] = useState<SpecialistFieldError[]>([])
@@ -50,7 +78,7 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
       description: form.description || undefined,
       systemPrompt: form.systemPrompt || undefined
     }
-    const errors = validateCreateSpecialistInput(input, [])
+    const errors = validateCreateSpecialistInput(input, existingNames)
     setFieldErrors(errors)
     return errors.length === 0
   }
@@ -65,7 +93,9 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
         displayName: form.displayName.trim(),
         name: effectiveName.trim() || undefined,
         description: form.description.trim() || undefined,
-        systemPrompt: form.systemPrompt.trim() || undefined
+        systemPrompt: form.systemPrompt.trim() || undefined,
+        iconKey: form.iconKey,
+        colorKey: form.colorKey
       }
       await onSave(input)
     } catch (error) {
@@ -151,6 +181,45 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
               onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
               placeholder="Short description shown in the list and picker"
             />
+          </div>
+
+          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold">Icon</label>
+              <Select
+                value={form.iconKey}
+                onValueChange={(iconKey) => setForm((prev) => ({ ...prev, iconKey }))}
+              >
+                <SelectTrigger aria-label="Specialist icon">
+                  <span>{ICON_OPTIONS.find((option) => option.key === form.iconKey)?.label}</span>
+                </SelectTrigger>
+                <SelectContent>
+                  {ICON_OPTIONS.map((option) => (
+                    <SelectItem key={option.key} value={option.key}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
+            <div>
+              <label className="mb-1.5 block text-xs font-semibold">Color</label>
+              <Select
+                value={form.colorKey}
+                onValueChange={(colorKey) => setForm((prev) => ({ ...prev, colorKey }))}
+              >
+                <SelectTrigger aria-label="Specialist color">
+                  <span>{COLOR_OPTIONS.find((option) => option.key === form.colorKey)?.label}</span>
+                </SelectTrigger>
+                <SelectContent>
+                  {COLOR_OPTIONS.map((option) => (
+                    <SelectItem key={option.key} value={option.key}>
+                      {option.label}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
+            </div>
           </div>
         </section>
 
