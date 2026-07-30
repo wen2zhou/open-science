@@ -91,9 +91,9 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
 
           {/* Display name */}
           <div className="mb-4">
-            <Label htmlFor="sp-display-name" className="mb-1.5 block text-xs font-semibold">
+            <label htmlFor="sp-display-name" className="mb-1.5 block text-xs font-semibold">
               Display name
-            </Label>
+            </label>
             <Input
               id="sp-display-name"
               value={form.displayName}
@@ -115,9 +115,9 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
 
           {/* Public name (UPPER_SNAKE) */}
           <div className="mb-4">
-            <Label htmlFor="sp-name" className="mb-1.5 block text-xs font-semibold">
+            <label htmlFor="sp-name" className="mb-1.5 block text-xs font-semibold">
               Public name
-            </Label>
+            </label>
             <Input
               id="sp-name"
               value={form.name}
@@ -149,10 +149,10 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
 
           {/* Description */}
           <div className="mb-0">
-            <Label htmlFor="sp-description" className="mb-1.5 block text-xs font-semibold">
+            <label htmlFor="sp-description" className="mb-1.5 block text-xs font-semibold">
               Description{' '}
               <span className="font-normal text-muted-foreground">(optional)</span>
-            </Label>
+            </label>
             <Input
               id="sp-description"
               value={form.description}
@@ -172,9 +172,9 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
             instructions. Optional.
           </p>
           <div>
-            <Label htmlFor="sp-system-prompt" className="sr-only">
+            <label htmlFor="sp-system-prompt" className="sr-only">
               Instructions
-            </Label>
+            </label>
             <Textarea
               id="sp-system-prompt"
               value={form.systemPrompt}
