@@ -2,6 +2,7 @@ import { ipcMain } from 'electron'
 
 import type {
   CreateSpecialistRequest,
+  UpdateSpecialistRequest,
   SetSpecialistEnabledRequest,
   SpecialistListItem,
   SpecialistProfileView
@@ -41,6 +42,19 @@ export const registerSpecialistIpcHandlers = (service: ProfileService): void => 
         return await service.create(request)
       } catch (error) {
         log.error('specialist:create failed', { error })
+        throw error
+      }
+    }
+  )
+
+  ipcMain.handle(
+    SPECIALIST_IPC.UPDATE,
+    async (_event, request: UpdateSpecialistRequest): Promise<SpecialistProfileView> => {
+      // Re-validate in main process — renderer input is untrusted.
+      try {
+        return await service.update(request)
+      } catch (error) {
+        log.error('specialist:update failed', { error })
         throw error
       }
     }

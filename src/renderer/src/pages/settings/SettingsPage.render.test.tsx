@@ -191,7 +191,7 @@ describe('SettingsPage layout', () => {
     expect(dialog?.getAttribute('data-slot')).toBe('settings-surface')
     expect(dialog?.className).toContain('overscroll-contain')
 
-    // Left navigation grouped as Capabilities (Skills, Specialists, Connectors, Compute, Network)
+    // Left navigation grouped as Capabilities (Skills, Connectors, Specialists, Compute, Network)
     // and Workspace (Model with its Agent sub-item, Runtimes, Storage, General).
     const nav = document.body.querySelector('nav[aria-label="Settings"]')
     expect(nav).not.toBeNull()
@@ -202,8 +202,8 @@ describe('SettingsPage layout', () => {
     const navItems = nav?.querySelectorAll('li') ?? []
     expect(navItems).toHaveLength(10)
     expect(navItems[0]?.textContent).toContain('Skills')
-    expect(navItems[1]?.textContent).toContain('Specialists')
-    expect(navItems[2]?.textContent).toContain('Connectors')
+    expect(navItems[1]?.textContent).toContain('Connectors')
+    expect(navItems[2]?.textContent).toContain('Specialists')
     expect(navItems[3]?.textContent).toContain('Compute')
     expect(navItems[4]?.textContent).toContain('Network')
     expect(navItems[5]?.textContent).toContain('Model')

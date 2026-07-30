@@ -5,7 +5,6 @@ import { fireEvent } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { SpecialistsPanel } from './SpecialistsPanel'
-import { clickRadixMenuItem, openRadixMenu } from './test-utils'
 import { useSpecialistStore } from '@/stores/specialist-store'
 import type { SpecialistListItem } from '../../../../shared/specialist'
 
@@ -95,21 +94,31 @@ describe('SpecialistsPanel', () => {
     expect(document.body.textContent).not.toContain('RNA Reviewer')
   })
 
-  it('filters the list to custom specialists when the Custom category is selected', async () => {
+  it('shows item counts in each filter tab', async () => {
     await act(async () => {
       root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={vi.fn()} />)
     })
 
-    const filter = document.body.querySelector<HTMLButtonElement>(
-      '[aria-label="Filter specialists by category"]'
+    const tabs = document.body.querySelectorAll<HTMLButtonElement>(
+      '[aria-label="Filter specialists by category"] [role="tab"]'
     )
-    expect(filter).not.toBeNull()
-    openRadixMenu(filter)
-    const custom = Array.from(document.body.querySelectorAll<HTMLElement>('[role="option"]')).find(
-      (option) => option.textContent === 'Custom'
-    )
+    const labels = Array.from(tabs).map((tab) => tab.textContent ?? '')
+    // 2 custom + 1 built-in reviewer = 3 total
+    expect(labels).toEqual(['All(3)', 'Custom(2)', 'Built-in(1)'])
+  })
+
+  it('filters the list to custom specialists when the Custom tab is clicked', async () => {
     await act(async () => {
-      clickRadixMenuItem(custom)
+      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={vi.fn()} />)
+    })
+
+    const tabs = document.body.querySelectorAll<HTMLButtonElement>(
+      '[aria-label="Filter specialists by category"] [role="tab"]'
+    )
+    const custom = Array.from(tabs).find((tab) => tab.textContent?.includes('Custom'))
+    expect(custom).toBeDefined()
+    await act(async () => {
+      custom!.click()
     })
 
     expect(document.body.textContent).toContain('RNA Reviewer')
@@ -131,5 +140,52 @@ describe('SpecialistsPanel', () => {
     })
 
     expect(document.body.querySelector('[data-specialist-icon="microscope"]')).not.toBeNull()
+  })
+
+  it('navigates to the edit view when a custom specialist row body is clicked', async () => {
+    const onNavigate = vi.fn()
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={onNavigate} />)
+    })
+
+    const editButton = document.body.querySelector<HTMLButtonElement>(
+      '[aria-label="Edit RNA Reviewer"]'
+    )
+    expect(editButton).not.toBeNull()
+    await act(async () => {
+      editButton!.click()
+    })
+
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'edit', id: 'rna-reviewer' })
+  })
+
+  it('renders the editor prefilled with the specialist data in the edit view', async () => {
+    await act(async () => {
+      root.render(
+        <SpecialistsPanel view={{ kind: 'edit', id: 'rna-reviewer' }} onNavigate={vi.fn()} />
+      )
+    })
+
+    const display = document.body.querySelector<HTMLInputElement>('#sp-display-name')
+    expect(display?.value).toBe('RNA Reviewer')
+    expect(
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).some(
+        (button) => button.textContent === 'Save changes'
+      )
+    ).toBe(true)
+  })
+
+  it('falls back to the list when the edited specialist no longer exists', async () => {
+    await act(async () => {
+      root.render(
+        <SpecialistsPanel view={{ kind: 'edit', id: 'missing-id' }} onNavigate={vi.fn()} />
+      )
+    })
+
+    // No editor fields — the list view is rendered instead.
+    expect(document.body.querySelector('#sp-display-name')).toBeNull()
+    expect(
+      document.body.querySelector('[aria-label="Filter specialists by category"]')
+    ).not.toBeNull()
   })
 })

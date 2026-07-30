@@ -100,4 +100,56 @@ describe('SpecialistEditor', () => {
     expect(document.body.querySelector('#sp-name-err')?.textContent).toContain('already in use')
     expect(onSave).not.toHaveBeenCalled()
   })
+
+  it('prefills the form and calls onSaveEdit with id and revision in edit mode', async () => {
+    const onSaveEdit = vi.fn().mockResolvedValue(undefined)
+    await act(async () => {
+      root.render(
+        <SpecialistEditor
+          editSpecialist={{
+            id: 'rna-reviewer',
+            name: 'RNA_REVIEWER',
+            displayName: 'RNA Reviewer',
+            description: 'Reviews RNA-seq.',
+            systemPrompt: 'Be rigorous.',
+            iconKey: 'microscope',
+            colorKey: 'teal',
+            enabled: true,
+            capabilityMode: 'full',
+            fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+            selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+            revision: 3
+          }}
+          existingNames={['OTHER_NAME']}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          onSaveEdit={onSaveEdit}
+        />
+      )
+    })
+
+    // Prefilled identity.
+    expect(
+      document.body.querySelector<HTMLInputElement>('#sp-display-name')?.value
+    ).toBe('RNA Reviewer')
+    expect(document.body.querySelector<HTMLInputElement>('#sp-name')?.value).toBe('RNA_REVIEWER')
+
+    // Edit mode uses the "Save changes" button and routes through onSaveEdit.
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Save changes')
+        ?.click()
+    })
+
+    expect(onSaveEdit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'rna-reviewer',
+        revision: 3,
+        displayName: 'RNA Reviewer',
+        name: 'RNA_REVIEWER'
+      })
+    )
+    // Create path is not used in edit mode.
+    expect(document.body.querySelector('#sp-name-err')).toBeNull()
+  })
 })

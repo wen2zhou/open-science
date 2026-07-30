@@ -21,12 +21,14 @@ import {
   type ProviderView,
   type UpsertProviderRequest
 } from '../../../../shared/settings'
+import type { SpecialistListItem } from '../../../../shared/specialist'
 import { Button } from '@/components/ui/button'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { selectFrameworkApiEndpoints, useSettingsStore } from '@/stores/settings-store'
 import type { SettingsPanelId } from './settings-navigation'
 import { useComputeStore } from '@/stores/compute-store'
+import { useSpecialistStore } from '@/stores/specialist-store'
 import { AgentPanel } from './AgentPanel'
 import { ProvidersPanel } from './ProvidersPanel'
 import { GeneralPanel } from './GeneralPanel'
@@ -121,8 +123,8 @@ const SETTINGS_GROUPS: ReadonlyArray<{ label: string; panels: ReadonlyArray<Sett
     label: 'Capabilities',
     panels: [
       { id: 'skills', label: 'Skills', Icon: ScrollText },
-      { id: 'specialists', label: 'Specialists', Icon: Users },
       { id: 'connectors', label: 'Connectors', Icon: ConnectorsNavIcon },
+      { id: 'specialists', label: 'Specialists', Icon: Users },
       { id: 'compute', label: 'Compute', Icon: Zap },
       { id: 'network', label: 'Network', Icon: Globe }
     ]
@@ -206,6 +208,7 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
   const connectors = useSettingsStore((state) => state.connectors)
   const customServers = useSettingsStore((state) => state.customServers)
   const computeHosts = useComputeStore((state) => state.hosts)
+  const specialistItems = useSpecialistStore((state) => state.items)
   const [formValue, setFormValue] = useState<ProviderFormValue>(() =>
     createEmptyProviderFormValue()
   )
@@ -325,7 +328,9 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
       nextCompute.kind === computeView.kind &&
       ('providerId' in nextCompute ? nextCompute.providerId : undefined) ===
         ('providerId' in computeView ? computeView.providerId : undefined) &&
-      nextSpecialists.kind === specialistsView.kind
+      nextSpecialists.kind === specialistsView.kind &&
+      ('id' in nextSpecialists ? nextSpecialists.id : undefined) ===
+        ('id' in specialistsView ? specialistsView.id : undefined)
     ) {
       return
     }
@@ -457,6 +462,17 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
       }
     }
     if (activePanel === 'specialists' && specialistsView.kind !== 'list') {
+      const editingSpecialist =
+        specialistsView.kind === 'edit'
+          ? specialistItems.find(
+              (item): item is Extract<SpecialistListItem, { kind: 'custom' }> =>
+                item.kind === 'custom' && item.id === specialistsView.id
+            )
+          : undefined
+      const leaf =
+        specialistsView.kind === 'create'
+          ? 'New specialist'
+          : (editingSpecialist?.displayName ?? 'Edit specialist')
       return {
         rootLabel: 'Specialists',
         rootTo: {
@@ -465,7 +481,7 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
           model: currentLocation.model,
           specialists: { kind: 'list' }
         },
-        leaf: 'New specialist'
+        leaf
       }
     }
     return null

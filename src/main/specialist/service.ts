@@ -6,11 +6,13 @@ import type { StoredSpecialist } from './types'
 import type {
   SpecialistProfileView,
   SpecialistListItem,
-  CreateSpecialistInput
+  CreateSpecialistInput,
+  UpdateSpecialistInput
 } from '../../shared/specialist'
 import {
   deriveSpecialistName,
   validateCreateSpecialistInput,
+  validateUpdateSpecialistInput,
   emptyFullAccessConfig,
   emptySelectedConfig
 } from '../../shared/specialist'
@@ -148,6 +150,41 @@ export class ProfileService {
     const found = doc.specialists.find((s) => s.id === id)
     if (!found) throw new Error(`Specialist ${id} not found after setEnabled.`)
     return toView(found)
+  }
+
+  // Atomically patches identity/instructions fields on an existing specialist.
+  // Re-validates display name and public name (uniqueness skips the record's own
+  // id so self-rename is allowed). `revision` must match the stored record
+  // (optimistic concurrency); the repository bumps it and rejects stale writes.
+  async update(input: UpdateSpecialistInput): Promise<SpecialistProfileView> {
+    if (!input || typeof input.id !== 'string' || typeof input.revision !== 'number') {
+      throw new Error('Update requires id and revision.')
+    }
+
+    const doc = await this.repo.getAll()
+    const existingNames = doc.specialists.map((s) => s.name)
+    const existingIds = new Map(doc.specialists.map((s) => [s.name, s.id]))
+
+    const errors = validateUpdateSpecialistInput(input, existingNames, existingIds)
+    if (errors.length > 0) {
+      throw new Error(errors.map((e) => e.message).join('; '))
+    }
+
+    const patch: Partial<StoredSpecialist> = {}
+    if (input.displayName !== undefined) patch.displayName = input.displayName
+    if (input.name !== undefined) patch.name = input.name
+    if (input.description !== undefined) patch.description = input.description
+    if (input.systemPrompt !== undefined) patch.systemPrompt = input.systemPrompt
+    if (input.iconKey !== undefined) patch.iconKey = input.iconKey
+    if (input.colorKey !== undefined) patch.colorKey = input.colorKey
+
+    log.info('updating specialist', { id: input.id, name: patch.name })
+
+    const updatedDoc = await this.repo.update(input.id, patch, input.revision)
+    this.notify()
+    const updated = updatedDoc.specialists.find((s) => s.id === input.id)
+    if (!updated) throw new Error(`Specialist ${input.id} not found after update.`)
+    return toView(updated)
   }
 
   // Subscribes a listener to be called whenever the profile catalog changes.
