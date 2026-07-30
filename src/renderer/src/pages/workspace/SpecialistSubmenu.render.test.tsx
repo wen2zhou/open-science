@@ -3,7 +3,7 @@ import { act, type PropsWithChildren } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { SpecialistPicker } from './SpecialistPicker'
+import { SpecialistSubmenu } from './SpecialistSubmenu'
 import { useSpecialistStore } from '@/stores/specialist-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import type { SpecialistListItem } from '../../../../shared/specialist'
@@ -11,17 +11,23 @@ import type { SpecialistListItem } from '../../../../shared/specialist'
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
 // Mock dropdown-menu to avoid Portal/open-state issues in jsdom.
-// The mock renders all children inline (no portal) and ignores open/close state,
-// so tests can assert on data-testid attributes without needing to open the dropdown first.
+// Submenus render inline so tests can assert on data-testid attributes without
+// needing to drive Radix pointer hover to open the submenu.
 vi.mock('@/components/ui/dropdown-menu', () => ({
   DropdownMenu: ({ children }: PropsWithChildren): React.JSX.Element => <div>{children}</div>,
   DropdownMenuContent: ({ children }: PropsWithChildren): React.JSX.Element => (
     <div data-testid="dd-content">{children}</div>
   ),
-  DropdownMenuTrigger: ({
+  DropdownMenuSub: ({ children }: PropsWithChildren): React.JSX.Element => <div>{children}</div>,
+  DropdownMenuSubTrigger: ({
     children,
-    asChild: _asChild
-  }: PropsWithChildren<{ asChild?: boolean }>): React.JSX.Element => <div>{children}</div>,
+    ...rest
+  }: PropsWithChildren<Record<string, unknown>>): React.JSX.Element => (
+    <div {...rest}>{children}</div>
+  ),
+  DropdownMenuSubContent: ({ children }: PropsWithChildren): React.JSX.Element => (
+    <div data-testid="dd-subcontent">{children}</div>
+  ),
   DropdownMenuSeparator: (): React.JSX.Element => <hr />,
   DropdownMenuItem: ({
     children,
@@ -129,59 +135,60 @@ afterEach(() => {
   vi.clearAllMocks()
 })
 
-const renderPicker = (props: React.ComponentProps<typeof SpecialistPicker>): void => {
+const renderSubmenu = (props: React.ComponentProps<typeof SpecialistSubmenu>): void => {
   act(() => {
-    root.render(<SpecialistPicker {...props} />)
+    root.render(<SpecialistSubmenu {...props} />)
   })
 }
 
-describe('SpecialistPicker — trigger', () => {
-  it('renders a trigger button', () => {
+describe('SpecialistSubmenu — trigger', () => {
+  it('renders a submenu trigger', () => {
     mockStore([])
-    renderPicker({ selectedId: undefined, onChange: vi.fn() })
-    expect(container.querySelector('[data-testid="specialist-picker-trigger"]')).toBeTruthy()
+    renderSubmenu({ selectedId: undefined, onChange: vi.fn() })
+    expect(container.querySelector('[data-testid="specialist-submenu-trigger"]')).toBeTruthy()
   })
 
-  it('shows no badge text when None is selected', () => {
+  it('shows "None" in the capsule when nothing is selected', () => {
     mockStore([])
-    renderPicker({ selectedId: undefined, onChange: vi.fn() })
-    // With no selection and no unavailable, showBadge is false so the span is not rendered
-    const span = container.querySelector('[data-testid="specialist-picker-trigger"] span.truncate')
-    expect(span).toBeNull()
+    renderSubmenu({ selectedId: undefined, onChange: vi.fn() })
+    const trigger = container.querySelector('[data-testid="specialist-submenu-trigger"]')!
+    expect(trigger.textContent).toContain('None')
   })
 
-  it('shows name badge when a specialist is selected', () => {
+  it('shows the specialist name in the capsule when one is selected', () => {
     const sp = makeSpecialist('uuid-1', 'RNA-seq Reviewer')
     mockStore([sp])
-    renderPicker({ selectedId: 'uuid-1', onChange: vi.fn() })
-    const trigger = container.querySelector('[data-testid="specialist-picker-trigger"]')!
+    renderSubmenu({ selectedId: 'uuid-1', onChange: vi.fn() })
+    const trigger = container.querySelector('[data-testid="specialist-submenu-trigger"]')!
     expect(trigger.textContent).toContain('RNA-seq Reviewer')
   })
 
-  it('shows "Unavailable" when unavailable prop is true', () => {
+  it('shows "Unavailable" in the capsule when unavailable prop is true', () => {
     mockStore([])
-    renderPicker({ selectedId: 'stale-id', onChange: vi.fn(), unavailable: true })
-    const trigger = container.querySelector('[data-testid="specialist-picker-trigger"]')!
+    renderSubmenu({ selectedId: 'stale-id', onChange: vi.fn(), unavailable: true })
+    const trigger = container.querySelector('[data-testid="specialist-submenu-trigger"]')!
     expect(trigger.textContent).toContain('Unavailable')
   })
 
-  it('keeps a bound session specialist visible without offering a mutable menu', () => {
+  it('keeps a bound session specialist visible but disables the trigger and hides options', () => {
     const sp = makeSpecialist('uuid-1', 'RNA-seq Reviewer')
     mockStore([sp])
-    renderPicker({ selectedId: 'uuid-1', onChange: vi.fn(), readOnly: true })
-    const trigger = container.querySelector<HTMLButtonElement>(
-      '[data-testid="specialist-picker-trigger"]'
+    renderSubmenu({ selectedId: 'uuid-1', onChange: vi.fn(), readOnly: true })
+    const trigger = container.querySelector<HTMLElement>(
+      '[data-testid="specialist-submenu-trigger"]'
     )!
     expect(trigger.textContent).toContain('RNA-seq Reviewer')
-    expect(trigger.disabled).toBe(true)
-    expect(container.querySelector('[data-testid="dd-content"]')).toBeNull()
+    expect(trigger.hasAttribute('disabled')).toBe(true)
+    // No mutable submenu content is offered for a bound session.
+    expect(container.querySelector('[data-testid="dd-subcontent"]')).toBeNull()
+    expect(container.querySelector('[data-testid="specialist-option-none"]')).toBeNull()
   })
 })
 
-describe('SpecialistPicker — dropdown contents', () => {
+describe('SpecialistSubmenu — submenu contents', () => {
   it('includes None option', () => {
     mockStore([makeSpecialist('uuid-1', 'RNA-seq Reviewer')])
-    renderPicker({ selectedId: undefined, onChange: vi.fn() })
+    renderSubmenu({ selectedId: undefined, onChange: vi.fn() })
     expect(
       container.querySelector('[data-testid="specialist-option-none"]') ??
         document.body.querySelector('[data-testid="specialist-option-none"]')
@@ -191,37 +198,37 @@ describe('SpecialistPicker — dropdown contents', () => {
   it('lists enabled specialists', () => {
     const sp = makeSpecialist('uuid-1', 'RNA-seq Reviewer')
     mockStore([sp])
-    renderPicker({ selectedId: undefined, onChange: vi.fn() })
+    renderSubmenu({ selectedId: undefined, onChange: vi.fn() })
     expect(container.querySelector('[data-testid="specialist-option-uuid-1"]')).toBeTruthy()
   })
 
   it('does NOT list disabled specialists', () => {
     const disabled = makeSpecialist('uuid-disabled', 'Disabled Bot', false)
     mockStore([disabled])
-    renderPicker({ selectedId: undefined, onChange: vi.fn() })
+    renderSubmenu({ selectedId: undefined, onChange: vi.fn() })
     expect(container.querySelector('[data-testid="specialist-option-uuid-disabled"]')).toBeNull()
   })
 
   it('does NOT list Reviewer entry', () => {
     const items: SpecialistListItem[] = [{ kind: 'reviewer', id: 'reviewer' }]
     mockStore(items)
-    renderPicker({ selectedId: undefined, onChange: vi.fn() })
+    renderSubmenu({ selectedId: undefined, onChange: vi.fn() })
     expect(container.querySelector('[data-testid="specialist-option-reviewer"]')).toBeNull()
   })
 
   it('includes Create new… option', () => {
     mockStore([])
-    renderPicker({ selectedId: undefined, onChange: vi.fn() })
+    renderSubmenu({ selectedId: undefined, onChange: vi.fn() })
     expect(container.querySelector('[data-testid="specialist-option-create"]')).toBeTruthy()
   })
 })
 
-describe('SpecialistPicker — selection', () => {
+describe('SpecialistSubmenu — selection', () => {
   it('calls onChange with undefined when None is selected', () => {
     const sp = makeSpecialist('uuid-1', 'RNA-seq Reviewer')
     const onChange = vi.fn()
     mockStore([sp])
-    renderPicker({ selectedId: 'uuid-1', onChange })
+    renderSubmenu({ selectedId: 'uuid-1', onChange })
     act(() => {
       container.querySelector<HTMLButtonElement>('[data-testid="specialist-option-none"]')?.click()
     })
@@ -232,7 +239,7 @@ describe('SpecialistPicker — selection', () => {
     const sp = makeSpecialist('uuid-1', 'RNA-seq Reviewer')
     const onChange = vi.fn()
     mockStore([sp])
-    renderPicker({ selectedId: undefined, onChange })
+    renderSubmenu({ selectedId: undefined, onChange })
     act(() => {
       container
         .querySelector<HTMLButtonElement>('[data-testid="specialist-option-uuid-1"]')
@@ -258,7 +265,7 @@ describe('SpecialistPicker — selection', () => {
       (selector: (s: { openSettingsToPanel: (panel: string) => void }) => unknown) =>
         selector({ openSettingsToPanel })
     )
-    renderPicker({ selectedId: undefined, onChange: vi.fn() })
+    renderSubmenu({ selectedId: undefined, onChange: vi.fn() })
     act(() => {
       container
         .querySelector<HTMLButtonElement>('[data-testid="specialist-option-create"]')

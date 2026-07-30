@@ -1,67 +1,66 @@
-// SpecialistPicker — composer control for selecting a Personal Specialist.
-// Renders as a button in the composer toolbar; opens a dropdown with None, enabled
-// Personal Specialists, and a "Create new…" link. Never shows Reviewer, disabled
-// specialists, or Main Agent.
+// SpecialistSubmenu — composer menu submenu for selecting a Personal Specialist.
+// Renders as a DropdownMenuSub inside ComposerAgentControlsMenu: hover the trigger
+// (icon + "Specialist" + current-value capsule) and None / enabled Personal
+// Specialists / "Create new…" expand to the side. Never shows Reviewer, disabled
+// specialists, or the Main Agent. A bound (read-only) session shows its identity
+// in the trigger without offering a mutable submenu.
 
-import { Check, ChevronDown, UserRound } from 'lucide-react'
-import { useEffect, useState } from 'react'
+import { Check, ChevronRight, UserRound } from 'lucide-react'
+import { useEffect } from 'react'
 
 import {
-  DropdownMenu,
-  DropdownMenuContent,
+  DropdownMenuSub,
+  DropdownMenuSubContent,
+  DropdownMenuSubTrigger,
   DropdownMenuItem,
-  DropdownMenuSeparator,
-  DropdownMenuTrigger
+  DropdownMenuSeparator
 } from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 import { useSettingsStore } from '@/stores/settings-store'
 import { useSpecialistStore } from '@/stores/specialist-store'
 import type { SpecialistProfileView } from '../../../../shared/specialist'
 
-type SpecialistPickerProps = {
+type SpecialistSubmenuProps = {
   // Undefined means None (no specialist selected).
   selectedId: string | undefined
   onChange: (specialistId: string | undefined) => void
-  // Shows an "unavailable" pill when the selected specialist is disabled/deleted.
+  // Shows an "unavailable" capsule when the selected specialist is disabled/deleted.
   unavailable?: boolean
-  // A bound session from the first-turn flow shows its identity in the composer without exposing the
-  // live-session switching behavior owned by issue 07.
+  // A bound session shows its identity in the trigger without a mutable submenu.
   readOnly?: boolean
 }
 
-// Trigger label: truncated name when selected, "Specialist" placeholder when None.
-const triggerLabel = (
+// Short label for the trigger capsule: truncated name when selected, "None" or
+// "Unavailable" otherwise. Kept compact so the trigger never wraps.
+const capsuleLabel = (
   selected: SpecialistProfileView | undefined,
   unavailable: boolean
 ): string => {
   if (unavailable) return 'Unavailable'
   if (selected) return selected.name
-  return 'Specialist'
+  return 'None'
 }
 
-const triggerClassName =
-  'flex h-8 max-w-[180px] items-center gap-1 rounded-md px-2 text-sm text-text-300 hover:bg-bg-200 hover:text-text-100 disabled:cursor-not-allowed disabled:opacity-50 transition-colors'
-
-const SpecialistPicker = ({
+const SpecialistSubmenu = ({
   selectedId,
   onChange,
   unavailable = false,
   readOnly = false
-}: SpecialistPickerProps): React.JSX.Element | null => {
-  const [open, setOpen] = useState(false)
+}: SpecialistSubmenuProps): React.JSX.Element => {
   const items = useSpecialistStore((state) => state.items)
   const isLoaded = useSpecialistStore((state) => state.isLoaded)
   const load = useSpecialistStore((state) => state.load)
   const openSettingsToPanel = useSettingsStore((state) => state.openSettingsToPanel)
 
-  // Load specialists on first open.
+  // Lazy-load on mount. This submenu only mounts when the parent menu opens
+  // (DropdownMenuContent mounts its children on open), so this is open-time load.
   useEffect(() => {
-    if (open && !isLoaded) {
+    if (!isLoaded) {
       void load()
     }
-  }, [open, isLoaded, load])
+  }, [isLoaded, load])
 
-  // Subscribe to catalog changes so the list stays fresh.
+  // Keep the list fresh when the specialist catalog changes elsewhere.
   useEffect(() => {
     const remove = window.api.specialist.onCatalogChanged(() => {
       void load()
@@ -77,45 +76,57 @@ const SpecialistPicker = ({
   const selected = enabledSpecialists.find((s) => s.id === selectedId)
   const isNone = selectedId === undefined
 
-  const label = triggerLabel(selected, unavailable)
-  const showBadge = Boolean(selectedId) || unavailable
+  const label = capsuleLabel(selected, unavailable)
+  const showValue = Boolean(selectedId) || unavailable
 
   return (
-    <DropdownMenu open={readOnly ? false : open} onOpenChange={readOnly ? undefined : setOpen}>
-      <DropdownMenuTrigger asChild>
-        <button
-          type="button"
+    <DropdownMenuSub>
+      <DropdownMenuSubTrigger
+        disabled={readOnly}
+        className="items-center gap-2 px-2 py-1.5"
+        data-testid="specialist-submenu-trigger"
+      >
+        <UserRound
           className={cn(
-            triggerClassName,
-            showBadge && 'text-text-100',
+            'size-4 shrink-0 text-text-200',
             unavailable && 'text-amber-600 dark:text-amber-400'
           )}
-          aria-label={`Specialist: ${label}`}
-          data-testid="specialist-picker-trigger"
-          disabled={readOnly}
+          strokeWidth={2}
+          aria-hidden="true"
+        />
+        <span className="min-w-0 flex-1">
+          <span className="block text-[13px] font-medium leading-5">Specialist</span>
+          <span className="block text-[11px] leading-4 text-text-300">
+            Bind a personal specialist to this conversation.
+          </span>
+        </span>
+        {/* Value capsule mirrors the permission-mode capsule: current selection on the right. */}
+        <span
+          className={cn(
+            'flex shrink-0 items-center gap-1 whitespace-nowrap rounded-full px-2 py-0.5 text-[11px] font-medium leading-4',
+            unavailable
+              ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400'
+              : showValue
+                ? 'bg-bg-200 text-text-100'
+                : 'text-text-300'
+          )}
         >
-          <UserRound
-            className={cn('size-4 shrink-0', unavailable && 'text-amber-600 dark:text-amber-400')}
-            strokeWidth={2}
-            aria-hidden="true"
-          />
-          {showBadge ? (
-            <span className="min-w-0 max-w-[120px] truncate text-[12.5px] font-medium">
-              {label}
-            </span>
+          <span className="max-w-[120px] truncate">{label}</span>
+          {!readOnly ? (
+            <ChevronRight
+              className="size-3 shrink-0 opacity-60"
+              strokeWidth={2}
+              aria-hidden="true"
+            />
           ) : null}
-          <ChevronDown className="size-3 shrink-0 opacity-60" strokeWidth={2} aria-hidden="true" />
-        </button>
-      </DropdownMenuTrigger>
+        </span>
+      </DropdownMenuSubTrigger>
 
       {!readOnly ? (
-        <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-56 p-1">
+        <DropdownMenuSubContent className="w-56 p-1">
           {/* None option */}
           <DropdownMenuItem
-            onSelect={() => {
-              onChange(undefined)
-              setOpen(false)
-            }}
+            onSelect={() => onChange(undefined)}
             className="items-center gap-2 px-2 py-1.5"
             data-testid="specialist-option-none"
           >
@@ -140,10 +151,7 @@ const SpecialistPicker = ({
                 return (
                   <DropdownMenuItem
                     key={specialist.id}
-                    onSelect={() => {
-                      onChange(specialist.id)
-                      setOpen(false)
-                    }}
+                    onSelect={() => onChange(specialist.id)}
                     className="items-center gap-2 px-2 py-1.5"
                     data-testid={`specialist-option-${specialist.id}`}
                   >
@@ -153,9 +161,7 @@ const SpecialistPicker = ({
                     >
                       {specialist.name.slice(0, 1).toUpperCase()}
                     </span>
-                    <span className="min-w-0 flex-1 truncate text-[13px]">
-                      {specialist.name}
-                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[13px]">{specialist.name}</span>
                     {isSelected ? (
                       <Check
                         className="size-4 shrink-0 text-primary"
@@ -173,19 +179,16 @@ const SpecialistPicker = ({
 
           {/* Create new entry point */}
           <DropdownMenuItem
-            onSelect={() => {
-              openSettingsToPanel('specialists')
-              setOpen(false)
-            }}
+            onSelect={() => openSettingsToPanel('specialists')}
             className="items-center gap-2 px-2 py-1.5 text-[13px] text-text-200"
             data-testid="specialist-option-create"
           >
             Create new…
           </DropdownMenuItem>
-        </DropdownMenuContent>
+        </DropdownMenuSubContent>
       ) : null}
-    </DropdownMenu>
+    </DropdownMenuSub>
   )
 }
 
-export { SpecialistPicker }
+export { SpecialistSubmenu }

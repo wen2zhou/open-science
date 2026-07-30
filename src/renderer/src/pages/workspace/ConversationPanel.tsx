@@ -53,7 +53,6 @@ import { docToSkillIds, type ComposerDoc } from './composer/composer-doc'
 import { ComposerAgentControlsMenu } from './ComposerAgentControlsMenu'
 import { ComposerContextUsage } from './ComposerContextUsage'
 import { ComposerModelPicker } from './ComposerModelPicker'
-import { SpecialistPicker } from './SpecialistPicker'
 import { PermissionApprovalControls } from './PermissionApprovalControls'
 import { normalizeRunFailureError } from './error-report'
 import { ReportErrorDialog } from './ReportErrorDialog'
@@ -641,19 +640,15 @@ const ConversationPanel = ({
                           onAutoReviewChange={onAutoReviewToggle}
                           onRevokeGrant={onRevokePermissionGrant}
                           onClearGrants={onClearPermissionGrants}
+                          showSpecialist={
+                            (!activeSession && onSpecialistChange !== undefined) ||
+                            (activeSession !== undefined && specialistId !== undefined)
+                          }
+                          specialistId={specialistId}
+                          specialistUnavailable={specialistUnavailable}
+                          specialistReadOnly={specialistReadOnly}
+                          onSpecialistChange={onSpecialistChange}
                         />
-
-                        {/* New conversations can choose their first-turn Specialist; existing bound
-                            sessions retain a read-only identity indicator until issue 07 adds switching. */}
-                        {(!activeSession && onSpecialistChange) ||
-                        (activeSession && specialistId !== undefined) ? (
-                          <SpecialistPicker
-                            selectedId={specialistId}
-                            onChange={onSpecialistChange ?? (() => undefined)}
-                            unavailable={specialistUnavailable}
-                            readOnly={specialistReadOnly}
-                          />
-                        ) : null}
 
                         <div className="flex-1" />
 
