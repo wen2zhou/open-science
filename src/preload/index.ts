@@ -232,6 +232,7 @@ import type {
   SpecialistListItem,
   SpecialistProfileView,
   SetSessionSpecialistRequest,
+  SetSessionSpecialistResponse,
   ResolveSessionSpecialistRequest,
   SessionSpecialistResolution
 } from '../shared/specialist'
@@ -404,7 +405,9 @@ type OpenScienceAPI = {
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     onCatalogChanged: (listener: () => void) => RemoveListener
     // Session switching (issue 07).
-    setSessionSpecialist: (request: SetSessionSpecialistRequest) => Promise<void>
+    setSessionSpecialist: (
+      request: SetSessionSpecialistRequest
+    ) => Promise<SetSessionSpecialistResponse>
     resolveSessionSpecialist: (
       request: ResolveSessionSpecialistRequest
     ) => Promise<SessionSpecialistResolution>
@@ -963,7 +966,10 @@ const api: OpenScienceAPI = {
       onIpcMessage(SPECIALIST_IPC.CATALOG_CHANGED, listener),
     // Session switching (issue 07).
     setSessionSpecialist: (request: SetSessionSpecialistRequest) =>
-      ipcRenderer.invoke(SPECIALIST_IPC.SET_SESSION_SPECIALIST, request) as Promise<void>,
+      ipcRenderer.invoke(
+        SPECIALIST_IPC.SET_SESSION_SPECIALIST,
+        request
+      ) as Promise<SetSessionSpecialistResponse>,
     resolveSessionSpecialist: (request: ResolveSessionSpecialistRequest) =>
       ipcRenderer.invoke(
         SPECIALIST_IPC.RESOLVE_SESSION_SPECIALIST,

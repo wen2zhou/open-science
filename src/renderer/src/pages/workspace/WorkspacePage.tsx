@@ -125,6 +125,9 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   const setAutoReviewEnabled = useSessionStore((state) => state.setAutoReviewEnabled)
   const setEnabledComputeHosts = useSessionStore((state) => state.setEnabledComputeHosts)
   const setSessionSpecialistId = useSessionStore((state) => state.setSessionSpecialistId)
+  const markSpecialistSwitchResetRequired = useSessionStore(
+    (state) => state.markSpecialistSwitchResetRequired
+  )
   const setFixLoopActive = useSessionStore((state) => state.setFixLoopActive)
   // Only sessions belonging to the active project are shown in this workspace.
   const sessions = useMemo(
@@ -955,11 +958,16 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
       void (async (): Promise<void> => {
         const sessionId = activeSession.id
         try {
-          // Apply the pending binding to main process (validates the UUID is still available).
-          await window.api?.specialist?.setSessionSpecialist?.({
+          // Apply the pending binding to main process (validates the UUID is still available, then
+          // hot-switches the live agent session). contextReset signals the agent session was replaced
+          // (Claude bakes identity into the session at creation) so history must be replayed below.
+          const switchResult = await window.api?.specialist?.setSessionSpecialist?.({
             sessionId,
             specialistId: pendingSpecialistId
           })
+          if (switchResult?.contextReset) {
+            markSpecialistSwitchResetRequired(sessionId)
+          }
         } catch (err: unknown) {
           // Reconfigure failed — preserve draft, do not send, show banner.
           const pendingProfile = specialistItems.find(
@@ -1269,6 +1277,11 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
       setPendingSessionSpecialist((prev) => ({ ...prev, [sessionId]: specialistId }))
     } else {
       // Idle: apply immediately (write to main process binding store + persist UUID).
+      const previousSpecialistId = activeSession.specialistId
+      // Optimistically update the session store so the specialist chip reflects the new selection
+      // right away and the persistence bridge writes the new UUID. Reverted on IPC failure so a
+      // rejected switch (e.g. specialist disabled between render and click) leaves the UI consistent.
+      setSessionSpecialistId(sessionId, specialistId)
       setPendingSessionSpecialist((prev) => {
         const next = { ...prev }
         delete next[sessionId]
@@ -1276,7 +1289,13 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
       })
       void window.api?.specialist
         ?.setSessionSpecialist?.({ sessionId, specialistId })
+        ?.then((result) => {
+          // The agent session was replaced on the main side; replay history on the next send so the
+          // new specialist keeps conversation continuity.
+          if (result?.contextReset) markSpecialistSwitchResetRequired(sessionId)
+        })
         ?.catch((err: unknown) => {
+          setSessionSpecialistId(sessionId, previousSpecialistId)
           console.warn('setSessionSpecialist failed', err)
         })
     }
@@ -1418,6 +1437,9 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
                 setReconfigureError(null)
                 void window.api?.specialist
                   ?.setSessionSpecialist?.({ sessionId: activeSession.id, specialistId: undefined })
+                  ?.then((result) => {
+                    if (result?.contextReset) markSpecialistSwitchResetRequired(activeSession.id)
+                  })
                   ?.catch((err: unknown) => console.warn('setSessionSpecialist (none) failed', err))
               }
             }}

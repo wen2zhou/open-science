@@ -42,6 +42,7 @@ const createFakeRuntime = (options: {
   connect: ReturnType<typeof vi.fn>
   createSession: ReturnType<typeof vi.fn>
   resetSessionContext: ReturnType<typeof vi.fn>
+  switchSpecialist: ReturnType<typeof vi.fn>
   compactSession: ReturnType<typeof vi.fn>
   resumeSession: ReturnType<typeof vi.fn>
   cancelPrompt: ReturnType<typeof vi.fn>
@@ -85,6 +86,7 @@ const createFakeRuntime = (options: {
     frameworkId: options.frameworkId,
     contextReset: true
   }))
+  const switchSpecialist = vi.fn(async () => ({ contextReset: false }))
   const compactSession = vi.fn(async () => ({ stopReason: 'end_turn' }))
   const cancelPrompt = vi.fn(async () => snapshot)
   const deleteSession = vi.fn(async ({ sessionId }: { sessionId: string }) => {
@@ -148,6 +150,7 @@ const createFakeRuntime = (options: {
     createSession,
     resumeSession,
     resetSessionContext,
+    switchSpecialist,
     compactSession,
     cancelPrompt,
     deleteSession,
@@ -185,6 +188,7 @@ const createFakeRuntime = (options: {
     connect,
     createSession,
     resetSessionContext,
+    switchSpecialist,
     compactSession,
     resumeSession,
     cancelPrompt,
@@ -216,6 +220,25 @@ const createFakeRuntime = (options: {
 }
 
 describe('AcpRuntimeCoordinator', () => {
+  it('forwards switchSpecialist to the owning runtime and returns its contextReset flag', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: [`session-${created.length + 1}`],
+        callbacks
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+    const session = await coordinator.createSession()
+
+    const result = await coordinator.switchSpecialist(session.sessionId, 'sp-b')
+
+    expect(created[0].switchSpecialist).toHaveBeenCalledWith(session.sessionId, 'sp-b')
+    expect(result).toEqual({ contextReset: false })
+  })
+
   it('routes native compaction to the session owner and publishes only owned capabilities', async () => {
     const created: ReturnType<typeof createFakeRuntime>[] = []
     const coordinator = new AcpRuntimeCoordinator((callbacks) => {

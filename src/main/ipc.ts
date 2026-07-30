@@ -94,6 +94,7 @@ import { getAppClaudeConfigDir } from './settings/provider-env'
 import { createDefaultSettingsService, type SettingsService } from './settings/service'
 import { createProfileService } from './specialist/service'
 import { registerSpecialistIpcHandlers } from './specialist/ipc'
+import { SessionBindingService } from './specialist/session-binding'
 import type { StoredConnectors } from './settings/types'
 import type { AppIconPreview, AppIconVariant } from '../shared/settings'
 import { registerStorageIpcHandlers } from './storage/ipc'
@@ -333,6 +334,9 @@ const registerIpcHandlers = async ({
   let connectorsSnapshot: StoredConnectors | undefined
   // Resolved lazily per connector call so dispatch always sees the latest persisted Specialist profile.
   const profileService = createProfileService(resolveStorageRoot())
+  // Per-session specialist binding store. Shared between the SET_SESSION_SPECIALIST barrier
+  // (validate + record) and the runtime switch so a hot-switch lands on the same source of truth.
+  const sessionBindingService = new SessionBindingService(profileService)
   // Desktop notifications for finished/failed agent tasks and approval waits. Delivery is
   // Electron's Notification (Notification Center on macOS, toasts on Windows, libnotify on Linux);
   // the service itself stays Electron-free so its filtering rules are unit-testable. The click
@@ -629,7 +633,17 @@ const registerIpcHandlers = async ({
     listAppIconPreviews
   })
   registerNotebookIpcHandlers(notebookService)
-  registerSpecialistIpcHandlers(profileService)
+  registerSpecialistIpcHandlers(
+    profileService,
+    sessionBindingService,
+    // Apply the switch to the live agent runtime. `runtime` is assigned above (registerAcpIpcHandlers),
+    // but the closure is invoked per-request so a late-bound reference is unnecessary.
+    (sessionId, specialistId) => runtime.switchSpecialist(sessionId, specialistId),
+    // A specialist capability edit (skills/connectors/enabled) must reach live sessions on the next
+    // turn: reconnect so the agent respawns (re-provisioning skills) and resumes with the updated
+    // specialist whitelist in the session _meta.
+    () => void runtime.requestSkillsReload()
+  )
   // Runtime selection UI (Settings/Onboarding): survey managed+external per language, persist the
   // choice, and pick an interpreter file. The runtime root MUST match the executor/service's
   // (getRuntimeRoot(<dataRoot>)); read lazily so a data-root switch is reflected without re-register.

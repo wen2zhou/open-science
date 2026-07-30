@@ -101,6 +101,10 @@ export type ChatSession = Omit<
   // Transient: the durable active Branch changed while the Agent/Notebook still hold the previous
   // Branch's volatile state. The next continuation must rebuild both contexts before prompting.
   branchContextResetRequired?: boolean
+  // Transient: a specialist switch replaced the live agent session (Claude bakes identity into the
+  // session at creation). The next continuation must replay conversation history so the new
+  // specialist retains continuity, without resetting the notebook kernel (unlike a Branch switch).
+  specialistSwitchResetRequired?: boolean
   // Transient aggregate of Reviewer, Notebook, Upload-finalization, and deletion activity that lives
   // outside this store. The workspace projects those operation gates here so direct store callers
   // cannot bypass disabled revision controls.
@@ -249,6 +253,8 @@ type SessionStore = SessionStoreData & {
   activateMessageBranch: (sessionId: string, branchId: string) => void
   setBranchSwitchBlocked: (sessionId: string, blocked: boolean) => void
   clearBranchContextReset: (sessionId: string) => void
+  markSpecialistSwitchResetRequired: (sessionId: string) => void
+  clearSpecialistSwitchResetRequired: (sessionId: string) => void
   upsertToolActivity: (input: UpsertToolActivityInput) => void
   beginActivityGroup: (sessionId: string, groupId: string, title: string) => void
   completeActivityGroup: (sessionId: string) => void
@@ -313,6 +319,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
     compacting,
     agentStatus,
     branchContextResetRequired,
+    specialistSwitchResetRequired,
     branchSwitchBlocked,
     conversationGraphSyncBlocked,
     messages,
@@ -325,6 +332,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
   void compacting
   void agentStatus
   void branchContextResetRequired
+  void specialistSwitchResetRequired
   void branchSwitchBlocked
   void conversationGraphSyncBlocked
 
@@ -384,6 +392,7 @@ const withTransientSessionState = (
     compacting: source.compacting,
     agentStatus: source.agentStatus,
     branchContextResetRequired: source.branchContextResetRequired,
+    specialistSwitchResetRequired: source.specialistSwitchResetRequired,
     branchSwitchBlocked: source.branchSwitchBlocked,
     conversationGraphSyncBlocked: source.conversationGraphSyncBlocked
   }
@@ -2108,6 +2117,27 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     set((state) => ({
       sessions: state.sessions.map((session) =>
         session.id === sessionId ? { ...session, branchContextResetRequired: undefined } : session
+      )
+    }))
+  },
+
+  // Marks that a specialist switch replaced the live agent session; the next send replays history
+  // into the fresh session so the new specialist keeps conversation continuity. Distinct from
+  // branchContextResetRequired because it must NOT shut down the notebook kernel.
+  markSpecialistSwitchResetRequired: (sessionId) => {
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId ? { ...session, specialistSwitchResetRequired: true } : session
+      )
+    }))
+  },
+
+  clearSpecialistSwitchResetRequired: (sessionId) => {
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId
+          ? { ...session, specialistSwitchResetRequired: undefined }
+          : session
       )
     }))
   },

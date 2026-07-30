@@ -126,6 +126,7 @@ const registerWithFakes = (overrides?: {
   onAllSessionsCancellationRequested?: () => void
   profileService?: { getById: (id: string) => Promise<unknown> }
   specialistSkillCatalog?: Array<{ id: string; frameworkName: string; displayName: string }>
+  provisionedConnectorSkillNames?: string[]
 }): void => {
   const taskNotifications =
     overrides?.taskNotifications ??
@@ -144,7 +145,12 @@ const registerWithFakes = (overrides?: {
     settingsService: {
       captureActiveAgentBackendSelection: vi.fn().mockResolvedValue({}),
       resolveAgentBackend: vi.fn().mockResolvedValue({}),
-      listSpecialistSkillCatalog: vi.fn().mockResolvedValue(overrides?.specialistSkillCatalog ?? [])
+      listSpecialistSkillCatalog: vi
+        .fn()
+        .mockResolvedValue(overrides?.specialistSkillCatalog ?? []),
+      provisionedConnectorSkillNames: vi
+        .fn()
+        .mockResolvedValue(overrides?.provisionedConnectorSkillNames ?? [])
     } as never,
     taskNotifications: taskNotifications as never,
     onSessionCancellationRequested: overrides?.onSessionCancellationRequested,
@@ -224,6 +230,62 @@ describe('registerAcpIpcHandlers — Specialist identity resolver', () => {
       frameworkNames: ['Main Disabled'],
       missingSkillIds: []
     })
+  })
+
+  it('merges only the specialist-allowed connector skills into the whitelist (selected mode)', async () => {
+    const profileService = {
+      getById: vi.fn().mockResolvedValue({
+        enabled: true,
+        capabilityMode: 'selected',
+        fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+        selectedCapabilities: {
+          skillIds: ['skill-a'],
+          connectorIds: ['chemistry'],
+          connectorTools: []
+        }
+      })
+    }
+    registerWithFakes({
+      profileService,
+      specialistSkillCatalog: [{ id: 'skill-a', frameworkName: 'Skill A', displayName: 'Skill A' }],
+      provisionedConnectorSkillNames: ['mcp-chemistry', 'mcp-literature']
+    })
+    const options = AcpRuntimeMock.mock.calls.at(-1)?.[0] as {
+      resolveSpecialistSkills?: (id: string) => Promise<unknown>
+    }
+    const result = (await options.resolveSpecialistSkills?.('uuid-1')) as {
+      frameworkNames: string[]
+    }
+    // Selected mode: only connectorIds are allowed, so mcp-literature is filtered out.
+    expect(result.frameworkNames).toEqual(['Skill A', 'mcp-chemistry'])
+  })
+
+  it('excludes full-access blocked connectors from the whitelist (full mode)', async () => {
+    const profileService = {
+      getById: vi.fn().mockResolvedValue({
+        enabled: true,
+        capabilityMode: 'full',
+        fullAccess: {
+          excludedSkillIds: [],
+          excludedConnectorIds: ['literature'],
+          connectorTools: []
+        },
+        selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] }
+      })
+    }
+    registerWithFakes({
+      profileService,
+      specialistSkillCatalog: [],
+      provisionedConnectorSkillNames: ['mcp-chemistry', 'mcp-literature']
+    })
+    const options = AcpRuntimeMock.mock.calls.at(-1)?.[0] as {
+      resolveSpecialistSkills?: (id: string) => Promise<unknown>
+    }
+    const result = (await options.resolveSpecialistSkills?.('uuid-1')) as {
+      frameworkNames: string[]
+    }
+    // Full mode: all connectors except excludedConnectorIds; literature is excluded.
+    expect(result.frameworkNames).toEqual(['mcp-chemistry'])
   })
 })
 

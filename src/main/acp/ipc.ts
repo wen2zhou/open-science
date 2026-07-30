@@ -43,7 +43,10 @@ import {
   buildSpecialistIdentityAppend,
   buildSpecialistIdentityPrefix
 } from '../specialist/identity'
-import { resolveEffectiveSpecialistSkills } from '../../shared/specialist'
+import {
+  resolveEffectiveSpecialistSkills,
+  filterSpecialistConnectorSkills
+} from '../../shared/specialist'
 
 const log = createLogger('acp')
 
@@ -223,10 +226,27 @@ const createRuntime = ({
                 if (!profile.enabled) {
                   return { kind: 'unavailable', reason: 'The bound specialist is disabled.' }
                 }
-                return resolveEffectiveSpecialistSkills(
+                const effective = resolveEffectiveSpecialistSkills(
                   profile,
                   await settingsService.listSpecialistSkillCatalog()
                 )
+                if (effective.kind === 'specialist') {
+                  // Connector tools are delivered as mcp-<id> skills on disk. Claude's options.skills
+                  // whitelist is restrictive, so without these names the agent cannot load the connector
+                  // skill docs and never discovers the tools. Include only the connectors this specialist
+                  // is allowed to use (selectedCapabilities.connectorIds, or all minus full-access
+                  // exclusions) so discovery matches the capability scope; the per-call ConnectorService
+                  // gate still enforces the same config at call time.
+                  const provisioned = await settingsService.provisionedConnectorSkillNames()
+                  const connectorSkills = filterSpecialistConnectorSkills(provisioned, profile)
+                  if (connectorSkills.length > 0) {
+                    return {
+                      ...effective,
+                      frameworkNames: [...effective.frameworkNames, ...connectorSkills]
+                    }
+                  }
+                }
+                return effective
               } catch {
                 return { kind: 'unavailable', reason: 'The bound specialist is unavailable.' }
               }

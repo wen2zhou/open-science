@@ -222,6 +222,7 @@ import type {
   SpecialistListItem,
   SpecialistProfileView,
   SetSessionSpecialistRequest,
+  SetSessionSpecialistResponse,
   ResolveSessionSpecialistRequest,
   SessionSpecialistResolution
 } from '../shared/specialist'
@@ -366,7 +367,9 @@ interface OpenScienceAPI {
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     onCatalogChanged(listener: () => void): RemoveListener
     // Session switching (issue 07).
-    setSessionSpecialist(request: SetSessionSpecialistRequest): Promise<void>
+    setSessionSpecialist(
+      request: SetSessionSpecialistRequest
+    ): Promise<SetSessionSpecialistResponse>
     resolveSessionSpecialist(
       request: ResolveSessionSpecialistRequest
     ): Promise<SessionSpecialistResolution>

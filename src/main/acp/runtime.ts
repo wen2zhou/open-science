@@ -1686,6 +1686,69 @@ class AcpRuntime {
     return this.adoptFreshSession(connection, request, sessionCwd, projectName)
   }
 
+  // Hot-switches the specialist bound to a live session. Updates the per-session skills and identity
+  // maps so the next prompt reflects the new specialist. For Claude (identity baked into session
+  // _meta at creation) the agent session is replaced via a context reset so the new identity append
+  // takes effect immediately; Codex/OpenCode carry identity as a per-turn prefix (updated in the map)
+  // and need no reset. Returns `contextReset` so the renderer knows to replay conversation history
+  // into the next prompt (only true for Claude, whose fresh session starts with no provider context).
+  async switchSpecialist(
+    sessionId: string,
+    specialistId: string | undefined
+  ): Promise<{ contextReset: boolean }> {
+    return this.withOperationLease(() => this.switchSpecialistOperation(sessionId, specialistId))
+  }
+
+  private async switchSpecialistOperation(
+    sessionId: string,
+    specialistId: string | undefined
+  ): Promise<{ contextReset: boolean }> {
+    if (this.hasSessionInteractionInFlight(sessionId)) {
+      throw new Error('Cannot switch specialist while the Agent is running.')
+    }
+
+    // Skills map drives per-turn skill resolution for every framework.
+    if (specialistId === undefined) {
+      this.sessionSpecialistIds.delete(sessionId)
+    } else {
+      this.sessionSpecialistIds.set(sessionId, specialistId)
+    }
+
+    // Per-turn identity prefix (Codex / OpenCode). Claude uses a session _meta append instead, which
+    // adoptFreshSession re-bakes from sessionSpecialistIds during the context reset below.
+    if (specialistId !== undefined && this.options.resolveSpecialistIdentity) {
+      const identity = await this.options.resolveSpecialistIdentity(specialistId, this.framework.id)
+      if (identity?.prefix) {
+        this.sessionSpecialistPrefixes.set(sessionId, identity.prefix)
+      } else {
+        this.sessionSpecialistPrefixes.delete(sessionId)
+      }
+    } else {
+      this.sessionSpecialistPrefixes.delete(sessionId)
+    }
+
+    // Keep notebook routing metadata in sync so MCP calls carry the new specialist context.
+    this.notebookOptions?.registerSessionSpecialist?.(sessionId, specialistId)
+
+    // Claude bakes the specialist identity into the session _meta at session/new. A live identity
+    // change therefore requires replacing the agent session so the new append takes effect. Only do
+    // this when a session is actually attached; an unattached session will pick up the new binding
+    // (now recorded in the maps above) when it is later created or resumed.
+    const requiresContextReset = this.framework.id === 'claude-code' && this.sessions.has(sessionId)
+    if (requiresContextReset) {
+      await this.resetSessionContextOperation({
+        sessionId,
+        cwd: this.sessionCwds.get(sessionId),
+        projectName: this.sessionProjectNames.get(sessionId),
+        ...(this.permissionProfiles.get(sessionId)?.selectedProfile
+          ? { permissionProfile: this.permissionProfiles.get(sessionId)!.selectedProfile }
+          : {})
+      } as AcpResumeSessionRequest)
+    }
+
+    return { contextReset: requiresContextReset }
+  }
+
   // Invokes the framework's own context compaction command on the attached agent session. The
   // command is an internal control turn: fresh usage updates are retained, while its command
   // echo/status output is not projected into the user's conversation.
@@ -2023,12 +2086,16 @@ class AcpRuntime {
       sessionCwd,
       projectName
     })
+    // A freshly adopted session carries no prior _meta, so the specialist identity append (Claude)
+    // must be re-resolved from the live binding. Without this, a context reset or specialist switch
+    // would silently drop the session's specialist identity.
+    const specialistAppend = await this.resolveCurrentSpecialistIdentityAppend(request.sessionId)
     const adopted = await connection.agent
       .buildSession({
         cwd: sessionCwd,
         mcpServers,
         ...this.buildSessionMetaArg(
-          [],
+          specialistAppend ? [specialistAppend] : [],
           await this.resolveCurrentSpecialistSkills(request.sessionId)
         )
       })
@@ -4182,6 +4249,22 @@ class AcpRuntime {
       return await this.options.resolveSpecialistSkills(specialistId)
     } catch {
       return { kind: 'unavailable', reason: 'The bound specialist is unavailable.' }
+    }
+  }
+
+  // Resolves the session-meta identity APPEND for the session's current specialist binding. Only
+  // meaningful for Claude (append mode); returns undefined for Codex/OpenCode (prefix mode) or when
+  // no specialist is bound. Used by adoptFreshSession so a context reset re-bakes the identity.
+  private async resolveCurrentSpecialistIdentityAppend(
+    sessionId: string
+  ): Promise<string | undefined> {
+    const specialistId = this.sessionSpecialistIds.get(sessionId)
+    if (!specialistId || !this.options.resolveSpecialistIdentity) return undefined
+    try {
+      const identity = await this.options.resolveSpecialistIdentity(specialistId, this.framework.id)
+      return identity?.append || undefined
+    } catch {
+      return undefined
     }
   }
 

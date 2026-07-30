@@ -578,6 +578,14 @@ const sendWorkspaceMessage = async (
       }
     }
 
+    // A specialist switch on Claude replaced the agent session on the main side (identity is baked
+    // into session _meta at creation). The runtime already adopted a fresh session, so here we only
+    // need to replay prior turns as a history preamble — no resetSessionContext, no notebook shutdown.
+    const specialistSwitchReplay = Boolean(currentSession?.specialistSwitchResetRequired)
+    if (specialistSwitchReplay) {
+      useSessionStore.getState().clearSpecialistSwitchResetRequired(targetSessionId)
+    }
+
     // A framework switch applies at the next turn boundary. The retiring runtime may still expose the
     // old session for a brief teardown window, so compare persisted ownership as well as the snapshot.
     const frameworkChanged = Boolean(
@@ -663,7 +671,10 @@ const sendWorkspaceMessage = async (
     // and can't report the reset again). historyMessages ends before the newly appended user message,
     // so this is the prior conversation only — the turn being sent is not duplicated in.
     if (
-      (branchContextResetPerformed || contextResetFromResume || forceHistoryReplay) &&
+      (branchContextResetPerformed ||
+        contextResetFromResume ||
+        forceHistoryReplay ||
+        specialistSwitchReplay) &&
       historyMessages
     ) {
       historyPreamble = buildHistoryPreamble(historyMessages)

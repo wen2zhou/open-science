@@ -1019,6 +1019,19 @@ class SettingsService {
     }))
   }
 
+  // Returns the mcp-<id> skill names for connectors provisioned at the Main Agent level (enabled
+  // bundled connectors + enabled custom MCP servers). Specialist sessions merge these into their
+  // skill whitelist so the agent can discover connector tools; the per-call ConnectorService gate
+  // still enforces the specialist's own connector access config.
+  async provisionedConnectorSkillNames(): Promise<string[]> {
+    const connectors = await this.getConnectors()
+    const bundled = this.enabledConnectorIds(connectors)
+    const custom = (connectors?.customMcpServers ?? [])
+      .filter((server) => server.enabled)
+      .map((server) => server.id)
+    return Array.from(new Set([...bundled, ...custom].map((id) => `mcp-${id}`)))
+  }
+
   // Returns the subset of forced ids that are currently disabled in settings — i.e. the picks that need
   // a respawn to materialize. Enabled picks are already present and need no reconnect.
   async skillsNeedingForceLoad(forcedIds: string[]): Promise<string[]> {

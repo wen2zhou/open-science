@@ -22,6 +22,14 @@ export type SetSessionSpecialistRequest = {
   specialistId: string | undefined
 }
 
+// Response for SET_SESSION_SPECIALIST. `contextReset` is true when the live agent session was
+// replaced so the new specialist identity could take effect (Claude bakes identity into session
+// _meta at creation, so a switch requires a fresh session). When true, the renderer must replay the
+// conversation history into the next prompt so the new specialist retains continuity.
+export type SetSessionSpecialistResponse = {
+  contextReset: boolean
+}
+
 export type ResolveSessionSpecialistRequest = {
   sessionId: string
 }
@@ -103,6 +111,25 @@ export const resolveEffectiveSpecialistSkills = (
     frameworkNames.push(skill.frameworkName)
   }
   return { kind: 'specialist', skillIds, frameworkNames, missingSkillIds }
+}
+
+// Filters provisioned `mcp-<id>` connector skill names down to those the specialist is allowed to
+// discover. "selected" mode keeps only connectorIds; "full" mode keeps everything except
+// excludedConnectorIds. This makes a restrictive skill whitelist (Claude's options.skills) match the
+// specialist's connector capability scope, so the agent discovers only the connectors it can call.
+// The per-call ConnectorService gate enforces the same config at execution time.
+export const filterSpecialistConnectorSkills = (
+  connectorSkillNames: string[],
+  specialist: Pick<SpecialistProfileView, 'capabilityMode' | 'fullAccess' | 'selectedCapabilities'>
+): string[] => {
+  const isAllowed =
+    specialist.capabilityMode === 'full'
+      ? (connectorId: string) => !specialist.fullAccess.excludedConnectorIds.includes(connectorId)
+      : (connectorId: string) => specialist.selectedCapabilities.connectorIds.includes(connectorId)
+  return connectorSkillNames.filter((skillName) => {
+    const connectorId = skillName.replace(/^mcp-/, '')
+    return isAllowed(connectorId)
+  })
 }
 
 // Renderer-safe view of one specialist profile (no secret fields).

@@ -394,6 +394,134 @@ describe('specialist identity injection — OpenCode', () => {
 })
 
 // ---------------------------------------------------------------------------
+// Tests: Hot-switching specialist on a live session
+// ---------------------------------------------------------------------------
+
+describe('specialist hot-switch — Claude Code', () => {
+  it('switchSpecialist replaces the session and re-bakes the new identity append', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['session-claude', 'session-claude-reset'])
+    const profileA = makeProfile({ id: 'sp-a', name: 'Specialist A', systemPrompt: 'You are A.' })
+    const profileB = makeProfile({ id: 'sp-b', name: 'Specialist B', systemPrompt: 'You are B.' })
+    const registerSessionSpecialist = vi.fn()
+
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/agent',
+        env: {}
+      }),
+      resolveSpecialistIdentity: async (specialistId: string) =>
+        specialistId === 'sp-a'
+          ? { append: buildSpecialistIdentityAppend(profileA), prefix: '' }
+          : { append: buildSpecialistIdentityAppend(profileB), prefix: '' },
+      notebook: {
+        projectName: 'test',
+        mcpEntryPath: '/test/mcp.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1', token: 'test' }),
+        registerSessionSpecialist
+      }
+    })
+
+    await runtime.createSession({ cwd: '/workspace', specialistId: 'sp-a' })
+    expect(JSON.stringify(fakeAgent.newSessions[0]._meta)).toContain('Specialist A')
+
+    const result = await runtime.switchSpecialist('session-claude', 'sp-b')
+
+    // Claude bakes identity at session creation, so a switch must replace the session.
+    expect(result.contextReset).toBe(true)
+    expect(fakeAgent.newSessions).toHaveLength(2)
+    expect(JSON.stringify(fakeAgent.newSessions[1]._meta)).toContain('Specialist B')
+    expect(JSON.stringify(fakeAgent.newSessions[1]._meta)).not.toContain('Specialist A')
+    expect(registerSessionSpecialist).toHaveBeenLastCalledWith('session-claude', 'sp-b')
+  })
+
+  it('switchSpecialist to undefined (Main Agent) resets and drops the identity append', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['session-claude2', 'session-claude2-reset'])
+    const profile = makeProfile()
+    const registerSessionSpecialist = vi.fn()
+
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/agent',
+        env: {}
+      }),
+      resolveSpecialistIdentity: async () => ({
+        append: buildSpecialistIdentityAppend(profile),
+        prefix: ''
+      }),
+      notebook: {
+        projectName: 'test',
+        mcpEntryPath: '/test/mcp.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1', token: 'test' }),
+        registerSessionSpecialist
+      }
+    })
+
+    await runtime.createSession({ cwd: '/workspace', specialistId: 'uuid-sp1' })
+    const result = await runtime.switchSpecialist('session-claude2', undefined)
+
+    expect(result.contextReset).toBe(true)
+    expect(fakeAgent.newSessions).toHaveLength(2)
+    expect(JSON.stringify(fakeAgent.newSessions[1]._meta ?? {})).not.toContain(
+      SPECIALIST_IDENTITY_TAG
+    )
+    expect(registerSessionSpecialist).toHaveBeenLastCalledWith('session-claude2', undefined)
+  })
+})
+
+describe('specialist hot-switch — Codex', () => {
+  it('switchSpecialist updates the per-turn prefix without resetting the session', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgentWithModes(process, ['session-codex'], CODEX_MODES)
+    const profileA = makeProfile({ id: 'sp-a', name: 'Specialist A', systemPrompt: 'You are A.' })
+    const profileB = makeProfile({ id: 'sp-b', name: 'Specialist B', systemPrompt: 'You are B.' })
+    const registerSessionSpecialist = vi.fn()
+
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...codexFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/codex-acp',
+        env: {}
+      }),
+      framework: codexFramework,
+      resolveSpecialistIdentity: async (specialistId: string) =>
+        specialistId === 'sp-a'
+          ? { append: '', prefix: buildSpecialistIdentityPrefix(profileA) }
+          : { append: '', prefix: buildSpecialistIdentityPrefix(profileB) },
+      notebook: {
+        projectName: 'test',
+        mcpEntryPath: '/test/mcp.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1', token: 'test' }),
+        registerSessionSpecialist
+      }
+    })
+
+    await runtime.createSession({ cwd: '/workspace', specialistId: 'sp-a' })
+    await runtime.sendPrompt({ sessionId: 'session-codex', text: 'Hello' })
+    expect(fakeAgent.prompts[0].text).toContain('Specialist A')
+
+    // Codex carries identity as a per-turn prefix, so switching updates the map only — no reset.
+    const result = await runtime.switchSpecialist('session-codex', 'sp-b')
+    expect(result.contextReset).toBe(false)
+    expect(fakeAgent.newSessions).toHaveLength(1)
+
+    await runtime.sendPrompt({ sessionId: 'session-codex', text: 'Again' })
+    expect(fakeAgent.prompts[1].text).toContain('Specialist B')
+    expect(fakeAgent.prompts[1].text).not.toContain('Specialist A')
+    expect(registerSessionSpecialist).toHaveBeenLastCalledWith('session-codex', 'sp-b')
+  })
+})
+
+// ---------------------------------------------------------------------------
 // Tests: Session persistence round-trip for specialistId
 // ---------------------------------------------------------------------------
 

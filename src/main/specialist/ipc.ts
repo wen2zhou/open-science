@@ -10,6 +10,7 @@ import type {
   SpecialistListItem,
   SpecialistProfileView,
   SetSessionSpecialistRequest,
+  SetSessionSpecialistResponse,
   ResolveSessionSpecialistRequest,
   SessionSpecialistResolution
 } from '../../shared/specialist'
@@ -30,7 +31,18 @@ const broadcastCatalogChanged = (): void => {
 // Call once per app lifecycle, after the ProfileService is ready.
 export const registerSpecialistIpcHandlers = (
   service: ProfileService,
-  sessionBindingService?: SessionBindingService
+  sessionBindingService?: SessionBindingService,
+  // Applies a switch to the live agent runtime. Kept as a callback so this module stays decoupled
+  // from the ACP coordinator. Returns whether the runtime replaced the agent session (context reset),
+  // which tells the renderer to replay conversation history into the next prompt.
+  switchSessionSpecialist?: (
+    sessionId: string,
+    specialistId: string | undefined
+  ) => Promise<{ contextReset: boolean }>,
+  // Notifies the runtime that a specialist profile's capabilities changed (skills/connectors/enabled).
+  // The runtime reconnects so live sessions re-provision skills and re-apply the updated whitelist on
+  // the next turn. Optional so headless/tests can omit it.
+  onProfilesChanged?: () => void
 ): void => {
   // Subscribe once so every mutation (create, setEnabled) triggers a broadcast.
   service.subscribe(broadcastCatalogChanged)
@@ -62,7 +74,11 @@ export const registerSpecialistIpcHandlers = (
     async (_event, request: UpdateSpecialistRequest): Promise<SpecialistProfileView> => {
       // Re-validate in main process — renderer input is untrusted.
       try {
-        return await service.update(request)
+        const updated = await service.update(request)
+        // A capability edit (skills/connectors) must reach live sessions: trigger a reconnect so the
+        // next turn re-provisions skills and re-applies the updated specialist whitelist.
+        onProfilesChanged?.()
+        return updated
       } catch (error) {
         log.error('specialist:update failed', { error })
         throw error
@@ -74,7 +90,9 @@ export const registerSpecialistIpcHandlers = (
     SPECIALIST_IPC.SET_ENABLED,
     async (_event, request: SetSpecialistEnabledRequest): Promise<SpecialistProfileView> => {
       try {
-        return await service.setEnabled(request.id, request.enabled)
+        const updated = await service.setEnabled(request.id, request.enabled)
+        onProfilesChanged?.()
+        return updated
       } catch (error) {
         log.error('specialist:set-enabled failed', { error })
         throw error
@@ -87,6 +105,7 @@ export const registerSpecialistIpcHandlers = (
     async (_event, request: DeleteSpecialistRequest): Promise<void> => {
       try {
         await service.delete(request.id, request.expectedRevision)
+        onProfilesChanged?.()
       } catch (error) {
         log.error('specialist:delete failed', { error })
         throw error
@@ -106,7 +125,10 @@ export const registerSpecialistIpcHandlers = (
   if (sessionBindingService) {
     ipcMain.handle(
       SPECIALIST_IPC.SET_SESSION_SPECIALIST,
-      async (_event, request: SetSessionSpecialistRequest): Promise<void> => {
+      async (
+        _event,
+        request: SetSessionSpecialistRequest
+      ): Promise<SetSessionSpecialistResponse> => {
         if (!request || typeof request.sessionId !== 'string') {
           throw new Error('SET_SESSION_SPECIALIST: sessionId must be a string.')
         }
@@ -125,6 +147,16 @@ export const registerSpecialistIpcHandlers = (
           }
         }
         sessionBindingService.setBinding(request.sessionId, request.specialistId)
+
+        // Apply the switch to the live agent session so the new specialist takes effect now, not
+        // just on the next session create/resume. When no runtime is wired (headless/tests) this is
+        // a no-op and the binding recorded above still takes effect on the next create/resume.
+        let contextReset = false
+        if (switchSessionSpecialist) {
+          const result = await switchSessionSpecialist(request.sessionId, request.specialistId)
+          contextReset = result.contextReset
+        }
+        return { contextReset }
       }
     )
 
