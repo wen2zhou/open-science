@@ -214,6 +214,12 @@ import type {
   ReviewUpdateEvent
 } from '../shared/reviewer'
 import type {
+  CreateSpecialistRequest,
+  SetSpecialistEnabledRequest,
+  SpecialistListItem,
+  SpecialistProfileView
+} from '../shared/specialist'
+import type {
   CloseConfirmRequest,
   CloseConfirmResponse,
   WindowFindAppearance,
@@ -344,6 +350,12 @@ interface OpenScienceAPI {
     respondSkillImportApproval(response: ConversationSkillImportApprovalResponse): Promise<void>
     respondConnectorApproval(request: RespondApprovalRequest): Promise<void>
     onInstallLog(listener: AcpListener<ClaudeInstallEvent>): RemoveListener
+  }
+  specialist: {
+    list(): Promise<SpecialistListItem[]>
+    create(request: CreateSpecialistRequest): Promise<SpecialistProfileView>
+    setEnabled(request: SetSpecialistEnabledRequest): Promise<SpecialistProfileView>
+    onCatalogChanged(listener: () => void): RemoveListener
   }
   logs: {
     getPath(): Promise<string | null>

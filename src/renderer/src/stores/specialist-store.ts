@@ -1,0 +1,45 @@
+import { create } from 'zustand'
+import type {
+  SpecialistListItem,
+  SpecialistProfileView,
+  CreateSpecialistInput
+} from '../../../shared/specialist'
+
+type SpecialistStoreData = {
+  items: SpecialistListItem[]
+  isLoaded: boolean
+}
+
+type SpecialistStoreActions = {
+  load: () => Promise<void>
+  create: (input: CreateSpecialistInput) => Promise<SpecialistProfileView>
+  setEnabled: (id: string, enabled: boolean) => Promise<void>
+}
+
+type SpecialistStore = SpecialistStoreData & SpecialistStoreActions
+
+const useSpecialistStore = create<SpecialistStore>((set) => ({
+  items: [],
+  isLoaded: false,
+
+  load: async () => {
+    const items = await window.api.specialist.list()
+    set({ items, isLoaded: true })
+  },
+
+  create: async (input: CreateSpecialistInput) => {
+    const view = await window.api.specialist.create(input)
+    // Reload the full list so Reviewer and ordering stay consistent.
+    const items = await window.api.specialist.list()
+    set({ items })
+    return view
+  },
+
+  setEnabled: async (id: string, enabled: boolean) => {
+    await window.api.specialist.setEnabled({ id, enabled })
+    const items = await window.api.specialist.list()
+    set({ items })
+  }
+}))
+
+export { useSpecialistStore }

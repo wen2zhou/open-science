@@ -223,6 +223,13 @@ import type {
   ReviewUpdateEvent
 } from '../shared/reviewer'
 import { REVIEWER_IPC } from '../shared/reviewer'
+import type {
+  CreateSpecialistRequest,
+  SetSpecialistEnabledRequest,
+  SpecialistListItem,
+  SpecialistProfileView
+} from '../shared/specialist'
+import { SPECIALIST_IPC } from '../main/specialist/ipc'
 import {
   announceWindowFindReady,
   subscribeCloseActivePane,
@@ -381,6 +388,12 @@ type OpenScienceAPI = {
     respondSkillImportApproval: (response: ConversationSkillImportApprovalResponse) => Promise<void>
     respondConnectorApproval: (request: RespondApprovalRequest) => Promise<void>
     onInstallLog: (listener: AcpListener<ClaudeInstallEvent>) => RemoveListener
+  }
+  specialist: {
+    list: () => Promise<SpecialistListItem[]>
+    create: (request: CreateSpecialistRequest) => Promise<SpecialistProfileView>
+    setEnabled: (request: SetSpecialistEnabledRequest) => Promise<SpecialistProfileView>
+    onCatalogChanged: (listener: () => void) => RemoveListener
   }
   logs: {
     getPath: () => Promise<string | null>
@@ -919,6 +932,15 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke('connectors:approval-respond', request) as Promise<void>,
     // Streams live installer output while a one-click install runs.
     onInstallLog: (listener) => onIpcMessage('settings:install-log', listener)
+  },
+  specialist: {
+    list: () => ipcRenderer.invoke(SPECIALIST_IPC.LIST) as Promise<SpecialistListItem[]>,
+    create: (request: CreateSpecialistRequest) =>
+      ipcRenderer.invoke(SPECIALIST_IPC.CREATE, request) as Promise<SpecialistProfileView>,
+    setEnabled: (request: SetSpecialistEnabledRequest) =>
+      ipcRenderer.invoke(SPECIALIST_IPC.SET_ENABLED, request) as Promise<SpecialistProfileView>,
+    onCatalogChanged: (listener: () => void) =>
+      onIpcMessage(SPECIALIST_IPC.CATALOG_CHANGED, listener)
   },
   logs: {
     getPath: () => ipcRenderer.invoke('logs:get-path') as Promise<string | null>,
