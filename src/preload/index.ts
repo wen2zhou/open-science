@@ -229,7 +229,7 @@ import type {
   SpecialistListItem,
   SpecialistProfileView
 } from '../shared/specialist'
-import { SPECIALIST_IPC } from '../main/specialist/ipc'
+import { SPECIALIST_IPC } from '../shared/specialist'
 import {
   announceWindowFindReady,
   subscribeCloseActivePane,

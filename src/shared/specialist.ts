@@ -1,6 +1,14 @@
 // Shared types and validation for Personal Specialist Profiles.
 // All mutation rules live here so Settings, SDK, and runtime share one contract.
 
+// IPC channel names shared between main, preload, and renderer.
+export const SPECIALIST_IPC = {
+  LIST: 'specialist:list',
+  CREATE: 'specialist:create',
+  SET_ENABLED: 'specialist:set-enabled',
+  CATALOG_CHANGED: 'specialist:catalog-changed'
+} as const
+
 // The capability scope mode for a specialist.
 export type SpecialistCapabilityMode = 'full' | 'selected'
 

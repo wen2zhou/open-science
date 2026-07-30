@@ -6,20 +6,12 @@ import type {
   SpecialistListItem,
   SpecialistProfileView
 } from '../../shared/specialist'
+import { SPECIALIST_IPC } from '../../shared/specialist'
 import { ProfileService } from './service'
 import { createLogger } from '../logger'
 import { broadcastToRenderers } from '../renderer-broadcast'
 
 const log = createLogger('specialist:ipc')
-
-// IPC channel names for the specialist surface.
-export const SPECIALIST_IPC = {
-  LIST: 'specialist:list',
-  CREATE: 'specialist:create',
-  SET_ENABLED: 'specialist:set-enabled',
-  // Push event: broadcast to renderers when the catalog changes.
-  CATALOG_CHANGED: 'specialist:catalog-changed'
-} as const
 
 // Broadcasts a catalog-changed event to all renderer windows.
 const broadcastCatalogChanged = (): void => {
