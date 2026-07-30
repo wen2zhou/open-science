@@ -37,7 +37,7 @@ afterEach(() => {
 })
 
 describe('SpecialistEditor', () => {
-  it('edits Skill scopes independently, shows Main-disabled and missing IDs, and summarizes the active mode', async () => {
+  it('edits Skill scopes independently, shows Main-disabled and missing IDs, and preserves the other mode', async () => {
     const onSaveEdit = vi.fn().mockResolvedValue(undefined)
     useSettingsStore.setState({
       skills: [
@@ -88,24 +88,34 @@ describe('SpecialistEditor', () => {
         />
       )
     })
-    expect(document.body.textContent).toContain('1 Skills included.')
-    expect(document.body.textContent).toContain('Main disabled · available here')
+    // Full access is on by default.
+    expect(
+      document.body.querySelector('[aria-label="Full access"]')?.getAttribute('aria-checked')
+    ).toBe('true')
+
+    // Turn Full access off to edit the Skills whitelist.
     await act(async () => {
-      fireEvent.click(
-        Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
-          (button) => button.textContent === 'Selected capabilities'
-        )!
-      )
+      fireEvent.click(document.body.querySelector<HTMLButtonElement>('[aria-label="Full access"]')!)
     })
-    expect(document.body.textContent).toContain('1 Skills selected.')
+    expect(
+      document.body.querySelector('[aria-label="Full access"]')?.getAttribute('aria-checked')
+    ).toBe('false')
+
+    // Skills tab is active by default. Both persisted selections render, including the
+    // Main-disabled (still usable here) and a stale missing ID.
+    expect(document.body.textContent).toContain('Main disabled · available here')
     expect(document.body.textContent).toContain('missing-stable-id')
     expect(document.body.textContent).toContain('Missing · unavailable')
     expect(document.body.textContent).not.toContain('Hard enforced')
     expect(document.body.textContent).not.toContain('Guidance only')
+
+    // Remove "Main disabled" from the whitelist, leaving only the missing reference.
     await act(async () => {
       fireEvent.click(
-        document.body.querySelector<HTMLInputElement>('[aria-label="Include Main disabled"]')!
+        document.body.querySelector<HTMLButtonElement>('[aria-label="Remove Main disabled"]')!
       )
+    })
+    await act(async () => {
       fireEvent.click(
         Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
           (button) => button.textContent === 'Save changes'
@@ -167,8 +177,16 @@ describe('SpecialistEditor', () => {
             systemPrompt: '',
             enabled: true,
             capabilityMode: 'full',
-            fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
-            selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+            fullAccess: {
+              excludedSkillIds: [],
+              excludedConnectorIds: ['pubmed'],
+              connectorTools: []
+            },
+            selectedCapabilities: {
+              skillIds: [],
+              connectorIds: ['Broken Server'],
+              connectorTools: []
+            },
             revision: 1
           }}
           onCancel={vi.fn()}
@@ -177,23 +195,43 @@ describe('SpecialistEditor', () => {
         />
       )
     })
-    expect(document.body.textContent).toContain('Broken Server')
-    expect(document.body.textContent).toContain('Unavailable — unavailable')
-    expect(
-      document.body.querySelector<HTMLInputElement>('[aria-label="Allow Broken Server"]')?.disabled
-    ).toBe(true)
+
+    // Turn Full access off, then open the Connectors tab.
     await act(async () => {
-      fireEvent.click(document.body.querySelector<HTMLInputElement>('[aria-label="Allow PubMed"]')!)
-      fireEvent.click(
-        Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
-          (button) => button.textContent === 'Selected capabilities'
-        )!
-      )
+      fireEvent.click(document.body.querySelector<HTMLButtonElement>('[aria-label="Full access"]')!)
     })
     await act(async () => {
       fireEvent.click(
-        document.body.querySelector<HTMLInputElement>('[aria-label="Include Chemistry"]')!
+        Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="tab"]')).find((tab) =>
+          tab.textContent?.includes('Connectors')
+        )!
       )
+    })
+
+    // The persisted unavailable custom server stays visible (and removable) instead of silently
+    // broadening the profile. Main-disabled connectors (PubMed) are not in the list yet.
+    expect(document.body.textContent).toContain('Broken Server')
+    expect(document.body.textContent).toContain('Unavailable — unavailable')
+
+    // Remove the broken server, then add Chemistry from the add menu.
+    await act(async () => {
+      fireEvent.click(
+        document.body.querySelector<HTMLButtonElement>('[aria-label="Remove Broken Server"]')!
+      )
+    })
+    const addTrigger = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent === '＋ Add a connector…'
+    )
+    openRadixMenu(addTrigger)
+    await act(async () => {
+      clickRadixMenuItem(
+        Array.from(document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')).find(
+          (item) => item.textContent === 'Chemistry'
+        )
+      )
+    })
+
+    await act(async () => {
       Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
         .find((button) => button.textContent === 'Save changes')
         ?.click()

@@ -3,6 +3,12 @@ import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
+import {
+  DropdownMenu,
+  DropdownMenuContent,
+  DropdownMenuItem,
+  DropdownMenuTrigger
+} from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 import {
   SPECIALIST_DESCRIPTION_MAX_LENGTH,
@@ -23,7 +29,7 @@ type SpecialistEditorProps = {
   existingNames?: string[]
   // Edit mode: when provided, the form is prefilled from this profile and Save
   // calls onSaveEdit (with id + revision for optimistic concurrency) instead of
-  // onSave. The capabilities section stays informational either way.
+  // onSave.
   editSpecialist?: SpecialistProfileView
   onSaveEdit?: (input: UpdateSpecialistInput) => Promise<void>
 }
@@ -44,6 +50,7 @@ type FormState = {
 type ConnectorRow = {
   id: string
   name: string
+  description?: string
   mainEnabled: boolean
   available: boolean
   availability?: 'unavailable' | 'unauthenticated'
@@ -52,6 +59,8 @@ type ConnectorRow = {
 type SkillRow = {
   id: string
   name: string
+  description?: string
+  source?: string
   mainEnabled: boolean
   missing: boolean
 }
@@ -117,6 +126,7 @@ const SpecialistEditor = ({
   const [fieldErrors, setFieldErrors] = useState<SpecialistFieldError[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>()
+  const [activeCapTab, setActiveCapTab] = useState<'skills' | 'connectors'>('skills')
 
   useEffect(() => {
     void loadConnectors()
@@ -134,12 +144,14 @@ const SpecialistEditor = ({
       ...connectors.map((connector) => ({
         id: connector.id,
         name: connector.displayName,
+        description: connector.description,
         mainEnabled: connector.enabled,
         available: true
       })),
       ...customServers.map((server) => ({
         id: server.name,
         name: server.name,
+        description: server.description,
         mainEnabled: server.enabled,
         available: server.availability === undefined,
         availability: server.availability
@@ -158,6 +170,8 @@ const SpecialistEditor = ({
     const known: SkillRow[] = skills.map((skill) => ({
       id: skill.id,
       name: skill.name,
+      description: skill.description,
+      source: skill.source,
       mainEnabled: skill.enabled,
       missing: false
     }))
@@ -168,8 +182,88 @@ const SpecialistEditor = ({
     return known.sort((a, b) => a.name.localeCompare(b.name))
   }, [skills, form.excludedSkillIds, form.selectedSkillIds])
 
+  // Selected-capabilities mode lists. Skills and Connectors are both whitelists: they start empty
+  // and are added explicitly. Persisted IDs missing from the catalog stay visible (and removable)
+  // so a stale reference never locks the session. Main-disabled installed items remain addable:
+  // Main's toggle is not a Specialist capability limit.
+  const selectedSkillRows = useMemo(
+    () =>
+      form.selectedSkillIds.map((id) => {
+        const found = skillRows.find((row) => row.id === id)
+        return found ?? { id, name: id, mainEnabled: false, missing: true }
+      }),
+    [form.selectedSkillIds, skillRows]
+  )
+  const addableSkills = useMemo(
+    () =>
+      skills
+        .filter((skill) => !form.selectedSkillIds.includes(skill.id))
+        .map((skill) => ({
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          source: skill.source
+        }))
+        .sort((a, b) => a.name.localeCompare(b.name)),
+    [skills, form.selectedSkillIds]
+  )
+
+  const selectedConnectorRows = useMemo(
+    () =>
+      form.connectorIds.map((id) => {
+        const found = connectorRows.find((row) => row.id === id)
+        return found ?? { id, name: id, mainEnabled: false, available: false }
+      }),
+    [form.connectorIds, connectorRows]
+  )
+  const addableConnectors = useMemo(() => {
+    const all: ConnectorRow[] = [
+      ...connectors.map((connector) => ({
+        id: connector.id,
+        name: connector.displayName,
+        description: connector.description,
+        mainEnabled: connector.enabled,
+        available: true
+      })),
+      ...customServers.map((server) => ({
+        id: server.name,
+        name: server.name,
+        description: server.description,
+        mainEnabled: server.enabled,
+        available: server.availability === undefined,
+        availability: server.availability
+      }))
+    ]
+    return all
+      .filter((row) => row.available && !form.connectorIds.includes(row.id))
+      .sort((a, b) => a.name.localeCompare(b.name))
+  }, [connectors, customServers, form.connectorIds])
+
+  const addSkill = (id: string): void =>
+    setForm((prev) =>
+      prev.selectedSkillIds.includes(id)
+        ? prev
+        : { ...prev, selectedSkillIds: [...prev.selectedSkillIds, id] }
+    )
+  const removeSkill = (id: string): void =>
+    setForm((prev) => ({
+      ...prev,
+      selectedSkillIds: prev.selectedSkillIds.filter((skillId) => skillId !== id)
+    }))
+  const addConnector = (id: string): void =>
+    setForm((prev) =>
+      prev.connectorIds.includes(id) ? prev : { ...prev, connectorIds: [...prev.connectorIds, id] }
+    )
+  const removeConnector = (id: string): void =>
+    setForm((prev) => ({
+      ...prev,
+      connectorIds: prev.connectorIds.filter((connectorId) => connectorId !== id)
+    }))
+
   const getFieldError = (field: SpecialistFieldError['field']): string | undefined =>
     fieldErrors.find((e) => e.field === field)?.message
+
+  const isFullAccess = form.capabilityMode === 'full'
 
   const validate = (): boolean => {
     // Client-side validation using the shared validator.
@@ -433,154 +527,293 @@ const SpecialistEditor = ({
         <section className="border-t border-border pt-5">
           <h3 className="mb-1 text-base font-semibold text-foreground">Capabilities</h3>
           <p className="mb-4 text-[13px] leading-5 text-muted-foreground">
-            Connector access is enforced before dispatch. Main Agent connector settings do not limit
-            this specialist.
+            Skills and connectors this specialist can use. Anything not chosen here stays invisible
+            and unreachable in its sessions, even when enabled globally.
           </p>
-          <div
-            className="mb-4 flex rounded-lg border border-border p-1"
-            role="radiogroup"
-            aria-label="Capability mode"
+
+          {/* Full access — single option, default selected. Loads every Main Agent skill and
+              connector; selecting it disables the Select capabilities panel below. */}
+          <button
+            type="button"
+            role="switch"
+            aria-checked={isFullAccess}
+            aria-label="Full access"
+            onClick={() =>
+              setForm((prev) => ({
+                ...prev,
+                capabilityMode: prev.capabilityMode === 'full' ? 'selected' : 'full'
+              }))
+            }
+            className={cn(
+              'mb-2 flex items-start gap-3 rounded-lg border p-3 text-left transition-colors',
+              isFullAccess ? 'border-primary bg-primary/5' : 'border-border bg-card hover:bg-muted'
+            )}
           >
-            {(
-              [
-                ['full', 'Full access'],
-                ['selected', 'Selected capabilities']
-              ] as const
-            ).map(([mode, label]) => (
-              <button
-                key={mode}
-                type="button"
-                role="radio"
-                aria-checked={form.capabilityMode === mode}
-                onClick={() => setForm((current) => ({ ...current, capabilityMode: mode }))}
-                className={cn(
-                  'flex-1 rounded-md px-3 py-1.5 text-xs font-medium',
-                  form.capabilityMode === mode
-                    ? 'bg-muted text-foreground'
-                    : 'text-muted-foreground hover:text-foreground'
-                )}
-              >
-                {label}
-              </button>
-            ))}
+            <span
+              className={cn(
+                'mt-0.5 flex size-[18px] shrink-0 items-center justify-center rounded-full border-2',
+                isFullAccess ? 'border-primary' : 'border-text-300'
+              )}
+            >
+              {isFullAccess ? <span className="size-2.5 rounded-full bg-primary" /> : null}
+            </span>
+            <span className="min-w-0 flex-1">
+              <span className="flex items-center gap-2 text-[13px] font-semibold">
+                Full access
+                <span className="rounded bg-primary px-1.5 py-px text-[9.5px] font-semibold uppercase tracking-wide text-primary-foreground">
+                  Default
+                </span>
+              </span>
+              <span className="mt-0.5 block text-[11.5px] leading-snug text-muted-foreground">
+                Use all of the Main Agent&rsquo;s skills and connectors, including new ones added
+                later. No need to configure each item.
+              </span>
+            </span>
+          </button>
+
+          <div className="my-3 flex items-center gap-3" aria-hidden="true">
+            <span className="h-px flex-1 bg-border" />
+            <span className="text-[11px] text-text-300">or choose specific capabilities</span>
+            <span className="h-px flex-1 bg-border" />
           </div>
-          <p className="mb-2 text-xs text-muted-foreground">
-            {form.capabilityMode === 'full'
-              ? 'All installed connectors are allowed unless excluded below.'
-              : 'Only selected installed connectors are allowed.'}
-          </p>
-          <div className="divide-y rounded-lg border border-border">
-            {connectorRows.map((connector) => {
-              const checked =
-                form.capabilityMode === 'full'
-                  ? !form.excludedConnectorIds.includes(connector.id)
-                  : form.connectorIds.includes(connector.id)
-              const toggle = (): void => {
-                if (!connector.available) return
-                setForm((current) => {
-                  if (current.capabilityMode === 'full') {
-                    const excludedConnectorIds = checked
-                      ? [...current.excludedConnectorIds, connector.id]
-                      : current.excludedConnectorIds.filter((id) => id !== connector.id)
-                    return { ...current, excludedConnectorIds }
-                  }
-                  const connectorIds = checked
-                    ? current.connectorIds.filter((id) => id !== connector.id)
-                    : [...current.connectorIds, connector.id]
-                  return { ...current, connectorIds }
-                })
-              }
-              return (
-                <label
-                  key={connector.id}
+
+          {/* Select capabilities — greyed and non-interactive while Full access is on. Clicking the
+              greyed panel turns Full access off so the lists become editable. */}
+          <div className="relative">
+            <div
+              className={cn(
+                'rounded-lg',
+                isFullAccess && 'pointer-events-none opacity-45 select-none'
+              )}
+            >
+              <div
+                className="mb-3 inline-flex gap-0.5 rounded-lg bg-muted p-1"
+                role="tablist"
+                aria-label="Capability type"
+              >
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeCapTab === 'skills'}
+                  onClick={() => setActiveCapTab('skills')}
                   className={cn(
-                    'flex items-center gap-3 px-3 py-2 text-sm',
-                    connector.available ? 'cursor-pointer' : 'cursor-not-allowed opacity-60'
+                    'rounded-md px-3 py-1 text-[12.5px] font-medium',
+                    activeCapTab === 'skills'
+                      ? 'bg-card text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
                   )}
                 >
-                  <input
-                    type="checkbox"
-                    aria-label={`${form.capabilityMode === 'full' ? 'Allow' : 'Include'} ${connector.name}`}
-                    checked={checked}
-                    disabled={!connector.available}
-                    onChange={toggle}
-                  />
-                  <span className="min-w-0 flex-1 truncate">{connector.name}</span>
-                  <span className="text-[11px] text-muted-foreground">
-                    {!connector.available
-                      ? `Unavailable — ${connector.availability ?? 'not installed'}`
-                      : connector.mainEnabled
-                        ? 'Available'
-                        : 'Main disabled · available here'}
+                  Skills{' '}
+                  <span className="ml-0.5 text-[11px] opacity-75">
+                    {form.selectedSkillIds.length}
                   </span>
-                </label>
-              )
-            })}
-            {connectorRows.length === 0 ? (
-              <p className="px-3 py-2 text-xs text-muted-foreground">Loading connectors…</p>
-            ) : null}
-          </div>
-          <div className="mt-5">
-            <p className="mb-2 text-xs text-muted-foreground">
-              {form.capabilityMode === 'full'
-                ? 'All installed Skills are allowed unless excluded below; future Skills are included automatically.'
-                : 'Only selected installed Skills are allowed.'}
-            </p>
-            <div className="max-h-52 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
-              {skillRows.map((skill) => {
-                const checked =
-                  form.capabilityMode === 'full'
-                    ? !form.excludedSkillIds.includes(skill.id)
-                    : form.selectedSkillIds.includes(skill.id)
-                return (
-                  <label
-                    key={skill.id}
-                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
-                  >
-                    <input
-                      type="checkbox"
-                      aria-label={`${form.capabilityMode === 'full' ? 'Allow' : 'Include'} ${skill.name}`}
-                      checked={checked}
-                      onChange={() =>
-                        setForm((current) => {
-                          const ids =
-                            current.capabilityMode === 'full'
-                              ? current.excludedSkillIds
-                              : current.selectedSkillIds
-                          const next = checked
-                            ? ids.filter((id) => id !== skill.id)
-                            : [...ids, skill.id]
-                          return current.capabilityMode === 'full'
-                            ? { ...current, excludedSkillIds: next }
-                            : { ...current, selectedSkillIds: next }
-                        })
-                      }
-                    />
-                    <span className="min-w-0 flex-1 truncate">{skill.name}</span>
-                    <span className="text-[11px] text-muted-foreground">
-                      {skill.missing
-                        ? 'Missing · unavailable'
-                        : skill.mainEnabled
-                          ? 'Available'
-                          : 'Main disabled · available here'}
+                </button>
+                <button
+                  type="button"
+                  role="tab"
+                  aria-selected={activeCapTab === 'connectors'}
+                  onClick={() => setActiveCapTab('connectors')}
+                  className={cn(
+                    'rounded-md px-3 py-1 text-[12.5px] font-medium',
+                    activeCapTab === 'connectors'
+                      ? 'bg-card text-foreground shadow-sm'
+                      : 'text-muted-foreground hover:text-foreground'
+                  )}
+                >
+                  Connectors{' '}
+                  <span className="ml-0.5 text-[11px] opacity-75">{form.connectorIds.length}</span>
+                </button>
+              </div>
+
+              {activeCapTab === 'skills' ? (
+                <div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="mb-2.5 flex h-[30px] w-full items-center rounded-lg border border-dashed border-border bg-card px-2.5 text-[12.5px] text-muted-foreground hover:bg-muted"
+                      >
+                        ＋ Add a skill…
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="start"
+                      className="max-h-[210px] w-[var(--radix-dropdown-menu-trigger-width)] min-w-[260px] overflow-y-auto"
+                    >
+                      {addableSkills.length === 0 ? (
+                        <DropdownMenuItem disabled>No more skills to add</DropdownMenuItem>
+                      ) : (
+                        addableSkills.map((skill) => (
+                          <DropdownMenuItem
+                            key={skill.id}
+                            onSelect={() => addSkill(skill.id)}
+                            className="flex flex-col items-start gap-0.5"
+                          >
+                            <span className="font-mono text-[12.5px]">{skill.name}</span>
+                            {skill.description ? (
+                              <span className="text-[11px] text-muted-foreground">
+                                {skill.description}
+                              </span>
+                            ) : null}
+                          </DropdownMenuItem>
+                        ))
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  <div className="overflow-hidden rounded-lg border border-border">
+                    {selectedSkillRows.length === 0 ? (
+                      <p className="px-3 py-3.5 text-[12px] text-muted-foreground">
+                        No skills added yet.
+                      </p>
+                    ) : (
+                      selectedSkillRows.map((skill) => (
+                        <div
+                          key={skill.id}
+                          className="flex items-center gap-2.5 border-b border-border px-3 py-2 last:border-b-0"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate font-mono text-[12.5px]">{skill.name}</div>
+                            {!skill.missing && skill.description ? (
+                              <div className="truncate text-[11px] text-muted-foreground">
+                                {skill.description}
+                              </div>
+                            ) : null}
+                          </div>
+                          {skill.missing ? (
+                            <span className="shrink-0 text-[11px] text-muted-foreground">
+                              Missing · unavailable
+                            </span>
+                          ) : (
+                            <>
+                              {skill.source ? (
+                                <span className="shrink-0 rounded bg-muted px-1.5 py-0.5 text-[10px] capitalize text-muted-foreground">
+                                  {skill.source}
+                                </span>
+                              ) : null}
+                              {!skill.mainEnabled ? (
+                                <span className="shrink-0 text-[11px] text-muted-foreground">
+                                  Main disabled · available here
+                                </span>
+                              ) : null}
+                            </>
+                          )}
+                          <button
+                            type="button"
+                            aria-label={`Remove ${skill.name}`}
+                            onClick={() => removeSkill(skill.id)}
+                            className="flex size-[22px] shrink-0 items-center justify-center rounded text-[12px] text-muted-foreground hover:bg-muted hover:text-destructive"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <p className="mt-2.5 flex gap-2 rounded-lg bg-muted p-2.5 text-[11.5px] leading-snug text-muted-foreground">
+                    <span aria-hidden="true">ⓘ</span>
+                    <span>
+                      Skills start empty and must be added. Skills not listed here are hidden from
+                      this specialist, and Skill calls to them are rejected.
                     </span>
-                  </label>
-                )
-              })}
-              {skillRows.length === 0 ? (
-                <p className="px-2 py-1 text-xs text-muted-foreground">Loading Skills…</p>
+                  </p>
+                </div>
+              ) : null}
+
+              {activeCapTab === 'connectors' ? (
+                <div>
+                  <DropdownMenu>
+                    <DropdownMenuTrigger asChild>
+                      <button
+                        type="button"
+                        className="mb-2.5 flex h-[30px] w-full items-center rounded-lg border border-dashed border-border bg-card px-2.5 text-[12.5px] text-muted-foreground hover:bg-muted"
+                      >
+                        ＋ Add a connector…
+                      </button>
+                    </DropdownMenuTrigger>
+                    <DropdownMenuContent
+                      align="start"
+                      className="max-h-[210px] w-[var(--radix-dropdown-menu-trigger-width)] min-w-[260px] overflow-y-auto"
+                    >
+                      {addableConnectors.length === 0 ? (
+                        <DropdownMenuItem disabled>No more connectors to add</DropdownMenuItem>
+                      ) : (
+                        addableConnectors.map((connector) => (
+                          <DropdownMenuItem
+                            key={connector.id}
+                            onSelect={() => addConnector(connector.id)}
+                            className="flex flex-col items-start gap-0.5"
+                          >
+                            <span className="text-[12.5px]">{connector.name}</span>
+                            {connector.description ? (
+                              <span className="text-[11px] text-muted-foreground">
+                                {connector.description}
+                              </span>
+                            ) : null}
+                          </DropdownMenuItem>
+                        ))
+                      )}
+                    </DropdownMenuContent>
+                  </DropdownMenu>
+
+                  <div className="overflow-hidden rounded-lg border border-border">
+                    {selectedConnectorRows.length === 0 ? (
+                      <p className="px-3 py-3.5 text-[12px] text-muted-foreground">
+                        No connectors added yet.
+                      </p>
+                    ) : (
+                      selectedConnectorRows.map((connector) => (
+                        <div
+                          key={connector.id}
+                          className="flex items-center gap-2.5 border-b border-border px-3 py-2 last:border-b-0"
+                        >
+                          <div className="min-w-0 flex-1">
+                            <div className="truncate text-[12.5px]">{connector.name}</div>
+                            {connector.available && connector.description ? (
+                              <div className="truncate text-[11px] text-muted-foreground">
+                                {connector.description}
+                              </div>
+                            ) : null}
+                          </div>
+                          {!connector.available ? (
+                            <span className="shrink-0 text-[11px] text-muted-foreground">
+                              Unavailable — {connector.availability ?? 'not installed'}
+                            </span>
+                          ) : !connector.mainEnabled ? (
+                            <span className="shrink-0 text-[11px] text-muted-foreground">
+                              Main disabled · available here
+                            </span>
+                          ) : null}
+                          <button
+                            type="button"
+                            aria-label={`Remove ${connector.name}`}
+                            onClick={() => removeConnector(connector.id)}
+                            className="flex size-[22px] shrink-0 items-center justify-center rounded text-[12px] text-muted-foreground hover:bg-muted hover:text-destructive"
+                          >
+                            ✕
+                          </button>
+                        </div>
+                      ))
+                    )}
+                  </div>
+                  <p className="mt-2.5 flex gap-2 rounded-lg bg-muted p-2.5 text-[11.5px] leading-snug text-muted-foreground">
+                    <span aria-hidden="true">ⓘ</span>
+                    <span>
+                      Connectors start empty and must be added. Connectors not listed here are
+                      blocked at runtime for this specialist&rsquo;s sessions.
+                    </span>
+                  </p>
+                </div>
               ) : null}
             </div>
-            <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
-              {form.capabilityMode === 'full'
-                ? `${Math.max(0, skillRows.filter((skill) => !skill.missing).length - form.excludedSkillIds.filter((id) => skills.some((skill) => skill.id === id)).length)} Skills included.`
-                : `${form.selectedSkillIds.filter((id) => skills.some((skill) => skill.id === id)).length} Skills selected.`}
-            </p>
-            {form.capabilityMode === 'selected' &&
-            form.selectedSkillIds.some((id) => !skills.some((skill) => skill.id === id)) ? (
-              <p className="mt-1 text-xs text-muted-foreground">
-                Some selected Skill IDs are missing and unavailable.
-              </p>
+
+            {isFullAccess ? (
+              <button
+                type="button"
+                aria-label="Enable select capabilities"
+                onClick={() => setForm((prev) => ({ ...prev, capabilityMode: 'selected' }))}
+                className="absolute inset-0 cursor-pointer rounded-lg"
+              />
             ) : null}
           </div>
         </section>
