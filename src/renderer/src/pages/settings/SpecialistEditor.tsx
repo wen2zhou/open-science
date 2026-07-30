@@ -1,14 +1,8 @@
-import { useEffect, useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, useCallback } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
-import {
-  DropdownMenu,
-  DropdownMenuContent,
-  DropdownMenuItem,
-  DropdownMenuTrigger
-} from '@/components/ui/dropdown-menu'
 import { cn } from '@/lib/utils'
 import {
   SPECIALIST_DESCRIPTION_MAX_LENGTH,
@@ -136,6 +130,44 @@ const SpecialistEditor = ({
   const [hasConflict, setHasConflict] = useState(false)
   const [isReloading, setIsReloading] = useState(false)
   const [activeCapTab, setActiveCapTab] = useState<'skills' | 'connectors'>('skills')
+  const [skillSearchQuery, setSkillSearchQuery] = useState('')
+  const [connectorSearchQuery, setConnectorSearchQuery] = useState('')
+  const skillSearchRef = useRef<HTMLInputElement>(null)
+  const connectorSearchRef = useRef<HTMLInputElement>(null)
+  const [skillPopoverOpen, setSkillPopoverOpen] = useState(false)
+  const [connectorPopoverOpen, setConnectorPopoverOpen] = useState(false)
+  const skillDropdownRef = useRef<HTMLDivElement>(null)
+  const connectorDropdownRef = useRef<HTMLDivElement>(null)
+  const skillTriggerRef = useRef<HTMLButtonElement>(null)
+  const connectorTriggerRef = useRef<HTMLButtonElement>(null)
+
+  const closeSkillDropdown = useCallback(() => setSkillPopoverOpen(false), [])
+  const closeConnectorDropdown = useCallback(() => setConnectorPopoverOpen(false), [])
+
+  useEffect(() => {
+    if (!skillPopoverOpen) return
+    const handle = (e: MouseEvent) => {
+      if (skillDropdownRef.current && !skillDropdownRef.current.contains(e.target as Node)) {
+        closeSkillDropdown()
+      }
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [skillPopoverOpen, closeSkillDropdown])
+
+  useEffect(() => {
+    if (!connectorPopoverOpen) return
+    const handle = (e: MouseEvent) => {
+      if (
+        connectorDropdownRef.current &&
+        !connectorDropdownRef.current.contains(e.target as Node)
+      ) {
+        closeConnectorDropdown()
+      }
+    }
+    document.addEventListener('mousedown', handle)
+    return () => document.removeEventListener('mousedown', handle)
+  }, [connectorPopoverOpen, closeConnectorDropdown])
 
   useEffect(() => {
     void loadConnectors()
@@ -247,6 +279,26 @@ const SpecialistEditor = ({
       .filter((row) => row.available && !form.connectorIds.includes(row.id))
       .sort((a, b) => a.name.localeCompare(b.name))
   }, [connectors, customServers, form.connectorIds])
+
+  const filteredAddableSkills = useMemo(() => {
+    if (!skillSearchQuery.trim()) return addableSkills
+    const q = skillSearchQuery.toLowerCase()
+    return addableSkills.filter(
+      (skill) =>
+        skill.name.toLowerCase().includes(q) ||
+        (skill.description && skill.description.toLowerCase().includes(q))
+    )
+  }, [addableSkills, skillSearchQuery])
+
+  const filteredAddableConnectors = useMemo(() => {
+    if (!connectorSearchQuery.trim()) return addableConnectors
+    const q = connectorSearchQuery.toLowerCase()
+    return addableConnectors.filter(
+      (connector) =>
+        connector.name.toLowerCase().includes(q) ||
+        (connector.description && connector.description.toLowerCase().includes(q))
+    )
+  }, [addableConnectors, connectorSearchQuery])
 
   const addSkill = (id: string): void =>
     setForm((prev) =>
@@ -636,81 +688,158 @@ const SpecialistEditor = ({
                 isFullAccess && 'pointer-events-none opacity-45 select-none'
               )}
             >
-              <div
-                className="mb-3 inline-flex gap-0.5 rounded-lg bg-muted p-1"
-                role="tablist"
-                aria-label="Capability type"
-              >
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeCapTab === 'skills'}
-                  onClick={() => setActiveCapTab('skills')}
-                  className={cn(
-                    'rounded-md px-3 py-1 text-[12.5px] font-medium',
-                    activeCapTab === 'skills'
-                      ? 'bg-card text-foreground shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground'
-                  )}
+              <div className="mb-3 flex items-center justify-between">
+                <div
+                  className="inline-flex gap-0.5 rounded-lg bg-muted p-1"
+                  role="tablist"
+                  aria-label="Capability type"
                 >
-                  Skills{' '}
-                  <span className="ml-0.5 text-[11px] opacity-75">
-                    {form.selectedSkillIds.length}
-                  </span>
-                </button>
-                <button
-                  type="button"
-                  role="tab"
-                  aria-selected={activeCapTab === 'connectors'}
-                  onClick={() => setActiveCapTab('connectors')}
-                  className={cn(
-                    'rounded-md px-3 py-1 text-[12.5px] font-medium',
-                    activeCapTab === 'connectors'
-                      ? 'bg-card text-foreground shadow-sm'
-                      : 'text-muted-foreground hover:text-foreground'
-                  )}
-                >
-                  Connectors{' '}
-                  <span className="ml-0.5 text-[11px] opacity-75">{form.connectorIds.length}</span>
-                </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeCapTab === 'skills'}
+                    onClick={() => setActiveCapTab('skills')}
+                    className={cn(
+                      'rounded-md px-3 py-1 text-[12.5px] font-medium',
+                      activeCapTab === 'skills'
+                        ? 'bg-card text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    Skills{' '}
+                    <span className="ml-0.5 text-[11px] opacity-75">
+                      {form.selectedSkillIds.length}
+                    </span>
+                  </button>
+                  <button
+                    type="button"
+                    role="tab"
+                    aria-selected={activeCapTab === 'connectors'}
+                    onClick={() => setActiveCapTab('connectors')}
+                    className={cn(
+                      'rounded-md px-3 py-1 text-[12.5px] font-medium',
+                      activeCapTab === 'connectors'
+                        ? 'bg-card text-foreground shadow-sm'
+                        : 'text-muted-foreground hover:text-foreground'
+                    )}
+                  >
+                    Connectors{' '}
+                    <span className="ml-0.5 text-[11px] opacity-75">{form.connectorIds.length}</span>
+                  </button>
+                </div>
+
+                {/* Add button + dropdown — right side of the same row */}
+                {activeCapTab === 'skills' ? (
+                  <div className="relative" ref={skillDropdownRef}>
+                    <button
+                      ref={skillTriggerRef}
+                      type="button"
+                      onClick={() => {
+                        setSkillPopoverOpen((prev) => !prev)
+                        setSkillSearchQuery('')
+                        setTimeout(() => skillSearchRef.current?.focus(), 0)
+                      }}
+                      className="flex h-[28px] items-center rounded-lg border border-dashed border-border bg-card px-3 text-[12px] text-muted-foreground hover:bg-muted"
+                    >
+                      ＋ Add a skill
+                    </button>
+                    {skillPopoverOpen ? (
+                      <div className="absolute right-0 top-full z-50 mt-1 flex max-h-[260px] w-[240px] flex-col overflow-y-auto rounded-lg border border-border bg-card shadow-md">
+                        <div className="sticky top-0 z-10 border-b border-border bg-card p-2">
+                          <input
+                            ref={skillSearchRef}
+                            type="search"
+                            placeholder="Search skills…"
+                            value={skillSearchQuery}
+                            onChange={(e) => setSkillSearchQuery(e.target.value)}
+                            className="w-full rounded-md border border-border bg-card px-2.5 py-1.5 text-[12.5px] text-foreground placeholder:text-muted-foreground outline-none focus:border-primary"
+                          />
+                        </div>
+                        <div className="flex-1">
+                          {filteredAddableSkills.length === 0 ? (
+                            <p className="px-3 py-3 text-[12px] text-muted-foreground">
+                              {skillSearchQuery ? 'No matching skills' : 'No more skills to add'}
+                            </p>
+                          ) : (
+                            filteredAddableSkills.map((skill) => (
+                              <button
+                                key={skill.id}
+                                type="button"
+                                onClick={() => {
+                                  addSkill(skill.id)
+                                  setSkillPopoverOpen(false)
+                                }}
+                                className="flex h-[38px] w-full items-center gap-2 px-3 text-left hover:bg-muted"
+                              >
+                                <span className="min-w-0 flex-1 truncate font-mono text-[12.5px]">
+                                  {skill.name}
+                                </span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                ) : (
+                  <div className="relative" ref={connectorDropdownRef}>
+                    <button
+                      ref={connectorTriggerRef}
+                      type="button"
+                      onClick={() => {
+                        setConnectorPopoverOpen((prev) => !prev)
+                        setConnectorSearchQuery('')
+                        setTimeout(() => connectorSearchRef.current?.focus(), 0)
+                      }}
+                      className="flex h-[28px] items-center rounded-lg border border-dashed border-border bg-card px-3 text-[12px] text-muted-foreground hover:bg-muted"
+                    >
+                      ＋ Add a connector
+                    </button>
+                    {connectorPopoverOpen ? (
+                      <div className="absolute right-0 top-full z-50 mt-1 flex max-h-[260px] w-[240px] flex-col overflow-y-auto rounded-lg border border-border bg-card shadow-md">
+                        <div className="sticky top-0 z-10 border-b border-border bg-card p-2">
+                          <input
+                            ref={connectorSearchRef}
+                            type="search"
+                            placeholder="Search connectors…"
+                            value={connectorSearchQuery}
+                            onChange={(e) => setConnectorSearchQuery(e.target.value)}
+                            className="w-full rounded-md border border-border bg-card px-2.5 py-1.5 text-[12.5px] text-foreground placeholder:text-muted-foreground outline-none focus:border-primary"
+                          />
+                        </div>
+                        <div className="flex-1">
+                          {filteredAddableConnectors.length === 0 ? (
+                            <p className="px-3 py-3 text-[12px] text-muted-foreground">
+                              {connectorSearchQuery
+                                ? 'No matching connectors'
+                                : 'No more connectors to add'}
+                            </p>
+                          ) : (
+                            filteredAddableConnectors.map((connector) => (
+                              <button
+                                key={connector.id}
+                                type="button"
+                                onClick={() => {
+                                  addConnector(connector.id)
+                                  setConnectorPopoverOpen(false)
+                                }}
+                                className="flex h-[38px] w-full items-center gap-2 px-3 text-left hover:bg-muted"
+                              >
+                                <span className="min-w-0 flex-1 truncate text-[12.5px]">
+                                  {connector.name}
+                                </span>
+                              </button>
+                            ))
+                          )}
+                        </div>
+                      </div>
+                    ) : null}
+                  </div>
+                )}
               </div>
 
               {activeCapTab === 'skills' ? (
                 <div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="mb-2.5 flex h-[30px] w-full items-center rounded-lg border border-dashed border-border bg-card px-2.5 text-[12.5px] text-muted-foreground hover:bg-muted"
-                      >
-                        ＋ Add a skill…
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      align="start"
-                      className="max-h-[210px] w-[var(--radix-dropdown-menu-trigger-width)] min-w-[260px] overflow-y-auto"
-                    >
-                      {addableSkills.length === 0 ? (
-                        <DropdownMenuItem disabled>No more skills to add</DropdownMenuItem>
-                      ) : (
-                        addableSkills.map((skill) => (
-                          <DropdownMenuItem
-                            key={skill.id}
-                            onSelect={() => addSkill(skill.id)}
-                            className="flex flex-col items-start gap-0.5"
-                          >
-                            <span className="font-mono text-[12.5px]">{skill.name}</span>
-                            {skill.description ? (
-                              <span className="text-[11px] text-muted-foreground">
-                                {skill.description}
-                              </span>
-                            ) : null}
-                          </DropdownMenuItem>
-                        ))
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-
                   <div className="overflow-hidden rounded-lg border border-border">
                     {selectedSkillRows.length === 0 ? (
                       <p className="px-3 py-3.5 text-[12px] text-muted-foreground">
@@ -720,7 +849,7 @@ const SpecialistEditor = ({
                       selectedSkillRows.map((skill) => (
                         <div
                           key={skill.id}
-                          className="flex items-center gap-2.5 border-b border-border px-3 py-2 last:border-b-0"
+                          className="flex h-[40px] items-center gap-2.5 border-b border-border px-3 last:border-b-0"
                         >
                           <div className="min-w-0 flex-1">
                             <div className="truncate font-mono text-[12.5px]">{skill.name}</div>
@@ -772,40 +901,6 @@ const SpecialistEditor = ({
 
               {activeCapTab === 'connectors' ? (
                 <div>
-                  <DropdownMenu>
-                    <DropdownMenuTrigger asChild>
-                      <button
-                        type="button"
-                        className="mb-2.5 flex h-[30px] w-full items-center rounded-lg border border-dashed border-border bg-card px-2.5 text-[12.5px] text-muted-foreground hover:bg-muted"
-                      >
-                        ＋ Add a connector…
-                      </button>
-                    </DropdownMenuTrigger>
-                    <DropdownMenuContent
-                      align="start"
-                      className="max-h-[210px] w-[var(--radix-dropdown-menu-trigger-width)] min-w-[260px] overflow-y-auto"
-                    >
-                      {addableConnectors.length === 0 ? (
-                        <DropdownMenuItem disabled>No more connectors to add</DropdownMenuItem>
-                      ) : (
-                        addableConnectors.map((connector) => (
-                          <DropdownMenuItem
-                            key={connector.id}
-                            onSelect={() => addConnector(connector.id)}
-                            className="flex flex-col items-start gap-0.5"
-                          >
-                            <span className="text-[12.5px]">{connector.name}</span>
-                            {connector.description ? (
-                              <span className="text-[11px] text-muted-foreground">
-                                {connector.description}
-                              </span>
-                            ) : null}
-                          </DropdownMenuItem>
-                        ))
-                      )}
-                    </DropdownMenuContent>
-                  </DropdownMenu>
-
                   <div className="overflow-hidden rounded-lg border border-border">
                     {selectedConnectorRows.length === 0 ? (
                       <p className="px-3 py-3.5 text-[12px] text-muted-foreground">
@@ -815,7 +910,7 @@ const SpecialistEditor = ({
                       selectedConnectorRows.map((connector) => (
                         <div
                           key={connector.id}
-                          className="flex items-center gap-2.5 border-b border-border px-3 py-2 last:border-b-0"
+                          className="flex h-[40px] items-center gap-2.5 border-b border-border px-3 last:border-b-0"
                         >
                           <div className="min-w-0 flex-1">
                             <div className="truncate text-[12.5px]">{connector.name}</div>
