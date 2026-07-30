@@ -12,6 +12,8 @@ import {
   type SpecialistFieldError,
   type SpecialistProfileView
 } from '../../../../shared/specialist'
+import { SpecialistAvatar } from './specialist-avatar'
+import { AVATAR_COLORS, AVATAR_ICONS } from './specialist-icons'
 
 type SpecialistEditorProps = {
   onCancel: () => void
@@ -220,7 +222,14 @@ const SpecialistEditor = ({
             />
           </div>
 
-          <div className="mt-4 grid gap-4 sm:grid-cols-2">
+          <div className="mt-4 grid gap-4 sm:grid-cols-[auto_1fr_1fr]">
+            {/* Live preview — reflects the current icon + color, matching the list */}
+            <div className="flex flex-col items-center gap-1.5 pt-6">
+              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
+                Preview
+              </span>
+              <SpecialistAvatar iconKey={form.iconKey} colorKey={form.colorKey} size="lg" />
+            </div>
             <div>
               <label className="mb-1.5 block text-xs font-semibold">Icon</label>
               <Select
@@ -228,14 +237,26 @@ const SpecialistEditor = ({
                 onValueChange={(iconKey) => setForm((prev) => ({ ...prev, iconKey }))}
               >
                 <SelectTrigger aria-label="Specialist icon">
-                  <span>{ICON_OPTIONS.find((option) => option.key === form.iconKey)?.label}</span>
+                  <span className="flex items-center gap-2">
+                    {(() => {
+                      const Icon = AVATAR_ICONS[form.iconKey] ?? AVATAR_ICONS.brain
+                      return <Icon className="size-4 shrink-0" aria-hidden="true" />
+                    })()}
+                    <span>{ICON_OPTIONS.find((option) => option.key === form.iconKey)?.label}</span>
+                  </span>
                 </SelectTrigger>
                 <SelectContent>
-                  {ICON_OPTIONS.map((option) => (
-                    <SelectItem key={option.key} value={option.key}>
-                      {option.label}
-                    </SelectItem>
-                  ))}
+                  {ICON_OPTIONS.map((option) => {
+                    const Icon = AVATAR_ICONS[option.key] ?? AVATAR_ICONS.brain
+                    return (
+                      <SelectItem key={option.key} value={option.key}>
+                        <span className="flex items-center gap-2">
+                          <Icon className="size-4 shrink-0" aria-hidden="true" />
+                          {option.label}
+                        </span>
+                      </SelectItem>
+                    )
+                  })}
                 </SelectContent>
               </Select>
             </div>
@@ -246,12 +267,26 @@ const SpecialistEditor = ({
                 onValueChange={(colorKey) => setForm((prev) => ({ ...prev, colorKey }))}
               >
                 <SelectTrigger aria-label="Specialist color">
-                  <span>{COLOR_OPTIONS.find((option) => option.key === form.colorKey)?.label}</span>
+                  <span className="flex items-center gap-2">
+                    <span
+                      className="size-3.5 shrink-0 rounded border border-black/10"
+                      style={{ background: AVATAR_COLORS[form.colorKey] }}
+                      aria-hidden="true"
+                    />
+                    <span>{COLOR_OPTIONS.find((option) => option.key === form.colorKey)?.label}</span>
+                  </span>
                 </SelectTrigger>
                 <SelectContent>
                   {COLOR_OPTIONS.map((option) => (
                     <SelectItem key={option.key} value={option.key}>
-                      {option.label}
+                      <span className="flex items-center gap-2">
+                        <span
+                          className="size-3.5 shrink-0 rounded border border-black/10"
+                          style={{ background: AVATAR_COLORS[option.key] }}
+                          aria-hidden="true"
+                        />
+                        {option.label}
+                      </span>
                     </SelectItem>
                   ))}
                 </SelectContent>

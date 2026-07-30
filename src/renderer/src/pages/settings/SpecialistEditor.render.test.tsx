@@ -152,4 +152,34 @@ describe('SpecialistEditor', () => {
     // Create path is not used in edit mode.
     expect(document.body.querySelector('#sp-name-err')).toBeNull()
   })
+
+  it('renders a live preview avatar reflecting the selected icon', async () => {
+    await act(async () => {
+      root.render(
+        <SpecialistEditor
+          editSpecialist={{
+            id: 'rna-reviewer',
+            name: 'RNA_REVIEWER',
+            displayName: 'RNA Reviewer',
+            description: '',
+            systemPrompt: '',
+            iconKey: 'microscope',
+            colorKey: 'teal',
+            enabled: true,
+            capabilityMode: 'full',
+            fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+            selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+            revision: 1
+          }}
+          existingNames={[]}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          onSaveEdit={vi.fn()}
+        />
+      )
+    })
+
+    // The live preview renders the selected icon glyph.
+    expect(document.body.querySelector('[data-specialist-icon="microscope"]')).not.toBeNull()
+  })
 })

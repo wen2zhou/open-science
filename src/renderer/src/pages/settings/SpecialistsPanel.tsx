@@ -1,16 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import {
-  Beaker,
-  BookOpen,
-  Brain,
-  ChevronDown,
-  FlaskConical,
-  Microscope,
-  Pencil,
-  Plus,
-  Search,
-  type LucideIcon
-} from 'lucide-react'
+import { ChevronDown, Pencil, Plus, Search } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -23,6 +12,7 @@ import { SettingsToggle } from './SettingsLayout'
 import { useSpecialistStore } from '@/stores/specialist-store'
 import type { CreateSpecialistInput } from '../../../../shared/specialist'
 import { SpecialistEditor } from './SpecialistEditor'
+import { SpecialistAvatar } from './specialist-avatar'
 
 // Sub-view for the Specialists panel (parallels SkillsView).
 export type SpecialistsView =
@@ -41,49 +31,6 @@ const FILTER_LABELS: Record<CategoryFilter, string> = {
 type SpecialistsPanelProps = {
   view: SpecialistsView
   onNavigate: (view: SpecialistsView) => void
-}
-
-// The color palette used for specialist avatar backgrounds.
-const AVATAR_COLORS: Record<string, string> = {
-  teal: '#e0f2f1',
-  purple: '#ede9fe',
-  amber: '#fef3c7',
-  green: '#dcfce7',
-  blue: '#dbeafe',
-  slate: '#f1f5f9'
-}
-const DEFAULT_AVATAR_COLOR = '#ececea'
-
-const AVATAR_ICONS: Record<string, LucideIcon> = {
-  brain: Brain,
-  beaker: Beaker,
-  'book-open': BookOpen,
-  'flask-conical': FlaskConical,
-  microscope: Microscope,
-  search: Search
-}
-
-const getAvatarStyle = (colorKey?: string): React.CSSProperties => ({
-  background: colorKey ? (AVATAR_COLORS[colorKey] ?? DEFAULT_AVATAR_COLOR) : DEFAULT_AVATAR_COLOR
-})
-
-const SpecialistAvatar = ({
-  iconKey,
-  colorKey
-}: {
-  iconKey?: string
-  colorKey?: string
-}): React.JSX.Element => {
-  const Icon = iconKey ? (AVATAR_ICONS[iconKey] ?? Brain) : Brain
-  return (
-    <span
-      className="flex size-7 shrink-0 items-center justify-center rounded-lg text-[13px]"
-      style={getAvatarStyle(colorKey)}
-      aria-hidden="true"
-    >
-      <Icon className="size-3.5" data-specialist-icon={iconKey ?? 'brain'} />
-    </span>
-  )
 }
 
 const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JSX.Element => {
@@ -258,7 +205,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                           type="button"
                           onClick={() => onNavigate({ kind: 'edit', id: item.id })}
                           aria-label={`Edit ${item.displayName}`}
-                          className="flex min-w-0 flex-1 items-center gap-2 text-left"
+                          className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           {/* Avatar */}
                           <SpecialistAvatar iconKey={item.iconKey} colorKey={item.colorKey} />
