@@ -20,6 +20,11 @@ let container: HTMLDivElement
 let root: Root
 
 beforeEach(() => {
+  useSettingsStore.setState({
+    skills: [],
+    loadSkills: vi.fn().mockResolvedValue(undefined),
+    loadConnectors: vi.fn().mockResolvedValue(undefined)
+  })
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -32,6 +37,90 @@ afterEach(() => {
 })
 
 describe('SpecialistEditor', () => {
+  it('edits Skill scopes independently, shows Main-disabled and missing IDs, and summarizes the active mode', async () => {
+    const onSaveEdit = vi.fn().mockResolvedValue(undefined)
+    useSettingsStore.setState({
+      skills: [
+        {
+          id: 'main-disabled',
+          name: 'Main disabled',
+          description: '',
+          source: 'featured',
+          enabled: false,
+          updatedAt: ''
+        },
+        {
+          id: 'included',
+          name: 'Included',
+          description: '',
+          source: 'featured',
+          enabled: true,
+          updatedAt: ''
+        }
+      ],
+      loadSkills: vi.fn().mockResolvedValue(undefined)
+    })
+    await act(async () => {
+      root.render(
+        <SpecialistEditor
+          editSpecialist={{
+            id: 'skills-bot',
+            name: 'Skills Bot',
+            description: '',
+            systemPrompt: '',
+            enabled: true,
+            capabilityMode: 'full',
+            fullAccess: {
+              excludedSkillIds: ['included'],
+              excludedConnectorIds: [],
+              connectorTools: []
+            },
+            selectedCapabilities: {
+              skillIds: ['main-disabled', 'missing-stable-id'],
+              connectorIds: [],
+              connectorTools: []
+            },
+            revision: 1
+          }}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          onSaveEdit={onSaveEdit}
+        />
+      )
+    })
+    expect(document.body.textContent).toContain('1 Skills included.')
+    expect(document.body.textContent).toContain('Main disabled · available here')
+    await act(async () => {
+      fireEvent.click(
+        Array.from(document.body.querySelectorAll<HTMLButtonElement>('[role="radio"]')).find(
+          (button) => button.textContent === 'Selected capabilities'
+        )!
+      )
+    })
+    expect(document.body.textContent).toContain('1 Skills selected.')
+    expect(document.body.textContent).toContain('missing-stable-id')
+    expect(document.body.textContent).toContain('Missing · unavailable')
+    expect(document.body.textContent).not.toContain('Hard enforced')
+    expect(document.body.textContent).not.toContain('Guidance only')
+    await act(async () => {
+      fireEvent.click(
+        document.body.querySelector<HTMLInputElement>('[aria-label="Include Main disabled"]')!
+      )
+      fireEvent.click(
+        Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+          (button) => button.textContent === 'Save changes'
+        )!
+      )
+    })
+    expect(onSaveEdit).toHaveBeenCalledWith(
+      expect.objectContaining({
+        capabilityMode: 'selected',
+        fullAccess: expect.objectContaining({ excludedSkillIds: ['included'] }),
+        selectedCapabilities: expect.objectContaining({ skillIds: ['missing-stable-id'] })
+      })
+    )
+  })
+
   it('persists Full exclusions and Selected inclusions without losing either mode', async () => {
     const onSaveEdit = vi.fn().mockResolvedValue(undefined)
     useSettingsStore.setState({

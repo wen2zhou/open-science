@@ -36,6 +36,59 @@ export type SpecialistSelectedConfig = {
   connectorTools: ConnectorToolRule[]
 }
 
+// A Skill catalog entry deliberately uses the durable app id for policy and the framework-facing
+// name only at the transport boundary. Main Agent enablement is not represented here: Specialists
+// own their capability policy independently of the Main Agent's disabled-skill preference.
+export type SpecialistSkillCatalogEntry = {
+  id: string
+  frameworkName: string
+  displayName?: string
+}
+
+export type EffectiveSpecialistSkills =
+  | { kind: 'main' }
+  | { kind: 'unavailable'; reason: string }
+  | {
+      kind: 'specialist'
+      skillIds: string[]
+      frameworkNames: string[]
+      missingSkillIds: string[]
+    }
+
+// Resolve against the live catalog; callers must not snapshot catalog contents into a profile or
+// session. Full access includes future entries by construction, while selected is an explicit list.
+export const resolveEffectiveSpecialistSkills = (
+  specialist:
+    | Pick<SpecialistProfileView, 'capabilityMode' | 'fullAccess' | 'selectedCapabilities'>
+    | undefined,
+  catalog: SpecialistSkillCatalogEntry[]
+): EffectiveSpecialistSkills => {
+  if (specialist === undefined) return { kind: 'main' }
+  const byId = new Map(catalog.map((skill) => [skill.id, skill]))
+  const requestedIds =
+    specialist.capabilityMode === 'full'
+      ? catalog
+          .filter((skill) => !specialist.fullAccess.excludedSkillIds.includes(skill.id))
+          .map((skill) => skill.id)
+      : specialist.selectedCapabilities.skillIds
+
+  const skillIds: string[] = []
+  const frameworkNames: string[] = []
+  const missingSkillIds: string[] = []
+  for (const id of requestedIds) {
+    const skill = byId.get(id)
+    if (!skill) {
+      // Exclusions are valid durable references too, but a missing exclusion has no local effect.
+      if (specialist.capabilityMode === 'selected') missingSkillIds.push(id)
+      continue
+    }
+    if (skillIds.includes(id)) continue
+    skillIds.push(id)
+    frameworkNames.push(skill.frameworkName)
+  }
+  return { kind: 'specialist', skillIds, frameworkNames, missingSkillIds }
+}
+
 // Renderer-safe view of one specialist profile (no secret fields).
 export type SpecialistProfileView = {
   id: string

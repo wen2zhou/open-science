@@ -644,7 +644,8 @@ const sendWorkspaceMessage = async (
           sessionProjectName,
           currentSession?.permissionProfile ?? permissionProfile,
           currentSession?.agentFrameworkId,
-          currentSession?.agentBackendId
+          currentSession?.agentBackendId,
+          currentSession?.specialistId
         )
 
         contextResetFromResume = Boolean(resumeResult?.contextReset)
@@ -829,7 +830,8 @@ const resumeInterruptedWorkspaceSession = async (
       session.projectId,
       session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
       session.agentFrameworkId,
-      session.agentBackendId
+      session.agentBackendId,
+      session.specialistId
     )
     // Adopting a fresh agent session (framework switch, or an unresumable restart) wipes the agent's
     // context; capture that so the re-sent turn below replays the transcript. The shared send path's

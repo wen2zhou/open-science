@@ -934,7 +934,7 @@ describe('SettingsPage layout', () => {
     })
 
     expect(document.body.querySelector('h3')?.textContent).toBe('Identity')
-    expect(document.body.querySelector<HTMLInputElement>('#sp-display-name')).not.toBeNull()
+    expect(document.body.querySelector<HTMLInputElement>('#sp-name')).not.toBeNull()
   })
 
   it('pushes Agent after storage recovery so Back returns to Storage', async () => {

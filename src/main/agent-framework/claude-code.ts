@@ -86,7 +86,11 @@ export const claudeCodeFramework: AgentFramework = {
     // Shared mode adds app-owned settings/plugins at the SDK flag layer via sessionOptions.
     const meta: Record<string, unknown> = {
       claudeCode: {
-        options: { ...ctx.sessionOptions, settingSources: ['user'] }
+        options: {
+          ...ctx.sessionOptions,
+          settingSources: ['user'],
+          ...(ctx.skillWhitelist !== undefined ? { skills: ctx.skillWhitelist } : {})
+        }
       }
     }
 

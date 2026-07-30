@@ -28,6 +28,7 @@ import {
   X
 } from 'lucide-react'
 import { useRef, useState } from 'react'
+import { resolveEffectiveSpecialistSkills } from '../../../../shared/specialist'
 
 import { FileDropOverlay } from '@/components/FileDropOverlay'
 import { RemoteJobBadge } from '@/components/RemoteJobBadge'
@@ -43,6 +44,8 @@ import { useFileDropZone } from '@/hooks/useFileDropZone'
 import { cn } from '@/lib/utils'
 import type { ChatSession } from '@/stores/session-store'
 import { useSessionJobStore } from '@/stores/session-job-store'
+import { useSettingsStore } from '@/stores/settings-store'
+import { useSpecialistStore } from '@/stores/specialist-store'
 
 import { ComposerEditor } from './composer/ComposerEditor'
 import type { ComposerUploadTransfer } from './composer-upload-transfer'
@@ -201,6 +204,8 @@ const ConversationPanel = ({
   onSpecialistChange,
   specialistReadOnly = false
 }: ConversationPanelProps): React.JSX.Element => {
+  const specialistItems = useSpecialistStore((state) => state.items)
+  const catalogSkills = useSettingsStore((state) => state.skills)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   // Local so the interrupted banner can show a spinner and block a double-resume until the request settles.
   const [isResuming, setIsResuming] = useState(false)
@@ -223,6 +228,24 @@ const ConversationPanel = ({
   // Fall back to classifying the raw error for sessions persisted before the flag existed (undefined).
   const isRunErrorReportable =
     activeSession?.errorReportable ?? isReportableRunFailure(activeSession?.error)
+
+  const activeSpecialist = specialistId
+    ? specialistItems.find((item) => item.kind === 'custom' && item.id === specialistId)
+    : undefined
+  const effectiveSpecialistSkills = resolveEffectiveSpecialistSkills(
+    activeSpecialist?.kind === 'custom' ? activeSpecialist : undefined,
+    catalogSkills.map((skill) => ({
+      id: skill.id,
+      frameworkName: skill.source === 'featured' ? skill.id : skill.name,
+      displayName: skill.name
+    }))
+  )
+  const allowedSkillIds =
+    effectiveSpecialistSkills.kind === 'specialist'
+      ? effectiveSpecialistSkills.skillIds
+      : specialistId
+        ? []
+        : undefined
 
   // Re-attaches the interrupted session; on success the banner unmounts, so guard the state update.
   const handleResume = async (): Promise<void> => {
@@ -548,6 +571,7 @@ const ConversationPanel = ({
                           disabled={!canEditDraft}
                           placeholder="Ask anything — / for skills, @ for files"
                           ariaLabel="Ask anything"
+                          allowedSkillIds={allowedSkillIds}
                         />
                       </div>
 

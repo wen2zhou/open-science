@@ -43,6 +43,7 @@ import {
   buildSpecialistIdentityAppend,
   buildSpecialistIdentityPrefix
 } from '../specialist/identity'
+import { resolveEffectiveSpecialistSkills } from '../../shared/specialist'
 
 const log = createLogger('acp')
 
@@ -213,6 +214,22 @@ const createRuntime = ({
               // Return both so the runtime can choose by framework.
               if (frameworkId === 'claude-code') return { append, prefix: '' }
               return { append: '', prefix }
+            }
+          : undefined,
+        resolveSpecialistSkills: profileService
+          ? async (specialistId) => {
+              try {
+                const profile = await profileService.getById(specialistId)
+                if (!profile.enabled) {
+                  return { kind: 'unavailable', reason: 'The bound specialist is disabled.' }
+                }
+                return resolveEffectiveSpecialistSkills(
+                  profile,
+                  await settingsService.listSpecialistSkillCatalog()
+                )
+              } catch {
+                return { kind: 'unavailable', reason: 'The bound specialist is unavailable.' }
+              }
             }
           : undefined
       })

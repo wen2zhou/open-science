@@ -125,6 +125,7 @@ const registerWithFakes = (overrides?: {
   onSessionUnavailable?: (sessionId: string) => void
   onAllSessionsCancellationRequested?: () => void
   profileService?: { getById: (id: string) => Promise<unknown> }
+  specialistSkillCatalog?: Array<{ id: string; frameworkName: string; displayName: string }>
 }): void => {
   const taskNotifications =
     overrides?.taskNotifications ??
@@ -142,7 +143,8 @@ const registerWithFakes = (overrides?: {
     authorizeSkillImportReferencedUploads: vi.fn(async () => () => undefined),
     settingsService: {
       captureActiveAgentBackendSelection: vi.fn().mockResolvedValue({}),
-      resolveAgentBackend: vi.fn().mockResolvedValue({})
+      resolveAgentBackend: vi.fn().mockResolvedValue({}),
+      listSpecialistSkillCatalog: vi.fn().mockResolvedValue(overrides?.specialistSkillCatalog ?? [])
     } as never,
     taskNotifications: taskNotifications as never,
     onSessionCancellationRequested: overrides?.onSessionCancellationRequested,
@@ -177,7 +179,7 @@ afterEach(() => {
 describe('registerAcpIpcHandlers — Specialist identity resolver', () => {
   it('passes a ProfileService-backed resolver into each runtime', async () => {
     const profile = {
-      displayName: 'RNA-seq Reviewer',
+      name: 'RNA-seq Reviewer',
       systemPrompt: 'Review RNA-seq quality.',
       enabled: true
     }
@@ -196,6 +198,32 @@ describe('registerAcpIpcHandlers — Specialist identity resolver', () => {
       prefix: ''
     })
     expect(profileService.getById).toHaveBeenCalledWith('uuid-1')
+  })
+
+  it('wires the production ProfileService and live catalog into the Specialist Skill resolver', async () => {
+    const profileService = {
+      getById: vi.fn().mockResolvedValue({
+        enabled: true,
+        capabilityMode: 'selected',
+        fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+        selectedCapabilities: { skillIds: ['main-disabled'], connectorIds: [], connectorTools: [] }
+      })
+    }
+    registerWithFakes({
+      profileService,
+      specialistSkillCatalog: [
+        { id: 'main-disabled', frameworkName: 'Main Disabled', displayName: 'Main Disabled' }
+      ]
+    })
+    const options = AcpRuntimeMock.mock.calls.at(-1)?.[0] as {
+      resolveSpecialistSkills?: (id: string) => Promise<unknown>
+    }
+    await expect(options.resolveSpecialistSkills?.('uuid-1')).resolves.toEqual({
+      kind: 'specialist',
+      skillIds: ['main-disabled'],
+      frameworkNames: ['Main Disabled'],
+      missingSkillIds: []
+    })
   })
 })
 

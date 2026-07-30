@@ -46,6 +46,7 @@ import {
   type SessionPermissionProfileState
 } from '../../shared/permission-profiles'
 import { type AgentFrameworkId } from '../../shared/settings'
+import type { EffectiveSpecialistSkills } from '../../shared/specialist'
 import type { ModelReasoningEffort, ResolvedReasoningEffort } from '../../shared/reasoning-effort'
 import {
   claudeCodeFramework,
@@ -207,6 +208,10 @@ type AcpRuntimeOptions = {
     specialistId: string,
     framework: string
   ) => Promise<{ append: string; prefix: string } | undefined>
+  // Re-resolves capabilities from the latest Specialist profile and installed catalog. This is
+  // intentionally separate from Main Agent enablement: a Main-disabled installed Skill remains
+  // eligible for a Specialist.
+  resolveSpecialistSkills?: (specialistId: string) => Promise<EffectiveSpecialistSkills>
 }
 
 // Turn-scoped skill force-load hooks, wired from the settings service. Optional so tests that construct
@@ -761,6 +766,7 @@ class AcpRuntime {
   // Per-session specialist identity prompt prefix (Codex / OpenCode only). Injected once at
   // createSession time and prepended to every prompt turn for the session's lifetime.
   private readonly sessionSpecialistPrefixes = new Map<string, string>()
+  private readonly sessionSpecialistIds = new Map<string, string>()
   // Framework control turns use a separate lock so an overflowed prompt's late `finally` can release
   // only its own prompt lock without making an in-progress native compaction look idle.
   private readonly contextCompactionInFlightSessionIds = new Set<string>()
@@ -1441,6 +1447,7 @@ class AcpRuntime {
       // included in session/new. Main process reads the latest Profile — renderer only sends the UUID.
       let specialistAppend: string | undefined
       let specialistPrefix: string | undefined
+      let specialistSkills: EffectiveSpecialistSkills | undefined
       if (request.specialistId) {
         if (!this.options.resolveSpecialistIdentity) {
           // A UUID must never quietly fall back to Main Agent just because startup omitted the
@@ -1459,6 +1466,7 @@ class AcpRuntime {
         }
         specialistAppend = identity.append || undefined
         specialistPrefix = identity.prefix || undefined
+        specialistSkills = await this.options.resolveSpecialistSkills?.(request.specialistId)
       }
 
       log.info('createSession: createMcpServers', {
@@ -1479,7 +1487,7 @@ class AcpRuntime {
         .buildSession({
           cwd: sessionCwd,
           mcpServers,
-          ...this.buildSessionMetaArg(extraAppends)
+          ...this.buildSessionMetaArg(extraAppends, specialistSkills)
         })
         .start()
 
@@ -1488,6 +1496,8 @@ class AcpRuntime {
       if (specialistPrefix) {
         this.sessionSpecialistPrefixes.set(session.sessionId, specialistPrefix)
       }
+      if (request.specialistId)
+        this.sessionSpecialistIds.set(session.sessionId, request.specialistId)
 
       log.info('createSession: configurePermissionProfile', { sessionId: session.sessionId })
       try {
@@ -1585,6 +1595,7 @@ class AcpRuntime {
   private async resumeSessionOperation(
     request: AcpResumeSessionRequest
   ): Promise<AcpCreateSessionResponse> {
+    if (request.specialistId) this.sessionSpecialistIds.set(request.sessionId, request.specialistId)
     const sessionCwd = resolve(request.cwd || this.cwd || this.options.defaultCwd)
     const projectName = this.normalizeProjectName(request.projectName)
 
@@ -1926,7 +1937,10 @@ class AcpRuntime {
         sessionId: request.sessionId,
         cwd: sessionCwd,
         mcpServers,
-        ...this.buildSessionMetaArg()
+        ...this.buildSessionMetaArg(
+          [],
+          await this.resolveCurrentSpecialistSkills(request.sessionId)
+        )
       })
     } catch (error) {
       if (!isUnresumableSessionError(error)) throw error
@@ -2013,7 +2027,10 @@ class AcpRuntime {
       .buildSession({
         cwd: sessionCwd,
         mcpServers,
-        ...this.buildSessionMetaArg()
+        ...this.buildSessionMetaArg(
+          [],
+          await this.resolveCurrentSpecialistSkills(request.sessionId)
+        )
       })
       .start()
 
@@ -2560,6 +2577,28 @@ class AcpRuntime {
       throw new Error('An ACP prompt is already running for this session')
     }
 
+    // A chip can survive a catalog/profile edit in the renderer. Re-resolve immediately before
+    // dispatch so it cannot be used to escape the active Specialist scope.
+    // Avoid yielding for ordinary (non-Specialist) sessions. The prompt lock below is intentionally
+    // claimed in the caller's synchronous turn so a context reset cannot race a just-dispatched prompt
+    // before it has registered ownership. Specialist sessions still await their authoritative scope
+    // resolution before dispatch, preserving the fail-closed validation path.
+    const currentSpecialistSkills =
+      this.sessionSpecialistIds.has(request.sessionId) && this.options.resolveSpecialistSkills
+        ? await this.resolveCurrentSpecialistSkills(request.sessionId)
+        : undefined
+    if (currentSpecialistSkills && currentSpecialistSkills.kind !== 'main') {
+      if (currentSpecialistSkills.kind === 'unavailable') {
+        throw new Error(currentSpecialistSkills.reason)
+      }
+      const rejected = (request.forcedSkillIds ?? []).find(
+        (id) => !currentSpecialistSkills.skillIds.includes(id)
+      )
+      if (rejected) {
+        throw new Error(`Skill "${rejected}" is not available to the active specialist.`)
+      }
+    }
+
     // Turn-scoped skill force-load: a skill the user picked but has toggled off must run this turn only.
     // If any pick is currently disabled, mark the picks forced and respawn the agent (drop the connection,
     // then resume the same session) so the fresh spawn's provisioning materializes them with full context
@@ -2703,7 +2742,9 @@ class AcpRuntime {
       // session _meta but repeats the short activity declaration reminder here; frameworks without a
       // session preset carry the complete guidance as a prompt prefix.
       const { promptPrefix: frameworkPromptPrefix } = this.framework.buildSessionSetup({
-        systemPromptAppends: this.getSystemPromptAppends(),
+        systemPromptAppends: this.getSystemPromptAppends(
+          this.specialistSkillGuidance(currentSpecialistSkills)
+        ),
         turnPromptReminders: this.getTurnPromptReminders(),
         sessionOptions: this.pendingSessionOptions
       })
@@ -3123,6 +3164,7 @@ class AcpRuntime {
     this.promptInFlightSessionIds.delete(request.sessionId)
     this.contextCompactionInFlightSessionIds.delete(request.sessionId)
     this.sessionSpecialistPrefixes.delete(request.sessionId)
+    this.sessionSpecialistIds.delete(request.sessionId)
 
     // Only announce a deletion and shift the current session when something was actually attached; a
     // detached cleanup (post-switch) must not emit a spurious event or move currentSessionId.
@@ -4114,7 +4156,7 @@ class AcpRuntime {
     )
   }
 
-  private getSystemPromptAppends(): string[] {
+  private getSystemPromptAppends(skillGuidance?: string): string[] {
     // Each append names MCP tools that only exist when that tooling is actually wired for this session;
     // omit it otherwise so the agent isn't told to use tools it wasn't given.
     return [
@@ -4126,8 +4168,30 @@ class AcpRuntime {
         : []),
       ...(this.artifactToolingAvailable() ? [ARTIFACT_FILE_SYSTEM_PROMPT_APPEND] : []),
       ...(this.notebookToolingAvailable() ? [NOTEBOOK_SYSTEM_PROMPT_APPEND] : []),
-      ...(this.skillImportToolingAvailable() ? [SKILL_IMPORT_SYSTEM_PROMPT_APPEND] : [])
+      ...(this.skillImportToolingAvailable() ? [SKILL_IMPORT_SYSTEM_PROMPT_APPEND] : []),
+      ...(skillGuidance ? [skillGuidance] : [])
     ]
+  }
+
+  private async resolveCurrentSpecialistSkills(
+    sessionId: string
+  ): Promise<EffectiveSpecialistSkills | undefined> {
+    const specialistId = this.sessionSpecialistIds.get(sessionId)
+    if (!specialistId || !this.options.resolveSpecialistSkills) return undefined
+    try {
+      return await this.options.resolveSpecialistSkills(specialistId)
+    } catch {
+      return { kind: 'unavailable', reason: 'The bound specialist is unavailable.' }
+    }
+  }
+
+  // Codex and OpenCode have no session-native whitelist. Their guidance is intentionally factual
+  // rather than presented as an isolation boundary; enforcement remains the picker/send gate.
+  private specialistSkillGuidance(
+    skills: EffectiveSpecialistSkills | undefined
+  ): string | undefined {
+    if (this.framework.id === 'claude-code' || skills?.kind !== 'specialist') return undefined
+    return `Allowed Specialist Skills for this session:\n${skills.frameworkNames.map((name) => `- ${name}`).join('\n')}`
   }
 
   private getTurnPromptReminders(): string[] {
@@ -4141,10 +4205,20 @@ class AcpRuntime {
   // options, and system-prompt appends; opencode returns no meta and uses a prompt prefix instead.
   // `extraAppends` lets createSession inject a one-off specialist identity without touching the
   // shared pendingSystemPromptAppends that apply to every session on this runtime generation.
-  private buildSessionMetaArg(extraAppends: string[] = []): { _meta?: Record<string, unknown> } {
+  private buildSessionMetaArg(
+    extraAppends: string[] = [],
+    specialistSkills?: EffectiveSpecialistSkills
+  ): { _meta?: Record<string, unknown> } {
+    const skillWhitelist =
+      specialistSkills?.kind === 'specialist'
+        ? specialistSkills.frameworkNames
+        : specialistSkills?.kind === 'unavailable'
+          ? []
+          : undefined
     const setup = this.framework.buildSessionSetup({
       systemPromptAppends: [...this.getSystemPromptAppends(), ...extraAppends],
-      sessionOptions: this.pendingSessionOptions
+      sessionOptions: this.pendingSessionOptions,
+      ...(skillWhitelist !== undefined ? { skillWhitelist } : {})
     })
 
     return setup.meta ? { _meta: setup.meta } : {}

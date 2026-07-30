@@ -299,6 +299,8 @@ export type AcpResumeSessionRequest = {
   permissionProfile?: PermissionProfileId
   previousFrameworkId?: AgentFrameworkId
   previousBackendId?: string
+  // Durable session binding, supplied on restore so session/resume reissues the Specialist whitelist.
+  specialistId?: string
 }
 
 export type AcpCompactSessionRequest = {

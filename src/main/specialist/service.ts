@@ -7,7 +7,9 @@ import type {
   SpecialistProfileView,
   SpecialistListItem,
   CreateSpecialistInput,
-  UpdateSpecialistInput
+  UpdateSpecialistInput,
+  SpecialistFullAccessConfig,
+  SpecialistSelectedConfig
 } from '../../shared/specialist'
 import {
   validateCreateSpecialistInput,
@@ -51,9 +53,11 @@ const assertCapabilityConfigShape = (
   if (input.fullAccess !== undefined) {
     const config = input.fullAccess
     if (
-      !isStringArray(config.excludedSkillIds) ||
-      !isStringArray(config.excludedConnectorIds) ||
-      !isConnectorToolRuleArray(config.connectorTools)
+      !config ||
+      typeof config !== 'object' ||
+      !isStringArray((config as SpecialistFullAccessConfig).excludedSkillIds) ||
+      !isStringArray((config as SpecialistFullAccessConfig).excludedConnectorIds) ||
+      !isConnectorToolRuleArray((config as SpecialistFullAccessConfig).connectorTools)
     ) {
       throw new Error('Full access capability configuration is invalid.')
     }
@@ -61,9 +65,11 @@ const assertCapabilityConfigShape = (
   if (input.selectedCapabilities !== undefined) {
     const config = input.selectedCapabilities
     if (
-      !isStringArray(config.skillIds) ||
-      !isStringArray(config.connectorIds) ||
-      !isConnectorToolRuleArray(config.connectorTools)
+      !config ||
+      typeof config !== 'object' ||
+      !isStringArray((config as SpecialistSelectedConfig).skillIds) ||
+      !isStringArray((config as SpecialistSelectedConfig).connectorIds) ||
+      !isConnectorToolRuleArray((config as SpecialistSelectedConfig).connectorTools)
     ) {
       throw new Error('Selected capabilities configuration is invalid.')
     }

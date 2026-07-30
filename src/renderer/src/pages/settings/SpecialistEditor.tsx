@@ -33,6 +33,8 @@ type FormState = {
   iconKey: string
   colorKey: string
   capabilityMode: 'full' | 'selected'
+  excludedSkillIds: string[]
+  selectedSkillIds: string[]
   excludedConnectorIds: string[]
   connectorIds: string[]
 }
@@ -43,6 +45,13 @@ type ConnectorRow = {
   mainEnabled: boolean
   available: boolean
   availability?: 'unavailable' | 'unauthenticated'
+}
+
+type SkillRow = {
+  id: string
+  name: string
+  mainEnabled: boolean
+  missing: boolean
 }
 
 const ICON_OPTIONS = [
@@ -72,8 +81,10 @@ const SpecialistEditor = ({
 }: SpecialistEditorProps): React.JSX.Element => {
   const isEdit = editSpecialist !== undefined
   const connectors = useSettingsStore((state) => state.connectors)
+  const skills = useSettingsStore((state) => state.skills)
   const customServers = useSettingsStore((state) => state.customServers)
   const loadConnectors = useSettingsStore((state) => state.loadConnectors)
+  const loadSkills = useSettingsStore((state) => state.loadSkills)
   const [form, setForm] = useState<FormState>(() =>
     editSpecialist
       ? {
@@ -83,6 +94,8 @@ const SpecialistEditor = ({
           iconKey: editSpecialist.iconKey ?? 'brain',
           colorKey: editSpecialist.colorKey ?? 'purple',
           capabilityMode: editSpecialist.capabilityMode,
+          excludedSkillIds: editSpecialist.fullAccess.excludedSkillIds,
+          selectedSkillIds: editSpecialist.selectedCapabilities.skillIds,
           excludedConnectorIds: editSpecialist.fullAccess.excludedConnectorIds,
           connectorIds: editSpecialist.selectedCapabilities.connectorIds
         }
@@ -93,6 +106,8 @@ const SpecialistEditor = ({
           iconKey: 'brain',
           colorKey: 'purple',
           capabilityMode: 'full',
+          excludedSkillIds: [],
+          selectedSkillIds: [],
           excludedConnectorIds: [],
           connectorIds: []
         }
@@ -104,6 +119,10 @@ const SpecialistEditor = ({
   useEffect(() => {
     void loadConnectors()
   }, [loadConnectors])
+
+  useEffect(() => {
+    if (skills.length === 0) void loadSkills()
+  }, [skills.length, loadSkills])
 
   // Persist references to unavailable entries so a temporarily missing connector is visible and
   // cannot silently broaden the profile when it returns. Main-disabled installed connectors remain
@@ -130,6 +149,22 @@ const SpecialistEditor = ({
     }
     return known.sort((a, b) => a.name.localeCompare(b.name))
   }, [connectors, customServers, form.connectorIds, form.excludedConnectorIds])
+
+  // Main-disabled installed Skills remain selectable for a Specialist. Persisted IDs absent from
+  // the live catalog are rendered locally so the user can remove them without blocking the session.
+  const skillRows = useMemo(() => {
+    const known: SkillRow[] = skills.map((skill) => ({
+      id: skill.id,
+      name: skill.name,
+      mainEnabled: skill.enabled,
+      missing: false
+    }))
+    const ids = new Set(known.map((skill) => skill.id))
+    for (const id of [...form.excludedSkillIds, ...form.selectedSkillIds]) {
+      if (!ids.has(id)) known.push({ id, name: id, mainEnabled: false, missing: true })
+    }
+    return known.sort((a, b) => a.name.localeCompare(b.name))
+  }, [skills, form.excludedSkillIds, form.selectedSkillIds])
 
   const getFieldError = (field: SpecialistFieldError['field']): string | undefined =>
     fieldErrors.find((e) => e.field === field)?.message
@@ -161,10 +196,12 @@ const SpecialistEditor = ({
         capabilityMode: form.capabilityMode,
         fullAccess: {
           ...(editSpecialist?.fullAccess ?? { excludedSkillIds: [], connectorTools: [] }),
+          excludedSkillIds: form.excludedSkillIds,
           excludedConnectorIds: form.excludedConnectorIds
         },
         selectedCapabilities: {
           ...(editSpecialist?.selectedCapabilities ?? { skillIds: [], connectorTools: [] }),
+          skillIds: form.selectedSkillIds,
           connectorIds: form.connectorIds
         }
       }
@@ -422,6 +459,69 @@ const SpecialistEditor = ({
             })}
             {connectorRows.length === 0 ? (
               <p className="px-3 py-2 text-xs text-muted-foreground">Loading connectors…</p>
+            ) : null}
+          </div>
+          <div className="mt-5">
+            <p className="mb-2 text-xs text-muted-foreground">
+              {form.capabilityMode === 'full'
+                ? 'All installed Skills are allowed unless excluded below; future Skills are included automatically.'
+                : 'Only selected installed Skills are allowed.'}
+            </p>
+            <div className="max-h-52 space-y-1 overflow-y-auto rounded-lg border border-border p-2">
+              {skillRows.map((skill) => {
+                const checked =
+                  form.capabilityMode === 'full'
+                    ? !form.excludedSkillIds.includes(skill.id)
+                    : form.selectedSkillIds.includes(skill.id)
+                return (
+                  <label
+                    key={skill.id}
+                    className="flex cursor-pointer items-center gap-2 rounded px-2 py-1.5 text-sm hover:bg-muted"
+                  >
+                    <input
+                      type="checkbox"
+                      aria-label={`${form.capabilityMode === 'full' ? 'Allow' : 'Include'} ${skill.name}`}
+                      checked={checked}
+                      onChange={() =>
+                        setForm((current) => {
+                          const ids =
+                            current.capabilityMode === 'full'
+                              ? current.excludedSkillIds
+                              : current.selectedSkillIds
+                          const next = checked
+                            ? ids.filter((id) => id !== skill.id)
+                            : [...ids, skill.id]
+                          return current.capabilityMode === 'full'
+                            ? { ...current, excludedSkillIds: next }
+                            : { ...current, selectedSkillIds: next }
+                        })
+                      }
+                    />
+                    <span className="min-w-0 flex-1 truncate">{skill.name}</span>
+                    <span className="text-[11px] text-muted-foreground">
+                      {skill.missing
+                        ? 'Missing · unavailable'
+                        : skill.mainEnabled
+                          ? 'Available'
+                          : 'Main disabled · available here'}
+                    </span>
+                  </label>
+                )
+              })}
+              {skillRows.length === 0 ? (
+                <p className="px-2 py-1 text-xs text-muted-foreground">Loading Skills…</p>
+              ) : null}
+            </div>
+            <p className="mt-2 text-xs text-muted-foreground" aria-live="polite">
+              {form.capabilityMode === 'full'
+                ? `${Math.max(0, skillRows.filter((skill) => !skill.missing).length - form.excludedSkillIds.filter((id) => skills.some((skill) => skill.id === id)).length)} Skills included.`
+                : `${form.selectedSkillIds.filter((id) => skills.some((skill) => skill.id === id)).length} Skills selected.`}
+            </p>
+            {form.capabilityMode === 'selected' &&
+            form.selectedSkillIds.some((id) => !skills.some((skill) => skill.id === id)) ? (
+              <p className="mt-1 text-xs text-muted-foreground">
+                Some selected Skill IDs are missing and unavailable.
+              </p>
             ) : null}
           </div>
         </section>

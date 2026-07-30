@@ -1493,7 +1493,8 @@ describe('resuming an interrupted session on demand', () => {
       'default-project',
       expect.any(String),
       'codex',
-      'codex:codex-isolated'
+      'codex:codex-isolated',
+      undefined
     )
     expect(useSessionStore.getState().sessions[0]).toMatchObject({ status: 'idle' })
     expect(useSessionStore.getState().sessions[0].error).toBeUndefined()
@@ -1886,7 +1887,8 @@ describe('resuming an interrupted session on demand', () => {
       'default-project',
       'ask',
       'claude-code',
-      'claude-code:anthropic'
+      'claude-code:anthropic',
+      undefined
     )
     const preamble = runtime.sendPrompt.mock.calls[0]?.[5]
     expect(preamble).toContain('Analyze the data with Claude')

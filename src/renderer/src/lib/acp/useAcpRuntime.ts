@@ -54,7 +54,8 @@ const useAcpRuntime = (): {
     projectName?: string,
     permissionProfile?: PermissionProfileId,
     previousFrameworkId?: AcpResumeSessionRequest['previousFrameworkId'],
-    previousBackendId?: AcpResumeSessionRequest['previousBackendId']
+    previousBackendId?: AcpResumeSessionRequest['previousBackendId'],
+    specialistId?: AcpResumeSessionRequest['specialistId']
   ) => Promise<AcpCreateSessionResponse>
   resetSessionContext: (
     sessionId: AcpResumeSessionRequest['sessionId'],
@@ -230,7 +231,8 @@ const useAcpRuntime = (): {
       projectName?: string,
       permissionProfile?: PermissionProfileId,
       previousFrameworkId?: AcpResumeSessionRequest['previousFrameworkId'],
-      previousBackendId?: AcpResumeSessionRequest['previousBackendId']
+      previousBackendId?: AcpResumeSessionRequest['previousBackendId'],
+      specialistId?: AcpResumeSessionRequest['specialistId']
     ) =>
       runValueAction(setIsConnecting, () =>
         window.api.acp.resumeSession({
@@ -239,7 +241,8 @@ const useAcpRuntime = (): {
           projectName,
           permissionProfile,
           previousFrameworkId,
-          previousBackendId
+          previousBackendId,
+          specialistId
         })
       ),
     [runValueAction]

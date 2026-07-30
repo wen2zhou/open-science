@@ -1006,6 +1006,19 @@ class SettingsService {
     return skills.map((skill) => this.toSkillView(skill, disabled))
   }
 
+  // Specialist scopes intentionally see the installed catalog irrespective of Main Agent toggles.
+  // The result is rebuilt for every caller so future imports and removals take effect on the next turn.
+  async listSpecialistSkillCatalog(): Promise<
+    Array<{ id: string; frameworkName: string; displayName: string }>
+  > {
+    const skills = await this.skillCatalog()
+    return skills.map((skill) => ({
+      id: skill.id,
+      frameworkName: skill.source === 'featured' ? skill.id : skill.name,
+      displayName: skill.name
+    }))
+  }
+
   // Returns the subset of forced ids that are currently disabled in settings — i.e. the picks that need
   // a respawn to materialize. Enabled picks are already present and need no reconnect.
   async skillsNeedingForceLoad(forcedIds: string[]): Promise<string[]> {

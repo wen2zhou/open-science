@@ -3,7 +3,8 @@ import {
   validateSpecialistName,
   validateCreateSpecialistInput,
   emptyFullAccessConfig,
-  emptySelectedConfig
+  emptySelectedConfig,
+  resolveEffectiveSpecialistSkills
 } from './specialist'
 
 describe('validateSpecialistName', () => {
@@ -75,5 +76,52 @@ describe('empty config helpers', () => {
     expect(cfg.skillIds).toEqual([])
     expect(cfg.connectorIds).toEqual([])
     expect(cfg.connectorTools).toEqual([])
+  })
+})
+
+describe('resolveEffectiveSpecialistSkills', () => {
+  const catalog = [
+    { id: 'disabled-in-main', frameworkName: 'Disabled In Main' },
+    { id: 'future-skill', frameworkName: 'Future Skill' }
+  ]
+  const base = {
+    capabilityMode: 'full' as const,
+    fullAccess: emptyFullAccessConfig(),
+    selectedCapabilities: emptySelectedConfig()
+  }
+
+  it('full access includes current and newly discovered catalog entries, minus exclusions', () => {
+    expect(resolveEffectiveSpecialistSkills(base, catalog)).toMatchObject({
+      kind: 'specialist',
+      skillIds: ['disabled-in-main', 'future-skill']
+    })
+    expect(
+      resolveEffectiveSpecialistSkills(
+        { ...base, fullAccess: { ...emptyFullAccessConfig(), excludedSkillIds: ['future-skill'] } },
+        catalog
+      )
+    ).toMatchObject({ skillIds: ['disabled-in-main'] })
+  })
+
+  it('selected access retains explicit inclusions and reports only missing inclusions', () => {
+    expect(
+      resolveEffectiveSpecialistSkills(
+        {
+          ...base,
+          capabilityMode: 'selected',
+          selectedCapabilities: { ...emptySelectedConfig(), skillIds: ['disabled-in-main', 'gone'] }
+        },
+        catalog
+      )
+    ).toEqual({
+      kind: 'specialist',
+      skillIds: ['disabled-in-main'],
+      frameworkNames: ['Disabled In Main'],
+      missingSkillIds: ['gone']
+    })
+  })
+
+  it('keeps Main unscoped', () => {
+    expect(resolveEffectiveSpecialistSkills(undefined, catalog)).toEqual({ kind: 'main' })
   })
 })
