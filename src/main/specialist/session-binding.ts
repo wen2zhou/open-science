@@ -14,10 +14,7 @@
 
 import { createLogger } from '../logger'
 import type { ProfileService } from './service'
-import type {
-  SessionSpecialistResolution,
-  SpecialistProfileView
-} from '../../shared/specialist'
+import type { SessionSpecialistResolution, SpecialistProfileView } from '../../shared/specialist'
 
 const log = createLogger('specialist.session-binding')
 

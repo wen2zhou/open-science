@@ -130,7 +130,10 @@ export const registerSpecialistIpcHandlers = (
 
     ipcMain.handle(
       SPECIALIST_IPC.RESOLVE_SESSION_SPECIALIST,
-      async (_event, request: ResolveSessionSpecialistRequest): Promise<SessionSpecialistResolution> => {
+      async (
+        _event,
+        request: ResolveSessionSpecialistRequest
+      ): Promise<SessionSpecialistResolution> => {
         if (!request || typeof request.sessionId !== 'string') {
           throw new Error('RESOLVE_SESSION_SPECIALIST: sessionId must be a string.')
         }
@@ -139,4 +142,3 @@ export const registerSpecialistIpcHandlers = (
     )
   }
 }
-

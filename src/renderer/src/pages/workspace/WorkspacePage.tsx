@@ -941,7 +941,9 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     const draftEnabledComputeHosts = newConversationEnabledComputeHosts
     const draftSpecialistId = wasNewConversation ? newConversationSpecialistId : undefined
     // Capture pending specialist for existing sessions (last change wins).
-    const pendingSpecialistId = activeSession ? pendingSessionSpecialist[activeSession.id] : undefined
+    const pendingSpecialistId = activeSession
+      ? pendingSessionSpecialist[activeSession.id]
+      : undefined
     const hasPendingSwitch = activeSession !== undefined && pendingSpecialistId !== undefined
 
     // If there is a pending specialist switch for an existing session, run the reconfigure barrier
@@ -965,7 +967,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
           const name =
             pendingProfile?.kind === 'custom'
               ? (pendingProfile.displayName ?? pendingProfile.name)
-              : pendingSpecialistId ?? 'specialist'
+              : (pendingSpecialistId ?? 'specialist')
           setReconfigureError({
             sessionId,
             specialistName: name,
@@ -1360,9 +1362,9 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
               // For existing sessions: show the effective specialist (session binding).
               // Pending switch overrides the display during a running turn.
               activeSession
-                ? (pendingSessionSpecialist[activeSession.id] !== undefined
-                    ? pendingSessionSpecialist[activeSession.id]
-                    : activeSession.specialistId)
+                ? pendingSessionSpecialist[activeSession.id] !== undefined
+                  ? pendingSessionSpecialist[activeSession.id]
+                  : activeSession.specialistId
                 : newConversationSpecialistId
             }
             specialistUnavailable={
@@ -1388,8 +1390,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
             specialistHasPendingSwitch={
               activeSession !== undefined &&
               pendingSessionSpecialist[activeSession.id] !== undefined &&
-              (activeSession.status === 'running' ||
-                activeSession.status === 'waiting-permission')
+              (activeSession.status === 'running' || activeSession.status === 'waiting-permission')
             }
             reconfigureError={
               reconfigureError?.sessionId === activeSession?.id ? reconfigureError : null
@@ -1415,7 +1416,9 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
               }
             }}
             onSpecialistChange={
-              activeSession ? handleExistingSessionSpecialistChange : handleNewConversationSpecialistChange
+              activeSession
+                ? handleExistingSessionSpecialistChange
+                : handleNewConversationSpecialistChange
             }
             specialistReadOnly={false}
           />

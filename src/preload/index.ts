@@ -405,7 +405,9 @@ type OpenScienceAPI = {
     onCatalogChanged: (listener: () => void) => RemoveListener
     // Session switching (issue 07).
     setSessionSpecialist: (request: SetSessionSpecialistRequest) => Promise<void>
-    resolveSessionSpecialist: (request: ResolveSessionSpecialistRequest) => Promise<SessionSpecialistResolution>
+    resolveSessionSpecialist: (
+      request: ResolveSessionSpecialistRequest
+    ) => Promise<SessionSpecialistResolution>
   }
   logs: {
     getPath: () => Promise<string | null>

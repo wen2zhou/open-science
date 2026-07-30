@@ -1,4 +1,4 @@
-import { describe, it, expect, vi, beforeEach } from 'vitest'
+import { describe, it, expect, vi } from 'vitest'
 import { SessionBindingService } from './session-binding'
 import type { ProfileService } from './service'
 import type { SpecialistProfileView } from '../../shared/specialist'
@@ -22,9 +22,7 @@ const makeProfile = (overrides: Partial<SpecialistProfileView> = {}): Specialist
   ...overrides
 })
 
-const makeService = (
-  profiles: Map<string, SpecialistProfileView> = new Map()
-): ProfileService => {
+const makeService = (profiles: Map<string, SpecialistProfileView> = new Map()): ProfileService => {
   return {
     getById: vi.fn(async (id: string) => {
       const p = profiles.get(id)
@@ -123,9 +121,7 @@ describe('SessionBindingService.resolve', () => {
 
   it('resolves an override UUID instead of the stored binding', async () => {
     const profile2 = makeProfile({ id: 'uuid-sp2', name: 'RESEARCHER' })
-    const svc = new SessionBindingService(
-      makeService(new Map([['uuid-sp2', profile2]]))
-    )
+    const svc = new SessionBindingService(makeService(new Map([['uuid-sp2', profile2]])))
     svc.setBinding('session-a', 'uuid-sp1') // stored binding
     const result = await svc.resolve('session-a', 'uuid-sp2') // override
     expect(result.kind).toBe('bound')
@@ -138,7 +134,12 @@ describe('SessionBindingService.resolve', () => {
     const profile1 = makeProfile({ id: 'uuid-sp1', name: 'DEBUGGER' })
     const profile2 = makeProfile({ id: 'uuid-sp2', name: 'RESEARCHER' })
     const svc = new SessionBindingService(
-      makeService(new Map([['uuid-sp1', profile1], ['uuid-sp2', profile2]]))
+      makeService(
+        new Map([
+          ['uuid-sp1', profile1],
+          ['uuid-sp2', profile2]
+        ])
+      )
     )
     svc.setBinding('session-a', 'uuid-sp1')
     svc.setBinding('session-b', 'uuid-sp2')

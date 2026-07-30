@@ -468,7 +468,8 @@ const ConversationPanel = ({
                           Could not switch to {reconfigureError.specialistName}
                         </div>
                         <div className="text-[11px] leading-4 text-red-400/80">
-                          The agent session could not be reconfigured. Your draft has been preserved.
+                          The agent session could not be reconfigured. Your draft has been
+                          preserved.
                         </div>
                         <div className="mt-2 flex flex-wrap gap-1.5">
                           <button
