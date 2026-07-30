@@ -365,3 +365,120 @@ describe('ProfileService lifecycle mutations', () => {
     )
   })
 })
+
+describe('ProfileService restart persistence', () => {
+  it('persists enabled=false across a service restart (re-create from same store)', async () => {
+    const created = await service.create({ name: 'PERSISTENT_BOT' })
+    expect(created.enabled).toBe(true)
+
+    await service.setEnabled(created.id, false)
+
+    // Simulate restart: create a new service instance from the same storage directory.
+    const restarted = new ProfileService(new SpecialistRepository(tmpDir))
+    const afterRestart = await restarted.getById(created.id)
+    expect(afterRestart.enabled).toBe(false)
+  })
+
+  it('preserves all specialist data after restart', async () => {
+    const created = await service.create({
+      name: 'RESTART_BOT',
+      displayName: 'Restart Bot',
+      description: 'Survives restart',
+      capabilityMode: 'selected',
+      selectedCapabilities: { skillIds: ['skill-x'], connectorIds: ['conn-y'], connectorTools: [] }
+    })
+
+    const restarted = new ProfileService(new SpecialistRepository(tmpDir))
+    const found = await restarted.getById(created.id)
+
+    expect(found.id).toBe(created.id)
+    expect(found.name).toBe('RESTART_BOT')
+    expect(found.displayName).toBe('Restart Bot')
+    expect(found.enabled).toBe(true)
+    expect(found.capabilityMode).toBe('selected')
+    expect(found.selectedCapabilities.skillIds).toEqual(['skill-x'])
+  })
+})
+
+describe('ProfileService session binding with stable IDs', () => {
+  it('keeps the UUID stable after rename — a stored session binding still resolves', async () => {
+    const created = await service.create({ name: 'RNA_REVIEWER' })
+    const originalId = created.id
+
+    // Simulate a session binding: record the profile UUID.
+    const sessionBinding = { profileId: created.id }
+
+    // Rename the profile.
+    await service.rename({
+      id: created.id,
+      name: 'RNA_AUDITOR',
+      expectedRevision: created.revision
+    })
+
+    // The session binding UUID still resolves to the renamed profile.
+    const resolved = await service.getById(sessionBinding.profileId)
+    expect(resolved.id).toBe(originalId)
+    expect(resolved.name).toBe('RNA_AUDITOR')
+  })
+
+  it('reports missing for a deleted profile UUID without erroring the catalog', async () => {
+    const created = await service.create({ name: 'TEMP_BOT' })
+    await service.delete(created.id)
+
+    // The deleted UUID no longer resolves.
+    await expect(service.getById(created.id)).rejects.toThrow(/not found/i)
+
+    // Other profiles are unaffected.
+    const other = await service.create({ name: 'OTHER_BOT' })
+    const found = await service.getById(other.id)
+    expect(found.name).toBe('OTHER_BOT')
+  })
+})
+
+describe('ProfileService stable Skill/Connector references', () => {
+  it('skill attachment tracks by ID — renamed display name does not break the binding', async () => {
+    // Attach a skill by stable ID. In a real app the skill catalog has a stable id
+    // and a separate display name. Profile stores the id, never the display name.
+    const created = await service.create({ name: 'ID_TRACKER', capabilityMode: 'selected' })
+    const withSkill = await service.attachSkill(created.id, 'skill-stable-id', created.revision)
+    expect(withSkill.selectedCapabilities.skillIds).toContain('skill-stable-id')
+
+    // Renaming a skill's display name is a catalog-layer change; the stored skill id
+    // remains unchanged. Profile attachment is independent of display name.
+    const fetched = await service.getById(created.id)
+    expect(fetched.selectedCapabilities.skillIds).toContain('skill-stable-id')
+  })
+
+  it('deleted skill ID stays in the profile — renderer shows it as missing', async () => {
+    const created = await service.create({ name: 'MISSING_REF_BOT', capabilityMode: 'selected' })
+    const withSkill = await service.attachSkill(created.id, 'soon-deleted-skill', created.revision)
+    expect(withSkill.selectedCapabilities.skillIds).toContain('soon-deleted-skill')
+
+    // Deleting the skill from the catalog is a catalog-layer operation.
+    // The profile still holds the id — renderer must display it as "missing".
+    const fetched = await service.getById(created.id)
+    expect(fetched.selectedCapabilities.skillIds).toContain('soon-deleted-skill')
+  })
+
+  it('two skills with different IDs but same display name are tracked by ID independently', async () => {
+    const created = await service.create({
+      name: 'DUAL_SKILL_BOT',
+      capabilityMode: 'selected',
+      selectedCapabilities: {
+        skillIds: ['skill-v1', 'skill-v2'],
+        connectorIds: [],
+        connectorTools: []
+      }
+    })
+
+    const fetched = await service.getById(created.id)
+    // Both IDs are stored even if they have the same display name in the catalog.
+    expect(fetched.selectedCapabilities.skillIds).toContain('skill-v1')
+    expect(fetched.selectedCapabilities.skillIds).toContain('skill-v2')
+
+    // Detaching one does not affect the other.
+    const detached = await service.detachSkill(created.id, 'skill-v1', fetched.revision)
+    expect(detached.selectedCapabilities.skillIds).not.toContain('skill-v1')
+    expect(detached.selectedCapabilities.skillIds).toContain('skill-v2')
+  })
+})

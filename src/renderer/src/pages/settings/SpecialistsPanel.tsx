@@ -103,6 +103,15 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
             await updateSpecialist(input)
             onNavigate({ kind: 'list' })
           }}
+          onReload={async () => {
+            await load()
+            const refreshed = items.find((item) => item.kind === 'custom' && item.id === view.id)
+            if (refreshed && refreshed.kind === 'custom') {
+              // Re-navigate to reload the editor with the freshest profile data.
+              onNavigate({ kind: 'edit', id: view.id })
+            }
+            return undefined
+          }}
         />
       )
     }
