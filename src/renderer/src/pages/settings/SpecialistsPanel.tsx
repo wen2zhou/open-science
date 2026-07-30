@@ -110,7 +110,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     if (specialist && specialist.kind === 'custom') {
       return (
         <SpecialistEditor
-          key={`${specialist.id}:${specialist.revision}`}
+          key={specialist.id}
           editSpecialist={specialist}
           existingNames={customItems.filter((item) => item.id !== view.id).map((item) => item.name)}
           onCancel={() => onNavigate({ kind: 'list' })}
