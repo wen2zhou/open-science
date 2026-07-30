@@ -124,6 +124,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   const togglePinned = useSessionStore((state) => state.togglePinned)
   const setAutoReviewEnabled = useSessionStore((state) => state.setAutoReviewEnabled)
   const setEnabledComputeHosts = useSessionStore((state) => state.setEnabledComputeHosts)
+  const setSessionSpecialistId = useSessionStore((state) => state.setSessionSpecialistId)
   const setFixLoopActive = useSessionStore((state) => state.setFixLoopActive)
   // Only sessions belonging to the active project are shown in this workspace.
   const sessions = useMemo(
@@ -976,7 +977,12 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
           return
         }
 
-        // Reconfigure succeeded: clear the pending state and proceed to send.
+        // Reconfigure succeeded: update the session's persisted specialist binding,
+        // clear the pending state, and proceed to send.
+        // Updating the session store's specialistId here ensures the next sendMessage
+        // call (which reads currentSession.specialistId for resumeSession) uses the
+        // new UUID — triggering the ACP dispose+resume that re-injects the new identity.
+        setSessionSpecialistId(sessionId, pendingSpecialistId)
         setPendingSessionSpecialist((prev) => {
           const next = { ...prev }
           delete next[sessionId]
