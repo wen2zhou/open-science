@@ -206,9 +206,7 @@ describe('SpecialistsPanel', () => {
         // Simulate remote write: rev bumped to 2 in the store
         useSpecialistStore.setState({
           items: specialistItems.map((item) =>
-            item.kind === 'custom' && item.id === 'rna-reviewer'
-              ? { ...item, revision: 2 }
-              : item
+            item.kind === 'custom' && item.id === 'rna-reviewer' ? { ...item, revision: 2 } : item
           )
         })
       }
@@ -248,7 +246,9 @@ describe('SpecialistsPanel', () => {
 
   it('F2: Reload actually replaces form content with the latest profile data', async () => {
     // updateMock rejects with a conflict so the banner appears.
-    const updateMock = vi.fn().mockRejectedValue(new Error('Revision conflict: expected 1, found 2.'))
+    const updateMock = vi
+      .fn()
+      .mockRejectedValue(new Error('Revision conflict: expected 1, found 2.'))
     // After reload, list returns rev 2 with updated name.
     const updatedItems = specialistItems.map((item) =>
       item.kind === 'custom' && item.id === 'rna-reviewer'
@@ -257,11 +257,13 @@ describe('SpecialistsPanel', () => {
     ) as SpecialistListItem[]
 
     let listCallCount = 0
-    ;(window.api.specialist as { list: ReturnType<typeof vi.fn> }).list = vi.fn(async () => {
-      listCallCount++
-      if (listCallCount > 1) return updatedItems
-      return specialistItems
-    })
+    ;(window.api.specialist as unknown as { list: ReturnType<typeof vi.fn> }).list = vi.fn(
+      async () => {
+        listCallCount++
+        if (listCallCount > 1) return updatedItems
+        return specialistItems
+      }
+    )
     useSpecialistStore.setState({
       ...useSpecialistStore.getState(),
       update: updateMock,
