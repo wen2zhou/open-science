@@ -230,7 +230,10 @@ import type {
   DeleteSpecialistRequest,
   DuplicateSpecialistRequest,
   SpecialistListItem,
-  SpecialistProfileView
+  SpecialistProfileView,
+  SetSessionSpecialistRequest,
+  ResolveSessionSpecialistRequest,
+  SessionSpecialistResolution
 } from '../shared/specialist'
 import { SPECIALIST_IPC } from '../shared/specialist'
 import {
@@ -400,6 +403,9 @@ type OpenScienceAPI = {
     delete(request: DeleteSpecialistRequest): Promise<void>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     onCatalogChanged: (listener: () => void) => RemoveListener
+    // Session switching (issue 07).
+    setSessionSpecialist: (request: SetSessionSpecialistRequest) => Promise<void>
+    resolveSessionSpecialist: (request: ResolveSessionSpecialistRequest) => Promise<SessionSpecialistResolution>
   }
   logs: {
     getPath: () => Promise<string | null>
@@ -952,7 +958,15 @@ const api: OpenScienceAPI = {
     duplicate: (request: DuplicateSpecialistRequest) =>
       ipcRenderer.invoke(SPECIALIST_IPC.DUPLICATE, request) as Promise<CreateSpecialistRequest>,
     onCatalogChanged: (listener: () => void) =>
-      onIpcMessage(SPECIALIST_IPC.CATALOG_CHANGED, listener)
+      onIpcMessage(SPECIALIST_IPC.CATALOG_CHANGED, listener),
+    // Session switching (issue 07).
+    setSessionSpecialist: (request: SetSessionSpecialistRequest) =>
+      ipcRenderer.invoke(SPECIALIST_IPC.SET_SESSION_SPECIALIST, request) as Promise<void>,
+    resolveSessionSpecialist: (request: ResolveSessionSpecialistRequest) =>
+      ipcRenderer.invoke(
+        SPECIALIST_IPC.RESOLVE_SESSION_SPECIALIST,
+        request
+      ) as Promise<SessionSpecialistResolution>
   },
   logs: {
     getPath: () => ipcRenderer.invoke('logs:get-path') as Promise<string | null>,

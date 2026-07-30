@@ -220,7 +220,10 @@ import type {
   DeleteSpecialistRequest,
   DuplicateSpecialistRequest,
   SpecialistListItem,
-  SpecialistProfileView
+  SpecialistProfileView,
+  SetSessionSpecialistRequest,
+  ResolveSessionSpecialistRequest,
+  SessionSpecialistResolution
 } from '../shared/specialist'
 import type {
   CloseConfirmRequest,
@@ -362,6 +365,9 @@ interface OpenScienceAPI {
     delete(request: DeleteSpecialistRequest): Promise<void>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     onCatalogChanged(listener: () => void): RemoveListener
+    // Session switching (issue 07).
+    setSessionSpecialist(request: SetSessionSpecialistRequest): Promise<void>
+    resolveSessionSpecialist(request: ResolveSessionSpecialistRequest): Promise<SessionSpecialistResolution>
   }
   logs: {
     getPath(): Promise<string | null>

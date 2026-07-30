@@ -9,8 +9,22 @@ export const SPECIALIST_IPC = {
   SET_ENABLED: 'specialist:set-enabled',
   DELETE: 'specialist:delete',
   DUPLICATE: 'specialist:duplicate',
-  CATALOG_CHANGED: 'specialist:catalog-changed'
+  CATALOG_CHANGED: 'specialist:catalog-changed',
+  // Session switching (issue 07): per-session mutable binding.
+  SET_SESSION_SPECIALIST: 'specialist:set-session-specialist',
+  RESOLVE_SESSION_SPECIALIST: 'specialist:resolve-session-specialist'
 } as const
+
+// Session switching request types — resolution type is declared after SpecialistProfileView below.
+export type SetSessionSpecialistRequest = {
+  sessionId: string
+  // undefined clears the binding (reverts to Main Agent).
+  specialistId: string | undefined
+}
+
+export type ResolveSessionSpecialistRequest = {
+  sessionId: string
+}
 
 // The capability scope mode for a specialist.
 export type SpecialistCapabilityMode = 'full' | 'selected'
@@ -115,6 +129,15 @@ export type ReviewerEntry = {
 
 // Union for the list — either a real profile or the reviewer placeholder.
 export type SpecialistListItem = ({ kind: 'custom' } & SpecialistProfileView) | ReviewerEntry
+
+// Resolution of a session's specialist binding at send time (requires SpecialistProfileView above).
+// 'main'        — no binding, main agent is used.
+// 'bound'       — a valid enabled profile was found.
+// 'unavailable' — the bound UUID is unknown, disabled, or corrupt (send must be blocked).
+export type SessionSpecialistResolution =
+  | { kind: 'main' }
+  | { kind: 'bound'; profile: SpecialistProfileView }
+  | { kind: 'unavailable'; reason: string }
 
 // Input for creating a new specialist.
 export type CreateSpecialistInput = {
