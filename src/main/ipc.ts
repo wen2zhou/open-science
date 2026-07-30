@@ -636,6 +636,11 @@ const registerIpcHandlers = async ({
   registerSpecialistIpcHandlers(
     profileService,
     sessionBindingService,
+    // Persist the specialist UUID to the durable session file before exposing the binding.
+    // TODO: wire the session-persistence writer once the persistence bridge exposes a per-session
+    // specialist-id update. Until then the binding is in-memory only (restored from the session file
+    // on the next create/resume via specialistId).
+    undefined,
     // Apply the switch to the live agent runtime. `runtime` is assigned above (registerAcpIpcHandlers),
     // but the closure is invoked per-request so a late-bound reference is unnecessary.
     (sessionId, specialistId) => runtime.switchSpecialist(sessionId, specialistId),

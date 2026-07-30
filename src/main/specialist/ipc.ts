@@ -22,6 +22,11 @@ import { broadcastToRenderers } from '../renderer-broadcast'
 
 const log = createLogger('specialist:ipc')
 
+type PersistSessionSpecialist = (
+  sessionId: string,
+  specialistId: string | undefined
+) => Promise<void>
+
 // Broadcasts a catalog-changed event to all renderer windows.
 const broadcastCatalogChanged = (): void => {
   broadcastToRenderers(SPECIALIST_IPC.CATALOG_CHANGED, undefined)
@@ -32,6 +37,9 @@ const broadcastCatalogChanged = (): void => {
 export const registerSpecialistIpcHandlers = (
   service: ProfileService,
   sessionBindingService?: SessionBindingService,
+  // Persists the specialist UUID to the durable session file before exposing the binding to the
+  // runtime. Optional so headless/tests can omit it.
+  persistSessionSpecialist?: PersistSessionSpecialist,
   // Applies a switch to the live agent runtime. Kept as a callback so this module stays decoupled
   // from the ACP coordinator. Returns whether the runtime replaced the agent session (context reset),
   // which tells the renderer to replay conversation history into the next prompt.
@@ -146,6 +154,9 @@ export const registerSpecialistIpcHandlers = (
             throw new Error(resolution.reason)
           }
         }
+        // Make the durable session file authoritative before exposing the new binding to runtime.
+        // Otherwise an app restart between these steps would silently restore the old specialist.
+        await persistSessionSpecialist?.(request.sessionId, request.specialistId)
         sessionBindingService.setBinding(request.sessionId, request.specialistId)
 
         // Apply the switch to the live agent session so the new specialist takes effect now, not
