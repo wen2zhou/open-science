@@ -154,7 +154,7 @@ const SpecialistEditor = ({
 
   useEffect(() => {
     if (!skillPopoverOpen) return
-    const handle = (e: MouseEvent) => {
+    const handle = (e: MouseEvent): void => {
       if (skillDropdownRef.current && !skillDropdownRef.current.contains(e.target as Node)) {
         closeSkillDropdown()
       }
@@ -165,7 +165,7 @@ const SpecialistEditor = ({
 
   useEffect(() => {
     if (!connectorPopoverOpen) return
-    const handle = (e: MouseEvent) => {
+    const handle = (e: MouseEvent): void => {
       if (
         connectorDropdownRef.current &&
         !connectorDropdownRef.current.contains(e.target as Node)
@@ -761,7 +761,9 @@ const SpecialistEditor = ({
                     )}
                   >
                     Connectors{' '}
-                    <span className="ml-0.5 text-[11px] opacity-75">{form.connectorIds.length}</span>
+                    <span className="ml-0.5 text-[11px] opacity-75">
+                      {form.connectorIds.length}
+                    </span>
                   </button>
                 </div>
 
