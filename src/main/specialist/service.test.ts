@@ -78,6 +78,22 @@ describe('ProfileService.create', () => {
     await expect(service.create({ displayName: 'Reviewer' })).rejects.toThrow()
   })
 
+  it('rejects an unsupported capability mode before persisting the profile', async () => {
+    await expect(
+      service.create({ displayName: 'My Bot', capabilityMode: 'unrestricted' } as never)
+    ).rejects.toThrow(/capability mode/i)
+
+    expect(await service.list()).toEqual([])
+  })
+
+  it('rejects non-string optional identity fields before persisting the profile', async () => {
+    await expect(
+      service.create({ displayName: 'My Bot', description: 42 } as never)
+    ).rejects.toThrow(/description must be a string/i)
+
+    expect(await service.list()).toEqual([])
+  })
+
   it('specialist is visible in list after creation', async () => {
     await service.create({ displayName: 'RNA-seq Reviewer' })
     const list = await service.list()

@@ -309,6 +309,7 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
     const nextConnectors = location.connectors ?? { kind: 'list' }
     const nextNetwork = location.network ?? { kind: 'list' }
     const nextCompute = location.compute ?? { kind: 'list' }
+    const nextSpecialists = location.specialists ?? { kind: 'list' }
     if (
       location.panel === activePanel &&
       location.skills.kind === skillsView.kind &&
@@ -323,7 +324,8 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
       nextNetwork.kind === networkView.kind &&
       nextCompute.kind === computeView.kind &&
       ('providerId' in nextCompute ? nextCompute.providerId : undefined) ===
-        ('providerId' in computeView ? computeView.providerId : undefined)
+        ('providerId' in computeView ? computeView.providerId : undefined) &&
+      nextSpecialists.kind === specialistsView.kind
     ) {
       return
     }

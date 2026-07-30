@@ -1,5 +1,16 @@
-import { useEffect } from 'react'
-import { ChevronDown, Pencil, Plus } from 'lucide-react'
+import { useEffect, useMemo, useState } from 'react'
+import {
+  Beaker,
+  BookOpen,
+  Brain,
+  ChevronDown,
+  FlaskConical,
+  Microscope,
+  Pencil,
+  Plus,
+  Search,
+  type LucideIcon
+} from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -7,6 +18,8 @@ import {
   DropdownMenuItem,
   DropdownMenuTrigger
 } from '@/components/ui/dropdown-menu'
+import { Input } from '@/components/ui/input'
+import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { SettingsToggle } from './SettingsLayout'
 import { useSpecialistStore } from '@/stores/specialist-store'
 import type { CreateSpecialistInput } from '../../../../shared/specialist'
@@ -14,6 +27,14 @@ import { SpecialistEditor } from './SpecialistEditor'
 
 // Sub-view for the Specialists panel (parallels SkillsView).
 export type SpecialistsView = { kind: 'list' } | { kind: 'create' }
+
+type CategoryFilter = 'all' | 'custom' | 'builtin'
+
+const FILTER_LABELS: Record<CategoryFilter, string> = {
+  all: 'All',
+  custom: 'Custom',
+  builtin: 'Built-in'
+}
 
 type SpecialistsPanelProps = {
   view: SpecialistsView
@@ -31,9 +52,31 @@ const AVATAR_COLORS: Record<string, string> = {
 }
 const DEFAULT_AVATAR_COLOR = '#ececea'
 
+const AVATAR_ICONS: Record<string, LucideIcon> = {
+  brain: Brain,
+  beaker: Beaker,
+  'book-open': BookOpen,
+  'flask-conical': FlaskConical,
+  microscope: Microscope,
+  search: Search
+}
+
 const getAvatarStyle = (colorKey?: string): React.CSSProperties => ({
   background: colorKey ? (AVATAR_COLORS[colorKey] ?? DEFAULT_AVATAR_COLOR) : DEFAULT_AVATAR_COLOR
 })
+
+const SpecialistAvatar = ({ iconKey, colorKey }: { iconKey?: string; colorKey?: string }) => {
+  const Icon = iconKey ? (AVATAR_ICONS[iconKey] ?? Brain) : Brain
+  return (
+    <span
+      className="flex size-7 shrink-0 items-center justify-center rounded-lg text-[13px]"
+      style={getAvatarStyle(colorKey)}
+      aria-hidden="true"
+    >
+      <Icon className="size-3.5" data-specialist-icon={iconKey ?? 'brain'} />
+    </span>
+  )
+}
 
 const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JSX.Element => {
   const items = useSpecialistStore((s) => s.items)
@@ -41,6 +84,9 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const load = useSpecialistStore((s) => s.load)
   const setEnabled = useSpecialistStore((s) => s.setEnabled)
   const createSpecialist = useSpecialistStore((s) => s.create)
+  const [filter, setFilter] = useState<CategoryFilter>('all')
+  const [query, setQuery] = useState('')
+  const customItems = items.filter((i) => i.kind === 'custom')
 
   useEffect(() => {
     void load()
@@ -50,9 +96,30 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     return unsub
   }, [load])
 
+  // Separate Custom vs Built-in (Reviewer) items.
+  const reviewerItems = items.filter((i) => i.kind === 'reviewer')
+  const visibleCustomItems = useMemo(() => {
+    const term = query.trim().toLowerCase()
+    if (filter === 'builtin') return []
+    if (!term) return customItems
+    return customItems.filter(
+      (item) =>
+        item.displayName.toLowerCase().includes(term) ||
+        item.name.toLowerCase().includes(term) ||
+        item.description.toLowerCase().includes(term)
+    )
+  }, [customItems, filter, query])
+  const visibleReviewerItems = useMemo(() => {
+    if (filter === 'custom') return []
+    const term = query.trim().toLowerCase()
+    if (!term || 'reviewer used by auto-review'.includes(term)) return reviewerItems
+    return []
+  }, [filter, query, reviewerItems])
+
   if (view.kind === 'create') {
     return (
       <SpecialistEditor
+        existingNames={customItems.map((item) => item.name)}
         onCancel={() => onNavigate({ kind: 'list' })}
         onSave={async (input: CreateSpecialistInput) => {
           await createSpecialist(input)
@@ -62,14 +129,34 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     )
   }
 
-  // Separate Custom vs Built-in (Reviewer) items.
-  const customItems = items.filter((i) => i.kind === 'custom')
-  const reviewerItems = items.filter((i) => i.kind === 'reviewer')
-
   return (
     <div className="p-5">
       {/* Toolbar */}
-      <div className="mb-4 flex items-center justify-end">
+      <div className="mb-4 flex items-center gap-2">
+        <Select value={filter} onValueChange={(value) => setFilter(value as CategoryFilter)}>
+          <SelectTrigger aria-label="Filter specialists by category" className="w-32">
+            <span>{FILTER_LABELS[filter]}</span>
+          </SelectTrigger>
+          <SelectContent>
+            <SelectItem value="all">All</SelectItem>
+            <SelectItem value="custom">Custom</SelectItem>
+            <SelectItem value="builtin">Built-in</SelectItem>
+          </SelectContent>
+        </Select>
+        <div className="relative flex-1">
+          <Search
+            className="pointer-events-none absolute left-2.5 top-1/2 size-4 -translate-y-1/2 text-muted-foreground"
+            aria-hidden="true"
+          />
+          <Input
+            type="search"
+            aria-label="Search specialists"
+            placeholder="Search specialists…"
+            value={query}
+            onChange={(event) => setQuery(event.target.value)}
+            className="pl-8"
+          />
+        </div>
         <DropdownMenu>
           <DropdownMenuTrigger asChild>
             <Button variant="outline" className="shrink-0">
@@ -97,67 +184,68 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
       ) : (
         <div className="flex flex-col gap-6">
           {/* Custom specialists group */}
-          <div>
-            <div className="mb-1 flex flex-col gap-0.5">
-              <span className="text-sm font-semibold text-foreground">Custom</span>
-              <span className="text-xs text-muted-foreground">Created by you.</span>
-            </div>
+          {filter !== 'builtin' ? (
+            <div>
+              <div className="mb-1 flex flex-col gap-0.5">
+                <span className="text-sm font-semibold text-foreground">Custom</span>
+                <span className="text-xs text-muted-foreground">Created by you.</span>
+              </div>
 
-            {customItems.length > 0 ? (
-              <ul className="mt-2 flex flex-col divide-y divide-border">
-                {customItems.map((item) => {
-                  if (item.kind !== 'custom') return null
-                  return (
-                    <li
-                      key={item.id}
-                      data-slot="settings-list-row"
-                      className="flex min-h-14 items-center gap-2 py-2.5"
-                    >
-                      {/* Avatar */}
-                      <span
-                        className="flex size-7 shrink-0 items-center justify-center rounded-lg text-[13px]"
-                        style={getAvatarStyle(item.colorKey)}
-                        aria-hidden="true"
+              {visibleCustomItems.length > 0 ? (
+                <ul className="mt-2 flex flex-col divide-y divide-border">
+                  {visibleCustomItems.map((item) => {
+                    if (item.kind !== 'custom') return null
+                    return (
+                      <li
+                        key={item.id}
+                        data-slot="settings-list-row"
+                        className="flex min-h-14 items-center gap-2 py-2.5"
                       >
-                        {item.iconKey ? '◈' : '◈'}
-                      </span>
+                        {/* Avatar */}
+                        <SpecialistAvatar iconKey={item.iconKey} colorKey={item.colorKey} />
 
-                      {/* Body: displayName + subtle UPPER_SNAKE name + description */}
-                      <div className="min-w-0 flex-1">
-                        <div className="flex items-center gap-1.5">
-                          <span className="truncate text-sm text-foreground">
-                            {item.displayName}
-                          </span>
-                          <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                            {item.name}
+                        {/* Body: displayName + subtle UPPER_SNAKE name + description */}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex items-center gap-1.5">
+                            <span className="truncate text-sm text-foreground">
+                              {item.displayName}
+                            </span>
+                            <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
+                              {item.name}
+                            </span>
+                          </div>
+                          {item.description ? (
+                            <span className="block truncate text-xs text-muted-foreground">
+                              {item.description}
+                            </span>
+                          ) : null}
+                          <span className="block text-[11px] text-muted-foreground">
+                            {item.capabilityMode === 'full'
+                              ? 'Full access'
+                              : 'Selected capabilities'}
                           </span>
                         </div>
-                        {item.description ? (
-                          <span className="block truncate text-xs text-muted-foreground">
-                            {item.description}
-                          </span>
-                        ) : null}
-                      </div>
 
-                      {/* Enabled toggle */}
-                      <SettingsToggle
-                        enabled={item.enabled}
-                        aria-label={`Toggle ${item.displayName}`}
-                        onToggle={() => void setEnabled(item.id, !item.enabled)}
-                      />
-                    </li>
-                  )
-                })}
-              </ul>
-            ) : (
-              <p className="mt-2 py-2 text-xs text-muted-foreground">
-                No specialists yet. Use &ldquo;Add specialist&rdquo; to create one.
-              </p>
-            )}
-          </div>
+                        {/* Enabled toggle */}
+                        <SettingsToggle
+                          enabled={item.enabled}
+                          aria-label={`Toggle ${item.displayName}`}
+                          onToggle={() => void setEnabled(item.id, !item.enabled)}
+                        />
+                      </li>
+                    )
+                  })}
+                </ul>
+              ) : (
+                <p className="mt-2 py-2 text-xs text-muted-foreground">
+                  No specialists yet. Use &ldquo;Add specialist&rdquo; to create one.
+                </p>
+              )}
+            </div>
+          ) : null}
 
           {/* Built-in group (Reviewer only) */}
-          {reviewerItems.length > 0 ? (
+          {visibleReviewerItems.length > 0 ? (
             <div>
               <div className="mb-1 flex flex-col gap-0.5">
                 <span className="text-sm font-semibold text-foreground">Built-in</span>
@@ -166,7 +254,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                 </span>
               </div>
               <ul className="mt-2 flex flex-col divide-y divide-border">
-                {reviewerItems.map(() => (
+                {visibleReviewerItems.map(() => (
                   <li
                     key="reviewer"
                     data-slot="settings-list-row"
