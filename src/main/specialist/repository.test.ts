@@ -194,9 +194,7 @@ describe('SpecialistRepository — old schema detection', () => {
     const { writeFile } = await import('node:fs/promises')
     const oldSchema = JSON.stringify({
       version: 1,
-      specialists: [
-        { agentId: 'rna-seq-reviewer', name: 'RNA Reviewer', enabled: true }
-      ]
+      specialists: [{ agentId: 'rna-seq-reviewer', name: 'RNA Reviewer', enabled: true }]
     })
     await writeFile(join(tmpDir, 'specialists.json'), oldSchema, 'utf8')
     const repo = new SpecialistRepository(tmpDir)

@@ -50,9 +50,7 @@ export type ReviewerEntry = {
 }
 
 // Union for the list — either a real profile or the reviewer placeholder.
-export type SpecialistListItem =
-  | ({ kind: 'custom' } & SpecialistProfileView)
-  | ReviewerEntry
+export type SpecialistListItem = ({ kind: 'custom' } & SpecialistProfileView) | ReviewerEntry
 
 // Input for creating a new specialist.
 export type CreateSpecialistInput = {

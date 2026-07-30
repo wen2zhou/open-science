@@ -234,9 +234,7 @@ export class SpecialistRepository {
   }
 
   // Serializes mutations so concurrent callers cannot clobber each other.
-  private mutate(
-    fn: (doc: StoredSpecialists) => StoredSpecialists
-  ): Promise<StoredSpecialists> {
+  private mutate(fn: (doc: StoredSpecialists) => StoredSpecialists): Promise<StoredSpecialists> {
     const run = this.saveQueue.then(async () => {
       const current = await this.getAll()
       const next = fn(current)

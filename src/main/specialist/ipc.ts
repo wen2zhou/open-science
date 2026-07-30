@@ -32,17 +32,14 @@ export const registerSpecialistIpcHandlers = (service: ProfileService): void => 
   // Subscribe once so every mutation (create, setEnabled) triggers a broadcast.
   service.subscribe(broadcastCatalogChanged)
 
-  ipcMain.handle(
-    SPECIALIST_IPC.LIST,
-    async (): Promise<SpecialistListItem[]> => {
-      try {
-        return await service.listForSettings()
-      } catch (error) {
-        log.error('specialist:list failed', { error })
-        throw error
-      }
+  ipcMain.handle(SPECIALIST_IPC.LIST, async (): Promise<SpecialistListItem[]> => {
+    try {
+      return await service.listForSettings()
+    } catch (error) {
+      log.error('specialist:list failed', { error })
+      throw error
     }
-  )
+  })
 
   ipcMain.handle(
     SPECIALIST_IPC.CREATE,

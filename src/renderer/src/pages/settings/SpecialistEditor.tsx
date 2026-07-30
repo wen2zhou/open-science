@@ -1,4 +1,4 @@
-import { useState, useEffect } from 'react'
+import { useState } from 'react'
 import { Button } from '@/components/ui/button'
 import { Input } from '@/components/ui/input'
 import { Textarea } from '@/components/ui/textarea'
@@ -36,12 +36,8 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>()
 
-  // Auto-derive name from displayName unless manually touched.
-  useEffect(() => {
-    if (!form.nameTouched) {
-      setForm((prev) => ({ ...prev, name: deriveSpecialistName(prev.displayName) }))
-    }
-  }, [form.displayName, form.nameTouched])
+  // Derived during render: the name follows displayName until manually edited.
+  const effectiveName = form.nameTouched ? form.name : deriveSpecialistName(form.displayName)
 
   const getFieldError = (field: SpecialistFieldError['field']): string | undefined =>
     fieldErrors.find((e) => e.field === field)?.message
@@ -50,7 +46,7 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
     // Client-side validation using the shared validator.
     const input: CreateSpecialistInput = {
       displayName: form.displayName,
-      name: form.name || undefined,
+      name: effectiveName || undefined,
       description: form.description || undefined,
       systemPrompt: form.systemPrompt || undefined
     }
@@ -67,7 +63,7 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
     try {
       const input: CreateSpecialistInput = {
         displayName: form.displayName.trim(),
-        name: form.name.trim() || undefined,
+        name: effectiveName.trim() || undefined,
         description: form.description.trim() || undefined,
         systemPrompt: form.systemPrompt.trim() || undefined
       }
@@ -120,7 +116,7 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
             </label>
             <Input
               id="sp-name"
-              value={form.name}
+              value={effectiveName}
               onChange={(e) => {
                 setForm((prev) => ({
                   ...prev,
@@ -130,10 +126,7 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
                 setFieldErrors((prev) => prev.filter((er) => er.field !== 'name'))
               }}
               placeholder="RNA_SEQ_REVIEWER"
-              className={cn(
-                'font-mono text-[13px]',
-                getFieldError('name') && 'border-destructive'
-              )}
+              className={cn('font-mono text-[13px]', getFieldError('name') && 'border-destructive')}
               aria-describedby="sp-name-hint sp-name-err"
               aria-invalid={!!getFieldError('name')}
             />
@@ -150,15 +143,12 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
           {/* Description */}
           <div className="mb-0">
             <label htmlFor="sp-description" className="mb-1.5 block text-xs font-semibold">
-              Description{' '}
-              <span className="font-normal text-muted-foreground">(optional)</span>
+              Description <span className="font-normal text-muted-foreground">(optional)</span>
             </label>
             <Input
               id="sp-description"
               value={form.description}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, description: e.target.value }))
-              }
+              onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
               placeholder="Short description shown in the list and picker"
             />
           </div>
@@ -178,9 +168,7 @@ const SpecialistEditor = ({ onCancel, onSave }: SpecialistEditorProps): React.JS
             <Textarea
               id="sp-system-prompt"
               value={form.systemPrompt}
-              onChange={(e) =>
-                setForm((prev) => ({ ...prev, systemPrompt: e.target.value }))
-              }
+              onChange={(e) => setForm((prev) => ({ ...prev, systemPrompt: e.target.value }))}
               placeholder="Optional — leave empty to use the base prompt as-is."
               className="min-h-[120px] resize-y text-[13px]"
             />

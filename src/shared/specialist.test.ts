@@ -100,9 +100,7 @@ describe('validateDisplayName', () => {
 
 describe('validateCreateSpecialistInput', () => {
   it('returns empty array for valid input', () => {
-    expect(
-      validateCreateSpecialistInput({ displayName: 'RNA Reviewer' }, [])
-    ).toHaveLength(0)
+    expect(validateCreateSpecialistInput({ displayName: 'RNA Reviewer' }, [])).toHaveLength(0)
   })
 
   it('returns displayName error when empty', () => {
@@ -121,11 +119,7 @@ describe('validateCreateSpecialistInput', () => {
 
   it('returns name error when explicit name is duplicate', () => {
     const map = new Map([['MYBOT', 'id-1']])
-    const errors = validateCreateSpecialistInput(
-      { displayName: 'My Bot', name: 'MYBOT' },
-      [],
-      map
-    )
+    const errors = validateCreateSpecialistInput({ displayName: 'My Bot', name: 'MYBOT' }, [], map)
     expect(errors.some((e) => e.field === 'name')).toBe(true)
   })
 })
