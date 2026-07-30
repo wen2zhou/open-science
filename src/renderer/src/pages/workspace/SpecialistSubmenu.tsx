@@ -1,9 +1,8 @@
 // SpecialistSubmenu — composer menu submenu for selecting a Personal Specialist.
 // Renders as a DropdownMenuSub inside ComposerAgentControlsMenu: hover the trigger
 // (icon + "Specialist" + current-value capsule) and None / enabled Personal
-// Specialists / "Create new…" expand to the side. Never shows Reviewer, disabled
-// specialists, or the Main Agent. A bound (read-only) session shows its identity
-// in the trigger without offering a mutable submenu.
+// Specialists / "Create new…" expand to the side. Never shows Reviewer or disabled
+// specialists (except the currently-bound unavailable one, shown struck-through).
 
 import { Check, ChevronRight, UserRound } from 'lucide-react'
 import { useEffect } from 'react'
@@ -79,6 +78,15 @@ const SpecialistSubmenu = ({
   const label = capsuleLabel(selected, unavailable)
   const showValue = Boolean(selectedId) || unavailable
 
+  // When the selected specialist is unavailable, keep it visible in the list as struck-through so
+  // the user understands which profile is bound. Only applies to the currently-bound unavailable
+  // profile; other disabled profiles stay out of the picker as normal.
+  const unavailableItem =
+    unavailable && selectedId
+      ? items.find((item) => item.kind === 'custom' && item.id === selectedId)
+      : undefined
+  const unavailableProfile = unavailableItem?.kind === 'custom' ? unavailableItem : undefined
+
   return (
     <DropdownMenuSub>
       <DropdownMenuSubTrigger
@@ -144,10 +152,31 @@ const SpecialistSubmenu = ({
             ) : null}
           </DropdownMenuItem>
 
-          {/* Enabled Personal Specialists */}
-          {isLoaded && enabledSpecialists.length > 0 ? (
+          {/* Enabled Personal Specialists (plus the unavailable bound profile if any) */}
+          {isLoaded && (enabledSpecialists.length > 0 || unavailableProfile) ? (
             <>
               <DropdownMenuSeparator />
+              {/* Unavailable bound specialist: struck-through/dimmed, not selectable.
+                  Only the currently-bound unavailable profile appears here; other disabled
+                  profiles are excluded from the picker as normal. */}
+              {unavailableProfile ? (
+                <div
+                  className="flex cursor-not-allowed items-center gap-2 rounded-sm px-2 py-1.5 opacity-35"
+                  data-testid={`specialist-option-${unavailableProfile.id}`}
+                  aria-disabled="true"
+                >
+                  <span
+                    className="flex size-5 shrink-0 items-center justify-center rounded bg-bg-300 text-[11px] font-medium"
+                    aria-hidden="true"
+                  >
+                    {unavailableProfile.name.slice(0, 1).toUpperCase()}
+                  </span>
+                  <span className="min-w-0 flex-1 truncate text-[13px] line-through">
+                    {unavailableProfile.name}
+                  </span>
+                  <span className="text-[10px] text-amber-500">Unavailable</span>
+                </div>
+              ) : null}
               {enabledSpecialists.map((specialist) => {
                 const isSelected = specialist.id === selectedId
                 return (

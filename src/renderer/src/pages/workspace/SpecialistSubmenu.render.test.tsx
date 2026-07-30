@@ -274,3 +274,55 @@ describe('SpecialistSubmenu — selection', () => {
     expect(openSettingsToPanel).toHaveBeenCalledWith('specialists')
   })
 })
+
+// ---------------------------------------------------------------------------
+// Tests: unavailable-session switching behavior (issue 07)
+// ---------------------------------------------------------------------------
+
+describe('SpecialistSubmenu — unavailable bound specialist', () => {
+  it('shows the unavailable bound specialist struck-through and not selectable', () => {
+    // Simulates a catalog that has the specialist as disabled (after setEnabled(false)).
+    const disabledSp = makeSpecialist('uuid-disabled', 'DEBUGGER', false)
+    mockStore([disabledSp])
+    renderSubmenu({ selectedId: 'uuid-disabled', onChange: vi.fn(), unavailable: true })
+    // The unavailable item is rendered as a non-interactive div (not a button).
+    const item = container.querySelector('[data-testid="specialist-option-uuid-disabled"]')
+    expect(item).toBeTruthy()
+    expect(item?.tagName).not.toBe('BUTTON')
+    expect(item?.textContent).toContain('DEBUGGER')
+    expect(item?.textContent).toContain('Unavailable')
+    // Should have line-through class.
+    expect(item?.innerHTML).toContain('line-through')
+  })
+
+  it('still shows enabled specialists alongside the unavailable one', () => {
+    const disabledSp = makeSpecialist('uuid-disabled', 'DEBUGGER', false)
+    const enabledSp = makeSpecialist('uuid-other', 'RESEARCHER', true)
+    mockStore([disabledSp, enabledSp])
+    renderSubmenu({ selectedId: 'uuid-disabled', onChange: vi.fn(), unavailable: true })
+    expect(container.querySelector('[data-testid="specialist-option-uuid-disabled"]')).toBeTruthy()
+    expect(container.querySelector('[data-testid="specialist-option-uuid-other"]')).toBeTruthy()
+  })
+
+  it('does NOT render an unavailable item for a session with no current specialist', () => {
+    // A different disabled specialist should not appear for a session that never had it bound.
+    const disabledSp = makeSpecialist('uuid-other', 'OTHER', false)
+    mockStore([disabledSp])
+    // selectedId is undefined and unavailable is false — no bound specialist.
+    renderSubmenu({ selectedId: undefined, onChange: vi.fn(), unavailable: false })
+    expect(container.querySelector('[data-testid="specialist-option-uuid-other"]')).toBeNull()
+  })
+
+  it('does NOT render the unavailable item if the specialist was already removed from catalog', () => {
+    // UUID not in the catalog at all (e.g. deleted, not just disabled).
+    mockStore([]) // empty catalog
+    renderSubmenu({ selectedId: 'uuid-gone', onChange: vi.fn(), unavailable: true })
+    // The unavailable item can only appear when the profile is in the store.
+    // When it's fully gone the item is absent — the banner/capsule still says Unavailable.
+    const item = container.querySelector('[data-testid="specialist-option-uuid-gone"]')
+    expect(item).toBeNull()
+    // But the trigger should still show "Unavailable" in the capsule.
+    const trigger = container.querySelector('[data-testid="specialist-submenu-trigger"]')!
+    expect(trigger.textContent).toContain('Unavailable')
+  })
+})

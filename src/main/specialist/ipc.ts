@@ -8,10 +8,14 @@ import type {
   DuplicateSpecialistRequest,
   CreateSpecialistInput,
   SpecialistListItem,
-  SpecialistProfileView
+  SpecialistProfileView,
+  SetSessionSpecialistRequest,
+  ResolveSessionSpecialistRequest,
+  SessionSpecialistResolution
 } from '../../shared/specialist'
 import { SPECIALIST_IPC } from '../../shared/specialist'
 import { ProfileService } from './service'
+import { SessionBindingService } from './session-binding'
 import { createLogger } from '../logger'
 import { broadcastToRenderers } from '../renderer-broadcast'
 
@@ -24,7 +28,10 @@ const broadcastCatalogChanged = (): void => {
 
 // Registers all specialist IPC handlers against ipcMain.
 // Call once per app lifecycle, after the ProfileService is ready.
-export const registerSpecialistIpcHandlers = (service: ProfileService): void => {
+export const registerSpecialistIpcHandlers = (
+  service: ProfileService,
+  sessionBindingService?: SessionBindingService
+): void => {
   // Subscribe once so every mutation (create, setEnabled) triggers a broadcast.
   service.subscribe(broadcastCatalogChanged)
 
@@ -92,4 +99,46 @@ export const registerSpecialistIpcHandlers = (service: ProfileService): void => 
     async (_event, request: DuplicateSpecialistRequest): Promise<CreateSpecialistInput> =>
       service.duplicate(request.id)
   )
+
+  // Session switching — only registered when a SessionBindingService is provided.
+  // This handler is a named seam: the future host.agents.switch() SDK (issue 08)
+  // will resolve name→UUID and call this same channel, not a parallel path.
+  if (sessionBindingService) {
+    ipcMain.handle(
+      SPECIALIST_IPC.SET_SESSION_SPECIALIST,
+      async (_event, request: SetSessionSpecialistRequest): Promise<void> => {
+        if (!request || typeof request.sessionId !== 'string') {
+          throw new Error('SET_SESSION_SPECIALIST: sessionId must be a string.')
+        }
+        if (request.specialistId !== undefined && typeof request.specialistId !== 'string') {
+          throw new Error('SET_SESSION_SPECIALIST: specialistId must be a string or undefined.')
+        }
+        // Validate the UUID exists and is enabled before accepting it.
+        if (request.specialistId !== undefined) {
+          const resolution = await sessionBindingService.resolve(
+            request.sessionId,
+            request.specialistId
+          )
+          if (resolution.kind === 'unavailable') {
+            // Surface the reason so the renderer can show a meaningful message.
+            throw new Error(resolution.reason)
+          }
+        }
+        sessionBindingService.setBinding(request.sessionId, request.specialistId)
+      }
+    )
+
+    ipcMain.handle(
+      SPECIALIST_IPC.RESOLVE_SESSION_SPECIALIST,
+      async (
+        _event,
+        request: ResolveSessionSpecialistRequest
+      ): Promise<SessionSpecialistResolution> => {
+        if (!request || typeof request.sessionId !== 'string') {
+          throw new Error('RESOLVE_SESSION_SPECIALIST: sessionId must be a string.')
+        }
+        return sessionBindingService.resolve(request.sessionId)
+      }
+    )
+  }
 }

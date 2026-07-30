@@ -259,6 +259,9 @@ type SessionStore = SessionStoreData & {
   setAutoReviewEnabled: (sessionId: string, enabled: boolean) => void
   // Sets the per-session enabled compute hosts (single-select, stored as array for extensibility).
   setEnabledComputeHosts: (sessionId: string, providerIds: string[]) => void
+  // Updates the persisted specialist UUID for an existing session after reconfigure succeeds.
+  // Passing undefined clears the binding (Main Agent). Persistence only stores the UUID.
+  setSessionSpecialistId: (sessionId: string, specialistId: string | undefined) => void
   // Toggles whether a conversation is pinned to the top section of the sidebar.
   togglePinned: (sessionId: string) => void
   // Sets or clears the per-session fix loop active flag. When true, the composer send button is
@@ -2176,6 +2179,22 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           ? {
               ...session,
               enabledComputeHosts: providerIds.length > 0 ? providerIds : undefined,
+              updatedAt: Date.now()
+            }
+          : session
+      )
+    }))
+  },
+
+  // Updates the persisted specialist UUID for an existing session (called after reconfigure succeeds).
+  // Passing undefined clears the binding (Main Agent). Session persistence stores only the UUID.
+  setSessionSpecialistId: (sessionId, specialistId) => {
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              specialistId: specialistId ?? undefined,
               updatedAt: Date.now()
             }
           : session
