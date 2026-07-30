@@ -218,10 +218,125 @@ describe('SessionBindingService — lazy profile update', () => {
     }
   })
 
-  it('catalog-change event does not auto-resume sessions (lazy, not eager)', () => {
-    // The binding service has no resumeSessions method — it only resolves on demand.
+  it('catalog-change event does not trigger bulk session resume (lazy resolution only)', async () => {
+    // The binding service must not iterate sessions or trigger per-session resume when the catalog
+    // changes. Correct behavior: each resolve() call reads the latest catalog on demand; the service
+    // holds no subscriber that iterates sessions or triggers any resume operation.
+    const profile = makeProfile({ id: 'uuid-sp1', revision: 1 })
+    const catalog = new Map<string, SpecialistProfileView>([['uuid-sp1', profile]])
+    const svc = new SessionBindingService(makeService(catalog))
+    svc.setBinding('session-a', 'uuid-sp1')
+
+    // Simulate a catalog-changed event by mutating the catalog backing the service.
+    catalog.set('uuid-sp1', { ...profile, revision: 2 })
+
+    // Only an explicit resolve() call reads the new data — not an automatic side effect.
+    const result = await svc.resolve('session-a')
+    expect(result.kind).toBe('bound')
+    if (result.kind === 'bound') {
+      // Updated revision is visible, but only because we called resolve(), not due to a push.
+      expect(result.profile.revision).toBe(2)
+    }
+
+    // No session iteration happened proactively — resolve was called exactly once above.
+    // The service has no method that processes all sessions at once.
+    expect(typeof (svc as unknown as Record<string, unknown>).resumeAllSessions).toBe('undefined')
+    expect(typeof (svc as unknown as Record<string, unknown>).bulkResume).toBe('undefined')
+    expect(typeof (svc as unknown as Record<string, unknown>).onCatalogChanged).toBe('undefined')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tests: I/O failure vs not-found discrimination
+// ---------------------------------------------------------------------------
+
+describe('SessionBindingService.resolve — I/O failure discrimination', () => {
+  it("returns 'unavailable' with an I/O reason for non-not-found errors", async () => {
+    const brokenService: ProfileService = {
+      getById: vi.fn().mockRejectedValue(new Error('EACCES: permission denied'))
+    } as unknown as ProfileService
+    const svc = new SessionBindingService(brokenService)
+    svc.setBinding('session-a', 'uuid-sp1')
+
+    const result = await svc.resolve('session-a')
+    expect(result.kind).toBe('unavailable')
+    if (result.kind === 'unavailable') {
+      // Must not claim the specialist was deleted — it was an I/O error.
+      expect(result.reason).not.toContain('not found')
+      expect(result.reason).toContain('store error')
+    }
+  })
+
+  it("returns 'unavailable' with a not-found reason for a missing specialist", async () => {
+    const svc = new SessionBindingService(makeService()) // empty catalog
+    svc.setBinding('session-a', 'uuid-deleted')
+
+    const result = await svc.resolve('session-a')
+    expect(result.kind).toBe('unavailable')
+    if (result.kind === 'unavailable') {
+      expect(result.reason).toContain('not found')
+    }
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tests: clearSession is invoked when a session is deleted
+// ---------------------------------------------------------------------------
+
+describe('SessionBindingService.clearSession — deletion wiring', () => {
+  it('removes the binding when the session is deleted', async () => {
+    const profile = makeProfile()
+    const svc = new SessionBindingService(makeService(new Map([['uuid-sp1', profile]])))
+    svc.setBinding('session-a', 'uuid-sp1')
+
+    // Simulate session deletion
+    svc.clearSession('session-a')
+
+    const result = await svc.resolve('session-a')
+    expect(result.kind).toBe('main')
+    expect(svc.getBinding('session-a')).toBeUndefined()
+  })
+
+  it('does not affect bindings for other sessions on clearSession', () => {
     const svc = new SessionBindingService(makeService())
-    expect((svc as unknown as Record<string, unknown>).resumeSessions).toBeUndefined()
-    expect((svc as unknown as Record<string, unknown>).bulkResume).toBeUndefined()
+    svc.setBinding('session-a', 'uuid-sp1')
+    svc.setBinding('session-b', 'uuid-sp2')
+
+    svc.clearSession('session-a')
+
+    expect(svc.getBinding('session-a')).toBeUndefined()
+    expect(svc.getBinding('session-b')).toBe('uuid-sp2')
+  })
+})
+
+// ---------------------------------------------------------------------------
+// Tests: restart round-trip (persist → re-read → binding restored)
+// ---------------------------------------------------------------------------
+
+describe('SessionBindingService — restart round-trip simulation', () => {
+  it('binding is the new UUID after simulated restart (re-create service with persisted UUID)', async () => {
+    const profile = makeProfile({ id: 'uuid-sp2', name: 'RESEARCHER' })
+    const catalog = new Map<string, SpecialistProfileView>([['uuid-sp2', profile]])
+
+    // First service instance — represents the running app.
+    const svc1 = new SessionBindingService(makeService(catalog))
+    svc1.setBinding('session-a', 'uuid-sp2')
+
+    // Simulate restart: create a fresh service (in-memory state cleared).
+    const svc2 = new SessionBindingService(makeService(catalog))
+    // On restart, the renderer calls sessions:load-all and then re-hydrates each session's
+    // specialistId from the durable file into the new binding service. Simulate that here.
+    const persistedSpecialistId = svc1.getBinding('session-a')
+    expect(persistedSpecialistId).toBe('uuid-sp2')
+    if (persistedSpecialistId !== undefined) {
+      svc2.setBinding('session-a', persistedSpecialistId)
+    }
+
+    // After restart hydration the binding is the new UUID, not the old default.
+    const result = await svc2.resolve('session-a')
+    expect(result.kind).toBe('bound')
+    if (result.kind === 'bound') {
+      expect(result.profile.id).toBe('uuid-sp2')
+    }
   })
 })

@@ -33,7 +33,7 @@ export class SessionBindingService {
     } else {
       this.bindings.set(sessionId, specialistId)
     }
-    log.info('session specialist binding updated', { sessionId, specialistId })
+    log.debug('session specialist binding updated', { sessionId, specialistId })
   }
 
   // Reads the current in-memory binding for a session. Returns undefined when
@@ -59,15 +59,34 @@ export class SessionBindingService {
     let profile: SpecialistProfileView | undefined
     try {
       profile = await this.profileService.getById(specialistId)
-    } catch {
-      // Not found.
+    } catch (error) {
+      // Distinguish a genuine not-found (profile deleted) from a transient I/O failure (corrupt
+      // store, permission error). getById throws "Specialist <id> not found." for missing profiles;
+      // any other error is an I/O or data failure. Log the real error so a corrupt store is
+      // diagnosable rather than silently misreported as a deletion.
+      const message = error instanceof Error ? error.message : String(error)
+      const isNotFound = message.includes('not found')
+      if (!isNotFound) {
+        log.error('specialist catalog read failed; treating binding as unavailable', {
+          sessionId,
+          specialistId,
+          error
+        })
+        return {
+          kind: 'unavailable',
+          reason: `Specialist ${specialistId} could not be loaded (store error).`
+        }
+      }
+      log.warn('session specialist not found; binding unavailable', { sessionId, specialistId })
       return { kind: 'unavailable', reason: `Specialist ${specialistId} not found.` }
     }
 
     if (!profile.enabled) {
+      log.warn('session specialist disabled; binding unavailable', { sessionId, specialistId })
       return { kind: 'unavailable', reason: `Specialist "${profile.name}" is disabled.` }
     }
 
+    log.debug('session specialist resolved', { sessionId, specialistId, kind: 'bound' })
     return { kind: 'bound', profile }
   }
 

@@ -633,14 +633,43 @@ const registerIpcHandlers = async ({
     listAppIconPreviews
   })
   registerNotebookIpcHandlers(notebookService)
+  // Wire session deletion to the binding store so stale in-memory bindings do not accumulate.
+  // The renderer calls sessions:delete-session (via sessionPersistenceBackend) and acp:delete-session
+  // separately; both paths should clear the binding. Override the backend deleteSession callback here
+  // so all durable-path deletions — regardless of whether the ACP session was attached — clear the
+  // binding in one place.
+  const originalDeleteSession =
+    sessionPersistenceBackend.deleteSession.bind(sessionPersistenceBackend)
+  sessionPersistenceBackend.deleteSession = async (projectId, sessionId) => {
+    await originalDeleteSession(projectId, sessionId)
+    sessionBindingService.clearSession(sessionId)
+  }
+  const specialistPersistLog = createLogger('specialist:persist')
   registerSpecialistIpcHandlers(
     profileService,
     sessionBindingService,
-    // Persist the specialist UUID to the durable session file before exposing the binding.
-    // TODO: wire the session-persistence writer once the persistence bridge exposes a per-session
-    // specialist-id update. Until then the binding is in-memory only (restored from the session file
-    // on the next create/resume via specialistId).
-    undefined,
+    // Persist only the specialist UUID to the durable session file — never a profile snapshot.
+    // Read the current session file, patch specialistId, and save so the binding survives restarts.
+    // Reading all sessions to locate the target is intentional: sessionId alone is not sufficient to
+    // open the file (it lives under sessions/<projectId>/<sessionId>.json), and this operation is
+    // infrequent enough that the scan cost is acceptable.
+    async (sessionId, specialistId) => {
+      const allSessions = await sessionRepository.loadAll()
+      const session = allSessions.sessions.find((s) => s.id === sessionId)
+      if (!session) {
+        // The session has not yet been persisted (created but not saved). The specialistId will be
+        // written when the renderer calls sessions:save-session for the first time.
+        specialistPersistLog.debug(
+          'session not yet durable; specialistId will be written on first save',
+          {
+            sessionId,
+            specialistId
+          }
+        )
+        return
+      }
+      await sessionPersistenceCoordinator.saveSession({ ...session, specialistId })
+    },
     // Apply the switch to the live agent runtime. `runtime` is assigned above (registerAcpIpcHandlers),
     // but the closure is invoked per-request so a late-bound reference is unnecessary.
     (sessionId, specialistId) => runtime.switchSpecialist(sessionId, specialistId),
