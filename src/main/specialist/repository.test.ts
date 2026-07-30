@@ -1,6 +1,6 @@
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { mkdir, rm } from 'node:fs/promises'
+import { mkdir, rm, writeFile, chmod } from 'node:fs/promises'
 import { randomUUID } from 'node:crypto'
 import { describe, it, expect, beforeEach, afterEach } from 'vitest'
 
@@ -103,12 +103,24 @@ describe('SpecialistRepository.getAll', () => {
     expect(doc.specialists).toHaveLength(0)
   })
 
-  it('returns empty document on corrupt file', async () => {
-    const { writeFile } = await import('node:fs/promises')
+  it('throws on corrupt JSON file instead of returning empty (prevents silent data loss)', async () => {
     await writeFile(join(tmpDir, 'specialists.json'), 'INVALID JSON', 'utf8')
     const repo = new SpecialistRepository(tmpDir)
-    const doc = await repo.getAll()
-    expect(doc.specialists).toHaveLength(0)
+    await expect(repo.getAll()).rejects.toThrow()
+  })
+
+  it('throws on non-ENOENT filesystem error instead of returning empty', async () => {
+    // Create the file then make it unreadable to trigger EACCES.
+    // Skip on CI environments that run as root (root ignores chmod 000).
+    const filePath = join(tmpDir, 'specialists.json')
+    await writeFile(filePath, '{}', 'utf8')
+    await chmod(filePath, 0o000)
+    const repo = new SpecialistRepository(tmpDir)
+    try {
+      await expect(repo.getAll()).rejects.toThrow()
+    } finally {
+      await chmod(filePath, 0o644)
+    }
   })
 })
 
@@ -200,9 +212,39 @@ describe('SpecialistRepository.update', () => {
   })
 })
 
+describe('SpecialistRepository — data-loss guard', () => {
+  it('a read failure followed by an insert must NOT truncate the store', async () => {
+    const repo = new SpecialistRepository(tmpDir)
+
+    // Populate the store with two specialists via a healthy write.
+    const sp1 = makeSpecialist()
+    const sp2 = makeSpecialist()
+    await repo.insert(sp1)
+    await repo.insert(sp2)
+
+    // Corrupt the file to simulate a truncated-write / disk-corruption scenario.
+    await writeFile(join(tmpDir, 'specialists.json'), 'CORRUPTED', 'utf8')
+
+    // The insert must reject (because getAll now throws) rather than silently
+    // writing a document containing only the new specialist.
+    const sp3 = makeSpecialist()
+    await expect(repo.insert(sp3)).rejects.toThrow()
+
+    // Restore the file to a valid state and confirm sp1 + sp2 are still there.
+    await writeFile(
+      join(tmpDir, 'specialists.json'),
+      JSON.stringify({ version: 1, specialists: [sp1, sp2] }, null, 2),
+      'utf8'
+    )
+    const doc = await repo.getAll()
+    expect(doc.specialists).toHaveLength(2)
+    expect(doc.specialists.map((s) => s.id)).toContain(sp1.id)
+    expect(doc.specialists.map((s) => s.id)).toContain(sp2.id)
+  })
+})
+
 describe('SpecialistRepository — old schema detection', () => {
   it('ignores old experimental schema with kebab-case agentId', async () => {
-    const { writeFile } = await import('node:fs/promises')
     const oldSchema = JSON.stringify({
       version: 1,
       specialists: [{ agentId: 'rna-seq-reviewer', name: 'RNA Reviewer', enabled: true }]

@@ -137,6 +137,13 @@ const sanitizeSpecialists = (v: unknown): StoredSpecialists => {
       return createEmptySpecialists()
     }
   }
+  // Deliberate policy: a malformed *individual* record is silently dropped rather than
+  // failing the whole read.  Rationale: a single corrupt record is most likely from a
+  // schema migration or manual edit gone wrong; surfacing all valid specialists is better
+  // than blocking all access.  The risk of silent loss on next write is mitigated by
+  // getAll() now throwing on OS-level read failures — the dangerous path (transient
+  // EMFILE/EACCES producing an empty document that then gets written back) is closed.
+  // If you change this policy, audit callers of sanitizeSpecialists in mutate().
   const specialists = Array.isArray(v.specialists)
     ? v.specialists
         .map(sanitizeStoredSpecialist)
@@ -162,12 +169,39 @@ export class SpecialistRepository {
   }
 
   async getAll(): Promise<StoredSpecialists> {
+    let raw: string
     try {
-      const raw = await readFile(this.filePath, 'utf8')
-      return sanitizeSpecialists(JSON.parse(raw) as unknown)
-    } catch {
-      return createEmptySpecialists()
+      raw = await readFile(this.filePath, 'utf8')
+    } catch (err) {
+      // ENOENT is the normal first-run state — return an empty document.
+      // Any other OS error (EMFILE, EACCES, truncated read, etc.) must propagate so
+      // that mutate() aborts rather than silently overwriting a store we could not read.
+      if ((err as NodeJS.ErrnoException).code === 'ENOENT') {
+        return createEmptySpecialists()
+      }
+      log.error('failed to read specialists file — aborting to prevent data loss', {
+        path: this.filePath,
+        code: (err as NodeJS.ErrnoException).code
+        // intentionally omitting file contents — systemPrompt must not reach the log
+      })
+      throw err
     }
+
+    // JSON.parse failure (truncated write, disk corruption) must also propagate.
+    // We do not return empty here because the file exists but is unreadable — a
+    // subsequent write would permanently destroy every specialist the file contained.
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(raw) as unknown
+    } catch (err) {
+      log.error('failed to parse specialists file — aborting to prevent data loss', {
+        path: this.filePath
+        // intentionally omitting raw content — systemPrompt must not reach the log
+      })
+      throw err
+    }
+
+    return sanitizeSpecialists(parsed)
   }
 
   // Insert a new specialist (caller supplies a fully-formed record).
