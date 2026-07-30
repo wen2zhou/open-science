@@ -21,6 +21,7 @@ import {
 } from '@/stores/preview-workbench-store'
 import type { ChatSession } from '@/stores/session-store'
 import { useSessionStore } from '@/stores/session-store'
+import { useSpecialistStore } from '@/stores/specialist-store'
 import { useReviewStore } from '@/stores/review-store'
 import {
   assembleReviewRunRequest,
@@ -111,7 +112,9 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     state.projects.find((project) => project.id === scopedProjectId)
   )
 
-  // Session data lives in zustand while draft/new-conversation state stays local to the chat surface.
+  // Specialist catalog for new-conversation draft validation.
+  const specialistItems = useSpecialistStore((state) => state.items)
+  const loadSpecialists = useSpecialistStore((state) => state.load)
   const allSessions = useSessionStore((state) => state.sessions)
   const selectedSessionId = useSessionStore((state) => state.selectedSessionId)
   const selectSession = useSessionStore((state) => state.selectSession)
@@ -173,6 +176,16 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   const [newConversationEnabledComputeHosts, setNewConversationEnabledComputeHosts] = useState<
     string[]
   >([])
+  // Draft specialist selection for a not-yet-created conversation. Stored in memory only (not
+  // persisted across restarts). Reset when clicking New; restored when switching back to the draft.
+  // On first send, the UUID is forwarded to createSession; the main process resolves the latest Profile.
+  const [newConversationSpecialistId, setNewConversationSpecialistId] = useState<
+    string | undefined
+  >(undefined)
+  // When the selected specialist is unavailable (disabled/deleted/corrupt) before send, block the send
+  // and show an unavailable pill. Derived during render from the specialist catalog.
+  const [newConversationSpecialistUnavailable, setNewConversationSpecialistUnavailable] =
+    useState(false)
   // Unsent composer state (rich doc + staged attachments) is kept per session (and per new conversation)
   // so switching away and back restores it. The active key's state is live; this map holds inactive keys.
   const composerDraftsRef = useRef<
@@ -698,6 +711,8 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     setNewConversationPermissionProfile(DEFAULT_PERMISSION_PROFILE)
     setNewConversationAutoReviewEnabled(false)
     setNewConversationEnabledComputeHosts([])
+    setNewConversationSpecialistId(undefined)
+    setNewConversationSpecialistUnavailable(false)
     clearSelection()
   }
 
@@ -880,6 +895,10 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
       setAttachmentError('The selected model is not configured for image input.')
       return
     }
+    // Block send if the draft specialist is unavailable (disabled/deleted/corrupt).
+    if (!activeSession && newConversationSpecialistUnavailable) {
+      return
+    }
 
     const doc = draftDoc
     const attachmentsForSend = attachments
@@ -888,6 +907,8 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     const wasNewConversation = !activeSession
     const draftAutoReviewEnabled = newConversationAutoReviewEnabled
     const draftEnabledComputeHosts = newConversationEnabledComputeHosts
+    // Capture the final specialist selection (last change wins before first send).
+    const draftSpecialistId = wasNewConversation ? newConversationSpecialistId : undefined
 
     // Optimistically clear composer state; failed sends restore both doc and attachments below. Staged
     // files are consumed (moved into the session dir) by the runtime, so they are not deleted here.
@@ -911,7 +932,9 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
       projectId: activeSession?.projectId ?? scopedProjectId,
       projectName: activeSession?.projectId ?? scopedProjectId,
       permissionProfile: activePermissionProfile,
-      forcedSkillIds
+      forcedSkillIds,
+      // New-conversation only: the UUID is forwarded to createSession; main process reads latest Profile.
+      specialistId: draftSpecialistId
     }).then((result) => {
       if (!result) {
         setDraftDoc(doc)
@@ -935,6 +958,8 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
       }
       setNewConversationAutoReviewEnabled(false)
       setNewConversationEnabledComputeHosts([])
+      setNewConversationSpecialistId(undefined)
+      setNewConversationSpecialistUnavailable(false)
     })
   }
 
@@ -1130,6 +1155,30 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     upsertAndActivatePreviewItem(createProjectFilesPreviewItem())
   }
 
+  // Handles specialist selection for the new-conversation draft.
+  // Validates availability synchronously against the in-memory catalog.
+  const handleNewConversationSpecialistChange = (specialistId: string | undefined): void => {
+    setNewConversationSpecialistId(specialistId)
+    if (!specialistId) {
+      setNewConversationSpecialistUnavailable(false)
+      return
+    }
+    const found = specialistItems.find((item) => item.kind === 'custom' && item.id === specialistId)
+    const unavailable = !found || (found.kind === 'custom' && !found.enabled)
+    setNewConversationSpecialistUnavailable(unavailable)
+  }
+
+  // Subscribe to specialist catalog changes so unavailability state stays fresh.
+  useEffect(() => {
+    // Guard: window.api.specialist may be absent in test/headless environments.
+    if (!window.api?.specialist) return
+    void loadSpecialists()
+    const remove = window.api.specialist.onCatalogChanged(() => {
+      void loadSpecialists()
+    })
+    return remove
+  }, [loadSpecialists])
+
   return (
     <main className="h-screen overflow-hidden bg-bg-10 p-[10px] text-[13px] leading-normal text-text-000">
       <div className="flex h-full gap-2">
@@ -1197,6 +1246,9 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
             canEditMessage={canEditMessage}
             onSendEditedMessage={sendEditedMessage}
             onOpenJobList={(sessionId) => setJobListModal({ open: true, sessionId })}
+            specialistId={!activeSession ? newConversationSpecialistId : undefined}
+            specialistUnavailable={!activeSession && newConversationSpecialistUnavailable}
+            onSpecialistChange={!activeSession ? handleNewConversationSpecialistChange : undefined}
           />
 
           <ResizableHandle

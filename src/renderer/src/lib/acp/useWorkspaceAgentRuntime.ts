@@ -76,6 +76,10 @@ type SendWorkspaceMessageInput = {
   // common send path still owns replay completion and clears the durable retry marker only after the
   // provider accepts the prompt.
   branchContextAlreadyReset?: boolean
+  // Immutable Specialist UUID from the new-conversation draft picker. Only used when creating a new
+  // ACP session (sessionId === undefined). The renderer sends only the UUID; the main process reads
+  // the latest Profile. Never passed for existing sessions (specialist binding is immutable).
+  specialistId?: string
 }
 
 type SendWorkspaceMessageResult = {
@@ -376,13 +380,19 @@ const startPendingSessionPrompt = (
   projectName: string | undefined,
   permissionProfile: PermissionProfileId,
   forcedSkillIds: string[] | undefined,
-  referencedArtifacts: FileReference[] | undefined
+  referencedArtifacts: FileReference[] | undefined,
+  specialistId: string | undefined
 ): void => {
   void (async () => {
     let createdSession
 
     try {
-      createdSession = await runtime.createSession(cwd, projectName, permissionProfile)
+      createdSession = await runtime.createSession(
+        cwd,
+        projectName,
+        permissionProfile,
+        specialistId
+      )
     } catch (error) {
       // Unwrap the IPC wrapper so an app-authored setup failure (model-incompat / no provider / Codex
       // bridge / missing executable) is recognized by the classifier and hides the report button.
@@ -478,7 +488,8 @@ const sendWorkspaceMessage = async (
     preAppendedMessageId,
     supportsImageInput,
     allowCompactionRecovery,
-    branchContextAlreadyReset
+    branchContextAlreadyReset,
+    specialistId
   }: SendWorkspaceMessageInput
 ): Promise<SendWorkspaceMessageResult | undefined> => {
   const content = text.trim()
@@ -533,7 +544,8 @@ const sendWorkspaceMessage = async (
         sessionProjectName,
         currentSession.permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
         forcedSkillIds,
-        referencedArtifacts
+        referencedArtifacts,
+        undefined // existing pending sessions do not re-apply specialistId
       )
       return appended
     }
@@ -739,7 +751,8 @@ const sendWorkspaceMessage = async (
     permissionProfile,
     agentFrameworkId,
     agentBackendId,
-    agentModel
+    agentModel,
+    specialistId
   })
 
   if (!pending) return undefined
@@ -754,7 +767,8 @@ const sendWorkspaceMessage = async (
     projectName,
     permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
     forcedSkillIds,
-    referencedArtifacts
+    referencedArtifacts,
+    specialistId
   )
 
   return pending

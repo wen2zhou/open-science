@@ -45,7 +45,8 @@ const useAcpRuntime = (): {
   createSession: (
     cwd?: string,
     projectName?: string,
-    permissionProfile?: PermissionProfileId
+    permissionProfile?: PermissionProfileId,
+    specialistId?: string
   ) => Promise<AcpCreateSessionResponse>
   resumeSession: (
     sessionId: AcpResumeSessionRequest['sessionId'],
@@ -209,9 +210,14 @@ const useAcpRuntime = (): {
 
   // Creates a protocol session and returns the runtime-provided id.
   const createSession = useCallback(
-    (cwd?: string, projectName?: string, permissionProfile?: PermissionProfileId) =>
+    (
+      cwd?: string,
+      projectName?: string,
+      permissionProfile?: PermissionProfileId,
+      specialistId?: string
+    ) =>
       runValueAction(setIsConnecting, () =>
-        window.api.acp.createSession({ cwd, projectName, permissionProfile })
+        window.api.acp.createSession({ cwd, projectName, permissionProfile, specialistId })
       ),
     [runValueAction]
   )

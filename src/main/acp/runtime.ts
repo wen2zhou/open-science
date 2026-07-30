@@ -199,6 +199,14 @@ type AcpRuntimeOptions = {
   // injectable so tests can drive the degrade-to-file path with small fixtures.
   inlineImageBudgetBytes?: number
   contextUsageTracker?: ContextUsageTracker
+  // Resolves the identity-inject text for a specialist UUID at session-creation time.
+  // The main process reads the latest Profile from ProfileService; the runtime never caches it.
+  // Returns undefined when the specialist is not found, disabled, or its Profile is corrupt —
+  // the caller should have validated before calling createSession.
+  resolveSpecialistIdentity?: (
+    specialistId: string,
+    framework: string
+  ) => Promise<{ append: string; prefix: string } | undefined>
 }
 
 // Turn-scoped skill force-load hooks, wired from the settings service. Optional so tests that construct
@@ -749,6 +757,9 @@ class AcpRuntime {
   // framework while moving to a different on-disk session store, where the old id is not resumable.
   private readonly sessionBackendIds = new Map<string, string>()
   private readonly promptInFlightSessionIds = new Set<string>()
+  // Per-session specialist identity prompt prefix (Codex / OpenCode only). Injected once at
+  // createSession time and prepended to every prompt turn for the session's lifetime.
+  private readonly sessionSpecialistPrefixes = new Map<string, string>()
   // Framework control turns use a separate lock so an overflowed prompt's late `finally` can release
   // only its own prompt lock without making an in-progress native compaction look idle.
   private readonly contextCompactionInFlightSessionIds = new Set<string>()
@@ -1425,6 +1436,25 @@ class AcpRuntime {
       const notebookSessionId = this.createNotebookSessionId()
       const skillImportSessionId = this.createSkillImportSessionId()
 
+      // Resolve specialist identity before starting the ACP session so the identity append is
+      // included in session/new. Main process reads the latest Profile — renderer only sends the UUID.
+      let specialistAppend: string | undefined
+      let specialistPrefix: string | undefined
+      if (request.specialistId && this.options.resolveSpecialistIdentity) {
+        const identity = await this.options.resolveSpecialistIdentity(
+          request.specialistId,
+          this.framework.id
+        )
+        if (!identity) {
+          // Profile is unavailable (disabled, deleted, or corrupt): fail fast.
+          throw new Error(
+            `Specialist ${request.specialistId} is unavailable (disabled, deleted, or corrupt).`
+          )
+        }
+        specialistAppend = identity.append || undefined
+        specialistPrefix = identity.prefix || undefined
+      }
+
       log.info('createSession: createMcpServers', {
         artifactSessionId,
         notebookSessionId,
@@ -1438,13 +1468,20 @@ class AcpRuntime {
         projectName
       })
       log.info('createSession: buildSession', { mcpServersCount: mcpServers.length })
+      const extraAppends = specialistAppend ? [specialistAppend] : []
       const session = await connection.agent
         .buildSession({
           cwd: sessionCwd,
           mcpServers,
-          ...this.buildSessionMetaArg()
+          ...this.buildSessionMetaArg(extraAppends)
         })
         .start()
+
+      // For Codex / OpenCode the specialist identity rides every prompt turn as a prefix.
+      // Store it now; sendPromptTurn reads it when composing each prompt.
+      if (specialistPrefix) {
+        this.sessionSpecialistPrefixes.set(session.sessionId, specialistPrefix)
+      }
 
       log.info('createSession: configurePermissionProfile', { sessionId: session.sessionId })
       try {
@@ -2658,11 +2695,18 @@ class AcpRuntime {
       // Framework-neutral delivery of the system-prompt guidance: Claude carries the complete appends in
       // session _meta but repeats the short activity declaration reminder here; frameworks without a
       // session preset carry the complete guidance as a prompt prefix.
-      const { promptPrefix } = this.framework.buildSessionSetup({
+      const { promptPrefix: frameworkPromptPrefix } = this.framework.buildSessionSetup({
         systemPromptAppends: this.getSystemPromptAppends(),
         turnPromptReminders: this.getTurnPromptReminders(),
         sessionOptions: this.pendingSessionOptions
       })
+      // For Codex/OpenCode, prepend the per-session specialist identity prefix (set at createSession).
+      // Claude carries its identity in session-level _meta; no per-turn prefix needed there.
+      const sessionSpecialistPrefix = this.sessionSpecialistPrefixes.get(request.sessionId)
+      const promptPrefix =
+        [sessionSpecialistPrefix, frameworkPromptPrefix]
+          .filter((segment): segment is string => Boolean(segment))
+          .join('\n\n') || undefined
       const selectorAbortController =
         this.framework.id === 'codex' &&
         forced.length === 0 &&
@@ -3071,6 +3115,7 @@ class AcpRuntime {
     this.skillImportTurnTokens.delete(request.sessionId)
     this.promptInFlightSessionIds.delete(request.sessionId)
     this.contextCompactionInFlightSessionIds.delete(request.sessionId)
+    this.sessionSpecialistPrefixes.delete(request.sessionId)
 
     // Only announce a deletion and shift the current session when something was actually attached; a
     // detached cleanup (post-switch) must not emit a spurious event or move currentSessionId.
@@ -4087,9 +4132,11 @@ class AcpRuntime {
   // Builds the ACP `_meta` argument for session/new and session/resume, delegating the framework-specific
   // shape to the active framework. Claude applies its settingSources restriction, resolved backend
   // options, and system-prompt appends; opencode returns no meta and uses a prompt prefix instead.
-  private buildSessionMetaArg(): { _meta?: Record<string, unknown> } {
+  // `extraAppends` lets createSession inject a one-off specialist identity without touching the
+  // shared pendingSystemPromptAppends that apply to every session on this runtime generation.
+  private buildSessionMetaArg(extraAppends: string[] = []): { _meta?: Record<string, unknown> } {
     const setup = this.framework.buildSessionSetup({
-      systemPromptAppends: this.getSystemPromptAppends(),
+      systemPromptAppends: [...this.getSystemPromptAppends(), ...extraAppends],
       sessionOptions: this.pendingSessionOptions
     })
 

@@ -38,6 +38,11 @@ import type { UploadRepository } from '../uploads/repository'
 import { broadcastToRenderers } from '../renderer-broadcast'
 import { withDataRootWrite } from '../storage/migration-state'
 import { createLogger, errorLogFields } from '../logger'
+import type { ProfileService } from '../specialist/service'
+import {
+  buildSpecialistIdentityAppend,
+  buildSpecialistIdentityPrefix
+} from '../specialist/identity'
 
 const log = createLogger('acp')
 
@@ -76,6 +81,9 @@ type AcpIpcOptions = AcpIpcArtifacts & {
   onSessionCancellationRequested?: (sessionId: string) => void
   onSessionUnavailable?: (sessionId: string) => void
   onAllSessionsCancellationRequested?: () => void
+  // Provides fresh Specialist Profiles for first-turn identity injection. Optional so existing
+  // tests and headless setups that construct the runtime without specialist support are unaffected.
+  profileService?: ProfileService
 }
 
 // Sends one runtime payload to every currently open renderer window.
@@ -110,7 +118,8 @@ const createRuntime = ({
   onSkillImportAttachmentEligible,
   onSessionCancellationRequested,
   onSessionUnavailable,
-  onAllSessionsCancellationRequested
+  onAllSessionsCancellationRequested,
+  profileService
 }: AcpIpcOptions): AcpRuntimeCoordinator => {
   const configRoot = resolveConfigRoot()
   const dataRoot = resolveDataRoot()
@@ -183,7 +192,27 @@ const createRuntime = ({
         },
         activityGroups: { mcpEntryPath },
         callbacks: runtimeCallbacks,
-        permissionGrantStore
+        permissionGrantStore,
+        // Main process resolves the latest Profile so the renderer never needs to send systemPrompt.
+        resolveSpecialistIdentity: profileService
+          ? async (specialistId: string, frameworkId: string) => {
+              let profile
+              try {
+                profile = await profileService.getById(specialistId)
+              } catch {
+                // Profile not found or corrupt
+                return undefined
+              }
+              if (!profile.enabled) return undefined
+              const append = buildSpecialistIdentityAppend(profile)
+              const prefix = buildSpecialistIdentityPrefix(profile)
+              // For Claude, only the append matters (session-level meta).
+              // For Codex/OpenCode, only the prefix matters (per-turn).
+              // Return both so the runtime can choose by framework.
+              if (frameworkId === 'claude-code') return { append, prefix: '' }
+              return { append: '', prefix }
+            }
+          : undefined
       })
     },
     callbacks,

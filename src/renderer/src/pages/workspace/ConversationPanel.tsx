@@ -50,6 +50,7 @@ import { docToSkillIds, type ComposerDoc } from './composer/composer-doc'
 import { ComposerAgentControlsMenu } from './ComposerAgentControlsMenu'
 import { ComposerContextUsage } from './ComposerContextUsage'
 import { ComposerModelPicker } from './ComposerModelPicker'
+import { SpecialistPicker } from './SpecialistPicker'
 import { PermissionApprovalControls } from './PermissionApprovalControls'
 import { normalizeRunFailureError } from './error-report'
 import { ReportErrorDialog } from './ReportErrorDialog'
@@ -145,6 +146,10 @@ type ConversationPanelProps = {
   onSendEditedMessage: (messageId: string, doc: ComposerDoc) => void
   // Open job list modal for a specific session.
   onOpenJobList?: (sessionId: string) => void
+  // Specialist picker for new conversations. Undefined selectedId means None.
+  specialistId?: string
+  specialistUnavailable?: boolean
+  onSpecialistChange?: (specialistId: string | undefined) => void
 }
 
 // Middle chat surface owns the visible conversation and local message composer UI.
@@ -189,7 +194,10 @@ const ConversationPanel = ({
   isRequestReviewDisabled,
   canEditMessage,
   onSendEditedMessage,
-  onOpenJobList
+  onOpenJobList,
+  specialistId,
+  specialistUnavailable = false,
+  onSpecialistChange
 }: ConversationPanelProps): React.JSX.Element => {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   // Local so the interrupted banner can show a spinner and block a double-resume until the request settles.
@@ -608,6 +616,16 @@ const ConversationPanel = ({
                           onRevokeGrant={onRevokePermissionGrant}
                           onClearGrants={onClearPermissionGrants}
                         />
+
+                        {/* Specialist picker: only shown for new conversations (no active session).
+                            Lets the user bind a Personal Specialist before the first send. */}
+                        {!activeSession && onSpecialistChange ? (
+                          <SpecialistPicker
+                            selectedId={specialistId}
+                            onChange={onSpecialistChange}
+                            unavailable={specialistUnavailable}
+                          />
+                        ) : null}
 
                         <div className="flex-1" />
 

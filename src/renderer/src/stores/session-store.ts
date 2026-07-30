@@ -127,6 +127,8 @@ type AppendUserMessageInput = {
   agentBackendId?: PersistedChatSession['agentBackendId']
   agentModel?: string
   isPending?: boolean
+  // Immutable Specialist UUID; written once on session creation and never changed after.
+  specialistId?: string
 }
 
 type AppendPendingUserMessageInput = {
@@ -139,6 +141,8 @@ type AppendPendingUserMessageInput = {
   agentFrameworkId?: PersistedChatSession['agentFrameworkId']
   agentBackendId?: PersistedChatSession['agentBackendId']
   agentModel?: string
+  // Immutable Specialist UUID forwarded from the new-conversation draft picker.
+  specialistId?: string
 }
 
 type BindPendingSessionInput = {
@@ -836,7 +840,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     agentFrameworkId,
     agentBackendId,
     agentModel,
-    isPending
+    isPending,
+    specialistId
   }) => {
     const trimmedContent = content.trim()
     const normalizedAgentBackendId = agentBackendId?.trim() || undefined
@@ -913,6 +918,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
         agentFrameworkId,
         agentBackendId: normalizedAgentBackendId,
         agentModel: normalizedAgentModel,
+        // Specialist UUID written once at creation; never changed after bind.
+        ...(specialistId ? { specialistId } : {}),
         messages: [userMessage],
         activeRun,
         createdAt: now,
@@ -946,7 +953,8 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     permissionProfile,
     agentFrameworkId,
     agentBackendId,
-    agentModel
+    agentModel,
+    specialistId
   }) => {
     return get().appendUserMessage({
       sessionId: createPendingSessionId(),
@@ -959,6 +967,7 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       agentFrameworkId,
       agentBackendId,
       agentModel,
+      specialistId,
       isPending: true
     })
   },
