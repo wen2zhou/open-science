@@ -472,7 +472,7 @@ const SettingsPage = ({ open, onClose }: SettingsPageProps): React.JSX.Element =
       const leaf =
         specialistsView.kind === 'create'
           ? 'New specialist'
-          : (editingSpecialist?.displayName ?? 'Edit specialist')
+          : (editingSpecialist?.name ?? 'Edit specialist')
       return {
         rootLabel: 'Specialists',
         rootTo: {

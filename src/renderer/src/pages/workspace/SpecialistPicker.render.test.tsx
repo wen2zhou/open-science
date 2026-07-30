@@ -73,13 +73,12 @@ Object.defineProperty(globalThis, 'window', {
 
 const makeSpecialist = (
   id: string,
-  displayName: string,
+  name: string,
   enabled = true
 ): SpecialistListItem & { kind: 'custom' } => ({
   kind: 'custom',
   id,
-  name: displayName.toUpperCase().replace(/\s+/g, '_'),
-  displayName,
+  name,
   description: '',
   systemPrompt: 'You are...',
   enabled,
@@ -151,7 +150,7 @@ describe('SpecialistPicker — trigger', () => {
     expect(span).toBeNull()
   })
 
-  it('shows displayName badge when a specialist is selected', () => {
+  it('shows name badge when a specialist is selected', () => {
     const sp = makeSpecialist('uuid-1', 'RNA-seq Reviewer')
     mockStore([sp])
     renderPicker({ selectedId: 'uuid-1', onChange: vi.fn() })

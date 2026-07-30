@@ -5,7 +5,6 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import {
-  deriveSpecialistName,
   validateCreateSpecialistInput,
   type CreateSpecialistInput,
   type UpdateSpecialistInput,
@@ -28,7 +27,6 @@ type SpecialistEditorProps = {
 }
 
 type FormState = {
-  displayName: string
   name: string
   description: string
   systemPrompt: string
@@ -37,8 +35,14 @@ type FormState = {
   capabilityMode: 'full' | 'selected'
   excludedConnectorIds: string[]
   connectorIds: string[]
-  // Whether name was manually edited (if so, stop auto-deriving)
-  nameTouched: boolean
+}
+
+type ConnectorRow = {
+  id: string
+  name: string
+  mainEnabled: boolean
+  available: boolean
+  availability?: 'unavailable' | 'unauthenticated'
 }
 
 const ICON_OPTIONS = [
@@ -73,7 +77,6 @@ const SpecialistEditor = ({
   const [form, setForm] = useState<FormState>(() =>
     editSpecialist
       ? {
-          displayName: editSpecialist.displayName,
           name: editSpecialist.name,
           description: editSpecialist.description,
           systemPrompt: editSpecialist.systemPrompt,
@@ -81,12 +84,9 @@ const SpecialistEditor = ({
           colorKey: editSpecialist.colorKey ?? 'purple',
           capabilityMode: editSpecialist.capabilityMode,
           excludedConnectorIds: editSpecialist.fullAccess.excludedConnectorIds,
-          connectorIds: editSpecialist.selectedCapabilities.connectorIds,
-          // Don't auto-derive the name from the display name while editing.
-          nameTouched: true
+          connectorIds: editSpecialist.selectedCapabilities.connectorIds
         }
       : {
-          displayName: '',
           name: '',
           description: '',
           systemPrompt: '',
@@ -94,8 +94,7 @@ const SpecialistEditor = ({
           colorKey: 'purple',
           capabilityMode: 'full',
           excludedConnectorIds: [],
-          connectorIds: [],
-          nameTouched: false
+          connectorIds: []
         }
   )
   const [fieldErrors, setFieldErrors] = useState<SpecialistFieldError[]>([])
@@ -110,7 +109,7 @@ const SpecialistEditor = ({
   // cannot silently broaden the profile when it returns. Main-disabled installed connectors remain
   // selectable: Main's toggle is not a Specialist capability limit.
   const connectorRows = useMemo(() => {
-    const known = [
+    const known: ConnectorRow[] = [
       ...connectors.map((connector) => ({
         id: connector.id,
         name: connector.displayName,
@@ -132,17 +131,13 @@ const SpecialistEditor = ({
     return known.sort((a, b) => a.name.localeCompare(b.name))
   }, [connectors, customServers, form.connectorIds, form.excludedConnectorIds])
 
-  // Derived during render: the name follows displayName until manually edited.
-  const effectiveName = form.nameTouched ? form.name : deriveSpecialistName(form.displayName)
-
   const getFieldError = (field: SpecialistFieldError['field']): string | undefined =>
     fieldErrors.find((e) => e.field === field)?.message
 
   const validate = (): boolean => {
     // Client-side validation using the shared validator.
     const input: CreateSpecialistInput = {
-      displayName: form.displayName,
-      name: effectiveName || undefined,
+      name: form.name,
       description: form.description || undefined,
       systemPrompt: form.systemPrompt || undefined
     }
@@ -158,8 +153,7 @@ const SpecialistEditor = ({
     setSaveError(undefined)
     try {
       const trimmed = {
-        displayName: form.displayName.trim(),
-        name: effectiveName.trim() || undefined,
+        name: form.name.trim(),
         description: form.description.trim() || undefined,
         systemPrompt: form.systemPrompt.trim() || undefined,
         iconKey: form.iconKey,
@@ -206,54 +200,23 @@ const SpecialistEditor = ({
             How this specialist appears in the registry and session picker.
           </p>
 
-          {/* Display name */}
-          <div className="mb-4">
-            <label htmlFor="sp-display-name" className="mb-1.5 block text-xs font-semibold">
-              Display name
-            </label>
-            <Input
-              id="sp-display-name"
-              value={form.displayName}
-              onChange={(e) => {
-                setForm((prev) => ({ ...prev, displayName: e.target.value }))
-                setFieldErrors((prev) => prev.filter((er) => er.field !== 'displayName'))
-              }}
-              placeholder="e.g. RNA-seq Reviewer"
-              aria-describedby={getFieldError('displayName') ? 'sp-display-name-err' : undefined}
-              aria-invalid={!!getFieldError('displayName')}
-              className={cn(getFieldError('displayName') && 'border-destructive')}
-            />
-            {getFieldError('displayName') ? (
-              <p id="sp-display-name-err" className="mt-1 text-xs text-destructive" role="alert">
-                {getFieldError('displayName')}
-              </p>
-            ) : null}
-          </div>
-
-          {/* Public name (UPPER_SNAKE) */}
+          {/* Name */}
           <div className="mb-4">
             <label htmlFor="sp-name" className="mb-1.5 block text-xs font-semibold">
-              Public name
+              Name
             </label>
             <Input
               id="sp-name"
-              value={effectiveName}
+              value={form.name}
               onChange={(e) => {
-                setForm((prev) => ({
-                  ...prev,
-                  name: e.target.value.toUpperCase(),
-                  nameTouched: true
-                }))
+                setForm((prev) => ({ ...prev, name: e.target.value }))
                 setFieldErrors((prev) => prev.filter((er) => er.field !== 'name'))
               }}
-              placeholder="RNA_SEQ_REVIEWER"
-              className={cn('font-mono text-[13px]', getFieldError('name') && 'border-destructive')}
-              aria-describedby="sp-name-hint sp-name-err"
+              placeholder="e.g. RNA-seq Reviewer"
+              aria-describedby={getFieldError('name') ? 'sp-name-err' : undefined}
               aria-invalid={!!getFieldError('name')}
+              className={cn(getFieldError('name') && 'border-destructive')}
             />
-            <p id="sp-name-hint" className="mt-1 text-[11px] text-muted-foreground">
-              Used in logs and the SDK. Auto-derived from display name; editable before saving.
-            </p>
             {getFieldError('name') ? (
               <p id="sp-name-err" className="mt-1 text-xs text-destructive" role="alert">
                 {getFieldError('name')}
@@ -478,7 +441,7 @@ const SpecialistEditor = ({
           <Button
             type="button"
             onClick={() => void handleSave()}
-            disabled={isSaving || !form.displayName.trim()}
+            disabled={isSaving || !form.name.trim()}
           >
             {isSaving
               ? isEdit

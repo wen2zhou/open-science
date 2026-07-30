@@ -5,8 +5,7 @@ import { emptyFullAccessConfig, emptySelectedConfig } from '../../shared/special
 
 const makeProfile = (overrides: Partial<SpecialistProfileView> = {}): SpecialistProfileView => ({
   id: 'uuid-1',
-  name: 'RNA_SEQ_REVIEWER',
-  displayName: 'RNA-seq Reviewer',
+  name: 'RNA-seq Reviewer',
   description: 'Reviews RNA-seq analysis quality.',
   systemPrompt: 'You are RNA-seq Reviewer. Focus on batch effects and QC.',
   enabled: true,
@@ -23,7 +22,7 @@ describe('buildSpecialistIdentityAppend', () => {
     expect(text.length).toBeGreaterThan(0)
   })
 
-  it('includes the specialist displayName', () => {
+  it('includes the specialist name', () => {
     const text = buildSpecialistIdentityAppend(makeProfile())
     expect(text).toContain('RNA-seq Reviewer')
   })
@@ -60,7 +59,7 @@ describe('buildSpecialistIdentityPrefix', () => {
     expect(text.length).toBeGreaterThan(0)
   })
 
-  it('includes the displayName', () => {
+  it('includes the name', () => {
     const text = buildSpecialistIdentityPrefix(makeProfile())
     expect(text).toContain('RNA-seq Reviewer')
   })

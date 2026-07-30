@@ -10,7 +10,6 @@ import type {
   UpdateSpecialistInput
 } from '../../shared/specialist'
 import {
-  deriveSpecialistName,
   validateCreateSpecialistInput,
   validateUpdateSpecialistInput,
   emptyFullAccessConfig,
@@ -80,7 +79,6 @@ const log = createLogger('specialist.service')
 const toView = (s: StoredSpecialist): SpecialistProfileView => ({
   id: s.id,
   name: s.name,
-  displayName: s.displayName,
   description: s.description,
   systemPrompt: s.systemPrompt,
   iconKey: s.iconKey,
@@ -93,12 +91,11 @@ const toView = (s: StoredSpecialist): SpecialistProfileView => ({
 })
 
 const assertCreateInputShape = (input: CreateSpecialistInput): void => {
-  if (!input || typeof input !== 'object' || typeof input.displayName !== 'string') {
-    throw new Error('Display name must be a string.')
+  if (!input || typeof input !== 'object' || typeof input.name !== 'string') {
+    throw new Error('Name must be a string.')
   }
 
   const optionalTextFields = [
-    ['name', input.name],
     ['description', input.description],
     ['system prompt', input.systemPrompt],
     ['icon', input.iconKey],
@@ -172,12 +169,11 @@ export class ProfileService {
       throw new Error(errors.map((e) => e.message).join('; '))
     }
 
-    const name = input.name ?? deriveSpecialistName(input.displayName)
+    const name = input.name
 
     const stored: StoredSpecialist = {
       id: randomUUID(),
       name,
-      displayName: input.displayName,
       description: input.description ?? '',
       systemPrompt: input.systemPrompt ?? '',
       iconKey: input.iconKey,
@@ -227,7 +223,6 @@ export class ProfileService {
     }
 
     const patch: Partial<StoredSpecialist> = {}
-    if (input.displayName !== undefined) patch.displayName = input.displayName
     if (input.name !== undefined) patch.name = input.name
     if (input.description !== undefined) patch.description = input.description
     if (input.systemPrompt !== undefined) patch.systemPrompt = input.systemPrompt

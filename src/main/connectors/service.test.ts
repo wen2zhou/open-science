@@ -390,8 +390,7 @@ describe('ConnectorService', () => {
         resolveApiKey: () => undefined,
         resolveSpecialistProfile: async () => ({
           id: 'specialist-1',
-          name: 'SECURED_SERVER_BOT',
-          displayName: 'Secured Server Bot',
+          name: 'Secured Server Bot',
           description: '',
           systemPrompt: 'profile secret',
           enabled: true,
@@ -431,8 +430,7 @@ describe('ConnectorService', () => {
 describe('ConnectorService specialist capability gate', () => {
   const specialist = (overrides: Partial<SpecialistProfileView> = {}): SpecialistProfileView => ({
     id: 'specialist-1',
-    name: 'CONNECTOR_BOT',
-    displayName: 'Connector Bot',
+    name: 'Connector Bot',
     description: '',
     systemPrompt: 'do not disclose profile-secret-prompt',
     enabled: true,

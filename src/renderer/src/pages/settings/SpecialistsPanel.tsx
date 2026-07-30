@@ -60,7 +60,6 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     if (!term) return customItems
     return customItems.filter(
       (item) =>
-        item.displayName.toLowerCase().includes(term) ||
         item.name.toLowerCase().includes(term) ||
         item.description.toLowerCase().includes(term)
     )
@@ -204,22 +203,17 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                         <button
                           type="button"
                           onClick={() => onNavigate({ kind: 'edit', id: item.id })}
-                          aria-label={`Edit ${item.displayName}`}
+                          aria-label={`Edit ${item.name}`}
                           className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           {/* Avatar */}
                           <SpecialistAvatar iconKey={item.iconKey} colorKey={item.colorKey} />
 
-                          {/* Body: displayName + subtle UPPER_SNAKE name + description */}
+                          {/* Body: name + description */}
                           <div className="min-w-0 flex-1">
-                            <div className="flex items-center gap-1.5">
-                              <span className="truncate text-sm text-foreground">
-                                {item.displayName}
-                              </span>
-                              <span className="shrink-0 font-mono text-[10px] text-muted-foreground">
-                                {item.name}
-                              </span>
-                            </div>
+                            <span className="block truncate text-sm text-foreground">
+                              {item.name}
+                            </span>
                             {item.description ? (
                               <span className="block truncate text-xs text-muted-foreground">
                                 {item.description}
@@ -236,7 +230,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                         {/* Enabled toggle */}
                         <SettingsToggle
                           enabled={item.enabled}
-                          aria-label={`Toggle ${item.displayName}`}
+                          aria-label={`Toggle ${item.name}`}
                           onToggle={() => void setEnabled(item.id, !item.enabled)}
                         />
                       </li>

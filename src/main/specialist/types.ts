@@ -10,8 +10,7 @@ import type {
 // The persisted document stored in specialists.json.
 export type StoredSpecialist = {
   id: string // immutable UUID
-  name: string // unique UPPER_SNAKE, public/SDK-facing
-  displayName: string
+  name: string // human-readable, unique
   description: string
   systemPrompt: string
   iconKey?: string

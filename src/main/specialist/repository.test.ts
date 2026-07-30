@@ -16,8 +16,7 @@ import { emptyFullAccessConfig, emptySelectedConfig } from '../../shared/special
 describe('sanitizeSpecialist', () => {
   const valid: StoredSpecialist = {
     id: 'uuid-1',
-    name: 'RNA_SEQ_REVIEWER',
-    displayName: 'RNA-seq Reviewer',
+    name: 'RNA-seq Reviewer',
     description: 'Reviews differential expression.',
     systemPrompt: '',
     enabled: true,
@@ -28,7 +27,7 @@ describe('sanitizeSpecialist', () => {
   }
 
   it('accepts a valid record', () => {
-    expect(sanitizeSpecialist(valid)).toMatchObject({ id: 'uuid-1', name: 'RNA_SEQ_REVIEWER' })
+    expect(sanitizeSpecialist(valid)).toMatchObject({ id: 'uuid-1', name: 'RNA-seq Reviewer' })
   })
 
   it('drops record missing required id', () => {
@@ -37,6 +36,18 @@ describe('sanitizeSpecialist', () => {
 
   it('drops record missing required name', () => {
     expect(sanitizeSpecialist({ ...valid, name: undefined })).toBeUndefined()
+  })
+
+  it('migrates legacy displayName into name (preferring displayName)', () => {
+    const legacy = { ...valid, name: 'RNA_SEQ_REVIEWER', displayName: 'RNA-seq Reviewer' }
+    const result = sanitizeSpecialist(legacy)
+    expect(result?.name).toBe('RNA-seq Reviewer')
+  })
+
+  it('falls back to legacy UPPER_SNAKE name when displayName is absent', () => {
+    const legacy = { ...valid, name: 'RNA_SEQ_REVIEWER', displayName: undefined }
+    const result = sanitizeSpecialist(legacy)
+    expect(result?.name).toBe('RNA_SEQ_REVIEWER')
   })
 
   it('drops record with unknown capabilityMode', () => {
@@ -64,8 +75,7 @@ let tmpDir: string
 
 const makeSpecialist = (overrides: Partial<StoredSpecialist> = {}): StoredSpecialist => ({
   id: randomUUID(),
-  name: `BOT_${randomUUID().slice(0, 6).toUpperCase()}`,
-  displayName: 'Test Bot',
+  name: `Bot ${randomUUID().slice(0, 6)}`,
   description: 'A test specialist.',
   systemPrompt: '',
   enabled: true,
@@ -157,9 +167,9 @@ describe('SpecialistRepository.update', () => {
     const repo = new SpecialistRepository(tmpDir)
     const sp = makeSpecialist({ revision: 1 })
     await repo.insert(sp)
-    await repo.update(sp.id, { displayName: 'Updated' }, 1)
+    await repo.update(sp.id, { name: 'Updated' }, 1)
     const doc = await repo.getAll()
-    expect(doc.specialists[0].displayName).toBe('Updated')
+    expect(doc.specialists[0].name).toBe('Updated')
     expect(doc.specialists[0].revision).toBe(2)
   })
 
@@ -167,7 +177,7 @@ describe('SpecialistRepository.update', () => {
     const repo = new SpecialistRepository(tmpDir)
     const sp = makeSpecialist({ revision: 1 })
     await repo.insert(sp)
-    await expect(repo.update(sp.id, { displayName: 'X' }, 99)).rejects.toThrow(/revision/i)
+    await expect(repo.update(sp.id, { name: 'X' }, 99)).rejects.toThrow(/revision/i)
   })
 
   it('id remains immutable across update', async () => {

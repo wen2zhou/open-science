@@ -29,13 +29,13 @@ type SpecialistPickerProps = {
   readOnly?: boolean
 }
 
-// Trigger label: truncated displayName when selected, "Specialist" placeholder when None.
+// Trigger label: truncated name when selected, "Specialist" placeholder when None.
 const triggerLabel = (
   selected: SpecialistProfileView | undefined,
   unavailable: boolean
 ): string => {
   if (unavailable) return 'Unavailable'
-  if (selected) return selected.displayName
+  if (selected) return selected.name
   return 'Specialist'
 }
 
@@ -151,10 +151,10 @@ const SpecialistPicker = ({
                       className="flex size-5 shrink-0 items-center justify-center rounded bg-bg-300 text-[11px] font-medium"
                       aria-hidden="true"
                     >
-                      {specialist.displayName.slice(0, 1).toUpperCase()}
+                      {specialist.name.slice(0, 1).toUpperCase()}
                     </span>
                     <span className="min-w-0 flex-1 truncate text-[13px]">
-                      {specialist.displayName}
+                      {specialist.name}
                     </span>
                     {isSelected ? (
                       <Check

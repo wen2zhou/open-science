@@ -73,8 +73,7 @@ describe('SpecialistEditor', () => {
         <SpecialistEditor
           editSpecialist={{
             id: 'connector-bot',
-            name: 'CONNECTOR_BOT',
-            displayName: 'Connector Bot',
+            name: 'Connector Bot',
             description: '',
             systemPrompt: '',
             enabled: true,
@@ -126,7 +125,7 @@ describe('SpecialistEditor', () => {
     })
 
     await act(async () => {
-      fireEvent.change(document.body.querySelector<HTMLInputElement>('#sp-display-name')!, {
+      fireEvent.change(document.body.querySelector<HTMLInputElement>('#sp-name')!, {
         target: { value: 'RNA Reviewer' }
       })
     })
@@ -161,23 +160,23 @@ describe('SpecialistEditor', () => {
 
     expect(onSave).toHaveBeenCalledWith(
       expect.objectContaining({
-        displayName: 'RNA Reviewer',
+        name: 'RNA Reviewer',
         iconKey: 'microscope',
         colorKey: 'teal'
       })
     )
   })
 
-  it('shows a field-level error instead of submitting a duplicate public name', async () => {
+  it('shows a field-level error instead of submitting a duplicate name', async () => {
     const onSave = vi.fn().mockResolvedValue(undefined)
     await act(async () => {
       root.render(
-        <SpecialistEditor existingNames={['RNA_REVIEWER']} onCancel={vi.fn()} onSave={onSave} />
+        <SpecialistEditor existingNames={['RNA Reviewer']} onCancel={vi.fn()} onSave={onSave} />
       )
     })
 
     await act(async () => {
-      fireEvent.change(document.body.querySelector<HTMLInputElement>('#sp-display-name')!, {
+      fireEvent.change(document.body.querySelector<HTMLInputElement>('#sp-name')!, {
         target: { value: 'RNA Reviewer' }
       })
       Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
@@ -196,8 +195,7 @@ describe('SpecialistEditor', () => {
         <SpecialistEditor
           editSpecialist={{
             id: 'rna-reviewer',
-            name: 'RNA_REVIEWER',
-            displayName: 'RNA Reviewer',
+            name: 'RNA Reviewer',
             description: 'Reviews RNA-seq.',
             systemPrompt: 'Be rigorous.',
             iconKey: 'microscope',
@@ -208,7 +206,7 @@ describe('SpecialistEditor', () => {
             selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
             revision: 3
           }}
-          existingNames={['OTHER_NAME']}
+          existingNames={['Other Name']}
           onCancel={vi.fn()}
           onSave={vi.fn()}
           onSaveEdit={onSaveEdit}
@@ -217,10 +215,7 @@ describe('SpecialistEditor', () => {
     })
 
     // Prefilled identity.
-    expect(document.body.querySelector<HTMLInputElement>('#sp-display-name')?.value).toBe(
-      'RNA Reviewer'
-    )
-    expect(document.body.querySelector<HTMLInputElement>('#sp-name')?.value).toBe('RNA_REVIEWER')
+    expect(document.body.querySelector<HTMLInputElement>('#sp-name')?.value).toBe('RNA Reviewer')
 
     // Edit mode uses the "Save changes" button and routes through onSaveEdit.
     await act(async () => {
@@ -233,8 +228,7 @@ describe('SpecialistEditor', () => {
       expect.objectContaining({
         id: 'rna-reviewer',
         revision: 3,
-        displayName: 'RNA Reviewer',
-        name: 'RNA_REVIEWER'
+        name: 'RNA Reviewer'
       })
     )
     // Create path is not used in edit mode.
@@ -247,8 +241,7 @@ describe('SpecialistEditor', () => {
         <SpecialistEditor
           editSpecialist={{
             id: 'rna-reviewer',
-            name: 'RNA_REVIEWER',
-            displayName: 'RNA Reviewer',
+            name: 'RNA Reviewer',
             description: '',
             systemPrompt: '',
             iconKey: 'microscope',

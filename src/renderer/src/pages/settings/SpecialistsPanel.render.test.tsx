@@ -23,8 +23,7 @@ const specialistItems: SpecialistListItem[] = [
   {
     kind: 'custom',
     id: 'rna-reviewer',
-    name: 'RNA_REVIEWER',
-    displayName: 'RNA Reviewer',
+    name: 'RNA Reviewer',
     description: 'Reviews RNA-seq analyses.',
     systemPrompt: '',
     iconKey: 'microscope',
@@ -38,8 +37,7 @@ const specialistItems: SpecialistListItem[] = [
   {
     kind: 'custom',
     id: 'literature-reviewer',
-    name: 'LITERATURE_REVIEWER',
-    displayName: 'Literature Reviewer',
+    name: 'Literature Reviewer',
     description: 'Finds relevant papers.',
     systemPrompt: '',
     enabled: true,
@@ -166,8 +164,8 @@ describe('SpecialistsPanel', () => {
       )
     })
 
-    const display = document.body.querySelector<HTMLInputElement>('#sp-display-name')
-    expect(display?.value).toBe('RNA Reviewer')
+    const name = document.body.querySelector<HTMLInputElement>('#sp-name')
+    expect(name?.value).toBe('RNA Reviewer')
     expect(
       Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).some(
         (button) => button.textContent === 'Save changes'
@@ -183,7 +181,7 @@ describe('SpecialistsPanel', () => {
     })
 
     // No editor fields — the list view is rendered instead.
-    expect(document.body.querySelector('#sp-display-name')).toBeNull()
+    expect(document.body.querySelector('#sp-name')).toBeNull()
     expect(
       document.body.querySelector('[aria-label="Filter specialists by category"]')
     ).not.toBeNull()

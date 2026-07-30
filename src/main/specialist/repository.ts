@@ -81,11 +81,14 @@ const sanitizeSelectedConfig = (v: unknown): SpecialistSelectedConfig => {
 }
 
 // Rebuild one stored specialist, dropping unknown or malformed records.
+// Migration: older documents stored both an UPPER_SNAKE `name` and a human
+// `displayName`. We collapse to a single human-readable `name`, preferring the
+// legacy `displayName` when present.
 export const sanitizeStoredSpecialist = (v: unknown): StoredSpecialist | undefined => {
   if (!isRecord(v)) return undefined
   const id = asString(v.id)
-  const name = asString(v.name)
   const displayName = asString(v.displayName)
+  const name = displayName ?? asString(v.name)
   const description = asString(v.description)
   const systemPrompt = asString(v.systemPrompt)
   const enabled = asBoolean(v.enabled)
@@ -94,7 +97,6 @@ export const sanitizeStoredSpecialist = (v: unknown): StoredSpecialist | undefin
   if (
     !id ||
     !name ||
-    displayName === undefined ||
     description === undefined ||
     systemPrompt === undefined ||
     enabled === undefined ||
@@ -108,7 +110,6 @@ export const sanitizeStoredSpecialist = (v: unknown): StoredSpecialist | undefin
   const specialist: StoredSpecialist = {
     id,
     name,
-    displayName,
     description,
     systemPrompt,
     enabled,

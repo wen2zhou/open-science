@@ -16,7 +16,7 @@ export const buildSpecialistIdentityAppend = (profile: SpecialistProfileView): s
 
   return [
     SPECIALIST_IDENTITY_TAG,
-    `# Specialist identity — ${profile.displayName}`,
+    `# Specialist identity — ${profile.name}`,
     '',
     '> The following overrides the Main Agent general identity description for this session.',
     '> App safety rules, tool rules, and workflow instructions still apply and are not replaced.',
@@ -33,7 +33,7 @@ export const buildSpecialistIdentityPrefix = (profile: SpecialistProfileView): s
 
   return [
     SPECIALIST_IDENTITY_TAG,
-    `[Specialist: ${profile.displayName}]`,
+    `[Specialist: ${profile.name}]`,
     '(This overrides the Main Agent identity for this session.',
     ' App safety rules, tool rules, and workflow instructions still apply.)',
     '',
