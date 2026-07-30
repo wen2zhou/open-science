@@ -830,7 +830,7 @@ const SpecialistEditor = ({
                       }}
                       className="flex h-[28px] items-center rounded-lg border border-dashed border-border bg-card px-3 text-[12px] text-muted-foreground hover:bg-muted"
                     >
-                      ＋ Add a connector
+                      ＋ Add a connector…
                     </button>
                     {connectorPopoverOpen ? (
                       <div className="absolute right-0 top-full z-50 mt-1 flex max-h-[260px] w-[240px] flex-col overflow-y-auto rounded-lg border border-border bg-card shadow-md">
@@ -856,6 +856,7 @@ const SpecialistEditor = ({
                               <button
                                 key={connector.id}
                                 type="button"
+                                role="menuitem"
                                 onClick={() => {
                                   addConnector(connector.id)
                                   setConnectorPopoverOpen(false)
