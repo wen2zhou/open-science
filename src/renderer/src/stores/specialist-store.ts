@@ -16,6 +16,8 @@ type SpecialistStoreActions = {
   create: (input: CreateSpecialistInput) => Promise<SpecialistProfileView>
   update: (input: UpdateSpecialistInput) => Promise<SpecialistProfileView>
   setEnabled: (id: string, enabled: boolean) => Promise<void>
+  delete: (id: string, expectedRevision: number) => Promise<void>
+  duplicate: (id: string) => Promise<CreateSpecialistInput>
 }
 
 type SpecialistStore = SpecialistStoreData & SpecialistStoreActions
@@ -49,7 +51,15 @@ const useSpecialistStore = create<SpecialistStore>((set) => ({
     await window.api.specialist.setEnabled({ id, enabled })
     const items = await window.api.specialist.list()
     set({ items })
-  }
+  },
+
+  delete: async (id: string, expectedRevision: number) => {
+    await window.api.specialist.delete({ id, expectedRevision })
+    const items = await window.api.specialist.list()
+    set({ items })
+  },
+
+  duplicate: async (id: string) => window.api.specialist.duplicate({ id })
 }))
 
 export { useSpecialistStore }

@@ -325,3 +325,43 @@ describe('ProfileService.subscribe', () => {
     expect(listener).not.toHaveBeenCalled()
   })
 })
+
+describe('ProfileService lifecycle mutations', () => {
+  it('keeps UUID stable across public rename and rejects a stale delete', async () => {
+    const created = await service.create({ name: 'RNA_REVIEWER', displayName: 'RNA reviewer' })
+    const renamed = await service.rename({
+      id: created.id,
+      name: 'RNA_AUDITOR',
+      expectedRevision: created.revision
+    })
+    expect(renamed).toMatchObject({ id: created.id, name: 'RNA_AUDITOR' })
+    await expect(service.delete(created.id, created.revision)).rejects.toThrow(/revision conflict/i)
+    expect(await service.getById(created.id)).toMatchObject({ name: 'RNA_AUDITOR' })
+  })
+
+  it('duplicates deeply without persisting until the caller creates it', async () => {
+    const created = await service.create({
+      name: 'CHEMIST',
+      displayName: 'Chemist',
+      selectedCapabilities: {
+        skillIds: ['chemistry'],
+        connectorIds: ['pubmed'],
+        connectorTools: []
+      }
+    })
+    const draft = await service.duplicate(created.id)
+    expect(draft).toMatchObject({ name: 'CHEMIST_COPY', displayName: 'Chemist Copy' })
+    expect(await service.list()).toHaveLength(1)
+    draft.selectedCapabilities?.skillIds.push('other')
+    expect((await service.getById(created.id)).selectedCapabilities.skillIds).toEqual(['chemistry'])
+  })
+
+  it('serializes collection patches through revision checks', async () => {
+    const created = await service.create({ name: 'CURATOR', displayName: 'Curator' })
+    const attached = await service.attachSkill(created.id, 'skill-a', created.revision)
+    expect(attached.selectedCapabilities.skillIds).toEqual(['skill-a'])
+    await expect(service.attachConnector(created.id, 'pubmed', created.revision)).rejects.toThrow(
+      /revision conflict/i
+    )
+  })
+})

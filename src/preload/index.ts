@@ -227,6 +227,8 @@ import type {
   CreateSpecialistRequest,
   UpdateSpecialistRequest,
   SetSpecialistEnabledRequest,
+  DeleteSpecialistRequest,
+  DuplicateSpecialistRequest,
   SpecialistListItem,
   SpecialistProfileView
 } from '../shared/specialist'
@@ -395,6 +397,8 @@ type OpenScienceAPI = {
     create: (request: CreateSpecialistRequest) => Promise<SpecialistProfileView>
     update: (request: UpdateSpecialistRequest) => Promise<SpecialistProfileView>
     setEnabled: (request: SetSpecialistEnabledRequest) => Promise<SpecialistProfileView>
+    delete(request: DeleteSpecialistRequest): Promise<void>
+    duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     onCatalogChanged: (listener: () => void) => RemoveListener
   }
   logs: {
@@ -943,6 +947,10 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke(SPECIALIST_IPC.UPDATE, request) as Promise<SpecialistProfileView>,
     setEnabled: (request: SetSpecialistEnabledRequest) =>
       ipcRenderer.invoke(SPECIALIST_IPC.SET_ENABLED, request) as Promise<SpecialistProfileView>,
+    delete: (request: DeleteSpecialistRequest) =>
+      ipcRenderer.invoke(SPECIALIST_IPC.DELETE, request) as Promise<void>,
+    duplicate: (request: DuplicateSpecialistRequest) =>
+      ipcRenderer.invoke(SPECIALIST_IPC.DUPLICATE, request) as Promise<CreateSpecialistRequest>,
     onCatalogChanged: (listener: () => void) =>
       onIpcMessage(SPECIALIST_IPC.CATALOG_CHANGED, listener)
   },

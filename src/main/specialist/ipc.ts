@@ -4,6 +4,9 @@ import type {
   CreateSpecialistRequest,
   UpdateSpecialistRequest,
   SetSpecialistEnabledRequest,
+  DeleteSpecialistRequest,
+  DuplicateSpecialistRequest,
+  CreateSpecialistInput,
   SpecialistListItem,
   SpecialistProfileView
 } from '../../shared/specialist'
@@ -70,5 +73,23 @@ export const registerSpecialistIpcHandlers = (service: ProfileService): void => 
         throw error
       }
     }
+  )
+
+  ipcMain.handle(
+    SPECIALIST_IPC.DELETE,
+    async (_event, request: DeleteSpecialistRequest): Promise<void> => {
+      try {
+        await service.delete(request.id, request.expectedRevision)
+      } catch (error) {
+        log.error('specialist:delete failed', { error })
+        throw error
+      }
+    }
+  )
+
+  ipcMain.handle(
+    SPECIALIST_IPC.DUPLICATE,
+    async (_event, request: DuplicateSpecialistRequest): Promise<CreateSpecialistInput> =>
+      service.duplicate(request.id)
   )
 }

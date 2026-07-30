@@ -31,6 +31,7 @@ type SpecialistEditorProps = {
   // calls onSaveEdit (with id + revision for optimistic concurrency) instead of
   // onSave.
   editSpecialist?: SpecialistProfileView
+  initialInput?: CreateSpecialistInput
   onSaveEdit?: (input: UpdateSpecialistInput) => Promise<void>
 }
 
@@ -88,7 +89,8 @@ const SpecialistEditor = ({
   onSave,
   onSaveEdit,
   existingNames = [],
-  editSpecialist
+  editSpecialist,
+  initialInput
 }: SpecialistEditorProps): React.JSX.Element => {
   const isEdit = editSpecialist !== undefined
   const connectors = useSettingsStore((state) => state.connectors)
@@ -111,16 +113,16 @@ const SpecialistEditor = ({
           connectorIds: editSpecialist.selectedCapabilities.connectorIds
         }
       : {
-          name: '',
-          description: '',
-          systemPrompt: '',
-          iconKey: 'brain',
-          colorKey: 'purple',
-          capabilityMode: 'full',
-          excludedSkillIds: [],
-          selectedSkillIds: [],
-          excludedConnectorIds: [],
-          connectorIds: []
+          name: initialInput?.name ?? '',
+          description: initialInput?.description ?? '',
+          systemPrompt: initialInput?.systemPrompt ?? '',
+          iconKey: initialInput?.iconKey ?? 'brain',
+          colorKey: initialInput?.colorKey ?? 'purple',
+          capabilityMode: initialInput?.capabilityMode ?? 'full',
+          excludedSkillIds: initialInput?.fullAccess?.excludedSkillIds ?? [],
+          selectedSkillIds: initialInput?.selectedCapabilities?.skillIds ?? [],
+          excludedConnectorIds: initialInput?.fullAccess?.excludedConnectorIds ?? [],
+          connectorIds: initialInput?.selectedCapabilities?.connectorIds ?? []
         }
   )
   const [fieldErrors, setFieldErrors] = useState<SpecialistFieldError[]>([])
