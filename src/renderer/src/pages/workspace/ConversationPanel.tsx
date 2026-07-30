@@ -150,6 +150,7 @@ type ConversationPanelProps = {
   specialistId?: string
   specialistUnavailable?: boolean
   onSpecialistChange?: (specialistId: string | undefined) => void
+  specialistReadOnly?: boolean
 }
 
 // Middle chat surface owns the visible conversation and local message composer UI.
@@ -197,7 +198,8 @@ const ConversationPanel = ({
   onOpenJobList,
   specialistId,
   specialistUnavailable = false,
-  onSpecialistChange
+  onSpecialistChange,
+  specialistReadOnly = false
 }: ConversationPanelProps): React.JSX.Element => {
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   // Local so the interrupted banner can show a spinner and block a double-resume until the request settles.
@@ -617,13 +619,15 @@ const ConversationPanel = ({
                           onClearGrants={onClearPermissionGrants}
                         />
 
-                        {/* Specialist picker: only shown for new conversations (no active session).
-                            Lets the user bind a Personal Specialist before the first send. */}
-                        {!activeSession && onSpecialistChange ? (
+                        {/* New conversations can choose their first-turn Specialist; existing bound
+                            sessions retain a read-only identity indicator until issue 07 adds switching. */}
+                        {(!activeSession && onSpecialistChange) ||
+                        (activeSession && specialistId !== undefined) ? (
                           <SpecialistPicker
                             selectedId={specialistId}
-                            onChange={onSpecialistChange}
+                            onChange={onSpecialistChange ?? (() => undefined)}
                             unavailable={specialistUnavailable}
+                            readOnly={specialistReadOnly}
                           />
                         ) : null}
 

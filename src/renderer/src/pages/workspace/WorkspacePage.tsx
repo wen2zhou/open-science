@@ -114,6 +114,7 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
 
   // Specialist catalog for new-conversation draft validation.
   const specialistItems = useSpecialistStore((state) => state.items)
+  const specialistCatalogLoaded = useSpecialistStore((state) => state.isLoaded)
   const loadSpecialists = useSpecialistStore((state) => state.load)
   const allSessions = useSessionStore((state) => state.sessions)
   const selectedSessionId = useSessionStore((state) => state.selectedSessionId)
@@ -182,10 +183,14 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
   const [newConversationSpecialistId, setNewConversationSpecialistId] = useState<
     string | undefined
   >(undefined)
-  // When the selected specialist is unavailable (disabled/deleted/corrupt) before send, block the send
-  // and show an unavailable pill. Derived during render from the specialist catalog.
-  const [newConversationSpecialistUnavailable, setNewConversationSpecialistUnavailable] =
-    useState(false)
+  // Keep availability derived from the current catalog, rather than caching it at click time: a profile
+  // can be disabled or deleted while a new-conversation draft is open.
+  const newConversationSpecialistUnavailable =
+    specialistCatalogLoaded &&
+    newConversationSpecialistId !== undefined &&
+    !specialistItems.some(
+      (item) => item.kind === 'custom' && item.enabled && item.id === newConversationSpecialistId
+    )
   // Unsent composer state (rich doc + staged attachments) is kept per session (and per new conversation)
   // so switching away and back restores it. The active key's state is live; this map holds inactive keys.
   const composerDraftsRef = useRef<
@@ -712,7 +717,6 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     setNewConversationAutoReviewEnabled(false)
     setNewConversationEnabledComputeHosts([])
     setNewConversationSpecialistId(undefined)
-    setNewConversationSpecialistUnavailable(false)
     clearSelection()
   }
 
@@ -959,7 +963,6 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
       setNewConversationAutoReviewEnabled(false)
       setNewConversationEnabledComputeHosts([])
       setNewConversationSpecialistId(undefined)
-      setNewConversationSpecialistUnavailable(false)
     })
   }
 
@@ -1155,17 +1158,10 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
     upsertAndActivatePreviewItem(createProjectFilesPreviewItem())
   }
 
-  // Handles specialist selection for the new-conversation draft.
-  // Validates availability synchronously against the in-memory catalog.
+  // Handles specialist selection for the new-conversation draft. Availability is derived from the
+  // catalog above so a later disable/delete is reflected before the next send.
   const handleNewConversationSpecialistChange = (specialistId: string | undefined): void => {
     setNewConversationSpecialistId(specialistId)
-    if (!specialistId) {
-      setNewConversationSpecialistUnavailable(false)
-      return
-    }
-    const found = specialistItems.find((item) => item.kind === 'custom' && item.id === specialistId)
-    const unavailable = !found || (found.kind === 'custom' && !found.enabled)
-    setNewConversationSpecialistUnavailable(unavailable)
   }
 
   // Subscribe to specialist catalog changes so unavailability state stays fresh.
@@ -1246,9 +1242,20 @@ const WorkspacePage = ({ isSessionPersistenceReady }: WorkspacePageProps): React
             canEditMessage={canEditMessage}
             onSendEditedMessage={sendEditedMessage}
             onOpenJobList={(sessionId) => setJobListModal({ open: true, sessionId })}
-            specialistId={!activeSession ? newConversationSpecialistId : undefined}
-            specialistUnavailable={!activeSession && newConversationSpecialistUnavailable}
+            specialistId={activeSession?.specialistId ?? newConversationSpecialistId}
+            specialistUnavailable={
+              activeSession?.specialistId !== undefined
+                ? specialistCatalogLoaded &&
+                  !specialistItems.some(
+                    (item) =>
+                      item.kind === 'custom' &&
+                      item.enabled &&
+                      item.id === activeSession.specialistId
+                  )
+                : newConversationSpecialistUnavailable
+            }
             onSpecialistChange={!activeSession ? handleNewConversationSpecialistChange : undefined}
+            specialistReadOnly={activeSession?.specialistId !== undefined}
           />
 
           <ResizableHandle

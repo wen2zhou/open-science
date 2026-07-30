@@ -24,6 +24,9 @@ type SpecialistPickerProps = {
   onChange: (specialistId: string | undefined) => void
   // Shows an "unavailable" pill when the selected specialist is disabled/deleted.
   unavailable?: boolean
+  // A bound session from the first-turn flow shows its identity in the composer without exposing the
+  // live-session switching behavior owned by issue 07.
+  readOnly?: boolean
 }
 
 // Trigger label: truncated displayName when selected, "Specialist" placeholder when None.
@@ -42,7 +45,8 @@ const triggerClassName =
 const SpecialistPicker = ({
   selectedId,
   onChange,
-  unavailable = false
+  unavailable = false,
+  readOnly = false
 }: SpecialistPickerProps): React.JSX.Element | null => {
   const [open, setOpen] = useState(false)
   const items = useSpecialistStore((state) => state.items)
@@ -77,7 +81,7 @@ const SpecialistPicker = ({
   const showBadge = Boolean(selectedId) || unavailable
 
   return (
-    <DropdownMenu open={open} onOpenChange={setOpen}>
+    <DropdownMenu open={readOnly ? false : open} onOpenChange={readOnly ? undefined : setOpen}>
       <DropdownMenuTrigger asChild>
         <button
           type="button"
@@ -88,6 +92,7 @@ const SpecialistPicker = ({
           )}
           aria-label={`Specialist: ${label}`}
           data-testid="specialist-picker-trigger"
+          disabled={readOnly}
         >
           <UserRound
             className={cn('size-4 shrink-0', unavailable && 'text-amber-600 dark:text-amber-400')}
@@ -103,80 +108,82 @@ const SpecialistPicker = ({
         </button>
       </DropdownMenuTrigger>
 
-      <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-56 p-1">
-        {/* None option */}
-        <DropdownMenuItem
-          onSelect={() => {
-            onChange(undefined)
-            setOpen(false)
-          }}
-          className="items-center gap-2 px-2 py-1.5"
-          data-testid="specialist-option-none"
-        >
-          <span
-            className="flex size-5 shrink-0 items-center justify-center rounded bg-bg-300 text-[11px] text-text-300"
-            aria-hidden="true"
+      {!readOnly ? (
+        <DropdownMenuContent side="top" align="start" sideOffset={8} className="w-56 p-1">
+          {/* None option */}
+          <DropdownMenuItem
+            onSelect={() => {
+              onChange(undefined)
+              setOpen(false)
+            }}
+            className="items-center gap-2 px-2 py-1.5"
+            data-testid="specialist-option-none"
           >
-            —
-          </span>
-          <span className="min-w-0 flex-1 truncate text-[13px]">None</span>
-          {isNone && !unavailable ? (
-            <Check className="size-4 shrink-0 text-primary" strokeWidth={2} aria-hidden="true" />
-          ) : null}
-        </DropdownMenuItem>
+            <span
+              className="flex size-5 shrink-0 items-center justify-center rounded bg-bg-300 text-[11px] text-text-300"
+              aria-hidden="true"
+            >
+              —
+            </span>
+            <span className="min-w-0 flex-1 truncate text-[13px]">None</span>
+            {isNone && !unavailable ? (
+              <Check className="size-4 shrink-0 text-primary" strokeWidth={2} aria-hidden="true" />
+            ) : null}
+          </DropdownMenuItem>
 
-        {/* Enabled Personal Specialists */}
-        {isLoaded && enabledSpecialists.length > 0 ? (
-          <>
-            <DropdownMenuSeparator />
-            {enabledSpecialists.map((specialist) => {
-              const isSelected = specialist.id === selectedId
-              return (
-                <DropdownMenuItem
-                  key={specialist.id}
-                  onSelect={() => {
-                    onChange(specialist.id)
-                    setOpen(false)
-                  }}
-                  className="items-center gap-2 px-2 py-1.5"
-                  data-testid={`specialist-option-${specialist.id}`}
-                >
-                  <span
-                    className="flex size-5 shrink-0 items-center justify-center rounded bg-bg-300 text-[11px] font-medium"
-                    aria-hidden="true"
+          {/* Enabled Personal Specialists */}
+          {isLoaded && enabledSpecialists.length > 0 ? (
+            <>
+              <DropdownMenuSeparator />
+              {enabledSpecialists.map((specialist) => {
+                const isSelected = specialist.id === selectedId
+                return (
+                  <DropdownMenuItem
+                    key={specialist.id}
+                    onSelect={() => {
+                      onChange(specialist.id)
+                      setOpen(false)
+                    }}
+                    className="items-center gap-2 px-2 py-1.5"
+                    data-testid={`specialist-option-${specialist.id}`}
                   >
-                    {specialist.displayName.slice(0, 1).toUpperCase()}
-                  </span>
-                  <span className="min-w-0 flex-1 truncate text-[13px]">
-                    {specialist.displayName}
-                  </span>
-                  {isSelected ? (
-                    <Check
-                      className="size-4 shrink-0 text-primary"
-                      strokeWidth={2}
+                    <span
+                      className="flex size-5 shrink-0 items-center justify-center rounded bg-bg-300 text-[11px] font-medium"
                       aria-hidden="true"
-                    />
-                  ) : null}
-                </DropdownMenuItem>
-              )
-            })}
-          </>
-        ) : null}
+                    >
+                      {specialist.displayName.slice(0, 1).toUpperCase()}
+                    </span>
+                    <span className="min-w-0 flex-1 truncate text-[13px]">
+                      {specialist.displayName}
+                    </span>
+                    {isSelected ? (
+                      <Check
+                        className="size-4 shrink-0 text-primary"
+                        strokeWidth={2}
+                        aria-hidden="true"
+                      />
+                    ) : null}
+                  </DropdownMenuItem>
+                )
+              })}
+            </>
+          ) : null}
 
-        <DropdownMenuSeparator />
+          <DropdownMenuSeparator />
 
-        {/* Create new entry point */}
-        <DropdownMenuItem
-          onSelect={() => {
-            openSettingsToPanel('specialists')
-            setOpen(false)
-          }}
-          className="items-center gap-2 px-2 py-1.5 text-[13px] text-text-200"
-          data-testid="specialist-option-create"
-        >
-          Create new…
-        </DropdownMenuItem>
-      </DropdownMenuContent>
+          {/* Create new entry point */}
+          <DropdownMenuItem
+            onSelect={() => {
+              openSettingsToPanel('specialists')
+              setOpen(false)
+            }}
+            className="items-center gap-2 px-2 py-1.5 text-[13px] text-text-200"
+            data-testid="specialist-option-create"
+          >
+            Create new…
+          </DropdownMenuItem>
+        </DropdownMenuContent>
+      ) : null}
     </DropdownMenu>
   )
 }

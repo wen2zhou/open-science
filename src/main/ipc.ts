@@ -550,6 +550,9 @@ const registerIpcHandlers = async ({
   registerWindowFindIpcHandlers()
   const updateService = registerUpdateIpcHandlers()
   startUpdateScheduler(updateService)
+  // ACP identity resolution and the Specialist settings IPC must use the same service instance.
+  // Creating it only for settings leaves create-session unable to resolve a selected UUID.
+  const profileService = createProfileService(resolveStorageRoot())
   const runtime = registerAcpIpcHandlers({
     mcpEntryPath: mainEntryPath,
     repository: artifactRepository,
@@ -571,7 +574,8 @@ const registerIpcHandlers = async ({
       skillImportApprovalBroker.cancelSession(sessionId),
     onSessionUnavailable: (sessionId) => skillImportApprovalBroker.cancelSession(sessionId),
     onAllSessionsCancellationRequested: () => skillImportApprovalBroker.cancelAll(),
-    initializationBarrier: initialConnectorSkillsReady
+    initializationBarrier: initialConnectorSkillsReady,
+    profileService
   })
   runtimeRef.current = runtime
   // Single shared teardown owner for both the before-quit handler (index.ts) and the pre-update-install
@@ -617,7 +621,7 @@ const registerIpcHandlers = async ({
     listAppIconPreviews
   })
   registerNotebookIpcHandlers(notebookService)
-  registerSpecialistIpcHandlers(createProfileService(resolveStorageRoot()))
+  registerSpecialistIpcHandlers(profileService)
   // Runtime selection UI (Settings/Onboarding): survey managed+external per language, persist the
   // choice, and pick an interpreter file. The runtime root MUST match the executor/service's
   // (getRuntimeRoot(<dataRoot>)); read lazily so a data-root switch is reflected without re-register.

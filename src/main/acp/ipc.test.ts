@@ -124,6 +124,7 @@ const registerWithFakes = (overrides?: {
   onSessionCancellationRequested?: (sessionId: string) => void
   onSessionUnavailable?: (sessionId: string) => void
   onAllSessionsCancellationRequested?: () => void
+  profileService?: { getById: (id: string) => Promise<unknown> }
 }): void => {
   const taskNotifications =
     overrides?.taskNotifications ??
@@ -147,7 +148,8 @@ const registerWithFakes = (overrides?: {
     onSessionCancellationRequested: overrides?.onSessionCancellationRequested,
     onSessionUnavailable: overrides?.onSessionUnavailable,
     onAllSessionsCancellationRequested: overrides?.onAllSessionsCancellationRequested,
-    initializationBarrier: overrides?.initializationBarrier
+    initializationBarrier: overrides?.initializationBarrier,
+    profileService: overrides?.profileService as never
   }
 
   registerAcpIpcHandlers(options)
@@ -169,6 +171,32 @@ afterEach(() => {
   sendPrompt.mockReset()
   sendPrompt.mockResolvedValue(undefined)
   errorLogSpy.mockClear()
+  AcpRuntimeMock.mockClear()
+})
+
+describe('registerAcpIpcHandlers — Specialist identity resolver', () => {
+  it('passes a ProfileService-backed resolver into each runtime', async () => {
+    const profile = {
+      displayName: 'RNA-seq Reviewer',
+      systemPrompt: 'Review RNA-seq quality.',
+      enabled: true
+    }
+    const profileService = { getById: vi.fn().mockResolvedValue(profile) }
+
+    registerWithFakes({ profileService })
+
+    const options = AcpRuntimeMock.mock.calls.at(-1)?.[0] as {
+      resolveSpecialistIdentity?: (id: string, framework: string) => Promise<unknown>
+    }
+    expect(options.resolveSpecialistIdentity).toBeTypeOf('function')
+    await expect(
+      options.resolveSpecialistIdentity?.('uuid-1', 'claude-code')
+    ).resolves.toMatchObject({
+      append: expect.stringContaining('RNA-seq Reviewer'),
+      prefix: ''
+    })
+    expect(profileService.getById).toHaveBeenCalledWith('uuid-1')
+  })
 })
 
 describe('registerAcpIpcHandlers — Skill import cancellation lifecycle', () => {

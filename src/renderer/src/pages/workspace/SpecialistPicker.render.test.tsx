@@ -147,9 +147,7 @@ describe('SpecialistPicker — trigger', () => {
     mockStore([])
     renderPicker({ selectedId: undefined, onChange: vi.fn() })
     // With no selection and no unavailable, showBadge is false so the span is not rendered
-    const span = container.querySelector(
-      '[data-testid="specialist-picker-trigger"] span.truncate'
-    )
+    const span = container.querySelector('[data-testid="specialist-picker-trigger"] span.truncate')
     expect(span).toBeNull()
   })
 
@@ -166,6 +164,18 @@ describe('SpecialistPicker — trigger', () => {
     renderPicker({ selectedId: 'stale-id', onChange: vi.fn(), unavailable: true })
     const trigger = container.querySelector('[data-testid="specialist-picker-trigger"]')!
     expect(trigger.textContent).toContain('Unavailable')
+  })
+
+  it('keeps a bound session specialist visible without offering a mutable menu', () => {
+    const sp = makeSpecialist('uuid-1', 'RNA-seq Reviewer')
+    mockStore([sp])
+    renderPicker({ selectedId: 'uuid-1', onChange: vi.fn(), readOnly: true })
+    const trigger = container.querySelector<HTMLButtonElement>(
+      '[data-testid="specialist-picker-trigger"]'
+    )!
+    expect(trigger.textContent).toContain('RNA-seq Reviewer')
+    expect(trigger.disabled).toBe(true)
+    expect(container.querySelector('[data-testid="dd-content"]')).toBeNull()
   })
 })
 
@@ -214,9 +224,7 @@ describe('SpecialistPicker — selection', () => {
     mockStore([sp])
     renderPicker({ selectedId: 'uuid-1', onChange })
     act(() => {
-      container
-        .querySelector<HTMLButtonElement>('[data-testid="specialist-option-none"]')
-        ?.click()
+      container.querySelector<HTMLButtonElement>('[data-testid="specialist-option-none"]')?.click()
     })
     expect(onChange).toHaveBeenCalledWith(undefined)
   })
@@ -244,8 +252,7 @@ describe('SpecialistPicker — selection', () => {
           isLoaded: boolean
           load: () => Promise<void>
         }) => unknown
-      ) =>
-        selector({ items: [], isLoaded: true, load: vi.fn().mockResolvedValue(undefined) })
+      ) => selector({ items: [], isLoaded: true, load: vi.fn().mockResolvedValue(undefined) })
     )
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     ;(useSettingsStore as any).mockImplementation(

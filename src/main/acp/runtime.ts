@@ -1440,7 +1440,12 @@ class AcpRuntime {
       // included in session/new. Main process reads the latest Profile — renderer only sends the UUID.
       let specialistAppend: string | undefined
       let specialistPrefix: string | undefined
-      if (request.specialistId && this.options.resolveSpecialistIdentity) {
+      if (request.specialistId) {
+        if (!this.options.resolveSpecialistIdentity) {
+          // A UUID must never quietly fall back to Main Agent just because startup omitted the
+          // ProfileService wiring. Failing closed preserves the user's selected identity.
+          throw new Error('Specialist identity resolution is unavailable.')
+        }
         const identity = await this.options.resolveSpecialistIdentity(
           request.specialistId,
           this.framework.id

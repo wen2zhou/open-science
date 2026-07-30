@@ -259,6 +259,26 @@ describe('specialist identity injection — Claude Code', () => {
       runtime.createSession({ cwd: '/workspace', specialistId: 'uuid-deleted' })
     ).rejects.toThrow(/unavailable/)
   })
+
+  it('fails closed when startup did not wire a specialist resolver', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['session-no-resolver'])
+
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      resolveBackend: () => ({
+        framework: { ...claudeCodeFramework, spawn: () => asAgentProcess(process) },
+        executablePath: '/bin/agent',
+        env: {}
+      })
+    })
+
+    await expect(
+      runtime.createSession({ cwd: '/workspace', specialistId: 'uuid-sp1' })
+    ).rejects.toThrow(/identity resolution is unavailable/)
+    expect(fakeAgent.newSessions).toHaveLength(0)
+  })
 })
 
 // ---------------------------------------------------------------------------
