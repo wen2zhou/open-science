@@ -147,7 +147,7 @@ const apiStub = (specialistOverrides?: Record<string, unknown>): typeof window.a
     }
   }) as never
 
-const renderPage = async (r: Root, c: HTMLDivElement): Promise<void> => {
+const renderPage = async (r: Root): Promise<void> => {
   await act(async () => {
     r.render(<WorkspacePage isSessionPersistenceReady={true} />)
   })
@@ -191,7 +191,7 @@ describe('WorkspacePage fail-closed send gate', () => {
     useSpecialistStore.setState({ items: [], isLoaded: true, load: vi.fn() })
     window.api = apiStub()
 
-    await renderPage(root, container)
+    await renderPage(root)
     await act(async () => {
       ;(conversationProps.onDraftDocChange as (doc: ComposerDoc) => void)(textDoc('hello'))
     })
@@ -217,7 +217,7 @@ describe('WorkspacePage fail-closed send gate', () => {
     })
     window.api = apiStub()
 
-    await renderPage(root, container)
+    await renderPage(root)
     await act(async () => {
       ;(conversationProps.onDraftDocChange as (doc: ComposerDoc) => void)(textDoc('hello'))
     })
@@ -241,7 +241,7 @@ describe('WorkspacePage fail-closed send gate', () => {
     })
     window.api = apiStub()
 
-    await renderPage(root, container)
+    await renderPage(root)
     await act(async () => {
       ;(conversationProps.onDraftDocChange as (doc: ComposerDoc) => void)(textDoc('hello'))
     })
@@ -270,7 +270,7 @@ describe('WorkspacePage fail-closed send gate', () => {
     })
     window.api = apiStub()
 
-    await renderPage(root, container)
+    await renderPage(root)
 
     // Pick a new specialist while running — sets the pending state.
     await act(async () => {
@@ -321,7 +321,7 @@ describe('WorkspacePage Retry recovery action', () => {
     })
     window.api = apiStub({ setSessionSpecialist })
 
-    await renderPage(root, container)
+    await renderPage(root)
 
     // While the session is running, pick a new specialist — this sets the pending state.
     await act(async () => {
@@ -379,7 +379,7 @@ describe('WorkspacePage double-send race prevention', () => {
     })
     window.api = apiStub({ setSessionSpecialist })
 
-    await renderPage(root, container)
+    await renderPage(root)
 
     // Set pending while running, then finish the run.
     await act(async () => {
@@ -434,7 +434,7 @@ describe('WorkspacePage specialist badge vs pending chip', () => {
     })
     window.api = apiStub()
 
-    await renderPage(root, container)
+    await renderPage(root)
 
     // Pick a different specialist while the session is running.
     await act(async () => {
@@ -461,7 +461,7 @@ describe('WorkspacePage specialist badge vs pending chip', () => {
     })
     window.api = apiStub()
 
-    await renderPage(root, container)
+    await renderPage(root)
 
     expect(conversationProps.specialistId).toBe('spec-a')
     expect(conversationProps.specialistHasPendingSwitch).toBe(false)
@@ -487,7 +487,7 @@ describe('WorkspacePage specialistUnavailable computation', () => {
     })
     window.api = apiStub()
 
-    await renderPage(root, container)
+    await renderPage(root)
 
     expect(conversationProps.specialistUnavailable).toBe(true)
   })
@@ -502,7 +502,7 @@ describe('WorkspacePage specialistUnavailable computation', () => {
     useSpecialistStore.setState({ items: [], isLoaded: false, load: vi.fn() })
     window.api = apiStub()
 
-    await renderPage(root, container)
+    await renderPage(root)
 
     // While catalog is loading we cannot tell if the specialist is unavailable —
     // the guard should not show the unavailable state to avoid false positives.
@@ -523,7 +523,7 @@ describe('WorkspacePage specialistUnavailable computation', () => {
     })
     window.api = apiStub()
 
-    await renderPage(root, container)
+    await renderPage(root)
 
     // While running, pick an available specialist — sets pending, overrides unavailability.
     await act(async () => {
