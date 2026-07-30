@@ -31,7 +31,11 @@ type SpecialistEditorProps = {
   // calls onSaveEdit (with id + revision for optimistic concurrency) instead of
   // onSave.
   editSpecialist?: SpecialistProfileView
+  initialInput?: CreateSpecialistInput
   onSaveEdit?: (input: UpdateSpecialistInput) => Promise<void>
+  // Called when the user clicks "Reload" after a revision conflict.
+  // Should fetch the latest profile from the store and return it.
+  onReload?: () => Promise<SpecialistProfileView | undefined>
 }
 
 type FormState = {
@@ -87,8 +91,10 @@ const SpecialistEditor = ({
   onCancel,
   onSave,
   onSaveEdit,
+  onReload,
   existingNames = [],
-  editSpecialist
+  editSpecialist,
+  initialInput
 }: SpecialistEditorProps): React.JSX.Element => {
   const isEdit = editSpecialist !== undefined
   const connectors = useSettingsStore((state) => state.connectors)
@@ -111,21 +117,24 @@ const SpecialistEditor = ({
           connectorIds: editSpecialist.selectedCapabilities.connectorIds
         }
       : {
-          name: '',
-          description: '',
-          systemPrompt: '',
-          iconKey: 'brain',
-          colorKey: 'purple',
-          capabilityMode: 'full',
-          excludedSkillIds: [],
-          selectedSkillIds: [],
-          excludedConnectorIds: [],
-          connectorIds: []
+          name: initialInput?.name ?? '',
+          description: initialInput?.description ?? '',
+          systemPrompt: initialInput?.systemPrompt ?? '',
+          iconKey: initialInput?.iconKey ?? 'brain',
+          colorKey: initialInput?.colorKey ?? 'purple',
+          capabilityMode: initialInput?.capabilityMode ?? 'full',
+          excludedSkillIds: initialInput?.fullAccess?.excludedSkillIds ?? [],
+          selectedSkillIds: initialInput?.selectedCapabilities?.skillIds ?? [],
+          excludedConnectorIds: initialInput?.fullAccess?.excludedConnectorIds ?? [],
+          connectorIds: initialInput?.selectedCapabilities?.connectorIds ?? []
         }
   )
   const [fieldErrors, setFieldErrors] = useState<SpecialistFieldError[]>([])
   const [isSaving, setIsSaving] = useState(false)
   const [saveError, setSaveError] = useState<string | undefined>()
+  // Tracks a revision conflict that requires the user to reload before saving.
+  const [hasConflict, setHasConflict] = useState(false)
+  const [isReloading, setIsReloading] = useState(false)
   const [activeCapTab, setActiveCapTab] = useState<'skills' | 'connectors'>('skills')
 
   useEffect(() => {
@@ -282,6 +291,7 @@ const SpecialistEditor = ({
 
     setIsSaving(true)
     setSaveError(undefined)
+    setHasConflict(false)
     try {
       const trimmed = {
         name: form.name.trim(),
@@ -311,15 +321,35 @@ const SpecialistEditor = ({
         await onSave(trimmed)
       }
     } catch (error) {
-      setSaveError(
+      const message =
         error instanceof Error
           ? error.message
           : isEdit
             ? 'Could not save changes.'
             : 'Could not create specialist.'
-      )
+      // Detect optimistic concurrency conflict — preserve local edits and show the
+      // conflict banner instead of a generic error so the user can choose to reload.
+      if (/revision conflict/i.test(message)) {
+        setHasConflict(true)
+      } else {
+        setSaveError(message)
+      }
     } finally {
       setIsSaving(false)
+    }
+  }
+
+  // Reloads the latest revision from the store, replacing the saved identity bar.
+  // Local form edits are discarded — the user confirmed "Reload" to get the
+  // server version, accepting the loss of unsaved changes.
+  const handleReload = async (): Promise<void> => {
+    if (!onReload) return
+    setIsReloading(true)
+    try {
+      await onReload()
+    } finally {
+      setIsReloading(false)
+      setHasConflict(false)
     }
   }
 
@@ -825,6 +855,38 @@ const SpecialistEditor = ({
           </p>
         ) : null}
 
+        {/* Revision conflict banner — shown when another save raced ahead.
+            Local edits are preserved so the user can review before reloading. */}
+        {hasConflict ? (
+          <div
+            role="alert"
+            aria-label="Revision conflict"
+            className="mt-4 flex items-start gap-3 rounded-lg border border-amber-200 bg-amber-50 p-3 text-sm dark:border-amber-900 dark:bg-amber-950"
+          >
+            <div className="min-w-0 flex-1">
+              <p className="font-semibold text-amber-900 dark:text-amber-100">
+                Someone else saved a newer version
+              </p>
+              <p className="mt-0.5 text-xs text-amber-700 dark:text-amber-300">
+                Your local edits are preserved. Reload to get the latest version (your unsaved
+                changes will be discarded), or cancel and try again.
+              </p>
+            </div>
+            {onReload ? (
+              <Button
+                type="button"
+                size="sm"
+                variant="outline"
+                onClick={() => void handleReload()}
+                disabled={isReloading}
+                className="shrink-0 border-amber-300 text-amber-900 hover:bg-amber-100 dark:border-amber-700 dark:text-amber-100"
+              >
+                {isReloading ? 'Reloading…' : 'Reload'}
+              </Button>
+            ) : null}
+          </div>
+        ) : null}
+
         {/* Footer actions */}
         <div className="mt-6 flex justify-end gap-2">
           <Button type="button" variant="ghost" onClick={onCancel} disabled={isSaving}>
@@ -833,7 +895,7 @@ const SpecialistEditor = ({
           <Button
             type="button"
             onClick={() => void handleSave()}
-            disabled={isSaving || !form.name.trim()}
+            disabled={isSaving || !form.name.trim() || hasConflict}
           >
             {isSaving
               ? isEdit

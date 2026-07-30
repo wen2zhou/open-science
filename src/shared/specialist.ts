@@ -7,6 +7,8 @@ export const SPECIALIST_IPC = {
   CREATE: 'specialist:create',
   UPDATE: 'specialist:update',
   SET_ENABLED: 'specialist:set-enabled',
+  DELETE: 'specialist:delete',
+  DUPLICATE: 'specialist:duplicate',
   CATALOG_CHANGED: 'specialist:catalog-changed'
 } as const
 
@@ -92,7 +94,8 @@ export const resolveEffectiveSpecialistSkills = (
 // Renderer-safe view of one specialist profile (no secret fields).
 export type SpecialistProfileView = {
   id: string
-  name: string // human-readable, unique
+  name: string // immutable-reference-safe public UPPER_SNAKE identifier
+  displayName?: string
   description: string
   systemPrompt: string
   iconKey?: string
@@ -116,6 +119,7 @@ export type SpecialistListItem = ({ kind: 'custom' } & SpecialistProfileView) | 
 // Input for creating a new specialist.
 export type CreateSpecialistInput = {
   name: string
+  displayName?: string
   description?: string
   systemPrompt?: string
   iconKey?: string
@@ -133,6 +137,7 @@ export type UpdateSpecialistInput = {
   id: string
   revision: number
   name?: string
+  displayName?: string
   description?: string
   systemPrompt?: string
   iconKey?: string
@@ -151,6 +156,9 @@ export type SetSpecialistEnabledRequest = {
   enabled: boolean
 }
 
+export type DeleteSpecialistRequest = { id: string; expectedRevision?: number }
+export type DuplicateSpecialistRequest = { id: string }
+
 // Validation error for a single field.
 export type SpecialistFieldError = {
   field: 'name' | 'description' | 'systemPrompt'
@@ -164,13 +172,15 @@ export type SpecialistFieldError = {
 // Hard caps shared by validation, the UI counters, and the maxLength attrs so
 // the three never drift apart.
 export const SPECIALIST_NAME_MAX_LENGTH = 80
+export const SPECIALIST_DISPLAY_NAME_MAX_LENGTH = 80
 export const SPECIALIST_DESCRIPTION_MAX_LENGTH = 200
 
 // ---------------------------------------------------------------------------
 // Name validation
 // ---------------------------------------------------------------------------
 
-// Validate a candidate name (human-readable, unique).
+// Legacy editor validation remains permissive; lifecycle/SDK mutations use the
+// strict public-name validator below.
 // Returns an error message string, or undefined when the name is valid.
 export const validateSpecialistName = (
   name: string,
@@ -193,6 +203,19 @@ export const validateSpecialistName = (
     return 'Name is already in use.'
   }
 
+  return undefined
+}
+
+export const validateSpecialistPublicName = (name: string): string | undefined =>
+  /^[A-Z0-9_]{2,32}$/.test(name)
+    ? undefined
+    : 'Name must be 2-32 uppercase letters, numbers, or underscores.'
+
+export const validateSpecialistDisplayName = (displayName: string): string | undefined => {
+  if (!displayName.trim()) return 'Display name is required.'
+  if (displayName.length > SPECIALIST_DISPLAY_NAME_MAX_LENGTH) {
+    return `Display name must be ${SPECIALIST_DISPLAY_NAME_MAX_LENGTH} characters or fewer.`
+  }
   return undefined
 }
 
@@ -221,6 +244,11 @@ export const validateCreateSpecialistInput = (
   const nameError = validateSpecialistName(input.name, existingNames, undefined, existingIds)
   if (nameError) errors.push({ field: 'name', message: nameError })
 
+  if (input.displayName !== undefined) {
+    const displayNameError = validateSpecialistDisplayName(input.displayName)
+    if (displayNameError) errors.push({ field: 'name', message: displayNameError })
+  }
+
   if (input.description !== undefined) {
     const descriptionError = validateSpecialistDescription(input.description)
     if (descriptionError) errors.push({ field: 'description', message: descriptionError })
@@ -242,6 +270,11 @@ export const validateUpdateSpecialistInput = (
   if (input.name !== undefined) {
     const nameError = validateSpecialistName(input.name, existingNames, input.id, existingIds)
     if (nameError) errors.push({ field: 'name', message: nameError })
+  }
+
+  if (input.displayName !== undefined) {
+    const displayNameError = validateSpecialistDisplayName(input.displayName)
+    if (displayNameError) errors.push({ field: 'name', message: displayNameError })
   }
 
   if (input.description !== undefined) {

@@ -439,4 +439,146 @@ describe('SpecialistEditor', () => {
     })
     expect(findSavedTag()).toBeTruthy()
   })
+
+  it('shows conflict banner and preserves local edits when onSaveEdit throws a revision conflict', async () => {
+    const revisionConflictError = new Error('Revision conflict: expected 1, found 2.')
+    const onSaveEdit = vi.fn().mockRejectedValue(revisionConflictError)
+
+    await act(async () => {
+      root.render(
+        <SpecialistEditor
+          editSpecialist={{
+            id: 'conflict-bot',
+            name: 'Conflict Bot',
+            description: 'Original description',
+            systemPrompt: '',
+            enabled: true,
+            capabilityMode: 'full',
+            fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+            selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+            revision: 1
+          }}
+          existingNames={[]}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          onSaveEdit={onSaveEdit}
+        />
+      )
+    })
+
+    // Edit the description to simulate unsaved local changes.
+    await act(async () => {
+      fireEvent.change(document.body.querySelector<HTMLInputElement>('#sp-description')!, {
+        target: { value: 'My unsaved edit' }
+      })
+    })
+
+    // Click Save — triggers the revision conflict.
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((btn) => btn.textContent === 'Save changes')
+        ?.click()
+    })
+
+    // Conflict banner must appear.
+    expect(document.body.querySelector('[aria-label="Revision conflict"]')).not.toBeNull()
+    expect(document.body.textContent).toContain('Someone else saved a newer version')
+
+    // Local edits must be preserved — description field retains the unsaved text.
+    expect(document.body.querySelector<HTMLInputElement>('#sp-description')?.value).toBe(
+      'My unsaved edit'
+    )
+
+    // Save button is disabled while conflict is active (prevents a write that
+    // would still lose the newer server version).
+    const saveButton = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+      (btn) => btn.textContent === 'Save changes'
+    )
+    expect(saveButton?.disabled).toBe(true)
+  })
+
+  it('calls onReload when the user clicks Reload in the conflict banner', async () => {
+    const revisionConflictError = new Error('Revision conflict: expected 1, found 2.')
+    const onSaveEdit = vi.fn().mockRejectedValue(revisionConflictError)
+    const onReload = vi.fn().mockResolvedValue(undefined)
+
+    await act(async () => {
+      root.render(
+        <SpecialistEditor
+          editSpecialist={{
+            id: 'reload-bot',
+            name: 'Reload Bot',
+            description: '',
+            systemPrompt: '',
+            enabled: true,
+            capabilityMode: 'full',
+            fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+            selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+            revision: 1
+          }}
+          existingNames={[]}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          onSaveEdit={onSaveEdit}
+          onReload={onReload}
+        />
+      )
+    })
+
+    // Trigger conflict.
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((btn) => btn.textContent === 'Save changes')
+        ?.click()
+    })
+
+    // Conflict banner appears with a Reload button.
+    const reloadBtn = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
+      (btn) => btn.textContent === 'Reload'
+    )
+    expect(reloadBtn).not.toBeNull()
+
+    // Click Reload — must call onReload once.
+    await act(async () => {
+      reloadBtn?.click()
+    })
+
+    expect(onReload).toHaveBeenCalledOnce()
+  })
+
+  it('does not show a conflict banner for non-conflict errors', async () => {
+    const onSaveEdit = vi.fn().mockRejectedValue(new Error('Network error'))
+
+    await act(async () => {
+      root.render(
+        <SpecialistEditor
+          editSpecialist={{
+            id: 'net-err-bot',
+            name: 'Net Err Bot',
+            description: '',
+            systemPrompt: '',
+            enabled: true,
+            capabilityMode: 'full',
+            fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+            selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+            revision: 1
+          }}
+          existingNames={[]}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          onSaveEdit={onSaveEdit}
+        />
+      )
+    })
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((btn) => btn.textContent === 'Save changes')
+        ?.click()
+    })
+
+    // Must show the generic error, not the conflict banner.
+    expect(document.body.querySelector('[aria-label="Revision conflict"]')).toBeNull()
+    expect(document.body.textContent).toContain('Network error')
+  })
 })

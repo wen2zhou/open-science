@@ -81,14 +81,14 @@ const sanitizeSelectedConfig = (v: unknown): SpecialistSelectedConfig => {
 }
 
 // Rebuild one stored specialist, dropping unknown or malformed records.
-// Migration: older documents stored both an UPPER_SNAKE `name` and a human
-// `displayName`. We collapse to a single human-readable `name`, preferring the
-// legacy `displayName` when present.
+// Older experimental documents may only have one human-readable name. Preserve
+// them as a display name and derive a durable public identifier on first write.
 export const sanitizeStoredSpecialist = (v: unknown): StoredSpecialist | undefined => {
   if (!isRecord(v)) return undefined
   const id = asString(v.id)
-  const displayName = asString(v.displayName)
-  const name = displayName ?? asString(v.name)
+  const legacyName = asString(v.name)
+  const displayName = asString(v.displayName) ?? legacyName
+  const name = legacyName
   const description = asString(v.description)
   const systemPrompt = asString(v.systemPrompt)
   const enabled = asBoolean(v.enabled)
@@ -97,6 +97,7 @@ export const sanitizeStoredSpecialist = (v: unknown): StoredSpecialist | undefin
   if (
     !id ||
     !name ||
+    !displayName ||
     description === undefined ||
     systemPrompt === undefined ||
     enabled === undefined ||
@@ -110,6 +111,7 @@ export const sanitizeStoredSpecialist = (v: unknown): StoredSpecialist | undefin
   const specialist: StoredSpecialist = {
     id,
     name,
+    displayName,
     description,
     systemPrompt,
     enabled,
@@ -221,17 +223,27 @@ export class SpecialistRepository {
       const index = doc.specialists.findIndex((s) => s.id === id)
       if (index < 0) throw new Error(`Specialist ${id} not found.`)
       const specialists = [...doc.specialists]
-      specialists[index] = { ...specialists[index], enabled }
+      specialists[index] = {
+        ...specialists[index],
+        enabled,
+        revision: specialists[index].revision + 1
+      }
       return { ...doc, specialists }
     })
   }
 
   // Delete a specialist by id.
-  async delete(id: string): Promise<StoredSpecialists> {
-    return this.mutate((doc) => ({
-      ...doc,
-      specialists: doc.specialists.filter((s) => s.id !== id)
-    }))
+  async delete(id: string, expectedRevision?: number): Promise<StoredSpecialists> {
+    return this.mutate((doc) => {
+      const current = doc.specialists.find((s) => s.id === id)
+      if (!current) throw new Error(`Specialist ${id} not found.`)
+      if (expectedRevision !== undefined && current.revision !== expectedRevision) {
+        throw new Error(
+          `Revision conflict: expected ${expectedRevision}, found ${current.revision}.`
+        )
+      }
+      return { ...doc, specialists: doc.specialists.filter((s) => s.id !== id) }
+    })
   }
 
   // Serializes mutations so concurrent callers cannot clobber each other.

@@ -8,12 +8,14 @@ import type {
   SpecialistListItem,
   CreateSpecialistInput,
   UpdateSpecialistInput,
+  SpecialistCapabilityMode,
   SpecialistFullAccessConfig,
   SpecialistSelectedConfig
 } from '../../shared/specialist'
 import {
   validateCreateSpecialistInput,
   validateUpdateSpecialistInput,
+  validateSpecialistPublicName,
   emptyFullAccessConfig,
   emptySelectedConfig
 } from '../../shared/specialist'
@@ -85,6 +87,7 @@ const log = createLogger('specialist.service')
 const toView = (s: StoredSpecialist): SpecialistProfileView => ({
   id: s.id,
   name: s.name,
+  displayName: s.displayName ?? s.name,
   description: s.description,
   systemPrompt: s.systemPrompt,
   iconKey: s.iconKey,
@@ -103,6 +106,7 @@ const assertCreateInputShape = (input: CreateSpecialistInput): void => {
 
   const optionalTextFields = [
     ['description', input.description],
+    ['display name', input.displayName],
     ['system prompt', input.systemPrompt],
     ['icon', input.iconKey],
     ['color', input.colorKey]
@@ -171,6 +175,10 @@ export class ProfileService {
     const existingIds = new Map(doc.specialists.map((s) => [s.name, s.id]))
 
     const errors = validateCreateSpecialistInput(input, existingNames, existingIds)
+    if (input.displayName !== undefined) {
+      const publicNameError = validateSpecialistPublicName(input.name)
+      if (publicNameError) errors.push({ field: 'name', message: publicNameError })
+    }
     if (errors.length > 0) {
       throw new Error(errors.map((e) => e.message).join('; '))
     }
@@ -180,6 +188,7 @@ export class ProfileService {
     const stored: StoredSpecialist = {
       id: randomUUID(),
       name,
+      displayName: input.displayName ?? name,
       description: input.description ?? '',
       systemPrompt: input.systemPrompt ?? '',
       iconKey: input.iconKey,
@@ -201,10 +210,9 @@ export class ProfileService {
   }
 
   async setEnabled(id: string, enabled: boolean): Promise<SpecialistProfileView> {
-    await this.repo.setEnabled(id, enabled)
+    const updatedDoc = await this.repo.setEnabled(id, enabled)
     this.notify()
-    const doc = await this.repo.getAll()
-    const found = doc.specialists.find((s) => s.id === id)
+    const found = updatedDoc.specialists.find((s) => s.id === id)
     if (!found) throw new Error(`Specialist ${id} not found after setEnabled.`)
     return toView(found)
   }
@@ -230,6 +238,7 @@ export class ProfileService {
 
     const patch: Partial<StoredSpecialist> = {}
     if (input.name !== undefined) patch.name = input.name
+    if (input.displayName !== undefined) patch.displayName = input.displayName
     if (input.description !== undefined) patch.description = input.description
     if (input.systemPrompt !== undefined) patch.systemPrompt = input.systemPrompt
     if (input.iconKey !== undefined) patch.iconKey = input.iconKey
@@ -247,6 +256,137 @@ export class ProfileService {
     const updated = updatedDoc.specialists.find((s) => s.id === input.id)
     if (!updated) throw new Error(`Specialist ${input.id} not found after update.`)
     return toView(updated)
+  }
+
+  // Naming is kept as a separate lifecycle mutation so SDK approval flows can
+  // re-check the exact record and revision immediately before committing.
+  async rename(input: {
+    id: string
+    name: string
+    expectedRevision?: number
+  }): Promise<SpecialistProfileView> {
+    const nameError = validateSpecialistPublicName(input.name)
+    if (nameError) throw new Error(nameError)
+    const current = await this.getById(input.id)
+    const revision = input.expectedRevision ?? current.revision
+    return this.update({ id: input.id, name: input.name, revision })
+  }
+
+  async delete(id: string, expectedRevision?: number): Promise<void> {
+    await this.repo.delete(id, expectedRevision)
+    this.notify()
+  }
+
+  async duplicate(id: string): Promise<Omit<CreateSpecialistInput, 'name'> & { name: string }> {
+    const source = await this.getById(id)
+    const names = new Set((await this.list()).map((profile) => profile.name))
+    const base = `${source.name}_COPY`
+    let name = base.slice(0, 32)
+    let suffix = 2
+    while (names.has(name)) {
+      const tail = `_${suffix++}`
+      name = `${base.slice(0, 32 - tail.length)}${tail}`
+    }
+    return {
+      name,
+      displayName: `${source.displayName ?? source.name} Copy`,
+      description: source.description,
+      systemPrompt: source.systemPrompt,
+      iconKey: source.iconKey,
+      colorKey: source.colorKey,
+      capabilityMode: source.capabilityMode,
+      fullAccess: structuredClone(source.fullAccess),
+      selectedCapabilities: structuredClone(source.selectedCapabilities)
+    }
+  }
+
+  private async patchCollection(
+    id: string,
+    expectedRevision: number,
+    mode: SpecialistCapabilityMode,
+    field: 'skillIds' | 'connectorIds' | 'excludedSkillIds' | 'excludedConnectorIds',
+    value: string,
+    attach: boolean
+  ): Promise<SpecialistProfileView> {
+    const current = await this.getById(id)
+    if (mode === 'full') {
+      const config = structuredClone(current.fullAccess)
+      const values = config[field as 'excludedSkillIds' | 'excludedConnectorIds']
+      config[field as 'excludedSkillIds' | 'excludedConnectorIds'] = attach
+        ? [...new Set([...values, value])]
+        : values.filter((entry) => entry !== value)
+      return this.update({ id, revision: expectedRevision, fullAccess: config })
+    }
+    const config = structuredClone(current.selectedCapabilities)
+    const values = config[field as 'skillIds' | 'connectorIds']
+    config[field as 'skillIds' | 'connectorIds'] = attach
+      ? [...new Set([...values, value])]
+      : values.filter((entry) => entry !== value)
+    return this.update({ id, revision: expectedRevision, selectedCapabilities: config })
+  }
+
+  async attachSkill(
+    id: string,
+    skillId: string,
+    expectedRevision: number,
+    mode: SpecialistCapabilityMode = 'selected'
+  ): Promise<SpecialistProfileView> {
+    return this.patchCollection(
+      id,
+      expectedRevision,
+      mode,
+      mode === 'full' ? 'excludedSkillIds' : 'skillIds',
+      skillId,
+      mode !== 'full'
+    )
+  }
+
+  async detachSkill(
+    id: string,
+    skillId: string,
+    expectedRevision: number,
+    mode: SpecialistCapabilityMode = 'selected'
+  ): Promise<SpecialistProfileView> {
+    return this.patchCollection(
+      id,
+      expectedRevision,
+      mode,
+      mode === 'full' ? 'excludedSkillIds' : 'skillIds',
+      skillId,
+      mode === 'full'
+    )
+  }
+
+  async attachConnector(
+    id: string,
+    connectorId: string,
+    expectedRevision: number,
+    mode: SpecialistCapabilityMode = 'selected'
+  ): Promise<SpecialistProfileView> {
+    return this.patchCollection(
+      id,
+      expectedRevision,
+      mode,
+      mode === 'full' ? 'excludedConnectorIds' : 'connectorIds',
+      connectorId,
+      mode !== 'full'
+    )
+  }
+
+  async detachConnector(
+    id: string,
+    connectorId: string,
+    expectedRevision: number,
+    mode: SpecialistCapabilityMode = 'selected'
+  ): Promise<SpecialistProfileView> {
+    return this.patchCollection(
+      id,
+      expectedRevision,
+      mode,
+      mode === 'full' ? 'excludedConnectorIds' : 'connectorIds',
+      connectorId,
+      mode === 'full'
+    )
   }
 
   // Subscribes a listener to be called whenever the profile catalog changes.

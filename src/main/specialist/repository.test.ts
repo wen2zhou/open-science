@@ -38,10 +38,11 @@ describe('sanitizeSpecialist', () => {
     expect(sanitizeSpecialist({ ...valid, name: undefined })).toBeUndefined()
   })
 
-  it('migrates legacy displayName into name (preferring displayName)', () => {
+  it('preserves a stable public name alongside its displayName', () => {
     const legacy = { ...valid, name: 'RNA_SEQ_REVIEWER', displayName: 'RNA-seq Reviewer' }
     const result = sanitizeSpecialist(legacy)
-    expect(result?.name).toBe('RNA-seq Reviewer')
+    expect(result?.name).toBe('RNA_SEQ_REVIEWER')
+    expect(result?.displayName).toBe('RNA-seq Reviewer')
   })
 
   it('falls back to legacy UPPER_SNAKE name when displayName is absent', () => {

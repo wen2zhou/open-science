@@ -217,6 +217,8 @@ import type {
   CreateSpecialistRequest,
   UpdateSpecialistRequest,
   SetSpecialistEnabledRequest,
+  DeleteSpecialistRequest,
+  DuplicateSpecialistRequest,
   SpecialistListItem,
   SpecialistProfileView
 } from '../shared/specialist'
@@ -357,6 +359,8 @@ interface OpenScienceAPI {
     create(request: CreateSpecialistRequest): Promise<SpecialistProfileView>
     update(request: UpdateSpecialistRequest): Promise<SpecialistProfileView>
     setEnabled(request: SetSpecialistEnabledRequest): Promise<SpecialistProfileView>
+    delete(request: DeleteSpecialistRequest): Promise<void>
+    duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     onCatalogChanged(listener: () => void): RemoveListener
   }
   logs: {

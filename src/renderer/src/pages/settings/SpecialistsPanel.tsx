@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, Pencil, Plus, Search } from 'lucide-react'
+import { ChevronDown, Copy, Pencil, Plus, Search, Trash2 } from 'lucide-react'
 import { Button } from '@/components/ui/button'
 import {
   DropdownMenu,
@@ -17,7 +17,7 @@ import { SpecialistAvatar } from './specialist-avatar'
 // Sub-view for the Specialists panel (parallels SkillsView).
 export type SpecialistsView =
   | { kind: 'list' }
-  | { kind: 'create' }
+  | { kind: 'create'; draft?: CreateSpecialistInput }
   | { kind: 'edit'; id: string }
 
 type CategoryFilter = 'all' | 'custom' | 'builtin'
@@ -40,6 +40,8 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const setEnabled = useSpecialistStore((s) => s.setEnabled)
   const createSpecialist = useSpecialistStore((s) => s.create)
   const updateSpecialist = useSpecialistStore((s) => s.update)
+  const deleteSpecialist = useSpecialistStore((s) => s.delete)
+  const duplicateSpecialist = useSpecialistStore((s) => s.duplicate)
   const [filter, setFilter] = useState<CategoryFilter>('all')
   const [query, setQuery] = useState('')
   const customItems = items.filter((i) => i.kind === 'custom')
@@ -60,6 +62,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     if (!term) return customItems
     return customItems.filter(
       (item) =>
+        (item.displayName ?? item.name).toLowerCase().includes(term) ||
         item.name.toLowerCase().includes(term) ||
         item.description.toLowerCase().includes(term)
     )
@@ -75,6 +78,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     return (
       <SpecialistEditor
         existingNames={customItems.map((item) => item.name)}
+        initialInput={view.draft}
         onCancel={() => onNavigate({ kind: 'list' })}
         onSave={async (input: CreateSpecialistInput) => {
           await createSpecialist(input)
@@ -98,6 +102,15 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
           onSaveEdit={async (input) => {
             await updateSpecialist(input)
             onNavigate({ kind: 'list' })
+          }}
+          onReload={async () => {
+            await load()
+            const refreshed = items.find((item) => item.kind === 'custom' && item.id === view.id)
+            if (refreshed && refreshed.kind === 'custom') {
+              // Re-navigate to reload the editor with the freshest profile data.
+              onNavigate({ kind: 'edit', id: view.id })
+            }
+            return undefined
           }}
         />
       )
@@ -203,7 +216,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                         <button
                           type="button"
                           onClick={() => onNavigate({ kind: 'edit', id: item.id })}
-                          aria-label={`Edit ${item.name}`}
+                          aria-label={`Edit ${item.displayName ?? item.name}`}
                           className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
                         >
                           {/* Avatar */}
@@ -212,7 +225,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                           {/* Body: name + description */}
                           <div className="min-w-0 flex-1">
                             <span className="block truncate text-sm text-foreground">
-                              {item.name}
+                              {item.displayName ?? item.name}
                             </span>
                             {item.description ? (
                               <span className="block truncate text-xs text-muted-foreground">
@@ -230,9 +243,37 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                         {/* Enabled toggle */}
                         <SettingsToggle
                           enabled={item.enabled}
-                          aria-label={`Toggle ${item.name}`}
+                          aria-label={`Toggle ${item.displayName ?? item.name}`}
                           onToggle={() => void setEnabled(item.id, !item.enabled)}
                         />
+                        <DropdownMenu>
+                          <DropdownMenuTrigger asChild>
+                            <Button
+                              variant="ghost"
+                              size="icon"
+                              aria-label={`Actions for ${item.displayName ?? item.name}`}
+                            >
+                              <ChevronDown aria-hidden="true" />
+                            </Button>
+                          </DropdownMenuTrigger>
+                          <DropdownMenuContent align="end">
+                            <DropdownMenuItem
+                              onSelect={() =>
+                                void duplicateSpecialist(item.id).then((draft) =>
+                                  onNavigate({ kind: 'create', draft })
+                                )
+                              }
+                            >
+                              <Copy className="size-4" aria-hidden="true" /> Duplicate
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="text-destructive"
+                              onSelect={() => void deleteSpecialist(item.id, item.revision)}
+                            >
+                              <Trash2 className="size-4" aria-hidden="true" /> Delete
+                            </DropdownMenuItem>
+                          </DropdownMenuContent>
+                        </DropdownMenu>
                       </li>
                     )
                   })}
