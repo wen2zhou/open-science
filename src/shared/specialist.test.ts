@@ -1,7 +1,10 @@
 import { describe, expect, it } from 'vitest'
 import {
   validateSpecialistName,
+  validateSpecialistDescription,
   validateCreateSpecialistInput,
+  validateUpdateSpecialistInput,
+  SPECIALIST_DESCRIPTION_MAX_LENGTH,
   emptyFullAccessConfig,
   emptySelectedConfig,
   resolveEffectiveSpecialistSkills
@@ -60,6 +63,42 @@ describe('validateCreateSpecialistInput', () => {
     const map = new Map([['My Bot', 'id-1']])
     const errors = validateCreateSpecialistInput({ name: 'My Bot' }, [], map)
     expect(errors.some((e) => e.field === 'name')).toBe(true)
+  })
+})
+
+describe('validateSpecialistDescription', () => {
+  it('accepts an empty description (optional field)', () => {
+    expect(validateSpecialistDescription('')).toBeUndefined()
+  })
+
+  it('accepts a description at exactly the max length', () => {
+    expect(
+      validateSpecialistDescription('a'.repeat(SPECIALIST_DESCRIPTION_MAX_LENGTH))
+    ).toBeUndefined()
+  })
+
+  it('rejects a description over the max length', () => {
+    expect(validateSpecialistDescription('a'.repeat(SPECIALIST_DESCRIPTION_MAX_LENGTH + 1))).toBe(
+      `Description must be ${SPECIALIST_DESCRIPTION_MAX_LENGTH} characters or fewer.`
+    )
+  })
+})
+
+describe('description validation in create/update inputs', () => {
+  it('surfaces a description error on create when too long', () => {
+    const errors = validateCreateSpecialistInput(
+      { name: 'Bot', description: 'a'.repeat(SPECIALIST_DESCRIPTION_MAX_LENGTH + 1) },
+      []
+    )
+    expect(errors.some((e) => e.field === 'description')).toBe(true)
+  })
+
+  it('surfaces a description error on update when too long', () => {
+    const errors = validateUpdateSpecialistInput(
+      { id: 'x', revision: 1, description: 'a'.repeat(SPECIALIST_DESCRIPTION_MAX_LENGTH + 1) },
+      []
+    )
+    expect(errors.some((e) => e.field === 'description')).toBe(true)
   })
 })
 

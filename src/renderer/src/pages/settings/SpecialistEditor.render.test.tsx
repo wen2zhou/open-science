@@ -352,4 +352,53 @@ describe('SpecialistEditor', () => {
     // The live preview renders the selected icon glyph.
     expect(document.body.querySelector('[data-specialist-icon="microscope"]')).not.toBeNull()
   })
+
+  it('caps Name and Description inputs and shows live character counters', async () => {
+    await act(async () => {
+      root.render(<SpecialistEditor onCancel={vi.fn()} onSave={vi.fn()} />)
+    })
+    expect(document.body.querySelector<HTMLInputElement>('#sp-name')!.maxLength).toBe(80)
+    expect(document.body.querySelector<HTMLInputElement>('#sp-description')!.maxLength).toBe(200)
+    expect(document.body.textContent).toContain('/ 80')
+    expect(document.body.textContent).toContain('/ 200')
+  })
+
+  it('shows the saved identity bar only in edit mode', async () => {
+    const findSavedTag = (): HTMLElement | undefined =>
+      Array.from(document.body.querySelectorAll<HTMLElement>('span')).find(
+        (el) => el.textContent?.trim() === 'Saved'
+      )
+
+    // Create mode: nothing is saved yet, so no identity bar.
+    await act(async () => {
+      root.render(<SpecialistEditor onCancel={vi.fn()} onSave={vi.fn()} />)
+    })
+    expect(findSavedTag()).toBeUndefined()
+
+    // Edit mode: the saved identity bar renders the persisted name + description.
+    await act(async () => {
+      root.render(
+        <SpecialistEditor
+          editSpecialist={{
+            id: 'rna-reviewer',
+            name: 'RNA Reviewer',
+            description: 'Reviews RNA-seq.',
+            systemPrompt: '',
+            iconKey: 'microscope',
+            colorKey: 'teal',
+            enabled: true,
+            capabilityMode: 'full',
+            fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+            selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+            revision: 1
+          }}
+          existingNames={[]}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          onSaveEdit={vi.fn()}
+        />
+      )
+    })
+    expect(findSavedTag()).toBeTruthy()
+  })
 })

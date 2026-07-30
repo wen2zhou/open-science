@@ -5,6 +5,8 @@ import { Textarea } from '@/components/ui/textarea'
 import { Select, SelectContent, SelectItem, SelectTrigger } from '@/components/ui/select'
 import { cn } from '@/lib/utils'
 import {
+  SPECIALIST_DESCRIPTION_MAX_LENGTH,
+  SPECIALIST_NAME_MAX_LENGTH,
   validateCreateSpecialistInput,
   type CreateSpecialistInput,
   type UpdateSpecialistInput,
@@ -230,6 +232,27 @@ const SpecialistEditor = ({
   return (
     <div className="p-5">
       <div className="max-w-2xl">
+        {/* Saved identity bar — stable reference of what's currently persisted (edit only).
+            In create mode there is nothing saved yet, so the bar is omitted. */}
+        {isEdit && editSpecialist ? (
+          <div className="mb-5 flex items-start gap-3 rounded-lg border border-border bg-muted/30 p-3">
+            <SpecialistAvatar iconKey={editSpecialist.iconKey} colorKey={editSpecialist.colorKey} />
+            <div className="min-w-0 flex-1">
+              <div className="flex flex-wrap items-center gap-2">
+                <span className="text-[15px] font-semibold text-foreground">
+                  {editSpecialist.name}
+                </span>
+                <span className="rounded bg-muted px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-muted-foreground">
+                  Saved
+                </span>
+              </div>
+              <p className="mt-0.5 line-clamp-2 max-w-xl text-xs text-muted-foreground">
+                {editSpecialist.description || 'No description'}
+              </p>
+            </div>
+          </div>
+        ) : null}
+
         {/* Identity section */}
         <section className="mb-6">
           <h3 className="mb-1 text-base font-semibold text-foreground">Identity</h3>
@@ -237,51 +260,23 @@ const SpecialistEditor = ({
             How this specialist appears in the registry and session picker.
           </p>
 
-          {/* Name */}
-          <div className="mb-4">
-            <label htmlFor="sp-name" className="mb-1.5 block text-xs font-semibold">
-              Name
-            </label>
-            <Input
-              id="sp-name"
-              value={form.name}
-              onChange={(e) => {
-                setForm((prev) => ({ ...prev, name: e.target.value }))
-                setFieldErrors((prev) => prev.filter((er) => er.field !== 'name'))
-              }}
-              placeholder="e.g. RNA-seq Reviewer"
-              aria-describedby={getFieldError('name') ? 'sp-name-err' : undefined}
-              aria-invalid={!!getFieldError('name')}
-              className={cn(getFieldError('name') && 'border-destructive')}
-            />
-            {getFieldError('name') ? (
-              <p id="sp-name-err" className="mt-1 text-xs text-destructive" role="alert">
-                {getFieldError('name')}
-              </p>
-            ) : null}
-          </div>
-
-          {/* Description */}
-          <div className="mb-0">
-            <label htmlFor="sp-description" className="mb-1.5 block text-xs font-semibold">
-              Description <span className="font-normal text-muted-foreground">(optional)</span>
-            </label>
-            <Input
-              id="sp-description"
-              value={form.description}
-              onChange={(e) => setForm((prev) => ({ ...prev, description: e.target.value }))}
-              placeholder="Short description shown in the list and picker"
-            />
-          </div>
-
-          <div className="mt-4 grid gap-4 sm:grid-cols-[auto_1fr_1fr]">
-            {/* Live preview — reflects the current icon + color, matching the list */}
-            <div className="flex flex-col items-center gap-1.5 pt-6">
-              <span className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
-                Preview
+          {/* Live preview — reflects the current icon + color + name, matching the list */}
+          <div className="mb-4 flex items-center gap-3 rounded-lg border border-border p-3">
+            <SpecialistAvatar iconKey={form.iconKey} colorKey={form.colorKey} size="lg" />
+            <div className="min-w-0 flex-1">
+              <span className="block truncate text-sm font-semibold text-foreground">
+                {form.name.trim() || 'Untitled specialist'}
               </span>
-              <SpecialistAvatar iconKey={form.iconKey} colorKey={form.colorKey} size="lg" />
+              <span className="text-xs text-muted-foreground">
+                Preview — matches the list and picker.
+              </span>
             </div>
+            <span className="shrink-0 rounded bg-primary/10 px-1.5 py-0.5 text-[10px] font-semibold uppercase tracking-wide text-primary">
+              Live
+            </span>
+          </div>
+
+          <div className="mb-4 grid gap-4 sm:grid-cols-2">
             <div>
               <label className="mb-1.5 block text-xs font-semibold">Icon</label>
               <Select
@@ -346,6 +341,70 @@ const SpecialistEditor = ({
                 </SelectContent>
               </Select>
             </div>
+          </div>
+
+          {/* Name */}
+          <div className="mb-4">
+            <label
+              htmlFor="sp-name"
+              className="mb-1.5 flex items-baseline justify-between text-xs font-semibold"
+            >
+              <span>Name</span>
+              <span className="font-normal tabular-nums text-muted-foreground">
+                {form.name.length} / {SPECIALIST_NAME_MAX_LENGTH}
+              </span>
+            </label>
+            <Input
+              id="sp-name"
+              value={form.name}
+              maxLength={SPECIALIST_NAME_MAX_LENGTH}
+              onChange={(e) => {
+                setForm((prev) => ({ ...prev, name: e.target.value }))
+                setFieldErrors((prev) => prev.filter((er) => er.field !== 'name'))
+              }}
+              placeholder="e.g. RNA-seq Reviewer"
+              aria-describedby={getFieldError('name') ? 'sp-name-err' : undefined}
+              aria-invalid={!!getFieldError('name')}
+              className={cn(getFieldError('name') && 'border-destructive')}
+            />
+            {getFieldError('name') ? (
+              <p id="sp-name-err" className="mt-1 text-xs text-destructive" role="alert">
+                {getFieldError('name')}
+              </p>
+            ) : null}
+          </div>
+
+          {/* Description */}
+          <div className="mb-0">
+            <label
+              htmlFor="sp-description"
+              className="mb-1.5 flex items-baseline justify-between text-xs font-semibold"
+            >
+              <span>
+                Description <span className="font-normal text-muted-foreground">(optional)</span>
+              </span>
+              <span className="font-normal tabular-nums text-muted-foreground">
+                {form.description.length} / {SPECIALIST_DESCRIPTION_MAX_LENGTH}
+              </span>
+            </label>
+            <Input
+              id="sp-description"
+              value={form.description}
+              maxLength={SPECIALIST_DESCRIPTION_MAX_LENGTH}
+              onChange={(e) => {
+                setForm((prev) => ({ ...prev, description: e.target.value }))
+                setFieldErrors((prev) => prev.filter((er) => er.field !== 'description'))
+              }}
+              aria-describedby={getFieldError('description') ? 'sp-description-err' : undefined}
+              aria-invalid={!!getFieldError('description')}
+              className={cn(getFieldError('description') && 'border-destructive')}
+              placeholder="Short description shown in the list and picker"
+            />
+            {getFieldError('description') ? (
+              <p id="sp-description-err" className="mt-1 text-xs text-destructive" role="alert">
+                {getFieldError('description')}
+              </p>
+            ) : null}
           </div>
         </section>
 

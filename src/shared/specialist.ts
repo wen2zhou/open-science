@@ -158,6 +158,15 @@ export type SpecialistFieldError = {
 }
 
 // ---------------------------------------------------------------------------
+// Field length limits
+// ---------------------------------------------------------------------------
+
+// Hard caps shared by validation, the UI counters, and the maxLength attrs so
+// the three never drift apart.
+export const SPECIALIST_NAME_MAX_LENGTH = 80
+export const SPECIALIST_DESCRIPTION_MAX_LENGTH = 200
+
+// ---------------------------------------------------------------------------
 // Name validation
 // ---------------------------------------------------------------------------
 
@@ -170,7 +179,9 @@ export const validateSpecialistName = (
   existingIds?: Map<string, string> // name -> id for duplicate detection
 ): string | undefined => {
   if (!name.trim()) return 'Name is required.'
-  if (name.trim().length > 80) return 'Name must be 80 characters or fewer.'
+  if (name.trim().length > SPECIALIST_NAME_MAX_LENGTH) {
+    return `Name must be ${SPECIALIST_NAME_MAX_LENGTH} characters or fewer.`
+  }
 
   // Duplicate check: skip self when editing.
   const collision = existingIds?.get(name)
@@ -185,6 +196,19 @@ export const validateSpecialistName = (
   return undefined
 }
 
+// ---------------------------------------------------------------------------
+// Description validation
+// ---------------------------------------------------------------------------
+
+// Validate a candidate description. Empty is allowed (the field is optional).
+// Returns an error message string, or undefined when the description is valid.
+export const validateSpecialistDescription = (description: string): string | undefined => {
+  if (description.length > SPECIALIST_DESCRIPTION_MAX_LENGTH) {
+    return `Description must be ${SPECIALIST_DESCRIPTION_MAX_LENGTH} characters or fewer.`
+  }
+  return undefined
+}
+
 // Validate all fields for a CreateSpecialistInput.
 // Returns an array of field errors (empty = valid).
 export const validateCreateSpecialistInput = (
@@ -196,6 +220,11 @@ export const validateCreateSpecialistInput = (
 
   const nameError = validateSpecialistName(input.name, existingNames, undefined, existingIds)
   if (nameError) errors.push({ field: 'name', message: nameError })
+
+  if (input.description !== undefined) {
+    const descriptionError = validateSpecialistDescription(input.description)
+    if (descriptionError) errors.push({ field: 'description', message: descriptionError })
+  }
 
   return errors
 }
@@ -213,6 +242,11 @@ export const validateUpdateSpecialistInput = (
   if (input.name !== undefined) {
     const nameError = validateSpecialistName(input.name, existingNames, input.id, existingIds)
     if (nameError) errors.push({ field: 'name', message: nameError })
+  }
+
+  if (input.description !== undefined) {
+    const descriptionError = validateSpecialistDescription(input.description)
+    if (descriptionError) errors.push({ field: 'description', message: descriptionError })
   }
 
   return errors
