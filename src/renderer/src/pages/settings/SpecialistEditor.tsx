@@ -357,6 +357,25 @@ const SpecialistEditor = ({
   return (
     <div className="p-5">
       <div className="max-w-2xl">
+        {/* Save error — shown at the top so it is immediately visible */}
+        {saveError ? (
+          <div
+            className="mb-4 flex items-start gap-2 rounded-lg border border-destructive/30 bg-destructive/5 p-3 text-sm text-destructive"
+            role="alert"
+          >
+            <svg className="mt-0.5 shrink-0" width="16" height="16" viewBox="0 0 16 16" fill="none">
+              <circle cx="8" cy="8" r="7" stroke="currentColor" strokeWidth="1.5" />
+              <path
+                d="M8 4.5v4M8 10.5v.5"
+                stroke="currentColor"
+                strokeWidth="1.5"
+                strokeLinecap="round"
+              />
+            </svg>
+            <span>{saveError}</span>
+          </div>
+        ) : null}
+
         {/* Saved identity bar — stable reference of what's currently persisted (edit only).
             In create mode there is nothing saved yet, so the bar is omitted. */}
         {isEdit && editSpecialist ? (
@@ -848,13 +867,6 @@ const SpecialistEditor = ({
             ) : null}
           </div>
         </section>
-
-        {/* Save error */}
-        {saveError ? (
-          <p className="mt-4 text-sm text-destructive" role="alert">
-            {saveError}
-          </p>
-        ) : null}
 
         {/* Revision conflict banner — shown when another save raced ahead.
             Local edits are preserved so the user can review before reloading. */}

@@ -207,9 +207,9 @@ export const validateSpecialistName = (
 }
 
 export const validateSpecialistPublicName = (name: string): string | undefined =>
-  /^[A-Z0-9_]{2,32}$/.test(name)
+  /^[\p{L}0-9_]{2,32}$/u.test(name)
     ? undefined
-    : 'Name must be 2-32 uppercase letters, numbers, or underscores.'
+    : 'Name must be 2-32 letters, numbers, or underscores.'
 
 export const validateSpecialistDisplayName = (displayName: string): string | undefined => {
   if (!displayName.trim()) return 'Display name is required.'
