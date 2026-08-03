@@ -504,9 +504,29 @@ const createApplicationModules = async (
     }
   )
 
-  // Resolved lazily per connector call so dispatch always sees the latest persisted Specialist profile.
+  // Builtins are validated once at startup from read-only repository resources. Package imports use
+  // the same repository while keeping their dynamic Connector/custom-Skill catalog separate.
   const specialistRepository = new SpecialistRepository(resolveStorageRoot())
-  const profileService = new ProfileService(specialistRepository)
+  const appVersion = app.getVersion()
+  const specialistSkills = await settingsService.listSpecialistSkillCatalog()
+  const builtinRegistry = new BuiltinSpecialistRegistry({
+    appVersion,
+    builtinSkills: specialistSkills
+      .filter((skill) => skill.source === 'featured')
+      .map((skill) => ({
+        id: skill.id,
+        appVersion,
+        compatibility: `app:${appVersion}:${skill.id}`
+      })),
+    skills: specialistSkills.map((skill) => ({
+      id: skill.id,
+      builtin: skill.source === 'featured'
+    })),
+    connectorIds: ALL_CONNECTOR_IDS,
+    protectedSpecialistIds: ['reviewer']
+  })
+  const profileService = new ProfileService(specialistRepository, builtinRegistry)
+  await profileService.ensureBuiltinCatalogReady()
   const specialistPackageService = new SpecialistPackageService({
     storageDir: resolveStorageRoot(),
     repository: specialistRepository,
@@ -562,7 +582,7 @@ const createApplicationModules = async (
     (event) => broadcastToRenderers(SPECIALIST_IPC.HANDOFF_LIFECYCLE_CHANGED, event),
     async ({ targetName }) => {
       if (targetName === null) return undefined
-      const profile = await profileService.getByName(targetName)
+      const profile = await profileService.resolveRunnableByName(targetName)
       return { specialistId: profile.id, revision: profile.revision }
     }
   )
@@ -703,7 +723,7 @@ const createApplicationModules = async (
       }),
     resolveSpecialistProfile: async (specialistId) => {
       try {
-        return await profileService.getById(specialistId)
+        return await profileService.resolveRunnableById(specialistId)
       } catch {
         return undefined
       }
@@ -999,7 +1019,7 @@ const createApplicationModules = async (
     resolveSwitchReadBack: async (sessionId, targetName) => {
       const specialistId = sessionBindingService.getBinding(sessionId)
       const revision = specialistId
-        ? (await profileService.getById(specialistId)).revision
+        ? (await profileService.resolveRunnableById(specialistId)).revision
         : undefined
       return {
         status: 'approved',

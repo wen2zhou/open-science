@@ -49,10 +49,31 @@ describe('BuiltinSpecialistRegistry', () => {
     expect(result.entries.some((entry) => entry.id === 'reviewer')).toBe(false)
   })
 
-  it('ships an empty contribution registry without migrating legacy Specialists or Reviewer', async () => {
+  it('gates every shipped contribution without migrating legacy Specialists or Reviewer', async () => {
     const result = await new BuiltinSpecialistRegistry(catalog, shippedRoot).load()
 
-    expect(result).toEqual({ entries: [], diagnostics: [] })
+    expect(result.diagnostics.filter((item) => item.severity === 'error')).toEqual([])
+    expect(result.entries.some((entry) => entry.id === 'reviewer')).toBe(false)
+  })
+
+  it('reports concrete diagnostics and omits an invalid builtin instead of partially loading it', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'builtin-specialists-invalid-'))
+    await cp(fixtureRoot, join(root, 'broken'), { recursive: true })
+    await writeFile(join(root, 'broken', 'manifest.json'), '{"id":"broken"}', 'utf8')
+    await writeFile(
+      join(root, 'manifest.json'),
+      JSON.stringify({ version: 1, specialists: ['broken'] }),
+      'utf8'
+    )
+
+    const result = await new BuiltinSpecialistRegistry(catalog, root).load()
+
+    expect(result.entries).toEqual([])
+    expect(result.diagnostics).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({ severity: 'error', code: expect.stringMatching(/^manifest\./) })
+      ])
+    )
   })
 })
 

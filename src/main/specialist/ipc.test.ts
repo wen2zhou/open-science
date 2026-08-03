@@ -7,6 +7,7 @@ import { registerSpecialistIpcHandlers } from './ipc'
 import type { ProfileService } from './service'
 
 const handlers = new Map<string, (event: unknown, payload: unknown) => unknown>()
+const broadcastToRenderers = vi.hoisted(() => vi.fn())
 
 vi.mock('electron', () => ({
   ipcMain: {
@@ -15,6 +16,7 @@ vi.mock('electron', () => ({
     }
   }
 }))
+vi.mock('../renderer-broadcast', () => ({ broadcastToRenderers }))
 
 const profile = {
   id: 'specialist-1',
@@ -31,11 +33,35 @@ const profile = {
 const createProfileService = (): ProfileService =>
   ({
     getById: vi.fn().mockResolvedValue(profile),
+    resolveRunnableById: vi.fn().mockResolvedValue(profile),
     listForSettings: vi.fn().mockResolvedValue([]),
     subscribe: vi.fn()
   }) as unknown as ProfileService
 
 describe('specialist session IPC', () => {
+  it('broadcasts only an invalidation signal without profile prompts or resource paths', () => {
+    let notify: (() => void) | undefined
+    const service = {
+      ...createProfileService(),
+      subscribe: vi.fn((listener: () => void) => {
+        notify = listener
+        return vi.fn()
+      })
+    } as unknown as ProfileService
+
+    registerSpecialistIpcHandlers(
+      service,
+      new SessionBindingService(service),
+      vi.fn().mockResolvedValue(undefined)
+    )
+    notify?.()
+
+    expect(broadcastToRenderers).toHaveBeenCalledWith(SPECIALIST_IPC.CATALOG_CHANGED, undefined)
+    const payload = JSON.stringify(broadcastToRenderers.mock.calls)
+    expect(payload).not.toContain(profile.systemPrompt)
+    expect(payload).not.toMatch(/resources[/\\]specialists/)
+  })
+
   it('registers and persists a session specialist switch', async () => {
     handlers.clear()
     const binding = new SessionBindingService(createProfileService())

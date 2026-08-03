@@ -43,6 +43,7 @@ export type SpecialistsView =
   | { kind: 'create'; draft?: CreateSpecialistInput }
   | { kind: 'edit'; id: string }
   | { kind: 'import' }
+  | { kind: 'builtin'; id: string }
 
 type CategoryFilter = 'all' | 'custom' | 'builtin'
 
@@ -89,6 +90,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
 
   // Memoised so visibleCustomItems' memo can reference a stable value.
   const customItems = useMemo(() => items.filter((i) => i.kind === 'custom'), [items])
+  const builtinItems = useMemo(() => items.filter((i) => i.kind === 'builtin'), [items])
 
   useEffect(() => {
     void load()
@@ -98,8 +100,20 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     return unsub
   }, [load])
 
-  // Separate Custom vs Built-in (Reviewer) items.
+  // Keep runnable builtins distinct from the Reviewer placeholder even though Settings groups both
+  // under Built-in. Only runnable builtins enter the Session picker.
   const reviewerItems = items.filter((i) => i.kind === 'reviewer')
+  const visibleBuiltinItems = useMemo(() => {
+    if (filter === 'custom') return []
+    const term = query.trim().toLowerCase()
+    if (!term) return builtinItems
+    return builtinItems.filter(
+      (item) =>
+        (item.displayName ?? item.name).toLowerCase().includes(term) ||
+        item.name.toLowerCase().includes(term) ||
+        item.description.toLowerCase().includes(term)
+    )
+  }, [builtinItems, filter, query])
   const visibleCustomItems = useMemo(() => {
     const term = query.trim().toLowerCase()
     if (filter === 'builtin') return []
@@ -413,6 +427,54 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     )
   }
 
+  if (view.kind === 'builtin') {
+    const specialist = builtinItems.find((item) => item.id === view.id)
+    if (specialist) {
+      const skillIds =
+        specialist.capabilityMode === 'selected'
+          ? specialist.selectedCapabilities.skillIds
+          : specialist.fullAccess.excludedSkillIds
+      return (
+        <div className="p-5">
+          <Button type="button" variant="ghost" onClick={() => onNavigate({ kind: 'list' })}>
+            Back to specialists
+          </Button>
+          <div className="mt-5 flex items-start gap-3">
+            <SpecialistAvatar iconKey={specialist.iconKey} colorKey={specialist.colorKey} />
+            <div className="min-w-0">
+              <h2 className="text-base font-semibold text-foreground">
+                {specialist.displayName ?? specialist.name}
+              </h2>
+              <p className="text-xs text-muted-foreground">
+                Built-in · Version {specialist.version}
+              </p>
+            </div>
+          </div>
+          <p className="mt-4 text-sm text-foreground">{specialist.description}</p>
+          <div className="mt-5 rounded-lg border border-border bg-muted/30 p-3">
+            <p className="text-sm font-medium text-foreground">Read-only</p>
+            <p className="mt-1 text-xs text-muted-foreground">
+              This Specialist ships with the app and cannot be changed.
+            </p>
+          </div>
+          <div className="mt-5">
+            <h3 className="text-sm font-semibold text-foreground">Capabilities</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              {specialist.capabilityMode === 'full' ? 'Full access' : 'Selected capabilities'}
+            </p>
+            {skillIds.length > 0 ? (
+              <ul className="mt-2 list-inside list-disc text-xs text-foreground">
+                {skillIds.map((skillId) => (
+                  <li key={skillId}>{skillId}</li>
+                ))}
+              </ul>
+            ) : null}
+          </div>
+        </div>
+      )
+    }
+  }
+
   return (
     <div className="p-5">
       {/* Toolbar */}
@@ -428,7 +490,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                 ? items.length
                 : key === 'custom'
                   ? customItems.length
-                  : reviewerItems.length
+                  : builtinItems.length + reviewerItems.length
             const active = filter === key
             return (
               <button
@@ -638,8 +700,8 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
             </div>
           ) : null}
 
-          {/* Built-in group (Reviewer only) */}
-          {visibleReviewerItems.length > 0 ? (
+          {/* Built-in group: runnable repository profiles plus the separate Reviewer placeholder. */}
+          {visibleBuiltinItems.length > 0 || visibleReviewerItems.length > 0 ? (
             <div>
               <div className="mb-1 flex flex-col gap-0.5">
                 <span className="text-sm font-semibold text-foreground">Built-in</span>
@@ -648,6 +710,33 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                 </span>
               </div>
               <ul className="mt-2 flex flex-col divide-y divide-border">
+                {visibleBuiltinItems.map((item) => (
+                  <li
+                    key={item.id}
+                    data-slot="settings-list-row"
+                    className="flex min-h-14 items-center gap-2 py-2.5"
+                  >
+                    <button
+                      type="button"
+                      onClick={() => onNavigate({ kind: 'builtin', id: item.id })}
+                      aria-label={`View ${item.displayName ?? item.name}`}
+                      className="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md text-left focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+                    >
+                      <SpecialistAvatar iconKey={item.iconKey} colorKey={item.colorKey} />
+                      <div className="min-w-0 flex-1">
+                        <span className="block truncate text-sm text-foreground">
+                          {item.displayName ?? item.name}
+                        </span>
+                        <span className="block truncate text-xs text-muted-foreground">
+                          {item.description}
+                        </span>
+                        <span className="block text-[11px] text-muted-foreground">
+                          Built-in · Version {item.version}
+                        </span>
+                      </div>
+                    </button>
+                  </li>
+                ))}
                 {visibleReviewerItems.map(() => (
                   <li
                     key="reviewer"

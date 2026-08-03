@@ -73,7 +73,7 @@ const reResolveForMutation = async (
 ): Promise<SpecialistProfileView> => {
   let current: SpecialistProfileView
   try {
-    current = await profileService.getByName(currentName)
+    current = await profileService.resolveCustomMutationByName(currentName)
   } catch (error) {
     // Target was renamed or deleted after card creation.
     throw new PrivilegedOpError(method, error)
