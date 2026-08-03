@@ -138,6 +138,45 @@ describe('SpecialistPackageService', () => {
     expect([...live]).toEqual(['analysis-tools'])
   })
 
+  it('preserves prior Skill ownership when a confirmed overwrite adds a bundled Skill', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    await repository.insert({
+      id: 'research-synth',
+      name: 'Existing Research Synthesizer',
+      description: 'Existing content.',
+      systemPrompt: 'Keep existing.',
+      enabled: true,
+      capabilityMode: 'full',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+      revision: 4,
+      packageVersion: '1.2.0',
+      origin: 'imported',
+      ownedSkillIds: ['previously-owned']
+    })
+    const skillPort: SpecialistPackageSkillPort = {
+      snapshot: async () => [],
+      prepare: async () => undefined,
+      commit: async () => undefined,
+      rollback: async () => undefined,
+      recover: async () => undefined
+    }
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => catalog,
+      skillPort
+    })
+
+    const preview = await service.preview(bundledZip())
+    await expect(
+      service.install({ candidateToken: preview.candidateToken, confirmOverwrite: true })
+    ).resolves.toMatchObject({
+      status: 'installed',
+      specialist: { ownedSkillIds: ['previously-owned', 'analysis-tools'], revision: 5 }
+    })
+  })
+
   it('previews and explicitly confirms an atomic overwrite while preserving local enabled state', async () => {
     const repository = new SpecialistRepository(storageDir)
     await repository.insert({

@@ -327,7 +327,8 @@ describe('SpecialistsPanel', () => {
         bundledSkillIds: [],
         requiredSkillIds: [],
         builtinSkillIds: [],
-        connectorIds: []
+        connectorIds: [],
+        skills: []
       },
       diagnostics: [
         {

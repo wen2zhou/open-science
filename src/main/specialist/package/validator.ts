@@ -467,7 +467,7 @@ const filesContentHash = (files: readonly SpecialistPackageFile[]): string => {
 }
 
 const bundledSkillHash = (files: ReadonlyArray<{ path: string; bytes: Uint8Array }>): string =>
-  contentHash(files)
+  filesContentHash(files)
 
 const planBundledSkills = (
   manifest: SpecialistPackageManifestV1,
