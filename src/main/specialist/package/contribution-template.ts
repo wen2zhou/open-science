@@ -62,7 +62,6 @@ export const buildContributionTemplateZip = (input: {
     name: '',
     description: '',
     systemPrompt: '',
-    enabled: true,
     capabilityMode: 'selected',
     fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
     selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] }

@@ -72,4 +72,47 @@ describe('specialist session IPC', () => {
     )
     expect(result).toEqual({ saved: true })
   })
+
+  it('keeps archive bytes in main and rejects mutated install requests before the package service', async () => {
+    handlers.clear()
+    const binding = new SessionBindingService(createProfileService())
+    const preview = vi.fn().mockResolvedValue({
+      candidateToken: 'candidate-1',
+      summary: { id: 'safe-id' },
+      diagnostics: [],
+      installable: true
+    })
+    const install = vi.fn()
+
+    registerSpecialistIpcHandlers(
+      createProfileService(),
+      binding,
+      vi.fn(),
+      undefined,
+      undefined,
+      undefined,
+      {
+        service: { preview, install, cancel: vi.fn(), dispose: vi.fn() },
+        selectArchive: vi.fn().mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]) })
+      }
+    )
+
+    const selected = await handlers.get(SPECIALIST_IPC.SELECT_PACKAGE)?.(undefined, undefined)
+    expect(selected).toEqual({
+      candidateToken: 'candidate-1',
+      summary: { id: 'safe-id' },
+      diagnostics: [],
+      installable: true
+    })
+    expect(JSON.stringify(selected)).not.toMatch(/bytes|path/i)
+    expect(preview).toHaveBeenCalledWith(new Uint8Array([1, 2, 3]))
+
+    await expect(
+      handlers.get(SPECIALIST_IPC.INSTALL_PACKAGE)?.(undefined, {
+        candidateToken: 'candidate-1',
+        enabled: false
+      })
+    ).resolves.toEqual({ status: 'failed', code: 'candidate-invalid' })
+    expect(install).not.toHaveBeenCalled()
+  })
 })

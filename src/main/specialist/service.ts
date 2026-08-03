@@ -96,7 +96,11 @@ const toView = (s: StoredSpecialist): SpecialistProfileView => ({
   capabilityMode: s.capabilityMode,
   fullAccess: s.fullAccess,
   selectedCapabilities: s.selectedCapabilities,
-  revision: s.revision
+  revision: s.revision,
+  packageVersion: s.packageVersion,
+  origin: s.origin,
+  ownedSkillIds: s.ownedSkillIds,
+  importBaseline: s.importBaseline
 })
 
 const assertOptionalIdentityFieldShapes = (
@@ -203,7 +207,10 @@ export class ProfileService {
       capabilityMode: input.capabilityMode ?? 'full',
       fullAccess: input.fullAccess ?? emptyFullAccessConfig(),
       selectedCapabilities: input.selectedCapabilities ?? emptySelectedConfig(),
-      revision: 1
+      revision: 1,
+      packageVersion: '0.1.0',
+      origin: 'local',
+      ownedSkillIds: []
     }
 
     // Do NOT log systemPrompt content per cross-cutting requirement.

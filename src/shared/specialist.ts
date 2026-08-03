@@ -10,6 +10,9 @@ export const SPECIALIST_IPC = {
   DELETE: 'specialist:delete',
   DUPLICATE: 'specialist:duplicate',
   EXPORT_CONTRIBUTION_TEMPLATE: 'specialist:export-contribution-template',
+  SELECT_PACKAGE: 'specialist:package-select',
+  INSTALL_PACKAGE: 'specialist:package-install',
+  CANCEL_PACKAGE: 'specialist:package-cancel',
   CATALOG_CHANGED: 'specialist:catalog-changed',
   // Session switching (issue 07): per-session mutable binding.
   SET_SESSION_SPECIALIST: 'specialist:set-session-specialist',
@@ -201,6 +204,15 @@ export type SpecialistProfileView = {
   fullAccess: SpecialistFullAccessConfig
   selectedCapabilities: SpecialistSelectedConfig
   revision: number
+  packageVersion?: string
+  origin?: 'local' | 'imported'
+  ownedSkillIds?: string[]
+  importBaseline?: {
+    importedAt: string
+    archiveDigest: string
+    contentDigest: string
+    requiresApp: string
+  }
 }
 
 // The built-in Reviewer entry shown in the list (read-only, never a real profile).

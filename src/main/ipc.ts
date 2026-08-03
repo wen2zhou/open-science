@@ -120,7 +120,11 @@ import { createDefaultSettingsService } from './settings/service'
 import type { NotebookRuntimeSettings } from './settings/capabilities'
 import type { WindowSettingsCapabilities } from './settings/service-capabilities'
 import { createSettingsWorkflows } from './settings/workflows'
-import { createProfileService } from './specialist/service'
+import { ProfileService } from './specialist/service'
+import { SpecialistRepository } from './specialist/repository'
+import { BuiltinSpecialistRegistry } from './specialist/builtin-registry'
+import { SpecialistPackageService } from './specialist/package/service'
+import { selectSpecialistArchive } from './specialist/package/electron-adapter'
 import { AgentsService } from './agents/agents-service'
 import {
   CompletionGateCoordinator,
@@ -501,7 +505,50 @@ const createApplicationModules = async (
   )
 
   // Resolved lazily per connector call so dispatch always sees the latest persisted Specialist profile.
-  const profileService = createProfileService(resolveStorageRoot())
+  const specialistRepository = new SpecialistRepository(resolveStorageRoot())
+  const profileService = new ProfileService(specialistRepository)
+  const specialistPackageService = new SpecialistPackageService({
+    storageDir: resolveStorageRoot(),
+    repository: specialistRepository,
+    catalog: async () => {
+      const appVersion = app.getVersion()
+      const [skills, connectorSettings] = await Promise.all([
+        settingsService.listSpecialistSkillCatalog(),
+        settingsService.getConnectors()
+      ])
+      const baseCatalog = {
+        appVersion,
+        builtinSkills: skills
+          .filter((skill) => skill.source === 'featured')
+          .map((skill) => ({
+            id: skill.id,
+            appVersion,
+            compatibility: `app:${appVersion}:${skill.id}`
+          })),
+        skills: skills.map((skill) => ({
+          id: skill.id,
+          builtin: skill.source === 'featured'
+        })),
+        connectorIds: [
+          ...ALL_CONNECTOR_IDS,
+          ...(connectorSettings?.customMcpServers ?? []).map((server) => server.id)
+        ],
+        protectedSpecialistIds: ['reviewer']
+      }
+      const builtinSpecialists = await new BuiltinSpecialistRegistry(baseCatalog).load()
+      return {
+        ...baseCatalog,
+        protectedSpecialistIds: [
+          ...baseCatalog.protectedSpecialistIds,
+          ...builtinSpecialists.entries.map((entry) => entry.id)
+        ]
+      }
+    },
+    onCommitted: () => {
+      broadcastToRenderers(SPECIALIST_IPC.CATALOG_CHANGED, undefined)
+      void runtime.requestSkillsReload()
+    }
+  })
   // Per-session specialist binding store. Shared between the SET_SESSION_SPECIALIST barrier
   // (validate + record) and the runtime switch so a hot-switch lands on the same source of truth.
   const sessionBindingService = new SessionBindingService(profileService)
@@ -1094,7 +1141,15 @@ const createApplicationModules = async (
         showSaveDialog: (options) => dialog.showSaveDialog(options),
         readReadme: () => readFile(resolveContributionTemplateReadmePath(app.getAppPath()), 'utf8'),
         writeFile: (filePath, bytes) => writeFile(filePath, bytes)
-      })
+      }),
+      {
+        service: specialistPackageService,
+        selectArchive: () =>
+          selectSpecialistArchive({
+            showOpenDialog: (options) => dialog.showOpenDialog(options),
+            readFile
+          })
+      }
     )
   )
   // Runtime selection UI (Settings/Onboarding): survey managed+external per language, persist the

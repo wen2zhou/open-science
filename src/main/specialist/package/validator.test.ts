@@ -33,13 +33,29 @@ const validSpecialist = {
   name: 'RNA Reviewer',
   description: 'Reviews RNA-seq experiments.',
   systemPrompt: 'Private identity instructions that must never appear in diagnostics.',
-  enabled: true,
   capabilityMode: 'selected',
   fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
   selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] }
 }
 
 describe('validateSpecialistPackage', () => {
+  it('rejects package attempts to control the installed enabled state', () => {
+    const result = validateSpecialistPackage(
+      files(validManifest, { ...validSpecialist, enabled: false }),
+      catalog,
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        code: 'specialist.enabled-field-forbidden',
+        path: 'specialist.json'
+      })
+    )
+  })
+
   it('returns a renderer-safe preview and immutable plan for a valid package', () => {
     const result = validateSpecialistPackage(files(validManifest, validSpecialist), catalog, 'zip')
 
@@ -110,7 +126,7 @@ describe('validateSpecialistPackage', () => {
         'specialist.name-invalid',
         'specialist.description-invalid',
         'specialist.system-prompt-invalid',
-        'specialist.enabled-invalid',
+        'specialist.enabled-field-forbidden',
         'specialist.capability-mode-invalid',
         'specialist.full-access-invalid',
         'specialist.selected-capabilities-invalid'
