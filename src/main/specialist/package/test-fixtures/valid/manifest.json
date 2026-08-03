@@ -1,0 +1,11 @@
+{
+  "schema_version": 1,
+  "id": "fixture-specialist",
+  "version": "1.0.0",
+  "requires_app": ">=0.9.0 <1.0.0",
+  "skills": {
+    "builtin": [],
+    "required": [],
+    "bundled": []
+  }
+}

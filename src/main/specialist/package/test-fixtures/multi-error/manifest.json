@@ -1,0 +1,11 @@
+{
+  "schema_version": 77,
+  "id": "../unsafe",
+  "version": "tomorrow",
+  "requires_app": 42,
+  "skills": {
+    "builtin": "everything",
+    "required": false,
+    "bundled": {}
+  }
+}

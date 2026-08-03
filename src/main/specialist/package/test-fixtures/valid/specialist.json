@@ -1,0 +1,17 @@
+{
+  "name": "Fixture Specialist",
+  "description": "A valid adapter fixture.",
+  "systemPrompt": "Fixture prompt that must stay out of previews and diagnostics.",
+  "enabled": true,
+  "capabilityMode": "selected",
+  "fullAccess": {
+    "excludedSkillIds": [],
+    "excludedConnectorIds": [],
+    "connectorTools": []
+  },
+  "selectedCapabilities": {
+    "skillIds": [],
+    "connectorIds": [],
+    "connectorTools": []
+  }
+}

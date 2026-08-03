@@ -1,0 +1,9 @@
+{
+  "name": "Invalid Fixture",
+  "description": "Contains forbidden root content.",
+  "systemPrompt": "Do not execute package code.",
+  "enabled": true,
+  "capabilityMode": "selected",
+  "fullAccess": { "excludedSkillIds": [], "excludedConnectorIds": [], "connectorTools": [] },
+  "selectedCapabilities": { "skillIds": [], "connectorIds": [], "connectorTools": [] }
+}
