@@ -91,6 +91,7 @@ export class BuiltinSpecialistRegistry {
       entries.push({
         kind: 'builtin',
         readonly: true,
+        enabled: true,
         id: result.plan.specialistId,
         version: result.plan.packageVersion,
         ...result.plan.payload

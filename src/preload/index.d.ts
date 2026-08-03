@@ -273,6 +273,11 @@ import type {
   CompletionHandoffCommand
 } from '../shared/specialist'
 import type {
+  SpecialistPackageCandidatePreview,
+  SpecialistPackageInstallRequest,
+  SpecialistPackageInstallResult
+} from '../shared/specialist-package'
+import type {
   CloseConfirmRequest,
   CloseConfirmResponse,
   WindowFindAppearance,
@@ -438,6 +443,11 @@ interface OpenScienceAPI {
     delete(request: DeleteSpecialistRequest): Promise<void>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     exportContributionTemplate(): Promise<ContributionTemplateExportResult>
+    selectPackage(): Promise<{ cancelled: true } | SpecialistPackageCandidatePreview>
+    installPackage(
+      request: SpecialistPackageInstallRequest
+    ): Promise<SpecialistPackageInstallResult>
+    cancelPackage(request: SpecialistPackageInstallRequest): Promise<void>
     onCatalogChanged(listener: () => void): RemoveListener
     // Compatibility-only pending-selection broadcast; approved SDK handoffs use lifecycle events.
     onPendingSwitch(listener: AcpListener<PendingSwitchBroadcast>): RemoveListener

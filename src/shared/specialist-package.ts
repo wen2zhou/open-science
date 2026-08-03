@@ -57,7 +57,6 @@ export type SpecialistPackagePayload = {
   systemPrompt: string
   iconKey?: string
   colorKey?: string
-  enabled: boolean
   capabilityMode: SpecialistCapabilityMode
   fullAccess: SpecialistFullAccessConfig
   selectedCapabilities: SpecialistSelectedConfig
@@ -90,6 +89,30 @@ export type SpecialistPackagePreview = {
   installable: boolean
 }
 
+export type SpecialistPackageCandidatePreview = SpecialistPackagePreview & {
+  candidateToken: string
+  overwrite?: {
+    id: string
+    currentVersion: string
+    incomingVersion: string
+    modifiedSinceImport: boolean
+  }
+}
+
+export type SpecialistPackageInstallRequest = { candidateToken: string }
+
+export type SpecialistPackageInstallResult =
+  | { status: 'installed'; specialist: import('./specialist').SpecialistProfileView }
+  | {
+      status: 'failed'
+      code:
+        | 'candidate-invalid'
+        | 'candidate-expired'
+        | 'candidate-not-installable'
+        | 'recovery-failed'
+        | 'commit-failed'
+    }
+
 export type SpecialistPackageValidationPlan = {
   specialistId: string
   packageVersion: string
@@ -107,6 +130,7 @@ export type SpecialistPackageValidationResult = {
 export type BuiltinSpecialistRegistryEntry = SpecialistPackagePayload & {
   kind: 'builtin'
   readonly: true
+  enabled: true
   id: string
   version: string
 }

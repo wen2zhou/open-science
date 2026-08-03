@@ -119,6 +119,7 @@ describe('SpecialistsPanel', () => {
       'The fixed ZIP contains manifest.json, specialist.json and a bilingual README.md.'
     )
     expect(document.body.textContent).toContain('Choose ZIP')
+    expect(document.body.textContent).toContain('Back')
   })
 
   it('starts the template download directly without an intermediate page', async () => {
@@ -204,6 +205,76 @@ describe('SpecialistsPanel', () => {
     )
     expect(document.body.textContent).not.toContain('/secret/location')
     expect(document.body.textContent).toContain('Download template')
+  })
+
+  it('shows the approved full ZIP preview and opens the installed custom Specialist for editing', async () => {
+    const preview = {
+      candidateToken: 'candidate-1',
+      summary: {
+        id: 'research-synth',
+        version: '1.3.0',
+        name: 'Research Synthesizer',
+        description: 'Synthesizes research.',
+        source: 'zip' as const,
+        requiresApp: '>=0.9.2 <1.0.0',
+        bundledSkillIds: [],
+        requiredSkillIds: [],
+        builtinSkillIds: [],
+        connectorIds: ['lab-notebook']
+      },
+      diagnostics: [
+        {
+          severity: 'warning' as const,
+          code: 'connector.unavailable',
+          message: 'The lab-notebook Connector is unavailable.',
+          relatedId: 'lab-notebook'
+        },
+        {
+          severity: 'info' as const,
+          code: 'package.metadata-noise-ignored',
+          message: 'Archive metadata was ignored.'
+        }
+      ],
+      installable: true
+    }
+    const selectPackage = vi.fn().mockImplementation(async () => {
+      useSpecialistStore.setState({ packagePreview: preview })
+      return preview
+    })
+    const installPackage = vi.fn().mockResolvedValue({
+      status: 'installed',
+      specialist: { id: 'research-synth' }
+    })
+    const cancelPackage = vi.fn()
+    useSpecialistStore.setState({ selectPackage, installPackage, cancelPackage })
+    const onNavigate = vi.fn()
+
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'import' }} onNavigate={onNavigate} />)
+    })
+    expect(document.body.textContent).toContain('Import a Specialist package')
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Choose ZIP')
+        ?.click()
+    })
+
+    expect(document.body.textContent).toContain('Research Synthesizer')
+    expect(document.body.textContent).toContain('research-synth')
+    expect(document.body.textContent).toContain('1.3.0')
+    expect(document.body.textContent).toContain('>=0.9.2 <1.0.0')
+    expect(document.body.textContent).toContain('No bundled Skills')
+    expect(document.body.textContent).toContain('lab-notebook')
+    expect(document.body.textContent).toContain('connector.unavailable')
+    expect(document.body.textContent).toContain('package.metadata-noise-ignored')
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Install Specialist')
+        ?.click()
+    })
+    expect(installPackage).toHaveBeenCalledOnce()
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'edit', id: 'research-synth' })
   })
 
   it('filters specialists by a user-entered search term', async () => {

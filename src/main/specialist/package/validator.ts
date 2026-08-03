@@ -330,7 +330,6 @@ const parsePayload = (
     'systemPrompt',
     'iconKey',
     'colorKey',
-    'enabled',
     'capabilityMode',
     'fullAccess',
     'selectedCapabilities'
@@ -349,6 +348,14 @@ const parsePayload = (
       diagnostics,
       'specialist.identity-field-forbidden',
       'Specialist identity and package version belong only in manifest.json.',
+      'specialist.json'
+    )
+  }
+  if ('enabled' in value) {
+    diagnostic(
+      diagnostics,
+      'specialist.enabled-field-forbidden',
+      'Installed Specialists are always enabled initially; packages cannot control this state.',
       'specialist.json'
     )
   }
@@ -374,14 +381,6 @@ const parsePayload = (
       diagnostics,
       'specialist.system-prompt-invalid',
       'Specialist system prompt must be a string.',
-      'specialist.json'
-    )
-  const enabled = typeof value.enabled === 'boolean' ? value.enabled : undefined
-  if (enabled === undefined)
-    diagnostic(
-      diagnostics,
-      'specialist.enabled-invalid',
-      'Specialist enabled state must be boolean.',
       'specialist.json'
     )
   const capabilityMode =
@@ -415,13 +414,13 @@ const parsePayload = (
     !name ||
     description === undefined ||
     systemPrompt === undefined ||
-    enabled === undefined ||
     !capabilityMode ||
     !fullAccess ||
     !selectedCapabilities ||
     hasForbiddenField ||
     'id' in value ||
-    'version' in value
+    'version' in value ||
+    'enabled' in value
   ) {
     return undefined
   }
@@ -432,7 +431,6 @@ const parsePayload = (
     systemPrompt,
     ...(typeof value.iconKey === 'string' ? { iconKey: value.iconKey } : {}),
     ...(typeof value.colorKey === 'string' ? { colorKey: value.colorKey } : {}),
-    enabled,
     capabilityMode,
     fullAccess,
     selectedCapabilities

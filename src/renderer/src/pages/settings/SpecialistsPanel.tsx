@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState } from 'react'
 import {
   ChevronDown,
   Copy,
+  Download,
   MessagesSquare,
   Pencil,
   Plus,
@@ -65,6 +66,10 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const updateSpecialist = useSpecialistStore((s) => s.update)
   const deleteSpecialist = useSpecialistStore((s) => s.delete)
   const duplicateSpecialist = useSpecialistStore((s) => s.duplicate)
+  const packagePreview = useSpecialistStore((s) => s.packagePreview)
+  const selectPackage = useSpecialistStore((s) => s.selectPackage)
+  const installPackage = useSpecialistStore((s) => s.installPackage)
+  const cancelPackage = useSpecialistStore((s) => s.cancelPackage)
   // Live project catalog drives the `Chat with agent` entry's enabled state and routing. The stored
   // last-opened reference is re-validated against this list before navigating.
   const projects = useProjectStore((s) => s.projects)
@@ -79,6 +84,8 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const [templateSaving, setTemplateSaving] = useState(false)
   const [templateSaved, setTemplateSaved] = useState(false)
   const [templateSaveError, setTemplateSaveError] = useState<string | undefined>()
+  const [packageBusy, setPackageBusy] = useState(false)
+  const [packageErrorCode, setPackageErrorCode] = useState<string | undefined>()
 
   // Memoised so visibleCustomItems' memo can reference a stable value.
   const customItems = useMemo(() => items.filter((i) => i.kind === 'custom'), [items])
@@ -139,7 +146,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     })()
   }
 
-  if (view.kind === 'import') {
+  if (view.kind === 'import' && templateSaved) {
     return (
       <div className="p-5">
         <div className="mb-5 flex items-start justify-between gap-4 border-b border-border pb-4">
@@ -154,54 +161,18 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
             Back
           </Button>
         </div>
-        {templateSaved ? (
-          <div className="rounded-xl border border-border px-6 py-10 text-center" role="status">
-            <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-success-000/10 text-success-000">
-              ✓
-            </div>
-            <h3 className="mt-4 text-lg font-semibold">Template saved</h3>
-            <p className="mt-2 text-sm text-muted-foreground">
-              openscience-specialist-template.zip is ready for contributor editing.
-            </p>
-            <Button type="button" className="mt-5" onClick={() => setTemplateSaved(false)}>
-              Done
-            </Button>
+        <div className="rounded-xl border border-border px-6 py-10 text-center" role="status">
+          <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-success-000/10 text-success-000">
+            ✓
           </div>
-        ) : (
-          <div className="rounded-xl border border-border px-6 py-10 text-center">
-            <Upload className="mx-auto size-10 text-primary" aria-hidden="true" />
-            <h3 className="mt-4 text-base font-semibold">Select a Specialist ZIP</h3>
-            <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
-              The package will be safely parsed and previewed before anything is installed.
-            </p>
-            <p className="mt-4 text-xs text-muted-foreground">
-              Limits: 50 MB compressed · 200 MB uncompressed · 2,000 files · 25 MB per file
-            </p>
-            <p className="mx-auto mt-2 max-w-xl text-xs text-muted-foreground">
-              The fixed ZIP contains manifest.json, specialist.json and a bilingual README.md.
-              Placeholder fields are expected until you fill them in.
-            </p>
-            <div className="mt-5 flex justify-center gap-2">
-              <Button
-                type="button"
-                variant="outline"
-                disabled={templateSaving}
-                onClick={downloadTemplate}
-              >
-                {templateSaving ? 'Saving template…' : 'Download template'}
-              </Button>
-              <Button type="button">Choose ZIP</Button>
-            </div>
-            {templateSaveError ? (
-              <p
-                role="alert"
-                className="mt-4 rounded-lg border border-danger-000/30 bg-danger-000/10 p-3 text-sm text-danger-000"
-              >
-                {templateSaveError}
-              </p>
-            ) : null}
-          </div>
-        )}
+          <h3 className="mt-4 text-lg font-semibold">Template saved</h3>
+          <p className="mt-2 text-sm text-muted-foreground">
+            openscience-specialist-template.zip is ready for contributor editing.
+          </p>
+          <Button type="button" className="mt-5" onClick={() => setTemplateSaved(false)}>
+            Done
+          </Button>
+        </div>
       </div>
     )
   }
@@ -250,6 +221,196 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
       )
     }
     // Profile no longer exists (deleted/stale) — fall through to the list.
+  }
+
+  if (view.kind === 'import') {
+    const summary = packagePreview?.summary
+    const blocking = packagePreview?.diagnostics.some((item) => item.severity === 'error') ?? false
+    return (
+      <div className="p-5">
+        <div className="mb-5 flex items-start justify-between gap-4 border-b border-border pb-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary">
+              {packagePreview ? 'Import ZIP · Preview' : 'Import ZIP'}
+            </p>
+            <h2 className="mt-1 text-xl font-semibold">
+              {packagePreview
+                ? packagePreview.installable
+                  ? 'Ready to install'
+                  : 'Cannot install'
+                : 'Import a Specialist package'}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              {packagePreview
+                ? 'Review the complete package summary and diagnostics before installing.'
+                : 'Choose one ZIP containing exactly one Specialist.'}
+            </p>
+          </div>
+          <Button type="button" variant="outline" onClick={() => onNavigate({ kind: 'list' })}>
+            Back
+          </Button>
+        </div>
+
+        {!packagePreview ? (
+          <div className="rounded-xl border border-border p-6 text-center">
+            <Upload className="mx-auto size-8 text-muted-foreground" aria-hidden="true" />
+            <h3 className="mt-3 text-sm font-semibold">Select a Specialist ZIP</h3>
+            <p className="mt-1 text-xs text-muted-foreground">
+              The package will be safely parsed and previewed before anything is installed.
+            </p>
+            <p className="mt-4 text-xs text-muted-foreground">
+              Limits: 50 MB compressed · 200 MB uncompressed · 2,000 files · 25 MB per file
+            </p>
+            <p className="mx-auto mt-2 max-w-xl text-xs text-muted-foreground">
+              The fixed ZIP contains manifest.json, specialist.json and a bilingual README.md.
+              Placeholder fields are expected until you fill them in.
+            </p>
+            <div className="mt-5 flex justify-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={templateSaving}
+                onClick={downloadTemplate}
+              >
+                <Download data-icon="inline-start" aria-hidden="true" />
+                {templateSaving ? 'Saving template…' : 'Download template'}
+              </Button>
+              <Button
+                type="button"
+                disabled={packageBusy}
+                onClick={() => {
+                  setPackageBusy(true)
+                  void selectPackage().finally(() => setPackageBusy(false))
+                }}
+              >
+                Choose ZIP
+              </Button>
+            </div>
+            {templateSaveError ? (
+              <p
+                role="alert"
+                className="mt-4 rounded-lg border border-danger-000/30 bg-danger-000/10 p-3 text-sm text-danger-000"
+              >
+                {templateSaveError}
+              </p>
+            ) : null}
+          </div>
+        ) : (
+          <div
+            role="dialog"
+            aria-modal="true"
+            aria-label="Specialist ZIP preview"
+            className="space-y-4"
+          >
+            <div className="grid grid-cols-2 gap-3 rounded-xl border border-border p-4 text-sm">
+              <div>
+                <span className="block text-xs text-muted-foreground">Specialist</span>
+                {summary?.name ?? 'Unknown'}
+              </div>
+              <div>
+                <span className="block text-xs text-muted-foreground">Immutable ID</span>
+                {summary?.id ?? 'Unknown'}
+              </div>
+              <div>
+                <span className="block text-xs text-muted-foreground">Package version</span>
+                {summary?.version ?? 'Unknown'}
+              </div>
+              <div>
+                <span className="block text-xs text-muted-foreground">App compatibility</span>
+                {summary?.requiresApp ?? 'Not declared'}
+              </div>
+            </div>
+
+            <section className="rounded-xl border border-border p-4">
+              <h3 className="text-sm font-semibold">Skills</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {summary?.bundledSkillIds.length
+                  ? `Bundled: ${summary.bundledSkillIds.join(', ')}`
+                  : 'No bundled Skills'}
+              </p>
+              {summary?.requiredSkillIds.length ? (
+                <p className="mt-1 text-xs">Referenced: {summary.requiredSkillIds.join(', ')}</p>
+              ) : null}
+              {summary?.builtinSkillIds.length ? (
+                <p className="mt-1 text-xs">Builtin: {summary.builtinSkillIds.join(', ')}</p>
+              ) : null}
+            </section>
+
+            <section className="rounded-xl border border-border p-4">
+              <h3 className="text-sm font-semibold">Connectors</h3>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {summary?.connectorIds.length
+                  ? summary.connectorIds.join(', ')
+                  : 'No Connector references'}
+              </p>
+            </section>
+
+            <section className="rounded-xl border border-border p-4">
+              <h3 className="text-sm font-semibold">Diagnostics</h3>
+              {packagePreview.diagnostics.length ? (
+                <ul className="mt-2 space-y-2">
+                  {packagePreview.diagnostics.map((diagnostic, index) => (
+                    <li key={`${diagnostic.code}-${index}`} className="text-xs">
+                      <strong>
+                        {diagnostic.severity.toUpperCase()} · {diagnostic.code}
+                      </strong>
+                      <span className="block text-muted-foreground">
+                        {diagnostic.message}
+                        {diagnostic.relatedId ? ` · ${diagnostic.relatedId}` : ''}
+                      </span>
+                    </li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-1 text-xs text-muted-foreground">Validation passed.</p>
+              )}
+            </section>
+
+            {packagePreview.overwrite ? (
+              <p
+                role="alert"
+                className="rounded-lg border border-destructive/40 p-3 text-xs text-destructive"
+              >
+                Existing custom Specialist {packagePreview.overwrite.id} requires overwrite
+                confirmation. Overwrite is not available in this release.
+              </p>
+            ) : null}
+            {packageErrorCode ? (
+              <p role="alert" className="text-xs text-destructive">
+                Import failed: {packageErrorCode}
+              </p>
+            ) : null}
+            <div className="flex justify-between gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => void cancelPackage().then(() => onNavigate({ kind: 'list' }))}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                disabled={packageBusy || blocking || !packagePreview.installable}
+                onClick={() => {
+                  setPackageBusy(true)
+                  void installPackage()
+                    .then((result) => {
+                      if (result.status === 'installed') {
+                        onNavigate({ kind: 'edit', id: result.specialist.id })
+                      } else {
+                        setPackageErrorCode(result.code)
+                      }
+                    })
+                    .finally(() => setPackageBusy(false))
+                }}
+              >
+                Install Specialist
+              </Button>
+            </div>
+          </div>
+        )}
+      </div>
+    )
   }
 
   return (
@@ -410,6 +571,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                               {item.capabilityMode === 'full'
                                 ? 'Full access'
                                 : 'Selected capabilities'}
+                              {item.origin === 'imported' ? ' · Imported' : ''}
                             </span>
                           </div>
                         </button>

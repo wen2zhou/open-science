@@ -278,7 +278,12 @@ import type {
   CompletionHandoffCommand
 } from '../shared/specialist'
 import { SPECIALIST_IPC } from '../shared/specialist'
-import type { ContributionTemplateExportResult } from '../shared/specialist-package'
+import type {
+  ContributionTemplateExportResult,
+  SpecialistPackageCandidatePreview,
+  SpecialistPackageInstallRequest,
+  SpecialistPackageInstallResult
+} from '../shared/specialist-package'
 import {
   HANDOFF_LIFECYCLE_IPC,
   type HandoffEventsRequest,
@@ -481,6 +486,11 @@ type OpenScienceAPI = {
     delete(request: DeleteSpecialistRequest): Promise<void>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     exportContributionTemplate(): Promise<ContributionTemplateExportResult>
+    selectPackage(): Promise<{ cancelled: true } | SpecialistPackageCandidatePreview>
+    installPackage(
+      request: SpecialistPackageInstallRequest
+    ): Promise<SpecialistPackageInstallResult>
+    cancelPackage(request: SpecialistPackageInstallRequest): Promise<void>
     onCatalogChanged: (listener: () => void) => RemoveListener
     // host.agents.switch() durable next-message switch broadcast (issue 08b). Main persists the
     // binding and notifies the renderer so it mirrors the pending target WITHOUT switching the live
@@ -1132,6 +1142,17 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke(
         SPECIALIST_IPC.EXPORT_CONTRIBUTION_TEMPLATE
       ) as Promise<ContributionTemplateExportResult>,
+    selectPackage: () =>
+      ipcRenderer.invoke(SPECIALIST_IPC.SELECT_PACKAGE) as Promise<
+        { cancelled: true } | SpecialistPackageCandidatePreview
+      >,
+    installPackage: (request: SpecialistPackageInstallRequest) =>
+      ipcRenderer.invoke(
+        SPECIALIST_IPC.INSTALL_PACKAGE,
+        request
+      ) as Promise<SpecialistPackageInstallResult>,
+    cancelPackage: (request: SpecialistPackageInstallRequest) =>
+      ipcRenderer.invoke(SPECIALIST_IPC.CANCEL_PACKAGE, request) as Promise<void>,
     onCatalogChanged: (listener: () => void) =>
       onIpcMessage(SPECIALIST_IPC.CATALOG_CHANGED, listener),
     // Compatibility-only pending-selection broadcast; approved SDK handoffs use lifecycle events.
