@@ -265,7 +265,6 @@ import type {
   CreateSpecialistRequest,
   UpdateSpecialistRequest,
   SetSpecialistEnabledRequest,
-  DeleteSpecialistRequest,
   DuplicateSpecialistRequest,
   SpecialistListItem,
   SpecialistProfileView,
@@ -286,7 +285,10 @@ import type {
   SpecialistPackageReportSaveResult,
   SpecialistExportPreview,
   SpecialistExportRequest,
-  SpecialistExportSaveResult
+  SpecialistExportSaveResult,
+  SpecialistDeleteRequest,
+  SpecialistDeleteResult,
+  SpecialistDeletePreview
 } from '../shared/specialist-package'
 import {
   HANDOFF_LIFECYCLE_IPC,
@@ -487,7 +489,8 @@ type OpenScienceAPI = {
     create: (request: CreateSpecialistRequest) => Promise<SpecialistProfileView>
     update: (request: UpdateSpecialistRequest) => Promise<SpecialistProfileView>
     setEnabled: (request: SetSpecialistEnabledRequest) => Promise<SpecialistProfileView>
-    delete(request: DeleteSpecialistRequest): Promise<void>
+    previewDelete(request: { id: string }): Promise<SpecialistDeletePreview>
+    delete(request: SpecialistDeleteRequest): Promise<SpecialistDeleteResult>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     exportContributionTemplate(): Promise<ContributionTemplateExportResult>
     previewExport(request: { specialistId: string }): Promise<SpecialistExportPreview>
@@ -1143,8 +1146,13 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke(SPECIALIST_IPC.UPDATE, request) as Promise<SpecialistProfileView>,
     setEnabled: (request: SetSpecialistEnabledRequest) =>
       ipcRenderer.invoke(SPECIALIST_IPC.SET_ENABLED, request) as Promise<SpecialistProfileView>,
-    delete: (request: DeleteSpecialistRequest) =>
-      ipcRenderer.invoke(SPECIALIST_IPC.DELETE, request) as Promise<void>,
+    previewDelete: (request: { id: string }) =>
+      ipcRenderer.invoke(
+        SPECIALIST_IPC.PREVIEW_DELETE,
+        request
+      ) as Promise<SpecialistDeletePreview>,
+    delete: (request: SpecialistDeleteRequest) =>
+      ipcRenderer.invoke(SPECIALIST_IPC.DELETE, request) as Promise<SpecialistDeleteResult>,
     duplicate: (request: DuplicateSpecialistRequest) =>
       ipcRenderer.invoke(SPECIALIST_IPC.DUPLICATE, request) as Promise<CreateSpecialistRequest>,
     exportContributionTemplate: () =>

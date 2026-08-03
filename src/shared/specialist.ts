@@ -7,6 +7,7 @@ export const SPECIALIST_IPC = {
   CREATE: 'specialist:create',
   UPDATE: 'specialist:update',
   SET_ENABLED: 'specialist:set-enabled',
+  PREVIEW_DELETE: 'specialist:delete-preview',
   DELETE: 'specialist:delete',
   DUPLICATE: 'specialist:duplicate',
   EXPORT_CONTRIBUTION_TEMPLATE: 'specialist:export-contribution-template',

@@ -18,8 +18,10 @@ type TransactionJournal = {
   specialistId: string
   beforeDigest: string
   afterDigest: string
-  before: StoredSpecialists
-  after: StoredSpecialists
+  // Legacy journals embedded documents. New journals keep sensitive Specialist payloads in
+  // transaction data sidecars and contain only IDs, digests, and phase metadata.
+  before?: StoredSpecialists
+  after?: StoredSpecialists
 }
 
 const log = createLogger('specialist.package.transaction')
@@ -48,6 +50,8 @@ const toView = (stored: StoredSpecialist): SpecialistProfileView => ({
 
 export class SpecialistPackageTransaction {
   private readonly journalPath: string
+  private readonly beforeDataPath: string
+  private readonly afterDataPath: string
   private queue: Promise<void> = Promise.resolve()
   private recoveryFailure: unknown
 
@@ -58,6 +62,8 @@ export class SpecialistPackageTransaction {
     private readonly skillPort: SpecialistPackageSkillPort = NOOP_SPECIALIST_PACKAGE_SKILL_PORT
   ) {
     this.journalPath = join(storageDir, 'specialist-package-transaction.json')
+    this.beforeDataPath = join(storageDir, 'specialist-package-transaction.before.json')
+    this.afterDataPath = join(storageDir, 'specialist-package-transaction.after.json')
   }
 
   async recover(): Promise<void> {
@@ -69,6 +75,7 @@ export class SpecialistPackageTransaction {
       if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
         try {
           await this.skillPort.recover(undefined, 'rollback')
+          await this.cleanupTransactionData()
         } catch (recoveryError) {
           this.recoveryFailure = recoveryError
           throw new SpecialistPackageRecoveryError()
@@ -81,17 +88,18 @@ export class SpecialistPackageTransaction {
 
     try {
       const journal = JSON.parse(raw) as TransactionJournal
-      if (!journal || typeof journal.transactionId !== 'string' || !journal.before) {
+      if (!journal || typeof journal.transactionId !== 'string') {
         throw new Error('Invalid Specialist package transaction journal.')
       }
+      const { before, after } = await this.readTransactionData(journal)
       if (journal.phase === 'committed') {
-        await this.repository.replaceAll(journal.after)
+        await this.repository.replaceAll(after)
         await this.skillPort.recover(journal.transactionId, 'commit')
       } else if (journal.phase !== 'rolled-back') {
         await this.skillPort.recover(journal.transactionId, 'rollback')
-        await this.repository.replaceAll(journal.before)
+        await this.repository.replaceAll(before)
       }
-      await rm(this.journalPath, { force: true })
+      await this.cleanupTransactionData()
       log.info('recovered specialist package transaction', {
         transactionId: journal.transactionId,
         specialistId: journal.specialistId
@@ -168,9 +176,7 @@ export class SpecialistPackageTransaction {
         phase: 'prepared',
         specialistId: stored.id,
         beforeDigest: documentDigest(before),
-        afterDigest: documentDigest(after),
-        before,
-        after
+        afterDigest: documentDigest(after)
       }
 
       try {
@@ -181,6 +187,7 @@ export class SpecialistPackageTransaction {
             (skill) => skill.disposition === 'install' || skill.disposition === 'reuse-owned'
           )
         )
+        await this.writeTransactionData(before, after)
         await this.writeJournal(journal)
         journal.phase = 'committing'
         await this.writeJournal(journal)
@@ -189,7 +196,7 @@ export class SpecialistPackageTransaction {
         journal.phase = 'committed'
         await this.writeJournal(journal)
         await this.skillPort.recover(transactionId, 'commit')
-        await rm(this.journalPath, { force: true })
+        await this.cleanupTransactionData()
         log.info('committed specialist package transaction', {
           transactionId: journal.transactionId,
           specialistId: stored.id
@@ -203,7 +210,71 @@ export class SpecialistPackageTransaction {
           await this.repository.replaceAll(before)
           journal.phase = 'rolled-back'
           await this.writeJournal(journal)
-          await rm(this.journalPath, { force: true })
+          await this.cleanupTransactionData()
+        } catch (recoveryError) {
+          this.recoveryFailure = recoveryError
+          throw new SpecialistPackageRollbackError()
+        }
+        throw error
+      }
+    })
+    this.queue = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+
+  deleteSpecialist(
+    specialistId: string,
+    expectedRevision: number,
+    deleteSkillIds: readonly string[]
+  ): Promise<void> {
+    const run = this.queue.then(async () => {
+      await this.recover()
+      const before = await this.repository.getAll()
+      const existing = before.specialists.find((specialist) => specialist.id === specialistId)
+      if (!existing || existing.revision !== expectedRevision) {
+        throw new SpecialistPackageRevisionConflictError()
+      }
+      const after: StoredSpecialists = {
+        version: SPECIALISTS_FILE_VERSION,
+        specialists: before.specialists.filter((specialist) => specialist.id !== specialistId)
+      }
+      const transactionId = this.transactionId()
+      const journal: TransactionJournal = {
+        transactionId,
+        phase: 'prepared',
+        specialistId,
+        beforeDigest: documentDigest(before),
+        afterDigest: documentDigest(after)
+      }
+      try {
+        await this.skillPort.prepareDeletion?.(
+          transactionId,
+          specialistId,
+          existing.ownedSkillIds,
+          deleteSkillIds
+        )
+        await this.writeTransactionData(before, after)
+        await this.writeJournal(journal)
+        journal.phase = 'committing'
+        await this.writeJournal(journal)
+        await this.repository.replaceAll(after)
+        await this.skillPort.commit(transactionId)
+        journal.phase = 'committed'
+        await this.writeJournal(journal)
+        await this.skillPort.recover(transactionId, 'commit')
+        await this.cleanupTransactionData()
+      } catch (error) {
+        try {
+          journal.phase = 'rolling-back'
+          await this.writeJournal(journal)
+          await this.skillPort.rollback(transactionId)
+          await this.repository.replaceAll(before)
+          journal.phase = 'rolled-back'
+          await this.writeJournal(journal)
+          await this.cleanupTransactionData()
         } catch (recoveryError) {
           this.recoveryFailure = recoveryError
           throw new SpecialistPackageRollbackError()
@@ -222,5 +293,39 @@ export class SpecialistPackageTransaction {
     const temporary = `${this.journalPath}.tmp`
     await writeFile(temporary, `${JSON.stringify(journal)}\n`, 'utf8')
     await rename(temporary, this.journalPath)
+  }
+
+  private async writeTransactionData(
+    before: StoredSpecialists,
+    after: StoredSpecialists
+  ): Promise<void> {
+    await writeFile(this.beforeDataPath, `${JSON.stringify(before)}\n`, 'utf8')
+    await writeFile(this.afterDataPath, `${JSON.stringify(after)}\n`, 'utf8')
+  }
+
+  private async readTransactionData(
+    journal: TransactionJournal
+  ): Promise<{ before: StoredSpecialists; after: StoredSpecialists }> {
+    const before =
+      journal.before ??
+      (JSON.parse(await readFile(this.beforeDataPath, 'utf8')) as StoredSpecialists)
+    const after =
+      journal.after ?? (JSON.parse(await readFile(this.afterDataPath, 'utf8')) as StoredSpecialists)
+    if (
+      (typeof journal.beforeDigest === 'string' &&
+        documentDigest(before) !== journal.beforeDigest) ||
+      (typeof journal.afterDigest === 'string' && documentDigest(after) !== journal.afterDigest)
+    ) {
+      throw new Error('Specialist package transaction data digest mismatch.')
+    }
+    return { before, after }
+  }
+
+  private async cleanupTransactionData(): Promise<void> {
+    await Promise.all([
+      rm(this.journalPath, { force: true }),
+      rm(this.beforeDataPath, { force: true }),
+      rm(this.afterDataPath, { force: true })
+    ])
   }
 }

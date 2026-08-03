@@ -7,6 +7,9 @@ import {
   type SpecialistPackageReport,
   type SpecialistPackageCandidatePreview,
   type SpecialistPackageCatalogSnapshot,
+  type SpecialistDeletePreview,
+  type SpecialistDeleteRequest,
+  type SpecialistDeleteResult,
   type SpecialistPackageInstallRequest,
   type SpecialistPackageInstallResult,
   type SpecialistExportPreview,
@@ -14,6 +17,7 @@ import {
   SPECIALIST_PACKAGE_SCHEMA_VERSION,
   type SpecialistPackageValidationPlan
 } from '../../../shared/specialist-package'
+import type { StoredSpecialist } from '../types'
 import { SpecialistRepository } from '../repository'
 import { createLogger } from '../../logger'
 import { validateSpecialistZip } from './zip-adapter'
@@ -56,8 +60,34 @@ const inferredAppRange = (version: string): string => {
   return `>=${version} <${major + 1}.0.0`
 }
 
+const referencedSkillIds = (
+  specialist: StoredSpecialist,
+  catalogSkillIds: readonly string[]
+): readonly string[] =>
+  specialist.capabilityMode === 'selected'
+    ? specialist.selectedCapabilities.skillIds
+    : catalogSkillIds.filter((id) => !specialist.fullAccess.excludedSkillIds.includes(id))
+
+export class SpecialistSkillDeletionProtectedError extends Error {
+  readonly code = 'protected-skill' as const
+
+  constructor(
+    readonly skillId: string,
+    readonly specialistIds: readonly string[],
+    readonly reason: 'builtin' | 'owned' | 'referenced'
+  ) {
+    super(
+      reason === 'builtin'
+        ? `Builtin Skill ${skillId} cannot be deleted.`
+        : `Skill ${skillId} is still ${reason} by ${specialistIds.join(', ')}.`
+    )
+    this.name = 'SpecialistSkillDeletionProtectedError'
+  }
+}
+
 export class SpecialistPackageService {
   private readonly candidates = new Map<string, Candidate>()
+  private readonly deletePreviews = new Map<string, SpecialistDeletePreview>()
   private readonly transaction: SpecialistPackageTransaction
   private readonly token: () => string
   private readonly now: () => Date
@@ -71,6 +101,154 @@ export class SpecialistPackageService {
     )
     this.token = options.token ?? randomUUID
     this.now = options.now ?? (() => new Date())
+  }
+
+  async previewSpecialistDelete(request: { id: string }): Promise<SpecialistDeletePreview> {
+    if (!request || typeof request.id !== 'string' || !request.id.trim()) {
+      throw new Error('Specialist id must be a non-empty string.')
+    }
+    const [document, catalog] = await Promise.all([
+      this.options.repository.getAll(),
+      this.options.catalog()
+    ])
+    if (catalog.protectedSpecialistIds.includes(request.id)) {
+      throw new Error(`Specialist ${request.id} is read-only.`)
+    }
+    const specialist = document.specialists.find((candidate) => candidate.id === request.id)
+    if (!specialist) throw new Error(`Specialist ${request.id} not found.`)
+    const catalogSkillIds = catalog.skills.map((skill) => skill.id)
+    const associated = new Set([
+      ...specialist.ownedSkillIds,
+      ...referencedSkillIds(specialist, catalogSkillIds)
+    ])
+    const skills = catalog.skills
+      .filter((skill) => associated.has(skill.id))
+      .map((skill) => {
+        const otherOwners = [...(skill.ownerIds ?? [])].filter((id) => id !== specialist.id).sort()
+        const otherReferences = document.specialists
+          .filter(
+            (candidate) =>
+              candidate.id !== specialist.id &&
+              referencedSkillIds(candidate, catalogSkillIds).includes(skill.id)
+          )
+          .map((candidate) => candidate.id)
+          .sort()
+        const reasons: Array<SpecialistDeletePreview['skills'][number]['reasons'][number]> = []
+        if (skill.builtin) reasons.push({ code: 'builtin', specialistIds: [] })
+        else {
+          if (skill.standalone) reasons.push({ code: 'standalone', specialistIds: [] })
+          if (otherOwners.length > 0) {
+            reasons.push({ code: 'shared-owner', specialistIds: otherOwners })
+          }
+          if (otherReferences.length > 0) {
+            reasons.push({ code: 'referenced', specialistIds: otherReferences })
+          }
+        }
+        const deletable = specialist.ownedSkillIds.includes(skill.id) && reasons.length === 0
+        return {
+          id: skill.id,
+          kind: deletable ? ('owned-exclusive' as const) : (reasons[0]?.code ?? 'referenced'),
+          deletable,
+          reasons
+        }
+      })
+      .sort((left, right) => left.id.localeCompare(right.id))
+    const preview = {
+      specialistId: specialist.id,
+      specialistName: specialist.displayName ?? specialist.name,
+      expectedRevision: specialist.revision,
+      skills
+    }
+    this.deletePreviews.set(specialist.id, preview)
+    return preview
+  }
+
+  async assertSkillDeletionAllowed(skillId: string): Promise<void> {
+    if (typeof skillId !== 'string' || !skillId.trim()) {
+      throw new Error('Skill id must be a non-empty string.')
+    }
+    const [document, catalog] = await Promise.all([
+      this.options.repository.getAll(),
+      this.options.catalog()
+    ])
+    const skill = catalog.skills.find((candidate) => candidate.id === skillId)
+    if (!skill) return
+    if (skill.builtin) throw new SpecialistSkillDeletionProtectedError(skillId, [], 'builtin')
+    const owners = [...(skill.ownerIds ?? [])].sort()
+    if (owners.length > 0) {
+      throw new SpecialistSkillDeletionProtectedError(skillId, owners, 'owned')
+    }
+    const catalogSkillIds = catalog.skills.map((candidate) => candidate.id)
+    const references = document.specialists
+      .filter((specialist) => referencedSkillIds(specialist, catalogSkillIds).includes(skillId))
+      .map((specialist) => specialist.id)
+      .sort()
+    if (references.length > 0) {
+      throw new SpecialistSkillDeletionProtectedError(skillId, references, 'referenced')
+    }
+  }
+
+  async deleteSpecialist(request: SpecialistDeleteRequest): Promise<SpecialistDeleteResult> {
+    if (
+      !request ||
+      typeof request.id !== 'string' ||
+      !request.id.trim() ||
+      !Number.isInteger(request.expectedRevision) ||
+      request.expectedRevision < 1 ||
+      !Array.isArray(request.deleteSkillIds) ||
+      request.deleteSkillIds.some((id) => typeof id !== 'string')
+    ) {
+      return { status: 'failed', code: 'protected-skill' }
+    }
+    const previewed = this.deletePreviews.get(request.id)
+    let live: SpecialistDeletePreview
+    try {
+      live = await this.previewSpecialistDelete({ id: request.id })
+    } catch {
+      return { status: 'failed', code: 'protected-target' }
+    }
+    if (live.expectedRevision !== request.expectedRevision) {
+      return { status: 'failed', code: 'revision-conflict' }
+    }
+    const selected = [...new Set(request.deleteSkillIds)]
+    const liveDeletable = new Set(
+      live.skills.filter((skill) => skill.deletable).map((skill) => skill.id)
+    )
+    const previewedDeletable = new Set(
+      previewed?.skills.filter((skill) => skill.deletable).map((skill) => skill.id) ?? []
+    )
+    const protectedSelection = selected.find((id) => !liveDeletable.has(id))
+    if (protectedSelection) {
+      return {
+        status: 'failed',
+        code: previewedDeletable.has(protectedSelection) ? 'stale-preview' : 'protected-skill'
+      }
+    }
+    this.deletePreviews.delete(request.id)
+    try {
+      await this.transaction.deleteSpecialist(request.id, request.expectedRevision, selected)
+    } catch (error) {
+      return {
+        status: 'failed',
+        code:
+          error instanceof SpecialistPackageRecoveryError
+            ? 'recovery-failed'
+            : error instanceof SpecialistPackageRevisionConflictError
+              ? 'revision-conflict'
+              : error instanceof SpecialistPackageRollbackError
+                ? 'rollback-failed'
+                : 'commit-failed'
+      }
+    }
+    try {
+      this.options.onCommitted?.()
+    } catch {
+      log.warn('post-delete Specialist catalog refresh failed', {
+        code: 'package-delete-refresh-failed',
+        specialistId: request.id
+      })
+    }
+    return { status: 'deleted' }
   }
 
   async preview(archiveBytes: Uint8Array): Promise<SpecialistPackageCandidatePreview> {
@@ -479,5 +657,6 @@ export class SpecialistPackageService {
 
   dispose(): void {
     this.candidates.clear()
+    this.deletePreviews.clear()
   }
 }

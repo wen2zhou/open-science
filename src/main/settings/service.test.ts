@@ -3571,6 +3571,23 @@ describe('SettingsService: skills', () => {
     expect(skills.map((skill) => skill.id)).toEqual(['demo'])
   })
 
+  it('runs the shared live-reference guard before direct Skill deletion', async () => {
+    const service = await createSkillService()
+    await service.createSkill({ name: 'My Skill', description: 'Mine.', body: '# Mine' })
+    const guard = vi.fn().mockRejectedValue(
+      Object.assign(new Error('Skill is referenced by specialist-1.'), {
+        code: 'protected-skill'
+      })
+    )
+    service.setSkillDeletionGuard(guard)
+
+    await expect(service.deleteSkill({ id: 'personal-my-skill' })).rejects.toMatchObject({
+      code: 'protected-skill'
+    })
+    expect(guard).toHaveBeenCalledWith('personal-my-skill')
+    await expect(service.getSkillDetail('personal-my-skill')).resolves.toBeDefined()
+  })
+
   it('creates with a custom slug and reconciles references reported by the detail view', async () => {
     const service = await createSkillService()
     const b64 = (text: string): string => Buffer.from(text).toString('base64')

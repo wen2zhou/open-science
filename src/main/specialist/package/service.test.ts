@@ -6,7 +6,12 @@ import { join } from 'node:path'
 import { strFromU8, unzipSync, zipSync } from 'fflate'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { SpecialistPackageCatalogSnapshot } from '../../../shared/specialist-package'
+import type {
+  SpecialistPackageCatalogSnapshot,
+  SpecialistPackageSkillPlan
+} from '../../../shared/specialist-package'
+import { UserSkillSpecialistPackageAdapter } from '../../skills/specialist-package-adapter'
+import { UserSkillRepository } from '../../skills/user-skill-repository'
 import { SpecialistRepository } from '../repository'
 import { ProfileService } from '../service'
 import { SpecialistPackageService } from './service'
@@ -78,6 +83,20 @@ const bundledZip = (): Uint8Array =>
     ),
     'skills/analysis-tools/scripts/run.sh': encoder.encode('exit 99')
   })
+
+const deletionSkillPlan = (id: string): SpecialistPackageSkillPlan => ({
+  id,
+  version: '1.0.0',
+  disposition: 'install',
+  files: ['SKILL.md'],
+  contentHash: id.padEnd(64, 'a').slice(0, 64),
+  filesToInstall: [
+    {
+      path: 'SKILL.md',
+      bytes: encoder.encode(`---\nname: ${id}\ndescription: ${id}\n---\n${id}`)
+    }
+  ]
+})
 
 let storageDir: string
 
@@ -888,5 +907,373 @@ describe('SpecialistPackageService', () => {
     await expect(recoveredProfiles.getById(existing.id)).resolves.toBeDefined()
     await expect(recoveredProfiles.getById('partial-specialist')).rejects.toThrow(/not found/i)
     await expect(recoveredProfiles.getById('research-synth')).resolves.toBeDefined()
+  })
+
+  it('previews exclusive owned Skills separately from every protected relationship', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    await repository.insert({
+      id: 'research-synth',
+      name: 'Research Synthesizer',
+      description: '',
+      systemPrompt: 'Private instructions.',
+      enabled: true,
+      capabilityMode: 'selected',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: {
+        skillIds: [
+          'exclusive',
+          'builtin-tool',
+          'standalone-tool',
+          'shared-tool',
+          'referenced-tool'
+        ],
+        connectorIds: [],
+        connectorTools: []
+      },
+      revision: 7,
+      packageVersion: '1.0.0',
+      origin: 'imported',
+      ownedSkillIds: ['exclusive', 'standalone-tool', 'shared-tool', 'referenced-tool']
+    })
+    await repository.insert({
+      id: 'other-specialist',
+      name: 'Other Specialist',
+      description: '',
+      systemPrompt: '',
+      enabled: true,
+      capabilityMode: 'selected',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: { skillIds: ['referenced-tool'], connectorIds: [], connectorTools: [] },
+      revision: 1,
+      packageVersion: '0.1.0',
+      origin: 'local',
+      ownedSkillIds: ['shared-tool']
+    })
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => ({
+        ...catalog,
+        skills: [
+          { id: 'exclusive', builtin: false, standalone: false, ownerIds: ['research-synth'] },
+          { id: 'builtin-tool', builtin: true },
+          {
+            id: 'standalone-tool',
+            builtin: false,
+            standalone: true,
+            ownerIds: ['research-synth']
+          },
+          {
+            id: 'shared-tool',
+            builtin: false,
+            standalone: false,
+            ownerIds: ['research-synth', 'other-specialist']
+          },
+          {
+            id: 'referenced-tool',
+            builtin: false,
+            standalone: false,
+            ownerIds: ['research-synth']
+          }
+        ]
+      })
+    })
+
+    await expect(service.previewSpecialistDelete({ id: 'research-synth' })).resolves.toEqual({
+      specialistId: 'research-synth',
+      specialistName: 'Research Synthesizer',
+      expectedRevision: 7,
+      skills: [
+        {
+          id: 'builtin-tool',
+          kind: 'builtin',
+          deletable: false,
+          reasons: [{ code: 'builtin', specialistIds: [] }]
+        },
+        { id: 'exclusive', kind: 'owned-exclusive', deletable: true, reasons: [] },
+        {
+          id: 'referenced-tool',
+          kind: 'referenced',
+          deletable: false,
+          reasons: [{ code: 'referenced', specialistIds: ['other-specialist'] }]
+        },
+        {
+          id: 'shared-tool',
+          kind: 'shared-owner',
+          deletable: false,
+          reasons: [{ code: 'shared-owner', specialistIds: ['other-specialist'] }]
+        },
+        {
+          id: 'standalone-tool',
+          kind: 'standalone',
+          deletable: false,
+          reasons: [{ code: 'standalone', specialistIds: [] }]
+        }
+      ]
+    })
+  })
+
+  it('atomically deletes selected exclusive Skills and makes retained owned Skills standalone', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    await repository.insert({
+      id: 'research-synth',
+      name: 'Research Synthesizer',
+      description: '',
+      systemPrompt: 'Private instructions.',
+      enabled: true,
+      capabilityMode: 'selected',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: {
+        skillIds: ['exclusive', 'retained'],
+        connectorIds: [],
+        connectorTools: []
+      },
+      revision: 3,
+      packageVersion: '1.0.0',
+      origin: 'imported',
+      ownedSkillIds: ['exclusive', 'retained']
+    })
+    const skillPort = new UserSkillSpecialistPackageAdapter(storageDir)
+    await skillPort.prepare('seed-skills', 'research-synth', [
+      deletionSkillPlan('exclusive'),
+      deletionSkillPlan('retained')
+    ])
+    await skillPort.commit('seed-skills')
+    await skillPort.recover('seed-skills', 'commit')
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      skillPort,
+      catalog: async () => ({
+        ...catalog,
+        skills: (await skillPort.snapshot()).map((skill) => ({ ...skill, builtin: false }))
+      })
+    })
+
+    await expect(
+      service.deleteSpecialist({
+        id: 'research-synth',
+        expectedRevision: 3,
+        deleteSkillIds: ['exclusive']
+      })
+    ).resolves.toEqual({ status: 'deleted' })
+    await expect(new ProfileService(repository).getById('research-synth')).rejects.toThrow(
+      /not found/i
+    )
+    await expect(new UserSkillRepository(storageDir).list()).resolves.toEqual([
+      expect.objectContaining({ id: 'retained' })
+    ])
+    await expect(skillPort.snapshot()).resolves.toEqual([
+      expect.objectContaining({ id: 'retained', standalone: true, ownerIds: [] })
+    ])
+  })
+
+  it('guards direct Skill deletion from live selected and full-access Specialist references', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    for (const specialist of [
+      {
+        id: 'selected-specialist',
+        name: 'Selected Specialist',
+        capabilityMode: 'selected' as const,
+        fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+        selectedCapabilities: {
+          skillIds: ['referenced-tool'],
+          connectorIds: [],
+          connectorTools: []
+        }
+      },
+      {
+        id: 'full-specialist',
+        name: 'Full Specialist',
+        capabilityMode: 'full' as const,
+        fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+        selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] }
+      }
+    ]) {
+      await repository.insert({
+        ...specialist,
+        description: '',
+        systemPrompt: '',
+        enabled: true,
+        revision: 1,
+        packageVersion: '0.1.0',
+        origin: 'local',
+        ownedSkillIds: []
+      })
+    }
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => ({
+        ...catalog,
+        skills: [{ id: 'referenced-tool', builtin: false, standalone: true, ownerIds: [] }]
+      })
+    })
+
+    await expect(service.assertSkillDeletionAllowed('referenced-tool')).rejects.toMatchObject({
+      code: 'protected-skill',
+      skillId: 'referenced-tool',
+      specialistIds: ['full-specialist', 'selected-specialist']
+    })
+  })
+
+  it('rejects a dangerous selected deletion when a concurrent Specialist adds a reference', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    await repository.insert({
+      id: 'owner',
+      name: 'Owner',
+      description: '',
+      systemPrompt: '',
+      enabled: true,
+      capabilityMode: 'selected',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: { skillIds: ['linked-skill'], connectorIds: [], connectorTools: [] },
+      revision: 2,
+      packageVersion: '1.0.0',
+      origin: 'imported',
+      ownedSkillIds: ['linked-skill']
+    })
+    await repository.insert({
+      id: 'concurrent',
+      name: 'Concurrent',
+      description: '',
+      systemPrompt: '',
+      enabled: true,
+      capabilityMode: 'selected',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+      revision: 1,
+      packageVersion: '0.1.0',
+      origin: 'local',
+      ownedSkillIds: []
+    })
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => ({
+        ...catalog,
+        skills: [
+          {
+            id: 'linked-skill',
+            builtin: false,
+            standalone: false,
+            ownerIds: ['owner']
+          }
+        ]
+      })
+    })
+    const preview = await service.previewSpecialistDelete({ id: 'owner' })
+    await new ProfileService(repository).update({
+      id: 'concurrent',
+      revision: 1,
+      selectedCapabilities: {
+        skillIds: ['linked-skill'],
+        connectorIds: [],
+        connectorTools: []
+      }
+    })
+
+    await expect(
+      service.deleteSpecialist({
+        id: 'owner',
+        expectedRevision: preview.expectedRevision,
+        deleteSkillIds: ['linked-skill']
+      })
+    ).resolves.toEqual({ status: 'failed', code: 'stale-preview' })
+    await expect(new ProfileService(repository).getById('owner')).resolves.toBeDefined()
+  })
+
+  it('keeps system prompts and paths out of the transaction journal', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    await repository.insert({
+      id: 'safe-owner',
+      name: 'Safe Owner',
+      description: '',
+      systemPrompt: 'DO-NOT-LOG-THIS-PROMPT',
+      enabled: true,
+      capabilityMode: 'selected',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+      revision: 1,
+      packageVersion: '0.1.0',
+      origin: 'local',
+      ownedSkillIds: []
+    })
+    let journal = ''
+    const skillPort: SpecialistPackageSkillPort = {
+      snapshot: async () => [],
+      prepare: async () => undefined,
+      prepareDeletion: async () => undefined,
+      commit: async () => {
+        journal = await import('node:fs/promises').then(({ readFile }) =>
+          readFile(join(storageDir, 'specialist-package-transaction.json'), 'utf8')
+        )
+      },
+      rollback: async () => undefined,
+      recover: async () => undefined
+    }
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      skillPort,
+      catalog: async () => catalog
+    })
+    const preview = await service.previewSpecialistDelete({ id: 'safe-owner' })
+    await service.deleteSpecialist({
+      id: 'safe-owner',
+      expectedRevision: preview.expectedRevision,
+      deleteSkillIds: []
+    })
+
+    expect(journal).not.toContain('DO-NOT-LOG-THIS-PROMPT')
+    expect(journal).not.toContain(storageDir)
+    expect(journal).not.toContain('systemPrompt')
+  })
+
+  it('rolls back prepared Skill deletion when the Specialist document swap fails', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    await repository.insert({
+      id: 'rollback-owner',
+      name: 'Rollback Owner',
+      description: '',
+      systemPrompt: '',
+      enabled: true,
+      capabilityMode: 'selected',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: { skillIds: ['rollback-skill'], connectorIds: [], connectorTools: [] },
+      revision: 1,
+      packageVersion: '1.0.0',
+      origin: 'imported',
+      ownedSkillIds: ['rollback-skill']
+    })
+    const skillPort = new UserSkillSpecialistPackageAdapter(storageDir)
+    await skillPort.prepare('seed-rollback', 'rollback-owner', [
+      deletionSkillPlan('rollback-skill')
+    ])
+    await skillPort.commit('seed-rollback')
+    await skillPort.recover('seed-rollback', 'commit')
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      skillPort,
+      catalog: async () => ({
+        ...catalog,
+        skills: (await skillPort.snapshot()).map((skill) => ({ ...skill, builtin: false }))
+      })
+    })
+    const preview = await service.previewSpecialistDelete({ id: 'rollback-owner' })
+    vi.spyOn(repository, 'replaceAll').mockRejectedValueOnce(new Error('durable write failed'))
+
+    await expect(
+      service.deleteSpecialist({
+        id: 'rollback-owner',
+        expectedRevision: preview.expectedRevision,
+        deleteSkillIds: ['rollback-skill']
+      })
+    ).resolves.toEqual({ status: 'failed', code: 'commit-failed' })
+    await expect(new ProfileService(repository).getById('rollback-owner')).resolves.toBeDefined()
+    await expect(skillPort.snapshot()).resolves.toEqual([
+      expect.objectContaining({ id: 'rollback-skill', ownerIds: ['rollback-owner'] })
+    ])
   })
 })

@@ -35,6 +35,10 @@ import { useSettingsStore } from '@/stores/settings-store'
 import { useSpecialistStore } from '@/stores/specialist-store'
 import type { CreateSpecialistInput } from '../../../../shared/specialist'
 import { specialistPackageReportFromPreview } from '../../../../shared/specialist-package'
+import type {
+  SpecialistDeletePreview,
+  SpecialistDeleteResult
+} from '../../../../shared/specialist-package'
 import { SpecialistEditor } from './SpecialistEditor'
 import { SpecialistAvatar } from './specialist-avatar'
 
@@ -72,6 +76,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const setEnabled = useSpecialistStore((s) => s.setEnabled)
   const createSpecialist = useSpecialistStore((s) => s.create)
   const updateSpecialist = useSpecialistStore((s) => s.update)
+  const previewSpecialistDelete = useSpecialistStore((s) => s.previewDelete)
   const deleteSpecialist = useSpecialistStore((s) => s.delete)
   const duplicateSpecialist = useSpecialistStore((s) => s.duplicate)
   const packagePreview = useSpecialistStore((s) => s.packagePreview)
@@ -91,7 +96,9 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     id: string
     revision: number
     name: string
+    preview: SpecialistDeletePreview
   } | null>(null)
+  const [deleteSkillIds, setDeleteSkillIds] = useState<Set<string>>(new Set())
   const [deleteError, setDeleteError] = useState<string | undefined>()
   const [templateSaving, setTemplateSaving] = useState(false)
   const [templateSaved, setTemplateSaved] = useState(false)
@@ -1107,13 +1114,22 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               className="gap-2 text-xs text-destructive"
-                              onSelect={() =>
-                                setDeletingItem({
-                                  id: item.id,
-                                  revision: item.revision,
-                                  name: item.displayName ?? item.name
-                                })
-                              }
+                              onSelect={() => {
+                                setDeleteError(undefined)
+                                setDeleteSkillIds(new Set())
+                                void previewSpecialistDelete(item.id)
+                                  .then((preview) =>
+                                    setDeletingItem({
+                                      id: item.id,
+                                      revision: preview.expectedRevision,
+                                      name: item.displayName ?? item.name,
+                                      preview
+                                    })
+                                  )
+                                  .catch(() =>
+                                    setDeleteError('Could not load live Skill relationships.')
+                                  )
+                              }}
                             >
                               <Trash2 className="size-3.5" aria-hidden="true" /> Delete
                             </DropdownMenuItem>
@@ -1212,9 +1228,56 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
               Delete {deletingItem?.name}?
             </AlertDialog.Title>
             <AlertDialog.Description className={dialogDescriptionClassName}>
-              This will permanently remove this specialist and all its configurations. This action
-              cannot be undone.
+              Choose linked Skills to delete. Eligible Skills are never selected automatically.
+              Retained owned Skills become standalone; shared owners and references are preserved.
             </AlertDialog.Description>
+            <div className="mt-4 max-h-72 overflow-y-auto rounded-lg border border-border px-3">
+              {deletingItem?.preview.skills.length ? (
+                deletingItem.preview.skills.map((skill) => {
+                  const reasonText =
+                    skill.reasons
+                      .map((reason) =>
+                        reason.code === 'builtin'
+                          ? 'Built-in Skill content is managed by the app.'
+                          : reason.code === 'standalone'
+                            ? 'Pre-existing standalone Skill.'
+                            : reason.code === 'shared-owner'
+                              ? `Owned by ${reason.specialistIds.join(', ')}.`
+                              : `Referenced by ${reason.specialistIds.join(', ')}.`
+                      )
+                      .join(' ') || 'Exclusive owned Skill; optional deletion.'
+                  return (
+                    <label
+                      key={skill.id}
+                      className="flex items-start gap-3 border-b border-border py-3 last:border-b-0"
+                    >
+                      <input
+                        type="checkbox"
+                        className="mt-0.5 size-4"
+                        disabled={!skill.deletable}
+                        checked={deleteSkillIds.has(skill.id)}
+                        onChange={(event) =>
+                          setDeleteSkillIds((current) => {
+                            const next = new Set(current)
+                            if (event.target.checked) next.add(skill.id)
+                            else next.delete(skill.id)
+                            return next
+                          })
+                        }
+                      />
+                      <span className="min-w-0">
+                        <span className="block text-sm font-medium text-foreground">
+                          {skill.id}
+                        </span>
+                        <span className="block text-xs text-muted-foreground">{reasonText}</span>
+                      </span>
+                    </label>
+                  )
+                })
+              ) : (
+                <p className="py-3 text-xs text-muted-foreground">No linked Skills.</p>
+              )}
+            </div>
             {deleteError ? (
               <p
                 role="alert"
@@ -1237,9 +1300,32 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                   const item = deletingItem
                   void (async () => {
                     try {
-                      await deleteSpecialist(item.id, item.revision)
-                      setDeletingItem(null)
-                      setDeleteError(undefined)
+                      const result: SpecialistDeleteResult = await deleteSpecialist(
+                        item.id,
+                        item.revision,
+                        [...deleteSkillIds].sort()
+                      )
+                      if (result.status === 'deleted') {
+                        await useSettingsStore.getState().loadSkills()
+                        setDeletingItem(null)
+                        setDeleteSkillIds(new Set())
+                        setDeleteError(undefined)
+                      } else {
+                        const messages: Record<typeof result.code, string> = {
+                          'stale-preview':
+                            'Skill relationships changed. Refresh the preview and review again.',
+                          'revision-conflict':
+                            'This Specialist changed. Refresh the preview and review again.',
+                          'protected-skill': 'A selected Skill is protected and cannot be deleted.',
+                          'protected-target': 'This Specialist is read-only and cannot be deleted.',
+                          'recovery-failed':
+                            'Storage recovery failed. No new deletion can continue safely.',
+                          'rollback-failed':
+                            'Deletion rollback failed. Restart before trying again.',
+                          'commit-failed': 'Deletion failed and was rolled back.'
+                        }
+                        setDeleteError(messages[result.code])
+                      }
                     } catch (err) {
                       // Reload the list so a retry picks up the current revision.
                       void load()
@@ -1252,7 +1338,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                   })()
                 }}
               >
-                Delete
+                Delete Specialist
               </Button>
             </div>
           </AlertDialog.Content>

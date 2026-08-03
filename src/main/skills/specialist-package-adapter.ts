@@ -1,5 +1,5 @@
 import { createHash } from 'node:crypto'
-import { lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 
 import type { SpecialistPackageSkillPlan } from '../../shared/specialist-package'
@@ -196,7 +196,7 @@ export class UserSkillSpecialistPackageAdapter implements SpecialistPackageSkill
       await mkdir(root, { recursive: true })
       await writeFile(
         join(root, 'transaction.json'),
-        `${JSON.stringify({ skillIds: skills.map((skill) => skill.id).sort() })}\n`,
+        `${JSON.stringify({ mode: 'install', skillIds: skills.map((skill) => skill.id).sort() })}\n`,
         { flag: 'wx' }
       )
       for (const skill of skills) {
@@ -237,23 +237,91 @@ export class UserSkillSpecialistPackageAdapter implements SpecialistPackageSkill
     }
   }
 
+  async prepareDeletion(
+    transactionId: string,
+    specialistId: string,
+    ownedSkillIds: readonly string[],
+    deleteSkillIds: readonly string[]
+  ): Promise<void> {
+    if (!SAFE_SLUG.test(transactionId) || !SAFE_SLUG.test(specialistId)) {
+      throw new Error('Invalid package transaction identity.')
+    }
+    const affected = [...new Set(ownedSkillIds)].sort()
+    const deleting = new Set(deleteSkillIds)
+    if ([...deleting].some((id) => !affected.includes(id))) {
+      throw new Error('A selected Skill is not owned by the Specialist.')
+    }
+    const root = this.transactionDir(transactionId)
+    await rm(root, { recursive: true, force: true })
+    try {
+      await mkdir(root, { recursive: true })
+      await writeFile(
+        join(root, 'transaction.json'),
+        `${JSON.stringify({ mode: 'delete', skillIds: affected })}\n`,
+        { flag: 'wx' }
+      )
+      for (const id of affected) {
+        if (!SAFE_SLUG.test(id)) throw new Error('Invalid owned Skill ID.')
+        const live = await this.findSkillDirectory(id)
+        if (!live) {
+          if (deleting.has(id)) throw new Error(`Selected Skill ${id} is no longer installed.`)
+          continue
+        }
+        const metadata = await readMetadata(live)
+        if (!metadata || !metadata.ownerIds.includes(specialistId)) {
+          if (deleting.has(id)) throw new Error(`Selected Skill ${id} is no longer owned.`)
+          continue
+        }
+        if (deleting.has(id)) continue
+        const staging = join(root, 'staging', id)
+        await mkdir(dirname(staging), { recursive: true })
+        await cp(live, staging, { recursive: true, errorOnExist: true })
+        const ownerIds = metadata.ownerIds.filter((ownerId) => ownerId !== specialistId).sort()
+        await writeFile(
+          join(staging, SPECIALIST_PACKAGE_SKILL_METADATA),
+          `${JSON.stringify({
+            ...metadata,
+            ownerIds,
+            standalone: metadata.standalone || ownerIds.length === 0
+          })}\n`,
+          'utf8'
+        )
+      }
+    } catch (error) {
+      await rm(root, { recursive: true, force: true }).catch(() => undefined)
+      throw error
+    }
+  }
+
   async commit(transactionId: string): Promise<void> {
     const root = this.transactionDir(transactionId)
     const stagingRoot = join(root, 'staging')
-    let ids: string[] = []
+    const ids = new Set<string>()
     try {
-      ids = (await readdir(stagingRoot)).filter((id) => SAFE_SLUG.test(id)).sort()
+      const transaction = JSON.parse(await readFile(join(root, 'transaction.json'), 'utf8')) as {
+        skillIds?: unknown
+      }
+      if (Array.isArray(transaction.skillIds)) {
+        for (const id of transaction.skillIds) {
+          if (typeof id === 'string' && SAFE_SLUG.test(id)) ids.add(id)
+        }
+      }
     } catch {
-      return
+      // Staging evidence below remains authoritative for legacy transactions.
+    }
+    try {
+      for (const id of await readdir(stagingRoot)) if (SAFE_SLUG.test(id)) ids.add(id)
+    } catch {
+      // A delete-only transaction intentionally has no staging directory.
     }
     await mkdir(this.importedRoot, { recursive: true })
     await mkdir(join(root, 'backup'), { recursive: true })
-    for (const id of ids) {
+    for (const id of [...ids].sort()) {
       const live = join(this.importedRoot, id)
       const backup = join(root, 'backup', id)
       const staging = join(stagingRoot, id)
       if (await exists(live)) await rename(live, backup)
-      await rename(staging, live)
+      if (await exists(staging)) await rename(staging, live)
     }
   }
 
@@ -278,10 +346,13 @@ export class UserSkillSpecialistPackageAdapter implements SpecialistPackageSkill
     const stagingRoot = join(root, 'staging')
     const backupRoot = join(root, 'backup')
     const ids = new Set<string>()
+    let mode: 'install' | 'delete' = 'install'
     try {
       const transaction = JSON.parse(await readFile(join(root, 'transaction.json'), 'utf8')) as {
         skillIds?: unknown
+        mode?: unknown
       }
+      if (transaction.mode === 'delete') mode = 'delete'
       if (Array.isArray(transaction.skillIds)) {
         for (const id of transaction.skillIds)
           if (typeof id === 'string' && SAFE_SLUG.test(id)) ids.add(id)
@@ -305,7 +376,7 @@ export class UserSkillSpecialistPackageAdapter implements SpecialistPackageSkill
           await rm(live, { recursive: true, force: true })
           await mkdir(dirname(live), { recursive: true })
           await rename(backup, live)
-        } else if (!(await exists(staging))) {
+        } else if (mode !== 'delete' && !(await exists(staging))) {
           await rm(live, { recursive: true, force: true })
         }
       }
@@ -328,6 +399,23 @@ export class UserSkillSpecialistPackageAdapter implements SpecialistPackageSkill
   private transactionDir(transactionId: string): string {
     if (!SAFE_SLUG.test(transactionId)) throw new Error('Invalid package transaction identity.')
     return join(this.transactionRoot, transactionId)
+  }
+
+  private async findSkillDirectory(id: string): Promise<string | undefined> {
+    for (const source of ['imported', 'personal'] as const) {
+      const root = join(dirname(this.importedRoot), source)
+      let entries: string[] = []
+      try {
+        entries = await readdir(root)
+      } catch {
+        continue
+      }
+      for (const entry of entries.filter((candidate) => SAFE_SLUG.test(candidate)).sort()) {
+        const directory = join(root, entry)
+        if ((await readMetadata(directory))?.id === id) return directory
+      }
+    }
+    return undefined
   }
 }
 
