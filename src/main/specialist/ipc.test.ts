@@ -124,10 +124,13 @@ describe('specialist session IPC', () => {
           install,
           cancel: vi.fn(),
           dispose: vi.fn(),
-          report: vi.fn()
+          report: vi.fn(),
+          previewExport: vi.fn(),
+          export: vi.fn()
         },
         selectArchive: vi.fn().mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]) }),
-        saveReport: vi.fn()
+        saveReport: vi.fn(),
+        saveExport: vi.fn()
       }
     )
 
@@ -171,10 +174,13 @@ describe('specialist session IPC', () => {
           install: vi.fn(),
           cancel: vi.fn(),
           dispose: vi.fn(),
-          report: vi.fn().mockReturnValue(report)
+          report: vi.fn().mockReturnValue(report),
+          previewExport: vi.fn(),
+          export: vi.fn()
         },
         selectArchive: vi.fn(),
-        saveReport
+        saveReport,
+        saveExport: vi.fn()
       }
     )
 
@@ -192,5 +198,62 @@ describe('specialist session IPC', () => {
       })
     ).resolves.toEqual({ saved: false })
     expect(saveReport).toHaveBeenCalledOnce()
+  })
+
+  it('revalidates export in main and returns no archive bytes or absolute path to renderer', async () => {
+    handlers.clear()
+    const previewExport = vi.fn().mockResolvedValue({
+      specialistId: 'research-synth',
+      version: '1.3.0',
+      expectedRevision: 3,
+      skills: [],
+      diagnostics: [],
+      canExport: true
+    })
+    const exportArchive = vi.fn().mockResolvedValue({
+      fileName: 'research-synth-1.3.0.zip',
+      archiveBytes: new Uint8Array([1, 2, 3])
+    })
+    const saveExport = vi.fn().mockResolvedValue({ saved: true })
+    registerSpecialistIpcHandlers(
+      createProfileService(),
+      new SessionBindingService(createProfileService()),
+      vi.fn(),
+      undefined,
+      undefined,
+      undefined,
+      {
+        service: {
+          preview: vi.fn(),
+          previewOversizedArchive: vi.fn(),
+          install: vi.fn(),
+          cancel: vi.fn(),
+          dispose: vi.fn(),
+          report: vi.fn(),
+          previewExport,
+          export: exportArchive
+        },
+        selectArchive: vi.fn(),
+        saveReport: vi.fn(),
+        saveExport
+      }
+    )
+
+    await expect(
+      handlers.get(SPECIALIST_IPC.PREVIEW_EXPORT)?.(undefined, {
+        specialistId: 'research-synth'
+      })
+    ).resolves.toMatchObject({ specialistId: 'research-synth', canExport: true })
+    const result = await handlers.get(SPECIALIST_IPC.EXPORT)?.(undefined, {
+      specialistId: 'research-synth',
+      expectedRevision: 3,
+      includedSkillIds: []
+    })
+    expect(result).toEqual({ saved: true })
+    expect(saveExport).toHaveBeenCalledWith({
+      fileName: 'research-synth-1.3.0.zip',
+      archiveBytes: new Uint8Array([1, 2, 3])
+    })
+    expect(JSON.stringify(result)).not.toMatch(/archiveBytes|\/downloads/)
   })
 })

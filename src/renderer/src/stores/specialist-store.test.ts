@@ -9,7 +9,56 @@ const setSpecialistApi = (api: Partial<Window['api']['specialist']>): void => {
 }
 
 beforeEach(() => {
-  useSpecialistStore.setState({ items: [], isLoaded: false, packagePreview: undefined })
+  useSpecialistStore.setState({
+    items: [],
+    isLoaded: false,
+    packagePreview: undefined,
+    exportPreview: undefined
+  })
+})
+
+describe('specialist store package export', () => {
+  it('keeps selection renderer-safe and preserves the catalog when native save is cancelled', async () => {
+    const preview = {
+      specialistId: 'research-synth',
+      name: 'Research Synthesizer',
+      version: '1.3.0',
+      expectedRevision: 3,
+      skills: [
+        {
+          id: 'analysis-tools',
+          version: '1.2.3',
+          kind: 'owned' as const,
+          selected: true,
+          selectable: true
+        }
+      ],
+      diagnostics: [],
+      canExport: true
+    }
+    const exportSpecialist = vi.fn().mockResolvedValue({ saved: false })
+    setSpecialistApi({
+      previewExport: vi.fn().mockResolvedValue(preview),
+      exportSpecialist
+    })
+    useSpecialistStore.setState({
+      items: [{ kind: 'reviewer', id: 'reviewer' }],
+      isLoaded: true
+    })
+
+    await expect(useSpecialistStore.getState().previewExport('research-synth')).resolves.toEqual(
+      preview
+    )
+    await expect(
+      useSpecialistStore.getState().exportSpecialist(['analysis-tools'])
+    ).resolves.toEqual({ saved: false })
+    expect(exportSpecialist).toHaveBeenCalledWith({
+      specialistId: 'research-synth',
+      expectedRevision: 3,
+      includedSkillIds: ['analysis-tools']
+    })
+    expect(useSpecialistStore.getState().items).toEqual([{ kind: 'reviewer', id: 'reviewer' }])
+  })
 })
 
 describe('specialist store package import', () => {
