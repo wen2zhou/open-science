@@ -13,10 +13,15 @@ const unsafePath = (path: string): boolean =>
   path.includes('\\') ||
   path.split('/').some((segment) => segment === '..' || segment === '')
 
+const isMacOsMetadata = (path: string): boolean =>
+  path === '__MACOSX' || path.startsWith('__MACOSX/')
+
 const normalizedFiles = (
   archive: Record<string, Uint8Array>
 ): SpecialistPackageFile[] | undefined => {
-  const entries = Object.entries(archive).filter(([path]) => !path.endsWith('/'))
+  const entries = Object.entries(archive).filter(
+    ([path]) => !path.endsWith('/') && !isMacOsMetadata(path)
+  )
   if (entries.some(([path]) => unsafePath(path))) return undefined
   const rootManifest = entries.some(([path]) => path === 'manifest.json')
   const wrapperCandidates = [
