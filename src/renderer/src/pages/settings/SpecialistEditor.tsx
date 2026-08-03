@@ -485,6 +485,17 @@ const SpecialistEditor = ({
               <p className="mt-0.5 line-clamp-2 max-w-xl text-xs text-muted-foreground">
                 {editSpecialist.description || 'No description'}
               </p>
+              {editSpecialist.origin === 'imported' ? (
+                <div className="mt-2 text-xs text-muted-foreground">
+                  <strong className="text-foreground">Package provenance</strong>
+                  <span className="block">
+                    Imported · Original version {editSpecialist.packageVersion ?? '0.1.0'} ·{' '}
+                    {editSpecialist.modifiedSinceImport
+                      ? 'Modified after import'
+                      : 'Unchanged since import'}
+                  </span>
+                </div>
+              ) : null}
             </div>
           </div>
         ) : null}

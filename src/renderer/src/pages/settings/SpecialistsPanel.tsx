@@ -87,6 +87,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const [templateSaveError, setTemplateSaveError] = useState<string | undefined>()
   const [packageBusy, setPackageBusy] = useState(false)
   const [packageErrorCode, setPackageErrorCode] = useState<string | undefined>()
+  const [overwriteConfirmationOpen, setOverwriteConfirmationOpen] = useState(false)
 
   // Memoised so visibleCustomItems' memo can reference a stable value.
   const customItems = useMemo(() => items.filter((i) => i.kind === 'custom'), [items])
@@ -383,10 +384,13 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
             {packagePreview.overwrite ? (
               <p
                 role="alert"
-                className="rounded-lg border border-destructive/40 p-3 text-xs text-destructive"
+                className="rounded-lg border border-warning-100/50 bg-warning-100/10 p-3 text-xs"
               >
-                Existing custom Specialist {packagePreview.overwrite.id} requires overwrite
-                confirmation. Overwrite is not available in this release.
+                {packagePreview.overwrite.hasImportBaseline
+                  ? packagePreview.overwrite.modifiedSinceImport
+                    ? 'Modified after import. Local edits will be replaced.'
+                    : 'Unchanged since import.'
+                  : 'This locally created Specialist has no import baseline.'}
               </p>
             ) : null}
             {packageErrorCode ? (
@@ -406,8 +410,12 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                 type="button"
                 disabled={packageBusy || blocking || !packagePreview.installable}
                 onClick={() => {
+                  if (packagePreview.overwrite) {
+                    setOverwriteConfirmationOpen(true)
+                    return
+                  }
                   setPackageBusy(true)
-                  void installPackage()
+                  void installPackage(false)
                     .then((result) => {
                       if (result.status === 'installed') {
                         onNavigate({ kind: 'edit', id: result.specialist.id })
@@ -418,9 +426,94 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                     .finally(() => setPackageBusy(false))
                 }}
               >
-                Install Specialist
+                {packagePreview.overwrite ? 'Review overwrite' : 'Install Specialist'}
               </Button>
             </div>
+            {packagePreview.overwrite ? (
+              <AlertDialog.Root
+                open={overwriteConfirmationOpen}
+                onOpenChange={setOverwriteConfirmationOpen}
+              >
+                <AlertDialog.Portal>
+                  <AlertDialog.Overlay className={dialogOverlayClassName} />
+                  <AlertDialog.Content
+                    className={dialogPanelClassName('w-[min(520px,calc(100vw-2rem))]')}
+                  >
+                    <AlertDialog.Title className={dialogTitleClassName}>
+                      Local changes will be permanently replaced
+                    </AlertDialog.Title>
+                    <AlertDialog.Description className={dialogDescriptionClassName}>
+                      Current local edits are not recoverable after a successful overwrite. A failed
+                      atomic install preserves the current version.
+                    </AlertDialog.Description>
+                    <dl className="mt-4 grid grid-cols-2 gap-3 rounded-lg border border-border p-3 text-xs">
+                      <div>
+                        <dt className="text-muted-foreground">Current version</dt>
+                        <dd>{packagePreview.overwrite.currentVersion}</dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Incoming version</dt>
+                        <dd>
+                          {packagePreview.overwrite.incomingVersion}
+                          {packagePreview.diagnostics.some(
+                            (item) => item.code === 'specialist.overwrite-downgrade'
+                          )
+                            ? ' · downgrade'
+                            : ''}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Local status</dt>
+                        <dd>
+                          {packagePreview.overwrite.hasImportBaseline
+                            ? packagePreview.overwrite.modifiedSinceImport
+                              ? 'Modified after import'
+                              : 'Unchanged since import'
+                            : 'No import baseline'}
+                        </dd>
+                      </div>
+                      <div>
+                        <dt className="text-muted-foreground">Target</dt>
+                        <dd>Custom Specialist only</dd>
+                      </div>
+                    </dl>
+                    <Button
+                      type="button"
+                      variant="outline"
+                      className="mt-4"
+                      onClick={() => onNavigate({ kind: 'edit', id: packagePreview.overwrite!.id })}
+                    >
+                      Export current version first
+                    </Button>
+                    <div className="mt-6 flex justify-end gap-2">
+                      <AlertDialog.Cancel asChild>
+                        <Button type="button" variant="outline">
+                          Cancel
+                        </Button>
+                      </AlertDialog.Cancel>
+                      <Button
+                        type="button"
+                        variant="destructive"
+                        disabled={packageBusy}
+                        onClick={() => {
+                          setPackageBusy(true)
+                          void installPackage(true)
+                            .then((result) => {
+                              if (result.status === 'installed') {
+                                setOverwriteConfirmationOpen(false)
+                                onNavigate({ kind: 'edit', id: result.specialist.id })
+                              } else setPackageErrorCode(result.code)
+                            })
+                            .finally(() => setPackageBusy(false))
+                        }}
+                      >
+                        Overwrite and install
+                      </Button>
+                    </div>
+                  </AlertDialog.Content>
+                </AlertDialog.Portal>
+              </AlertDialog.Root>
+            ) : null}
           </div>
         )}
       </div>
@@ -633,7 +726,13 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                               {item.capabilityMode === 'full'
                                 ? 'Full access'
                                 : 'Selected capabilities'}
-                              {item.origin === 'imported' ? ' · Imported' : ''}
+                              {item.origin === 'imported'
+                                ? ` · Imported · Original version ${item.packageVersion ?? '0.1.0'} · ${
+                                    item.modifiedSinceImport
+                                      ? 'Modified after import'
+                                      : 'Unchanged since import'
+                                  }`
+                                : ''}
                             </span>
                           </div>
                         </button>

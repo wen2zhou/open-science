@@ -265,6 +265,35 @@ describe('validateSpecialistPackage', () => {
     })
   })
 
+  it('blocks a bundled Skill collision when the installed version or digest differs', () => {
+    const manifest = {
+      ...validManifest,
+      skills: {
+        ...validManifest.skills,
+        bundled: [{ id: 'analysis', version: '2.0.0', path: 'skills/analysis' }]
+      }
+    }
+    const result = validateSpecialistPackage(
+      [
+        ...files(manifest, validSpecialist),
+        { path: 'skills/analysis/SKILL.md', bytes: encoder.encode('# Analysis') }
+      ],
+      {
+        ...catalog,
+        skills: [{ id: 'analysis', version: '1.0.0', builtin: false, contentDigest: 'different' }]
+      },
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'dependency.bundled-skill-conflict',
+        relatedId: 'analysis'
+      })
+    )
+  })
+
   it('fails builtin conformance for bundled files, non-builtin dependencies, and protected IDs', () => {
     const manifest = {
       ...validManifest,

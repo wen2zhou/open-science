@@ -10,7 +10,14 @@ import type {
 import { SpecialistRepository } from '../repository'
 import { createLogger } from '../../logger'
 import { validateSpecialistZip } from './zip-adapter'
-import { SpecialistPackageRecoveryError, SpecialistPackageTransaction } from './transaction'
+import { compareSemver } from './semver'
+import { specialistPayloadContentHash } from './validator'
+import {
+  SpecialistPackageRecoveryError,
+  SpecialistPackageRevisionConflictError,
+  SpecialistPackageRollbackError,
+  SpecialistPackageTransaction
+} from './transaction'
 
 const CANDIDATE_TTL_MS = 10 * 60 * 1000
 const log = createLogger('specialist.package.service')
@@ -20,6 +27,8 @@ type Candidate = {
   expiresAt: number
   archiveDigest: string
   installable: boolean
+  archiveBytes: Uint8Array
+  overwrite?: { id: string; expectedRevision: number }
 }
 
 type SpecialistPackageServiceOptions = {
@@ -57,7 +66,8 @@ export class SpecialistPackageService {
     const token = this.token()
     const diagnostics = [...result.preview.diagnostics]
     let overwrite: SpecialistPackageCandidatePreview['overwrite']
-    let installable = result.preview.installable
+    const installable = result.preview.installable
+    let overwriteTarget: Candidate['overwrite']
     if (result.plan) {
       const existing = (await this.options.repository.getAll()).specialists.find(
         (specialist) => specialist.id === result.plan?.specialistId
@@ -65,27 +75,58 @@ export class SpecialistPackageService {
       if (existing) {
         overwrite = {
           id: existing.id,
+          target: 'custom',
           currentVersion: existing.packageVersion,
           incomingVersion: result.plan.packageVersion,
           modifiedSinceImport:
             existing.origin === 'imported' &&
-            existing.importBaseline?.contentDigest !== result.plan.contentHash
+            existing.importBaseline !== undefined &&
+            existing.importBaseline.contentDigest !== specialistPayloadContentHash(existing),
+          hasImportBaseline: existing.origin === 'imported' && existing.importBaseline !== undefined
         }
-        diagnostics.push({
-          severity: 'error',
-          code: 'specialist.overwrite-confirmation-required',
-          message:
-            'This custom Specialist already exists; overwrite is not enabled in this release.',
-          relatedId: existing.id
-        })
-        installable = false
+        overwriteTarget = { id: existing.id, expectedRevision: existing.revision }
+        const versionOrder = compareSemver(result.plan.packageVersion, existing.packageVersion)
+        if (versionOrder === 0)
+          diagnostics.push({
+            severity: 'warning',
+            code: 'specialist.overwrite-same-version',
+            message: 'The incoming package has the same version as the installed Specialist.',
+            relatedId: existing.id
+          })
+        if (versionOrder !== undefined && versionOrder < 0)
+          diagnostics.push({
+            severity: 'warning',
+            code: 'specialist.overwrite-downgrade',
+            message: 'The incoming package version is lower than the installed version.',
+            relatedId: existing.id
+          })
+        if (overwrite.modifiedSinceImport)
+          diagnostics.push({
+            severity: 'warning',
+            code: 'specialist.overwrite-local-modifications',
+            message: 'Local edits differ from the imported baseline and will be replaced.',
+            relatedId: existing.id
+          })
+        if (
+          versionOrder === 0 &&
+          existing.importBaseline &&
+          existing.importBaseline.contentDigest !== result.plan.contentHash
+        )
+          diagnostics.push({
+            severity: 'warning',
+            code: 'specialist.overwrite-content-without-version-bump',
+            message: 'Package content changed without increasing its version.',
+            relatedId: existing.id
+          })
       }
     }
     this.candidates.set(token, {
       plan: result.plan,
       expiresAt: this.now().getTime() + CANDIDATE_TTL_MS,
       archiveDigest: createHash('sha256').update(archiveBytes).digest('hex'),
-      installable
+      installable,
+      archiveBytes: Uint8Array.from(archiveBytes),
+      ...(overwriteTarget ? { overwrite: overwriteTarget } : {})
     })
     return {
       candidateToken: token,
@@ -100,34 +141,53 @@ export class SpecialistPackageService {
     if (
       !request ||
       typeof request !== 'object' ||
-      Object.keys(request).length !== 1 ||
+      Object.keys(request).some((key) => !['candidateToken', 'confirmOverwrite'].includes(key)) ||
       typeof request.candidateToken !== 'string' ||
-      !request.candidateToken
+      !request.candidateToken ||
+      (request.confirmOverwrite !== undefined && request.confirmOverwrite !== true)
     ) {
       return { status: 'failed', code: 'candidate-invalid' }
     }
     const candidate = this.candidates.get(request.candidateToken)
-    this.candidates.delete(request.candidateToken)
-    if (!candidate) return { status: 'failed', code: 'candidate-invalid' }
+    if (!candidate) return { status: 'failed', code: 'stale-candidate' }
     if (candidate.expiresAt <= this.now().getTime()) {
+      this.candidates.delete(request.candidateToken)
       return { status: 'failed', code: 'candidate-expired' }
     }
     if (!candidate.installable || !candidate.plan) {
       return { status: 'failed', code: 'candidate-not-installable' }
     }
+    if (candidate.overwrite && request.confirmOverwrite !== true) {
+      return { status: 'failed', code: 'overwrite-confirmation-required' }
+    }
+    this.candidates.delete(request.candidateToken)
     let specialist: Extract<SpecialistPackageInstallResult, { status: 'installed' }>['specialist']
     try {
       const catalog = await this.options.catalog()
+      const liveValidation = validateSpecialistZip(candidate.archiveBytes, catalog)
+      if (catalog.protectedSpecialistIds.includes(candidate.plan.specialistId)) {
+        return { status: 'failed', code: 'protected-target' }
+      }
+      if (!liveValidation.preview.installable || !liveValidation.plan)
+        return { status: 'failed', code: 'candidate-not-installable' }
       specialist = await this.transaction.install(
-        candidate.plan,
+        liveValidation.plan,
         this.now(),
         candidate.archiveDigest,
-        inferredAppRange(catalog.appVersion)
+        inferredAppRange(catalog.appVersion),
+        candidate.overwrite ? { expectedRevision: candidate.overwrite.expectedRevision } : undefined
       )
     } catch (error) {
       return {
         status: 'failed',
-        code: error instanceof SpecialistPackageRecoveryError ? 'recovery-failed' : 'commit-failed'
+        code:
+          error instanceof SpecialistPackageRecoveryError
+            ? 'recovery-failed'
+            : error instanceof SpecialistPackageRevisionConflictError
+              ? 'revision-conflict'
+              : error instanceof SpecialistPackageRollbackError
+                ? 'rollback-failed'
+                : 'commit-failed'
       }
     }
     try {

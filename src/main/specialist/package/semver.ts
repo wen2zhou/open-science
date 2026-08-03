@@ -43,6 +43,12 @@ const compare = (left: Version, right: Version): number => {
   return 0
 }
 
+export const compareSemver = (leftValue: string, rightValue: string): number | undefined => {
+  const left = parseVersion(leftValue)
+  const right = parseVersion(rightValue)
+  return left && right ? compare(left, right) : undefined
+}
+
 const satisfiesComparator = (version: Version, token: string): boolean | undefined => {
   if (token === '*' || /^x$/i.test(token)) return true
   const wildcard = /^(\d+)(?:\.(\d+|x|\*))?(?:\.(\d+|x|\*))?$/i.exec(token)

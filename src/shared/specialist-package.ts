@@ -65,7 +65,12 @@ export type SpecialistPackagePayload = {
 export type SpecialistPackageCatalogSnapshot = {
   appVersion: string
   builtinSkills: ReadonlyArray<{ id: string; appVersion: string; compatibility: string }>
-  skills: ReadonlyArray<{ id: string; version?: string; builtin: boolean }>
+  skills: ReadonlyArray<{
+    id: string
+    version?: string
+    builtin: boolean
+    contentDigest?: string
+  }>
   connectorIds: readonly string[]
   protectedSpecialistIds: readonly string[]
 }
@@ -93,13 +98,18 @@ export type SpecialistPackageCandidatePreview = SpecialistPackagePreview & {
   candidateToken: string
   overwrite?: {
     id: string
+    target: 'custom'
     currentVersion: string
     incomingVersion: string
     modifiedSinceImport: boolean
+    hasImportBaseline: boolean
   }
 }
 
-export type SpecialistPackageInstallRequest = { candidateToken: string }
+export type SpecialistPackageInstallRequest = {
+  candidateToken: string
+  confirmOverwrite?: true
+}
 
 export type SpecialistPackageInstallResult =
   | { status: 'installed'; specialist: import('./specialist').SpecialistProfileView }
@@ -108,8 +118,13 @@ export type SpecialistPackageInstallResult =
       code:
         | 'candidate-invalid'
         | 'candidate-expired'
+        | 'stale-candidate'
         | 'candidate-not-installable'
+        | 'overwrite-confirmation-required'
+        | 'revision-conflict'
+        | 'protected-target'
         | 'recovery-failed'
+        | 'rollback-failed'
         | 'commit-failed'
     }
 

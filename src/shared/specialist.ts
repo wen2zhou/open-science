@@ -206,6 +206,8 @@ export type SpecialistProfileView = {
   revision: number
   packageVersion?: string
   origin?: 'local' | 'imported'
+  // Derived from the current portable profile and importBaseline; never persisted.
+  modifiedSinceImport?: boolean
   ownedSkillIds?: string[]
   importBaseline?: {
     importedAt: string

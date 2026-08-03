@@ -298,6 +298,108 @@ describe('SpecialistsPanel', () => {
     expect(onNavigate).toHaveBeenCalledWith({ kind: 'edit', id: 'research-synth' })
   })
 
+  it('requires the approved destructive second confirmation for an overwrite', async () => {
+    const preview = {
+      candidateToken: 'overwrite-1',
+      summary: {
+        id: 'research-synth',
+        version: '1.3.0',
+        name: 'Research Synthesizer',
+        description: 'Incoming content.',
+        source: 'zip' as const,
+        bundledSkillIds: [],
+        requiredSkillIds: [],
+        builtinSkillIds: [],
+        connectorIds: []
+      },
+      diagnostics: [
+        {
+          severity: 'warning' as const,
+          code: 'specialist.overwrite-downgrade',
+          message: 'The incoming package version is lower than the installed version.'
+        }
+      ],
+      installable: true,
+      overwrite: {
+        id: 'research-synth',
+        target: 'custom' as const,
+        currentVersion: '1.4.0',
+        incomingVersion: '1.3.0',
+        modifiedSinceImport: true,
+        hasImportBaseline: true
+      }
+    }
+    const installPackage = vi.fn().mockResolvedValue({
+      status: 'installed',
+      specialist: { id: 'research-synth' }
+    })
+    const onNavigate = vi.fn()
+    useSpecialistStore.setState({ packagePreview: preview, installPackage })
+
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'import' }} onNavigate={onNavigate} />)
+    })
+    expect(document.body.textContent).toContain('Review overwrite')
+    expect(installPackage).not.toHaveBeenCalled()
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Review overwrite')
+        ?.click()
+    })
+
+    expect(document.body.textContent).toContain('Local changes will be permanently replaced')
+    expect(document.body.textContent).toContain('Current local edits are not recoverable')
+    expect(document.body.textContent).toContain('Current version1.4.0')
+    expect(document.body.textContent).toContain('Incoming version1.3.0 · downgrade')
+    expect(document.body.textContent).toContain('Modified after import')
+    expect(document.body.textContent).toContain('Export current version first')
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Overwrite and install')
+        ?.click()
+    })
+    expect(installPackage).toHaveBeenCalledWith(true)
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'edit', id: 'research-synth' })
+  })
+
+  it('shows imported version and derived modification provenance in list and detail', async () => {
+    const imported: SpecialistListItem = {
+      ...(specialistItems[0] as Extract<SpecialistListItem, { kind: 'custom' }>),
+      kind: 'custom',
+      id: 'research-synth',
+      origin: 'imported',
+      packageVersion: '1.2.0',
+      modifiedSinceImport: true,
+      importBaseline: {
+        importedAt: '2026-08-03T10:00:00.000Z',
+        archiveDigest: 'a'.repeat(64),
+        contentDigest: 'b'.repeat(64),
+        requiresApp: '>=0.9.2 <1.0.0'
+      }
+    }
+    useSpecialistStore.setState({ items: [imported, { kind: 'reviewer', id: 'reviewer' }] })
+    ;(window.api.specialist.list as ReturnType<typeof vi.fn>).mockResolvedValue([
+      imported,
+      { kind: 'reviewer', id: 'reviewer' }
+    ])
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={vi.fn()} />)
+    })
+    expect(document.body.textContent).toContain(
+      'Imported · Original version 1.2.0 · Modified after import'
+    )
+
+    await act(async () => {
+      root.render(
+        <SpecialistsPanel view={{ kind: 'edit', id: 'research-synth' }} onNavigate={vi.fn()} />
+      )
+    })
+    expect(document.body.textContent).toContain('Package provenance')
+    expect(document.body.textContent).toContain('Original version')
+    expect(document.body.textContent).toContain('Modified after import')
+  })
+
   it('filters specialists by a user-entered search term', async () => {
     await act(async () => {
       root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={vi.fn()} />)

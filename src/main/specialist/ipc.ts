@@ -42,9 +42,11 @@ type PackageImportIpc = {
 const isCandidateRequest = (request: unknown): request is SpecialistPackageInstallRequest =>
   typeof request === 'object' &&
   request !== null &&
-  Object.keys(request).length === 1 &&
+  Object.keys(request).every((key) => ['candidateToken', 'confirmOverwrite'].includes(key)) &&
   typeof (request as { candidateToken?: unknown }).candidateToken === 'string' &&
-  Boolean((request as { candidateToken: string }).candidateToken)
+  Boolean((request as { candidateToken: string }).candidateToken) &&
+  ((request as { confirmOverwrite?: unknown }).confirmOverwrite === undefined ||
+    (request as { confirmOverwrite?: unknown }).confirmOverwrite === true)
 
 // Broadcasts a catalog-changed event to all renderer windows.
 const broadcastCatalogChanged = (): void => {
