@@ -64,6 +64,27 @@ const specialistItems: SpecialistListItem[] = [
     selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
     revision: 1
   },
+  {
+    kind: 'builtin',
+    readonly: true,
+    version: '1.2.0',
+    id: 'builtin-curator',
+    name: 'BUILTIN_CURATOR',
+    displayName: 'Builtin Curator',
+    description: 'Curates repository evidence.',
+    systemPrompt: 'Do not expose this through catalog broadcasts.',
+    iconKey: 'microscope',
+    colorKey: 'teal',
+    enabled: true,
+    capabilityMode: 'selected',
+    fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+    selectedCapabilities: {
+      skillIds: ['literature-review'],
+      connectorIds: [],
+      connectorTools: []
+    },
+    revision: 0
+  },
   { kind: 'reviewer', id: 'reviewer' }
 ]
 
@@ -301,8 +322,39 @@ describe('SpecialistsPanel', () => {
       '[aria-label="Filter specialists by category"] [role="tab"]'
     )
     const labels = Array.from(tabs).map((tab) => tab.textContent ?? '')
-    // 2 custom + 1 built-in reviewer = 3 total
-    expect(labels).toEqual(['All(3)', 'Custom(2)', 'Built-in(1)'])
+    // 2 custom + 1 runnable builtin + Reviewer = 4 total
+    expect(labels).toEqual(['All(4)', 'Custom(2)', 'Built-in(2)'])
+  })
+
+  it('shows a runnable builtin as a read-only row and opens its approved detail view', async () => {
+    const onNavigate = vi.fn()
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={onNavigate} />)
+    })
+
+    const builtin = document.body.querySelector<HTMLButtonElement>(
+      '[aria-label="View Builtin Curator"]'
+    )
+    expect(builtin).not.toBeNull()
+    expect(document.body.querySelector('[aria-label="Toggle Builtin Curator"]')).toBeNull()
+    expect(document.body.querySelector('[aria-label="Actions for Builtin Curator"]')).toBeNull()
+    await act(async () => builtin!.click())
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'builtin', id: 'builtin-curator' })
+
+    await act(async () => {
+      root.render(
+        <SpecialistsPanel
+          view={{ kind: 'builtin', id: 'builtin-curator' }}
+          onNavigate={onNavigate}
+        />
+      )
+    })
+    expect(document.body.textContent).toContain('Builtin Curator')
+    expect(document.body.textContent).toContain('Built-in · Version 1.2.0')
+    expect(document.body.textContent).toContain('Read-only')
+    expect(document.body.textContent).toContain('literature-review')
+    expect(document.body.querySelector('input')).toBeNull()
+    expect(document.body.textContent).not.toMatch(/Duplicate|Export|Delete/)
   })
 
   it('filters the list to custom specialists when the Custom tab is clicked', async () => {

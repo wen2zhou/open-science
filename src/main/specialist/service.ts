@@ -4,6 +4,12 @@ import { createLogger } from '../logger'
 import { SpecialistRepository } from './repository'
 import type { StoredSpecialist } from './types'
 import type {
+  BuiltinSpecialistRegistryEntry,
+  BuiltinSpecialistRegistryResult,
+  PackageDiagnostic
+} from '../../shared/specialist-package'
+import type {
+  BuiltinSpecialistEntry,
   SpecialistProfileView,
   SpecialistListItem,
   CreateSpecialistInput,
@@ -80,6 +86,31 @@ const assertCapabilityConfigShape = (
 
 const log = createLogger('specialist.service')
 
+export class SpecialistReadonlyError extends Error {
+  readonly code = 'SPECIALIST_READ_ONLY' as const
+
+  constructor(
+    readonly targetKind: 'builtin' | 'reviewer',
+    readonly specialistId: string
+  ) {
+    super(
+      `${targetKind === 'reviewer' ? 'Reviewer' : `Builtin Specialist ${specialistId}`} is read-only.`
+    )
+    this.name = 'SpecialistReadonlyError'
+  }
+}
+
+export class BuiltinSpecialistConformanceError extends Error {
+  constructor(readonly diagnostics: readonly PackageDiagnostic[]) {
+    super(
+      `Builtin Specialist conformance failed: ${diagnostics
+        .map((diagnostic) => `${diagnostic.code}: ${diagnostic.message}`)
+        .join('; ')}`
+    )
+    this.name = 'BuiltinSpecialistConformanceError'
+  }
+}
+
 // ---------------------------------------------------------------------------
 // View projection
 // ---------------------------------------------------------------------------
@@ -148,8 +179,47 @@ const assertCreateInputShape = (input: CreateSpecialistInput): void => {
 // it to write directly to the repository.
 export class ProfileService {
   private readonly listeners: Set<() => void> = new Set()
+  private builtinEntriesPromise: Promise<readonly BuiltinSpecialistRegistryEntry[]> | undefined
 
-  constructor(private readonly repo: SpecialistRepository) {}
+  constructor(
+    private readonly repo: SpecialistRepository,
+    private readonly builtinRegistry?: { load(): Promise<BuiltinSpecialistRegistryResult> }
+  ) {}
+
+  private async builtinEntries(): Promise<readonly BuiltinSpecialistRegistryEntry[]> {
+    if (!this.builtinRegistry) return []
+    this.builtinEntriesPromise ??= this.builtinRegistry.load().then((result) => {
+      const errors = result.diagnostics.filter((diagnostic) => diagnostic.severity === 'error')
+      if (errors.length > 0) throw new BuiltinSpecialistConformanceError(errors)
+      return result.entries
+    })
+    return this.builtinEntriesPromise
+  }
+
+  private toBuiltinView(entry: BuiltinSpecialistRegistryEntry): BuiltinSpecialistEntry {
+    return { ...entry, revision: 0 }
+  }
+
+  async ensureBuiltinCatalogReady(): Promise<void> {
+    await this.builtinEntries()
+  }
+
+  private async assertMutableId(id: string): Promise<void> {
+    if (id === 'reviewer') throw new SpecialistReadonlyError('reviewer', id)
+    if ((await this.builtinEntries()).some((entry) => entry.id === id)) {
+      throw new SpecialistReadonlyError('builtin', id)
+    }
+  }
+
+  private async assertCreatableName(name: string): Promise<void> {
+    if (name.trim().toLowerCase() === 'reviewer') {
+      throw new SpecialistReadonlyError('reviewer', 'reviewer')
+    }
+    const builtin = (await this.builtinEntries()).find(
+      (entry) => entry.name.toLowerCase() === name.trim().toLowerCase()
+    )
+    if (builtin) throw new SpecialistReadonlyError('builtin', builtin.id)
+  }
 
   // Returns all custom specialists as views (no Reviewer, no Main Agent, no None).
   async list(): Promise<SpecialistProfileView[]> {
@@ -159,10 +229,29 @@ export class ProfileService {
 
   // Returns the full list for the Settings UI, including the built-in Reviewer placeholder.
   async listForSettings(): Promise<SpecialistListItem[]> {
-    const custom = await this.list()
+    const [custom, builtin] = await Promise.all([this.list(), this.builtinEntries()])
     const items: SpecialistListItem[] = custom.map((v) => ({ kind: 'custom' as const, ...v }))
+    items.push(...builtin.map((entry) => this.toBuiltinView(entry)))
     items.push({ kind: 'reviewer', id: 'reviewer' })
     return items
+  }
+
+  async resolveRunnableById(id: string): Promise<SpecialistProfileView> {
+    const custom = await this.list()
+    const customMatch = custom.find((profile) => profile.id === id)
+    if (customMatch) return customMatch
+    const builtin = (await this.builtinEntries()).find((entry) => entry.id === id)
+    if (builtin) return this.toBuiltinView(builtin)
+    throw new Error(`Runnable Specialist ${id} not found.`)
+  }
+
+  async resolveRunnableByName(name: string): Promise<SpecialistProfileView> {
+    const custom = await this.list()
+    const customMatch = custom.find((profile) => profile.name === name)
+    if (customMatch) return customMatch
+    const builtin = (await this.builtinEntries()).find((entry) => entry.name === name)
+    if (builtin) return this.toBuiltinView(builtin)
+    throw new Error(`Runnable Specialist "${name}" not found.`)
   }
 
   async getById(id: string): Promise<SpecialistProfileView> {
@@ -179,8 +268,14 @@ export class ProfileService {
     return toView(found)
   }
 
+  async resolveCustomMutationByName(name: string): Promise<SpecialistProfileView> {
+    await this.assertCreatableName(name)
+    return this.getByName(name)
+  }
+
   async create(input: CreateSpecialistInput): Promise<SpecialistProfileView> {
     assertCreateInputShape(input)
+    await this.assertCreatableName(input.name)
 
     const doc = await this.repo.getAll()
     const existingNames = doc.specialists.map((s) => s.name)
@@ -226,6 +321,7 @@ export class ProfileService {
       throw new Error('Specialist id must be a non-empty string.')
     }
     if (typeof enabled !== 'boolean') throw new Error('Enabled must be a boolean.')
+    await this.assertMutableId(id)
     const updatedDoc = await this.repo.setEnabled(id, enabled)
     this.notify()
     const found = updatedDoc.specialists.find((s) => s.id === id)
@@ -247,6 +343,7 @@ export class ProfileService {
     if (input.enabled !== undefined && typeof input.enabled !== 'boolean') {
       throw new Error('Enabled must be a boolean.')
     }
+    await this.assertMutableId(input.id)
     assertOptionalIdentityFieldShapes(input)
     assertCapabilityConfigShape(input)
 
@@ -304,6 +401,7 @@ export class ProfileService {
     name: string
     expectedRevision?: number
   }): Promise<SpecialistProfileView> {
+    await this.assertMutableId(input.id)
     // Use the same relaxed public-name validator as create() for consistency.
     const nameError = validateSpecialistPublicName(input.name)
     if (nameError) throw new Error(nameError)
@@ -322,11 +420,13 @@ export class ProfileService {
     ) {
       throw new Error('Expected revision must be a positive integer.')
     }
+    await this.assertMutableId(id)
     await this.repo.delete(id, expectedRevision)
     this.notify()
   }
 
   async duplicate(id: string): Promise<Omit<CreateSpecialistInput, 'name'> & { name: string }> {
+    await this.assertMutableId(id)
     const source = await this.getById(id)
     const names = new Set((await this.list()).map((profile) => profile.name))
     // Use the display name (which equals name in the single-name model) as the base.
@@ -359,6 +459,7 @@ export class ProfileService {
     value: string,
     attach: boolean
   ): Promise<SpecialistProfileView> {
+    await this.assertMutableId(id)
     const current = await this.getById(id)
     if (mode === 'full') {
       const config = structuredClone(current.fullAccess)
@@ -462,6 +563,9 @@ export class ProfileService {
 // Factory
 // ---------------------------------------------------------------------------
 
-export const createProfileService = (storageDir: string): ProfileService => {
-  return new ProfileService(new SpecialistRepository(storageDir))
+export const createProfileService = (
+  storageDir: string,
+  builtinRegistry?: { load(): Promise<BuiltinSpecialistRegistryResult> }
+): ProfileService => {
+  return new ProfileService(new SpecialistRepository(storageDir), builtinRegistry)
 }

@@ -221,8 +221,18 @@ export type ReviewerEntry = {
   id: 'reviewer'
 }
 
-// Union for the list — either a real profile or the reviewer placeholder.
-export type SpecialistListItem = ({ kind: 'custom' } & SpecialistProfileView) | ReviewerEntry
+export type BuiltinSpecialistEntry = {
+  kind: 'builtin'
+  readonly: true
+  version: string
+} & SpecialistProfileView
+
+// Exhaustive Settings/runtime catalog discriminant. Reviewer remains a placeholder, never a
+// runnable profile.
+export type SpecialistListItem =
+  | ({ kind: 'custom' } & SpecialistProfileView)
+  | BuiltinSpecialistEntry
+  | ReviewerEntry
 
 // Resolution of a session's specialist binding at send time (requires SpecialistProfileView above).
 // 'main'        — no binding, main agent is used.
