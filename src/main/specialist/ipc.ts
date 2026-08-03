@@ -23,7 +23,9 @@ import type {
   ContributionTemplateExportResult,
   SpecialistPackageCandidatePreview,
   SpecialistPackageInstallRequest,
-  SpecialistPackageInstallResult
+  SpecialistPackageInstallResult,
+  SpecialistPackageReport,
+  SpecialistPackageReportSaveResult
 } from '../../shared/specialist-package'
 import type { SpecialistPackageService } from './package/service'
 
@@ -35,8 +37,14 @@ type PersistSessionSpecialist = (
 ) => Promise<void>
 
 type PackageImportIpc = {
-  service: Pick<SpecialistPackageService, 'preview' | 'install' | 'cancel' | 'dispose'>
-  selectArchive: () => Promise<{ cancelled: true } | { bytes: Uint8Array }>
+  service: Pick<
+    SpecialistPackageService,
+    'preview' | 'previewOversizedArchive' | 'install' | 'cancel' | 'dispose' | 'report'
+  >
+  selectArchive: () => Promise<
+    { cancelled: true } | { bytes: Uint8Array } | { tooLarge: true; compressedBytes: number }
+  >
+  saveReport: (report: SpecialistPackageReport) => Promise<SpecialistPackageReportSaveResult>
 }
 
 const isCandidateRequest = (request: unknown): request is SpecialistPackageInstallRequest =>
@@ -118,7 +126,9 @@ export const registerSpecialistIpcHandlers = (
           event as { sender?: { once?: (name: string, listener: () => void) => void } }
         )?.sender
         sender?.once?.('destroyed', () => packageImport.service.dispose())
-        return packageImport.service.preview(selected.bytes)
+        return 'tooLarge' in selected
+          ? packageImport.service.previewOversizedArchive(selected.compressedBytes)
+          : packageImport.service.preview(selected.bytes)
       }
     )
 
@@ -135,6 +145,16 @@ export const registerSpecialistIpcHandlers = (
       async (_event, request: unknown): Promise<void> => {
         if (!isCandidateRequest(request)) throw new Error('Invalid Specialist package candidate.')
         packageImport.service.cancel(request.candidateToken)
+      }
+    )
+
+    ipcMainHandle(
+      SPECIALIST_IPC.SAVE_PACKAGE_REPORT,
+      async (_event, request: unknown): Promise<SpecialistPackageReportSaveResult> => {
+        if (!isCandidateRequest(request)) return { saved: false }
+        const report = packageImport.service.report(request.candidateToken)
+        if (!report) return { saved: false }
+        return packageImport.saveReport(report)
       }
     )
   }

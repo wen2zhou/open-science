@@ -5,13 +5,17 @@ import { join } from 'node:path'
 import { zipSync } from 'fflate'
 import { describe, expect, it } from 'vitest'
 
-import type { SpecialistPackageCatalogSnapshot } from '../../../shared/specialist-package'
+import {
+  SPECIALIST_PACKAGE_ARCHIVE_LIMITS,
+  type SpecialistPackageCatalogSnapshot
+} from '../../../shared/specialist-package'
 import { validateSpecialistDirectory } from './directory-adapter'
 import { validateSpecialistZip } from './zip-adapter'
 
 const fixtureRoot = join(import.meta.dirname, 'test-fixtures', 'valid')
 const invalidFixtureRoot = join(import.meta.dirname, 'test-fixtures', 'invalid')
 const multiErrorFixtureRoot = join(import.meta.dirname, 'test-fixtures', 'multi-error')
+const encoder = new TextEncoder()
 const catalog: SpecialistPackageCatalogSnapshot = {
   appVersion: '0.9.2',
   builtinSkills: [],
@@ -40,15 +44,158 @@ describe('Specialist package source adapters', () => {
 
     const result = validateSpecialistZip(zip, catalog)
 
-    expect(result.preview).toEqual({
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        code: 'package.symbolic-link-forbidden'
+      })
+    )
+  })
+
+  it('rejects an oversized compressed archive before attempting to unzip it', () => {
+    const actual = SPECIALIST_PACKAGE_ARCHIVE_LIMITS.compressedBytes + 1
+
+    const result = validateSpecialistZip(new Uint8Array(actual), catalog)
+
+    expect(result.preview).toMatchObject({
+      installable: false,
+      archive: {
+        compressedBytes: actual,
+        limits: SPECIALIST_PACKAGE_ARCHIVE_LIMITS
+      },
       diagnostics: [
-        expect.objectContaining({
+        {
           severity: 'error',
-          code: 'package.symbolic-link-forbidden'
-        })
-      ],
-      installable: false
+          code: 'package.archive-compressed-size-exceeded',
+          actual,
+          limit: SPECIALIST_PACKAGE_ARCHIVE_LIMITS.compressedBytes,
+          unit: 'bytes'
+        }
+      ]
     })
+  })
+
+  it('rejects an oversized entry from ZIP metadata before expanding it', () => {
+    const actual = SPECIALIST_PACKAGE_ARCHIVE_LIMITS.fileBytes + 1
+    const zip = zipSync({
+      'manifest.json': encoder.encode('{}'),
+      'specialist.json': encoder.encode('{}'),
+      'skills/large/reference.bin': [new Uint8Array(actual), { level: 0 }]
+    })
+
+    const result = validateSpecialistZip(zip, catalog)
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.archive).toMatchObject({ uncompressedBytes: actual + 4, fileCount: 3 })
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'package.archive-file-size-exceeded',
+        path: 'skills/large/reference.bin',
+        actual,
+        limit: SPECIALIST_PACKAGE_ARCHIVE_LIMITS.fileBytes,
+        unit: 'bytes'
+      })
+    )
+  })
+
+  it('blocks a symbolic-link ZIP entry without exposing its target', () => {
+    const zip = zipSync({
+      'manifest.json': encoder.encode('{}'),
+      'specialist.json': encoder.encode('{}'),
+      'skills/unsafe-link': [encoder.encode('/private/secret'), { os: 3, attrs: 0o120777 << 16 }]
+    })
+
+    const result = validateSpecialistZip(zip, catalog)
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        code: 'package.symbolic-link-forbidden',
+        path: 'skills/unsafe-link'
+      })
+    )
+    expect(JSON.stringify(result.preview)).not.toContain('/private/secret')
+  })
+
+  it('aggregates POSIX and Windows path violations and normalized duplicates', () => {
+    const zip = zipSync({
+      'manifest.json': encoder.encode('{}'),
+      'specialist.json': encoder.encode('{}'),
+      '/absolute.txt': encoder.encode('x'),
+      'C:\\drive.txt': encoder.encode('x'),
+      'folder\\backslash.txt': encoder.encode('x'),
+      '../traversal.txt': encoder.encode('x'),
+      'skills/Case.md': encoder.encode('x'),
+      'skills/case.md': encoder.encode('x')
+    })
+
+    const result = validateSpecialistZip(zip, catalog)
+    const codes = result.preview.diagnostics.map((item) => item.code)
+
+    expect(codes).toEqual(
+      expect.arrayContaining([
+        'package.archive-path-absolute',
+        'package.archive-path-drive',
+        'package.archive-path-backslash',
+        'package.archive-path-traversal',
+        'package.archive-path-duplicate'
+      ])
+    )
+    expect(result.preview.installable).toBe(false)
+    expect(result.plan).toBeUndefined()
+    expect(JSON.stringify(result.preview)).not.toContain('C:\\drive.txt')
+  })
+
+  it('accepts the file-count boundary and blocks the first file above it', () => {
+    const entries = Object.fromEntries(
+      Array.from({ length: SPECIALIST_PACKAGE_ARCHIVE_LIMITS.fileCount - 2 }, (_, index) => [
+        `skills/example/references/${index}.md`,
+        new Uint8Array()
+      ])
+    )
+    const base = {
+      'manifest.json': encoder.encode('{}'),
+      'specialist.json': encoder.encode('{}'),
+      ...entries
+    }
+    const atLimit = validateSpecialistZip(zipSync(base), catalog)
+    const aboveLimit = validateSpecialistZip(
+      zipSync({ ...base, 'skills/example/references/overflow.md': new Uint8Array() }),
+      catalog
+    )
+
+    expect(atLimit.preview.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: 'package.archive-file-count-exceeded' })
+    )
+    expect(aboveLimit.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'package.archive-file-count-exceeded',
+        actual: SPECIALIST_PACKAGE_ARCHIVE_LIMITS.fileCount + 1,
+        limit: SPECIALIST_PACKAGE_ARCHIVE_LIMITS.fileCount
+      })
+    )
+  })
+
+  it('blocks a highly compressible ZIP-bomb entry from expansion', () => {
+    const zip = zipSync({
+      'manifest.json': encoder.encode('{}'),
+      'specialist.json': encoder.encode('{}'),
+      'skills/example/references/bomb.txt': new Uint8Array(4 * 1024 * 1024)
+    })
+
+    const result = validateSpecialistZip(zip, catalog)
+
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'package.archive-compression-ratio-exceeded',
+        path: 'skills/example/references/bomb.txt',
+        limit: SPECIALIST_PACKAGE_ARCHIVE_LIMITS.compressionRatio,
+        unit: 'ratio'
+      })
+    )
+    expect(result.preview.installable).toBe(false)
   })
 
   it('feeds directory files and real ZIP bytes through the same validation core', async () => {

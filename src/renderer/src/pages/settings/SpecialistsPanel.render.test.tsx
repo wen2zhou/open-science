@@ -266,7 +266,20 @@ describe('SpecialistsPanel', () => {
           message: 'Archive metadata was ignored.'
         }
       ],
-      installable: true
+      installable: true,
+      archive: {
+        compressedBytes: 1024 * 1024,
+        uncompressedBytes: 2 * 1024 * 1024,
+        fileCount: 3,
+        limits: {
+          compressedBytes: 50 * 1024 * 1024,
+          uncompressedBytes: 200 * 1024 * 1024,
+          fileCount: 2000,
+          fileBytes: 25 * 1024 * 1024,
+          compressionRatio: 1000,
+          pathDepth: 32
+        }
+      }
     }
     const selectPackage = vi.fn().mockImplementation(async () => {
       useSpecialistStore.setState({ packagePreview: preview })
@@ -277,6 +290,10 @@ describe('SpecialistsPanel', () => {
       specialist: { id: 'research-synth' }
     })
     const cancelPackage = vi.fn()
+    const savePackageReport = vi.fn().mockResolvedValue({ saved: true })
+    window.api.specialist.savePackageReport = savePackageReport
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
     useSpecialistStore.setState({ selectPackage, installPackage, cancelPackage })
     const onNavigate = vi.fn()
 
@@ -305,6 +322,28 @@ describe('SpecialistsPanel', () => {
     expect(document.body.textContent).toContain('lab-notebook')
     expect(document.body.textContent).toContain('connector.unavailable')
     expect(document.body.textContent).toContain('package.metadata-noise-ignored')
+    expect(document.body.textContent).toContain('Warnings (1)')
+    expect(document.body.textContent).toContain('Information (1)')
+    expect(document.body.textContent).toContain('ID: lab-notebook')
+    expect(document.body.textContent).toContain('1 MB / 50 MB')
+    expect(document.body.textContent).toContain('2 MB / 200 MB')
+    expect(document.body.textContent).toContain('3 / 2000')
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('Copy report'))
+        ?.click()
+    })
+    expect(writeText).toHaveBeenCalledOnce()
+    expect(String(writeText.mock.calls[0]?.[0])).not.toContain('candidate-1')
+
+    await act(async () => {
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent?.includes('Download JSON'))
+        ?.click()
+    })
+    expect(savePackageReport).toHaveBeenCalledWith({ candidateToken: 'candidate-1' })
+    expect(document.body.textContent).toContain('Report saved')
 
     await act(async () => {
       Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))

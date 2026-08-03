@@ -129,6 +129,13 @@ describe('SpecialistPackageService', () => {
     expect(preview.summary?.skills).toEqual([
       expect.objectContaining({ id: 'analysis-tools', disposition: 'install' })
     ])
+    expect(preview.diagnostics.map((diagnostic) => diagnostic.code)).toEqual(
+      expect.arrayContaining([
+        'package.executable-content-present',
+        'skill.executable-content-present'
+      ])
+    )
+    expect(JSON.stringify(service.report(preview.candidateToken))).not.toContain('exit 99')
     await expect(
       service.install({ candidateToken: preview.candidateToken })
     ).resolves.toMatchObject({
@@ -175,6 +182,29 @@ describe('SpecialistPackageService', () => {
       status: 'installed',
       specialist: { ownedSkillIds: ['previously-owned', 'analysis-tools'], revision: 5 }
     })
+  })
+
+  it('exposes a candidate-bound report without the token, prompt, archive bytes, or source path', async () => {
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository: new SpecialistRepository(storageDir),
+      catalog: async () => catalog,
+      token: () => 'candidate-secret-token'
+    })
+
+    const preview = await service.preview(validZip())
+    const report = service.report(preview.candidateToken)
+
+    expect(report).toMatchObject({
+      schemaVersion: 1,
+      summary: { id: 'research-synth', version: '1.3.0' },
+      diagnostics: [],
+      installable: true
+    })
+    expect(JSON.stringify(report)).not.toMatch(
+      /candidate-secret-token|Private imported instructions|archiveBytes|\/private\//
+    )
+    expect(service.report('unknown-token')).toBeUndefined()
   })
 
   it('previews and explicitly confirms an atomic overwrite while preserving local enabled state', async () => {

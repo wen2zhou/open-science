@@ -34,6 +34,7 @@ import { useProjectStore } from '@/stores/project-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import { useSpecialistStore } from '@/stores/specialist-store'
 import type { CreateSpecialistInput } from '../../../../shared/specialist'
+import { specialistPackageReportFromPreview } from '../../../../shared/specialist-package'
 import { SpecialistEditor } from './SpecialistEditor'
 import { SpecialistAvatar } from './specialist-avatar'
 
@@ -52,6 +53,11 @@ const FILTER_LABELS: Record<CategoryFilter, string> = {
   custom: 'Custom',
   builtin: 'Built-in'
 }
+
+const formatBytes = (value: number): string =>
+  value >= 1024 * 1024
+    ? `${Number((value / (1024 * 1024)).toFixed(1))} MB`
+    : `${Number((value / 1024).toFixed(1))} KB`
 
 type SpecialistsPanelProps = {
   view: SpecialistsView
@@ -88,6 +94,7 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const [packageBusy, setPackageBusy] = useState(false)
   const [packageErrorCode, setPackageErrorCode] = useState<string | undefined>()
   const [overwriteConfirmationOpen, setOverwriteConfirmationOpen] = useState(false)
+  const [reportStatus, setReportStatus] = useState<string | undefined>()
 
   // Memoised so visibleCustomItems' memo can reference a stable value.
   const customItems = useMemo(() => items.filter((i) => i.kind === 'custom'), [items])
@@ -241,6 +248,13 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   if (view.kind === 'import') {
     const summary = packagePreview?.summary
     const blocking = packagePreview?.diagnostics.some((item) => item.severity === 'error') ?? false
+    const diagnosticsBySeverity = packagePreview
+      ? {
+          error: packagePreview.diagnostics.filter((item) => item.severity === 'error'),
+          warning: packagePreview.diagnostics.filter((item) => item.severity === 'warning'),
+          info: packagePreview.diagnostics.filter((item) => item.severity === 'info')
+        }
+      : { error: [], warning: [], info: [] }
     return (
       <div className="p-5">
         <div className="mb-5 flex items-start justify-between gap-4 border-b border-border pb-4">
@@ -386,25 +400,138 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
               </p>
             </section>
 
+            {packagePreview.archive ? (
+              <section className="rounded-xl border border-border p-4">
+                <h3 className="text-sm font-semibold">Archive limits</h3>
+                <dl className="mt-2 grid grid-cols-2 gap-x-4 gap-y-2 text-xs">
+                  <div>
+                    <dt className="text-muted-foreground">Compressed</dt>
+                    <dd>
+                      {formatBytes(packagePreview.archive.compressedBytes)} /{' '}
+                      {formatBytes(packagePreview.archive.limits.compressedBytes)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Uncompressed</dt>
+                    <dd>
+                      {formatBytes(packagePreview.archive.uncompressedBytes ?? 0)} /{' '}
+                      {formatBytes(packagePreview.archive.limits.uncompressedBytes)}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Files</dt>
+                    <dd>
+                      {packagePreview.archive.fileCount ?? 0} /{' '}
+                      {packagePreview.archive.limits.fileCount}
+                    </dd>
+                  </div>
+                  <div>
+                    <dt className="text-muted-foreground">Per file</dt>
+                    <dd>Up to {formatBytes(packagePreview.archive.limits.fileBytes)}</dd>
+                  </div>
+                </dl>
+              </section>
+            ) : null}
+
             <section className="rounded-xl border border-border p-4">
-              <h3 className="text-sm font-semibold">Diagnostics</h3>
+              <div className="flex items-center justify-between gap-2">
+                <h3 className="text-sm font-semibold">Diagnostics</h3>
+                <div className="flex gap-2">
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      const json = JSON.stringify(
+                        specialistPackageReportFromPreview(packagePreview),
+                        null,
+                        2
+                      )
+                      void navigator.clipboard.writeText(json).then(
+                        () => setReportStatus('Report copied'),
+                        () => setReportStatus('Could not copy report')
+                      )
+                    }}
+                  >
+                    <Copy data-icon="inline-start" aria-hidden="true" />
+                    Copy report
+                  </Button>
+                  <Button
+                    type="button"
+                    size="sm"
+                    variant="outline"
+                    onClick={() => {
+                      void window.api.specialist
+                        .savePackageReport({ candidateToken: packagePreview.candidateToken })
+                        .then((result) =>
+                          setReportStatus(result.saved ? 'Report saved' : undefined)
+                        )
+                        .catch(() => setReportStatus('Could not save report'))
+                    }}
+                  >
+                    <Download data-icon="inline-start" aria-hidden="true" />
+                    Download JSON
+                  </Button>
+                </div>
+              </div>
               {packagePreview.diagnostics.length ? (
-                <ul className="mt-2 space-y-2">
-                  {packagePreview.diagnostics.map((diagnostic, index) => (
-                    <li key={`${diagnostic.code}-${index}`} className="text-xs">
-                      <strong>
-                        {diagnostic.severity.toUpperCase()} · {diagnostic.code}
-                      </strong>
-                      <span className="block text-muted-foreground">
-                        {diagnostic.message}
-                        {diagnostic.relatedId ? ` · ${diagnostic.relatedId}` : ''}
-                      </span>
-                    </li>
-                  ))}
-                </ul>
+                <div className="mt-3 max-h-64 space-y-4 overflow-y-auto pr-2" tabIndex={0}>
+                  {(
+                    [
+                      ['error', 'Blocking errors'],
+                      ['warning', 'Warnings'],
+                      ['info', 'Information']
+                    ] as const
+                  ).map(([severity, label]) =>
+                    diagnosticsBySeverity[severity].length ? (
+                      <div key={severity}>
+                        <h4 className="text-xs font-semibold">
+                          {label} ({diagnosticsBySeverity[severity].length})
+                        </h4>
+                        <ul className="mt-1 space-y-2">
+                          {diagnosticsBySeverity[severity].map((diagnostic, index) => (
+                            <li
+                              key={`${diagnostic.code}-${index}`}
+                              className="rounded-md bg-muted/40 p-2 text-xs"
+                            >
+                              <strong>{diagnostic.code}</strong>
+                              <span className="block text-muted-foreground">
+                                {diagnostic.message}
+                              </span>
+                              {diagnostic.path || diagnostic.relatedId ? (
+                                <span className="block text-muted-foreground">
+                                  {diagnostic.path ? `Path: ${diagnostic.path}` : ''}
+                                  {diagnostic.path && diagnostic.relatedId ? ' · ' : ''}
+                                  {diagnostic.relatedId ? `ID: ${diagnostic.relatedId}` : ''}
+                                </span>
+                              ) : null}
+                              {diagnostic.actual !== undefined && diagnostic.limit !== undefined ? (
+                                <span className="block text-muted-foreground">
+                                  Actual:{' '}
+                                  {diagnostic.unit === 'bytes'
+                                    ? formatBytes(diagnostic.actual)
+                                    : diagnostic.actual}{' '}
+                                  · Limit:{' '}
+                                  {diagnostic.unit === 'bytes'
+                                    ? formatBytes(diagnostic.limit)
+                                    : diagnostic.limit}
+                                </span>
+                              ) : null}
+                            </li>
+                          ))}
+                        </ul>
+                      </div>
+                    ) : null
+                  )}
+                </div>
               ) : (
                 <p className="mt-1 text-xs text-muted-foreground">Validation passed.</p>
               )}
+              {reportStatus ? (
+                <p role="status" className="mt-2 text-xs text-muted-foreground">
+                  {reportStatus}
+                </p>
+              ) : null}
             </section>
 
             {packagePreview.overwrite ? (

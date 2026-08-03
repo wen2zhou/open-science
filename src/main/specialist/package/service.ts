@@ -1,11 +1,14 @@
 import { createHash, randomUUID } from 'node:crypto'
 
-import type {
-  SpecialistPackageCandidatePreview,
-  SpecialistPackageCatalogSnapshot,
-  SpecialistPackageInstallRequest,
-  SpecialistPackageInstallResult,
-  SpecialistPackageValidationPlan
+import {
+  SPECIALIST_PACKAGE_ARCHIVE_LIMITS,
+  specialistPackageReportFromPreview,
+  type SpecialistPackageReport,
+  type SpecialistPackageCandidatePreview,
+  type SpecialistPackageCatalogSnapshot,
+  type SpecialistPackageInstallRequest,
+  type SpecialistPackageInstallResult,
+  type SpecialistPackageValidationPlan
 } from '../../../shared/specialist-package'
 import { SpecialistRepository } from '../repository'
 import { createLogger } from '../../logger'
@@ -30,6 +33,7 @@ type Candidate = {
   installable: boolean
   archiveBytes: Uint8Array
   overwrite?: { id: string; expectedRevision: number }
+  report: SpecialistPackageReport
 }
 
 type SpecialistPackageServiceOptions = {
@@ -133,7 +137,8 @@ export class SpecialistPackageService {
       archiveDigest: createHash('sha256').update(archiveBytes).digest('hex'),
       installable,
       archiveBytes: Uint8Array.from(archiveBytes),
-      ...(overwriteTarget ? { overwrite: overwriteTarget } : {})
+      ...(overwriteTarget ? { overwrite: overwriteTarget } : {}),
+      report: specialistPackageReportFromPreview({ ...result.preview, diagnostics, installable })
     })
     return {
       candidateToken: token,
@@ -142,6 +147,43 @@ export class SpecialistPackageService {
       installable,
       ...(overwrite ? { overwrite } : {})
     }
+  }
+
+  async previewOversizedArchive(
+    compressedBytes: number
+  ): Promise<SpecialistPackageCandidatePreview> {
+    this.candidates.clear()
+    const token = this.token()
+    const preview = {
+      diagnostics: [
+        {
+          severity: 'error' as const,
+          code: 'package.archive-compressed-size-exceeded',
+          message: 'The compressed archive exceeds the safe preview limit.',
+          actual: compressedBytes,
+          limit: SPECIALIST_PACKAGE_ARCHIVE_LIMITS.compressedBytes,
+          unit: 'bytes' as const
+        }
+      ],
+      installable: false,
+      archive: {
+        compressedBytes,
+        limits: SPECIALIST_PACKAGE_ARCHIVE_LIMITS
+      }
+    }
+    this.candidates.set(token, {
+      expiresAt: this.now().getTime() + CANDIDATE_TTL_MS,
+      archiveDigest: '',
+      installable: false,
+      archiveBytes: new Uint8Array(),
+      report: specialistPackageReportFromPreview(preview)
+    })
+    return { candidateToken: token, ...preview }
+  }
+
+  report(candidateToken: unknown): SpecialistPackageReport | undefined {
+    if (typeof candidateToken !== 'string') return undefined
+    return this.candidates.get(candidateToken)?.report
   }
 
   async install(request: SpecialistPackageInstallRequest): Promise<SpecialistPackageInstallResult> {

@@ -13,6 +13,7 @@ export const SPECIALIST_IPC = {
   SELECT_PACKAGE: 'specialist:package-select',
   INSTALL_PACKAGE: 'specialist:package-install',
   CANCEL_PACKAGE: 'specialist:package-cancel',
+  SAVE_PACKAGE_REPORT: 'specialist:package-report-save',
   CATALOG_CHANGED: 'specialist:catalog-changed',
   // Session switching (issue 07): per-session mutable binding.
   SET_SESSION_SPECIALIST: 'specialist:set-session-specialist',

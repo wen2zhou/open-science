@@ -6,11 +6,29 @@ import type {
 
 export const SPECIALIST_PACKAGE_SCHEMA_VERSION = 1 as const
 export const LEGACY_UNVERSIONED_SKILL_VERSION = '0.1.0' as const
+export type SpecialistPackageArchiveLimits = {
+  compressedBytes: number
+  uncompressedBytes: number
+  fileCount: number
+  fileBytes: number
+  compressionRatio: number
+  pathDepth: number
+}
+
+export const SPECIALIST_PACKAGE_ARCHIVE_LIMITS: SpecialistPackageArchiveLimits = {
+  compressedBytes: 50 * 1024 * 1024,
+  uncompressedBytes: 200 * 1024 * 1024,
+  fileCount: 2_000,
+  fileBytes: 25 * 1024 * 1024,
+  compressionRatio: 1_000,
+  pathDepth: 32
+}
 
 export type SpecialistPackageSource = 'zip' | 'directory' | 'builtin'
 export type PackageDiagnosticSeverity = 'error' | 'warning' | 'info'
 
 export type ContributionTemplateExportResult = { saved: boolean }
+export type SpecialistPackageReportSaveResult = { saved: boolean; filePath?: string }
 
 export type PackageDiagnostic = {
   severity: PackageDiagnosticSeverity
@@ -18,6 +36,16 @@ export type PackageDiagnostic = {
   message: string
   path?: string
   relatedId?: string
+  actual?: number
+  limit?: number
+  unit?: 'bytes' | 'files' | 'ratio' | 'levels'
+}
+
+export type SpecialistPackageArchiveMetrics = {
+  compressedBytes: number
+  uncompressedBytes?: number
+  fileCount?: number
+  limits: SpecialistPackageArchiveLimits
 }
 
 export type SpecialistPackageBuiltinSkillDependency = {
@@ -113,7 +141,40 @@ export type SpecialistPackagePreview = {
   summary?: SpecialistPackageSummary
   diagnostics: readonly PackageDiagnostic[]
   installable: boolean
+  archive?: SpecialistPackageArchiveMetrics
 }
+
+export type SpecialistPackageReport = {
+  schemaVersion: 1
+  summary?: Pick<
+    SpecialistPackageSummary,
+    'id' | 'version' | 'name' | 'description' | 'source' | 'requiresApp'
+  >
+  diagnostics: readonly PackageDiagnostic[]
+  installable: boolean
+  archive?: SpecialistPackageArchiveMetrics
+}
+
+export const specialistPackageReportFromPreview = (
+  preview: SpecialistPackagePreview
+): SpecialistPackageReport => ({
+  schemaVersion: 1,
+  ...(preview.summary
+    ? {
+        summary: {
+          id: preview.summary.id,
+          version: preview.summary.version,
+          name: preview.summary.name,
+          description: preview.summary.description,
+          source: preview.summary.source,
+          ...(preview.summary.requiresApp ? { requiresApp: preview.summary.requiresApp } : {})
+        }
+      }
+    : {}),
+  diagnostics: preview.diagnostics,
+  installable: preview.installable,
+  ...(preview.archive ? { archive: preview.archive } : {})
+})
 
 export type SpecialistPackageCandidatePreview = SpecialistPackagePreview & {
   candidateToken: string
