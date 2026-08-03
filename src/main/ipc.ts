@@ -125,6 +125,7 @@ import { SpecialistRepository } from './specialist/repository'
 import { BuiltinSpecialistRegistry } from './specialist/builtin-registry'
 import { SpecialistPackageService } from './specialist/package/service'
 import {
+  saveSpecialistExport,
   saveSpecialistPackageReport,
   selectSpecialistArchive
 } from './specialist/package/electron-adapter'
@@ -1189,6 +1190,14 @@ const createApplicationModules = async (
               writeFile: (filePath, contents) => writeFile(filePath, contents, 'utf8')
             },
             report
+          ),
+        saveExport: (archive) =>
+          saveSpecialistExport(
+            {
+              showSaveDialog: (options) => dialog.showSaveDialog(options),
+              writeFile: (filePath, bytes) => writeFile(filePath, bytes)
+            },
+            archive
           )
       }
     )

@@ -1,8 +1,30 @@
 import {
   SPECIALIST_PACKAGE_ARCHIVE_LIMITS,
+  type SpecialistExportSaveResult,
   type SpecialistPackageReport,
   type SpecialistPackageReportSaveResult
 } from '../../../shared/specialist-package'
+
+type SpecialistExportDialog = {
+  showSaveDialog: (options: {
+    defaultPath: string
+    filters: [{ name: 'ZIP archive'; extensions: ['zip'] }]
+  }) => Promise<{ canceled: boolean; filePath?: string }>
+  writeFile: (path: string, bytes: Uint8Array) => Promise<unknown>
+}
+
+export const saveSpecialistExport = async (
+  adapter: SpecialistExportDialog,
+  archive: { fileName: string; archiveBytes: Uint8Array }
+): Promise<SpecialistExportSaveResult> => {
+  const selected = await adapter.showSaveDialog({
+    defaultPath: archive.fileName,
+    filters: [{ name: 'ZIP archive', extensions: ['zip'] }]
+  })
+  if (selected.canceled || !selected.filePath) return { saved: false }
+  await adapter.writeFile(selected.filePath, archive.archiveBytes)
+  return { saved: true }
+}
 
 type SpecialistArchiveDialog = {
   showOpenDialog: (options: {

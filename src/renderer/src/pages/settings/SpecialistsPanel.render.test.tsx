@@ -120,6 +120,95 @@ afterEach(() => {
 })
 
 describe('SpecialistsPanel', () => {
+  it('offers Export ZIP only from a custom Specialist action menu', async () => {
+    const onNavigate = vi.fn()
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={onNavigate} />)
+    })
+    const actions = document.body.querySelector<HTMLButtonElement>(
+      '[aria-label="Actions for RNA Reviewer"]'
+    )
+    openRadixMenu(actions)
+    const exportItem = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    ).find((item) => item.textContent?.includes('Export ZIP'))
+    expect(exportItem).toBeDefined()
+    await act(async () => clickRadixMenuItem(exportItem))
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'export', id: 'rna-reviewer' })
+    expect(document.body.querySelector('[aria-label="Actions for Builtin Curator"]')).toBeNull()
+  })
+
+  it('matches approved export defaults, portability warning, and native-cancel state', async () => {
+    const preview = {
+      specialistId: 'rna-reviewer',
+      name: 'RNA Reviewer',
+      version: '0.1.0',
+      expectedRevision: 1,
+      canExport: true,
+      diagnostics: [
+        {
+          severity: 'warning' as const,
+          code: 'specialist.export-version-unchanged',
+          message: 'Content changed but the package version remains 0.1.0.'
+        }
+      ],
+      skills: [
+        {
+          id: 'document-reader',
+          version: '0.9.2',
+          kind: 'builtin' as const,
+          selected: true,
+          selectable: false
+        },
+        {
+          id: 'analysis-tools',
+          version: '1.2.3',
+          kind: 'owned' as const,
+          selected: true,
+          selectable: true
+        },
+        {
+          id: 'citation-manager',
+          version: '0.1.0',
+          kind: 'referenced' as const,
+          selected: false,
+          selectable: true
+        }
+      ]
+    }
+    const exportSpecialist = vi.fn().mockResolvedValue({ saved: false })
+    useSpecialistStore.setState({
+      ...useSpecialistStore.getState(),
+      exportPreview: preview,
+      previewExport: vi.fn().mockResolvedValue(preview),
+      exportSpecialist
+    })
+    await act(async () => {
+      root.render(
+        <SpecialistsPanel view={{ kind: 'export', id: 'rna-reviewer' }} onNavigate={vi.fn()} />
+      )
+    })
+    const checkboxFor = (label: string): HTMLInputElement | undefined =>
+      Array.from(document.body.querySelectorAll('label'))
+        .find((node) => node.textContent?.includes(label))
+        ?.querySelector('input') ?? undefined
+    expect(checkboxFor('document-reader')).toMatchObject({ checked: true, disabled: true })
+    expect(checkboxFor('analysis-tools')).toMatchObject({ checked: true, disabled: false })
+    expect(checkboxFor('citation-manager')).toMatchObject({ checked: false, disabled: false })
+    expect(document.body.textContent).toContain('Content changed but the package version remains')
+    expect(document.body.textContent).toContain(
+      'destination must already have a compatible version'
+    )
+
+    const exportButton = Array.from(document.body.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Export ZIP'
+    )
+    await act(async () => exportButton?.click())
+    expect(exportSpecialist).toHaveBeenCalledWith(['analysis-tools'])
+    expect(document.body.textContent).toContain('Choose Skills to include')
+    expect(document.body.textContent).not.toContain('Export complete')
+  })
+
   it('matches the Import ZIP entry hierarchy and template action summary', async () => {
     await act(async () => {
       root.render(<SpecialistsPanel view={{ kind: 'import' }} onNavigate={vi.fn()} />)

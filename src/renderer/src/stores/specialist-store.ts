@@ -7,13 +7,16 @@ import type {
 } from '../../../shared/specialist'
 import type {
   SpecialistPackageCandidatePreview,
-  SpecialistPackageInstallResult
+  SpecialistPackageInstallResult,
+  SpecialistExportPreview,
+  SpecialistExportSaveResult
 } from '../../../shared/specialist-package'
 
 type SpecialistStoreData = {
   items: SpecialistListItem[]
   isLoaded: boolean
   packagePreview?: SpecialistPackageCandidatePreview
+  exportPreview?: SpecialistExportPreview
 }
 
 type SpecialistStoreActions = {
@@ -26,6 +29,9 @@ type SpecialistStoreActions = {
   selectPackage: () => Promise<{ cancelled: true } | SpecialistPackageCandidatePreview>
   installPackage: (confirmOverwrite?: boolean) => Promise<SpecialistPackageInstallResult>
   cancelPackage: () => Promise<void>
+  previewExport: (specialistId: string) => Promise<SpecialistExportPreview>
+  exportSpecialist: (includedSkillIds: readonly string[]) => Promise<SpecialistExportSaveResult>
+  clearExport: () => void
 }
 
 type SpecialistStore = SpecialistStoreData & SpecialistStoreActions
@@ -34,6 +40,7 @@ const useSpecialistStore = create<SpecialistStore>((set) => ({
   items: [],
   isLoaded: false,
   packagePreview: undefined,
+  exportPreview: undefined,
 
   load: async () => {
     const items = await window.api.specialist.list()
@@ -96,7 +103,25 @@ const useSpecialistStore = create<SpecialistStore>((set) => ({
       await window.api.specialist.cancelPackage({ candidateToken: preview.candidateToken })
     }
     set({ packagePreview: undefined })
-  }
+  },
+
+  previewExport: async (specialistId: string) => {
+    const preview = await window.api.specialist.previewExport({ specialistId })
+    set({ exportPreview: preview })
+    return preview
+  },
+
+  exportSpecialist: async (includedSkillIds: readonly string[]) => {
+    const preview = useSpecialistStore.getState().exportPreview
+    if (!preview) throw new Error('Preview the Specialist export before saving.')
+    return window.api.specialist.exportSpecialist({
+      specialistId: preview.specialistId,
+      expectedRevision: preview.expectedRevision,
+      includedSkillIds
+    })
+  },
+
+  clearExport: () => set({ exportPreview: undefined })
 }))
 
 export { useSpecialistStore }

@@ -74,6 +74,8 @@ type PreloadApi = {
   }
   specialist: {
     exportContributionTemplate: () => unknown
+    previewExport: (request: unknown) => unknown
+    exportSpecialist: (request: unknown) => unknown
   }
   acp: {
     resumeSession: (request: unknown) => unknown
@@ -388,12 +390,14 @@ describe('preload bridge — public surface inventory', () => {
       'specialist.delete',
       'specialist.duplicate',
       'specialist.exportContributionTemplate',
+      'specialist.exportSpecialist',
       'specialist.getHandoffEvents',
       'specialist.installPackage',
       'specialist.list',
       'specialist.onCatalogChanged',
       'specialist.onHandoffLifecycleEvent',
       'specialist.onPendingSwitch',
+      'specialist.previewExport',
       'specialist.resolveSessionSpecialist',
       'specialist.retryHandoff',
       'specialist.savePackageReport',
@@ -529,6 +533,29 @@ const sampleSessionArtifactSelection = {
 }
 
 const cases: ForwardingCase[] = [
+  {
+    name: 'specialist.previewExport → specialist:export-preview',
+    invoke: (a) => a.specialist.previewExport({ specialistId: 'research-synth' }),
+    channel: 'specialist:export-preview',
+    args: [{ specialistId: 'research-synth' }]
+  },
+  {
+    name: 'specialist.exportSpecialist → specialist:export-save',
+    invoke: (a) =>
+      a.specialist.exportSpecialist({
+        specialistId: 'research-synth',
+        expectedRevision: 3,
+        includedSkillIds: ['analysis-tools']
+      }),
+    channel: 'specialist:export-save',
+    args: [
+      {
+        specialistId: 'research-synth',
+        expectedRevision: 3,
+        includedSkillIds: ['analysis-tools']
+      }
+    ]
+  },
   {
     name: 'specialist.exportContributionTemplate → specialist:export-contribution-template',
     invoke: (a) => a.specialist.exportContributionTemplate(),

@@ -20,6 +20,14 @@ export interface SpecialistPackageSkillPort {
   commit(transactionId: string): Promise<void>
   rollback(transactionId: string): Promise<void>
   recover(transactionId: string | undefined, outcome: 'commit' | 'rollback'): Promise<void>
+  exportSnapshot?: (skillIds: readonly string[]) => Promise<
+    ReadonlyArray<{
+      id: string
+      version: string
+      contentHash: string
+      files: ReadonlyArray<{ path: string; bytes: Uint8Array }>
+    }>
+  >
 }
 
 export const NOOP_SPECIALIST_PACKAGE_SKILL_PORT: SpecialistPackageSkillPort = {

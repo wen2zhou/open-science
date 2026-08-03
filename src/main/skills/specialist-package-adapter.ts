@@ -51,7 +51,7 @@ const directoryHash = async (directory: string): Promise<string> => {
       const relative = prefix ? `${prefix}/${entry.name}` : entry.name
       const path = join(current, entry.name)
       const metadata = await lstat(path)
-      if (metadata.isSymbolicLink() || metadata.nlink > 1) {
+      if (metadata.isSymbolicLink() || (metadata.isFile() && metadata.nlink > 1)) {
         throw new Error('Unsafe Skill filesystem entry.')
       }
       if (metadata.isDirectory()) await visit(path, relative)
@@ -106,6 +106,77 @@ export class UserSkillSpecialistPackageAdapter implements SpecialistPackageSkill
             // Invalid existing Skills remain visible through the ordinary catalog but cannot be reused.
           }
         }
+      }
+    }
+    return result.sort((left, right) => left.id.localeCompare(right.id))
+  }
+
+  async exportSnapshot(skillIds: readonly string[]): Promise<
+    Array<{
+      id: string
+      version: string
+      contentHash: string
+      files: Array<{ path: string; bytes: Uint8Array }>
+    }>
+  > {
+    const requested = new Set(skillIds)
+    const result: Array<{
+      id: string
+      version: string
+      contentHash: string
+      files: Array<{ path: string; bytes: Uint8Array }>
+    }> = []
+    for (const source of ['imported', 'personal'] as const) {
+      const root = join(dirname(this.importedRoot), source)
+      let entries: string[] = []
+      try {
+        entries = await readdir(root)
+      } catch {
+        continue
+      }
+      for (const entry of entries.sort()) {
+        if (!SAFE_SLUG.test(entry)) continue
+        const directory = join(root, entry)
+        const beforeMetadata = await readMetadata(directory)
+        const id = beforeMetadata?.id ?? `${source}-${entry}`
+        if (!requested.has(id)) continue
+        const beforeHash = await directoryHash(directory)
+        const files: Array<{ path: string; bytes: Uint8Array }> = []
+        const visit = async (current: string, prefix = ''): Promise<void> => {
+          for (const child of (await readdir(current, { withFileTypes: true })).sort(
+            (left, right) => left.name.localeCompare(right.name)
+          )) {
+            if (child.name === SPECIALIST_PACKAGE_SKILL_METADATA || child.name === '.source.json') {
+              continue
+            }
+            const relative = prefix ? `${prefix}/${child.name}` : child.name
+            const absolute = join(current, child.name)
+            const metadata = await lstat(absolute)
+            if (metadata.isSymbolicLink() || (metadata.isFile() && metadata.nlink > 1)) {
+              throw new Error('Unsafe Skill filesystem entry.')
+            }
+            if (metadata.isDirectory()) await visit(absolute, relative)
+            else if (metadata.isFile()) {
+              files.push({ path: relative, bytes: new Uint8Array(await readFile(absolute)) })
+            }
+          }
+        }
+        await visit(directory)
+        files.sort((left, right) => left.path.localeCompare(right.path))
+        const afterHash = await directoryHash(directory)
+        const afterMetadata = await readMetadata(directory)
+        if (
+          beforeHash !== afterHash ||
+          JSON.stringify(beforeMetadata) !== JSON.stringify(afterMetadata)
+        ) {
+          throw new Error('Skill changed during export. Preview again and retry.')
+        }
+        result.push({
+          id,
+          version: beforeMetadata?.version ?? '0.1.0',
+          contentHash: afterHash,
+          files
+        })
       }
     }
     return result.sort((left, right) => left.id.localeCompare(right.id))

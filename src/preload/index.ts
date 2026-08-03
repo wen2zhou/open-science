@@ -283,7 +283,10 @@ import type {
   SpecialistPackageCandidatePreview,
   SpecialistPackageInstallRequest,
   SpecialistPackageInstallResult,
-  SpecialistPackageReportSaveResult
+  SpecialistPackageReportSaveResult,
+  SpecialistExportPreview,
+  SpecialistExportRequest,
+  SpecialistExportSaveResult
 } from '../shared/specialist-package'
 import {
   HANDOFF_LIFECYCLE_IPC,
@@ -487,6 +490,8 @@ type OpenScienceAPI = {
     delete(request: DeleteSpecialistRequest): Promise<void>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     exportContributionTemplate(): Promise<ContributionTemplateExportResult>
+    previewExport(request: { specialistId: string }): Promise<SpecialistExportPreview>
+    exportSpecialist(request: SpecialistExportRequest): Promise<SpecialistExportSaveResult>
     selectPackage(): Promise<{ cancelled: true } | SpecialistPackageCandidatePreview>
     installPackage(
       request: SpecialistPackageInstallRequest
@@ -1146,6 +1151,13 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke(
         SPECIALIST_IPC.EXPORT_CONTRIBUTION_TEMPLATE
       ) as Promise<ContributionTemplateExportResult>,
+    previewExport: (request: { specialistId: string }) =>
+      ipcRenderer.invoke(
+        SPECIALIST_IPC.PREVIEW_EXPORT,
+        request
+      ) as Promise<SpecialistExportPreview>,
+    exportSpecialist: (request: SpecialistExportRequest) =>
+      ipcRenderer.invoke(SPECIALIST_IPC.EXPORT, request) as Promise<SpecialistExportSaveResult>,
     selectPackage: () =>
       ipcRenderer.invoke(SPECIALIST_IPC.SELECT_PACKAGE) as Promise<
         { cancelled: true } | SpecialistPackageCandidatePreview

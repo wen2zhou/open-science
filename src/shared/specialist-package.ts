@@ -29,6 +29,31 @@ export type PackageDiagnosticSeverity = 'error' | 'warning' | 'info'
 
 export type ContributionTemplateExportResult = { saved: boolean }
 export type SpecialistPackageReportSaveResult = { saved: boolean; filePath?: string }
+export type SpecialistExportSaveResult = { saved: boolean }
+
+export type SpecialistExportSkillChoice = {
+  id: string
+  version: string
+  kind: 'builtin' | 'owned' | 'referenced'
+  selected: boolean
+  selectable: boolean
+}
+
+export type SpecialistExportPreview = {
+  specialistId: string
+  name: string
+  version: string
+  expectedRevision: number
+  skills: readonly SpecialistExportSkillChoice[]
+  diagnostics: readonly PackageDiagnostic[]
+  canExport: boolean
+}
+
+export type SpecialistExportRequest = {
+  specialistId: string
+  expectedRevision: number
+  includedSkillIds: readonly string[]
+}
 
 export type PackageDiagnostic = {
   severity: PackageDiagnosticSeverity

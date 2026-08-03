@@ -1,4 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { strToU8 } from 'fflate'
 
 import {
   SPECIALIST_PACKAGE_ARCHIVE_LIMITS,
@@ -8,12 +9,16 @@ import {
   type SpecialistPackageCatalogSnapshot,
   type SpecialistPackageInstallRequest,
   type SpecialistPackageInstallResult,
+  type SpecialistExportPreview,
+  type SpecialistExportRequest,
+  SPECIALIST_PACKAGE_SCHEMA_VERSION,
   type SpecialistPackageValidationPlan
 } from '../../../shared/specialist-package'
 import { SpecialistRepository } from '../repository'
 import { createLogger } from '../../logger'
 import { validateSpecialistZip } from './zip-adapter'
 import { compareSemver } from './semver'
+import { buildDeterministicSpecialistZip } from './contribution-template'
 import { specialistPayloadContentHash } from './validator'
 import {
   SpecialistPackageRecoveryError,
@@ -146,6 +151,224 @@ export class SpecialistPackageService {
       diagnostics,
       installable,
       ...(overwrite ? { overwrite } : {})
+    }
+  }
+
+  async previewExport(specialistId: string): Promise<SpecialistExportPreview> {
+    const [document, catalog] = await Promise.all([
+      this.options.repository.getAll(),
+      this.options.catalog()
+    ])
+    if (catalog.protectedSpecialistIds.includes(specialistId)) {
+      throw new Error('Protected Specialists cannot be exported.')
+    }
+    const specialist = document.specialists.find((candidate) => candidate.id === specialistId)
+    if (!specialist) throw new Error('Custom Specialist not found.')
+
+    const requestedSkillIds =
+      specialist.capabilityMode === 'selected'
+        ? specialist.selectedCapabilities.skillIds
+        : catalog.skills
+            .filter((skill) => !specialist.fullAccess.excludedSkillIds.includes(skill.id))
+            .map((skill) => skill.id)
+    const skills = [...new Set(requestedSkillIds)]
+      .map((id) => {
+        const builtin = catalog.builtinSkills.find((candidate) => candidate.id === id)
+        if (builtin) {
+          return {
+            id,
+            version: builtin.appVersion,
+            kind: 'builtin' as const,
+            selected: true,
+            selectable: false
+          }
+        }
+        const skill = catalog.skills.find((candidate) => candidate.id === id)
+        return {
+          id,
+          version: skill?.version ?? '0.1.0',
+          kind: specialist.ownedSkillIds.includes(id)
+            ? ('owned' as const)
+            : ('referenced' as const),
+          selected: specialist.ownedSkillIds.includes(id),
+          selectable: true
+        }
+      })
+      .sort((left, right) => left.id.localeCompare(right.id))
+    const diagnostics: Array<{
+      severity: 'error' | 'warning' | 'info'
+      code: string
+      message: string
+    }> = []
+    if (skills.some((skill) => skill.kind === 'referenced')) {
+      diagnostics.push({
+        severity: 'info',
+        code: 'specialist.export-portability-dependency',
+        message:
+          'Unbundled required Skills must already exist compatibly in the destination environment.'
+      })
+    }
+    if (
+      specialist.origin === 'imported' &&
+      specialist.importBaseline &&
+      specialist.importBaseline.contentDigest !== specialistPayloadContentHash(specialist)
+    ) {
+      diagnostics.push({
+        severity: 'warning',
+        code: 'specialist.export-version-unchanged',
+        message: `Content changed but the package version remains ${specialist.packageVersion}.`
+      })
+    }
+    const includedSkillIds = skills
+      .filter((skill) => skill.kind === 'owned')
+      .map((skill) => skill.id)
+    try {
+      await this.export({
+        specialistId: specialist.id,
+        expectedRevision: specialist.revision,
+        includedSkillIds
+      })
+    } catch {
+      diagnostics.push({
+        severity: 'error',
+        code: 'specialist.export-validation-failed',
+        message: 'The current Specialist or selected Skills contain blocking validation errors.'
+      })
+    }
+
+    return {
+      specialistId: specialist.id,
+      name: specialist.displayName ?? specialist.name,
+      version: specialist.packageVersion,
+      expectedRevision: specialist.revision,
+      skills,
+      diagnostics,
+      canExport: !diagnostics.some((diagnostic) => diagnostic.severity === 'error')
+    }
+  }
+
+  async export(request: SpecialistExportRequest): Promise<{
+    fileName: string
+    archiveBytes: Uint8Array
+  }> {
+    if (
+      !request ||
+      typeof request.specialistId !== 'string' ||
+      !Number.isInteger(request.expectedRevision) ||
+      !Array.isArray(request.includedSkillIds) ||
+      request.includedSkillIds.some((id) => typeof id !== 'string') ||
+      new Set(request.includedSkillIds).size !== request.includedSkillIds.length
+    ) {
+      throw new Error('Invalid Specialist export request.')
+    }
+    const [before, catalog] = await Promise.all([
+      this.options.repository.getAll(),
+      this.options.catalog()
+    ])
+    if (catalog.protectedSpecialistIds.includes(request.specialistId)) {
+      throw new Error('Protected Specialists cannot be exported.')
+    }
+    const specialist = before.specialists.find((candidate) => candidate.id === request.specialistId)
+    if (!specialist) throw new Error('Custom Specialist not found.')
+    if (specialist.revision !== request.expectedRevision) {
+      throw new Error('Specialist changed during export. Preview again and retry.')
+    }
+
+    const requestedSkillIds =
+      specialist.capabilityMode === 'selected'
+        ? specialist.selectedCapabilities.skillIds
+        : catalog.skills
+            .filter((skill) => !specialist.fullAccess.excludedSkillIds.includes(skill.id))
+            .map((skill) => skill.id)
+    const builtin = catalog.builtinSkills
+      .filter((skill) => requestedSkillIds.includes(skill.id))
+      .map((skill) => ({
+        id: skill.id,
+        app_version: skill.appVersion,
+        compatibility: skill.compatibility
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id))
+    const portable = [...new Set(requestedSkillIds)]
+      .filter((id) => !builtin.some((skill) => skill.id === id))
+      .map((id) => {
+        const skill = catalog.skills.find((candidate) => candidate.id === id)
+        return { id, version: skill?.version ?? '0.1.0' }
+      })
+      .sort((left, right) => left.id.localeCompare(right.id))
+    if (request.includedSkillIds.some((id) => !portable.some((skill) => skill.id === id))) {
+      throw new Error('Export selection contains a Skill the Specialist does not reference.')
+    }
+    if (!this.options.skillPort?.exportSnapshot && request.includedSkillIds.length > 0) {
+      throw new Error('Skill export snapshot is unavailable.')
+    }
+    const skillSnapshots = request.includedSkillIds.length
+      ? await this.options.skillPort!.exportSnapshot!(request.includedSkillIds)
+      : []
+    if (
+      skillSnapshots.length !== request.includedSkillIds.length ||
+      request.includedSkillIds.some((id) => !skillSnapshots.some((skill) => skill.id === id))
+    ) {
+      throw new Error('A selected Skill changed during export. Preview again and retry.')
+    }
+
+    const after = await this.options.repository.getAll()
+    const live = after.specialists.find((candidate) => candidate.id === request.specialistId)
+    if (!live || JSON.stringify(live) !== JSON.stringify(specialist)) {
+      throw new Error('Specialist changed during export. Preview again and retry.')
+    }
+    const currentCatalog = await this.options.catalog()
+    if (JSON.stringify(currentCatalog) !== JSON.stringify(catalog)) {
+      throw new Error('The Skill catalog changed during export. Preview again and retry.')
+    }
+
+    const bundled = skillSnapshots
+      .map((skill) => ({ id: skill.id, version: skill.version, path: `skills/${skill.id}` }))
+      .sort((left, right) => left.id.localeCompare(right.id))
+    const manifest = {
+      schema_version: SPECIALIST_PACKAGE_SCHEMA_VERSION,
+      id: specialist.id,
+      version: specialist.packageVersion,
+      exported_with_app_version: catalog.appVersion,
+      requires_app: inferredAppRange(catalog.appVersion),
+      skills: {
+        builtin,
+        required: portable.map((skill) => ({
+          id: skill.id,
+          version_range: skill.version
+        })),
+        bundled
+      }
+    }
+    const payload = {
+      name: specialist.name,
+      ...(specialist.displayName ? { displayName: specialist.displayName } : {}),
+      description: specialist.description,
+      systemPrompt: specialist.systemPrompt,
+      ...(specialist.iconKey ? { iconKey: specialist.iconKey } : {}),
+      ...(specialist.colorKey ? { colorKey: specialist.colorKey } : {}),
+      capabilityMode: specialist.capabilityMode,
+      fullAccess: specialist.fullAccess,
+      selectedCapabilities: specialist.selectedCapabilities
+    }
+    const files: Record<string, Uint8Array> = {
+      'manifest.json': strToU8(`${JSON.stringify(manifest, null, 2)}\n`),
+      'specialist.json': strToU8(`${JSON.stringify(payload, null, 2)}\n`)
+    }
+    for (const skill of skillSnapshots) {
+      for (const file of skill.files) files[`skills/${skill.id}/${file.path}`] = file.bytes
+    }
+    const archiveBytes = buildDeterministicSpecialistZip(files)
+    const validationCatalog = {
+      ...catalog,
+      skills: catalog.skills.filter((skill) => !request.includedSkillIds.includes(skill.id))
+    }
+    const validation = validateSpecialistZip(archiveBytes, validationCatalog)
+    if (!validation.preview.installable) {
+      throw new Error('Specialist export has blocking validation errors.')
+    }
+    return {
+      fileName: `${specialist.id}-${specialist.packageVersion}.zip`,
+      archiveBytes
     }
   }
 

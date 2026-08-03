@@ -25,7 +25,10 @@ import type {
   SpecialistPackageInstallRequest,
   SpecialistPackageInstallResult,
   SpecialistPackageReport,
-  SpecialistPackageReportSaveResult
+  SpecialistPackageReportSaveResult,
+  SpecialistExportPreview,
+  SpecialistExportRequest,
+  SpecialistExportSaveResult
 } from '../../shared/specialist-package'
 import type { SpecialistPackageService } from './package/service'
 
@@ -39,12 +42,23 @@ type PersistSessionSpecialist = (
 type PackageImportIpc = {
   service: Pick<
     SpecialistPackageService,
-    'preview' | 'previewOversizedArchive' | 'install' | 'cancel' | 'dispose' | 'report'
+    | 'preview'
+    | 'previewOversizedArchive'
+    | 'install'
+    | 'cancel'
+    | 'dispose'
+    | 'report'
+    | 'previewExport'
+    | 'export'
   >
   selectArchive: () => Promise<
     { cancelled: true } | { bytes: Uint8Array } | { tooLarge: true; compressedBytes: number }
   >
   saveReport: (report: SpecialistPackageReport) => Promise<SpecialistPackageReportSaveResult>
+  saveExport: (archive: {
+    fileName: string
+    archiveBytes: Uint8Array
+  }) => Promise<SpecialistExportSaveResult>
 }
 
 const isCandidateRequest = (request: unknown): request is SpecialistPackageInstallRequest =>
@@ -55,6 +69,27 @@ const isCandidateRequest = (request: unknown): request is SpecialistPackageInsta
   Boolean((request as { candidateToken: string }).candidateToken) &&
   ((request as { confirmOverwrite?: unknown }).confirmOverwrite === undefined ||
     (request as { confirmOverwrite?: unknown }).confirmOverwrite === true)
+
+const isExportPreviewRequest = (request: unknown): request is { specialistId: string } =>
+  typeof request === 'object' &&
+  request !== null &&
+  Object.keys(request).length === 1 &&
+  typeof (request as { specialistId?: unknown }).specialistId === 'string' &&
+  Boolean((request as { specialistId: string }).specialistId)
+
+const isExportRequest = (request: unknown): request is SpecialistExportRequest =>
+  typeof request === 'object' &&
+  request !== null &&
+  Object.keys(request).every((key) =>
+    ['specialistId', 'expectedRevision', 'includedSkillIds'].includes(key)
+  ) &&
+  Object.keys(request).length === 3 &&
+  typeof (request as { specialistId?: unknown }).specialistId === 'string' &&
+  Number.isInteger((request as { expectedRevision?: unknown }).expectedRevision) &&
+  Array.isArray((request as { includedSkillIds?: unknown }).includedSkillIds) &&
+  (request as { includedSkillIds: unknown[] }).includedSkillIds.every(
+    (id) => typeof id === 'string'
+  )
 
 // Broadcasts a catalog-changed event to all renderer windows.
 const broadcastCatalogChanged = (): void => {
@@ -111,6 +146,23 @@ export const registerSpecialistIpcHandlers = (
   )
 
   if (packageImport) {
+    ipcMainHandle(
+      SPECIALIST_IPC.PREVIEW_EXPORT,
+      async (_event, request: unknown): Promise<SpecialistExportPreview> => {
+        if (!isExportPreviewRequest(request)) throw new Error('Invalid Specialist export preview.')
+        return packageImport.service.previewExport(request.specialistId)
+      }
+    )
+
+    ipcMainHandle(
+      SPECIALIST_IPC.EXPORT,
+      async (_event, request: unknown): Promise<SpecialistExportSaveResult> => {
+        if (!isExportRequest(request)) throw new Error('Invalid Specialist export request.')
+        const archive = await packageImport.service.export(request)
+        return packageImport.saveExport(archive)
+      }
+    )
+
     ipcMainHandle(
       SPECIALIST_IPC.SELECT_PACKAGE,
       async (

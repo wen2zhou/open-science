@@ -11,6 +11,7 @@ import {
 } from '../../../shared/specialist-package'
 import { validateSpecialistDirectory } from './directory-adapter'
 import { validateSpecialistZip } from './zip-adapter'
+import { UserSkillSpecialistPackageAdapter } from '../../skills/specialist-package-adapter'
 
 const fixtureRoot = join(import.meta.dirname, 'test-fixtures', 'valid')
 const invalidFixtureRoot = join(import.meta.dirname, 'test-fixtures', 'invalid')
@@ -25,6 +26,46 @@ const catalog: SpecialistPackageCatalogSnapshot = {
 }
 
 describe('Specialist package source adapters', () => {
+  it('reads a complete stable Skill directory for export without sidecar metadata', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'specialist-export-snapshot-'))
+    try {
+      const skill = join(root, 'skills', 'imported', 'analysis-tools')
+      await mkdir(join(skill, 'references'), { recursive: true })
+      await writeFile(
+        join(skill, 'SKILL.md'),
+        '---\nname: analysis-tools\ndescription: Analyze data\n---\nUse the tools.'
+      )
+      await writeFile(join(skill, 'references', 'guide.md'), 'Complete reference.')
+      await writeFile(
+        join(skill, '.specialist-package.json'),
+        JSON.stringify({
+          id: 'analysis-tools',
+          version: '1.2.3',
+          contentHash: 'stale-sidecar-hash',
+          standalone: false,
+          ownerIds: ['research-synth']
+        })
+      )
+
+      const adapter = new UserSkillSpecialistPackageAdapter(root)
+      const snapshot = await adapter.exportSnapshot(['analysis-tools'])
+
+      expect(snapshot).toEqual([
+        expect.objectContaining({
+          id: 'analysis-tools',
+          version: '1.2.3',
+          files: [
+            expect.objectContaining({ path: 'references/guide.md' }),
+            expect.objectContaining({ path: 'SKILL.md' })
+          ]
+        })
+      ])
+      expect(snapshot[0].files.map((file) => file.path)).not.toContain('.specialist-package.json')
+    } finally {
+      await rm(root, { recursive: true, force: true })
+    }
+  })
+
   it('rejects ZIP entries marked as symbolic links', async () => {
     const zip = zipSync({
       'manifest.json': new Uint8Array(await readFile(join(fixtureRoot, 'manifest.json'))),

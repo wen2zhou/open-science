@@ -43,7 +43,10 @@ import type {
 } from '../shared/file-save'
 import type {
   ContributionTemplateExportResult,
-  SpecialistPackageReportSaveResult
+  SpecialistPackageReportSaveResult,
+  SpecialistExportPreview,
+  SpecialistExportRequest,
+  SpecialistExportSaveResult
 } from '../shared/specialist-package'
 import type {
   ComputeApprovalDecision,
@@ -446,6 +449,8 @@ interface OpenScienceAPI {
     delete(request: DeleteSpecialistRequest): Promise<void>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     exportContributionTemplate(): Promise<ContributionTemplateExportResult>
+    previewExport(request: { specialistId: string }): Promise<SpecialistExportPreview>
+    exportSpecialist(request: SpecialistExportRequest): Promise<SpecialistExportSaveResult>
     selectPackage(): Promise<{ cancelled: true } | SpecialistPackageCandidatePreview>
     installPackage(
       request: SpecialistPackageInstallRequest

@@ -14,6 +14,8 @@ export const SPECIALIST_IPC = {
   INSTALL_PACKAGE: 'specialist:package-install',
   CANCEL_PACKAGE: 'specialist:package-cancel',
   SAVE_PACKAGE_REPORT: 'specialist:package-report-save',
+  PREVIEW_EXPORT: 'specialist:export-preview',
+  EXPORT: 'specialist:export-save',
   CATALOG_CHANGED: 'specialist:catalog-changed',
   // Session switching (issue 07): per-session mutable binding.
   SET_SESSION_SPECIALIST: 'specialist:set-session-specialist',
@@ -233,9 +235,7 @@ export type BuiltinSpecialistEntry = {
 // Exhaustive Settings/runtime catalog discriminant. Reviewer remains a placeholder, never a
 // runnable profile.
 export type SpecialistListItem =
-  | ({ kind: 'custom' } & SpecialistProfileView)
-  | BuiltinSpecialistEntry
-  | ReviewerEntry
+  ({ kind: 'custom' } & SpecialistProfileView) | BuiltinSpecialistEntry | ReviewerEntry
 
 // Resolution of a session's specialist binding at send time (requires SpecialistProfileView above).
 // 'main'        — no binding, main agent is used.

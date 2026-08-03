@@ -43,6 +43,7 @@ export type SpecialistsView =
   | { kind: 'list' }
   | { kind: 'create'; draft?: CreateSpecialistInput }
   | { kind: 'edit'; id: string }
+  | { kind: 'export'; id: string }
   | { kind: 'import' }
   | { kind: 'builtin'; id: string }
 
@@ -77,6 +78,10 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const selectPackage = useSpecialistStore((s) => s.selectPackage)
   const installPackage = useSpecialistStore((s) => s.installPackage)
   const cancelPackage = useSpecialistStore((s) => s.cancelPackage)
+  const exportPreview = useSpecialistStore((s) => s.exportPreview)
+  const previewExport = useSpecialistStore((s) => s.previewExport)
+  const exportSpecialist = useSpecialistStore((s) => s.exportSpecialist)
+  const clearExport = useSpecialistStore((s) => s.clearExport)
   // Live project catalog drives the `Chat with agent` entry's enabled state and routing. The stored
   // last-opened reference is re-validated against this list before navigating.
   const projects = useProjectStore((s) => s.projects)
@@ -95,6 +100,10 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
   const [packageErrorCode, setPackageErrorCode] = useState<string | undefined>()
   const [overwriteConfirmationOpen, setOverwriteConfirmationOpen] = useState(false)
   const [reportStatus, setReportStatus] = useState<string | undefined>()
+  const [includedExportSkillIds, setIncludedExportSkillIds] = useState<string[]>([])
+  const [exportBusy, setExportBusy] = useState(false)
+  const [exportSaved, setExportSaved] = useState(false)
+  const [exportError, setExportError] = useState<string | undefined>()
 
   // Memoised so visibleCustomItems' memo can reference a stable value.
   const customItems = useMemo(() => items.filter((i) => i.kind === 'custom'), [items])
@@ -107,6 +116,19 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     const unsub = window.api.specialist.onCatalogChanged(() => void load())
     return unsub
   }, [load])
+
+  useEffect(() => {
+    if (view.kind !== 'export') return
+    void previewExport(view.id)
+      .then((preview) =>
+        setIncludedExportSkillIds(
+          preview.skills
+            .filter((skill) => skill.selected && skill.kind !== 'builtin')
+            .map((skill) => skill.id)
+        )
+      )
+      .catch(() => setExportError('Could not preview this Specialist export. Try again.'))
+  }, [previewExport, view])
 
   // Keep runnable builtins distinct from the Reviewer placeholder even though Settings groups both
   // under Built-in. Only runnable builtins enter the Session picker.
@@ -210,6 +232,147 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
           onNavigate({ kind: 'list' })
         }}
       />
+    )
+  }
+
+  if (view.kind === 'export') {
+    if (exportSaved && exportPreview) {
+      return (
+        <div className="p-5">
+          <div className="rounded-xl border border-border px-6 py-10 text-center" role="status">
+            <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-success-000/10 text-success-000">
+              ✓
+            </div>
+            <h2 className="mt-4 text-lg font-semibold">Export complete</h2>
+            <p className="mt-2 text-sm text-muted-foreground">
+              {exportPreview.specialistId}-{exportPreview.version}.zip was saved. No location is
+              shown here.
+            </p>
+            <Button
+              type="button"
+              className="mt-5"
+              onClick={() => {
+                clearExport()
+                onNavigate({ kind: 'list' })
+              }}
+            >
+              Done
+            </Button>
+          </div>
+        </div>
+      )
+    }
+    return (
+      <div className="p-5">
+        <div className="mb-5 flex items-start justify-between gap-4 border-b border-border pb-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary">Export ZIP</p>
+            <h2 className="mt-1 text-xl font-semibold">
+              {exportPreview ? 'Choose Skills to include' : 'Preparing export…'}
+            </h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Builtin Skills remain references. Non-builtin selection controls package portability.
+            </p>
+          </div>
+          <span className="text-sm font-medium" role="status">
+            {exportPreview?.canExport ? '✓ Ready' : exportPreview ? '× Blocked' : 'Checking…'}
+          </span>
+        </div>
+        {exportError ? (
+          <div
+            className="rounded-lg border border-destructive/40 bg-destructive/10 p-3 text-sm"
+            role="alert"
+          >
+            {exportError}
+          </div>
+        ) : null}
+        {exportPreview ? (
+          <div className="flex flex-col gap-4">
+            {exportPreview.diagnostics.map((diagnostic) => (
+              <div
+                key={diagnostic.code}
+                role={diagnostic.severity === 'error' ? 'alert' : 'status'}
+                className="rounded-lg border border-border p-3 text-sm"
+              >
+                <strong>{diagnostic.code}</strong>
+                <p className="text-muted-foreground">{diagnostic.message}</p>
+              </div>
+            ))}
+            <div className="flex flex-col divide-y divide-border rounded-lg border border-border">
+              {exportPreview.skills.map((skill) => {
+                const checked =
+                  skill.kind === 'builtin' || includedExportSkillIds.includes(skill.id)
+                return (
+                  <label key={skill.id} className="flex items-center gap-3 p-3 text-sm">
+                    <input
+                      type="checkbox"
+                      checked={checked}
+                      disabled={!skill.selectable}
+                      onChange={(event) =>
+                        setIncludedExportSkillIds((current) =>
+                          event.target.checked
+                            ? [...new Set([...current, skill.id])]
+                            : current.filter((id) => id !== skill.id)
+                        )
+                      }
+                    />
+                    <span className="min-w-0 flex-1">
+                      <strong className="block">{skill.id}</strong>
+                      <span className="text-xs text-muted-foreground">
+                        {skill.kind === 'builtin'
+                          ? 'Reference only; builtin content is never copied.'
+                          : skill.kind === 'owned'
+                            ? `Owned Skill · v${skill.version} · bundled by default.`
+                            : `Required global Skill · v${skill.version} · dependency reference by default.`}
+                      </span>
+                    </span>
+                    <span className="text-xs capitalize text-muted-foreground">{skill.kind}</span>
+                  </label>
+                )
+              })}
+            </div>
+            <div className="rounded-lg border border-border p-3 text-sm" role="status">
+              <strong>Portability rule</strong>
+              <p className="text-muted-foreground">
+                If a required non-builtin Skill is not bundled, the destination must already have a
+                compatible version.
+              </p>
+            </div>
+            <div className="flex justify-between gap-3">
+              <Button
+                type="button"
+                variant="outline"
+                onClick={() => {
+                  clearExport()
+                  onNavigate({ kind: 'list' })
+                }}
+              >
+                Cancel
+              </Button>
+              <Button
+                type="button"
+                disabled={!exportPreview.canExport || exportBusy}
+                onClick={() => {
+                  setExportBusy(true)
+                  setExportError(undefined)
+                  void exportSpecialist(includedExportSkillIds)
+                    .then((result) => {
+                      if (result.saved) setExportSaved(true)
+                    })
+                    .catch(() =>
+                      setExportError(
+                        'Could not save this Specialist export. Preview again and retry.'
+                      )
+                    )
+                    .finally(() => setExportBusy(false))
+                }}
+              >
+                {exportBusy ? 'Saving…' : 'Export ZIP'}
+              </Button>
+            </div>
+          </div>
+        ) : null}
+      </div>
     )
   }
 
@@ -634,7 +797,12 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                       type="button"
                       variant="outline"
                       className="mt-4"
-                      onClick={() => onNavigate({ kind: 'edit', id: packagePreview.overwrite!.id })}
+                      onClick={() => {
+                        setExportSaved(false)
+                        setExportError(undefined)
+                        clearExport()
+                        onNavigate({ kind: 'export', id: packagePreview.overwrite!.id })
+                      }}
                     >
                       Export current version first
                     </Button>
@@ -925,6 +1093,17 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                               }
                             >
                               <Copy className="size-3.5" aria-hidden="true" /> Duplicate
+                            </DropdownMenuItem>
+                            <DropdownMenuItem
+                              className="gap-2 text-xs"
+                              onSelect={() => {
+                                setExportSaved(false)
+                                setExportError(undefined)
+                                clearExport()
+                                onNavigate({ kind: 'export', id: item.id })
+                              }}
+                            >
+                              <Download className="size-3.5" aria-hidden="true" /> Export ZIP
                             </DropdownMenuItem>
                             <DropdownMenuItem
                               className="gap-2 text-xs text-destructive"
