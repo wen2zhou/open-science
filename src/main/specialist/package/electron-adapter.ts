@@ -74,5 +74,5 @@ export const saveSpecialistPackageReport = async (
   })
   if (selected.canceled || !selected.filePath) return { saved: false }
   await adapter.writeFile(selected.filePath, `${JSON.stringify(report, null, 2)}\n`)
-  return { saved: true, filePath: selected.filePath }
+  return { saved: true }
 }

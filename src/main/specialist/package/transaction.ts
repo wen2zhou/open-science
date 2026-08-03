@@ -92,12 +92,24 @@ export class SpecialistPackageTransaction {
         throw new Error('Invalid Specialist package transaction journal.')
       }
       const { before, after } = await this.readTransactionData(journal)
+      const beforeDigest = journal.beforeDigest ?? documentDigest(before)
+      const afterDigest = journal.afterDigest ?? documentDigest(after)
       if (journal.phase === 'committed') {
-        await this.repository.replaceAll(after)
+        const current = await this.repository.getAll()
+        if (documentDigest(current) === beforeDigest) {
+          await this.repository.replaceAllIfUnchanged(before, after)
+        } else if (documentDigest(current) !== afterDigest) {
+          throw new Error('Specialist document changed after package commit.')
+        }
         await this.skillPort.recover(journal.transactionId, 'commit')
       } else if (journal.phase !== 'rolled-back') {
         await this.skillPort.recover(journal.transactionId, 'rollback')
-        await this.repository.replaceAll(before)
+        const current = await this.repository.getAll()
+        if (documentDigest(current) === afterDigest) {
+          await this.repository.replaceAllIfUnchanged(after, before)
+        } else if (documentDigest(current) !== beforeDigest) {
+          throw new Error('Specialist document changed before package rollback.')
+        }
       }
       await this.cleanupTransactionData()
       log.info('recovered specialist package transaction', {
@@ -158,7 +170,8 @@ export class SpecialistPackageTransaction {
           importedAt: importedAt.toISOString(),
           archiveDigest,
           contentDigest: plan.contentHash,
-          requiresApp: plan.manifest.requires_app ?? inferredRequiresApp
+          requiresApp: plan.manifest.requires_app ?? inferredRequiresApp,
+          packageVersion: plan.packageVersion
         }
       }
       const after: StoredSpecialists = {
@@ -179,6 +192,9 @@ export class SpecialistPackageTransaction {
         afterDigest: documentDigest(after)
       }
 
+      let specialistCommitted = false
+      let skillMutationBegun = false
+
       try {
         await this.skillPort.prepare(
           transactionId,
@@ -191,7 +207,10 @@ export class SpecialistPackageTransaction {
         await this.writeJournal(journal)
         journal.phase = 'committing'
         await this.writeJournal(journal)
-        await this.repository.replaceAll(after)
+        await this.skillPort.beginMutation?.(transactionId, plan.specialistId, plan.skills)
+        skillMutationBegun = true
+        await this.repository.replaceAllIfUnchanged(before, after)
+        specialistCommitted = true
         await this.skillPort.commit(transactionId)
         journal.phase = 'committed'
         await this.writeJournal(journal)
@@ -207,7 +226,9 @@ export class SpecialistPackageTransaction {
           journal.phase = 'rolling-back'
           await this.writeJournal(journal)
           await this.skillPort.rollback(transactionId)
-          await this.repository.replaceAll(before)
+          if (specialistCommitted) {
+            await this.repository.replaceAllIfUnchanged(after, before)
+          }
           journal.phase = 'rolled-back'
           await this.writeJournal(journal)
           await this.cleanupTransactionData()
@@ -216,6 +237,8 @@ export class SpecialistPackageTransaction {
           throw new SpecialistPackageRollbackError()
         }
         throw error
+      } finally {
+        if (skillMutationBegun) await this.skillPort.endMutation?.(transactionId)
       }
     })
     this.queue = run.then(
@@ -249,7 +272,11 @@ export class SpecialistPackageTransaction {
         beforeDigest: documentDigest(before),
         afterDigest: documentDigest(after)
       }
+      let specialistCommitted = false
+      let skillMutationBegun = false
       try {
+        await this.skillPort.beginMutation?.(transactionId, specialistId, [])
+        skillMutationBegun = true
         await this.skillPort.prepareDeletion?.(
           transactionId,
           specialistId,
@@ -260,7 +287,8 @@ export class SpecialistPackageTransaction {
         await this.writeJournal(journal)
         journal.phase = 'committing'
         await this.writeJournal(journal)
-        await this.repository.replaceAll(after)
+        await this.repository.replaceAllIfUnchanged(before, after)
+        specialistCommitted = true
         await this.skillPort.commit(transactionId)
         journal.phase = 'committed'
         await this.writeJournal(journal)
@@ -271,7 +299,9 @@ export class SpecialistPackageTransaction {
           journal.phase = 'rolling-back'
           await this.writeJournal(journal)
           await this.skillPort.rollback(transactionId)
-          await this.repository.replaceAll(before)
+          if (specialistCommitted) {
+            await this.repository.replaceAllIfUnchanged(after, before)
+          }
           journal.phase = 'rolled-back'
           await this.writeJournal(journal)
           await this.cleanupTransactionData()
@@ -280,6 +310,8 @@ export class SpecialistPackageTransaction {
           throw new SpecialistPackageRollbackError()
         }
         throw error
+      } finally {
+        if (skillMutationBegun) await this.skillPort.endMutation?.(transactionId)
       }
     })
     this.queue = run.then(

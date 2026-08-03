@@ -10,6 +10,7 @@ import {
   SPECIALIST_NAME_MAX_LENGTH,
   SPECIALIST_SYSTEM_PROMPT_MAX_LENGTH,
   validateCreateSpecialistInput,
+  validateSpecialistPackageVersion,
   type CreateSpecialistInput,
   type UpdateSpecialistInput,
   type SpecialistFieldError,
@@ -37,6 +38,7 @@ type SpecialistEditorProps = {
 
 type FormState = {
   name: string
+  packageVersion: string
   description: string
   systemPrompt: string
   iconKey: string
@@ -107,6 +109,7 @@ const SpecialistEditor = ({
     editSpecialist
       ? {
           name: editSpecialist.name,
+          packageVersion: editSpecialist.packageVersion ?? '0.1.0',
           description: editSpecialist.description,
           systemPrompt: editSpecialist.systemPrompt,
           iconKey: editSpecialist.iconKey ?? 'brain',
@@ -122,6 +125,7 @@ const SpecialistEditor = ({
         }
       : {
           name: initialInput?.name ?? '',
+          packageVersion: '0.1.0',
           description: initialInput?.description ?? '',
           systemPrompt: initialInput?.systemPrompt ?? '',
           iconKey: initialInput?.iconKey ?? 'brain',
@@ -345,6 +349,12 @@ const SpecialistEditor = ({
       systemPrompt: form.systemPrompt || undefined
     }
     const errors = validateCreateSpecialistInput(input, existingNames)
+    if (isEdit) {
+      const packageVersionError = validateSpecialistPackageVersion(form.packageVersion)
+      if (packageVersionError) {
+        errors.push({ field: 'packageVersion', message: packageVersionError })
+      }
+    }
     setFieldErrors(errors)
     return errors.length === 0
   }
@@ -390,6 +400,7 @@ const SpecialistEditor = ({
         await onSaveEdit?.({
           id: editSpecialist.id,
           revision: form.baseRevision,
+          packageVersion: form.packageVersion,
           ...trimmed
         })
         // Advance the base revision only after a confirmed save.
@@ -428,6 +439,7 @@ const SpecialistEditor = ({
       if (fresh) {
         setForm({
           name: fresh.name,
+          packageVersion: fresh.packageVersion ?? '0.1.0',
           description: fresh.description,
           systemPrompt: fresh.systemPrompt,
           iconKey: fresh.iconKey ?? 'brain',
@@ -650,6 +662,45 @@ const SpecialistEditor = ({
               </p>
             ) : null}
           </div>
+
+          {isEdit && editSpecialist ? (
+            <div className="mt-4 grid gap-4 sm:grid-cols-2">
+              <div>
+                <label htmlFor="sp-package-version" className="mb-1.5 block text-xs font-semibold">
+                  Package version
+                </label>
+                <Input
+                  id="sp-package-version"
+                  value={form.packageVersion}
+                  onChange={(e) => {
+                    setForm((prev) => ({ ...prev, packageVersion: e.target.value }))
+                    setFieldErrors((prev) =>
+                      prev.filter((error) => error.field !== 'packageVersion')
+                    )
+                  }}
+                  aria-invalid={!!getFieldError('packageVersion')}
+                  aria-describedby={
+                    getFieldError('packageVersion') ? 'sp-package-version-err' : undefined
+                  }
+                />
+                {getFieldError('packageVersion') ? (
+                  <p
+                    id="sp-package-version-err"
+                    className="mt-1 text-xs text-destructive"
+                    role="alert"
+                  >
+                    {getFieldError('packageVersion')}
+                  </p>
+                ) : null}
+              </div>
+              <div>
+                <label htmlFor="sp-specialist-id" className="mb-1.5 block text-xs font-semibold">
+                  Specialist ID
+                </label>
+                <Input id="sp-specialist-id" value={editSpecialist.id} readOnly />
+              </div>
+            </div>
+          ) : null}
         </section>
 
         {/* Instructions section */}

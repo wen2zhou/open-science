@@ -266,6 +266,20 @@ describe('ProfileService.setEnabled', () => {
 })
 
 describe('ProfileService.update', () => {
+  it('persists an explicit package-version bump through optimistic update', async () => {
+    const created = await service.create({ name: 'Versioned Bot' })
+
+    const updated = await service.update({
+      id: created.id,
+      revision: created.revision,
+      packageVersion: '1.0.0'
+    })
+
+    expect(updated).toMatchObject({ packageVersion: '1.0.0', revision: created.revision + 1 })
+    const restarted = new ProfileService(new SpecialistRepository(tmpDir))
+    await expect(restarted.getById(created.id)).resolves.toMatchObject({ packageVersion: '1.0.0' })
+  })
+
   it('atomically persists enabled with other fields and bumps revision once', async () => {
     const created = await service.create({ name: 'My Bot' })
     const updated = await service.update({

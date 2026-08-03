@@ -115,7 +115,7 @@ describe('saveSpecialistPackageReport', () => {
 
     await expect(
       saveSpecialistPackageReport({ showSaveDialog, writeFile }, report)
-    ).resolves.toEqual({ saved: true, filePath: '/downloads/specialist-package-report.json' })
+    ).resolves.toEqual({ saved: true })
     expect(showSaveDialog).toHaveBeenCalledWith({
       defaultPath: 'safe-specialist-1.0.0-diagnostics.json',
       filters: [{ name: 'JSON report', extensions: ['json'] }]

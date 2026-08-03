@@ -103,6 +103,17 @@ export class SpecialistPackageService {
     this.now = options.now ?? (() => new Date())
   }
 
+  private async validationCatalog(): Promise<SpecialistPackageCatalogSnapshot> {
+    const [catalog, document] = await Promise.all([
+      this.options.catalog(),
+      this.options.repository.getAll()
+    ])
+    return {
+      ...catalog,
+      specialists: document.specialists.map(({ id, name }) => ({ id, name }))
+    }
+  }
+
   async previewSpecialistDelete(request: { id: string }): Promise<SpecialistDeletePreview> {
     if (!request || typeof request.id !== 'string' || !request.id.trim()) {
       throw new Error('Specialist id must be a non-empty string.')
@@ -255,7 +266,7 @@ export class SpecialistPackageService {
     // One renderer window owns one active preview. Selecting another archive invalidates the prior
     // capability immediately so stale confirmation buttons cannot replay it.
     this.candidates.clear()
-    const catalog = await this.options.catalog()
+    const catalog = await this.validationCatalog()
     const result = validateSpecialistZip(archiveBytes, catalog)
     const token = this.token()
     const diagnostics = [...result.preview.diagnostics]
@@ -389,6 +400,8 @@ export class SpecialistPackageService {
     if (
       specialist.origin === 'imported' &&
       specialist.importBaseline &&
+      (specialist.importBaseline.packageVersion === undefined ||
+        specialist.importBaseline.packageVersion === specialist.packageVersion) &&
       specialist.importBaseline.contentDigest !== specialistPayloadContentHash(specialist)
     ) {
       diagnostics.push({
@@ -613,7 +626,7 @@ export class SpecialistPackageService {
     this.candidates.delete(request.candidateToken)
     let specialist: Extract<SpecialistPackageInstallResult, { status: 'installed' }>['specialist']
     try {
-      const catalog = await this.options.catalog()
+      const catalog = await this.validationCatalog()
       const liveValidation = validateSpecialistZip(candidate.archiveBytes, catalog)
       if (catalog.protectedSpecialistIds.includes(candidate.plan.specialistId)) {
         return { status: 'failed', code: 'protected-target' }

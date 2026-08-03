@@ -142,7 +142,7 @@ const toView = (s: StoredSpecialist): SpecialistProfileView => ({
 const assertOptionalIdentityFieldShapes = (
   input: Pick<
     UpdateSpecialistInput,
-    'description' | 'displayName' | 'systemPrompt' | 'iconKey' | 'colorKey'
+    'description' | 'displayName' | 'systemPrompt' | 'iconKey' | 'colorKey' | 'packageVersion'
   >
 ): void => {
   const optionalTextFields = [
@@ -150,7 +150,8 @@ const assertOptionalIdentityFieldShapes = (
     ['display name', input.displayName],
     ['system prompt', input.systemPrompt],
     ['icon', input.iconKey],
-    ['color', input.colorKey]
+    ['color', input.colorKey],
+    ['package version', input.packageVersion]
   ] as const
   for (const [label, value] of optionalTextFields) {
     if (value !== undefined && typeof value !== 'string') {
@@ -362,6 +363,7 @@ export class ProfileService {
     }
 
     const patch: Partial<StoredSpecialist> = {}
+    if (input.packageVersion !== undefined) patch.packageVersion = input.packageVersion
     if (input.name !== undefined) patch.name = input.name
     // A rename that leaves displayName unset keeps a CUSTOM display name (the settings list shows
     // displayName ?? name), but an UNcustomized one (snapshotted to the old name at create) must

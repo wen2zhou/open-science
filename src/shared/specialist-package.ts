@@ -28,7 +28,7 @@ export type SpecialistPackageSource = 'zip' | 'directory' | 'builtin'
 export type PackageDiagnosticSeverity = 'error' | 'warning' | 'info'
 
 export type ContributionTemplateExportResult = { saved: boolean }
-export type SpecialistPackageReportSaveResult = { saved: boolean; filePath?: string }
+export type SpecialistPackageReportSaveResult = { saved: boolean }
 export type SpecialistExportSaveResult = { saved: boolean }
 
 export type SpecialistExportSkillChoice = {
@@ -129,6 +129,8 @@ export type SpecialistPackageCatalogSnapshot = {
   }>
   connectorIds: readonly string[]
   protectedSpecialistIds: readonly string[]
+  protectedSpecialistNames?: readonly string[]
+  specialists?: ReadonlyArray<{ id: string; name: string }>
 }
 
 export type SpecialistPackageSkillDisposition =

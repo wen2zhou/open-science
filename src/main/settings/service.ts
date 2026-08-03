@@ -461,6 +461,7 @@ class SettingsService {
       source: SkillSource
       mainEnabled: boolean
       available: boolean
+      compatibility?: string
     }>
   > {
     return this.skills.listSpecialistSkillCatalog()
@@ -537,8 +538,7 @@ class SettingsService {
 
   // Deletes a personal or imported skill, returning the refreshed list.
   async deleteSkill(request: DeleteSkillRequest): Promise<SkillView[]> {
-    await this.skillDeletionGuard?.(request.id)
-    return this.skills.deleteSkill(request)
+    return this.skills.deleteSkill(request, this.skillDeletionGuard)
   }
 
   setSkillDeletionGuard(guard: (skillId: string) => Promise<void>): void {

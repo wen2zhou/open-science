@@ -368,6 +368,45 @@ describe('SpecialistEditor', () => {
     expect(document.body.querySelector('#sp-name-err')).toBeNull()
   })
 
+  it('lets a custom specialist explicitly bump its package version', async () => {
+    const onSaveEdit = vi.fn().mockResolvedValue(undefined)
+    await act(async () => {
+      root.render(
+        <SpecialistEditor
+          editSpecialist={{
+            id: 'versioned-bot',
+            name: 'Versioned Bot',
+            description: '',
+            systemPrompt: '',
+            enabled: true,
+            capabilityMode: 'full',
+            fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+            selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+            revision: 4,
+            packageVersion: '1.2.0',
+            origin: 'local'
+          }}
+          onCancel={vi.fn()}
+          onSave={vi.fn()}
+          onSaveEdit={onSaveEdit}
+        />
+      )
+    })
+
+    const version = document.body.querySelector<HTMLInputElement>('#sp-package-version')
+    expect(version?.value).toBe('1.2.0')
+    await act(async () => {
+      fireEvent.change(version!, { target: { value: '2.0.0' } })
+      Array.from(document.body.querySelectorAll<HTMLButtonElement>('button'))
+        .find((button) => button.textContent === 'Save changes')
+        ?.click()
+    })
+
+    expect(onSaveEdit).toHaveBeenCalledWith(
+      expect.objectContaining({ id: 'versioned-bot', revision: 4, packageVersion: '2.0.0' })
+    )
+  })
+
   it('renders a live preview avatar reflecting the selected icon', async () => {
     await act(async () => {
       root.render(

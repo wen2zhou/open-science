@@ -31,6 +31,7 @@ import { readSkillFile } from './skill-files'
 import { selectSkillManifestRoots } from './skill-bundle-paths'
 import { extractZip, extractZipLenient } from './zip-extract'
 import { readSpecialistPackageSkillMetadata } from './specialist-package-adapter'
+import { type SkillMutationOwner, skillMutationOwnerFor } from './skill-mutation-owner'
 
 const log = createLogger('skills')
 
@@ -333,7 +334,14 @@ const discoverSkillRoots = (zip: Buffer): SkillDiscovery => {
 
 // Reads and writes user-authored (personal) and imported skills under `<storageRoot>/skills/`.
 class UserSkillRepository {
-  constructor(private readonly storageRoot: string) {}
+  private readonly mutationOwner: SkillMutationOwner
+
+  constructor(
+    private readonly storageRoot: string,
+    mutationOwner: SkillMutationOwner = skillMutationOwnerFor(storageRoot)
+  ) {
+    this.mutationOwner = mutationOwner
+  }
 
   private sourceDir(source: (typeof USER_SOURCES)[number]): string {
     return join(this.storageRoot, 'skills', source)
@@ -355,15 +363,8 @@ class UserSkillRepository {
 
   // Serializes transaction recovery and the writeImported swap so neither observes the other's
   // intermediate on-disk state, and lets every public operation trigger a fresh recovery pass.
-  private lock: Promise<unknown> = Promise.resolve()
   private runExclusive<T>(fn: () => Promise<T>): Promise<T> {
-    const run = this.lock.then(fn, fn)
-    // Chain the next waiter on completion regardless of outcome, so one failure can't wedge the lock.
-    this.lock = run.then(
-      () => undefined,
-      () => undefined
-    )
-    return run
+    return this.mutationOwner.runExclusive(fn)
   }
 
   // Finalizes any imported-skill replace that a crash interrupted, so the swap is failure-atomic across
@@ -511,22 +512,24 @@ class UserSkillRepository {
   // used verbatim (validated, and rejected if already taken); otherwise a slug is derived from the
   // name and collisions get a numeric suffix.
   async createPersonal(input: WriteSkillInput, requestedSlug?: string): Promise<string> {
-    if (requestedSlug !== undefined) {
-      const slug = requestedSlug.trim()
-      assertUsableSlug(slug)
-      if (await this.slugTaken('personal', slug)) {
-        throw new Error(`A skill with ID "${slug}" already exists.`)
+    return this.runExclusive(async () => {
+      if (requestedSlug !== undefined) {
+        const slug = requestedSlug.trim()
+        assertUsableSlug(slug)
+        if (await this.slugTaken('personal', slug)) {
+          throw new Error(`A skill with ID "${slug}" already exists.`)
+        }
+        await this.writeSkill('personal', slug, input)
+
+        return `personal-${slug}`
       }
+
+      const base = toSlug(input.name) || 'skill'
+      const slug = await this.uniqueSlug('personal', base)
       await this.writeSkill('personal', slug, input)
 
       return `personal-${slug}`
-    }
-
-    const base = toSlug(input.name) || 'skill'
-    const slug = await this.uniqueSlug('personal', base)
-    await this.writeSkill('personal', slug, input)
-
-    return `personal-${slug}`
+    })
   }
 
   // Rewrites an existing personal skill's SKILL.md in place.
@@ -534,15 +537,16 @@ class UserSkillRepository {
     const parsed = parseUserSkillId(id)
     if (!parsed || parsed.source !== 'personal') throw new Error(`Not a personal skill id: ${id}`)
 
-    await this.writeSkill('personal', parsed.slug, input)
+    await this.runExclusive(() => this.writeSkill('personal', parsed.slug, input))
   }
 
   // Deletes a personal or imported skill directory.
-  async delete(id: string): Promise<void> {
+  async delete(id: string, guard?: (skillId: string) => Promise<void>): Promise<void> {
     return this.runExclusive(async () => {
       // Recover first, so a skill left only in a crash backup is restored to its live dir and then
       // actually removed here — otherwise a later recovery would "resurrect" the deleted skill.
       await this.doRecoverImportedTransactions()
+      await guard?.(id)
       const parsed = await this.resolveSkillId(id)
       const metadata = await readSpecialistPackageSkillMetadata(
         this.skillDir(parsed.source, parsed.slug)

@@ -12,10 +12,12 @@ import type {
 } from '../../../shared/specialist-package'
 import { UserSkillSpecialistPackageAdapter } from '../../skills/specialist-package-adapter'
 import { UserSkillRepository } from '../../skills/user-skill-repository'
+import type { FetchLike } from '../../skills/github-import'
 import { SpecialistRepository } from '../repository'
 import { ProfileService } from '../service'
 import { SpecialistPackageService } from './service'
 import type { SpecialistPackageSkillPort } from './skill-port'
+import { validateSpecialistZip } from './zip-adapter'
 
 const encoder = new TextEncoder()
 const catalog: SpecialistPackageCatalogSnapshot = {
@@ -98,6 +100,34 @@ const deletionSkillPlan = (id: string): SpecialistPackageSkillPlan => ({
   ]
 })
 
+const githubSkill =
+  (body: string): FetchLike =>
+  async (url: string) => {
+    if (url.includes('/contents/')) {
+      return {
+        ok: true,
+        status: 200,
+        json: async () => [
+          {
+            type: 'file',
+            name: 'SKILL.md',
+            path: 'analysis-tools/SKILL.md',
+            download_url: 'https://raw.example/analysis-tools'
+          }
+        ],
+        arrayBuffer: async () => new ArrayBuffer(0)
+      }
+    }
+    const bytes = encoder.encode(body)
+    return {
+      ok: true,
+      status: 200,
+      json: async () => ({}),
+      arrayBuffer: async () =>
+        bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength)
+    }
+  }
+
 let storageDir: string
 
 beforeEach(async () => {
@@ -110,6 +140,111 @@ afterEach(async () => {
 })
 
 describe('SpecialistPackageService', () => {
+  it('preserves a conflicting GitHub import that lands while package Skill preparation is paused', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    const skillPort = new UserSkillSpecialistPackageAdapter(storageDir)
+    const userSkills = new UserSkillRepository(storageDir)
+    const originalPrepare = skillPort.prepare.bind(skillPort)
+    let prepared!: () => void
+    const preparedSignal = new Promise<void>((resolve) => {
+      prepared = resolve
+    })
+    let continueInstall!: () => void
+    const installBarrier = new Promise<void>((resolve) => {
+      continueInstall = resolve
+    })
+    vi.spyOn(skillPort, 'prepare').mockImplementation(async (...args) => {
+      await originalPrepare(...args)
+      prepared()
+      await installBarrier
+    })
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      skillPort,
+      catalog: async () => ({
+        ...catalog,
+        skills: (await skillPort.snapshot()).map((skill) => ({ ...skill, builtin: false }))
+      })
+    })
+    const preview = await service.preview(bundledZip())
+    const installation = service.install({ candidateToken: preview.candidateToken })
+    await preparedSignal
+
+    await userSkills.importFromGitHub(
+      'https://github.com/acme/skills/tree/main/analysis-tools',
+      githubSkill(
+        '---\nname: analysis-tools\ndescription: Standalone\n---\nKeep the GitHub version.'
+      )
+    )
+    continueInstall()
+
+    await expect(installation).resolves.toEqual({ status: 'failed', code: 'commit-failed' })
+    await expect(userSkills.body('imported-analysis-tools')).resolves.toContain(
+      'Keep the GitHub version.'
+    )
+    await expect(new ProfileService(repository).getById('research-synth')).rejects.toThrow(
+      /not found/i
+    )
+  })
+
+  it('keeps a reused standalone Skill when direct deletion races the durable Specialist commit', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    const skillPort = new UserSkillSpecialistPackageAdapter(storageDir)
+    const userSkills = new UserSkillRepository(storageDir)
+    const bundledPlan = validateSpecialistZip(bundledZip(), catalog).plan!.skills[0]
+    await skillPort.prepare('seed-standalone', 'former-owner', [bundledPlan])
+    await skillPort.commit('seed-standalone')
+    await skillPort.recover('seed-standalone', 'commit')
+    await skillPort.prepareDeletion('release-standalone', 'former-owner', ['analysis-tools'], [])
+    await skillPort.commit('release-standalone')
+    await skillPort.recover('release-standalone', 'commit')
+
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      skillPort,
+      catalog: async () => ({
+        ...catalog,
+        skills: (await skillPort.snapshot()).map((skill) => ({ ...skill, builtin: false }))
+      })
+    })
+    const preview = await service.preview(bundledZip())
+    expect(preview.summary?.skills).toEqual([
+      expect.objectContaining({ id: 'analysis-tools', disposition: 'reuse-standalone' })
+    ])
+
+    const originalBegin = skillPort.beginMutation.bind(skillPort)
+    let mutationBegun!: () => void
+    const mutationSignal = new Promise<void>((resolve) => {
+      mutationBegun = resolve
+    })
+    let continueCommit!: () => void
+    const commitBarrier = new Promise<void>((resolve) => {
+      continueCommit = resolve
+    })
+    vi.spyOn(skillPort, 'beginMutation').mockImplementation(async (...args) => {
+      await originalBegin(...args)
+      mutationBegun()
+      await commitBarrier
+    })
+
+    const installation = service.install({ candidateToken: preview.candidateToken })
+    await mutationSignal
+    const deletion = userSkills.delete('analysis-tools', (skillId) =>
+      service.assertSkillDeletionAllowed(skillId)
+    )
+    continueCommit()
+
+    await expect(installation).resolves.toMatchObject({ status: 'installed' })
+    await expect(deletion).rejects.toMatchObject({
+      code: 'protected-skill',
+      skillId: 'analysis-tools',
+      specialistIds: ['research-synth']
+    })
+    await expect(userSkills.body('analysis-tools')).resolves.toContain('Use the tools.')
+  })
+
   it('previews a custom export with owned portable Skills selected by default', async () => {
     const repository = new SpecialistRepository(storageDir)
     await repository.insert({
@@ -208,7 +343,8 @@ describe('SpecialistPackageService', () => {
         importedAt: '2026-08-03T00:00:00.000Z',
         archiveDigest: 'archive',
         contentDigest: 'different-content',
-        requiresApp: '>=0.9.2 <1.0.0'
+        requiresApp: '>=0.9.2 <1.0.0',
+        packageVersion: '1.3.0'
       }
     })
     const service = new SpecialistPackageService({
@@ -224,6 +360,57 @@ describe('SpecialistPackageService', () => {
         severity: 'warning',
         code: 'specialist.export-version-unchanged'
       })
+    )
+
+    const profiles = new ProfileService(repository)
+    const bumped = await profiles.update({
+      id: 'research-synth',
+      revision: 4,
+      packageVersion: '2.0.0'
+    })
+    const bumpedPreview = await service.previewExport('research-synth')
+    expect(bumpedPreview.diagnostics).not.toContainEqual(
+      expect.objectContaining({ code: 'specialist.export-version-unchanged' })
+    )
+    const exported = await service.export({
+      specialistId: 'research-synth',
+      expectedRevision: bumped.revision,
+      includedSkillIds: []
+    })
+    expect(exported.fileName).toBe('research-synth-2.0.0.zip')
+    expect(JSON.parse(strFromU8(unzipSync(exported.archiveBytes)['manifest.json']))).toMatchObject({
+      id: 'research-synth',
+      version: '2.0.0'
+    })
+  })
+
+  it('rejects an import whose name is already used by another custom profile', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    await repository.insert({
+      id: 'existing-profile',
+      name: 'Research Synthesizer',
+      description: '',
+      systemPrompt: '',
+      enabled: true,
+      capabilityMode: 'selected',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+      revision: 1,
+      packageVersion: '0.1.0',
+      origin: 'local',
+      ownedSkillIds: []
+    })
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => catalog
+    })
+
+    const preview = await service.preview(validZip())
+
+    expect(preview.installable).toBe(false)
+    expect(preview.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'specialist.name-duplicate' })
     )
   })
 
@@ -429,6 +616,7 @@ describe('SpecialistPackageService', () => {
       specialist: {
         id: 'research-synth',
         packageVersion: '1.3.0',
+        importBaseline: { packageVersion: '1.3.0' },
         enabled: true,
         ownedSkillIds: ['analysis-tools'],
         systemPrompt: 'Portable user-authored instructions.',
@@ -760,6 +948,96 @@ describe('SpecialistPackageService', () => {
     expect(duplicate).toMatchObject({ origin: 'local', packageVersion: '0.1.0', ownedSkillIds: [] })
   })
 
+  it('does not erase a profile created while package Skill preparation is paused', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    const profiles = new ProfileService(repository)
+    let preparationStarted!: () => void
+    let resumePreparation!: () => void
+    const started = new Promise<void>((resolve) => {
+      preparationStarted = resolve
+    })
+    const resume = new Promise<void>((resolve) => {
+      resumePreparation = resolve
+    })
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => catalog,
+      skillPort: {
+        snapshot: async () => [],
+        prepare: async () => {
+          preparationStarted()
+          await resume
+        },
+        commit: async () => undefined,
+        rollback: async () => undefined,
+        recover: async () => undefined
+      }
+    })
+    const preview = await service.preview(validZip())
+
+    const installing = service.install({ candidateToken: preview.candidateToken })
+    await started
+    const concurrent = await profiles.create({ name: 'CONCURRENT_PROFILE' })
+    resumePreparation()
+
+    await expect(installing).resolves.toEqual({ status: 'failed', code: 'commit-failed' })
+    await expect(profiles.getById(concurrent.id)).resolves.toMatchObject({
+      name: 'CONCURRENT_PROFILE',
+      revision: 1
+    })
+    await expect(profiles.getById('research-synth')).rejects.toThrow(/not found/i)
+  })
+
+  it('does not erase a profile update made while package Skill preparation is paused', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    const profiles = new ProfileService(repository)
+    const existing = await profiles.create({
+      name: 'EXISTING_PROFILE',
+      description: 'Before concurrent update.'
+    })
+    let preparationStarted!: () => void
+    let resumePreparation!: () => void
+    const started = new Promise<void>((resolve) => {
+      preparationStarted = resolve
+    })
+    const resume = new Promise<void>((resolve) => {
+      resumePreparation = resolve
+    })
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => catalog,
+      skillPort: {
+        snapshot: async () => [],
+        prepare: async () => {
+          preparationStarted()
+          await resume
+        },
+        commit: async () => undefined,
+        rollback: async () => undefined,
+        recover: async () => undefined
+      }
+    })
+    const preview = await service.preview(validZip())
+
+    const installing = service.install({ candidateToken: preview.candidateToken })
+    await started
+    await profiles.update({
+      id: existing.id,
+      revision: existing.revision,
+      description: 'Concurrent update survives.'
+    })
+    resumePreparation()
+
+    await expect(installing).resolves.toEqual({ status: 'failed', code: 'commit-failed' })
+    await expect(profiles.getById(existing.id)).resolves.toMatchObject({
+      description: 'Concurrent update survives.',
+      revision: 2
+    })
+    await expect(profiles.getById('research-synth')).rejects.toThrow(/not found/i)
+  })
+
   it('cleans candidates on cancel and expiry and serializes concurrent replay attempts', async () => {
     const repository = new SpecialistRepository(storageDir)
     let now = new Date('2026-08-03T10:00:00.000Z')
@@ -835,7 +1113,7 @@ describe('SpecialistPackageService', () => {
       name: 'EXISTING_SPECIALIST',
       systemPrompt: 'Keep me.'
     })
-    const replace = vi.spyOn(repository, 'replaceAll')
+    const replace = vi.spyOn(repository, 'replaceAllIfUnchanged')
     replace.mockRejectedValueOnce(new Error('simulated durable write failure'))
     const service = new SpecialistPackageService({
       storageDir,
@@ -854,11 +1132,23 @@ describe('SpecialistPackageService', () => {
 
   it('distinguishes rollback failure from the commit that triggered it', async () => {
     const repository = new SpecialistRepository(storageDir)
-    vi.spyOn(repository, 'replaceAll').mockRejectedValue(new Error('storage unavailable'))
+    const replaceAllIfUnchanged = repository.replaceAllIfUnchanged.bind(repository)
+    vi.spyOn(repository, 'replaceAllIfUnchanged')
+      .mockImplementationOnce(replaceAllIfUnchanged)
+      .mockRejectedValueOnce(new Error('storage unavailable'))
     const service = new SpecialistPackageService({
       storageDir,
       repository,
-      catalog: async () => catalog
+      catalog: async () => catalog,
+      skillPort: {
+        snapshot: async () => [],
+        prepare: async () => undefined,
+        commit: async () => {
+          throw new Error('Skill commit failed.')
+        },
+        rollback: async () => undefined,
+        recover: async () => undefined
+      }
     })
     const preview = await service.preview(validZip())
 
@@ -1262,7 +1552,9 @@ describe('SpecialistPackageService', () => {
       })
     })
     const preview = await service.previewSpecialistDelete({ id: 'rollback-owner' })
-    vi.spyOn(repository, 'replaceAll').mockRejectedValueOnce(new Error('durable write failed'))
+    vi.spyOn(repository, 'replaceAllIfUnchanged').mockRejectedValueOnce(
+      new Error('durable write failed')
+    )
 
     await expect(
       service.deleteSpecialist({

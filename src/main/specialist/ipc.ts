@@ -210,7 +210,8 @@ export const registerSpecialistIpcHandlers = (
         if (!isCandidateRequest(request)) return { saved: false }
         const report = packageImport.service.report(request.candidateToken)
         if (!report) return { saved: false }
-        return packageImport.saveReport(report)
+        const result = await packageImport.saveReport(report)
+        return { saved: result.saved }
       }
     )
   }

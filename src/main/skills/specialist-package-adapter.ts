@@ -4,6 +4,7 @@ import { dirname, join, resolve, sep } from 'node:path'
 
 import type { SpecialistPackageSkillPlan } from '../../shared/specialist-package'
 import type { SpecialistPackageSkillPort } from '../specialist/package/skill-port'
+import { type SkillMutationOwner, skillMutationOwnerFor } from './skill-mutation-owner'
 
 const SAFE_SLUG = /^[a-z0-9-]+$/
 
@@ -72,10 +73,62 @@ const directoryHash = async (directory: string): Promise<string> => {
 export class UserSkillSpecialistPackageAdapter implements SpecialistPackageSkillPort {
   private readonly importedRoot: string
   private readonly transactionRoot: string
+  private readonly mutationOwner: SkillMutationOwner
+  private readonly mutationReleases = new Map<string, () => void>()
 
-  constructor(storageRoot: string) {
+  constructor(
+    storageRoot: string,
+    mutationOwner: SkillMutationOwner = skillMutationOwnerFor(storageRoot)
+  ) {
     this.importedRoot = join(storageRoot, 'skills', 'imported')
     this.transactionRoot = join(storageRoot, 'specialist-package-skill-transactions')
+    this.mutationOwner = mutationOwner
+  }
+
+  async beginMutation(
+    transactionId: string,
+    _specialistId: string,
+    skills: readonly SpecialistPackageSkillPlan[]
+  ): Promise<void> {
+    if (!SAFE_SLUG.test(transactionId) || this.mutationReleases.has(transactionId)) {
+      throw new Error('Invalid package transaction identity.')
+    }
+    const release = await this.mutationOwner.acquire()
+    try {
+      const live = await this.snapshot()
+      for (const skill of skills) {
+        const current = live.find((candidate) => candidate.id === skill.id)
+        if (skill.disposition === 'install') {
+          if (current || (await exists(join(this.importedRoot, skill.id)))) {
+            throw new Error(`Skill ${skill.id} changed after preview.`)
+          }
+          continue
+        }
+        if (skill.disposition === 'reuse-owned' || skill.disposition === 'reuse-standalone') {
+          if (
+            !current ||
+            current.version !== skill.version ||
+            current.contentHash !== skill.contentHash ||
+            (skill.disposition === 'reuse-standalone' &&
+              (current.standalone === false || current.ownerIds.length > 0)) ||
+            (skill.disposition === 'reuse-owned' &&
+              (current.standalone !== false || current.ownerIds.length === 0))
+          ) {
+            throw new Error(`Skill ${skill.id} changed after preview.`)
+          }
+        }
+      }
+      this.mutationReleases.set(transactionId, release)
+    } catch (error) {
+      release()
+      throw error
+    }
+  }
+
+  async endMutation(transactionId: string): Promise<void> {
+    const release = this.mutationReleases.get(transactionId)
+    this.mutationReleases.delete(transactionId)
+    release?.()
   }
 
   async snapshot(): Promise<PackageSkillMetadata[]> {

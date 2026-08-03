@@ -56,6 +56,178 @@ describe('validateSpecialistPackage', () => {
     )
   })
 
+  it('rejects a Specialist name that case-insensitively matches a protected identity', () => {
+    const protectedCatalog = {
+      ...catalog,
+      protectedSpecialistNames: ['Reviewer', 'Literature Reviewer']
+    } as SpecialistPackageCatalogSnapshot & { protectedSpecialistNames: readonly string[] }
+
+    const result = validateSpecialistPackage(
+      files(validManifest, { ...validSpecialist, name: 'rEvIeWeR' }),
+      protectedCatalog,
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual({
+      severity: 'error',
+      code: 'specialist.name-protected',
+      message: 'The Specialist name is reserved and cannot be contributed.',
+      path: 'specialist.json',
+      relatedId: 'rEvIeWeR'
+    })
+  })
+
+  it('rejects a Specialist name already used by a custom profile', () => {
+    const result = validateSpecialistPackage(
+      files(validManifest, validSpecialist),
+      { ...catalog, specialists: [{ id: 'another-specialist', name: 'RNA Reviewer' }] },
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        code: 'specialist.name-duplicate',
+        path: 'specialist.json',
+        relatedId: 'RNA Reviewer'
+      })
+    )
+  })
+
+  it('applies the shared public-name rules to imported Specialists', () => {
+    const result = validateSpecialistPackage(
+      files(validManifest, { ...validSpecialist, name: 'Unsafe/name' }),
+      catalog,
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        severity: 'error',
+        code: 'specialist.name-invalid',
+        path: 'specialist.json'
+      })
+    )
+  })
+
+  it('rejects an imported display name above the shared maximum', () => {
+    const result = validateSpecialistPackage(
+      files(validManifest, { ...validSpecialist, displayName: 'D'.repeat(81) }),
+      catalog,
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'specialist.display-name-invalid' })
+    )
+  })
+
+  it('accepts a 200-character description and rejects 201 characters', () => {
+    const atLimit = validateSpecialistPackage(
+      files(validManifest, { ...validSpecialist, description: 'D'.repeat(200) }),
+      catalog,
+      'zip'
+    )
+    const aboveLimit = validateSpecialistPackage(
+      files(validManifest, { ...validSpecialist, description: 'D'.repeat(201) }),
+      catalog,
+      'zip'
+    )
+
+    expect(atLimit.preview.installable).toBe(true)
+    expect(aboveLimit.preview.installable).toBe(false)
+    expect(aboveLimit.preview.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'specialist.description-invalid' })
+    )
+  })
+
+  it('accepts a 32,768-character system prompt and rejects a larger archive-valid prompt', () => {
+    const atLimit = validateSpecialistPackage(
+      files(validManifest, { ...validSpecialist, systemPrompt: 'P'.repeat(32_768) }),
+      catalog,
+      'zip'
+    )
+    const aboveLimit = validateSpecialistPackage(
+      files(validManifest, { ...validSpecialist, systemPrompt: 'P'.repeat(32_769) }),
+      catalog,
+      'zip'
+    )
+
+    expect(atLimit.preview.installable).toBe(true)
+    expect(aboveLimit.preview.installable).toBe(false)
+    expect(aboveLimit.preview.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'specialist.system-prompt-invalid' })
+    )
+  })
+
+  it('rejects an imported capability list with more than 1,000 entries', () => {
+    const result = validateSpecialistPackage(
+      files(validManifest, {
+        ...validSpecialist,
+        selectedCapabilities: {
+          ...validSpecialist.selectedCapabilities,
+          skillIds: Array.from({ length: 1_001 }, (_, index) => `skill-${index}`)
+        }
+      }),
+      catalog,
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'specialist.selected-capabilities-invalid' })
+    )
+  })
+
+  it('rejects an imported connector pattern longer than 1,024 characters', () => {
+    const result = validateSpecialistPackage(
+      files(validManifest, {
+        ...validSpecialist,
+        selectedCapabilities: {
+          skillIds: [],
+          connectorIds: ['zotero'],
+          connectorTools: [{ connectorId: 'zotero', includeToolsPattern: 'x'.repeat(1_025) }]
+        }
+      }),
+      catalog,
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'specialist.selected-capabilities-invalid' })
+    )
+  })
+
+  it('rejects an imported connector method list with more than 1,000 entries', () => {
+    const result = validateSpecialistPackage(
+      files(validManifest, {
+        ...validSpecialist,
+        selectedCapabilities: {
+          skillIds: [],
+          connectorIds: ['zotero'],
+          connectorTools: [
+            {
+              connectorId: 'zotero',
+              includedMethods: Array.from({ length: 1_001 }, (_, index) => `method-${index}`)
+            }
+          ]
+        }
+      }),
+      catalog,
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(false)
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({ code: 'specialist.selected-capabilities-invalid' })
+    )
+  })
+
   it('returns a renderer-safe preview and immutable plan for a valid package', () => {
     const result = validateSpecialistPackage(files(validManifest, validSpecialist), catalog, 'zip')
 

@@ -44,9 +44,15 @@ const sanitizeImportBaseline = (v: unknown): SpecialistImportBaseline | undefine
   const archiveDigest = asString(v.archiveDigest)
   const contentDigest = asString(v.contentDigest)
   const requiresApp = asString(v.requiresApp)
-  return importedAt && archiveDigest && contentDigest && requiresApp
-    ? { importedAt, archiveDigest, contentDigest, requiresApp }
-    : undefined
+  if (!importedAt || !archiveDigest || !contentDigest || !requiresApp) return undefined
+  const packageVersion = asString(v.packageVersion)
+  return {
+    importedAt,
+    archiveDigest,
+    contentDigest,
+    requiresApp,
+    ...(packageVersion ? { packageVersion } : {})
+  }
 }
 
 const CAPABILITY_MODES = new Set<SpecialistCapabilityMode>(['full', 'selected'])
@@ -300,6 +306,28 @@ export class SpecialistRepository {
   // Package transactions use this narrow document swap after journaling their before/after state.
   async replaceAll(doc: StoredSpecialists): Promise<void> {
     const run = this.saveQueue.then(() => this.write(doc))
+    this.saveQueue = run.then(
+      () => undefined,
+      () => undefined
+    )
+    return run
+  }
+
+  // Atomically replaces the document only when no owner mutation has changed it
+  // since the caller took its snapshot. Package transactions use this after their
+  // asynchronous preparation work so a successful ProfileService mutation can
+  // never be overwritten by a stale whole-document snapshot.
+  async replaceAllIfUnchanged(
+    expected: StoredSpecialists,
+    replacement: StoredSpecialists
+  ): Promise<void> {
+    const run = this.saveQueue.then(async () => {
+      const current = await this.getAll()
+      if (JSON.stringify(current) !== JSON.stringify(expected)) {
+        throw new Error('Specialist document changed during package transaction.')
+      }
+      await this.write(replacement)
+    })
     this.saveQueue = run.then(
       () => undefined,
       () => undefined

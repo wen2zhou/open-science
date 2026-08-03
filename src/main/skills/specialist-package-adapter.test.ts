@@ -1,4 +1,4 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -6,7 +6,11 @@ import { afterEach, describe, expect, it } from 'vitest'
 
 import type { SpecialistPackageSkillPlan } from '../../shared/specialist-package'
 import { UserSkillRepository } from './user-skill-repository'
-import { UserSkillSpecialistPackageAdapter } from './specialist-package-adapter'
+import {
+  SPECIALIST_PACKAGE_SKILL_METADATA,
+  UserSkillSpecialistPackageAdapter
+} from './specialist-package-adapter'
+import { zipSync, strToU8 } from 'fflate'
 
 const roots: string[] = []
 afterEach(async () => {
@@ -32,6 +36,70 @@ const plan = (id = 'analysis-tools'): SpecialistPackageSkillPlan => ({
 })
 
 describe('UserSkillSpecialistPackageAdapter', () => {
+  it('rejects reuse-owned when live ownership metadata becomes inconsistent', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'specialist-skill-adapter-'))
+    roots.push(root)
+    const adapter = new UserSkillSpecialistPackageAdapter(root)
+
+    await adapter.prepare('tx-seed', 'research-synth', [plan()])
+    await adapter.commit('tx-seed')
+    await adapter.recover('tx-seed', 'commit')
+    await writeFile(
+      join(root, 'skills', 'imported', 'analysis-tools', SPECIALIST_PACKAGE_SKILL_METADATA),
+      JSON.stringify({
+        id: 'analysis-tools',
+        version: '1.2.3',
+        contentHash: 'a'.repeat(64),
+        standalone: true,
+        ownerIds: ['research-synth']
+      })
+    )
+
+    await expect(
+      adapter.beginMutation('tx-reuse', 'research-synth', [
+        { ...plan(), disposition: 'reuse-owned' }
+      ])
+    ).rejects.toThrow(/changed after preview/i)
+  })
+
+  it('serializes package promotion with ordinary ZIP imports of the same Skill ID', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'specialist-skill-adapter-'))
+    roots.push(root)
+    const adapter = new UserSkillSpecialistPackageAdapter(root)
+    const repository = new UserSkillRepository(root)
+    const packagePlan = plan()
+
+    await adapter.prepare('tx-zip-race', 'research-synth', [packagePlan])
+    await adapter.beginMutation('tx-zip-race', 'research-synth', [packagePlan])
+
+    const ordinaryImport = repository.importFromZip(
+      Buffer.from(
+        zipSync({
+          'SKILL.md': strToU8(
+            '---\nname: analysis-tools\ndescription: A different standalone Skill\n---\nStandalone.'
+          )
+        })
+      )
+    )
+    let importSettled = false
+    void ordinaryImport.finally(() => {
+      importSettled = true
+    })
+    await new Promise((resolve) => setImmediate(resolve))
+    expect(importSettled).toBe(false)
+
+    await adapter.commit('tx-zip-race')
+    await adapter.recover('tx-zip-race', 'commit')
+    await adapter.endMutation('tx-zip-race')
+
+    await expect(ordinaryImport).resolves.toMatchObject({
+      status: 'imported',
+      id: 'imported-analysis-tools-2'
+    })
+    await expect(repository.body('analysis-tools')).resolves.toContain('Use this Skill.')
+    await expect(repository.body('imported-analysis-tools-2')).resolves.toContain('Standalone.')
+  })
+
   it('keeps prepared Skill trees invisible until commit and exposes their package identity afterward', async () => {
     const root = await mkdtemp(join(tmpdir(), 'specialist-skill-adapter-'))
     roots.push(root)

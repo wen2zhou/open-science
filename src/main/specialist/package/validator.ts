@@ -15,10 +15,14 @@ import {
   type SpecialistPackageValidationPlan,
   type SpecialistPackageValidationResult
 } from '../../../shared/specialist-package'
-import type {
-  ConnectorToolRule,
-  SpecialistFullAccessConfig,
-  SpecialistSelectedConfig
+import {
+  validateSpecialistDescription,
+  validateSpecialistDisplayName,
+  validateSpecialistPublicName,
+  validateSpecialistSystemPrompt,
+  type ConnectorToolRule,
+  type SpecialistFullAccessConfig,
+  type SpecialistSelectedConfig
 } from '../../../shared/specialist'
 import { isValidSemverRange, satisfiesSemverRange } from './semver'
 
@@ -30,6 +34,8 @@ const RESERVED_ID_PREFIXES = ['os-', 'mcp-'] as const
 const isSafeContributionId = (value: string): boolean =>
   SAFE_ID.test(value) && !RESERVED_ID_PREFIXES.some((prefix) => value.startsWith(prefix))
 const SEMVER = /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-[0-9A-Za-z.-]+)?(?:\+[0-9A-Za-z.-]+)?$/
+const MAX_CAPABILITY_ENTRIES = 1_000
+const MAX_CONNECTOR_PATTERN_LENGTH = 1_024
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -77,11 +83,15 @@ const parseJson = (
   }
 }
 
-const stringArray = (value: unknown): string[] | undefined =>
-  Array.isArray(value) && value.every((entry) => typeof entry === 'string') ? [...value] : undefined
+const stringArray = (value: unknown, maximum = Number.POSITIVE_INFINITY): string[] | undefined =>
+  Array.isArray(value) &&
+  value.length <= maximum &&
+  value.every((entry) => typeof entry === 'string')
+    ? [...value]
+    : undefined
 
 const parseConnectorRules = (value: unknown): ConnectorToolRule[] | undefined => {
-  if (!Array.isArray(value)) return undefined
+  if (!Array.isArray(value) || value.length > MAX_CAPABILITY_ENTRIES) return undefined
   const result: ConnectorToolRule[] = []
   for (const candidate of value) {
     if (!isRecord(candidate) || typeof candidate.connectorId !== 'string') return undefined
@@ -94,16 +104,22 @@ const parseConnectorRules = (value: unknown): ConnectorToolRule[] | undefined =>
     ])
     if (Object.keys(candidate).some((key) => !allowed.has(key))) return undefined
     const includedMethods =
-      candidate.includedMethods === undefined ? undefined : stringArray(candidate.includedMethods)
+      candidate.includedMethods === undefined
+        ? undefined
+        : stringArray(candidate.includedMethods, MAX_CAPABILITY_ENTRIES)
     const excludedMethods =
-      candidate.excludedMethods === undefined ? undefined : stringArray(candidate.excludedMethods)
+      candidate.excludedMethods === undefined
+        ? undefined
+        : stringArray(candidate.excludedMethods, MAX_CAPABILITY_ENTRIES)
     if (
       (candidate.includedMethods !== undefined && includedMethods === undefined) ||
       (candidate.excludedMethods !== undefined && excludedMethods === undefined) ||
       (candidate.includeToolsPattern !== undefined &&
-        typeof candidate.includeToolsPattern !== 'string') ||
+        (typeof candidate.includeToolsPattern !== 'string' ||
+          candidate.includeToolsPattern.length > MAX_CONNECTOR_PATTERN_LENGTH)) ||
       (candidate.excludeToolsPattern !== undefined &&
-        typeof candidate.excludeToolsPattern !== 'string')
+        (typeof candidate.excludeToolsPattern !== 'string' ||
+          candidate.excludeToolsPattern.length > MAX_CONNECTOR_PATTERN_LENGTH))
     ) {
       return undefined
     }
@@ -124,8 +140,8 @@ const parseConnectorRules = (value: unknown): ConnectorToolRule[] | undefined =>
 
 const parseFullAccess = (value: unknown): SpecialistFullAccessConfig | undefined => {
   if (!isRecord(value)) return undefined
-  const excludedSkillIds = stringArray(value.excludedSkillIds)
-  const excludedConnectorIds = stringArray(value.excludedConnectorIds)
+  const excludedSkillIds = stringArray(value.excludedSkillIds, MAX_CAPABILITY_ENTRIES)
+  const excludedConnectorIds = stringArray(value.excludedConnectorIds, MAX_CAPABILITY_ENTRIES)
   const connectorTools = parseConnectorRules(value.connectorTools)
   if (!excludedSkillIds || !excludedConnectorIds || !connectorTools) return undefined
   return { excludedSkillIds, excludedConnectorIds, connectorTools }
@@ -133,8 +149,8 @@ const parseFullAccess = (value: unknown): SpecialistFullAccessConfig | undefined
 
 const parseSelected = (value: unknown): SpecialistSelectedConfig | undefined => {
   if (!isRecord(value)) return undefined
-  const skillIds = stringArray(value.skillIds)
-  const connectorIds = stringArray(value.connectorIds)
+  const skillIds = stringArray(value.skillIds, MAX_CAPABILITY_ENTRIES)
+  const connectorIds = stringArray(value.connectorIds, MAX_CAPABILITY_ENTRIES)
   const connectorTools = parseConnectorRules(value.connectorTools)
   if (!skillIds || !connectorIds || !connectorTools) return undefined
   return { skillIds, connectorIds, connectorTools }
@@ -368,6 +384,21 @@ const parsePayload = (
       'Specialist name is invalid.',
       'specialist.json'
     )
+  else if (validateSpecialistPublicName(name))
+    diagnostic(
+      diagnostics,
+      'specialist.name-invalid',
+      validateSpecialistPublicName(name)!,
+      'specialist.json'
+    )
+  if (typeof value.displayName === 'string' && validateSpecialistDisplayName(value.displayName)) {
+    diagnostic(
+      diagnostics,
+      'specialist.display-name-invalid',
+      validateSpecialistDisplayName(value.displayName)!,
+      'specialist.json'
+    )
+  }
   const description = typeof value.description === 'string' ? value.description : undefined
   if (description === undefined)
     diagnostic(
@@ -376,12 +407,26 @@ const parsePayload = (
       'Specialist description must be a string.',
       'specialist.json'
     )
+  else if (validateSpecialistDescription(description))
+    diagnostic(
+      diagnostics,
+      'specialist.description-invalid',
+      validateSpecialistDescription(description)!,
+      'specialist.json'
+    )
   const systemPrompt = typeof value.systemPrompt === 'string' ? value.systemPrompt : undefined
   if (systemPrompt === undefined)
     diagnostic(
       diagnostics,
       'specialist.system-prompt-invalid',
       'Specialist system prompt must be a string.',
+      'specialist.json'
+    )
+  else if (validateSpecialistSystemPrompt(systemPrompt))
+    diagnostic(
+      diagnostics,
+      'specialist.system-prompt-invalid',
+      validateSpecialistSystemPrompt(systemPrompt)!,
       'specialist.json'
     )
   const capabilityMode =
@@ -692,6 +737,37 @@ export const validateSpecialistPackage = (
   const payload = specialistFile
     ? parsePayload(parseJson(specialistFile, diagnostics), diagnostics)
     : undefined
+  if (
+    payload &&
+    (_catalog.protectedSpecialistNames ?? []).some(
+      (name) => name.trim().toLowerCase() === payload.name.trim().toLowerCase()
+    )
+  ) {
+    diagnostic(
+      diagnostics,
+      'specialist.name-protected',
+      'The Specialist name is reserved and cannot be contributed.',
+      'specialist.json',
+      payload.name
+    )
+  }
+  if (
+    manifest &&
+    payload &&
+    (_catalog.specialists ?? []).some(
+      (specialist) =>
+        specialist.id !== manifest.id &&
+        specialist.name.trim().toLowerCase() === payload.name.trim().toLowerCase()
+    )
+  ) {
+    diagnostic(
+      diagnostics,
+      'specialist.name-duplicate',
+      'The Specialist name is already in use.',
+      'specialist.json',
+      payload.name
+    )
+  }
   const connectorIds = payload
     ? [
         ...(payload.capabilityMode === 'selected' ? payload.selectedCapabilities.connectorIds : []),

@@ -192,7 +192,7 @@ describe('specialist session IPC', () => {
       handlers.get(SPECIALIST_IPC.SAVE_PACKAGE_REPORT)?.(undefined, {
         candidateToken: 'candidate-1'
       })
-    ).resolves.toEqual({ saved: true, filePath: '/downloads/report.json' })
+    ).resolves.toEqual({ saved: true })
     expect(saveReport).toHaveBeenCalledWith(report)
 
     await expect(

@@ -123,6 +123,7 @@ import { createSettingsWorkflows } from './settings/workflows'
 import { ProfileService } from './specialist/service'
 import { SpecialistRepository } from './specialist/repository'
 import { BuiltinSpecialistRegistry } from './specialist/builtin-registry'
+import { composeBuiltinSkillCatalog } from './specialist/package/builtin-skill-catalog'
 import { SpecialistPackageService } from './specialist/package/service'
 import {
   saveSpecialistExport,
@@ -518,19 +519,14 @@ const createApplicationModules = async (
   const packageSkills = await specialistPackageSkillAdapter.snapshot()
   const builtinRegistry = new BuiltinSpecialistRegistry({
     appVersion,
-    builtinSkills: specialistSkills
-      .filter((skill) => skill.source === 'featured')
-      .map((skill) => ({
-        id: skill.id,
-        appVersion,
-        compatibility: `app:${appVersion}:${skill.id}`
-      })),
+    builtinSkills: composeBuiltinSkillCatalog(appVersion, specialistSkills),
     skills: specialistSkills.map((skill) => {
       const packageSkill = packageSkills.find((candidate) => candidate.id === skill.id)
       return { id: skill.id, builtin: skill.source === 'featured', ...(packageSkill ?? {}) }
     }),
     connectorIds: ALL_CONNECTOR_IDS,
-    protectedSpecialistIds: ['reviewer']
+    protectedSpecialistIds: ['reviewer'],
+    protectedSpecialistNames: ['Reviewer']
   })
   const profileService = new ProfileService(specialistRepository, builtinRegistry)
   await profileService.ensureBuiltinCatalogReady()
@@ -546,13 +542,7 @@ const createApplicationModules = async (
       ])
       const baseCatalog = {
         appVersion,
-        builtinSkills: skills
-          .filter((skill) => skill.source === 'featured')
-          .map((skill) => ({
-            id: skill.id,
-            appVersion,
-            compatibility: `app:${appVersion}:${skill.id}`
-          })),
+        builtinSkills: composeBuiltinSkillCatalog(appVersion, skills),
         skills: skills.map((skill) => {
           const packageSkill = packageSkills.find((candidate) => candidate.id === skill.id)
           return {
@@ -565,7 +555,8 @@ const createApplicationModules = async (
           ...ALL_CONNECTOR_IDS,
           ...(connectorSettings?.customMcpServers ?? []).map((server) => server.id)
         ],
-        protectedSpecialistIds: ['reviewer']
+        protectedSpecialistIds: ['reviewer'],
+        protectedSpecialistNames: ['Reviewer']
       }
       const builtinSpecialists = await new BuiltinSpecialistRegistry(baseCatalog).load()
       return {
@@ -573,6 +564,13 @@ const createApplicationModules = async (
         protectedSpecialistIds: [
           ...baseCatalog.protectedSpecialistIds,
           ...builtinSpecialists.entries.map((entry) => entry.id)
+        ],
+        protectedSpecialistNames: [
+          ...(baseCatalog.protectedSpecialistNames ?? []),
+          ...builtinSpecialists.entries.flatMap((entry) => [
+            entry.name,
+            entry.displayName ?? entry.name
+          ])
         ]
       }
     },

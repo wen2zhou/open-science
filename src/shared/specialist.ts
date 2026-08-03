@@ -218,6 +218,7 @@ export type SpecialistProfileView = {
     archiveDigest: string
     contentDigest: string
     requiresApp: string
+    packageVersion?: string
   }
 }
 
@@ -267,6 +268,7 @@ export type CreateSpecialistInput = {
 export type UpdateSpecialistInput = {
   id: string
   revision: number
+  packageVersion?: string
   name?: string
   displayName?: string
   description?: string
@@ -293,7 +295,7 @@ export type DuplicateSpecialistRequest = { id: string }
 
 // Validation error for a single field.
 export type SpecialistFieldError = {
-  field: 'name' | 'description' | 'systemPrompt'
+  field: 'name' | 'description' | 'systemPrompt' | 'packageVersion'
   message: string
 }
 
@@ -307,6 +309,12 @@ export const SPECIALIST_NAME_MAX_LENGTH = 80
 export const SPECIALIST_DISPLAY_NAME_MAX_LENGTH = 80
 export const SPECIALIST_DESCRIPTION_MAX_LENGTH = 200
 export const SPECIALIST_SYSTEM_PROMPT_MAX_LENGTH = 32_768
+
+const SEMVER_PATTERN =
+  /^(0|[1-9]\d*)\.(0|[1-9]\d*)\.(0|[1-9]\d*)(?:-(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*)(?:\.(?:0|[1-9]\d*|\d*[A-Za-z-][0-9A-Za-z-]*))*)?(?:\+[0-9A-Za-z-]+(?:\.[0-9A-Za-z-]+)*)?$/
+
+export const validateSpecialistPackageVersion = (version: string): string | undefined =>
+  SEMVER_PATTERN.test(version) ? undefined : 'Package version must be valid SemVer.'
 
 // ---------------------------------------------------------------------------
 // Name validation
@@ -421,6 +429,13 @@ export const validateUpdateSpecialistInput = (
   existingIds?: Map<string, string>
 ): SpecialistFieldError[] => {
   const errors: SpecialistFieldError[] = []
+
+  if (input.packageVersion !== undefined) {
+    const packageVersionError = validateSpecialistPackageVersion(input.packageVersion)
+    if (packageVersionError) {
+      errors.push({ field: 'packageVersion', message: packageVersionError })
+    }
+  }
 
   if (input.name !== undefined) {
     const nameError = validateSpecialistName(input.name, existingNames, input.id, existingIds)

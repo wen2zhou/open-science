@@ -14,6 +14,7 @@ export type SpecialistImportBaseline = {
   archiveDigest: string
   contentDigest: string
   requiresApp: string
+  packageVersion?: string
 }
 
 // The persisted document stored in specialists.json.
