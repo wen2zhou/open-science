@@ -396,6 +396,7 @@ describe('preload bridge — public surface inventory', () => {
       'specialist.onPendingSwitch',
       'specialist.resolveSessionSpecialist',
       'specialist.retryHandoff',
+      'specialist.savePackageReport',
       'specialist.selectPackage',
       'specialist.setEnabled',
       'specialist.setSessionSpecialist',

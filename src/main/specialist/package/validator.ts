@@ -647,6 +647,18 @@ export const validateSpecialistPackage = (
     'skills'
   ])
   for (const file of packageFiles) {
+    if (
+      /(?:^|\/)(?:scripts?\/|[^/]+\.(?:sh|bash|zsh|fish|ps1|bat|cmd|exe|com|msi|app|dll|so|dylib|py|pl|rb|js|mjs|cjs))$/i.test(
+        file.path
+      )
+    ) {
+      warning(
+        diagnostics,
+        'package.executable-content-present',
+        'The package contains script or executable content; preview never executes it.',
+        file.path
+      )
+    }
     const topLevel = file.path.split('/')[0]
     if (!allowedTopLevel.has(topLevel)) {
       diagnostic(

@@ -118,8 +118,16 @@ describe('specialist session IPC', () => {
       undefined,
       undefined,
       {
-        service: { preview, install, cancel: vi.fn(), dispose: vi.fn() },
-        selectArchive: vi.fn().mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]) })
+        service: {
+          preview,
+          previewOversizedArchive: vi.fn(),
+          install,
+          cancel: vi.fn(),
+          dispose: vi.fn(),
+          report: vi.fn()
+        },
+        selectArchive: vi.fn().mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]) }),
+        saveReport: vi.fn()
       }
     )
 
@@ -140,5 +148,49 @@ describe('specialist session IPC', () => {
       })
     ).resolves.toEqual({ status: 'failed', code: 'candidate-invalid' })
     expect(install).not.toHaveBeenCalled()
+  })
+
+  it('saves only the main-owned report for a valid candidate request', async () => {
+    handlers.clear()
+    const report = { schemaVersion: 1 as const, diagnostics: [], installable: false }
+    const saveReport = vi
+      .fn()
+      .mockResolvedValue({ saved: true, filePath: '/downloads/report.json' })
+
+    registerSpecialistIpcHandlers(
+      createProfileService(),
+      new SessionBindingService(createProfileService()),
+      vi.fn(),
+      undefined,
+      undefined,
+      undefined,
+      {
+        service: {
+          preview: vi.fn(),
+          previewOversizedArchive: vi.fn(),
+          install: vi.fn(),
+          cancel: vi.fn(),
+          dispose: vi.fn(),
+          report: vi.fn().mockReturnValue(report)
+        },
+        selectArchive: vi.fn(),
+        saveReport
+      }
+    )
+
+    await expect(
+      handlers.get(SPECIALIST_IPC.SAVE_PACKAGE_REPORT)?.(undefined, {
+        candidateToken: 'candidate-1'
+      })
+    ).resolves.toEqual({ saved: true, filePath: '/downloads/report.json' })
+    expect(saveReport).toHaveBeenCalledWith(report)
+
+    await expect(
+      handlers.get(SPECIALIST_IPC.SAVE_PACKAGE_REPORT)?.(undefined, {
+        candidateToken: 'candidate-1',
+        report: { secret: true }
+      })
+    ).resolves.toEqual({ saved: false })
+    expect(saveReport).toHaveBeenCalledOnce()
   })
 })

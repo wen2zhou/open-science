@@ -1,6 +1,6 @@
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
-import { readFile, writeFile } from 'node:fs/promises'
+import { readFile, stat, writeFile } from 'node:fs/promises'
 
 import { app, BrowserWindow, dialog, net, Notification, protocol, webContents } from 'electron'
 
@@ -124,7 +124,10 @@ import { ProfileService } from './specialist/service'
 import { SpecialistRepository } from './specialist/repository'
 import { BuiltinSpecialistRegistry } from './specialist/builtin-registry'
 import { SpecialistPackageService } from './specialist/package/service'
-import { selectSpecialistArchive } from './specialist/package/electron-adapter'
+import {
+  saveSpecialistPackageReport,
+  selectSpecialistArchive
+} from './specialist/package/electron-adapter'
 import { UserSkillSpecialistPackageAdapter } from './skills/specialist-package-adapter'
 import { AgentsService } from './agents/agents-service'
 import {
@@ -1176,8 +1179,17 @@ const createApplicationModules = async (
         selectArchive: () =>
           selectSpecialistArchive({
             showOpenDialog: (options) => dialog.showOpenDialog(options),
-            readFile
-          })
+            readFile,
+            getFileSize: async (filePath) => (await stat(filePath)).size
+          }),
+        saveReport: (report) =>
+          saveSpecialistPackageReport(
+            {
+              showSaveDialog: (options) => dialog.showSaveDialog(options),
+              writeFile: (filePath, contents) => writeFile(filePath, contents, 'utf8')
+            },
+            report
+          )
       }
     )
   )
