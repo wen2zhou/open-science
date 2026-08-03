@@ -8,6 +8,7 @@ import { createLogger } from '../../logger'
 import { SpecialistRepository } from '../repository'
 import { SPECIALISTS_FILE_VERSION, type StoredSpecialist, type StoredSpecialists } from '../types'
 import { specialistPayloadContentHash } from './validator'
+import { NOOP_SPECIALIST_PACKAGE_SKILL_PORT, type SpecialistPackageSkillPort } from './skill-port'
 
 type TransactionPhase = 'prepared' | 'committing' | 'committed' | 'rolling-back' | 'rolled-back'
 
@@ -53,7 +54,8 @@ export class SpecialistPackageTransaction {
   constructor(
     storageDir: string,
     private readonly repository: SpecialistRepository,
-    private readonly transactionId: () => string = randomUUID
+    private readonly transactionId: () => string = randomUUID,
+    private readonly skillPort: SpecialistPackageSkillPort = NOOP_SPECIALIST_PACKAGE_SKILL_PORT
   ) {
     this.journalPath = join(storageDir, 'specialist-package-transaction.json')
   }
@@ -64,7 +66,15 @@ export class SpecialistPackageTransaction {
     try {
       raw = await readFile(this.journalPath, 'utf8')
     } catch (error) {
-      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') {
+        try {
+          await this.skillPort.recover(undefined, 'rollback')
+        } catch (recoveryError) {
+          this.recoveryFailure = recoveryError
+          throw new SpecialistPackageRecoveryError()
+        }
+        return
+      }
       this.recoveryFailure = error
       throw new SpecialistPackageRecoveryError()
     }
@@ -74,7 +84,11 @@ export class SpecialistPackageTransaction {
       if (!journal || typeof journal.transactionId !== 'string' || !journal.before) {
         throw new Error('Invalid Specialist package transaction journal.')
       }
-      if (journal.phase !== 'committed' && journal.phase !== 'rolled-back') {
+      if (journal.phase === 'committed') {
+        await this.repository.replaceAll(journal.after)
+        await this.skillPort.recover(journal.transactionId, 'commit')
+      } else if (journal.phase !== 'rolled-back') {
+        await this.skillPort.recover(journal.transactionId, 'rollback')
         await this.repository.replaceAll(journal.before)
       }
       await rm(this.journalPath, { force: true })
@@ -122,7 +136,16 @@ export class SpecialistPackageTransaction {
         revision: existing ? existing.revision + 1 : 1,
         packageVersion: plan.packageVersion,
         origin: 'imported',
-        ownedSkillIds: existing?.ownedSkillIds ?? [],
+        ownedSkillIds: [
+          ...new Set([
+            ...(existing?.ownedSkillIds ?? []),
+            ...plan.skills
+              .filter(
+                (skill) => skill.disposition === 'install' || skill.disposition === 'reuse-owned'
+              )
+              .map((skill) => skill.id)
+          ])
+        ],
         importBaseline: {
           importedAt: importedAt.toISOString(),
           archiveDigest,
@@ -139,8 +162,9 @@ export class SpecialistPackageTransaction {
                 index === existingIndex ? stored : specialist
               )
       }
+      const transactionId = this.transactionId()
       const journal: TransactionJournal = {
-        transactionId: this.transactionId(),
+        transactionId,
         phase: 'prepared',
         specialistId: stored.id,
         beforeDigest: documentDigest(before),
@@ -150,12 +174,21 @@ export class SpecialistPackageTransaction {
       }
 
       try {
+        await this.skillPort.prepare(
+          transactionId,
+          plan.specialistId,
+          plan.skills.filter(
+            (skill) => skill.disposition === 'install' || skill.disposition === 'reuse-owned'
+          )
+        )
         await this.writeJournal(journal)
         journal.phase = 'committing'
         await this.writeJournal(journal)
         await this.repository.replaceAll(after)
+        await this.skillPort.commit(transactionId)
         journal.phase = 'committed'
         await this.writeJournal(journal)
+        await this.skillPort.recover(transactionId, 'commit')
         await rm(this.journalPath, { force: true })
         log.info('committed specialist package transaction', {
           transactionId: journal.transactionId,
@@ -166,6 +199,7 @@ export class SpecialistPackageTransaction {
         try {
           journal.phase = 'rolling-back'
           await this.writeJournal(journal)
+          await this.skillPort.rollback(transactionId)
           await this.repository.replaceAll(before)
           journal.phase = 'rolled-back'
           await this.writeJournal(journal)

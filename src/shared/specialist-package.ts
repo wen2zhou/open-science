@@ -70,9 +70,29 @@ export type SpecialistPackageCatalogSnapshot = {
     version?: string
     builtin: boolean
     contentDigest?: string
+    contentHash?: string
+    standalone?: boolean
+    ownerIds?: readonly string[]
   }>
   connectorIds: readonly string[]
   protectedSpecialistIds: readonly string[]
+}
+
+export type SpecialistPackageSkillDisposition =
+  'install' | 'reuse-owned' | 'reuse-standalone' | 'conflict'
+
+export type SpecialistPackageSkillPreview = {
+  id: string
+  version: string
+  versionRange?: string
+  disposition: SpecialistPackageSkillDisposition
+  files: readonly string[]
+  reason?: string
+}
+
+export type SpecialistPackageSkillPlan = SpecialistPackageSkillPreview & {
+  contentHash: string
+  filesToInstall: ReadonlyArray<{ path: string; bytes: Uint8Array }>
 }
 
 export type SpecialistPackageSummary = {
@@ -86,6 +106,7 @@ export type SpecialistPackageSummary = {
   requiredSkillIds: readonly string[]
   builtinSkillIds: readonly string[]
   connectorIds: readonly string[]
+  skills: readonly SpecialistPackageSkillPreview[]
 }
 
 export type SpecialistPackagePreview = {
@@ -135,6 +156,7 @@ export type SpecialistPackageValidationPlan = {
   contentHash: string
   manifest: SpecialistPackageManifestV1
   payload: SpecialistPackagePayload
+  skills: readonly SpecialistPackageSkillPlan[]
 }
 
 export type SpecialistPackageValidationResult = {

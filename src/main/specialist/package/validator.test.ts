@@ -70,7 +70,8 @@ describe('validateSpecialistPackage', () => {
         bundledSkillIds: [],
         requiredSkillIds: [],
         builtinSkillIds: [],
-        connectorIds: []
+        connectorIds: [],
+        skills: []
       },
       diagnostics: [],
       installable: true
@@ -225,6 +226,60 @@ describe('validateSpecialistPackage', () => {
       path: 'manifest.json',
       relatedId: 'legacy-skill'
     })
+  })
+
+  it('plans a complete bundled Skill directory without executing its scripts', () => {
+    const manifest = {
+      ...validManifest,
+      skills: {
+        builtin: [],
+        required: [{ id: 'analysis-tools', version_range: '^1.2.0' }],
+        bundled: [{ id: 'analysis-tools', version: '1.2.3', path: 'skills/analysis-tools' }]
+      }
+    }
+    const result = validateSpecialistPackage(
+      [
+        ...files(manifest, validSpecialist),
+        {
+          path: 'skills/analysis-tools/SKILL.md',
+          bytes: encoder.encode('---\nname: analysis-tools\ndescription: Analyze data\n---\nBody')
+        },
+        {
+          path: 'skills/analysis-tools/scripts/run.sh',
+          bytes: encoder.encode('exit 99')
+        },
+        { path: 'skills/analysis-tools/references/guide.md', bytes: encoder.encode('Guide') },
+        { path: 'skills/analysis-tools/assets/icon.png', bytes: encoder.encode('image') },
+        { path: 'skills/analysis-tools/templates/report.md', bytes: encoder.encode('Template') }
+      ],
+      catalog,
+      'zip'
+    )
+
+    expect(result.preview.installable).toBe(true)
+    expect(result.preview.summary?.skills).toEqual([
+      expect.objectContaining({
+        id: 'analysis-tools',
+        version: '1.2.3',
+        disposition: 'install',
+        files: [
+          'SKILL.md',
+          'assets/icon.png',
+          'references/guide.md',
+          'scripts/run.sh',
+          'templates/report.md'
+        ]
+      })
+    ])
+    expect(result.plan?.skills).toEqual([
+      expect.objectContaining({ id: 'analysis-tools', disposition: 'install' })
+    ])
+    expect(result.preview.diagnostics).toContainEqual(
+      expect.objectContaining({
+        code: 'skill.executable-content-present',
+        relatedId: 'analysis-tools'
+      })
+    )
   })
 
   it('requires referenced builtin Skills to have the declared compatibility identity', () => {

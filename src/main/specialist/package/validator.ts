@@ -10,6 +10,7 @@ import {
   type SpecialistPackageManifestV1,
   type SpecialistPackagePayload,
   type SpecialistPackageRequiredSkillDependency,
+  type SpecialistPackageSkillPlan,
   type SpecialistPackageSource,
   type SpecialistPackageValidationPlan,
   type SpecialistPackageValidationResult
@@ -465,8 +466,155 @@ const filesContentHash = (files: readonly SpecialistPackageFile[]): string => {
   return hash.digest('hex')
 }
 
+const bundledSkillHash = (files: ReadonlyArray<{ path: string; bytes: Uint8Array }>): string =>
+  filesContentHash(files)
+
+const planBundledSkills = (
+  manifest: SpecialistPackageManifestV1,
+  packageFiles: readonly SpecialistPackageFile[],
+  catalog: SpecialistPackageCatalogSnapshot,
+  diagnostics: PackageDiagnostic[]
+): SpecialistPackageSkillPlan[] => {
+  const plans: SpecialistPackageSkillPlan[] = []
+  const declaredPaths = new Set<string>()
+  const builtinIds = new Set(catalog.builtinSkills.map((skill) => skill.id))
+
+  for (const bundled of manifest.skills.bundled) {
+    const canonicalPath = `skills/${bundled.id}`
+    if (bundled.path !== canonicalPath) {
+      diagnostic(
+        diagnostics,
+        'skill.path-noncanonical',
+        'Bundled Skill path must map canonically from its global ID.',
+        'manifest.json',
+        bundled.id
+      )
+      continue
+    }
+    if (builtinIds.has(bundled.id)) {
+      diagnostic(
+        diagnostics,
+        'skill.builtin-id-protected',
+        'A bundled Skill cannot use a builtin Skill ID.',
+        'manifest.json',
+        bundled.id
+      )
+      continue
+    }
+    if (declaredPaths.has(bundled.path)) {
+      diagnostic(
+        diagnostics,
+        'skill.path-duplicate',
+        'Bundled Skill paths must be unique.',
+        'manifest.json',
+        bundled.id
+      )
+      continue
+    }
+    declaredPaths.add(bundled.path)
+    const prefix = `${bundled.path}/`
+    const files = packageFiles
+      .filter((file) => file.path.startsWith(prefix))
+      .map((file) => ({ path: file.path.slice(prefix.length), bytes: file.bytes }))
+      .sort((left, right) => {
+        if (left.path === 'SKILL.md') return -1
+        if (right.path === 'SKILL.md') return 1
+        return left.path.localeCompare(right.path)
+      })
+    if (!files.some((file) => file.path === 'SKILL.md')) {
+      diagnostic(
+        diagnostics,
+        'skill.document-missing',
+        'A bundled Skill must contain SKILL.md.',
+        bundled.path,
+        bundled.id
+      )
+      continue
+    }
+    const standardRoots = new Set(['scripts', 'references', 'assets', 'templates'])
+    const unsupported = files.find((file) => {
+      if (file.path === 'SKILL.md') return false
+      const [root] = file.path.split('/')
+      return !standardRoots.has(root)
+    })
+    if (unsupported) {
+      diagnostic(
+        diagnostics,
+        'skill.layout-invalid',
+        'Bundled Skill files must use the standard Skill directory layout.',
+        `${bundled.path}/${unsupported.path}`,
+        bundled.id
+      )
+      continue
+    }
+    if (files.some((file) => file.path.startsWith('scripts/'))) {
+      warning(
+        diagnostics,
+        'skill.executable-content-present',
+        'This Skill contains scripts. Preview and validation do not execute them.',
+        bundled.path,
+        bundled.id
+      )
+    }
+    const digest = bundledSkillHash(files)
+    const existing = catalog.skills.find((skill) => skill.id === bundled.id)
+    let disposition: SpecialistPackageSkillPlan['disposition'] = 'install'
+    let reason: string | undefined
+    if (existing) {
+      const existingVersion = existing.version ?? LEGACY_UNVERSIONED_SKILL_VERSION
+      if (
+        existing.builtin ||
+        existingVersion !== bundled.version ||
+        existing.contentHash !== digest
+      ) {
+        disposition = 'conflict'
+        reason = existing.builtin
+          ? 'The ID belongs to a builtin Skill.'
+          : 'The installed Skill version or normalized content differs.'
+        diagnostic(
+          diagnostics,
+          existing.builtin ? 'skill.builtin-id-protected' : 'skill.existing-conflict',
+          reason,
+          'manifest.json',
+          bundled.id
+        )
+      } else if (existing.standalone !== false && !existing.ownerIds?.length) {
+        disposition = 'reuse-standalone'
+        reason = 'An identical standalone Skill is already installed.'
+      } else {
+        disposition = 'reuse-owned'
+        reason = 'An identical Specialist-owned Skill is already installed.'
+      }
+    }
+    const required = manifest.skills.required.find((entry) => entry.id === bundled.id)
+    plans.push({
+      id: bundled.id,
+      version: bundled.version,
+      ...(required ? { versionRange: required.version_range } : {}),
+      disposition,
+      files: files.map((file) => file.path),
+      ...(reason ? { reason } : {}),
+      contentHash: digest,
+      filesToInstall: files
+    })
+  }
+
+  for (const file of packageFiles.filter((candidate) => candidate.path.startsWith('skills/'))) {
+    if (![...declaredPaths].some((path) => file.path.startsWith(`${path}/`))) {
+      diagnostic(
+        diagnostics,
+        'skill.undeclared-content',
+        'Every bundled Skill directory must be declared in manifest.json.',
+        file.path
+      )
+    }
+  }
+  return plans
+}
+
 const deepFreeze = <T>(value: T): T => {
   if (typeof value !== 'object' || value === null || Object.isFrozen(value)) return value
+  if (ArrayBuffer.isView(value)) return value
   for (const nested of Object.values(value)) deepFreeze(nested)
   return Object.freeze(value)
 }
@@ -678,6 +826,9 @@ export const validateSpecialistPackage = (
       }
     }
   }
+  const skillPlans = manifest
+    ? planBundledSkills(manifest, packageFiles, _catalog, diagnostics)
+    : []
   const summary =
     manifest && payload
       ? {
@@ -690,7 +841,15 @@ export const validateSpecialistPackage = (
           bundledSkillIds: manifest.skills.bundled.map((skill) => skill.id),
           requiredSkillIds: manifest.skills.required.map((skill) => skill.id),
           builtinSkillIds: manifest.skills.builtin.map((skill) => skill.id),
-          connectorIds
+          connectorIds,
+          skills: skillPlans.map((skill) => ({
+            id: skill.id,
+            version: skill.version,
+            ...(skill.versionRange ? { versionRange: skill.versionRange } : {}),
+            disposition: skill.disposition,
+            files: skill.files,
+            ...(skill.reason ? { reason: skill.reason } : {})
+          }))
         }
       : undefined
   if (diagnostics.some((item) => item.severity === 'error') || !manifest || !payload) {
@@ -702,7 +861,8 @@ export const validateSpecialistPackage = (
     source,
     contentHash: specialistPayloadContentHash(payload),
     manifest,
-    payload
+    payload,
+    skills: skillPlans
   }
   deepFreeze(plan)
   return { preview: { summary, diagnostics, installable: true }, plan }

@@ -238,10 +238,20 @@ describe('SpecialistsPanel', () => {
         description: 'Synthesizes research.',
         source: 'zip' as const,
         requiresApp: '>=0.9.2 <1.0.0',
-        bundledSkillIds: [],
-        requiredSkillIds: [],
+        bundledSkillIds: ['analysis-tools'],
+        requiredSkillIds: ['analysis-tools'],
         builtinSkillIds: [],
-        connectorIds: ['lab-notebook']
+        connectorIds: ['lab-notebook'],
+        skills: [
+          {
+            id: 'analysis-tools',
+            version: '1.2.3',
+            versionRange: '^1.2.0',
+            disposition: 'reuse-standalone' as const,
+            reason: 'An identical standalone Skill is already installed.',
+            files: ['SKILL.md', 'scripts/run.sh']
+          }
+        ]
       },
       diagnostics: [
         {
@@ -284,7 +294,14 @@ describe('SpecialistsPanel', () => {
     expect(document.body.textContent).toContain('research-synth')
     expect(document.body.textContent).toContain('1.3.0')
     expect(document.body.textContent).toContain('>=0.9.2 <1.0.0')
-    expect(document.body.textContent).toContain('No bundled Skills')
+    expect(document.body.textContent).toContain('analysis-tools')
+    expect(document.body.textContent).toContain('1.2.3')
+    expect(document.body.textContent).toContain('^1.2.0')
+    expect(document.body.textContent).toContain('Reuse standalone')
+    expect(document.body.textContent).toContain(
+      'An identical standalone Skill is already installed.'
+    )
+    expect(document.body.textContent).toContain('scripts/run.sh')
     expect(document.body.textContent).toContain('lab-notebook')
     expect(document.body.textContent).toContain('connector.unavailable')
     expect(document.body.textContent).toContain('package.metadata-noise-ignored')
@@ -310,7 +327,8 @@ describe('SpecialistsPanel', () => {
         bundledSkillIds: [],
         requiredSkillIds: [],
         builtinSkillIds: [],
-        connectorIds: []
+        connectorIds: [],
+        skills: []
       },
       diagnostics: [
         {

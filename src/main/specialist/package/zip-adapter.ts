@@ -6,6 +6,17 @@ import type {
 } from '../../../shared/specialist-package'
 import { validateSpecialistPackage, type SpecialistPackageFile } from './validator'
 
+const containsSymbolicLink = (bytes: Uint8Array): boolean => {
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength)
+  for (let offset = 0; offset <= bytes.byteLength - 46; offset += 1) {
+    if (view.getUint32(offset, true) !== 0x02014b50) continue
+    const creatorSystem = bytes[offset + 5]
+    const unixMode = view.getUint32(offset + 38, true) >>> 16
+    if (creatorSystem === 3 && (unixMode & 0o170000) === 0o120000) return true
+  }
+  return false
+}
+
 const unsafePath = (path: string): boolean =>
   path.startsWith('/') ||
   path.startsWith('\\') ||
@@ -45,6 +56,20 @@ export const validateSpecialistZip = (
   catalog: SpecialistPackageCatalogSnapshot
 ): SpecialistPackageValidationResult => {
   try {
+    if (containsSymbolicLink(archiveBytes)) {
+      return {
+        preview: {
+          diagnostics: [
+            {
+              severity: 'error',
+              code: 'package.symbolic-link-forbidden',
+              message: 'ZIP packages cannot contain symbolic links.'
+            }
+          ],
+          installable: false
+        }
+      }
+    }
     const files = normalizedFiles(unzipSync(archiveBytes))
     if (!files) {
       return {

@@ -19,6 +19,7 @@ const readDirectoryFiles = async (
     const absolutePath = join(root, ...relativePath.split('/'))
     const metadata = await lstat(absolutePath)
     if (metadata.isSymbolicLink()) throw new Error('symbolic-link')
+    if (metadata.isFile() && metadata.nlink > 1) throw new Error('hard-link')
     if (entry.isDirectory()) {
       files.push(...(await readDirectoryFiles(root, relativePath)))
     } else if (entry.isFile()) {
@@ -38,15 +39,22 @@ export const validateSpecialistDirectory = async (
     return validateSpecialistPackage(files, catalog, source)
   } catch (error) {
     const symbolicLink = error instanceof Error && error.message === 'symbolic-link'
+    const hardLink = error instanceof Error && error.message === 'hard-link'
     return {
       preview: {
         diagnostics: [
           {
             severity: 'error',
-            code: symbolicLink ? 'package.symbolic-link-forbidden' : 'package.directory-unreadable',
+            code: symbolicLink
+              ? 'package.symbolic-link-forbidden'
+              : hardLink
+                ? 'package.hard-link-forbidden'
+                : 'package.directory-unreadable',
             message: symbolicLink
               ? 'Package directories cannot contain symbolic links.'
-              : 'The package directory could not be read.'
+              : hardLink
+                ? 'Package directories cannot contain hard links.'
+                : 'The package directory could not be read.'
           }
         ],
         installable: false

@@ -30,6 +30,7 @@ import type { BundledSkill } from './registry'
 import { readSkillFile } from './skill-files'
 import { selectSkillManifestRoots } from './skill-bundle-paths'
 import { extractZip, extractZipLenient } from './zip-extract'
+import { readSpecialistPackageSkillMetadata } from './specialist-package-adapter'
 
 const log = createLogger('skills')
 
@@ -459,10 +460,11 @@ class UserSkillRepository {
 
         try {
           const { fields } = await readSkillFile(skillDir)
+          const packageMetadata = await readSpecialistPackageSkillMetadata(skillDir)
           const updatedAt = (await stat(join(skillDir, 'SKILL.md'))).mtime.toISOString()
 
           skills.push({
-            id: `${source}-${slug}`,
+            id: packageMetadata?.id ?? `${source}-${slug}`,
             name: fields.name || slug,
             description: fields.description ?? '',
             source,
@@ -481,14 +483,26 @@ class UserSkillRepository {
     return skills
   }
 
+  private async resolveSkillId(
+    id: string
+  ): Promise<{ source: (typeof USER_SOURCES)[number]; slug: string }> {
+    const conventional = parseUserSkillId(id)
+    if (conventional) return conventional
+    for (const source of USER_SOURCES) {
+      for (const slug of await this.listSlugs(source)) {
+        const metadata = await readSpecialistPackageSkillMetadata(this.skillDir(source, slug))
+        if (metadata?.id === id) return { source, slug }
+      }
+    }
+    throw new Error(`Not a user skill id: ${id}`)
+  }
+
   // Returns one user skill's SKILL.md body (frontmatter stripped). Recovery + read run under the lock
   // so a concurrent replace can't rename the live dir out from under the read (transient ENOENT).
   async body(id: string): Promise<string> {
-    const parsed = parseUserSkillId(id)
-    if (!parsed) throw new Error(`Not a user skill id: ${id}`)
-
     return this.runExclusive(async () => {
       await this.doRecoverImportedTransactions()
+      const parsed = await this.resolveSkillId(id)
       return (await readSkillFile(this.skillDir(parsed.source, parsed.slug))).body
     })
   }
@@ -525,13 +539,17 @@ class UserSkillRepository {
 
   // Deletes a personal or imported skill directory.
   async delete(id: string): Promise<void> {
-    const parsed = parseUserSkillId(id)
-    if (!parsed) throw new Error(`Not a user skill id: ${id}`)
-
     return this.runExclusive(async () => {
       // Recover first, so a skill left only in a crash backup is restored to its live dir and then
       // actually removed here — otherwise a later recovery would "resurrect" the deleted skill.
       await this.doRecoverImportedTransactions()
+      const parsed = await this.resolveSkillId(id)
+      const metadata = await readSpecialistPackageSkillMetadata(
+        this.skillDir(parsed.source, parsed.slug)
+      )
+      if (metadata?.ownerIds.length) {
+        throw new Error('A Specialist-owned Skill cannot be deleted directly.')
+      }
       await rm(this.skillDir(parsed.source, parsed.slug), { recursive: true, force: true })
     })
   }

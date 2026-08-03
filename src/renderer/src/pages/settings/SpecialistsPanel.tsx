@@ -349,6 +349,32 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
               {summary?.builtinSkillIds.length ? (
                 <p className="mt-1 text-xs">Builtin: {summary.builtinSkillIds.join(', ')}</p>
               ) : null}
+              {summary?.skills?.length ? (
+                <div className="mt-3 space-y-2">
+                  {summary.skills.map((skill) => (
+                    <details key={skill.id} className="rounded-lg border border-border px-3 py-2">
+                      <summary className="cursor-pointer text-xs font-medium">
+                        {skill.id} · {skill.version}
+                        {skill.versionRange ? ` · ${skill.versionRange}` : ''} ·{' '}
+                        {skill.disposition
+                          .split('-')
+                          .map((part, index) =>
+                            index === 0 ? `${part[0]?.toUpperCase()}${part.slice(1)}` : part
+                          )
+                          .join(' ')}
+                      </summary>
+                      {skill.reason ? (
+                        <p className="mt-2 text-xs text-muted-foreground">{skill.reason}</p>
+                      ) : null}
+                      <ul className="mt-2 list-inside list-disc text-xs text-muted-foreground">
+                        {skill.files.map((file) => (
+                          <li key={file}>{file}</li>
+                        ))}
+                      </ul>
+                    </details>
+                  ))}
+                </div>
+              ) : null}
             </section>
 
             <section className="rounded-xl border border-border p-4">

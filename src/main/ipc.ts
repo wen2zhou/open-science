@@ -125,6 +125,7 @@ import { SpecialistRepository } from './specialist/repository'
 import { BuiltinSpecialistRegistry } from './specialist/builtin-registry'
 import { SpecialistPackageService } from './specialist/package/service'
 import { selectSpecialistArchive } from './specialist/package/electron-adapter'
+import { UserSkillSpecialistPackageAdapter } from './skills/specialist-package-adapter'
 import { AgentsService } from './agents/agents-service'
 import {
   CompletionGateCoordinator,
@@ -509,6 +510,8 @@ const createApplicationModules = async (
   const specialistRepository = new SpecialistRepository(resolveStorageRoot())
   const appVersion = app.getVersion()
   const specialistSkills = await settingsService.listSpecialistSkillCatalog()
+  const specialistPackageSkillAdapter = new UserSkillSpecialistPackageAdapter(resolveStorageRoot())
+  const packageSkills = await specialistPackageSkillAdapter.snapshot()
   const builtinRegistry = new BuiltinSpecialistRegistry({
     appVersion,
     builtinSkills: specialistSkills
@@ -518,10 +521,10 @@ const createApplicationModules = async (
         appVersion,
         compatibility: `app:${appVersion}:${skill.id}`
       })),
-    skills: specialistSkills.map((skill) => ({
-      id: skill.id,
-      builtin: skill.source === 'featured'
-    })),
+    skills: specialistSkills.map((skill) => {
+      const packageSkill = packageSkills.find((candidate) => candidate.id === skill.id)
+      return { id: skill.id, builtin: skill.source === 'featured', ...(packageSkill ?? {}) }
+    }),
     connectorIds: ALL_CONNECTOR_IDS,
     protectedSpecialistIds: ['reviewer']
   })
@@ -532,8 +535,9 @@ const createApplicationModules = async (
     repository: specialistRepository,
     catalog: async () => {
       const appVersion = app.getVersion()
-      const [skills, connectorSettings] = await Promise.all([
+      const [skills, packageSkills, connectorSettings] = await Promise.all([
         settingsService.listSpecialistSkillCatalog(),
+        specialistPackageSkillAdapter.snapshot(),
         settingsService.getConnectors()
       ])
       const baseCatalog = {
@@ -545,10 +549,14 @@ const createApplicationModules = async (
             appVersion,
             compatibility: `app:${appVersion}:${skill.id}`
           })),
-        skills: skills.map((skill) => ({
-          id: skill.id,
-          builtin: skill.source === 'featured'
-        })),
+        skills: skills.map((skill) => {
+          const packageSkill = packageSkills.find((candidate) => candidate.id === skill.id)
+          return {
+            id: skill.id,
+            builtin: skill.source === 'featured',
+            ...(packageSkill ?? {})
+          }
+        }),
         connectorIds: [
           ...ALL_CONNECTOR_IDS,
           ...(connectorSettings?.customMcpServers ?? []).map((server) => server.id)
@@ -564,6 +572,7 @@ const createApplicationModules = async (
         ]
       }
     },
+    skillPort: specialistPackageSkillAdapter,
     onCommitted: () => {
       broadcastToRenderers(SPECIALIST_IPC.CATALOG_CHANGED, undefined)
       void runtime.requestSkillsReload()
