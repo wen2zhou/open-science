@@ -139,7 +139,8 @@ jobs:
             'e2e_workspace_windows',
             'e2e_accessibility_macos',
             'e2e_accessibility_windows',
-            'e2e_visual_macos'
+            'e2e_visual_macos',
+            'specialist'
           ]
           const bundles = [
             'policy',
@@ -148,7 +149,8 @@ jobs:
             'coverage_macos',
             'windows_core',
             'macos_e2e',
-            'windows_e2e'
+            'windows_e2e',
+            'specialist'
           ]
           const plan = {
             schemaVersion: 1,
@@ -330,6 +332,27 @@ jobs:
             echo "unit_renderer ended with $UNIT_RENDERER_OUTCOME" >&2
             exit 1
           fi
+
+  specialist:
+    name: Specialist validation
+    needs: preflight
+    if: ${{ needs.preflight.result == 'success' && contains(fromJSON(needs.preflight.outputs.plan).bundles, 'specialist') }}
+    runs-on: ubuntu-latest
+    timeout-minutes: 8
+    steps:
+      - name: Checkout
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          persist-credentials: false
+      - name: Setup Node
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 22
+          cache: npm
+      - name: Install dependencies
+        run: npm ci
+      - name: Validate Specialist resources
+        run: npm run test:specialist
 
   coverage_macos:
     name: Coverage macOS
@@ -673,6 +696,7 @@ jobs:
       - windows_core
       - macos_e2e
       - windows_e2e
+      - specialist
     runs-on: ubuntu-latest
     timeout-minutes: 3
     env:

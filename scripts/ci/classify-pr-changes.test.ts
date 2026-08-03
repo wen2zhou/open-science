@@ -134,7 +134,8 @@ describe('pull request change classification', () => {
       'coverage_macos',
       'windows_core',
       'macos_e2e',
-      'windows_e2e'
+      'windows_e2e',
+      'specialist'
     ])
     expect(plan.reasonChains).toContain('src/new-runtime/capability.ts -> unknown -> full')
   })
@@ -170,6 +171,26 @@ describe('pull request change classification', () => {
       expect.arrayContaining([
         'README.md -> documentation',
         'docs/internal/pr-gate.md -> documentation'
+      ])
+    )
+  })
+
+  it('routes resources/specialists changes to only the Specialist validation gate', () => {
+    const plan = classifyChanges([
+      { path: 'resources/specialists/manifest.json', status: 'modified' },
+      { path: 'resources/specialists/my-specialist/specialist.json', status: 'added' },
+      { path: 'resources/specialists/my-specialist/README.md', status: 'added' }
+    ])
+
+    expect(plan.mode).toBe('selective')
+    expect(plan.roots).toEqual(['specialist_resources'])
+    expect(plan.lanes).toEqual(['policy', 'specialist'])
+    expect(plan.bundles).toEqual(['policy', 'specialist'])
+    expect(plan.reasonChains).toEqual(
+      expect.arrayContaining([
+        'resources/specialists/manifest.json -> specialist_resources',
+        'resources/specialists/my-specialist/specialist.json -> specialist_resources',
+        'resources/specialists/my-specialist/README.md -> specialist_resources'
       ])
     )
   })

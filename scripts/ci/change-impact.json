@@ -22,7 +22,8 @@
     "e2e_workspace_windows",
     "e2e_accessibility_macos",
     "e2e_accessibility_windows",
-    "e2e_visual_macos"
+    "e2e_visual_macos",
+    "specialist"
   ],
   "bundleOrder": [
     "policy",
@@ -31,7 +32,8 @@
     "coverage_macos",
     "windows_core",
     "macos_e2e",
-    "windows_e2e"
+    "windows_e2e",
+    "specialist"
   ],
   "laneBundles": {
     "policy": "policy",
@@ -54,7 +56,8 @@
     "e2e_workspace_windows": "windows_e2e",
     "e2e_accessibility_macos": "macos_e2e",
     "e2e_accessibility_windows": "windows_e2e",
-    "e2e_visual_macos": "macos_e2e"
+    "e2e_visual_macos": "macos_e2e",
+    "specialist": "specialist"
   },
   "rules": [
     {
@@ -88,7 +91,13 @@
     {
       "id": "documentation",
       "paths": ["**/*.md", "docs/**", "LICENSE", ".gitignore"],
+      "excludePaths": ["resources/specialists/**"],
       "capabilities": ["documentation"]
+    },
+    {
+      "id": "specialist_resources",
+      "paths": ["resources/specialists/**"],
+      "capabilities": ["specialist_resources"]
     },
     {
       "id": "shared_contract",
@@ -250,6 +259,10 @@
     "e2e_visual": {
       "consumers": [],
       "lanes": ["e2e_visual_macos"]
+    },
+    "specialist_resources": {
+      "consumers": [],
+      "lanes": ["specialist"]
     }
   }
 }

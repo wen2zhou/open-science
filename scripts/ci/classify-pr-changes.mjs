@@ -79,8 +79,10 @@ export function classifyChanges(changes, manifest = defaultManifest) {
   for (const change of changes) {
     const paths = new Set([change.path, change.previousPath].filter(Boolean))
     for (const path of paths) {
-      const rules = manifest.rules.filter((rule) =>
-        rule.paths.some((pattern) => matchesPath(path, pattern))
+      const rules = manifest.rules.filter(
+        (rule) =>
+          rule.paths.some((pattern) => matchesPath(path, pattern)) &&
+          !(rule.excludePaths ?? []).some((pattern) => matchesPath(path, pattern))
       )
       if (rules.length === 0) {
         mode = 'full'

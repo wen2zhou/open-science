@@ -172,6 +172,7 @@ describe('PR Gate workflow', () => {
   it('shares dependency installation and Electron builds inside platform bundles', () => {
     for (const bundle of [
       'static',
+      'specialist',
       'unit',
       'coverage_macos',
       'windows_core',
@@ -203,6 +204,20 @@ describe('PR Gate workflow', () => {
         'npm run test:e2e:workspace',
         'npm run test:e2e:accessibility'
       ])
+    )
+  })
+
+  it('runs only the focused Specialist validation command in the Specialist bundle', () => {
+    expect(workflow.jobs.specialist).toMatchObject({
+      name: 'Specialist validation',
+      'runs-on': 'ubuntu-latest',
+      'timeout-minutes': 8
+    })
+    expect(workflow.jobs.specialist.steps?.map(({ run }) => run).filter(Boolean)).toEqual(
+      expect.arrayContaining(['npm ci', 'npm run test:specialist'])
+    )
+    expect(workflow.jobs.specialist.steps?.map(({ run }) => run).filter(Boolean)).not.toEqual(
+      expect.arrayContaining(['npm run lint', 'npm run typecheck', 'npm test'])
     )
   })
 

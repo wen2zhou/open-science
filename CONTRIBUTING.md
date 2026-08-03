@@ -44,6 +44,7 @@ Run installation, development, and validation commands from the repository root:
 | Run         | `npm run dev`                                              |
 | Validate    | `npm run typecheck`, `npm run lint`, and `npm test`        |
 | Target test | `npm test -- <affected-test-path> [-t '<test pattern>']`   |
+| Specialists | `npm run test:specialist`                                 |
 | UI E2E      | `npm run build:e2e`, then `npm run test:e2e`               |
 | UI journeys | `npm run build:e2e`, then `npm run test:e2e:journey`       |
 | Workspace   | `npm run build:e2e`, then `npm run test:e2e:workspace`     |
@@ -83,7 +84,7 @@ Three runtime process layers and a shared module live under `src/`:
 1. Create a branch off the default branch for your change.
 2. Make your change, keeping it focused and self-contained.
 3. Add or update tests that cover the behavior you changed.
-4. Run the full check suite locally (see below) and make sure it passes.
+4. Run the checks required for the changed area (see below) and make sure they pass.
 5. Open a pull request with a clear description of the change and its motivation.
 
 ### Branch names
@@ -121,7 +122,15 @@ Use one of these standard type prefixes:
 
 ## Required Checks
 
-Before opening a pull request, run all of these and make sure they pass:
+Before opening a pull request, use the checks for its scope:
+
+For a PR limited to `resources/specialists/**`:
+
+```bash
+npm run test:specialist
+```
+
+For all other PRs:
 
 ```bash
 npm run typecheck   # TypeScript type checking (node + web)
@@ -129,8 +138,8 @@ npm run lint        # ESLint
 npm run test        # Vitest unit tests
 ```
 
-Pull requests are expected to keep type checking, linting, and the test suite
-green. New behavior should come with tests.
+Other pull requests are expected to keep type checking, linting, and the test
+suite green. New behavior should come with tests.
 
 These repository gates are not automatically evidence for every changed behavior. Pair each behavior
 with the smallest project-owned check that exercises it, and run that check after the last material
