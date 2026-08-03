@@ -40,6 +40,30 @@ describe('Specialist package source adapters', () => {
     })
   })
 
+  it('accepts Finder-created wrapper archives with macOS metadata', async () => {
+    const packageFiles = Object.fromEntries(
+      await Promise.all(
+        ['manifest.json', 'specialist.json', 'README.md'].map(async (fileName) => [
+          `openscience-specialist-template/${fileName}`,
+          new Uint8Array(await readFile(join(fixtureRoot, fileName)))
+        ])
+      )
+    )
+    const zip = zipSync({
+      ...packageFiles,
+      '__MACOSX/openscience-specialist-template/._manifest.json': new Uint8Array([1, 2, 3]),
+      '__MACOSX/openscience-specialist-template/._specialist.json': new Uint8Array([4, 5, 6])
+    })
+
+    const archive = validateSpecialistZip(zip, catalog)
+
+    expect(archive.preview.installable).toBe(true)
+    expect(archive.preview.summary).toMatchObject({
+      id: 'fixture-specialist',
+      name: 'Fixture Specialist'
+    })
+  })
+
   it('rejects forbidden root content identically without executing it', async () => {
     const zip = zipSync({
       'manifest.json': new Uint8Array(await readFile(join(invalidFixtureRoot, 'manifest.json'))),
