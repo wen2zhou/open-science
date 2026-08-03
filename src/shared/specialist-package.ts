@@ -235,6 +235,48 @@ export type SpecialistPackageInstallResult =
         | 'commit-failed'
     }
 
+export type SpecialistDeleteProtectionCode =
+  'builtin' | 'standalone' | 'shared-owner' | 'referenced'
+
+export type SpecialistDeleteSkillKind = 'owned-exclusive' | SpecialistDeleteProtectionCode
+
+export type SpecialistDeleteSkillPreview = {
+  id: string
+  kind: SpecialistDeleteSkillKind
+  deletable: boolean
+  reasons: ReadonlyArray<{
+    code: SpecialistDeleteProtectionCode
+    specialistIds: readonly string[]
+  }>
+}
+
+export type SpecialistDeletePreview = {
+  specialistId: string
+  specialistName: string
+  expectedRevision: number
+  skills: readonly SpecialistDeleteSkillPreview[]
+}
+
+export type SpecialistDeleteRequest = {
+  id: string
+  expectedRevision: number
+  deleteSkillIds: readonly string[]
+}
+
+export type SpecialistDeleteResult =
+  | { status: 'deleted' }
+  | {
+      status: 'failed'
+      code:
+        | 'stale-preview'
+        | 'revision-conflict'
+        | 'protected-skill'
+        | 'protected-target'
+        | 'recovery-failed'
+        | 'rollback-failed'
+        | 'commit-failed'
+    }
+
 export type SpecialistPackageValidationPlan = {
   specialistId: string
   packageVersion: string

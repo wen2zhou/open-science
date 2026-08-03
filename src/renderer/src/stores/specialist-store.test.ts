@@ -59,6 +59,35 @@ describe('specialist store package export', () => {
     })
     expect(useSpecialistStore.getState().items).toEqual([{ kind: 'reviewer', id: 'reviewer' }])
   })
+
+  it('preserves an export preview while linked deletion is previewed', async () => {
+    const exportPreview = {
+      specialistId: 'research-synth',
+      name: 'Research Synthesizer',
+      version: '1.3.0',
+      expectedRevision: 3,
+      skills: [],
+      diagnostics: [],
+      canExport: true
+    }
+    const deletePreview = {
+      specialistId: 'research-synth',
+      specialistName: 'Research Synthesizer',
+      expectedRevision: 3,
+      skills: []
+    }
+    setSpecialistApi({
+      previewExport: vi.fn().mockResolvedValue(exportPreview),
+      previewDelete: vi.fn().mockResolvedValue(deletePreview)
+    })
+
+    await useSpecialistStore.getState().previewExport('research-synth')
+    await expect(useSpecialistStore.getState().previewDelete('research-synth')).resolves.toEqual(
+      deletePreview
+    )
+
+    expect(useSpecialistStore.getState().exportPreview).toEqual(exportPreview)
+  })
 })
 
 describe('specialist store package import', () => {

@@ -17,6 +17,12 @@ export interface SpecialistPackageSkillPort {
     specialistId: string,
     skills: readonly SpecialistPackageSkillPlan[]
   ): Promise<void>
+  prepareDeletion?(
+    transactionId: string,
+    specialistId: string,
+    ownedSkillIds: readonly string[],
+    deleteSkillIds: readonly string[]
+  ): Promise<void>
   commit(transactionId: string): Promise<void>
   rollback(transactionId: string): Promise<void>
   recover(transactionId: string | undefined, outcome: 'commit' | 'rollback'): Promise<void>
@@ -33,6 +39,7 @@ export interface SpecialistPackageSkillPort {
 export const NOOP_SPECIALIST_PACKAGE_SKILL_PORT: SpecialistPackageSkillPort = {
   snapshot: async () => [],
   prepare: async () => undefined,
+  prepareDeletion: async () => undefined,
   commit: async () => undefined,
   rollback: async () => undefined,
   recover: async () => undefined

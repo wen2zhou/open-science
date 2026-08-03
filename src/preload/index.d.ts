@@ -266,7 +266,6 @@ import type {
   CreateSpecialistRequest,
   UpdateSpecialistRequest,
   SetSpecialistEnabledRequest,
-  DeleteSpecialistRequest,
   DuplicateSpecialistRequest,
   SpecialistListItem,
   SpecialistProfileView,
@@ -281,7 +280,10 @@ import type {
 import type {
   SpecialistPackageCandidatePreview,
   SpecialistPackageInstallRequest,
-  SpecialistPackageInstallResult
+  SpecialistPackageInstallResult,
+  SpecialistDeletePreview,
+  SpecialistDeleteRequest,
+  SpecialistDeleteResult
 } from '../shared/specialist-package'
 import type {
   CloseConfirmRequest,
@@ -446,7 +448,8 @@ interface OpenScienceAPI {
     create(request: CreateSpecialistRequest): Promise<SpecialistProfileView>
     update(request: UpdateSpecialistRequest): Promise<SpecialistProfileView>
     setEnabled(request: SetSpecialistEnabledRequest): Promise<SpecialistProfileView>
-    delete(request: DeleteSpecialistRequest): Promise<void>
+    previewDelete(request: { id: string }): Promise<SpecialistDeletePreview>
+    delete(request: SpecialistDeleteRequest): Promise<SpecialistDeleteResult>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
     exportContributionTemplate(): Promise<ContributionTemplateExportResult>
     previewExport(request: { specialistId: string }): Promise<SpecialistExportPreview>

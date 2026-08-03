@@ -75,4 +75,32 @@ describe('UserSkillSpecialistPackageAdapter', () => {
     await expect(repository.list()).resolves.toEqual([])
     await expect(adapter.snapshot()).resolves.toEqual([])
   })
+
+  it('restores deleted and ownership-edited Skills when restart recovery rolls back', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'specialist-skill-adapter-'))
+    roots.push(root)
+    const adapter = new UserSkillSpecialistPackageAdapter(root)
+
+    await adapter.prepare('seed-recovery', 'research-synth', [plan('delete-me'), plan('retain-me')])
+    await adapter.commit('seed-recovery')
+    await adapter.recover('seed-recovery', 'commit')
+    await adapter.prepareDeletion(
+      'interrupted-delete',
+      'research-synth',
+      ['delete-me', 'retain-me'],
+      ['delete-me']
+    )
+    await adapter.commit('interrupted-delete')
+    await expect(adapter.snapshot()).resolves.toEqual([
+      expect.objectContaining({ id: 'retain-me', standalone: true, ownerIds: [] })
+    ])
+
+    const restarted = new UserSkillSpecialistPackageAdapter(root)
+    await restarted.recover('interrupted-delete', 'rollback')
+
+    await expect(restarted.snapshot()).resolves.toEqual([
+      expect.objectContaining({ id: 'delete-me', standalone: false, ownerIds: ['research-synth'] }),
+      expect.objectContaining({ id: 'retain-me', standalone: false, ownerIds: ['research-synth'] })
+    ])
+  })
 })

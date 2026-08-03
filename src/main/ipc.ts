@@ -582,6 +582,9 @@ const createApplicationModules = async (
       void runtime.requestSkillsReload()
     }
   })
+  settingsService.setSkillDeletionGuard((skillId) =>
+    specialistPackageService.assertSkillDeletionAllowed(skillId)
+  )
   // Per-session specialist binding store. Shared between the SET_SESSION_SPECIALIST barrier
   // (validate + record) and the runtime switch so a hot-switch lands on the same source of truth.
   const sessionBindingService = new SessionBindingService(profileService)
@@ -832,6 +835,7 @@ const createApplicationModules = async (
     // broadcast is intentionally not emitted: lifecycle events are a read-only projection and can
     // neither delay nor re-run the approved continuation.
     switchNotifier: createCompletionGateSwitchNotifier(completionGateCoordinator),
+    deleteSpecialist: (request) => specialistPackageService.deleteSpecialist(request),
     // Catalog invalidation after a successful privileged mutation: reconnect live sessions so the
     // agent respawns (re-provisioning skills) and re-applies the updated Specialist whitelist. The
     // ProfileService already broadcasts specialist:catalog-changed on update/delete; this refreshes the

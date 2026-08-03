@@ -126,7 +126,9 @@ describe('specialist session IPC', () => {
           dispose: vi.fn(),
           report: vi.fn(),
           previewExport: vi.fn(),
-          export: vi.fn()
+          export: vi.fn(),
+          previewSpecialistDelete: vi.fn(),
+          deleteSpecialist: vi.fn()
         },
         selectArchive: vi.fn().mockResolvedValue({ bytes: new Uint8Array([1, 2, 3]) }),
         saveReport: vi.fn(),
@@ -176,7 +178,9 @@ describe('specialist session IPC', () => {
           dispose: vi.fn(),
           report: vi.fn().mockReturnValue(report),
           previewExport: vi.fn(),
-          export: vi.fn()
+          export: vi.fn(),
+          previewSpecialistDelete: vi.fn(),
+          deleteSpecialist: vi.fn()
         },
         selectArchive: vi.fn(),
         saveReport,
@@ -200,7 +204,7 @@ describe('specialist session IPC', () => {
     expect(saveReport).toHaveBeenCalledOnce()
   })
 
-  it('revalidates export in main and returns no archive bytes or absolute path to renderer', async () => {
+  it('keeps export and linked deletion routes available on the same package owner', async () => {
     handlers.clear()
     const previewExport = vi.fn().mockResolvedValue({
       specialistId: 'research-synth',
@@ -215,28 +219,34 @@ describe('specialist session IPC', () => {
       archiveBytes: new Uint8Array([1, 2, 3])
     })
     const saveExport = vi.fn().mockResolvedValue({ saved: true })
+    const previewSpecialistDelete = vi.fn().mockResolvedValue({
+      specialistId: 'specialist-1',
+      specialistName: 'Researcher',
+      expectedRevision: 1,
+      skills: []
+    })
+    const deleteSpecialist = vi.fn().mockResolvedValue({ status: 'deleted' })
+    const onProfilesChanged = vi.fn()
+    const packageService = {
+      preview: vi.fn(),
+      previewOversizedArchive: vi.fn(),
+      install: vi.fn(),
+      cancel: vi.fn(),
+      dispose: vi.fn(),
+      report: vi.fn(),
+      previewExport,
+      export: exportArchive,
+      previewSpecialistDelete,
+      deleteSpecialist
+    }
     registerSpecialistIpcHandlers(
       createProfileService(),
       new SessionBindingService(createProfileService()),
       vi.fn(),
       undefined,
+      onProfilesChanged,
       undefined,
-      undefined,
-      {
-        service: {
-          preview: vi.fn(),
-          previewOversizedArchive: vi.fn(),
-          install: vi.fn(),
-          cancel: vi.fn(),
-          dispose: vi.fn(),
-          report: vi.fn(),
-          previewExport,
-          export: exportArchive
-        },
-        selectArchive: vi.fn(),
-        saveReport: vi.fn(),
-        saveExport
-      }
+      { service: packageService, selectArchive: vi.fn(), saveReport: vi.fn(), saveExport }
     )
 
     await expect(
@@ -255,5 +265,23 @@ describe('specialist session IPC', () => {
       archiveBytes: new Uint8Array([1, 2, 3])
     })
     expect(JSON.stringify(result)).not.toMatch(/archiveBytes|\/downloads/)
+
+    await expect(
+      handlers.get(SPECIALIST_IPC.PREVIEW_DELETE)?.(undefined, { id: 'specialist-1' })
+    ).resolves.toMatchObject({ expectedRevision: 1 })
+    await expect(
+      handlers.get(SPECIALIST_IPC.DELETE)?.(undefined, {
+        id: 'specialist-1',
+        expectedRevision: 1,
+        deleteSkillIds: []
+      })
+    ).resolves.toEqual({ status: 'deleted' })
+    expect(previewSpecialistDelete).toHaveBeenCalledWith({ id: 'specialist-1' })
+    expect(deleteSpecialist).toHaveBeenCalledWith({
+      id: 'specialist-1',
+      expectedRevision: 1,
+      deleteSkillIds: []
+    })
+    expect(onProfilesChanged).not.toHaveBeenCalled()
   })
 })

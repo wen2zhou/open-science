@@ -4,7 +4,6 @@ import type {
   CreateSpecialistRequest,
   UpdateSpecialistRequest,
   SetSpecialistEnabledRequest,
-  DeleteSpecialistRequest,
   DuplicateSpecialistRequest,
   CreateSpecialistInput,
   SpecialistListItem,
@@ -28,7 +27,10 @@ import type {
   SpecialistPackageReportSaveResult,
   SpecialistExportPreview,
   SpecialistExportRequest,
-  SpecialistExportSaveResult
+  SpecialistExportSaveResult,
+  SpecialistDeleteRequest,
+  SpecialistDeleteResult,
+  SpecialistDeletePreview
 } from '../../shared/specialist-package'
 import type { SpecialistPackageService } from './package/service'
 
@@ -50,6 +52,8 @@ type PackageImportIpc = {
     | 'report'
     | 'previewExport'
     | 'export'
+    | 'previewSpecialistDelete'
+    | 'deleteSpecialist'
   >
   selectArchive: () => Promise<
     { cancelled: true } | { bytes: Uint8Array } | { tooLarge: true; compressedBytes: number }
@@ -243,11 +247,29 @@ export const registerSpecialistIpcHandlers = (
   )
 
   ipcMainHandle(
+    SPECIALIST_IPC.PREVIEW_DELETE,
+    async (_event, request: unknown): Promise<SpecialistDeletePreview> => {
+      if (
+        !packageImport ||
+        !request ||
+        typeof request !== 'object' ||
+        Object.keys(request).some((key) => key !== 'id') ||
+        typeof (request as { id?: unknown }).id !== 'string'
+      ) {
+        throw new Error('Invalid Specialist delete preview request.')
+      }
+      return packageImport.service.previewSpecialistDelete(request as { id: string })
+    }
+  )
+
+  ipcMainHandle(
     SPECIALIST_IPC.DELETE,
-    async (_event, request: DeleteSpecialistRequest): Promise<void> => {
+    async (_event, request: SpecialistDeleteRequest): Promise<SpecialistDeleteResult> => {
       try {
+        if (packageImport) return await packageImport.service.deleteSpecialist(request)
         await service.delete(request.id, request.expectedRevision)
         onProfilesChanged?.()
+        return { status: 'deleted' }
       } catch (error) {
         log.error('specialist:delete failed', { error })
         throw error

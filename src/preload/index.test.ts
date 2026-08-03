@@ -76,6 +76,8 @@ type PreloadApi = {
     exportContributionTemplate: () => unknown
     previewExport: (request: unknown) => unknown
     exportSpecialist: (request: unknown) => unknown
+    previewDelete: (request: unknown) => unknown
+    delete: (request: unknown) => unknown
   }
   acp: {
     resumeSession: (request: unknown) => unknown
@@ -397,6 +399,7 @@ describe('preload bridge — public surface inventory', () => {
       'specialist.onCatalogChanged',
       'specialist.onHandoffLifecycleEvent',
       'specialist.onPendingSwitch',
+      'specialist.previewDelete',
       'specialist.previewExport',
       'specialist.resolveSessionSpecialist',
       'specialist.retryHandoff',
@@ -533,6 +536,29 @@ const sampleSessionArtifactSelection = {
 }
 
 const cases: ForwardingCase[] = [
+  {
+    name: 'specialist.previewDelete → specialist:delete-preview',
+    invoke: (a) => a.specialist.previewDelete({ id: 'research-synth' }),
+    channel: 'specialist:delete-preview',
+    args: [{ id: 'research-synth' }]
+  },
+  {
+    name: 'specialist.delete → specialist:delete',
+    invoke: (a) =>
+      a.specialist.delete({
+        id: 'research-synth',
+        expectedRevision: 3,
+        deleteSkillIds: ['analysis-tools']
+      }),
+    channel: 'specialist:delete',
+    args: [
+      {
+        id: 'research-synth',
+        expectedRevision: 3,
+        deleteSkillIds: ['analysis-tools']
+      }
+    ]
+  },
   {
     name: 'specialist.previewExport → specialist:export-preview',
     invoke: (a) => a.specialist.previewExport({ specialistId: 'research-synth' }),

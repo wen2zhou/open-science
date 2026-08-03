@@ -9,7 +9,9 @@ import type {
   SpecialistPackageCandidatePreview,
   SpecialistPackageInstallResult,
   SpecialistExportPreview,
-  SpecialistExportSaveResult
+  SpecialistExportSaveResult,
+  SpecialistDeletePreview,
+  SpecialistDeleteResult
 } from '../../../shared/specialist-package'
 
 type SpecialistStoreData = {
@@ -24,7 +26,12 @@ type SpecialistStoreActions = {
   create: (input: CreateSpecialistInput) => Promise<SpecialistProfileView>
   update: (input: UpdateSpecialistInput) => Promise<SpecialistProfileView>
   setEnabled: (id: string, enabled: boolean) => Promise<void>
-  delete: (id: string, expectedRevision: number) => Promise<void>
+  previewDelete: (id: string) => Promise<SpecialistDeletePreview>
+  delete: (
+    id: string,
+    expectedRevision: number,
+    deleteSkillIds: readonly string[]
+  ) => Promise<SpecialistDeleteResult>
   duplicate: (id: string) => Promise<CreateSpecialistInput>
   selectPackage: () => Promise<{ cancelled: true } | SpecialistPackageCandidatePreview>
   installPackage: (confirmOverwrite?: boolean) => Promise<SpecialistPackageInstallResult>
@@ -69,10 +76,15 @@ const useSpecialistStore = create<SpecialistStore>((set) => ({
     set({ items })
   },
 
-  delete: async (id: string, expectedRevision: number) => {
-    await window.api.specialist.delete({ id, expectedRevision })
-    const items = await window.api.specialist.list()
-    set({ items })
+  previewDelete: async (id: string) => window.api.specialist.previewDelete({ id }),
+
+  delete: async (id: string, expectedRevision: number, deleteSkillIds: readonly string[]) => {
+    const result = await window.api.specialist.delete({ id, expectedRevision, deleteSkillIds })
+    if (result.status === 'deleted') {
+      const items = await window.api.specialist.list()
+      set({ items })
+    }
+    return result
   },
 
   duplicate: async (id: string) => window.api.specialist.duplicate({ id }),

@@ -798,10 +798,43 @@ describe('SpecialistsPanel', () => {
     expect(document.body.querySelector('[aria-label="Revision conflict"]')).toBeNull()
   })
 
-  it('F3: a rejected delete keeps the dialog open and shows an error', async () => {
-    const deleteMock = vi.fn().mockRejectedValue(new Error('Revision conflict — try again.'))
+  it('matches the approved linked-Skill deletion preview and sends only explicit selections', async () => {
+    const previewDelete = vi.fn().mockResolvedValue({
+      specialistId: 'rna-reviewer',
+      specialistName: 'RNA Reviewer',
+      expectedRevision: 1,
+      skills: [
+        { id: 'exclusive', kind: 'owned-exclusive', deletable: true, reasons: [] },
+        {
+          id: 'builtin-tool',
+          kind: 'builtin',
+          deletable: false,
+          reasons: [{ code: 'builtin', specialistIds: [] }]
+        },
+        {
+          id: 'standalone-tool',
+          kind: 'standalone',
+          deletable: false,
+          reasons: [{ code: 'standalone', specialistIds: [] }]
+        },
+        {
+          id: 'shared-tool',
+          kind: 'shared-owner',
+          deletable: false,
+          reasons: [{ code: 'shared-owner', specialistIds: ['literature-reviewer'] }]
+        },
+        {
+          id: 'referenced-tool',
+          kind: 'referenced',
+          deletable: false,
+          reasons: [{ code: 'referenced', specialistIds: ['builtin-curator'] }]
+        }
+      ]
+    })
+    const deleteMock = vi.fn().mockResolvedValue({ status: 'deleted' })
     useSpecialistStore.setState({
       ...useSpecialistStore.getState(),
+      previewDelete,
       delete: deleteMock,
       load: vi.fn().mockResolvedValue(undefined)
     })
@@ -829,18 +862,30 @@ describe('SpecialistsPanel', () => {
       clickRadixMenuItem(deleteItem)
     })
 
-    // Confirm deletion in the dialog.
+    expect(previewDelete).toHaveBeenCalledWith('rna-reviewer')
+    expect(document.body.textContent).toContain('Choose linked Skills to delete')
+    expect(document.body.textContent).toContain('Built-in Skill content is managed by the app')
+    expect(document.body.textContent).toContain('Pre-existing standalone Skill')
+    expect(document.body.textContent).toContain('Owned by literature-reviewer')
+    expect(document.body.textContent).toContain('Referenced by builtin-curator')
+    const checkboxes = Array.from(
+      document.body.querySelectorAll<HTMLInputElement>('input[type="checkbox"]')
+    )
+    expect(checkboxes).toHaveLength(5)
+    expect(checkboxes.filter((input) => !input.disabled)).toHaveLength(1)
+    expect(checkboxes.every((input) => !input.checked)).toBe(true)
+    await act(async () => checkboxes.find((input) => !input.disabled)?.click())
+
     const confirmBtn = Array.from(document.body.querySelectorAll<HTMLButtonElement>('button')).find(
-      (btn) => btn.textContent === 'Delete' && btn.closest('[role="alertdialog"]') !== null
+      (btn) =>
+        btn.textContent === 'Delete Specialist' && btn.closest('[role="alertdialog"]') !== null
     )
     expect(confirmBtn).not.toBeNull()
     await act(async () => {
       confirmBtn!.click()
     })
 
-    // Dialog stays open and shows the error.
-    expect(document.body.querySelector('[role="alertdialog"]')).not.toBeNull()
-    expect(document.body.textContent).toMatch(/revision conflict|try again/i)
+    expect(deleteMock).toHaveBeenCalledWith('rna-reviewer', 1, ['exclusive'])
   })
 })
 
