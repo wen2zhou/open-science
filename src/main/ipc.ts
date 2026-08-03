@@ -1,7 +1,8 @@
 import { join } from 'node:path'
 import { randomUUID } from 'node:crypto'
+import { readFile, writeFile } from 'node:fs/promises'
 
-import { app, BrowserWindow, net, Notification, protocol, webContents } from 'electron'
+import { app, BrowserWindow, dialog, net, Notification, protocol, webContents } from 'electron'
 
 import { createIpcHandlerInstallationScope, ipcMainHandle } from './ipc-handler-registry'
 import {
@@ -146,6 +147,10 @@ import { PendingSessionSpecialistBindings } from './agents/pending-session-speci
 import { createCodexCompletionGateRuntime } from './acp/codex-completion-handoff'
 import { createOpenCodeImmediateHandoffRuntime } from './acp/opencode-immediate-handoff'
 import { registerSpecialistIpcHandlers } from './specialist/ipc'
+import {
+  createContributionTemplateExporter,
+  resolveContributionTemplateReadmePath
+} from './specialist/package/contribution-template'
 import { SessionBindingService } from './specialist/session-binding'
 import { SPECIALIST_IPC } from '../shared/specialist'
 import type { AppIconPreview, AppIconVariant, RespondApprovalRequest } from '../shared/settings'
@@ -1083,7 +1088,13 @@ const createApplicationModules = async (
       // A specialist capability edit (skills/connectors/enabled) must reach live sessions on the next
       // turn: reconnect so the agent respawns (re-provisioning skills) and resumes with the updated
       // specialist whitelist in the session _meta.
-      () => void runtime.requestSkillsReload()
+      () => void runtime.requestSkillsReload(),
+      createContributionTemplateExporter({
+        appVersion: app.getVersion(),
+        showSaveDialog: (options) => dialog.showSaveDialog(options),
+        readReadme: () => readFile(resolveContributionTemplateReadmePath(app.getAppPath()), 'utf8'),
+        writeFile: (filePath, bytes) => writeFile(filePath, bytes)
+      })
     )
   )
   // Runtime selection UI (Settings/Onboarding): survey managed+external per language, persist the

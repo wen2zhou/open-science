@@ -278,6 +278,7 @@ import type {
   CompletionHandoffCommand
 } from '../shared/specialist'
 import { SPECIALIST_IPC } from '../shared/specialist'
+import type { ContributionTemplateExportResult } from '../shared/specialist-package'
 import {
   HANDOFF_LIFECYCLE_IPC,
   type HandoffEventsRequest,
@@ -479,6 +480,7 @@ type OpenScienceAPI = {
     setEnabled: (request: SetSpecialistEnabledRequest) => Promise<SpecialistProfileView>
     delete(request: DeleteSpecialistRequest): Promise<void>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
+    exportContributionTemplate(): Promise<ContributionTemplateExportResult>
     onCatalogChanged: (listener: () => void) => RemoveListener
     // host.agents.switch() durable next-message switch broadcast (issue 08b). Main persists the
     // binding and notifies the renderer so it mirrors the pending target WITHOUT switching the live
@@ -1126,6 +1128,10 @@ const api: OpenScienceAPI = {
       ipcRenderer.invoke(SPECIALIST_IPC.DELETE, request) as Promise<void>,
     duplicate: (request: DuplicateSpecialistRequest) =>
       ipcRenderer.invoke(SPECIALIST_IPC.DUPLICATE, request) as Promise<CreateSpecialistRequest>,
+    exportContributionTemplate: () =>
+      ipcRenderer.invoke(
+        SPECIALIST_IPC.EXPORT_CONTRIBUTION_TEMPLATE
+      ) as Promise<ContributionTemplateExportResult>,
     onCatalogChanged: (listener: () => void) =>
       onIpcMessage(SPECIALIST_IPC.CATALOG_CHANGED, listener),
     // Compatibility-only pending-selection broadcast; approved SDK handoffs use lifecycle events.

@@ -41,6 +41,7 @@ import type {
   SaveSessionArtifactsRequest,
   SaveSessionArtifactsResult
 } from '../shared/file-save'
+import type { ContributionTemplateExportResult } from '../shared/specialist-package'
 import type {
   ComputeApprovalDecision,
   ComputeApprovalRequest,
@@ -436,6 +437,7 @@ interface OpenScienceAPI {
     setEnabled(request: SetSpecialistEnabledRequest): Promise<SpecialistProfileView>
     delete(request: DeleteSpecialistRequest): Promise<void>
     duplicate(request: DuplicateSpecialistRequest): Promise<CreateSpecialistRequest>
+    exportContributionTemplate(): Promise<ContributionTemplateExportResult>
     onCatalogChanged(listener: () => void): RemoveListener
     // Compatibility-only pending-selection broadcast; approved SDK handoffs use lifecycle events.
     onPendingSwitch(listener: AcpListener<PendingSwitchBroadcast>): RemoveListener

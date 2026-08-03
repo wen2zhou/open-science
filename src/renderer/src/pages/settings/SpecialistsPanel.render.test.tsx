@@ -99,6 +99,113 @@ afterEach(() => {
 })
 
 describe('SpecialistsPanel', () => {
+  it('matches the Import ZIP entry hierarchy and template action summary', async () => {
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'import' }} onNavigate={vi.fn()} />)
+    })
+
+    expect(document.body.textContent).toContain('Import a Specialist package')
+    expect(document.body.textContent).toContain('Choose one ZIP containing exactly one Specialist.')
+    expect(document.body.textContent).toContain('Select a Specialist ZIP')
+    expect(document.body.textContent).toContain(
+      'The package will be safely parsed and previewed before anything is installed.'
+    )
+    expect(document.body.textContent).toContain('50 MB compressed')
+    expect(document.body.textContent).toContain('200 MB uncompressed')
+    expect(document.body.textContent).toContain('2,000 files')
+    expect(document.body.textContent).toContain('25 MB per file')
+    expect(document.body.textContent).toContain('Download template')
+    expect(document.body.textContent).toContain(
+      'The fixed ZIP contains manifest.json, specialist.json and a bilingual README.md.'
+    )
+    expect(document.body.textContent).toContain('Choose ZIP')
+  })
+
+  it('starts the template download directly without an intermediate page', async () => {
+    const exportContributionTemplate = vi.fn().mockResolvedValue({ saved: false })
+    window.api.specialist.exportContributionTemplate = exportContributionTemplate
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'import' }} onNavigate={vi.fn()} />)
+    })
+    const download = Array.from(document.body.querySelectorAll('button')).find((button) =>
+      button.textContent?.includes('Download template')
+    )
+    await act(async () => download?.click())
+
+    expect(exportContributionTemplate).toHaveBeenCalledOnce()
+    expect(document.body.querySelector('[role="dialog"]')).toBeNull()
+    expect(document.body.textContent).not.toContain('Download the fixed starter ZIP')
+  })
+
+  it('quietly restores the Import ZIP entry when the native save dialog is cancelled', async () => {
+    const exportContributionTemplate = vi.fn().mockResolvedValue({ saved: false })
+    window.api.specialist.exportContributionTemplate = exportContributionTemplate
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'import' }} onNavigate={vi.fn()} />)
+    })
+    const clickButton = async (label: string): Promise<void> => {
+      const button = Array.from(document.body.querySelectorAll('button')).find((candidate) =>
+        candidate.textContent?.includes(label)
+      )
+      await act(async () => button?.click())
+    }
+
+    await clickButton('Download template')
+
+    expect(exportContributionTemplate).toHaveBeenCalledOnce()
+    expect(document.body.textContent).toContain('Select a Specialist ZIP')
+    expect(document.body.textContent).not.toContain('Template saved')
+    expect(document.body.querySelector('[role="alert"]')).toBeNull()
+  })
+
+  it('shows loading and the success state around a completed template save', async () => {
+    let finishSave: ((value: { saved: boolean }) => void) | undefined
+    window.api.specialist.exportContributionTemplate = vi.fn(
+      (): Promise<{ saved: boolean }> => new Promise((resolve) => (finishSave = resolve))
+    )
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'import' }} onNavigate={vi.fn()} />)
+    })
+    const click = async (label: string): Promise<void> => {
+      const button = Array.from(document.body.querySelectorAll('button')).find((candidate) =>
+        candidate.textContent?.includes(label)
+      )
+      await act(async () => button?.click())
+    }
+
+    await click('Download template')
+    expect(document.body.textContent).toContain('Saving template…')
+
+    await act(async () => finishSave?.({ saved: true }))
+    expect(document.body.textContent).toContain('Template saved')
+    expect(document.body.textContent).toContain(
+      'openscience-specialist-template.zip is ready for contributor editing.'
+    )
+  })
+
+  it('shows a path-free error and permits retry when saving fails', async () => {
+    window.api.specialist.exportContributionTemplate = vi
+      .fn()
+      .mockRejectedValue(new Error('EACCES /secret/location/template.zip'))
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'import' }} onNavigate={vi.fn()} />)
+    })
+    const click = async (label: string): Promise<void> => {
+      const button = Array.from(document.body.querySelectorAll('button')).find((candidate) =>
+        candidate.textContent?.includes(label)
+      )
+      await act(async () => button?.click())
+    }
+
+    await click('Download template')
+
+    expect(document.body.querySelector('[role="alert"]')?.textContent).toContain(
+      'Could not save contribution template. Try again.'
+    )
+    expect(document.body.textContent).not.toContain('/secret/location')
+    expect(document.body.textContent).toContain('Download template')
+  })
+
   it('filters specialists by a user-entered search term', async () => {
     await act(async () => {
       root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={vi.fn()} />)
@@ -433,6 +540,22 @@ describe('SpecialistsPanel Chat with agent', () => {
 
     expect(labels.some((label) => label.includes('Write from scratch'))).toBe(true)
     expect(labels.some((label) => label.includes('Chat with agent'))).toBe(true)
+  })
+
+  it('opens the approved Import ZIP entry from the existing Add specialist menu', async () => {
+    const onNavigate = vi.fn()
+    await act(async () => {
+      root.render(<SpecialistsPanel view={{ kind: 'list' }} onNavigate={onNavigate} />)
+    })
+
+    openRadixMenu(openAddSpecialistMenu())
+    const importItem = Array.from(
+      document.body.querySelectorAll<HTMLElement>('[role="menuitem"]')
+    ).find((item) => item.textContent?.includes('Import ZIP'))
+    await act(async () => clickRadixMenuItem(importItem))
+
+    expect(importItem?.textContent).toContain('Preview and install a Specialist package')
+    expect(onNavigate).toHaveBeenCalledWith({ kind: 'import' })
   })
 
   it('uses the approved Chat with agent subtitle copy', async () => {

@@ -51,4 +51,25 @@ describe('specialist session IPC', () => {
     expect(persistSessionSpecialist).toHaveBeenCalledWith('session-1', profile.id)
     expect(binding.getBinding('session-1')).toBe(profile.id)
   })
+
+  it('returns only the renderer-safe template save result from main', async () => {
+    handlers.clear()
+    const binding = new SessionBindingService(createProfileService())
+    const exportContributionTemplate = vi.fn().mockResolvedValue({ saved: true })
+
+    registerSpecialistIpcHandlers(
+      createProfileService(),
+      binding,
+      vi.fn(),
+      undefined,
+      undefined,
+      exportContributionTemplate
+    )
+
+    const result = await handlers.get(SPECIALIST_IPC.EXPORT_CONTRIBUTION_TEMPLATE)?.(
+      undefined,
+      undefined
+    )
+    expect(result).toEqual({ saved: true })
+  })
 })

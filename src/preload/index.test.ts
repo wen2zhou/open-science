@@ -72,6 +72,9 @@ type PreloadApi = {
     previewGitHubSkill: (request: unknown) => unknown
     previewAgentHomeSkill: (request: unknown) => unknown
   }
+  specialist: {
+    exportContributionTemplate: () => unknown
+  }
   acp: {
     resumeSession: (request: unknown) => unknown
     resetSessionContext: (request: unknown) => unknown
@@ -383,6 +386,7 @@ describe('preload bridge — public surface inventory', () => {
       'specialist.create',
       'specialist.delete',
       'specialist.duplicate',
+      'specialist.exportContributionTemplate',
       'specialist.getHandoffEvents',
       'specialist.list',
       'specialist.onCatalogChanged',
@@ -521,6 +525,12 @@ const sampleSessionArtifactSelection = {
 }
 
 const cases: ForwardingCase[] = [
+  {
+    name: 'specialist.exportContributionTemplate → specialist:export-contribution-template',
+    invoke: (a) => a.specialist.exportContributionTemplate(),
+    channel: 'specialist:export-contribution-template',
+    args: []
+  },
   {
     name: 'saveSessionArtifacts → file:save-session-artifacts',
     invoke: (a) => a.saveSessionArtifacts(sampleSessionArtifactSelection),

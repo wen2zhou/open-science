@@ -19,6 +19,7 @@ import { ProfileService } from './service'
 import { SessionBindingService } from './session-binding'
 import { createLogger } from '../logger'
 import { broadcastToRenderers } from '../renderer-broadcast'
+import type { ContributionTemplateExportResult } from '../../shared/specialist-package'
 
 const log = createLogger('specialist:ipc')
 
@@ -52,7 +53,8 @@ export const registerSpecialistIpcHandlers = (
   // Notifies the runtime that a specialist profile's capabilities changed (skills/connectors/enabled).
   // The runtime reconnects so live sessions re-provision skills and re-apply the updated whitelist on
   // the next turn. Optional so headless/tests can omit it.
-  onProfilesChanged?: () => void
+  onProfilesChanged?: () => void,
+  exportContributionTemplate?: () => Promise<ContributionTemplateExportResult>
 ): void => {
   // Subscribe once so every mutation (create, setEnabled) triggers a broadcast.
   service.subscribe(broadcastCatalogChanged)
@@ -128,6 +130,10 @@ export const registerSpecialistIpcHandlers = (
     async (_event, request: DuplicateSpecialistRequest): Promise<CreateSpecialistInput> =>
       service.duplicate(request.id)
   )
+
+  if (exportContributionTemplate) {
+    ipcMainHandle(SPECIALIST_IPC.EXPORT_CONTRIBUTION_TEMPLATE, exportContributionTemplate)
+  }
 
   // Session switching. This handler is a named seam: the future host.agents.switch() SDK (issue 08)
   // will resolve name→UUID and call this same channel, not a parallel path.

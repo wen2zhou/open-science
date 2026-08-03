@@ -10,6 +10,8 @@ export const LEGACY_UNVERSIONED_SKILL_VERSION = '0.1.0' as const
 export type SpecialistPackageSource = 'zip' | 'directory' | 'builtin'
 export type PackageDiagnosticSeverity = 'error' | 'warning' | 'info'
 
+export type ContributionTemplateExportResult = { saved: boolean }
+
 export type PackageDiagnostic = {
   severity: PackageDiagnosticSeverity
   code: string

@@ -9,6 +9,7 @@ export const SPECIALIST_IPC = {
   SET_ENABLED: 'specialist:set-enabled',
   DELETE: 'specialist:delete',
   DUPLICATE: 'specialist:duplicate',
+  EXPORT_CONTRIBUTION_TEMPLATE: 'specialist:export-contribution-template',
   CATALOG_CHANGED: 'specialist:catalog-changed',
   // Session switching (issue 07): per-session mutable binding.
   SET_SESSION_SPECIALIST: 'specialist:set-session-specialist',

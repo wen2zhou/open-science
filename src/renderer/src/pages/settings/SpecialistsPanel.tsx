@@ -1,5 +1,14 @@
 import { useEffect, useMemo, useState } from 'react'
-import { ChevronDown, Copy, MessagesSquare, Pencil, Plus, Search, Trash2 } from 'lucide-react'
+import {
+  ChevronDown,
+  Copy,
+  MessagesSquare,
+  Pencil,
+  Plus,
+  Search,
+  Trash2,
+  Upload
+} from 'lucide-react'
 import { AlertDialog } from 'radix-ui'
 import { Button } from '@/components/ui/button'
 import {
@@ -32,6 +41,7 @@ export type SpecialistsView =
   | { kind: 'list' }
   | { kind: 'create'; draft?: CreateSpecialistInput }
   | { kind: 'edit'; id: string }
+  | { kind: 'import' }
 
 type CategoryFilter = 'all' | 'custom' | 'builtin'
 
@@ -66,6 +76,9 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     name: string
   } | null>(null)
   const [deleteError, setDeleteError] = useState<string | undefined>()
+  const [templateSaving, setTemplateSaving] = useState(false)
+  const [templateSaved, setTemplateSaved] = useState(false)
+  const [templateSaveError, setTemplateSaveError] = useState<string | undefined>()
 
   // Memoised so visibleCustomItems' memo can reference a stable value.
   const customItems = useMemo(() => items.filter((i) => i.kind === 'custom'), [items])
@@ -109,6 +122,88 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
     if (!chatProjectId) return
     useSettingsStore.getState().closeSettings()
     useNavigationStore.getState().startCustomizeConversation(chatProjectId)
+  }
+
+  const downloadTemplate = (): void => {
+    void (async () => {
+      setTemplateSaving(true)
+      setTemplateSaveError(undefined)
+      try {
+        const result = await window.api.specialist.exportContributionTemplate()
+        if (result.saved) setTemplateSaved(true)
+      } catch {
+        setTemplateSaveError('Could not save contribution template. Try again.')
+      } finally {
+        setTemplateSaving(false)
+      }
+    })()
+  }
+
+  if (view.kind === 'import') {
+    return (
+      <div className="p-5">
+        <div className="mb-5 flex items-start justify-between gap-4 border-b border-border pb-4">
+          <div>
+            <p className="text-xs font-semibold uppercase tracking-wide text-primary">Import ZIP</p>
+            <h2 className="mt-1 text-xl font-semibold">Import a Specialist package</h2>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Choose one ZIP containing exactly one Specialist.
+            </p>
+          </div>
+          <Button type="button" variant="outline" onClick={() => onNavigate({ kind: 'list' })}>
+            Back
+          </Button>
+        </div>
+        {templateSaved ? (
+          <div className="rounded-xl border border-border px-6 py-10 text-center" role="status">
+            <div className="mx-auto flex size-12 items-center justify-center rounded-full bg-success-000/10 text-success-000">
+              ✓
+            </div>
+            <h3 className="mt-4 text-lg font-semibold">Template saved</h3>
+            <p className="mt-2 text-sm text-muted-foreground">
+              openscience-specialist-template.zip is ready for contributor editing.
+            </p>
+            <Button type="button" className="mt-5" onClick={() => setTemplateSaved(false)}>
+              Done
+            </Button>
+          </div>
+        ) : (
+          <div className="rounded-xl border border-border px-6 py-10 text-center">
+            <Upload className="mx-auto size-10 text-primary" aria-hidden="true" />
+            <h3 className="mt-4 text-base font-semibold">Select a Specialist ZIP</h3>
+            <p className="mx-auto mt-2 max-w-xl text-sm text-muted-foreground">
+              The package will be safely parsed and previewed before anything is installed.
+            </p>
+            <p className="mt-4 text-xs text-muted-foreground">
+              Limits: 50 MB compressed · 200 MB uncompressed · 2,000 files · 25 MB per file
+            </p>
+            <p className="mx-auto mt-2 max-w-xl text-xs text-muted-foreground">
+              The fixed ZIP contains manifest.json, specialist.json and a bilingual README.md.
+              Placeholder fields are expected until you fill them in.
+            </p>
+            <div className="mt-5 flex justify-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                disabled={templateSaving}
+                onClick={downloadTemplate}
+              >
+                {templateSaving ? 'Saving template…' : 'Download template'}
+              </Button>
+              <Button type="button">Choose ZIP</Button>
+            </div>
+            {templateSaveError ? (
+              <p
+                role="alert"
+                className="mt-4 rounded-lg border border-danger-000/30 bg-danger-000/10 p-3 text-sm text-danger-000"
+              >
+                {templateSaveError}
+              </p>
+            ) : null}
+          </div>
+        )}
+      </div>
+    )
   }
 
   if (view.kind === 'create') {
@@ -255,6 +350,16 @@ const SpecialistsPanel = ({ view, onNavigate }: SpecialistsPanelProps): React.JS
                 </p>
               </>
             ) : null}
+            <DropdownMenuSeparator />
+            <DropdownMenuItem className="gap-2.5" onSelect={() => onNavigate({ kind: 'import' })}>
+              <Upload className="size-4 shrink-0" aria-hidden="true" />
+              <span className="flex flex-col">
+                <span>Import ZIP</span>
+                <span className="text-xs text-muted-foreground">
+                  Preview and install a Specialist package
+                </span>
+              </span>
+            </DropdownMenuItem>
           </DropdownMenuContent>
         </DropdownMenu>
       </div>
