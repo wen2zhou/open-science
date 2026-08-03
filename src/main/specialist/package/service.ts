@@ -18,6 +18,7 @@ import {
   SpecialistPackageRollbackError,
   SpecialistPackageTransaction
 } from './transaction'
+import type { SpecialistPackageSkillPort } from './skill-port'
 
 const CANDIDATE_TTL_MS = 10 * 60 * 1000
 const log = createLogger('specialist.package.service')
@@ -38,6 +39,7 @@ type SpecialistPackageServiceOptions = {
   token?: () => string
   now?: () => Date
   onCommitted?: () => void
+  skillPort?: SpecialistPackageSkillPort
 }
 
 const inferredAppRange = (version: string): string => {
@@ -52,7 +54,12 @@ export class SpecialistPackageService {
   private readonly now: () => Date
 
   constructor(private readonly options: SpecialistPackageServiceOptions) {
-    this.transaction = new SpecialistPackageTransaction(options.storageDir, options.repository)
+    this.transaction = new SpecialistPackageTransaction(
+      options.storageDir,
+      options.repository,
+      randomUUID,
+      options.skillPort
+    )
     this.token = options.token ?? randomUUID
     this.now = options.now ?? (() => new Date())
   }

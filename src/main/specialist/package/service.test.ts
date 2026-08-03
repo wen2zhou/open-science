@@ -10,6 +10,7 @@ import type { SpecialistPackageCatalogSnapshot } from '../../../shared/specialis
 import { SpecialistRepository } from '../repository'
 import { ProfileService } from '../service'
 import { SpecialistPackageService } from './service'
+import type { SpecialistPackageSkillPort } from './skill-port'
 
 const encoder = new TextEncoder()
 const catalog: SpecialistPackageCatalogSnapshot = {
@@ -43,6 +44,41 @@ const validZip = (overrides: { version?: string; description?: string } = {}): U
     )
   })
 
+const bundledZip = (): Uint8Array =>
+  zipSync({
+    'manifest.json': encoder.encode(
+      JSON.stringify({
+        schema_version: 1,
+        id: 'research-synth',
+        version: '1.3.0',
+        requires_app: '>=0.9.2 <1.0.0',
+        skills: {
+          builtin: [],
+          required: [{ id: 'analysis-tools', version_range: '^1.0.0' }],
+          bundled: [{ id: 'analysis-tools', version: '1.0.0', path: 'skills/analysis-tools' }]
+        }
+      })
+    ),
+    'specialist.json': encoder.encode(
+      JSON.stringify({
+        name: 'Research Synthesizer',
+        description: 'Synthesizes research.',
+        systemPrompt: 'Private imported instructions.',
+        capabilityMode: 'selected',
+        fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+        selectedCapabilities: {
+          skillIds: ['analysis-tools'],
+          connectorIds: [],
+          connectorTools: []
+        }
+      })
+    ),
+    'skills/analysis-tools/SKILL.md': encoder.encode(
+      '---\nname: analysis-tools\ndescription: Analyze data\n---\nUse the tools.'
+    ),
+    'skills/analysis-tools/scripts/run.sh': encoder.encode('exit 99')
+  })
+
 let storageDir: string
 
 beforeEach(async () => {
@@ -55,6 +91,53 @@ afterEach(async () => {
 })
 
 describe('SpecialistPackageService', () => {
+  it('commits bundled Skills and ownership through one package transaction', async () => {
+    const live = new Set<string>()
+    const staged = new Map<string, readonly string[]>()
+    const skillPort: SpecialistPackageSkillPort = {
+      snapshot: async () => [],
+      prepare: async (transactionId, _specialistId, skills) => {
+        staged.set(
+          transactionId,
+          skills.map((skill) => skill.id)
+        )
+      },
+      commit: async (transactionId) => {
+        for (const id of staged.get(transactionId) ?? []) live.add(id)
+      },
+      rollback: async (transactionId) => {
+        for (const id of staged.get(transactionId) ?? []) live.delete(id)
+        staged.delete(transactionId)
+      },
+      recover: async (transactionId, outcome) => {
+        if (transactionId === undefined) return
+        if (outcome === 'rollback') {
+          for (const id of staged.get(transactionId) ?? []) live.delete(id)
+        }
+        staged.delete(transactionId)
+      }
+    }
+    const repository = new SpecialistRepository(storageDir)
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => catalog,
+      skillPort
+    })
+
+    const preview = await service.preview(bundledZip())
+    expect(preview.summary?.skills).toEqual([
+      expect.objectContaining({ id: 'analysis-tools', disposition: 'install' })
+    ])
+    await expect(
+      service.install({ candidateToken: preview.candidateToken })
+    ).resolves.toMatchObject({
+      status: 'installed',
+      specialist: { ownedSkillIds: ['analysis-tools'] }
+    })
+    expect([...live]).toEqual(['analysis-tools'])
+  })
+
   it('previews and explicitly confirms an atomic overwrite while preserving local enabled state', async () => {
     const repository = new SpecialistRepository(storageDir)
     await repository.insert({
