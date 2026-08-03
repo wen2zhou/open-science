@@ -20,13 +20,13 @@ const catalog: SpecialistPackageCatalogSnapshot = {
   protectedSpecialistIds: ['reviewer']
 }
 
-const validZip = (): Uint8Array =>
+const validZip = (overrides: { version?: string; description?: string } = {}): Uint8Array =>
   zipSync({
     'manifest.json': encoder.encode(
       JSON.stringify({
         schema_version: 1,
         id: 'research-synth',
-        version: '1.3.0',
+        version: overrides.version ?? '1.3.0',
         requires_app: '>=0.9.2 <1.0.0',
         skills: { builtin: [], required: [], bundled: [] }
       })
@@ -34,7 +34,7 @@ const validZip = (): Uint8Array =>
     'specialist.json': encoder.encode(
       JSON.stringify({
         name: 'Research Synthesizer',
-        description: 'Synthesizes research.',
+        description: overrides.description ?? 'Synthesizes research.',
         systemPrompt: 'Private imported instructions.',
         capabilityMode: 'selected',
         fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
@@ -55,7 +55,7 @@ afterEach(async () => {
 })
 
 describe('SpecialistPackageService', () => {
-  it('shows custom ID overwrite requirements without committing the replacement', async () => {
+  it('previews and explicitly confirms an atomic overwrite while preserving local enabled state', async () => {
     const repository = new SpecialistRepository(storageDir)
     await repository.insert({
       id: 'research-synth',
@@ -79,24 +79,122 @@ describe('SpecialistPackageService', () => {
 
     const preview = await service.preview(validZip())
     expect(preview).toMatchObject({
-      installable: false,
+      installable: true,
       overwrite: {
         id: 'research-synth',
+        target: 'custom',
         currentVersion: '1.2.0',
-        incomingVersion: '1.3.0'
+        incomingVersion: '1.3.0',
+        modifiedSinceImport: false,
+        hasImportBaseline: false
       }
     })
-    expect(preview.diagnostics).toContainEqual(
-      expect.objectContaining({ code: 'specialist.overwrite-confirmation-required' })
-    )
     await expect(service.install({ candidateToken: preview.candidateToken })).resolves.toEqual({
       status: 'failed',
-      code: 'candidate-not-installable'
+      code: 'overwrite-confirmation-required'
+    })
+    await expect(
+      service.install({ candidateToken: preview.candidateToken, confirmOverwrite: true })
+    ).resolves.toMatchObject({
+      status: 'installed',
+      specialist: {
+        id: 'research-synth',
+        systemPrompt: 'Private imported instructions.',
+        enabled: false,
+        revision: 5,
+        packageVersion: '1.3.0',
+        origin: 'imported'
+      }
     })
     await expect(new ProfileService(repository).getById('research-synth')).resolves.toMatchObject({
-      systemPrompt: 'Keep existing.',
+      systemPrompt: 'Private imported instructions.',
       enabled: false,
-      revision: 4
+      revision: 5,
+      importBaseline: {
+        importedAt: expect.any(String),
+        archiveDigest: expect.stringMatching(/^[a-f0-9]{64}$/),
+        contentDigest: expect.stringMatching(/^[a-f0-9]{64}$/)
+      }
+    })
+  })
+
+  it('derives modified provenance from the live portable profile and reports version risks', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    const initial = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => catalog,
+      now: () => new Date('2026-08-03T09:00:00.000Z')
+    })
+    const installed = await initial.preview(validZip())
+    await initial.install({ candidateToken: installed.candidateToken })
+
+    const unchanged = await initial.preview(validZip())
+    expect(unchanged.overwrite).toMatchObject({ modifiedSinceImport: false })
+    expect(unchanged.diagnostics.map((item) => item.code)).toContain(
+      'specialist.overwrite-same-version'
+    )
+
+    await new ProfileService(repository).update({
+      id: 'research-synth',
+      revision: 1,
+      description: 'Locally edited.'
+    })
+    const modified = await initial.preview(validZip())
+    expect(modified.overwrite).toMatchObject({ modifiedSinceImport: true })
+    expect(modified.diagnostics.map((item) => item.code)).toEqual(
+      expect.arrayContaining([
+        'specialist.overwrite-local-modifications',
+        'specialist.overwrite-same-version'
+      ])
+    )
+
+    const changedWithoutBump = await initial.preview(
+      validZip({ description: 'Changed package content.' })
+    )
+    expect(changedWithoutBump.diagnostics.map((item) => item.code)).toContain(
+      'specialist.overwrite-content-without-version-bump'
+    )
+    const downgrade = await initial.preview(validZip({ version: '1.2.0' }))
+    expect(downgrade.diagnostics.map((item) => item.code)).toContain(
+      'specialist.overwrite-downgrade'
+    )
+  })
+
+  it('rejects overwrite confirmation after revision drift without changing the edited profile', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    await repository.insert({
+      id: 'research-synth',
+      name: 'Existing Research Synthesizer',
+      description: 'Existing content.',
+      systemPrompt: 'Keep existing.',
+      enabled: true,
+      capabilityMode: 'full',
+      fullAccess: { excludedSkillIds: [], excludedConnectorIds: [], connectorTools: [] },
+      selectedCapabilities: { skillIds: [], connectorIds: [], connectorTools: [] },
+      revision: 2,
+      packageVersion: '1.2.0',
+      origin: 'local',
+      ownedSkillIds: []
+    })
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => catalog
+    })
+    const preview = await service.preview(validZip())
+    await new ProfileService(repository).update({
+      id: 'research-synth',
+      revision: 2,
+      systemPrompt: 'Concurrent edit must survive.'
+    })
+
+    await expect(
+      service.install({ candidateToken: preview.candidateToken, confirmOverwrite: true })
+    ).resolves.toEqual({ status: 'failed', code: 'revision-conflict' })
+    await expect(new ProfileService(repository).getById('research-synth')).resolves.toMatchObject({
+      systemPrompt: 'Concurrent edit must survive.',
+      revision: 3
     })
   })
 
@@ -135,7 +233,7 @@ describe('SpecialistPackageService', () => {
     })
     await expect(service.install({ candidateToken: preview.candidateToken })).resolves.toEqual({
       status: 'failed',
-      code: 'candidate-invalid'
+      code: 'stale-candidate'
     })
 
     const restarted = new ProfileService(new SpecialistRepository(storageDir))
@@ -178,7 +276,7 @@ describe('SpecialistPackageService', () => {
     service.cancel(cancelled.candidateToken)
     await expect(service.install({ candidateToken: cancelled.candidateToken })).resolves.toEqual({
       status: 'failed',
-      code: 'candidate-invalid'
+      code: 'stale-candidate'
     })
 
     const expired = await service.preview(validZip())
@@ -194,7 +292,7 @@ describe('SpecialistPackageService', () => {
       service.install({ candidateToken: live.candidateToken })
     ])
     expect(results.map((result) => result.status).sort()).toEqual(['failed', 'installed'])
-    expect(results).toContainEqual({ status: 'failed', code: 'candidate-invalid' })
+    expect(results).toContainEqual({ status: 'failed', code: 'stale-candidate' })
     expect(onCommitted).toHaveBeenCalledOnce()
   })
 
@@ -250,6 +348,22 @@ describe('SpecialistPackageService', () => {
     })
     await expect(profiles.getById(existing.id)).resolves.toMatchObject({ systemPrompt: 'Keep me.' })
     await expect(profiles.getById('research-synth')).rejects.toThrow(/not found/i)
+  })
+
+  it('distinguishes rollback failure from the commit that triggered it', async () => {
+    const repository = new SpecialistRepository(storageDir)
+    vi.spyOn(repository, 'replaceAll').mockRejectedValue(new Error('storage unavailable'))
+    const service = new SpecialistPackageService({
+      storageDir,
+      repository,
+      catalog: async () => catalog
+    })
+    const preview = await service.preview(validZip())
+
+    await expect(service.install({ candidateToken: preview.candidateToken })).resolves.toEqual({
+      status: 'failed',
+      code: 'rollback-failed'
+    })
   })
 
   it('rolls back an interrupted Specialist transaction on restart before accepting a new mutation', async () => {

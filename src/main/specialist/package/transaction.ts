@@ -7,6 +7,7 @@ import type { SpecialistProfileView } from '../../../shared/specialist'
 import { createLogger } from '../../logger'
 import { SpecialistRepository } from '../repository'
 import { SPECIALISTS_FILE_VERSION, type StoredSpecialist, type StoredSpecialists } from '../types'
+import { specialistPayloadContentHash } from './validator'
 
 type TransactionPhase = 'prepared' | 'committing' | 'committed' | 'rolling-back' | 'rolled-back'
 
@@ -32,9 +33,16 @@ export class SpecialistPackageRecoveryError extends Error {
   }
 }
 
+export class SpecialistPackageRevisionConflictError extends Error {}
+export class SpecialistPackageRollbackError extends Error {}
+
 const toView = (stored: StoredSpecialist): SpecialistProfileView => ({
   ...stored,
-  displayName: stored.displayName ?? stored.name
+  displayName: stored.displayName ?? stored.name,
+  modifiedSinceImport:
+    stored.origin === 'imported' && stored.importBaseline !== undefined
+      ? specialistPayloadContentHash(stored) !== stored.importBaseline.contentDigest
+      : false
 })
 
 export class SpecialistPackageTransaction {
@@ -84,14 +92,21 @@ export class SpecialistPackageTransaction {
     plan: Readonly<SpecialistPackageValidationPlan>,
     importedAt: Date,
     archiveDigest: string,
-    inferredRequiresApp: string
+    inferredRequiresApp: string,
+    overwrite?: { expectedRevision: number }
   ): Promise<SpecialistProfileView> {
     const run = this.queue.then(async () => {
       await this.recover()
       const before = await this.repository.getAll()
-      if (before.specialists.some((specialist) => specialist.id === plan.specialistId)) {
-        throw new Error('Specialist overwrite requires a future explicit overwrite transaction.')
-      }
+      const existingIndex = before.specialists.findIndex(
+        (specialist) => specialist.id === plan.specialistId
+      )
+      const existing = existingIndex < 0 ? undefined : before.specialists[existingIndex]
+      if (overwrite) {
+        if (!existing || existing.revision !== overwrite.expectedRevision) {
+          throw new SpecialistPackageRevisionConflictError()
+        }
+      } else if (existing) throw new SpecialistPackageRevisionConflictError()
       const stored: StoredSpecialist = {
         id: plan.specialistId,
         name: plan.payload.name,
@@ -100,14 +115,14 @@ export class SpecialistPackageTransaction {
         systemPrompt: plan.payload.systemPrompt,
         iconKey: plan.payload.iconKey,
         colorKey: plan.payload.colorKey,
-        enabled: true,
+        enabled: existing?.enabled ?? true,
         capabilityMode: plan.payload.capabilityMode,
         fullAccess: structuredClone(plan.payload.fullAccess),
         selectedCapabilities: structuredClone(plan.payload.selectedCapabilities),
-        revision: 1,
+        revision: existing ? existing.revision + 1 : 1,
         packageVersion: plan.packageVersion,
         origin: 'imported',
-        ownedSkillIds: [],
+        ownedSkillIds: existing?.ownedSkillIds ?? [],
         importBaseline: {
           importedAt: importedAt.toISOString(),
           archiveDigest,
@@ -117,7 +132,12 @@ export class SpecialistPackageTransaction {
       }
       const after: StoredSpecialists = {
         version: SPECIALISTS_FILE_VERSION,
-        specialists: [...before.specialists, stored]
+        specialists:
+          existingIndex < 0
+            ? [...before.specialists, stored]
+            : before.specialists.map((specialist, index) =>
+                index === existingIndex ? stored : specialist
+              )
       }
       const journal: TransactionJournal = {
         transactionId: this.transactionId(),
@@ -152,6 +172,7 @@ export class SpecialistPackageTransaction {
           await rm(this.journalPath, { force: true })
         } catch (recoveryError) {
           this.recoveryFailure = recoveryError
+          throw new SpecialistPackageRollbackError()
         }
         throw error
       }

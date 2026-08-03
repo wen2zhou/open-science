@@ -19,6 +19,7 @@ import {
   emptyFullAccessConfig,
   emptySelectedConfig
 } from '../../shared/specialist'
+import { specialistPayloadContentHash } from './package/validator'
 
 const isStringArray = (value: unknown): value is string[] =>
   Array.isArray(value) && value.every((item) => typeof item === 'string')
@@ -100,7 +101,11 @@ const toView = (s: StoredSpecialist): SpecialistProfileView => ({
   packageVersion: s.packageVersion,
   origin: s.origin,
   ownedSkillIds: s.ownedSkillIds,
-  importBaseline: s.importBaseline
+  importBaseline: s.importBaseline,
+  modifiedSinceImport:
+    s.origin === 'imported' && s.importBaseline !== undefined
+      ? specialistPayloadContentHash(s) !== s.importBaseline.contentDigest
+      : false
 })
 
 const assertOptionalIdentityFieldShapes = (

@@ -437,7 +437,24 @@ const parsePayload = (
   }
 }
 
-const contentHash = (files: readonly SpecialistPackageFile[]): string => {
+export const specialistPayloadContentHash = (payload: SpecialistPackagePayload): string =>
+  createHash('sha256')
+    .update(
+      JSON.stringify({
+        name: payload.name,
+        displayName: payload.displayName ?? payload.name,
+        description: payload.description,
+        systemPrompt: payload.systemPrompt,
+        iconKey: payload.iconKey,
+        colorKey: payload.colorKey,
+        capabilityMode: payload.capabilityMode,
+        fullAccess: payload.fullAccess,
+        selectedCapabilities: payload.selectedCapabilities
+      })
+    )
+    .digest('hex')
+
+const filesContentHash = (files: readonly SpecialistPackageFile[]): string => {
   const hash = createHash('sha256')
   for (const file of [...files].sort((left, right) => left.path.localeCompare(right.path))) {
     hash.update(file.path)
@@ -635,6 +652,31 @@ export const validateSpecialistPackage = (
         )
       }
     }
+    for (const bundled of manifest.skills.bundled) {
+      const installed = _catalog.skills.find((skill) => skill.id === bundled.id)
+      if (!installed) continue
+      const bundledFiles = packageFiles.filter(
+        (file) => file.path === bundled.path || file.path.startsWith(`${bundled.path}/`)
+      )
+      const bundledDigest = filesContentHash(bundledFiles)
+      if (
+        installed.builtin ||
+        installed.version !== bundled.version ||
+        (installed.contentDigest !== undefined && installed.contentDigest !== bundledDigest)
+      ) {
+        diagnostic(
+          diagnostics,
+          installed.builtin
+            ? 'dependency.bundled-skill-protected'
+            : 'dependency.bundled-skill-conflict',
+          installed.builtin
+            ? 'A bundled Skill uses a protected builtin Skill ID.'
+            : 'An installed Skill with this ID has a different version or content digest.',
+          bundled.path,
+          bundled.id
+        )
+      }
+    }
   }
   const summary =
     manifest && payload
@@ -658,7 +700,7 @@ export const validateSpecialistPackage = (
     specialistId: manifest.id,
     packageVersion: manifest.version,
     source,
-    contentHash: contentHash(packageFiles),
+    contentHash: specialistPayloadContentHash(payload),
     manifest,
     payload
   }

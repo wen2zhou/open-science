@@ -24,7 +24,7 @@ type SpecialistStoreActions = {
   delete: (id: string, expectedRevision: number) => Promise<void>
   duplicate: (id: string) => Promise<CreateSpecialistInput>
   selectPackage: () => Promise<{ cancelled: true } | SpecialistPackageCandidatePreview>
-  installPackage: () => Promise<SpecialistPackageInstallResult>
+  installPackage: (confirmOverwrite?: boolean) => Promise<SpecialistPackageInstallResult>
   cancelPackage: () => Promise<void>
 }
 
@@ -76,11 +76,12 @@ const useSpecialistStore = create<SpecialistStore>((set) => ({
     return result
   },
 
-  installPackage: async () => {
+  installPackage: async (confirmOverwrite = false) => {
     const preview = useSpecialistStore.getState().packagePreview
     if (!preview) return { status: 'failed', code: 'candidate-invalid' }
     const result = await window.api.specialist.installPackage({
-      candidateToken: preview.candidateToken
+      candidateToken: preview.candidateToken,
+      ...(confirmOverwrite ? { confirmOverwrite: true as const } : {})
     })
     if (result.status === 'installed') {
       const items = await window.api.specialist.list()
