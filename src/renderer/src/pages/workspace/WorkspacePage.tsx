@@ -656,10 +656,10 @@ const WorkspacePage = ({
   )
 
   useEffect(() => {
-    if (!activeSession || activeSession.activePlanProjection) return
+    const getPlanProjection = window.api.acp?.getPlanProjection
+    if (!activeSession || activeSession.activePlanProjection || !getPlanProjection) return
     let cancelled = false
-    void window.api.acp
-      .getPlanProjection(activeSession.projectId, activeSession.id)
+    void getPlanProjection(activeSession.projectId, activeSession.id)
       .then((projection) => {
         if (cancelled) return
         if (projection) {
