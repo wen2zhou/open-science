@@ -2,6 +2,7 @@ import { randomUUID } from 'node:crypto'
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http'
 
 import type { NotebookRunProvenanceContext } from '../../shared/notebook'
+import { PlanCommandError } from '../../shared/session-plan/contract'
 import type { NotebookRpcConnection } from './mcp-server'
 import { NotebookControlCompletionCapturedError } from './execution-owner'
 import {
@@ -724,7 +725,8 @@ class NotebookLocalRpcServer {
       const message = error instanceof Error ? error.message : String(error)
 
       writeJson(response, error instanceof RpcHttpError ? error.statusCode : 500, {
-        error: message
+        error: message,
+        ...(error instanceof PlanCommandError ? { errorCode: error.code } : {})
       })
     } finally {
       releaseArtifactRequest?.()

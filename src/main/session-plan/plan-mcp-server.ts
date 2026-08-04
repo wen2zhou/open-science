@@ -3,7 +3,11 @@ import { McpServer as ModelContextProtocolServer } from '@modelcontextprotocol/s
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 
-import type { GeneratePlanContent } from '../../shared/session-plan/contract'
+import {
+  PlanCommandError,
+  type GeneratePlanContent,
+  type PlanCommandErrorCode
+} from '../../shared/session-plan/contract'
 import type { SessionPlanStepStatus } from '../../shared/session-persistence'
 import { fetchLocalRpc, type LocalRpcTransport } from '../local-rpc-transport'
 import { PLAN_MCP_SERVER_ARG } from '../mcp-server-args'
@@ -63,9 +67,32 @@ type PlanMcpEnvironment = LocalRpcTransport &
 type PlanMcpServerConfigRequest = PlanMcpEnvironment &
   Readonly<{ command: string; entryPath: string }>
 
-const toolResult = (result: unknown) => ({
+type PlanMcpToolResult = {
+  content: Array<{ type: 'text'; text: string }>
+  isError?: true
+}
+
+const toolResult = (result: unknown): PlanMcpToolResult => ({
   content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
 })
+
+const toolError = (
+  code: PlanCommandErrorCode | 'plan-command-failed',
+  message: string
+): PlanMcpToolResult => ({
+  content: [{ type: 'text' as const, text: JSON.stringify({ error: { code, message } }) }],
+  isError: true
+})
+
+const runPlanTool = async (work: () => Promise<unknown>): Promise<PlanMcpToolResult> => {
+  try {
+    return toolResult(await work())
+  } catch (error) {
+    if (error instanceof PlanCommandError) return toolError(error.code, error.message)
+    const message = error instanceof Error ? error.message : 'Session Plan command failed.'
+    return toolError('plan-command-failed', message)
+  }
+}
 
 const projectionVersionId = (result: unknown): string | undefined => {
   if (typeof result !== 'object' || result === null) return undefined
@@ -88,25 +115,36 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
       description: 'Create an immutable execution Plan, or approve the active Plan.',
       inputSchema: generatePlanToolSchema
     },
-    async ({ approve, task_summary, phases, desired_outputs, feasibility }) => {
-      const hasContent =
-        task_summary !== undefined ||
-        phases !== undefined ||
-        desired_outputs !== undefined ||
-        feasibility !== undefined
-      if (approve === true) {
-        if (hasContent) throw new Error('Approval cannot be combined with Plan content.')
-        const result = await handler.approve()
+    async ({ approve, task_summary, phases, desired_outputs, feasibility }) =>
+      runPlanTool(async () => {
+        const hasContent =
+          task_summary !== undefined ||
+          phases !== undefined ||
+          desired_outputs !== undefined ||
+          feasibility !== undefined
+        if (approve === true) {
+          if (hasContent) {
+            throw new PlanCommandError(
+              'invalid-plan',
+              'Approval cannot be combined with Plan content.'
+            )
+          }
+          const result = await handler.approve()
+          executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
+          return result
+        }
+        if (!task_summary || !phases || !desired_outputs || !feasibility) {
+          throw new PlanCommandError('invalid-plan', 'A complete Plan document is required.')
+        }
+        const result = await handler.generate({
+          task_summary,
+          phases,
+          desired_outputs,
+          feasibility
+        })
         executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
-        return toolResult(result)
-      }
-      if (!task_summary || !phases || !desired_outputs || !feasibility) {
-        throw new Error('A complete Plan document is required.')
-      }
-      const result = await handler.generate({ task_summary, phases, desired_outputs, feasibility })
-      executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
-      return toolResult(result)
-    }
+        return result
+      })
   )
   server.registerTool(
     'update_step_status',
@@ -116,8 +154,8 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
       inputSchema: updateStepStatusToolSchema
     },
     async (input) =>
-      toolResult(
-        await handler.updateStepStatus({
+      runPlanTool(() =>
+        handler.updateStepStatus({
           ...input,
           expectedArtifactVersionId: executionArtifactVersionId
         })
@@ -151,9 +189,15 @@ const callPlanRpc = async (
     },
     'Session Plan RPC'
   )
-  const payload = (await response.json()) as { result?: unknown; error?: string }
+  const payload = (await response.json()) as {
+    result?: unknown
+    error?: string
+    errorCode?: PlanCommandErrorCode
+  }
   if (!response.ok || payload.error) {
-    throw new Error(payload.error ?? `Session Plan RPC failed with status ${response.status}`)
+    const message = payload.error ?? `Session Plan RPC failed with status ${response.status}`
+    if (payload.errorCode) throw new PlanCommandError(payload.errorCode, message)
+    throw new Error(message)
   }
   return payload.result
 }

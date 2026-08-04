@@ -172,8 +172,12 @@ const registerAcpCommands = (
         dependencies.runtime.setPermissionProfile(invocation.args[0]),
       'acp:revoke-permission-grant': (invocation) =>
         dependencies.runtime.revokePermissionGrant(invocation.args[0]),
-      'acp:get-plan-projection': (invocation) =>
-        dependencies.runtime.getSessionPlanProjection(invocation.args[0], invocation.args[1]),
+      'acp:get-plan-projection': (invocation) => {
+        if (!canSatisfyHumanApproval(invocation.callerContext)) {
+          throw new Error('Only a current human caller can access a Session Plan.')
+        }
+        return dependencies.runtime.getSessionPlanProjection(invocation.args[0], invocation.args[1])
+      },
       'acp:respond-plan': (invocation) => {
         if (!canSatisfyHumanApproval(invocation.callerContext)) {
           throw new Error('Only a current human caller can respond to a Session Plan.')

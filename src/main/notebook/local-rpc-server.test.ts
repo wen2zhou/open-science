@@ -2,6 +2,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
+import { PlanCommandError } from '../../shared/session-plan/contract'
 
 import type { NotebookRunInputFile } from '../../shared/notebook'
 import { fetchLocalRpc } from '../local-rpc-transport'
@@ -87,7 +88,7 @@ describe('notebook local RPC server', () => {
       planService: { call }
     })
     const connection = await server.issuePlanConnection('session-1', 'project-1')
-    const request = (token: string) =>
+    const request = (token: string): Promise<Response> =>
       fetch(connection.endpoint, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
@@ -109,6 +110,48 @@ describe('notebook local RPC server', () => {
         sessionId: 'session-1',
         operation: 'approve',
         input: undefined
+      })
+    } finally {
+      connection.release?.()
+      await server.close()
+    }
+  })
+
+  it('preserves structured Plan error codes across the session-bound RPC transport', async () => {
+    const root = await createStorageRoot()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const server = new NotebookLocalRpcServer(service, {
+      token: 'master-token',
+      planService: {
+        call: async () => {
+          throw new PlanCommandError('stale-plan', 'A newer Plan is active.')
+        }
+      }
+    })
+    const connection = await server.issuePlanConnection('session-1', 'project-1')
+
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'planCall',
+          params: { operation: 'updateStepStatus', input: { title: 'Old step' } }
+        })
+      })
+
+      expect(response.status).toBe(500)
+      await expect(response.json()).resolves.toEqual({
+        error: 'A newer Plan is active.',
+        errorCode: 'stale-plan'
       })
     } finally {
       connection.release?.()

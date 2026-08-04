@@ -275,6 +275,43 @@ describe('ACP application commands', () => {
     ).rejects.toThrow('Only a current human caller can respond to a Session Plan.')
   })
 
+  it('exposes Plan projection reads to the same current human callers on Electron and Web', async () => {
+    const dependencies = createDependencies()
+    const router = createApplicationCommandRouter()
+    registerAcpCommands(router.registrar, dependencies)
+    const humanCallers = [
+      createElectronCallerContext(7),
+      createWebCallerContext('local-web'),
+      createWebCallerContext('remote-web', { location: 'remote' })
+    ]
+
+    for (const callerContext of humanCallers) {
+      await expect(
+        router.dispatcher.invoke(
+          acpCommands.getPlanProjection,
+          invocation(['project-1', 'session-1'], callerContext)
+        )
+      ).resolves.toBeNull()
+    }
+    await expect(
+      router.dispatcher.invoke(
+        acpCommands.getPlanProjection,
+        invocation(['project-1', 'session-1'], createTaskCallerContext())
+      )
+    ).rejects.toThrow('Only a current human caller can access a Session Plan.')
+    await expect(
+      router.dispatcher.invoke(
+        acpCommands.getPlanProjection,
+        invocation(
+          ['project-1', 'session-1'],
+          createWebCallerContext('stale', { isAuthorizationCurrent: () => false })
+        )
+      )
+    ).rejects.toThrow('Caller authorization is no longer current.')
+
+    expect(dependencies.runtime.getSessionPlanProjection).toHaveBeenCalledTimes(humanCallers.length)
+  })
+
   it('keeps permission-profile changes on their separate current policy', async () => {
     const dependencies = createDependencies()
     const router = createApplicationCommandRouter()

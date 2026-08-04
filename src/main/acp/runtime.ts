@@ -138,6 +138,7 @@ import {
 } from './backend-generation-owner'
 import { AcpSessionConfigurator, type AcpSessionConfigurationFacts } from './session-configurator'
 import { createProductionPlanService } from '../session-plan/production-plan-service'
+import { SESSION_PLAN_SYSTEM_PROMPT_APPEND } from '../session-plan/guidance'
 import type { PlanService } from '../session-plan/plan-service'
 import type { GeneratePlanContent } from '../../shared/session-plan/contract'
 import type { SessionPlanStepStatus } from '../../shared/session-persistence'
@@ -352,15 +353,6 @@ const ARTIFACT_FILE_SYSTEM_PROMPT_APPEND = [
   'After using the tool, mention the generated filename rather than an absolute filesystem path. The app will display the generated file list below your message.',
   'Never write files inside a skill directory — loaded skills are read-only; route any file a skill generates through `write_artifact_file`.',
   '</open_science_artifact_instructions>'
-].join('\n')
-
-const SESSION_PLAN_SYSTEM_PROMPT_APPEND = [
-  '<open_science_session_plan_instructions>',
-  'For a complex task, discover applicable skills before deciding whether a Session Plan is useful.',
-  'When a plan is useful, call `generate_plan` from the `open-science-plan` server with a complete plan, then wait for the user to approve or dismiss it before executing any plan step.',
-  'After approval, call `update_step_status` with the exact step title when work starts and when it completes, is blocked, or is skipped.',
-  'Do not call `end_turn` while an approved Session Plan still has unfinished steps.',
-  '</open_science_session_plan_instructions>'
 ].join('\n')
 
 // Steers the agent away from reading large attached data files in their entirety, since a single big
@@ -900,17 +892,16 @@ class AcpRuntime {
     return result
   }
 
-  getSessionPlanProjection(projectId: string, sessionId: string) {
+  getSessionPlanProjection(
+    projectId: string,
+    sessionId: string
+  ): ReturnType<PlanService['getProjection']> {
     return this.planService?.getProjection(projectId, sessionId) ?? Promise.resolve(null)
   }
 
-  async respondSessionPlan(input: {
-    projectId: string
-    sessionId: string
-    artifactVersionId: string
-    expectedRevision: number
-    decision: 'approved' | 'rejected'
-  }) {
+  async respondSessionPlan(
+    input: Parameters<PlanService['respond']>[0]
+  ): Promise<Awaited<ReturnType<PlanService['respond']>>> {
     if (!this.planService) throw new Error('Session Plan capability is not configured.')
     const result = await this.planService.respond(input)
     this.resolvePlanApprovalWaiter(input.sessionId, result)
