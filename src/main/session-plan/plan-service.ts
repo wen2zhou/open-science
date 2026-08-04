@@ -169,7 +169,7 @@ class PlanService {
     const sameTerminal =
       previous === input.status && ['completed', 'blocked', 'skipped'].includes(input.status)
     if (sameTerminal) {
-      return { projection: this.project(document, plan, context.revision), changed: false }
+      return { projection: this.project(document, plan, context.revision, true), changed: false }
     }
     const valid =
       (!previous && (input.status === 'in_progress' || input.status === 'skipped')) ||
@@ -190,7 +190,7 @@ class PlanService {
       }
     }
     const next = await this.patch(input, updated, 'running')
-    return { projection: this.project(document, updated, next.revision), changed: true }
+    return { projection: this.project(document, updated, next.revision, true), changed: true }
   }
 
   async getProjection(projectId: string, sessionId: string): Promise<ActivePlanProjection | null> {
@@ -325,7 +325,8 @@ class PlanService {
   private project(
     document: PlanDocumentV1,
     plan: SessionPlanRuntimeContext,
-    revision: number
+    revision: number,
+    interactionIsLive = false
   ): ActivePlanProjection {
     const titles = planStepTitles(document)
     return {
@@ -334,7 +335,7 @@ class PlanService {
       artifactChecksum: plan.artifactChecksum,
       revision,
       approval: plan.approval,
-      lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, true),
+      lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, interactionIsLive),
       document,
       stepStatuses: plan.stepStatuses,
       stepStates: projectPlanStepStates(document, plan.stepStatuses),
@@ -342,7 +343,10 @@ class PlanService {
         phases: document.phases.length,
         delegations: document.phases.reduce((sum, phase) => sum + phase.delegations.length, 0),
         steps: titles.length,
-        completed: titles.filter((title) => plan.stepStatuses[title]?.status === 'completed').length
+        completed: titles.filter((title) => {
+          const status = plan.stepStatuses[title]?.status
+          return status === 'completed' || status === 'skipped'
+        }).length
       }
     }
   }

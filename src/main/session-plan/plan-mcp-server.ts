@@ -3,7 +3,12 @@ import { McpServer as ModelContextProtocolServer } from '@modelcontextprotocol/s
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 
-import type { GeneratePlanContent } from '../../shared/session-plan/contract'
+import {
+  isPlanCommandErrorCode,
+  PlanCommandError,
+  type GeneratePlanContent,
+  type PlanCommandErrorCode
+} from '../../shared/session-plan/contract'
 import type { SessionPlanStepStatus } from '../../shared/session-persistence'
 import { fetchLocalRpc, type LocalRpcTransport } from '../local-rpc-transport'
 import { PLAN_MCP_SERVER_ARG } from '../mcp-server-args'
@@ -63,9 +68,35 @@ type PlanMcpEnvironment = LocalRpcTransport &
 type PlanMcpServerConfigRequest = PlanMcpEnvironment &
   Readonly<{ command: string; entryPath: string }>
 
-const toolResult = (result: unknown): { content: Array<{ type: 'text'; text: string }> } => ({
+type PlanToolCallResult = Readonly<{
+  isError?: true
+  structuredContent?: Readonly<{
+    error: Readonly<{ code: PlanCommandErrorCode; message: string }>
+  }>
+  content: Array<{ type: 'text'; text: string }>
+}>
+
+const toolResult = (result: unknown): PlanToolCallResult => ({
   content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
 })
+
+const structuredPlanErrorResult = (error: PlanCommandError): PlanToolCallResult => {
+  const payload = { error: { code: error.code, message: error.message } }
+  return {
+    isError: true,
+    structuredContent: payload,
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }]
+  }
+}
+
+const handlePlanToolCall = async (call: () => Promise<unknown>): Promise<PlanToolCallResult> => {
+  try {
+    return toolResult(await call())
+  } catch (error) {
+    if (error instanceof PlanCommandError) return structuredPlanErrorResult(error)
+    throw error
+  }
+}
 
 const projectionVersionId = (result: unknown): string | undefined => {
   if (typeof result !== 'object' || result === null) return undefined
@@ -96,16 +127,25 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
         feasibility !== undefined
       if (approve === true) {
         if (hasContent) throw new Error('Approval cannot be combined with Plan content.')
-        const result = await handler.approve()
-        executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
-        return toolResult(result)
+        return handlePlanToolCall(async () => {
+          const result = await handler.approve()
+          executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
+          return result
+        })
       }
       if (!task_summary || !phases || !desired_outputs || !feasibility) {
         throw new Error('A complete Plan document is required.')
       }
-      const result = await handler.generate({ task_summary, phases, desired_outputs, feasibility })
-      executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
-      return toolResult(result)
+      return handlePlanToolCall(async () => {
+        const result = await handler.generate({
+          task_summary,
+          phases,
+          desired_outputs,
+          feasibility
+        })
+        executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
+        return result
+      })
     }
   )
   server.registerTool(
@@ -116,8 +156,8 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
       inputSchema: updateStepStatusToolSchema
     },
     async (input) =>
-      toolResult(
-        await handler.updateStepStatus({
+      handlePlanToolCall(() =>
+        handler.updateStepStatus({
           ...input,
           expectedArtifactVersionId: executionArtifactVersionId
         })
@@ -151,9 +191,24 @@ const callPlanRpc = async (
     },
     'Session Plan RPC'
   )
-  const payload = (await response.json()) as { result?: unknown; error?: string }
+  const payload = (await response.json()) as {
+    result?: unknown
+    error?: string | { code?: unknown; message?: unknown }
+  }
   if (!response.ok || payload.error) {
-    throw new Error(payload.error ?? `Session Plan RPC failed with status ${response.status}`)
+    if (
+      typeof payload.error === 'object' &&
+      payload.error !== null &&
+      isPlanCommandErrorCode(payload.error.code) &&
+      typeof payload.error.message === 'string'
+    ) {
+      throw new PlanCommandError(payload.error.code, payload.error.message)
+    }
+    throw new Error(
+      typeof payload.error === 'string'
+        ? payload.error
+        : `Session Plan RPC failed with status ${response.status}`
+    )
   }
   return payload.result
 }

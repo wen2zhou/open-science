@@ -101,6 +101,47 @@ const setup = (): Readonly<{
   }
 }
 
+type ExecutionPlanFixture = Readonly<{
+  service: PlanService
+  identity: Readonly<{
+    projectId: string
+    sessionId: string
+    artifactVersionId: string
+  }>
+  generated: Awaited<ReturnType<PlanService['generate']>>
+}>
+
+const generateExecutionPlan = async (): Promise<ExecutionPlanFixture> => {
+  const { service } = setup()
+  const generated = await service.generate({
+    projectId: 'project-1',
+    sessionId: 'session-1',
+    interactionId: 'interaction-1',
+    content: executionContent
+  })
+  return {
+    service,
+    generated,
+    identity: {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+  }
+}
+
+const approveExecutionPlan = async (): Promise<
+  ExecutionPlanFixture & Readonly<{ approved: Awaited<ReturnType<PlanService['respond']>> }>
+> => {
+  const fixture = await generateExecutionPlan()
+  const approved = await fixture.service.respond({
+    ...fixture.identity,
+    expectedRevision: fixture.generated.projection.revision,
+    decision: 'approved'
+  })
+  return { ...fixture, approved }
+}
+
 describe('PlanService', () => {
   it('durably verifies a generated Plan before atomically activating it for the Session', async () => {
     const { service, dependencies, context, status } = setup()
@@ -188,6 +229,38 @@ describe('PlanService', () => {
     ).rejects.toMatchObject({ code: 'approval-already-decided' })
   })
 
+  it('counts a deliberately skipped step as done in completed Plan progress', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const skipped = await service.updateStepStatus({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: (
+        await service.respond({
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          artifactVersionId: generated.projection.artifactVersionId,
+          expectedRevision: generated.projection.revision,
+          decision: 'approved'
+        })
+      ).projection.revision,
+      title: 'Analyze the data',
+      status: 'skipped',
+      notes: 'The input already contains the result.'
+    })
+
+    expect(skipped.projection).toMatchObject({
+      lifecycle: 'completed',
+      counts: { completed: 1, steps: 1 }
+    })
+  })
+
   it('does not change the active Plan when durable Artifact verification fails', async () => {
     const { service, dependencies, context } = setup()
     vi.mocked(dependencies.readArtifactVersion).mockResolvedValueOnce({
@@ -261,6 +334,9 @@ describe('PlanService', () => {
         status: 'in_progress'
       })
     ).resolves.toMatchObject({ projection: { lifecycle: 'in_progress' } })
+    await expect(reconstructed.getProjection('project-1', 'session-1')).resolves.toMatchObject({
+      lifecycle: 'interrupted'
+    })
 
     vi.mocked(dependencies.writeArtifactForActiveTurn).mockResolvedValueOnce({
       artifactId: 'artifact-2',
@@ -287,23 +363,7 @@ describe('PlanService', () => {
   })
 
   it('enforces serial steps and phase gates while independent delegations may start together', async () => {
-    const { service } = setup()
-    const generated = await service.generate({
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      interactionId: 'interaction-1',
-      content: executionContent
-    })
-    const identity = {
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      artifactVersionId: generated.projection.artifactVersionId
-    }
-    const approved = await service.respond({
-      ...identity,
-      expectedRevision: generated.projection.revision,
-      decision: 'approved'
-    })
+    const { service, identity, approved } = await approveExecutionPlan()
 
     await expect(
       service.updateStepStatus({
@@ -342,23 +402,7 @@ describe('PlanService', () => {
   })
 
   it('lets an already-started peer delegation settle after a block and then completes cleanly blocked', async () => {
-    const { service } = setup()
-    const generated = await service.generate({
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      interactionId: 'interaction-1',
-      content: executionContent
-    })
-    const identity = {
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      artifactVersionId: generated.projection.artifactVersionId
-    }
-    const approved = await service.respond({
-      ...identity,
-      expectedRevision: generated.projection.revision,
-      decision: 'approved'
-    })
+    const { service, identity, approved } = await approveExecutionPlan()
     const cohortRunning = await service.updateStepStatus({
       ...identity,
       expectedRevision: approved.projection.revision,
@@ -377,6 +421,12 @@ describe('PlanService', () => {
       title: 'Validate cohorts',
       status: 'blocked',
       notes: 'Cohort boundaries are missing.'
+    })
+    expect(cohortBlocked.projection.stepStates).toMatchObject({
+      'Compare cohorts': { status: 'not_run' },
+      'Review evidence': { status: 'not_started' },
+      'Audit findings': { status: 'not_run' },
+      'Draft report': { status: 'not_run' }
     })
 
     await expect(
@@ -422,23 +472,7 @@ describe('PlanService', () => {
   })
 
   it('supports primary-agent sequential fallback without changing the delegation schema', async () => {
-    const { service } = setup()
-    const generated = await service.generate({
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      interactionId: 'interaction-1',
-      content: executionContent
-    })
-    const identity = {
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      artifactVersionId: generated.projection.artifactVersionId
-    }
-    const approved = await service.respond({
-      ...identity,
-      expectedRevision: generated.projection.revision,
-      decision: 'approved'
-    })
+    const { service, identity, approved } = await approveExecutionPlan()
     let revision = approved.projection.revision
     const transition = async (
       title: string,
@@ -466,24 +500,13 @@ describe('PlanService', () => {
     await transition('Draft report', 'in_progress')
 
     const projection = await service.getProjection('project-1', 'session-1')
-    expect(projection?.lifecycle).toBe('in_progress')
+    expect(projection?.lifecycle).toBe('interrupted')
     expect(projection?.document.phases[0].delegations).toHaveLength(3)
     expect(projection?.document).not.toHaveProperty('execution_strategy')
   })
 
   it('returns stable structured errors for approval, title, and revision violations', async () => {
-    const { service } = setup()
-    const generated = await service.generate({
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      interactionId: 'interaction-1',
-      content: executionContent
-    })
-    const identity = {
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      artifactVersionId: generated.projection.artifactVersionId
-    }
+    const { service, identity, generated } = await generateExecutionPlan()
     await expect(
       service.updateStepStatus({
         ...identity,

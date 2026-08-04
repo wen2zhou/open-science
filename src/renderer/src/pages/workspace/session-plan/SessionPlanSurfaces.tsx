@@ -43,37 +43,24 @@ const progressTitle = (projection: ActivePlanProjection): string => {
 const stepStatusLabel = (status: ActivePlanProjection['stepStates'][string]['status']): string =>
   status.replaceAll('_', ' ')
 
-const stepStatusMark = (status: ActivePlanProjection['stepStates'][string]['status']): string => {
-  switch (status) {
-    case 'completed':
-      return '✓'
-    case 'in_progress':
-      return '●'
-    case 'blocked':
-      return '!'
-    case 'skipped':
-      return '–'
-    default:
-      return ''
-  }
-}
+type StepProjectionStatus = ActivePlanProjection['stepStates'][string]['status']
 
-const stepStatusClassName = (
-  status: ActivePlanProjection['stepStates'][string]['status']
-): string => {
-  switch (status) {
-    case 'completed':
-      return 'border-primary bg-primary text-primary-foreground'
-    case 'in_progress':
-      return 'rounded-full border-primary/30 bg-primary/10 text-primary'
-    case 'blocked':
-      return 'border-destructive/30 bg-destructive/10 text-destructive'
-    case 'skipped':
-    case 'not_run':
-      return 'bg-muted text-muted-foreground'
-    default:
-      return 'border-border text-muted-foreground'
-  }
+const STEP_STATUS_PRESENTATION: Record<
+  StepProjectionStatus,
+  Readonly<{ mark: string; className: string }>
+> = {
+  completed: { mark: '✓', className: 'border-primary bg-primary text-primary-foreground' },
+  in_progress: {
+    mark: '●',
+    className: 'rounded-full border-primary/30 bg-primary/10 text-primary'
+  },
+  blocked: {
+    mark: '!',
+    className: 'border-destructive/30 bg-destructive/10 text-destructive'
+  },
+  skipped: { mark: '–', className: 'bg-muted text-muted-foreground' },
+  not_run: { mark: '', className: 'bg-muted text-muted-foreground' },
+  not_started: { mark: '', className: 'border-border text-muted-foreground' }
 }
 
 const WorkspacePlanCard = ({
@@ -264,13 +251,14 @@ const PlanPreviewSurface = ({ projection }: PlanSurfaceProps): React.JSX.Element
               }
               const showNote =
                 state?.notes && (state.status === 'blocked' || state.status === 'skipped')
+              const presentation = STEP_STATUS_PRESENTATION[state.status]
               return (
                 <div key={step.title} className="mt-3 grid grid-cols-[18px_1fr] gap-2">
                   <span
                     aria-label={`${step.title} status: ${stepStatusLabel(state.status)}`}
-                    className={`mt-0.5 grid size-4 place-items-center rounded border text-[10px] ${stepStatusClassName(state.status)}`}
+                    className={`mt-0.5 grid size-4 place-items-center rounded border text-[10px] ${presentation.className}`}
                   >
-                    {stepStatusMark(state.status)}
+                    {presentation.mark}
                   </span>
                   <div>
                     <div className="text-sm font-medium">{step.title}</div>

@@ -50,17 +50,23 @@ export type ActivePlanProjection = Readonly<{
   counts: Readonly<{ phases: number; delegations: number; steps: number; completed: number }>
 }>
 
-export type PlanCommandErrorCode =
-  | 'invalid-plan'
-  | 'no-active-plan'
-  | 'approval-already-decided'
-  | 'stale-plan'
-  | 'unknown-step'
-  | 'invalid-transition'
-  | 'dependency-not-satisfied'
-  | 'plan-not-approved'
-  | 'artifact-unavailable'
-  | 'revision-conflict'
+export const PLAN_COMMAND_ERROR_CODES = [
+  'invalid-plan',
+  'no-active-plan',
+  'approval-already-decided',
+  'stale-plan',
+  'unknown-step',
+  'invalid-transition',
+  'dependency-not-satisfied',
+  'plan-not-approved',
+  'artifact-unavailable',
+  'revision-conflict'
+] as const
+
+export type PlanCommandErrorCode = (typeof PLAN_COMMAND_ERROR_CODES)[number]
+
+export const isPlanCommandErrorCode = (value: unknown): value is PlanCommandErrorCode =>
+  typeof value === 'string' && PLAN_COMMAND_ERROR_CODES.includes(value as PlanCommandErrorCode)
 
 export type PlanResponseCommand = Readonly<{
   projectId: string
@@ -133,18 +139,36 @@ export const projectPlanStepStates = (
   document: PlanDocumentV1,
   statuses: SessionPlanRuntimeContext['stepStatuses']
 ): Readonly<Record<string, PlanStepProjection>> => {
-  const hasBlockedStep = Object.values(statuses).some((entry) => entry.status === 'blocked')
+  const blockedPhaseIndex = document.phases.findIndex((phase) =>
+    phase.delegations.some((delegation) =>
+      delegation.steps.some((step) => statuses[step.title]?.status === 'blocked')
+    )
+  )
   return Object.fromEntries(
-    planStepTitles(document).map((title) => {
-      const runtime = statuses[title]
-      if (runtime) {
-        return [
-          title,
-          { status: runtime.status, ...(runtime.notes ? { notes: runtime.notes } : {}) }
-        ]
-      }
-      return [title, { status: hasBlockedStep ? 'not_run' : 'not_started' }]
-    })
+    document.phases.flatMap((phase, phaseIndex) =>
+      phase.delegations.flatMap((delegation) => {
+        const delegationStarted = delegation.steps.some(
+          (step) => statuses[step.title] !== undefined
+        )
+        const delegationBlocked = delegation.steps.some(
+          (step) => statuses[step.title]?.status === 'blocked'
+        )
+        return delegation.steps.map((step) => {
+          const runtime = statuses[step.title]
+          if (runtime) {
+            return [
+              step.title,
+              { status: runtime.status, ...(runtime.notes ? { notes: runtime.notes } : {}) }
+            ]
+          }
+          const unreachable =
+            blockedPhaseIndex >= 0 &&
+            (phaseIndex > blockedPhaseIndex ||
+              (phaseIndex === blockedPhaseIndex && (!delegationStarted || delegationBlocked)))
+          return [step.title, { status: unreachable ? 'not_run' : 'not_started' }]
+        })
+      })
+    )
   )
 }
 

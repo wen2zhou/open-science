@@ -47,6 +47,15 @@ vi.mock('@/components/ui/dropdown-menu', () => ({
   )
 }))
 
+vi.mock('@/components/ui/tooltip', () => ({
+  TooltipProvider: ({ children }: PropsWithChildren): React.JSX.Element => <>{children}</>,
+  Tooltip: ({ children }: PropsWithChildren): React.JSX.Element => <>{children}</>,
+  TooltipTrigger: ({ children }: PropsWithChildren): React.JSX.Element => <>{children}</>,
+  TooltipContent: ({ children }: PropsWithChildren): React.JSX.Element => (
+    <span data-testid="tooltip-content">{children}</span>
+  )
+}))
+
 vi.mock('./ComposerModelPicker', () => ({
   ComposerModelPicker: (): null => null
 }))
@@ -508,6 +517,16 @@ describe('ConversationPanel + menu', () => {
 
     expect(attachItem).not.toBeNull()
     expect(reviewItem).not.toBeNull()
+  })
+
+  it('describes the composer add icon with a tooltip', () => {
+    renderPanel()
+
+    expect(
+      [...container.querySelectorAll('[data-testid="tooltip-content"]')].some(
+        (node) => node.textContent === 'Add attachment or request review'
+      )
+    ).toBe(true)
   })
 
   it('shows View plan for every active Plan lifecycle and hides it when no Plan was generated', () => {

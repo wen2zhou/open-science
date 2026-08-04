@@ -702,24 +702,35 @@ const ConversationPanel = ({
                       <div className="@container/composer flex items-center gap-1">
                         {/* The + button opens a dropdown for Attach files and Request review actions. */}
                         <DropdownMenu>
-                          <DropdownMenuTrigger asChild>
-                            <button
-                              type="button"
-                              disabled={
-                                isUploadingAttachments ||
-                                (!canEditDraft && !activeSession?.activePlanProjection)
-                              }
-                              className={composerIconButtonClassName}
-                              aria-label={
-                                activeSession?.activePlanProjection
+                          <TooltipProvider delayDuration={200}>
+                            <Tooltip>
+                              <TooltipTrigger asChild>
+                                <DropdownMenuTrigger asChild>
+                                  <button
+                                    type="button"
+                                    disabled={
+                                      isUploadingAttachments ||
+                                      (!canEditDraft && !activeSession?.activePlanProjection)
+                                    }
+                                    className={composerIconButtonClassName}
+                                    aria-label={
+                                      activeSession?.activePlanProjection
+                                        ? 'Add attachment, view plan, or request review'
+                                        : 'Add attachment or request review'
+                                    }
+                                    data-testid="composer-plus-trigger"
+                                  >
+                                    <Plus className="size-4" strokeWidth={2} aria-hidden="true" />
+                                  </button>
+                                </DropdownMenuTrigger>
+                              </TooltipTrigger>
+                              <TooltipContent side="top">
+                                {activeSession?.activePlanProjection
                                   ? 'Add attachment, view plan, or request review'
-                                  : 'Add attachment or request review'
-                              }
-                              data-testid="composer-plus-trigger"
-                            >
-                              <Plus className="size-4" strokeWidth={2} aria-hidden="true" />
-                            </button>
-                          </DropdownMenuTrigger>
+                                  : 'Add attachment or request review'}
+                              </TooltipContent>
+                            </Tooltip>
+                          </TooltipProvider>
                           <DropdownMenuContent side="top" align="start" className="w-64">
                             <DropdownMenuItem
                               data-testid="menu-attach-files"
