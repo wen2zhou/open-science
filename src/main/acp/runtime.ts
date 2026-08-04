@@ -896,7 +896,11 @@ class AcpRuntime {
     projectId: string,
     sessionId: string
   ): ReturnType<PlanService['getProjection']> {
-    return this.planService?.getProjection(projectId, sessionId) ?? Promise.resolve(null)
+    return (
+      this.planService?.getProjection(projectId, sessionId, {
+        interactionIsLive: this.sessionInteractions.current(sessionId) !== undefined
+      }) ?? Promise.resolve(null)
+    )
   }
 
   async respondSessionPlan(
@@ -925,6 +929,20 @@ class AcpRuntime {
       })
     } catch (error) {
       safeLogError('Session Plan projection callback failed', errorLogFields(error))
+    }
+  }
+
+  private async publishTerminalPlanProjection(sessionId: string): Promise<void> {
+    if (!this.planService) return
+    try {
+      const projection = await this.planService.getProjection(
+        this.resolveSessionProjectName(sessionId),
+        sessionId,
+        { interactionIsLive: false }
+      )
+      if (projection) this.publishPlanProjection(sessionId, projection)
+    } catch (error) {
+      safeLogError('Session Plan terminal projection failed', errorLogFields(error))
     }
   }
 
@@ -3329,6 +3347,7 @@ class AcpRuntime {
         }
       }
       this.sessionInteractions.release(promptInteraction)
+      if (ownsInteraction) await this.publishTerminalPlanProjection(request.sessionId)
       if (ownsInteraction) {
         try {
           this.callbacks.onPromptEnded?.(request.sessionId, skillImportTurnToken)

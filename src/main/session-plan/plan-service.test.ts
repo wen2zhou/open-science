@@ -145,6 +145,36 @@ describe('PlanService', () => {
     ).rejects.toMatchObject({ code: 'approval-already-decided' })
   })
 
+  it('projects retained in-progress work as interrupted after the interaction ends', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const approved = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved'
+    })
+    const running = await service.updateStepStatus({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: approved.projection.revision,
+      title: 'Analyze the data',
+      status: 'in_progress'
+    })
+
+    expect(running.projection.lifecycle).toBe('in_progress')
+    await expect(
+      service.getProjection('project-1', 'session-1', { interactionIsLive: false })
+    ).resolves.toMatchObject({ lifecycle: 'interrupted' })
+  })
+
   it('does not change the active Plan when durable Artifact verification fails', async () => {
     const { service, dependencies, context } = setup()
     vi.mocked(dependencies.readArtifactVersion).mockResolvedValueOnce({

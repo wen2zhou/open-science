@@ -190,18 +190,29 @@ class PlanService {
     return { projection: this.project(document, updated, next.revision), changed: true }
   }
 
-  async getProjection(projectId: string, sessionId: string): Promise<ActivePlanProjection | null> {
+  async getProjection(
+    projectId: string,
+    sessionId: string,
+    options: Readonly<{ interactionIsLive?: boolean }> = {}
+  ): Promise<ActivePlanProjection | null> {
     const context = await this.dependencies.readRuntimeContext(projectId, sessionId)
     if (!context.plan) return null
     const document = await this.readDocument(projectId, sessionId, context.plan)
-    return this.project(document, context.plan, context.revision)
+    return this.project(
+      document,
+      context.plan,
+      context.revision,
+      options.interactionIsLive ?? false
+    )
   }
 
   async checkTurnCompletion(input: {
     projectId: string
     sessionId: string
   }): Promise<{ allow: boolean; lifecycle?: ActivePlanProjection['lifecycle'] }> {
-    const projection = await this.getProjection(input.projectId, input.sessionId)
+    const projection = await this.getProjection(input.projectId, input.sessionId, {
+      interactionIsLive: true
+    })
     if (!projection || projection.approval !== 'approved') return { allow: true }
     return { allow: projection.lifecycle === 'completed', lifecycle: projection.lifecycle }
   }
@@ -274,7 +285,8 @@ class PlanService {
   private project(
     document: PlanDocumentV1,
     plan: SessionPlanRuntimeContext,
-    revision: number
+    revision: number,
+    interactionIsLive = true
   ): ActivePlanProjection {
     const titles = planStepTitles(document)
     return {
@@ -283,7 +295,7 @@ class PlanService {
       artifactChecksum: plan.artifactChecksum,
       revision,
       approval: plan.approval,
-      lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, true),
+      lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, interactionIsLive),
       document,
       stepStatuses: plan.stepStatuses,
       counts: {

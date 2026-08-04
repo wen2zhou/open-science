@@ -32,7 +32,7 @@ const projection = (artifactVersionId: string, revision = 1): ActivePlanProjecti
 })
 
 const createRuntimeHarness = (options: {
-  onEvent?: () => void
+  onEvent?: (event?: unknown) => void
   activeProjection?: ActivePlanProjection
 }) => {
   const generated = projection('version-1')
@@ -41,7 +41,18 @@ const createRuntimeHarness = (options: {
   const service = {
     generate: vi.fn(async () => ({ projection: generated, pauseInteraction: true as const })),
     respond: vi.fn(async () => ({ projection: approved, changed: true })),
-    getProjection: vi.fn(async () => options.activeProjection ?? generated),
+    getProjection: vi.fn(
+      async (
+        _projectId: string,
+        _sessionId: string,
+        projectionOptions?: { interactionIsLive?: boolean }
+      ) => {
+        const current = options.activeProjection ?? generated
+        return projectionOptions?.interactionIsLive === false && current.lifecycle === 'in_progress'
+          ? { ...current, lifecycle: 'interrupted' as const }
+          : current
+      }
+    ),
     updateStepStatus,
     checkTurnCompletion: vi.fn(async () => ({ allow: true }))
   }
@@ -50,7 +61,9 @@ const createRuntimeHarness = (options: {
     planService: service,
     artifactTurns: { promptMessageIdFor: () => 'interaction-1' },
     planApprovalWaiters: new Map(),
-    callbacks: { onEvent: options.onEvent }
+    callbacks: { onEvent: options.onEvent },
+    sessionInteractions: { current: () => undefined },
+    resolveSessionProjectName: () => 'project-1'
   })
   return { runtime: target as unknown as AcpRuntime, service, updateStepStatus }
 }
@@ -108,6 +121,36 @@ describe('AcpRuntime Session Plan seam', () => {
 
     expect(updateStepStatus).toHaveBeenCalledWith(
       expect.objectContaining({ artifactVersionId: 'version-1', expectedRevision: 4 })
+    )
+  })
+
+  it('publishes an interrupted projection through the provider-neutral terminal seam', async () => {
+    const onEvent = vi.fn()
+    const running = {
+      ...projection('version-1', 4),
+      approval: 'approved' as const,
+      lifecycle: 'in_progress' as const,
+      stepStatuses: {
+        'Analyze the data': { status: 'in_progress' as const, updatedAt: 42 }
+      }
+    }
+    const { runtime, service } = createRuntimeHarness({ onEvent, activeProjection: running })
+
+    await (
+      runtime as unknown as {
+        publishTerminalPlanProjection: (sessionId: string) => Promise<void>
+      }
+    ).publishTerminalPlanProjection('session-1')
+
+    expect(service.getProjection).toHaveBeenCalledWith('project-1', 'session-1', {
+      interactionIsLive: false
+    })
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'plan',
+        sessionId: 'session-1',
+        planProjection: expect.objectContaining({ lifecycle: 'interrupted' })
+      })
     )
   })
 })

@@ -80,7 +80,7 @@ const toolError = (
   code: PlanCommandErrorCode | 'plan-command-failed',
   message: string
 ): PlanMcpToolResult => ({
-  content: [{ type: 'text' as const, text: JSON.stringify({ error: { code, message } }) }],
+  ...toolResult({ error: { code, message } }),
   isError: true
 })
 

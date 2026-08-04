@@ -3,9 +3,52 @@ import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { describe, expect, it, vi } from 'vitest'
 
 import { PlanCommandError } from '../../shared/session-plan/contract'
-import { createPlanMcpServer } from './plan-mcp-server'
+import { callPlanRpc, createPlanMcpServer } from './plan-mcp-server'
 
 describe('Session Plan MCP server', () => {
+  it('rehydrates structured Plan errors returned by the local RPC adapter', async () => {
+    const fetch = vi.fn(async () =>
+      Promise.resolve(
+        new Response(
+          JSON.stringify({ error: 'A newer Plan is active.', errorCode: 'stale-plan' }),
+          { status: 500, headers: { 'content-type': 'application/json' } }
+        )
+      )
+    )
+    vi.stubGlobal('fetch', fetch)
+
+    try {
+      await expect(
+        callPlanRpc(
+          {
+            endpoint: 'http://127.0.0.1:1234/plan',
+            token: 'plan-token',
+            projectId: 'project-1',
+            sessionId: 'session-1'
+          },
+          'updateStepStatus',
+          { title: 'Analyze the data', status: 'completed' }
+        )
+      ).rejects.toMatchObject({
+        name: 'PlanCommandError',
+        code: 'stale-plan',
+        message: 'A newer Plan is active.'
+      })
+      expect(fetch).toHaveBeenCalledWith(
+        'http://127.0.0.1:1234/plan',
+        expect.objectContaining({
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer plan-token',
+            'content-type': 'application/json'
+          }
+        })
+      )
+    } finally {
+      vi.unstubAllGlobals()
+    }
+  })
+
   it('exposes server-bound generation, approval, and exact-title status commands', async () => {
     const generate = vi.fn().mockResolvedValue({
       projection: { artifactVersionId: 'version-1', lifecycle: 'approved' }
