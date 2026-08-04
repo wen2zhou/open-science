@@ -21,8 +21,21 @@ export type GeneratePlanContent = Readonly<{
 
 export type PlanDocumentV1 = GeneratePlanContent & Readonly<{ schema_version: 1 }>
 
+export type PlanStepProjectionStatus = SessionPlanStepStatus | 'not_started' | 'not_run'
+
+export type PlanStepProjection = Readonly<{
+  status: PlanStepProjectionStatus
+  notes?: string
+}>
+
 export type PlanLifecycle =
-  'awaiting_approval' | 'approved' | 'in_progress' | 'interrupted' | 'completed' | 'rejected'
+  | 'awaiting_approval'
+  | 'approved'
+  | 'in_progress'
+  | 'interrupted'
+  | 'blocked'
+  | 'completed'
+  | 'rejected'
 
 export type ActivePlanProjection = Readonly<{
   artifactId: string
@@ -33,6 +46,7 @@ export type ActivePlanProjection = Readonly<{
   lifecycle: PlanLifecycle
   document: PlanDocumentV1
   stepStatuses: SessionPlanRuntimeContext['stepStatuses']
+  stepStates: Readonly<Record<string, PlanStepProjection>>
   counts: Readonly<{ phases: number; delegations: number; steps: number; completed: number }>
 }>
 
@@ -43,6 +57,7 @@ export type PlanCommandErrorCode =
   | 'stale-plan'
   | 'unknown-step'
   | 'invalid-transition'
+  | 'dependency-not-satisfied'
   | 'plan-not-approved'
   | 'artifact-unavailable'
   | 'revision-conflict'
@@ -114,6 +129,25 @@ export const planStepTitles = (document: PlanDocumentV1): string[] =>
     phase.delegations.flatMap((delegation) => delegation.steps.map((step) => step.title))
   )
 
+export const projectPlanStepStates = (
+  document: PlanDocumentV1,
+  statuses: SessionPlanRuntimeContext['stepStatuses']
+): Readonly<Record<string, PlanStepProjection>> => {
+  const hasBlockedStep = Object.values(statuses).some((entry) => entry.status === 'blocked')
+  return Object.fromEntries(
+    planStepTitles(document).map((title) => {
+      const runtime = statuses[title]
+      if (runtime) {
+        return [
+          title,
+          { status: runtime.status, ...(runtime.notes ? { notes: runtime.notes } : {}) }
+        ]
+      }
+      return [title, { status: hasBlockedStep ? 'not_run' : 'not_started' }]
+    })
+  )
+}
+
 export const derivePlanLifecycle = (
   document: PlanDocumentV1,
   approval: SessionPlanApproval,
@@ -125,5 +159,6 @@ export const derivePlanLifecycle = (
   const values = planStepTitles(document).map((title) => statuses[title]?.status)
   if (values.every((status) => status === 'completed' || status === 'skipped')) return 'completed'
   if (values.includes('in_progress')) return interactionIsLive ? 'in_progress' : 'interrupted'
+  if (values.includes('blocked')) return 'blocked'
   return 'approved'
 }

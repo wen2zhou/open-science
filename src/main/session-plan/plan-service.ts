@@ -9,6 +9,7 @@ import {
   createPlanDocumentV1,
   derivePlanLifecycle,
   PlanCommandError,
+  projectPlanStepStates,
   planStepTitles,
   type ActivePlanProjection,
   type GeneratePlanContent,
@@ -59,8 +60,7 @@ const parseDocument = (content: string): PlanDocumentV1 => {
   try {
     const parsed = JSON.parse(content) as PlanDocumentV1
     if (parsed.schema_version !== 1) throw new Error('unsupported schema')
-    const { schema_version: _schemaVersion, ...candidate } = parsed
-    return createPlanDocumentV1(candidate)
+    return createPlanDocumentV1(parsed)
   } catch (error) {
     if (error instanceof PlanCommandError) throw error
     throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')
@@ -175,6 +175,9 @@ class PlanService {
       (!previous && (input.status === 'in_progress' || input.status === 'skipped')) ||
       (previous === 'in_progress' && ['in_progress', 'completed', 'blocked'].includes(input.status))
     if (!valid) throw new PlanCommandError('invalid-transition', 'Invalid Plan step transition.')
+    if (input.status === 'in_progress' && !previous) {
+      this.requireStartDependencies(document, plan, input.title)
+    }
     const updated: SessionPlanRuntimeContext = {
       ...plan,
       stepStatuses: {
@@ -203,7 +206,10 @@ class PlanService {
   }): Promise<{ allow: boolean; lifecycle?: ActivePlanProjection['lifecycle'] }> {
     const projection = await this.getProjection(input.projectId, input.sessionId)
     if (!projection || projection.approval !== 'approved') return { allow: true }
-    return { allow: projection.lifecycle === 'completed', lifecycle: projection.lifecycle }
+    return {
+      allow: projection.lifecycle === 'completed' || projection.lifecycle === 'blocked',
+      lifecycle: projection.lifecycle
+    }
   }
 
   private async loadActive(input: PlanIdentityCommand): Promise<{
@@ -271,6 +277,51 @@ class PlanService {
     }
   }
 
+  private requireStartDependencies(
+    document: PlanDocumentV1,
+    plan: SessionPlanRuntimeContext,
+    title: string
+  ): void {
+    const phaseIndex = document.phases.findIndex((phase) =>
+      phase.delegations.some((delegation) => delegation.steps.some((step) => step.title === title))
+    )
+    const phase = document.phases[phaseIndex]
+    const delegation = phase.delegations.find((candidate) =>
+      candidate.steps.some((step) => step.title === title)
+    )!
+    const stepIndex = delegation.steps.findIndex((step) => step.title === title)
+    const isNormallyFinished = (stepTitle: string): boolean => {
+      const status = plan.stepStatuses[stepTitle]?.status
+      return status === 'completed' || status === 'skipped'
+    }
+    const priorStepSatisfied = delegation.steps
+      .slice(0, stepIndex)
+      .every((step) => isNormallyFinished(step.title))
+    const priorPhasesSatisfied = document.phases
+      .slice(0, phaseIndex)
+      .every((priorPhase) =>
+        priorPhase.delegations.every((priorDelegation) =>
+          priorDelegation.steps.every((step) => isNormallyFinished(step.title))
+        )
+      )
+    const blockedTitle = Object.entries(plan.stepStatuses).find(
+      ([, value]) => value.status === 'blocked'
+    )?.[0]
+    const delegationStartedBeforeBlock = delegation.steps.some(
+      (step) => plan.stepStatuses[step.title] !== undefined
+    )
+    if (
+      !priorStepSatisfied ||
+      !priorPhasesSatisfied ||
+      (blockedTitle !== undefined && !delegationStartedBeforeBlock)
+    ) {
+      throw new PlanCommandError(
+        'dependency-not-satisfied',
+        'The Plan step dependencies are not satisfied.'
+      )
+    }
+  }
+
   private project(
     document: PlanDocumentV1,
     plan: SessionPlanRuntimeContext,
@@ -286,6 +337,7 @@ class PlanService {
       lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, true),
       document,
       stepStatuses: plan.stepStatuses,
+      stepStates: projectPlanStepStates(document, plan.stepStatuses),
       counts: {
         phases: document.phases.length,
         delegations: document.phases.reduce((sum, phase) => sum + phase.delegations.length, 0),

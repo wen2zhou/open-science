@@ -21,7 +21,50 @@ const content = {
   feasibility: { confidence: 'high' as const, rationale: 'Inputs are available.' }
 }
 
-const setup = () => {
+const executionContent = {
+  ...content,
+  phases: [
+    {
+      name: 'Parallel analysis',
+      delegations: [
+        {
+          name: 'Cohort comparison',
+          steps: [
+            { title: 'Validate cohorts', description: 'Confirm cohort boundaries.' },
+            { title: 'Compare cohorts', description: 'Calculate cohort differences.' }
+          ]
+        },
+        {
+          name: 'Evidence review',
+          steps: [
+            { title: 'Find evidence', description: 'Find supporting evidence.' },
+            { title: 'Review evidence', description: 'Review supporting evidence.' }
+          ]
+        },
+        {
+          name: 'Quality review',
+          steps: [{ title: 'Audit findings', description: 'Audit the analysis findings.' }]
+        }
+      ]
+    },
+    {
+      name: 'Synthesis',
+      delegations: [
+        {
+          name: 'Report',
+          steps: [{ title: 'Draft report', description: 'Produce the final report.' }]
+        }
+      ]
+    }
+  ]
+}
+
+const setup = (): Readonly<{
+  service: PlanService
+  dependencies: PlanServiceDependencies
+  context: () => SessionRuntimeContext
+  status: () => string
+}> => {
   let context: SessionRuntimeContext = { version: 1, revision: 0 }
   let persistedStatus = 'running'
   let bytes = ''
@@ -241,5 +284,235 @@ describe('PlanService', () => {
         status: 'completed'
       })
     ).rejects.toMatchObject({ code: 'stale-plan' })
+  })
+
+  it('enforces serial steps and phase gates while independent delegations may start together', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content: executionContent
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const approved = await service.respond({
+      ...identity,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved'
+    })
+
+    await expect(
+      service.updateStepStatus({
+        ...identity,
+        expectedRevision: approved.projection.revision,
+        title: 'Compare cohorts',
+        status: 'in_progress'
+      })
+    ).rejects.toMatchObject({ code: 'dependency-not-satisfied' })
+
+    const cohortRunning = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: approved.projection.revision,
+      title: 'Validate cohorts',
+      status: 'in_progress'
+    })
+    const evidenceRunning = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: cohortRunning.projection.revision,
+      title: 'Find evidence',
+      status: 'in_progress'
+    })
+    expect(evidenceRunning.projection.stepStatuses).toMatchObject({
+      'Validate cohorts': { status: 'in_progress' },
+      'Find evidence': { status: 'in_progress' }
+    })
+
+    await expect(
+      service.updateStepStatus({
+        ...identity,
+        expectedRevision: evidenceRunning.projection.revision,
+        title: 'Draft report',
+        status: 'in_progress'
+      })
+    ).rejects.toMatchObject({ code: 'dependency-not-satisfied' })
+  })
+
+  it('lets an already-started peer delegation settle after a block and then completes cleanly blocked', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content: executionContent
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const approved = await service.respond({
+      ...identity,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved'
+    })
+    const cohortRunning = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: approved.projection.revision,
+      title: 'Validate cohorts',
+      status: 'in_progress'
+    })
+    const evidenceRunning = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: cohortRunning.projection.revision,
+      title: 'Find evidence',
+      status: 'in_progress'
+    })
+    const cohortBlocked = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: evidenceRunning.projection.revision,
+      title: 'Validate cohorts',
+      status: 'blocked',
+      notes: 'Cohort boundaries are missing.'
+    })
+
+    await expect(
+      service.updateStepStatus({
+        ...identity,
+        expectedRevision: cohortBlocked.projection.revision,
+        title: 'Audit findings',
+        status: 'in_progress'
+      })
+    ).rejects.toMatchObject({ code: 'dependency-not-satisfied' })
+
+    const evidenceFound = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: cohortBlocked.projection.revision,
+      title: 'Find evidence',
+      status: 'completed'
+    })
+    const reviewRunning = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: evidenceFound.projection.revision,
+      title: 'Review evidence',
+      status: 'in_progress'
+    })
+    const settled = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: reviewRunning.projection.revision,
+      title: 'Review evidence',
+      status: 'completed'
+    })
+
+    expect(settled.projection.lifecycle).toBe('blocked')
+    expect(settled.projection.stepStates).toMatchObject({
+      'Validate cohorts': { status: 'blocked', notes: 'Cohort boundaries are missing.' },
+      'Compare cohorts': { status: 'not_run' },
+      'Find evidence': { status: 'completed' },
+      'Review evidence': { status: 'completed' },
+      'Audit findings': { status: 'not_run' },
+      'Draft report': { status: 'not_run' }
+    })
+    await expect(
+      service.checkTurnCompletion({ projectId: 'project-1', sessionId: 'session-1' })
+    ).resolves.toEqual({ allow: true, lifecycle: 'blocked' })
+  })
+
+  it('supports primary-agent sequential fallback without changing the delegation schema', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content: executionContent
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const approved = await service.respond({
+      ...identity,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved'
+    })
+    let revision = approved.projection.revision
+    const transition = async (
+      title: string,
+      status: 'in_progress' | 'completed'
+    ): Promise<void> => {
+      const result = await service.updateStepStatus({
+        ...identity,
+        expectedRevision: revision,
+        title,
+        status
+      })
+      revision = result.projection.revision
+    }
+
+    for (const title of [
+      'Validate cohorts',
+      'Compare cohorts',
+      'Find evidence',
+      'Review evidence',
+      'Audit findings'
+    ]) {
+      await transition(title, 'in_progress')
+      await transition(title, 'completed')
+    }
+    await transition('Draft report', 'in_progress')
+
+    const projection = await service.getProjection('project-1', 'session-1')
+    expect(projection?.lifecycle).toBe('in_progress')
+    expect(projection?.document.phases[0].delegations).toHaveLength(3)
+    expect(projection?.document).not.toHaveProperty('execution_strategy')
+  })
+
+  it('returns stable structured errors for approval, title, and revision violations', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content: executionContent
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    await expect(
+      service.updateStepStatus({
+        ...identity,
+        expectedRevision: generated.projection.revision,
+        title: 'Validate cohorts',
+        status: 'in_progress'
+      })
+    ).rejects.toMatchObject({ code: 'plan-not-approved' })
+
+    const approved = await service.respond({
+      ...identity,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved'
+    })
+    await expect(
+      service.updateStepStatus({
+        ...identity,
+        expectedRevision: approved.projection.revision,
+        title: 'Unknown work',
+        status: 'in_progress'
+      })
+    ).rejects.toMatchObject({ code: 'unknown-step' })
+    await expect(
+      service.updateStepStatus({
+        ...identity,
+        expectedRevision: generated.projection.revision,
+        title: 'Validate cohorts',
+        status: 'in_progress'
+      })
+    ).rejects.toMatchObject({ code: 'revision-conflict' })
   })
 })

@@ -705,9 +705,16 @@ const ConversationPanel = ({
                           <DropdownMenuTrigger asChild>
                             <button
                               type="button"
-                              disabled={!canEditDraft || isUploadingAttachments}
+                              disabled={
+                                isUploadingAttachments ||
+                                (!canEditDraft && !activeSession?.activePlanProjection)
+                              }
                               className={composerIconButtonClassName}
-                              aria-label="Add attachment or request review"
+                              aria-label={
+                                activeSession?.activePlanProjection
+                                  ? 'Add attachment, view plan, or request review'
+                                  : 'Add attachment or request review'
+                              }
                               data-testid="composer-plus-trigger"
                             >
                               <Plus className="size-4" strokeWidth={2} aria-hidden="true" />
@@ -716,6 +723,7 @@ const ConversationPanel = ({
                           <DropdownMenuContent side="top" align="start" className="w-64">
                             <DropdownMenuItem
                               data-testid="menu-attach-files"
+                              disabled={!canEditDraft || isUploadingAttachments}
                               onSelect={() => fileInputRef.current?.click()}
                             >
                               <FileText className="mr-2 size-4 text-text-300" aria-hidden="true" />
@@ -729,11 +737,40 @@ const ConversationPanel = ({
                               file. Large files are linked, not embedded.
                             </div>
                             <DropdownMenuSeparator />
+                            {activeSession?.activePlanProjection ? (
+                              <>
+                                <DropdownMenuItem
+                                  data-testid="menu-view-plan"
+                                  className="text-primary"
+                                  onSelect={() => {
+                                    usePreviewWorkbenchStore
+                                      .getState()
+                                      .upsertAndActivateItem(
+                                        createSessionPlanPreviewItem(
+                                          activeSession.id,
+                                          activeSession.projectId
+                                        )
+                                      )
+                                  }}
+                                >
+                                  <BookOpen
+                                    className="mr-2 size-4 text-primary"
+                                    aria-hidden="true"
+                                  />
+                                  <span className="flex-1">View plan</span>
+                                  <span className="text-[11px] text-text-300">
+                                    {activeSession.activePlanProjection.counts.completed}/
+                                    {activeSession.activePlanProjection.counts.steps}
+                                  </span>
+                                </DropdownMenuItem>
+                                <DropdownMenuSeparator />
+                              </>
+                            ) : null}
                             <DropdownMenuItem
                               data-testid="menu-request-review"
-                              disabled={isRequestReviewDisabled}
+                              disabled={!canEditDraft || isRequestReviewDisabled}
                               onSelect={() => {
-                                if (!isRequestReviewDisabled) onRequestReview()
+                                if (canEditDraft && !isRequestReviewDisabled) onRequestReview()
                               }}
                             >
                               <ScanEye className="mr-2 size-4 text-text-300" aria-hidden="true" />

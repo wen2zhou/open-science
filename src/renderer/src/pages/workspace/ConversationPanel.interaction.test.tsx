@@ -8,6 +8,7 @@ import { ConversationPanel } from './ConversationPanel'
 import { emptyDoc } from './composer/composer-doc'
 
 import type { ChatSession } from '@/stores/session-store'
+import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
 
 // React's act() refuses to run unless the environment opts in to act-aware scheduling.
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -100,6 +101,35 @@ let container: HTMLDivElement
 let root: Root
 
 const onStageAttachmentFiles = vi.fn()
+
+const completedPlanProjection: ActivePlanProjection = {
+  artifactId: 'artifact-1',
+  artifactVersionId: 'version-1',
+  artifactChecksum: 'a'.repeat(64),
+  revision: 4,
+  approval: 'approved',
+  lifecycle: 'completed',
+  document: {
+    schema_version: 1,
+    task_summary: 'Analyze one dataset',
+    phases: [
+      {
+        name: 'Analysis',
+        delegations: [
+          {
+            name: 'Primary agent',
+            steps: [{ title: 'Analyze data', description: 'Produce the result.' }]
+          }
+        ]
+      }
+    ],
+    desired_outputs: [],
+    feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+  },
+  stepStatuses: { 'Analyze data': { status: 'completed', updatedAt: 1 } },
+  stepStates: { 'Analyze data': { status: 'completed' } },
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 1 }
+}
 
 const renderPanel = (props: Partial<Parameters<typeof ConversationPanel>[0]> = {}): void => {
   act(() => {
@@ -478,6 +508,45 @@ describe('ConversationPanel + menu', () => {
 
     expect(attachItem).not.toBeNull()
     expect(reviewItem).not.toBeNull()
+  })
+
+  it('shows View plan for every active Plan lifecycle and hides it when no Plan was generated', () => {
+    renderPanel()
+    expect(container.querySelector('[data-testid="menu-view-plan"]')).toBeNull()
+
+    const session: ChatSession = {
+      id: 'session-plan',
+      projectId: 'project-a',
+      title: 'Planned session',
+      cwd: '/workspace',
+      status: 'waiting-plan-approval',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 2,
+      activePlanProjection: {
+        ...completedPlanProjection,
+        approval: 'pending',
+        lifecycle: 'awaiting_approval'
+      }
+    }
+    renderPanel({ activeSession: session, canEditDraft: false })
+
+    expect(container.querySelector('[data-testid="menu-view-plan"]')?.textContent).toContain(
+      'View plan'
+    )
+    expect(
+      (container.querySelector('[data-testid="composer-plus-trigger"]') as HTMLButtonElement)
+        .disabled
+    ).toBe(false)
+
+    renderPanel({
+      activeSession: {
+        ...session,
+        status: 'idle',
+        activePlanProjection: completedPlanProjection
+      }
+    })
+    expect(container.querySelector('[data-testid="menu-view-plan"]')).not.toBeNull()
   })
 
   it('Attach files item triggers the hidden file input (onStageAttachmentFiles path)', () => {

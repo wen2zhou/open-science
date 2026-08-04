@@ -18,6 +18,8 @@ const lifecycleLabel = (projection: ActivePlanProjection): string => {
       return 'Plan approved'
     case 'interrupted':
       return 'Plan interrupted'
+    case 'blocked':
+      return 'Plan blocked'
     default:
       return 'Plan in progress'
   }
@@ -26,10 +28,52 @@ const lifecycleLabel = (projection: ActivePlanProjection): string => {
 const progressTitle = (projection: ActivePlanProjection): string => {
   if (projection.lifecycle === 'awaiting_approval') return 'Awaiting plan approval'
   if (projection.lifecycle === 'completed') return `Completed · ${projection.counts.steps} steps`
-  const running = Object.entries(projection.stepStatuses).find(
+  const running = Object.entries(projection.stepStatuses).filter(
     ([, value]) => value.status === 'in_progress'
   )
-  return running?.[0] ?? lifecycleLabel(projection)
+  if (running.length > 1) return `${running.length} steps running in parallel`
+  if (running.length === 1) return running[0][0]
+  const blocked = Object.entries(projection.stepStatuses).find(
+    ([, value]) => value.status === 'blocked'
+  )
+  if (blocked) return `Blocked · ${blocked[0]}`
+  return lifecycleLabel(projection)
+}
+
+const stepStatusLabel = (status: ActivePlanProjection['stepStates'][string]['status']): string =>
+  status.replaceAll('_', ' ')
+
+const stepStatusMark = (status: ActivePlanProjection['stepStates'][string]['status']): string => {
+  switch (status) {
+    case 'completed':
+      return '✓'
+    case 'in_progress':
+      return '●'
+    case 'blocked':
+      return '!'
+    case 'skipped':
+      return '–'
+    default:
+      return ''
+  }
+}
+
+const stepStatusClassName = (
+  status: ActivePlanProjection['stepStates'][string]['status']
+): string => {
+  switch (status) {
+    case 'completed':
+      return 'border-primary bg-primary text-primary-foreground'
+    case 'in_progress':
+      return 'rounded-full border-primary/30 bg-primary/10 text-primary'
+    case 'blocked':
+      return 'border-destructive/30 bg-destructive/10 text-destructive'
+    case 'skipped':
+    case 'not_run':
+      return 'bg-muted text-muted-foreground'
+    default:
+      return 'border-border text-muted-foreground'
+  }
 }
 
 const WorkspacePlanCard = ({
@@ -214,18 +258,28 @@ const PlanPreviewSurface = ({ projection }: PlanSurfaceProps): React.JSX.Element
             <div className="font-medium">{delegation.name}</div>
             {delegation.steps.map((step) => {
               const runtime = projection.stepStatuses[step.title]
+              const state = projection.stepStates?.[step.title] ?? {
+                status: runtime?.status ?? ('not_started' as const),
+                ...(runtime?.notes ? { notes: runtime.notes } : {})
+              }
+              const showNote =
+                state?.notes && (state.status === 'blocked' || state.status === 'skipped')
               return (
                 <div key={step.title} className="mt-3 grid grid-cols-[18px_1fr] gap-2">
-                  <span className="mt-0.5 grid size-4 place-items-center rounded border border-border text-[10px]">
-                    {runtime?.status === 'completed'
-                      ? '✓'
-                      : runtime?.status === 'in_progress'
-                        ? '●'
-                        : ''}
+                  <span
+                    aria-label={`${step.title} status: ${stepStatusLabel(state.status)}`}
+                    className={`mt-0.5 grid size-4 place-items-center rounded border text-[10px] ${stepStatusClassName(state.status)}`}
+                  >
+                    {stepStatusMark(state.status)}
                   </span>
                   <div>
                     <div className="text-sm font-medium">{step.title}</div>
                     <div className="text-xs text-muted-foreground">{step.description}</div>
+                    {showNote ? (
+                      <div className="mt-1.5 rounded bg-muted px-2 py-1 text-[11px] text-muted-foreground">
+                        {state.notes}
+                      </div>
+                    ) : null}
                   </div>
                 </div>
               )
