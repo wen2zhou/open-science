@@ -869,7 +869,11 @@ class AcpRuntime {
       this.publishPlanProjection(input.sessionId, result.projection)
       return approval
     }
-    const projection = await service.getProjection(input.projectId, input.sessionId)
+    const projection = await service.getProjection(
+      input.projectId,
+      input.sessionId,
+      this.getInFlightSessionIds().includes(input.sessionId)
+    )
     if (!projection) throw new Error('The Session has no active Plan.')
     const identity = {
       projectId: input.projectId,
@@ -904,7 +908,13 @@ class AcpRuntime {
     projectId: string,
     sessionId: string
   ): ReturnType<PlanService['getProjection']> {
-    return this.planService?.getProjection(projectId, sessionId) ?? Promise.resolve(null)
+    return (
+      this.planService?.getProjection(
+        projectId,
+        sessionId,
+        this.getInFlightSessionIds().includes(sessionId)
+      ) ?? Promise.resolve(null)
+    )
   }
 
   async respondSessionPlan(input: {

@@ -337,6 +337,9 @@ describe('PlanService', () => {
     await expect(reconstructed.getProjection('project-1', 'session-1')).resolves.toMatchObject({
       lifecycle: 'interrupted'
     })
+    await expect(
+      reconstructed.getProjection('project-1', 'session-1', true)
+    ).resolves.toMatchObject({ lifecycle: 'in_progress' })
 
     vi.mocked(dependencies.writeArtifactForActiveTurn).mockResolvedValueOnce({
       artifactId: 'artifact-2',
@@ -371,6 +374,14 @@ describe('PlanService', () => {
         expectedRevision: approved.projection.revision,
         title: 'Compare cohorts',
         status: 'in_progress'
+      })
+    ).rejects.toMatchObject({ code: 'dependency-not-satisfied' })
+    await expect(
+      service.updateStepStatus({
+        ...identity,
+        expectedRevision: approved.projection.revision,
+        title: 'Compare cohorts',
+        status: 'skipped'
       })
     ).rejects.toMatchObject({ code: 'dependency-not-satisfied' })
 
@@ -444,6 +455,9 @@ describe('PlanService', () => {
       title: 'Find evidence',
       status: 'completed'
     })
+    await expect(
+      service.checkTurnCompletion({ projectId: 'project-1', sessionId: 'session-1' })
+    ).resolves.toEqual({ allow: false, lifecycle: 'blocked' })
     const reviewRunning = await service.updateStepStatus({
       ...identity,
       expectedRevision: evidenceFound.projection.revision,

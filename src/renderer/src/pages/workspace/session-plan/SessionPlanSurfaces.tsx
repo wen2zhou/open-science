@@ -28,6 +28,7 @@ const lifecycleLabel = (projection: ActivePlanProjection): string => {
 const progressTitle = (projection: ActivePlanProjection): string => {
   if (projection.lifecycle === 'awaiting_approval') return 'Awaiting plan approval'
   if (projection.lifecycle === 'completed') return `Completed · ${projection.counts.steps} steps`
+  if (projection.lifecycle === 'interrupted') return 'Plan interrupted'
   const running = Object.entries(projection.stepStatuses).filter(
     ([, value]) => value.status === 'in_progress'
   )
@@ -196,9 +197,11 @@ const PlanProgressDock = ({
     projection.counts.steps === 0
       ? 0
       : Math.round((projection.counts.completed / projection.counts.steps) * 100)
-  const running = Object.values(projection.stepStatuses).filter(
-    (value) => value.status === 'in_progress'
-  ).length
+  const running =
+    projection.lifecycle === 'in_progress'
+      ? Object.values(projection.stepStatuses).filter((value) => value.status === 'in_progress')
+          .length
+      : 0
   return (
     <div className="mb-2 grid grid-cols-[auto_minmax(120px,1fr)_auto] items-center gap-3 rounded-xl border border-border bg-bg-200/95 px-3 py-2 shadow-card">
       <div className="min-w-0">

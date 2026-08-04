@@ -175,7 +175,7 @@ class PlanService {
       (!previous && (input.status === 'in_progress' || input.status === 'skipped')) ||
       (previous === 'in_progress' && ['in_progress', 'completed', 'blocked'].includes(input.status))
     if (!valid) throw new PlanCommandError('invalid-transition', 'Invalid Plan step transition.')
-    if (input.status === 'in_progress' && !previous) {
+    if (!previous && (input.status === 'in_progress' || input.status === 'skipped')) {
       this.requireStartDependencies(document, plan, input.title)
     }
     const updated: SessionPlanRuntimeContext = {
@@ -193,11 +193,15 @@ class PlanService {
     return { projection: this.project(document, updated, next.revision, true), changed: true }
   }
 
-  async getProjection(projectId: string, sessionId: string): Promise<ActivePlanProjection | null> {
+  async getProjection(
+    projectId: string,
+    sessionId: string,
+    interactionIsLive = false
+  ): Promise<ActivePlanProjection | null> {
     const context = await this.dependencies.readRuntimeContext(projectId, sessionId)
     if (!context.plan) return null
     const document = await this.readDocument(projectId, sessionId, context.plan)
-    return this.project(document, context.plan, context.revision)
+    return this.project(document, context.plan, context.revision, interactionIsLive)
   }
 
   async checkTurnCompletion(input: {
@@ -206,8 +210,11 @@ class PlanService {
   }): Promise<{ allow: boolean; lifecycle?: ActivePlanProjection['lifecycle'] }> {
     const projection = await this.getProjection(input.projectId, input.sessionId)
     if (!projection || projection.approval !== 'approved') return { allow: true }
+    const cleanlyBlocked =
+      projection.lifecycle === 'blocked' &&
+      !Object.values(projection.stepStates).some((step) => step.status === 'not_started')
     return {
-      allow: projection.lifecycle === 'completed' || projection.lifecycle === 'blocked',
+      allow: projection.lifecycle === 'completed' || cleanlyBlocked,
       lifecycle: projection.lifecycle
     }
   }

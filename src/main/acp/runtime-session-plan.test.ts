@@ -52,6 +52,9 @@ const createRuntimeHarness = (options: {
   const target = Object.create(AcpRuntime.prototype) as Record<string, unknown>
   Object.assign(target, {
     planService: service,
+    sessionInteractions: {
+      snapshot: () => [{ kind: 'prompt', sessionId: 'session-1' }]
+    },
     artifactTurns: { promptMessageIdFor: () => 'interaction-1' },
     planApprovalWaiters: new Map(),
     callbacks: { onEvent: options.onEvent }

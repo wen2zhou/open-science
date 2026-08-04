@@ -169,4 +169,27 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByText('2 steps running in parallel')).toBeTruthy()
     expect(screen.getByText('2 running · 0/2 done')).toBeTruthy()
   })
+
+  it('does not describe retained interrupted work as currently running', () => {
+    const { container } = render(
+      <PlanProgressDock
+        projection={{
+          ...projection,
+          approval: 'approved',
+          lifecycle: 'interrupted',
+          stepStatuses: {
+            'Analyze the data': { status: 'in_progress', updatedAt: 1 }
+          },
+          stepStates: {
+            'Analyze the data': { status: 'in_progress' }
+          }
+        }}
+        onOpen={vi.fn()}
+      />
+    )
+
+    expect(container.textContent).toContain('Plan interrupted')
+    expect(container.textContent).toContain('0/1 done')
+    expect(container.textContent).not.toMatch(/running/u)
+  })
 })
