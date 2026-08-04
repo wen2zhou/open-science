@@ -127,7 +127,14 @@ describe('Session Plan renderer surfaces', () => {
     )
     expect(screen.getByText('PHASE 1')).toBeTruthy()
     expect(screen.getByText('PHASE 2')).toBeTruthy()
+    expect(
+      screen.getByText(
+        'Complete two phases in order. Delegations within a phase may run in parallel.'
+      )
+    ).toBeTruthy()
     expect(screen.getByText('Data intake')).toBeTruthy()
+    expect(screen.getByText('primary agent')).toBeTruthy()
+    expect(screen.getAllByText('runs in parallel')).toHaveLength(2)
     expect(screen.getAllByText('Cohort comparison')).toHaveLength(2)
     expect(screen.getByText('Evidence review')).toBeTruthy()
     expect(screen.getByText('Compare cohorts')).toBeTruthy()
@@ -135,6 +142,10 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByText('Review-ready report')).toBeTruthy()
     expect(screen.getByText('Cohort B is undefined.')).toBeTruthy()
     expect(screen.getByText('SCOPE & FEASIBILITY · MEDIUM CONFIDENCE')).toBeTruthy()
+    expect(document.querySelector('[data-slot="scroll-area"]')).not.toBeNull()
+    expect(screen.getAllByRole('button').every((button) => button.dataset.slot === 'button')).toBe(
+      true
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Download Plan' }))
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
@@ -150,7 +161,8 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('0')
   })
 
-  it('shows a stable invalid-schema state instead of rendering malformed Plan content', () => {
+  it('shows a stable invalid-schema state while preserving immutable download', () => {
+    const onDownload = vi.fn().mockResolvedValue(undefined)
     render(
       <PlanPreviewSurface
         projection={
@@ -159,10 +171,13 @@ describe('Session Plan renderer surfaces', () => {
             document: { ...projection.document, schema_version: 2 }
           } as unknown as ActivePlanProjection
         }
+        onDownload={onDownload}
       />
     )
 
     expect(screen.getByRole('alert').textContent).toContain('Invalid Plan document')
-    expect(screen.queryByRole('button', { name: 'Download Plan' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    fireEvent.click(screen.getByRole('button', { name: 'Download Plan' }))
+    expect(onDownload).toHaveBeenCalledOnce()
   })
 })

@@ -79,6 +79,9 @@ export const createPlanDocumentV1 = (input: unknown): PlanDocumentV1 => {
   if (!isRecord(input)) {
     throw new PlanCommandError('invalid-plan', 'Plan document must be an object.')
   }
+  if ('schema_version' in input && input.schema_version !== 1) {
+    throw new PlanCommandError('invalid-plan', 'schema_version must be 1.')
+  }
   const taskSummary = requireText(input.task_summary, 'task_summary')
   if (!Array.isArray(input.phases) || input.phases.length === 0) {
     throw new PlanCommandError('invalid-plan', 'A Plan requires at least one phase.')

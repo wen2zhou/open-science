@@ -57,9 +57,7 @@ const sha256 = (value: string): string => createHash('sha256').update(value).dig
 
 const parseDocument = (content: string): PlanDocumentV1 => {
   try {
-    const parsed = JSON.parse(content) as PlanDocumentV1
-    if (parsed.schema_version !== 1) throw new Error('unsupported schema')
-    return createPlanDocumentV1(parsed)
+    return createPlanDocumentV1(JSON.parse(content))
   } catch (error) {
     if (error instanceof PlanCommandError) throw error
     throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')

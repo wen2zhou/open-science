@@ -81,6 +81,33 @@ describe('Plan document V1', () => {
     expect(document.desired_outputs).toEqual([])
   })
 
+  it('rejects an explicitly unsupported schema version at the shared contract boundary', () => {
+    expect(() =>
+      createPlanDocumentV1({
+        schema_version: 2,
+        task_summary: 'Analyze data',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Primary agent',
+                steps: [{ title: 'Analyze data', description: 'Produce the result.' }]
+              }
+            ]
+          }
+        ],
+        desired_outputs: [],
+        feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+      })
+    ).toThrow(
+      expect.objectContaining<Partial<PlanCommandError>>({
+        code: 'invalid-plan',
+        message: 'schema_version must be 1.'
+      })
+    )
+  })
+
   it.each([
     [undefined, 'Plan document must be an object.'],
     [{}, 'task_summary must be non-empty.'],

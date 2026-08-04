@@ -16,6 +16,7 @@ import type {
   HandoffLifecycleEvent,
   HandoffLifecycleEventSource
 } from '../../../../shared/handoff-lifecycle'
+import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -83,12 +84,21 @@ vi.mock('@/lib/utils', () => ({
 }))
 
 const upsertAndActivateItem = vi.fn()
+const createSessionPlanPreviewItem = vi.fn((sessionId: string, projectId: string) => ({
+  id: `tool:${sessionId}:plan`,
+  sessionId,
+  projectId,
+  type: 'tool' as const,
+  toolKind: 'plan' as const,
+  title: 'Plan'
+}))
 const announceWindowFindReady = vi.fn(() => () => undefined)
 
 vi.mock('@/stores/preview-workbench-store', () => ({
   usePreviewWorkbenchStore: {
     getState: () => ({ upsertAndActivateItem })
-  }
+  },
+  createSessionPlanPreviewItem
 }))
 
 const createMessage = (overrides: Partial<ChatMessage>): ChatMessage => ({
@@ -961,5 +971,65 @@ describe('WorkspaceMessageScroller artifact click behavior', () => {
       .mocked(window.api.artifacts.readPreview)
       .mock.calls.filter(([request]) => request.maxBytes !== 1)
     expect(thumbnailReads).toHaveLength(1)
+  })
+
+  it('opens the active Plan card in the Preview workbench', async () => {
+    const { WorkspaceMessageScroller } = await import('./WorkspaceMessageScroller')
+    const activePlanProjection: ActivePlanProjection = {
+      artifactId: 'artifact-plan',
+      artifactVersionId: 'version-plan',
+      artifactChecksum: 'a'.repeat(64),
+      revision: 1,
+      approval: 'pending',
+      lifecycle: 'awaiting_approval',
+      document: {
+        schema_version: 1,
+        task_summary: 'Analyze the dataset',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Primary agent',
+                steps: [{ title: 'Analyze data', description: 'Produce the result.' }]
+              }
+            ]
+          }
+        ],
+        desired_outputs: [],
+        feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+      },
+      stepStatuses: {},
+      counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+    }
+    const session = createSession({
+      id: 'session-plan',
+      projectId: 'project-plan',
+      status: 'waiting-plan-approval',
+      activePlanProjection
+    })
+
+    root = createRoot(container)
+    await act(async () => {
+      root.render(
+        <WorkspaceMessageScroller activeSession={session} onSendEditedMessage={vi.fn()} />
+      )
+    })
+    await act(async () => {
+      const openButton = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
+        (button) => button.textContent === 'Open'
+      )
+      openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
+    })
+
+    expect(createSessionPlanPreviewItem).toHaveBeenCalledWith('session-plan', 'project-plan')
+    expect(upsertAndActivateItem).toHaveBeenCalledWith({
+      id: 'tool:session-plan:plan',
+      sessionId: 'session-plan',
+      projectId: 'project-plan',
+      type: 'tool',
+      toolKind: 'plan',
+      title: 'Plan'
+    })
   })
 })

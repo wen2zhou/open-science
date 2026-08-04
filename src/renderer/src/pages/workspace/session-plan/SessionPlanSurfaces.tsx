@@ -1,5 +1,8 @@
+import { useState } from 'react'
 import { Download, Maximize2, Minimize2 } from 'lucide-react'
 
+import { Button } from '@/components/ui/button'
+import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 import {
@@ -7,7 +10,6 @@ import {
   type ActivePlanProjection,
   type PlanDocumentV1
 } from '../../../../../shared/session-plan/contract'
-import { useState } from 'react'
 
 type PlanSurfaceProps = Readonly<{ projection: ActivePlanProjection }>
 
@@ -214,20 +216,16 @@ type PlanPreviewSurfaceProps = PlanSurfaceProps &
   }>
 
 const validatedPreviewDocument = (value: unknown): PlanDocumentV1 | null => {
-  if (
-    typeof value !== 'object' ||
-    value === null ||
-    !('schema_version' in value) ||
-    value.schema_version !== 1
-  ) {
-    return null
-  }
   try {
     return createPlanDocumentV1(value)
   } catch {
     return null
   }
 }
+
+const countLabel = (count: number): string =>
+  ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'][count] ??
+  String(count)
 
 const stepMark = (status: string | undefined): string => {
   if (status === 'completed') return '✓'
@@ -244,24 +242,14 @@ const PlanPreviewSurface = ({
   onRespond,
   onToggleFullScreen
 }: PlanPreviewSurfaceProps): React.JSX.Element => {
-  const document = validatedPreviewDocument(projection.document)
-  if (!document) {
-    return (
-      <div className="flex h-full items-center justify-center bg-bg-10 p-8">
-        <div
-          role="alert"
-          className="max-w-sm rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
-        >
-          Invalid Plan document. This preview cannot be displayed.
-        </div>
-      </div>
-    )
-  }
+  const planDocument = validatedPreviewDocument(projection.document)
 
   const download =
     onDownload ??
     (async (): Promise<void> => {
-      const bytes = new TextEncoder().encode(JSON.stringify(document, null, 2))
+      const bytes = new TextEncoder().encode(
+        JSON.stringify(planDocument ?? projection.document, null, 2)
+      )
       await window.api.saveBlobFile({
         suggestedName: `plan-${projection.artifactVersionId}.json`,
         mimeType: 'application/json',
@@ -279,41 +267,34 @@ const PlanPreviewSurface = ({
           plan-{projection.artifactVersionId}.json
         </span>
         <div className="flex items-center gap-1">
-          <button
+          <Button
             type="button"
             aria-label="Download Plan"
-            className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            variant="ghost"
             onClick={() => void download()}
           >
             <Download className="size-4" aria-hidden="true" />
             Download
-          </button>
-          {projection.approval === 'pending' && onRespond ? (
+          </Button>
+          {planDocument && projection.approval === 'pending' && onRespond ? (
             <>
-              <button
-                type="button"
-                className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                onClick={() => void onRespond('rejected')}
-              >
+              <Button type="button" variant="outline" onClick={() => void onRespond('rejected')}>
                 Dismiss
-              </button>
-              <button
-                type="button"
-                className="h-8 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/80 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-                onClick={() => void onRespond('approved')}
-              >
+              </Button>
+              <Button type="button" onClick={() => void onRespond('approved')}>
                 Approve
-              </button>
+              </Button>
             </>
           ) : null}
           {onToggleFullScreen ? (
             <TooltipProvider delayDuration={200}>
               <Tooltip>
                 <TooltipTrigger asChild>
-                  <button
+                  <Button
                     type="button"
                     aria-label={isFullScreen ? 'Exit full screen' : 'Enter full screen'}
-                    className="grid size-8 place-items-center rounded-md hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                    variant="ghost"
+                    size="icon-sm"
                     onClick={onToggleFullScreen}
                   >
                     {isFullScreen ? (
@@ -321,7 +302,7 @@ const PlanPreviewSurface = ({
                     ) : (
                       <Maximize2 className="size-4" aria-hidden="true" />
                     )}
-                  </button>
+                  </Button>
                 </TooltipTrigger>
                 <TooltipContent className="z-[70]">
                   {isFullScreen ? 'Exit full screen' : 'Enter full screen'}
@@ -331,69 +312,95 @@ const PlanPreviewSurface = ({
           ) : null}
         </div>
       </header>
-      <div className="min-h-0 flex-1 overflow-auto px-8 py-8">
-        <h1 className="text-[22px] font-semibold">{document.task_summary}</h1>
-        <p className="mt-1 text-sm text-muted-foreground">
-          Complete phases in order. Delegations within a phase may run in parallel.
-        </p>
-        {document.phases.map((phase, phaseIndex) => (
-          <section key={`${phaseIndex}:${phase.name}`} className="mt-7 border-t border-border pt-6">
-            <div className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground">
-              PHASE {phaseIndex + 1}
-            </div>
-            <h2 className="mt-1 text-lg font-medium">{phase.name}</h2>
-            {phase.delegations.map((delegation, delegationIndex) => (
-              <div
-                key={`${delegationIndex}:${delegation.name}`}
-                className="relative mt-4 border-l border-border pl-5"
+      {planDocument ? (
+        <ScrollArea className="min-h-0 flex-1">
+          <div className="px-8 py-8">
+            <h1 className="text-[22px] font-semibold">{planDocument.task_summary}</h1>
+            <p className="mt-1 text-sm text-muted-foreground">
+              Complete {countLabel(planDocument.phases.length)}{' '}
+              {planDocument.phases.length === 1 ? 'phase' : 'phases'} in order. Delegations within a
+              phase may run in parallel.
+            </p>
+            {planDocument.phases.map((phase, phaseIndex) => (
+              <section
+                key={`${phaseIndex}:${phase.name}`}
+                className="mt-7 border-t border-border pt-6"
               >
-                <span
-                  aria-hidden="true"
-                  className="absolute left-[-4px] top-2 size-[7px] rounded-full bg-foreground"
-                />
-                <div className="font-medium">{delegation.name}</div>
-                {delegation.steps.map((step) => {
-                  const runtime = projection.stepStatuses[step.title]
-                  return (
-                    <div key={step.title} className="mt-3 grid grid-cols-[18px_1fr] gap-2">
-                      <span className="mt-0.5 grid size-4 place-items-center rounded border border-border text-[10px]">
-                        {stepMark(runtime?.status)}
+                <div className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground">
+                  PHASE {phaseIndex + 1}
+                </div>
+                <h2 className="mt-1 text-lg font-medium">{phase.name}</h2>
+                {phase.delegations.map((delegation, delegationIndex) => (
+                  <div
+                    key={`${delegationIndex}:${delegation.name}`}
+                    className="relative mt-4 border-l border-border pl-5"
+                  >
+                    <span
+                      aria-hidden="true"
+                      className="absolute left-[-4px] top-2 size-[7px] rounded-full bg-foreground"
+                    />
+                    <div className="flex items-baseline gap-2">
+                      <span className="font-medium">{delegation.name}</span>
+                      <span className="text-[11px] text-muted-foreground">
+                        {phase.delegations.length === 1 ? 'primary agent' : 'runs in parallel'}
                       </span>
-                      <div>
-                        <div className="text-sm font-medium">{step.title}</div>
-                        <div className="text-xs text-muted-foreground">{step.description}</div>
-                        {runtime?.notes ? (
-                          <div className="mt-1.5 rounded-md bg-muted px-2 py-1.5 text-[11px] text-muted-foreground">
-                            {runtime.notes}
-                          </div>
-                        ) : null}
-                      </div>
                     </div>
-                  )
-                })}
-              </div>
+                    {delegation.steps.map((step) => {
+                      const runtime = projection.stepStatuses[step.title]
+                      return (
+                        <div key={step.title} className="mt-3 grid grid-cols-[18px_1fr] gap-2">
+                          <span className="mt-0.5 grid size-4 place-items-center rounded border border-border text-[10px]">
+                            {stepMark(runtime?.status)}
+                          </span>
+                          <div>
+                            <div className="text-sm font-medium">{step.title}</div>
+                            <div className="text-xs text-muted-foreground">{step.description}</div>
+                            {runtime?.notes ? (
+                              <div className="mt-1.5 rounded-md bg-muted px-2 py-1.5 text-[11px] text-muted-foreground">
+                                {runtime.notes}
+                              </div>
+                            ) : null}
+                          </div>
+                        </div>
+                      )
+                    })}
+                  </div>
+                ))}
+              </section>
             ))}
-          </section>
-        ))}
-        <section className="mt-7 border-t border-border pt-6">
-          <h2 className="text-sm font-medium">Desired outputs</h2>
-          {document.desired_outputs.length > 0 ? (
-            <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
-              {document.desired_outputs.map((output) => (
-                <li key={output}>{output}</li>
-              ))}
-            </ul>
-          ) : (
-            <p className="mt-2 text-xs text-muted-foreground">No desired outputs specified.</p>
-          )}
-        </section>
-        <div className="mt-7 rounded-lg bg-muted p-4">
-          <div className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
-            SCOPE &amp; FEASIBILITY · {document.feasibility.confidence.toUpperCase()} CONFIDENCE
+            <section className="mt-7 border-t border-border pt-6">
+              <h2 className="text-sm font-medium">Desired outputs</h2>
+              {planDocument.desired_outputs.length > 0 ? (
+                <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+                  {planDocument.desired_outputs.map((output) => (
+                    <li key={output}>{output}</li>
+                  ))}
+                </ul>
+              ) : (
+                <p className="mt-2 text-xs text-muted-foreground">No desired outputs specified.</p>
+              )}
+            </section>
+            <div className="mt-7 rounded-lg bg-muted p-4">
+              <div className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
+                SCOPE &amp; FEASIBILITY · {planDocument.feasibility.confidence.toUpperCase()}{' '}
+                CONFIDENCE
+              </div>
+              <p className="mt-1 text-xs text-muted-foreground">
+                {planDocument.feasibility.rationale}
+              </p>
+            </div>
           </div>
-          <p className="mt-1 text-xs text-muted-foreground">{document.feasibility.rationale}</p>
+        </ScrollArea>
+      ) : (
+        <div className="flex min-h-0 flex-1 items-center justify-center p-8">
+          <div
+            role="alert"
+            className="max-w-sm rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+          >
+            Invalid Plan document. This preview cannot be displayed.
+          </div>
         </div>
-      </div>
+      )}
     </div>
   )
 }
