@@ -139,7 +139,7 @@ import {
 import { AcpSessionConfigurator, type AcpSessionConfigurationFacts } from './session-configurator'
 import { createProductionPlanService } from '../session-plan/production-plan-service'
 import type { PlanService } from '../session-plan/plan-service'
-import type { GeneratePlanContent } from '../../shared/session-plan/contract'
+import type { ActivePlanProjection, GeneratePlanContent } from '../../shared/session-plan/contract'
 import type { SessionPlanStepStatus } from '../../shared/session-persistence'
 import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 
@@ -878,7 +878,12 @@ class AcpRuntime {
       expectedRevision: projection.revision
     }
     if (input.operation === 'approve') {
-      const result = await service.respond({ ...identity, decision: 'approved' })
+      const interactionIsLive = this.planApprovalWaiters.has(input.sessionId)
+      const result = await service.respond({
+        ...identity,
+        decision: 'approved',
+        interactionIsLive
+      })
       this.resolvePlanApprovalWaiter(input.sessionId, result)
       this.publishPlanProjection(input.sessionId, result.projection)
       return result
@@ -900,8 +905,16 @@ class AcpRuntime {
     return result
   }
 
-  getSessionPlanProjection(projectId: string, sessionId: string) {
-    return this.planService?.getProjection(projectId, sessionId) ?? Promise.resolve(null)
+  getSessionPlanProjection(
+    projectId: string,
+    sessionId: string
+  ): Promise<ActivePlanProjection | null> {
+    const interactionIsLive =
+      this.planApprovalWaiters.has(sessionId) || this.getInFlightSessionIds().includes(sessionId)
+    return (
+      this.planService?.getProjection(projectId, sessionId, interactionIsLive) ??
+      Promise.resolve(null)
+    )
   }
 
   async respondSessionPlan(input: {
@@ -910,10 +923,11 @@ class AcpRuntime {
     artifactVersionId: string
     expectedRevision: number
     decision: 'approved' | 'rejected'
-  }) {
+  }): Promise<Awaited<ReturnType<PlanService['respond']>>> {
     if (!this.planService) throw new Error('Session Plan capability is not configured.')
-    const result = await this.planService.respond(input)
-    this.resolvePlanApprovalWaiter(input.sessionId, result)
+    const interactionIsLive = this.planApprovalWaiters.has(input.sessionId)
+    const result = await this.planService.respond({ ...input, interactionIsLive })
+    if (interactionIsLive) this.resolvePlanApprovalWaiter(input.sessionId, result)
     this.publishPlanProjection(input.sessionId, result.projection)
     return result
   }
@@ -2719,6 +2733,14 @@ class AcpRuntime {
 
     if (!activeSession) {
       throw new Error(`ACP session not found: ${request.sessionId}`)
+    }
+
+    if (publishUserMessage && this.planService) {
+      await this.planService.assertInteractionMayStart(
+        this.resolveSessionProjectName(request.sessionId),
+        request.sessionId,
+        request.text
+      )
     }
 
     if (this.hasSessionInteractionInFlight(request.sessionId)) {

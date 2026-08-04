@@ -31,6 +31,7 @@ export type ActivePlanProjection = Readonly<{
   revision: number
   approval: SessionPlanApproval
   lifecycle: PlanLifecycle
+  requiresExplicitContinuation: boolean
   document: PlanDocumentV1
   stepStatuses: SessionPlanRuntimeContext['stepStatuses']
   counts: Readonly<{ phases: number; delegations: number; steps: number; completed: number }>
@@ -45,6 +46,7 @@ export type PlanCommandErrorCode =
   | 'invalid-transition'
   | 'plan-not-approved'
   | 'artifact-unavailable'
+  | 'explicit-continuation-required'
   | 'revision-conflict'
 
 export type PlanResponseCommand = Readonly<{
@@ -54,6 +56,11 @@ export type PlanResponseCommand = Readonly<{
   expectedRevision: number
   decision: 'approved' | 'rejected'
 }>
+
+export const isExplicitPlanContinuation = (text: string): boolean =>
+  /\b(?:continue|resume|proceed|go\s+ahead|carry\s+on|start\s+the\s+plan|execute\s+the\s+plan)\b/iu.test(
+    text.trim()
+  )
 
 export class PlanCommandError extends Error {
   constructor(

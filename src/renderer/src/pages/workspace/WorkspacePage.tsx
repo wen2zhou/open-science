@@ -33,6 +33,7 @@ import {
 import type { UploadedAttachment } from '../../../../shared/uploads'
 import type { ConversationExportFormat } from '../../../../shared/conversation-export'
 import type { CompletionHandoffLifecycleEvent } from '../../../../shared/specialist'
+import { isExplicitPlanContinuation } from '../../../../shared/session-plan/contract'
 
 import { planComposerAttachmentIntake } from './composer-attachment-intake'
 import { stageComposerFile, type ComposerUploadTransfer } from './composer-upload-transfer'
@@ -661,7 +662,17 @@ const WorkspacePage = ({
     void window.api.acp
       .getPlanProjection(activeSession.projectId, activeSession.id)
       .then((projection) => {
-        if (!cancelled && projection) setActivePlanProjection(activeSession.id, projection)
+        if (cancelled) return
+        if (projection) {
+          setActivePlanProjection(activeSession.id, projection)
+          return
+        }
+        const current = useSessionStore
+          .getState()
+          .sessions.find((session) => session.id === activeSession.id)
+        if (current?.status === 'waiting-plan-approval' && !current.activePlanProjection) {
+          useSessionStore.getState().finishRun(activeSession.id)
+        }
       })
       .catch(() => undefined)
     return () => {
@@ -769,6 +780,8 @@ const WorkspacePage = ({
     // Auto-recovery drops the session to idle while it resets context and replays the transcript; block
     // sends in that window so a manual prompt can't race the recovery resend into the same session.
     !activeSession?.compacting &&
+    (!activeSession?.activePlanProjection?.requiresExplicitContinuation ||
+      isExplicitPlanContinuation(docToText(draftDoc))) &&
     // Block while the reconfigure barrier is running (async, between Enter and sendMessage). This
     // prevents a second Enter press from racing the first one through the same pending-switch barrier.
     !barrierInFlightSessions.has(activeSession?.id ?? '')

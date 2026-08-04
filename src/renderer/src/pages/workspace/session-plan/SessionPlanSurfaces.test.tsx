@@ -13,6 +13,7 @@ const projection: ActivePlanProjection = {
   revision: 3,
   approval: 'pending',
   lifecycle: 'awaiting_approval',
+  requiresExplicitContinuation: false,
   document: {
     schema_version: 1,
     task_summary: 'Analyze one dataset',
@@ -80,5 +81,33 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByText('Awaiting plan approval')).toBeTruthy()
     expect(screen.getByText('0/1 done')).toBeTruthy()
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('0')
+  })
+
+  it('prompts for an explicit continuation after passive restart recovery', () => {
+    const restored = {
+      ...projection,
+      approval: 'approved' as const,
+      lifecycle: 'interrupted' as const,
+      requiresExplicitContinuation: true,
+      stepStatuses: {
+        'Analyze the data': { status: 'in_progress' as const, updatedAt: 42 }
+      }
+    }
+    const { rerender } = render(
+      <WorkspacePlanCard
+        projection={restored}
+        onOpen={vi.fn()}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+      />
+    )
+    expect(screen.getByText('Approved · Send a message to continue this plan.')).toBeTruthy()
+
+    rerender(<PlanProgressDock projection={restored} onOpen={vi.fn()} />)
+    expect(screen.getByText('Ready to continue · Send a message to resume')).toBeTruthy()
+
+    rerender(<PlanPreviewSurface projection={restored} />)
+    expect(
+      screen.getByText('Plan approved. Send an explicit continuation message to resume execution.')
+    ).toBeTruthy()
   })
 })

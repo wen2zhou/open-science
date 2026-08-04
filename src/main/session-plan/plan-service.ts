@@ -8,6 +8,7 @@ import type {
 import {
   createPlanDocumentV1,
   derivePlanLifecycle,
+  isExplicitPlanContinuation,
   PlanCommandError,
   planStepTitles,
   type ActivePlanProjection,
@@ -38,7 +39,7 @@ type PlanServiceDependencies = Readonly<{
     projectId: string
     sessionId: string
     expectedRevision: number
-    plan: SessionPlanRuntimeContext
+    plan: SessionPlanRuntimeContext | undefined
     sessionStatus: 'waiting-plan-approval' | 'running' | 'idle'
   }) => Promise<SessionRuntimeContext>
   isRevisionConflict: (error: unknown) => boolean
@@ -59,8 +60,12 @@ const parseDocument = (content: string): PlanDocumentV1 => {
   try {
     const parsed = JSON.parse(content) as PlanDocumentV1
     if (parsed.schema_version !== 1) throw new Error('unsupported schema')
-    const { schema_version: _schemaVersion, ...candidate } = parsed
-    return createPlanDocumentV1(candidate)
+    return createPlanDocumentV1({
+      task_summary: parsed.task_summary,
+      phases: parsed.phases,
+      desired_outputs: parsed.desired_outputs,
+      feasibility: parsed.feasibility
+    })
   } catch (error) {
     if (error instanceof PlanCommandError) throw error
     throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')
@@ -136,11 +141,15 @@ class PlanService {
   }
 
   async respond(
-    input: PlanIdentityCommand & Readonly<{ decision: 'approved' | 'rejected' }>
+    input: PlanIdentityCommand &
+      Readonly<{ decision: 'approved' | 'rejected'; interactionIsLive?: boolean }>
   ): Promise<{ projection: ActivePlanProjection; changed: boolean }> {
     const { context, plan, document } = await this.loadActive(input)
     if (plan.approval === input.decision) {
-      return { projection: this.project(document, plan, context.revision), changed: false }
+      return {
+        projection: this.project(document, plan, context.revision, input.interactionIsLive),
+        changed: false
+      }
     }
     if (plan.approval !== 'pending') {
       throw new PlanCommandError('approval-already-decided', 'Plan approval is irreversible.')
@@ -149,9 +158,12 @@ class PlanService {
     const next = await this.patch(
       input,
       updated,
-      input.decision === 'approved' ? 'running' : 'idle'
+      input.decision === 'approved' && input.interactionIsLive ? 'running' : 'idle'
     )
-    return { projection: this.project(document, updated, next.revision), changed: true }
+    return {
+      projection: this.project(document, updated, next.revision, input.interactionIsLive),
+      changed: true
+    }
   }
 
   async updateStepStatus(
@@ -190,11 +202,21 @@ class PlanService {
     return { projection: this.project(document, updated, next.revision), changed: true }
   }
 
-  async getProjection(projectId: string, sessionId: string): Promise<ActivePlanProjection | null> {
+  async getProjection(
+    projectId: string,
+    sessionId: string,
+    interactionIsLive = false
+  ): Promise<ActivePlanProjection | null> {
     const context = await this.dependencies.readRuntimeContext(projectId, sessionId)
     if (!context.plan) return null
-    const document = await this.readDocument(projectId, sessionId, context.plan)
-    return this.project(document, context.plan, context.revision)
+    try {
+      const document = await this.readDocument(projectId, sessionId, context.plan)
+      return this.project(document, context.plan, context.revision, interactionIsLive)
+    } catch (error) {
+      if (!(error instanceof PlanCommandError) || error.code !== 'artifact-unavailable') throw error
+      await this.dropUnavailableAuthority(projectId, sessionId, context)
+      return null
+    }
   }
 
   async checkTurnCompletion(input: {
@@ -204,6 +226,20 @@ class PlanService {
     const projection = await this.getProjection(input.projectId, input.sessionId)
     if (!projection || projection.approval !== 'approved') return { allow: true }
     return { allow: projection.lifecycle === 'completed', lifecycle: projection.lifecycle }
+  }
+
+  async assertInteractionMayStart(
+    projectId: string,
+    sessionId: string,
+    text: string
+  ): Promise<void> {
+    const projection = await this.getProjection(projectId, sessionId, false)
+    if (projection?.requiresExplicitContinuation && !isExplicitPlanContinuation(text)) {
+      throw new PlanCommandError(
+        'explicit-continuation-required',
+        'Send an explicit continuation message to resume the approved Plan.'
+      )
+    }
   }
 
   private async loadActive(input: PlanIdentityCommand): Promise<{
@@ -227,17 +263,54 @@ class PlanService {
     }
   }
 
+  private async dropUnavailableAuthority(
+    projectId: string,
+    sessionId: string,
+    observed: SessionRuntimeContext
+  ): Promise<void> {
+    let current = observed
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await this.dependencies.patchRuntimeContext({
+          projectId,
+          sessionId,
+          expectedRevision: current.revision,
+          plan: undefined,
+          sessionStatus: 'idle'
+        })
+        return
+      } catch (error) {
+        if (!this.dependencies.isRevisionConflict(error)) throw error
+        const latest = await this.dependencies.readRuntimeContext(projectId, sessionId)
+        if (!latest.plan || !observed.plan) return
+        if (
+          latest.plan.artifactId !== observed.plan.artifactId ||
+          latest.plan.artifactVersionId !== observed.plan.artifactVersionId ||
+          latest.plan.artifactChecksum !== observed.plan.artifactChecksum
+        ) {
+          return
+        }
+        current = latest
+      }
+    }
+  }
+
   private async readDocument(
     projectId: string,
     sessionId: string,
     plan: SessionPlanRuntimeContext
   ): Promise<PlanDocumentV1> {
-    const result = await this.dependencies.readArtifactVersion({
-      projectId,
-      sessionId,
-      artifactId: plan.artifactId,
-      artifactVersionId: plan.artifactVersionId
-    })
+    let result: { content: string; checksum: string }
+    try {
+      result = await this.dependencies.readArtifactVersion({
+        projectId,
+        sessionId,
+        artifactId: plan.artifactId,
+        artifactVersionId: plan.artifactVersionId
+      })
+    } catch {
+      throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')
+    }
     if (
       result.checksum !== plan.artifactChecksum ||
       sha256(result.content) !== plan.artifactChecksum
@@ -274,7 +347,8 @@ class PlanService {
   private project(
     document: PlanDocumentV1,
     plan: SessionPlanRuntimeContext,
-    revision: number
+    revision: number,
+    interactionIsLive = true
   ): ActivePlanProjection {
     const titles = planStepTitles(document)
     return {
@@ -283,7 +357,14 @@ class PlanService {
       artifactChecksum: plan.artifactChecksum,
       revision,
       approval: plan.approval,
-      lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, true),
+      lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, interactionIsLive),
+      requiresExplicitContinuation:
+        !interactionIsLive &&
+        plan.approval === 'approved' &&
+        !titles.every((title) => {
+          const status = plan.stepStatuses[title]?.status
+          return status === 'completed' || status === 'skipped'
+        }),
       document,
       stepStatuses: plan.stepStatuses,
       counts: {

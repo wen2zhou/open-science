@@ -21,7 +21,12 @@ const content = {
   feasibility: { confidence: 'high' as const, rationale: 'Inputs are available.' }
 }
 
-const setup = () => {
+const setup = (): {
+  service: PlanService
+  dependencies: PlanServiceDependencies
+  context: () => SessionRuntimeContext
+  status: () => string
+} => {
   let context: SessionRuntimeContext = { version: 1, revision: 0 }
   let persistedStatus = 'running'
   let bytes = ''
@@ -42,7 +47,11 @@ const setup = () => {
     readRuntimeContext: vi.fn(async () => context),
     patchRuntimeContext: vi.fn(async ({ expectedRevision, plan, sessionStatus }) => {
       if (expectedRevision !== context.revision) throw new Error('revision conflict')
-      context = { version: 1, revision: context.revision + 1, plan }
+      context = {
+        version: 1,
+        revision: context.revision + 1,
+        ...(plan ? { plan } : {})
+      }
       persistedStatus = sessionStatus
       return context
     }),
@@ -241,5 +250,109 @@ describe('PlanService', () => {
         status: 'completed'
       })
     ).rejects.toMatchObject({ code: 'stale-plan' })
+  })
+
+  it('passively restores approved progress as interrupted without reviving an interaction', async () => {
+    const { service, dependencies } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const approved = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved',
+      interactionIsLive: true
+    })
+    await service.updateStepStatus({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: approved.projection.revision,
+      title: 'Analyze the data',
+      status: 'in_progress'
+    })
+
+    const restarted = new PlanService(dependencies)
+    await expect(restarted.getProjection('project-1', 'session-1')).resolves.toMatchObject({
+      lifecycle: 'interrupted',
+      requiresExplicitContinuation: true,
+      stepStatuses: { 'Analyze the data': { status: 'in_progress' } }
+    })
+  })
+
+  it('records approval after restart without claiming that execution resumed', async () => {
+    const { service, status } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+
+    const approved = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved',
+      interactionIsLive: false
+    })
+
+    expect(status()).toBe('idle')
+    expect(approved.projection).toMatchObject({
+      approval: 'approved',
+      lifecycle: 'approved',
+      requiresExplicitContinuation: true
+    })
+    await expect(
+      service.assertInteractionMayStart('project-1', 'session-1', 'What files are available?')
+    ).rejects.toMatchObject({ code: 'explicit-continuation-required' })
+    await expect(
+      service.assertInteractionMayStart(
+        'project-1',
+        'session-1',
+        'Please resume the approved plan.'
+      )
+    ).resolves.toBeUndefined()
+  })
+
+  it('drops unreadable restored Plan authority instead of exposing it as executable', async () => {
+    const { service, dependencies, context, status } = setup()
+    await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    vi.mocked(dependencies.readArtifactVersion).mockResolvedValueOnce({
+      content: '{"schema_version":1}',
+      checksum: '0'.repeat(64)
+    })
+
+    await expect(service.getProjection('project-1', 'session-1')).resolves.toBeNull()
+    expect(context().plan).toBeUndefined()
+    expect(status()).toBe('idle')
+  })
+
+  it('drops restored Plan authority when provenance content is missing', async () => {
+    const { service, dependencies, context, status } = setup()
+    await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    vi.mocked(dependencies.readArtifactVersion).mockRejectedValueOnce(
+      new Error('pending content is missing')
+    )
+
+    await expect(service.getProjection('project-1', 'session-1')).resolves.toBeNull()
+    expect(context().plan).toBeUndefined()
+    expect(status()).toBe('idle')
   })
 })

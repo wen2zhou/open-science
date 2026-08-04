@@ -133,6 +133,9 @@ describe('WorkspacePage send gate while compacting', () => {
     runtime.nativeContextCompactionSessionIds = ['sess-a']
 
     window.api = {
+      acp: {
+        getPlanProjection: vi.fn(() => Promise.resolve(null))
+      },
       notebook: {
         onAvailable: vi.fn(() => vi.fn()),
         getReference: vi.fn(() => Promise.resolve(null))
@@ -198,6 +201,69 @@ describe('WorkspacePage send gate while compacting', () => {
       useSessionStore.getState().finishRun('sess-a')
     })
     expect(conversationProps.canSendMessage).toBe(true)
+  })
+
+  it('allows only explicit continuation messages for a passively restored Plan', async () => {
+    useSessionStore.setState({
+      sessions: [
+        createSession({
+          activePlanProjection: {
+            artifactId: 'artifact-1',
+            artifactVersionId: 'version-1',
+            artifactChecksum: 'a'.repeat(64),
+            revision: 4,
+            approval: 'approved',
+            lifecycle: 'interrupted',
+            requiresExplicitContinuation: true,
+            document: {
+              schema_version: 1,
+              task_summary: 'Analyze one dataset',
+              phases: [
+                {
+                  name: 'Analysis',
+                  delegations: [
+                    {
+                      name: 'Primary agent',
+                      steps: [{ title: 'Analyze the data', description: 'Produce the result.' }]
+                    }
+                  ]
+                }
+              ],
+              desired_outputs: [],
+              feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+            },
+            stepStatuses: {
+              'Analyze the data': { status: 'in_progress', updatedAt: 42 }
+            },
+            counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+          }
+        })
+      ],
+      selectedSessionId: 'sess-a'
+    })
+    await renderPage()
+
+    await act(async () => {
+      conversationProps.onDraftDocChange(textDoc('What files are in this project?'))
+    })
+    expect(conversationProps.canSendMessage).toBe(false)
+
+    await act(async () => {
+      conversationProps.onDraftDocChange(textDoc('Please resume the approved plan.'))
+    })
+    expect(conversationProps.canSendMessage).toBe(true)
+  })
+
+  it('unlocks a waiting Session after main drops unreadable Plan authority', async () => {
+    useSessionStore.setState({
+      sessions: [createSession({ status: 'waiting-plan-approval' })],
+      selectedSessionId: 'sess-a'
+    })
+
+    await renderPage()
+
+    expect(window.api.acp.getPlanProjection).toHaveBeenCalledWith('proj-1', 'sess-a')
+    expect(useSessionStore.getState().sessions[0]?.status).toBe('idle')
   })
 
   it('blocks message-branch changes only while the project-scoped review is running', async () => {

@@ -607,6 +607,42 @@ describe('normalizeSessionFile with activities', () => {
     expect(restored?.error).toBeUndefined()
   })
 
+  it('does not restore the expired interaction identity for a pending Plan', () => {
+    const restored = normalizeSessionFile({
+      ...(createSessionWithActivity(undefined) as PersistedChatSession),
+      activities: undefined,
+      status: 'waiting-plan-approval',
+      activeRun: { promptMessageId: 'expired-prompt', startedAt: 10 },
+      runtimeContext: {
+        version: 1,
+        revision: 3,
+        plan: createRuntimePlan()
+      }
+    })
+
+    expect(restored?.status).toBe('waiting-plan-approval')
+    expect(restored?.activeRun).toBeUndefined()
+    expect(restored?.error).toBeUndefined()
+  })
+
+  it('restores an approved incomplete Plan passively instead of as a generic Session error', () => {
+    const plan = { ...createRuntimePlan(), approval: 'approved' as const }
+    const restored = normalizeSessionFile({
+      ...(createSessionWithActivity(undefined) as PersistedChatSession),
+      activities: undefined,
+      status: 'running',
+      activeRun: { promptMessageId: 'prompt-1', startedAt: 10 },
+      runtimeContext: { version: 1, revision: 4, plan }
+    })
+
+    expect(restored).toMatchObject({
+      status: 'idle',
+      runtimeContext: { version: 1, revision: 4, plan }
+    })
+    expect(restored?.activeRun).toBeUndefined()
+    expect(restored?.error).toBeUndefined()
+  })
+
   it('drops unknown or damaged runtime context without losing the conversation', () => {
     const unknown = normalizeSessionFile({
       ...createSessionWithActivity(undefined),
