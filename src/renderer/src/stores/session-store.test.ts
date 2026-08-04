@@ -100,13 +100,10 @@ describe('session store', () => {
       ]
     })
 
-    useSessionStore.getState().setActivePlanProjection(
-      'blocked-plan-session',
-      {
-        lifecycle: 'blocked',
-        approval: 'approved'
-      } as NonNullable<ChatSession['activePlanProjection']>
-    )
+    useSessionStore.getState().setActivePlanProjection('blocked-plan-session', {
+      lifecycle: 'blocked',
+      approval: 'approved'
+    } as NonNullable<ChatSession['activePlanProjection']>)
 
     expect(useSessionStore.getState().sessions[0].status).toBe('idle')
   })

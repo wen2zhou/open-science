@@ -59,6 +59,24 @@ describe('Session Plan MCP server', () => {
       arguments: { approve: true, session_id: 'forged' }
     })
     expect(forged).toMatchObject({ isError: true })
+
+    const malformed = await client.callTool({
+      name: 'generate_plan',
+      arguments: {
+        task_summary: '',
+        phases: [{ name: 'Analysis', delegations: [] }],
+        desired_outputs: []
+      }
+    })
+    expect(malformed).toMatchObject({ isError: true })
+    const malformedContent = (malformed as { content: Array<{ text: string }> }).content
+    expect(JSON.parse(malformedContent[0].text)).toEqual({
+      error: {
+        code: 'invalid-plan',
+        message: 'task_summary must be non-empty.'
+      }
+    })
+    expect(generate).toHaveBeenCalledOnce()
     await client.close()
     await server.close()
   })

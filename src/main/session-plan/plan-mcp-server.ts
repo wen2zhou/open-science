@@ -3,20 +3,16 @@ import { McpServer as ModelContextProtocolServer } from '@modelcontextprotocol/s
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js'
 import { z } from 'zod'
 
-import type { GeneratePlanContent } from '../../shared/session-plan/contract'
+import {
+  createPlanDocumentV1,
+  PlanCommandError,
+  type GeneratePlanContent
+} from '../../shared/session-plan/contract'
 import type { SessionPlanStepStatus } from '../../shared/session-persistence'
 import { fetchLocalRpc, type LocalRpcTransport } from '../local-rpc-transport'
 import { PLAN_MCP_SERVER_ARG } from '../mcp-server-args'
 
 const PLAN_MCP_SERVER_NAME = 'open-science-plan'
-
-const stepSchema = z.object({ title: z.string().min(1), description: z.string().min(1) }).strict()
-const delegationSchema = z
-  .object({ name: z.string().min(1), steps: z.array(stepSchema).min(1) })
-  .strict()
-const phaseSchema = z
-  .object({ name: z.string().min(1), delegations: z.array(delegationSchema).min(1) })
-  .strict()
 
 const generatePlanToolSchema = {
   session_id: z.never().optional(),
@@ -24,16 +20,12 @@ const generatePlanToolSchema = {
   artifact_id: z.never().optional(),
   artifact_version_id: z.never().optional(),
   approve: z.literal(true).optional(),
-  task_summary: z.string().min(1).optional(),
-  phases: z.array(phaseSchema).min(1).optional(),
-  desired_outputs: z.array(z.string().min(1)).optional(),
-  feasibility: z
-    .object({
-      confidence: z.enum(['high', 'medium', 'low']),
-      rationale: z.string().min(1)
-    })
-    .strict()
-    .optional()
+  // The shared Plan contract owns semantic validation so every malformed document returns the same
+  // structured invalid-plan result instead of being intercepted as an untyped MCP schema error.
+  task_summary: z.unknown().optional(),
+  phases: z.unknown().optional(),
+  desired_outputs: z.unknown().optional(),
+  feasibility: z.unknown().optional()
 }
 
 const updateStepStatusToolSchema = {
@@ -67,6 +59,18 @@ const toolResult = (result: unknown): { content: { type: 'text'; text: string }[
   content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
 })
 
+const planErrorToolResult = (
+  error: PlanCommandError
+): { content: { type: 'text'; text: string }[]; isError: true } => ({
+  content: [
+    {
+      type: 'text',
+      text: JSON.stringify({ error: { code: error.code, message: error.message } }, null, 2)
+    }
+  ],
+  isError: true
+})
+
 const projectionVersionId = (result: unknown): string | undefined => {
   if (typeof result !== 'object' || result === null) return undefined
   const projection = (result as { projection?: unknown }).projection
@@ -89,23 +93,36 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
       inputSchema: generatePlanToolSchema
     },
     async ({ approve, task_summary, phases, desired_outputs, feasibility }) => {
-      const hasContent =
-        task_summary !== undefined ||
-        phases !== undefined ||
-        desired_outputs !== undefined ||
-        feasibility !== undefined
-      if (approve === true) {
-        if (hasContent) throw new Error('Approval cannot be combined with Plan content.')
-        const result = await handler.approve()
+      try {
+        const hasContent =
+          task_summary !== undefined ||
+          phases !== undefined ||
+          desired_outputs !== undefined ||
+          feasibility !== undefined
+        if (approve === true) {
+          if (hasContent) {
+            throw new PlanCommandError(
+              'invalid-plan',
+              'Approval cannot be combined with Plan content.'
+            )
+          }
+          const result = await handler.approve()
+          executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
+          return toolResult(result)
+        }
+        const document = createPlanDocumentV1({
+          task_summary,
+          phases,
+          desired_outputs,
+          feasibility
+        })
+        const result = await handler.generate(document)
         executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
         return toolResult(result)
+      } catch (error) {
+        if (error instanceof PlanCommandError) return planErrorToolResult(error)
+        throw error
       }
-      if (!task_summary || !phases || !desired_outputs || !feasibility) {
-        throw new Error('A complete Plan document is required.')
-      }
-      const result = await handler.generate({ task_summary, phases, desired_outputs, feasibility })
-      executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
-      return toolResult(result)
     }
   )
   server.registerTool(
