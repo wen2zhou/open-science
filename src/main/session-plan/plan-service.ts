@@ -8,6 +8,7 @@ import type {
 import {
   createPlanDocumentV1,
   derivePlanLifecycle,
+  parsePlanDocumentV1,
   PlanCommandError,
   planStepTitles,
   type ActivePlanProjection,
@@ -57,7 +58,7 @@ const sha256 = (value: string): string => createHash('sha256').update(value).dig
 
 const parseDocument = (content: string): PlanDocumentV1 => {
   try {
-    return createPlanDocumentV1(JSON.parse(content))
+    return parsePlanDocumentV1(JSON.parse(content))
   } catch (error) {
     if (error instanceof PlanCommandError) throw error
     throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')

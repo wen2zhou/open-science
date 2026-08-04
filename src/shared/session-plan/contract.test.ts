@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { createPlanDocumentV1, derivePlanLifecycle, PlanCommandError } from './contract'
+import {
+  createPlanDocumentV1,
+  derivePlanLifecycle,
+  parsePlanDocumentV1,
+  PlanCommandError
+} from './contract'
 
 describe('Plan document V1', () => {
   it('adds the server-owned schema version to a valid single-step plan', () => {
@@ -85,6 +90,32 @@ describe('Plan document V1', () => {
     expect(() =>
       createPlanDocumentV1({
         schema_version: 2,
+        task_summary: 'Analyze data',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Primary agent',
+                steps: [{ title: 'Analyze data', description: 'Produce the result.' }]
+              }
+            ]
+          }
+        ],
+        desired_outputs: [],
+        feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+      })
+    ).toThrow(
+      expect.objectContaining<Partial<PlanCommandError>>({
+        code: 'invalid-plan',
+        message: 'schema_version must be 1.'
+      })
+    )
+  })
+
+  it('requires the V1 discriminator when parsing a persisted Plan document', () => {
+    expect(() =>
+      parsePlanDocumentV1({
         task_summary: 'Analyze data',
         phases: [
           {

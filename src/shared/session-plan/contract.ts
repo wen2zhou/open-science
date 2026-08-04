@@ -139,6 +139,13 @@ export const createPlanDocumentV1 = (input: unknown): PlanDocumentV1 => {
   }
 }
 
+export const parsePlanDocumentV1 = (input: unknown): PlanDocumentV1 => {
+  if (!isRecord(input) || input.schema_version !== 1) {
+    throw new PlanCommandError('invalid-plan', 'schema_version must be 1.')
+  }
+  return createPlanDocumentV1(input)
+}
+
 export const planStepTitles = (document: PlanDocumentV1): string[] =>
   document.phases.flatMap((phase) =>
     phase.delegations.flatMap((delegation) => delegation.steps.map((step) => step.title))

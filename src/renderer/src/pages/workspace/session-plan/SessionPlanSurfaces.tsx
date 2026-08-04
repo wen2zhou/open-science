@@ -6,10 +6,11 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 import {
-  createPlanDocumentV1,
+  parsePlanDocumentV1,
   type ActivePlanProjection,
   type PlanDocumentV1
 } from '../../../../../shared/session-plan/contract'
+import type { SessionPlanStepStatus } from '../../../../../shared/session-persistence'
 
 type PlanSurfaceProps = Readonly<{ projection: ActivePlanProjection }>
 
@@ -226,7 +227,7 @@ type PlanPreviewSurfaceProps = PlanSurfaceProps &
 
 const validatedPreviewDocument = (value: unknown): PlanDocumentV1 | null => {
   try {
-    return createPlanDocumentV1(value)
+    return parsePlanDocumentV1(value)
   } catch {
     return null
   }
@@ -236,7 +237,7 @@ const countLabel = (count: number): string =>
   ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'][count] ??
   String(count)
 
-const stepMark = (status: string | undefined): string => {
+const stepMark = (status: SessionPlanStepStatus | undefined): string => {
   if (status === 'completed') return '✓'
   if (status === 'in_progress') return '●'
   if (status === 'blocked') return '!'
@@ -271,27 +272,20 @@ const PlanPreviewSurface = ({
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-10 text-foreground">
-      <header className="flex h-11 shrink-0 items-center justify-between border-b border-border px-3">
+      <header className="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border px-3">
         <span className="truncate text-xs text-muted-foreground">
           plan-{projection.artifactVersionId}.json
         </span>
         <div className="flex items-center gap-1">
-          <TooltipProvider delayDuration={200}>
-            <Tooltip>
-              <TooltipTrigger asChild>
-                <Button
-                  type="button"
-                  aria-label="Download Plan"
-                  variant="ghost"
-                  size="icon-sm"
-                  onClick={() => void download()}
-                >
-                  <Download className="size-4" aria-hidden="true" />
-                </Button>
-              </TooltipTrigger>
-              <TooltipContent className="z-[70]">Download</TooltipContent>
-            </Tooltip>
-          </TooltipProvider>
+          <Button
+            type="button"
+            aria-label="Download Plan"
+            variant="ghost"
+            onClick={() => void download()}
+          >
+            <Download className="size-4" aria-hidden="true" />
+            Download
+          </Button>
           {planDocument && projection.approval === 'pending' && onRespond ? (
             <>
               <Button type="button" variant="outline" onClick={() => void onRespond('rejected')}>

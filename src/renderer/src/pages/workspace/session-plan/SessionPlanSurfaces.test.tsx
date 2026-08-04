@@ -150,8 +150,8 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getAllByRole('button').every((button) => button.dataset.slot === 'button')).toBe(
       true
     )
-    expect(screen.getByRole('button', { name: 'Download Plan' }).dataset.size).toBe('icon-sm')
-    expect(screen.getByRole('button', { name: 'Download Plan' }).textContent).toBe('')
+    expect(screen.getByRole('button', { name: 'Download Plan' }).textContent).toContain('Download')
+    expect(document.querySelector('header')?.className).toContain('h-9')
     fireEvent.click(screen.getByRole('button', { name: 'Download Plan' }))
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
@@ -220,5 +220,22 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
     fireEvent.click(screen.getByRole('button', { name: 'Download Plan' }))
     expect(onDownload).toHaveBeenCalledOnce()
+  })
+
+  it('treats a missing schema discriminator as an invalid persisted Plan', () => {
+    render(
+      <PlanPreviewSurface
+        projection={
+          {
+            ...projection,
+            document: { ...projection.document, schema_version: undefined }
+          } as unknown as ActivePlanProjection
+        }
+        onDownload={vi.fn().mockResolvedValue(undefined)}
+      />
+    )
+
+    expect(screen.getByRole('alert').textContent).toContain('Invalid Plan document')
+    expect(screen.getByRole('button', { name: 'Download Plan' })).toBeTruthy()
   })
 })
