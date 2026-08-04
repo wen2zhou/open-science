@@ -577,7 +577,6 @@ class AcpRuntime {
       reject: (error: Error) => void
     }
   >()
-  private readonly executionPlanVersions = new Map<string, string>()
   private readonly promptContentOwner: AcpPromptContentOwner
 
   // Wires runtime dependencies and forwards permission prompts into the event stream.
@@ -880,14 +879,9 @@ class AcpRuntime {
     }
     if (input.operation === 'approve') {
       const result = await service.respond({ ...identity, decision: 'approved' })
-      this.executionPlanVersions.set(input.sessionId, result.projection.artifactVersionId)
       this.resolvePlanApprovalWaiter(input.sessionId, result)
       this.publishPlanProjection(input.sessionId, result.projection)
       return result
-    }
-    const executionVersion = this.executionPlanVersions.get(input.sessionId)
-    if (!executionVersion || executionVersion !== projection.artifactVersionId) {
-      throw new Error('The executing Session Plan is stale or has not been approved.')
     }
     const update = input.input as {
       title: string
@@ -912,9 +906,6 @@ class AcpRuntime {
   }) {
     if (!this.planService) throw new Error('Session Plan capability is not configured.')
     const result = await this.planService.respond(input)
-    if (input.decision === 'approved') {
-      this.executionPlanVersions.set(input.sessionId, result.projection.artifactVersionId)
-    }
     this.resolvePlanApprovalWaiter(input.sessionId, result)
     this.publishPlanProjection(input.sessionId, result.projection)
     return result
@@ -2571,7 +2562,6 @@ class AcpRuntime {
     for (const sessionId of this.planApprovalWaiters.keys()) {
       this.rejectPlanApprovalWaiter(sessionId, 'The Session Plan interaction was disconnected.')
     }
-    this.executionPlanVersions.clear()
     this.sessionInteractions.supersedeAll()
     // Context usage belongs to this live agent-context generation. Invalidate it before teardown,
     // including when a later session.dispose throws. A reconnect may resume the native context or
@@ -3428,7 +3418,6 @@ class AcpRuntime {
     const session = target?.attachment?.session
 
     this.rejectPlanApprovalWaiter(request.sessionId, 'The Session Plan interaction was deleted.')
-    this.executionPlanVersions.delete(request.sessionId)
     this.cancelPermissionFlowForSession(request.sessionId)
 
     if (session) {

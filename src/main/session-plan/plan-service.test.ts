@@ -191,4 +191,55 @@ describe('PlanService', () => {
       })
     ).rejects.toThrow('disk unavailable')
   })
+
+  it('rehydrates approved execution authority and rejects a replaced Artifact Version', async () => {
+    const { service, dependencies } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const approved = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved'
+    })
+    const reconstructed = new PlanService(dependencies)
+    await expect(
+      reconstructed.updateStepStatus({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: generated.projection.artifactVersionId,
+        expectedRevision: approved.projection.revision,
+        title: 'Analyze the data',
+        status: 'in_progress'
+      })
+    ).resolves.toMatchObject({ projection: { lifecycle: 'in_progress' } })
+
+    vi.mocked(dependencies.writeArtifactForActiveTurn).mockResolvedValueOnce({
+      artifactId: 'artifact-2',
+      versionId: 'version-2',
+      checksum: generated.projection.artifactChecksum,
+      name: 'plan-replacement.json'
+    })
+    const replacement = await reconstructed.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-2',
+      content
+    })
+    await expect(
+      reconstructed.updateStepStatus({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: generated.projection.artifactVersionId,
+        expectedRevision: replacement.projection.revision,
+        title: 'Analyze the data',
+        status: 'completed'
+      })
+    ).rejects.toMatchObject({ code: 'stale-plan' })
+  })
 })
