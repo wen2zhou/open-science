@@ -887,8 +887,15 @@ class AcpRuntime {
       title: string
       status: SessionPlanStepStatus
       notes?: string
+      expectedArtifactVersionId?: string
     }
-    const result = await service.updateStepStatus({ ...identity, ...update })
+    const result = await service.updateStepStatus({
+      ...identity,
+      artifactVersionId: update.expectedArtifactVersionId ?? identity.artifactVersionId,
+      title: update.title,
+      status: update.status,
+      ...(update.notes ? { notes: update.notes } : {})
+    })
     this.publishPlanProjection(input.sessionId, result.projection)
     return result
   }

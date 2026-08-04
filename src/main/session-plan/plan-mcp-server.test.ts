@@ -6,8 +6,12 @@ import { createPlanMcpServer } from './plan-mcp-server'
 
 describe('Session Plan MCP server', () => {
   it('exposes server-bound generation, approval, and exact-title status commands', async () => {
-    const generate = vi.fn().mockResolvedValue({ lifecycle: 'awaiting_approval' })
-    const approve = vi.fn().mockResolvedValue({ lifecycle: 'approved' })
+    const generate = vi.fn().mockResolvedValue({
+      projection: { artifactVersionId: 'version-1', lifecycle: 'approved' }
+    })
+    const approve = vi.fn().mockResolvedValue({
+      projection: { artifactVersionId: 'version-1', lifecycle: 'approved' }
+    })
     const updateStepStatus = vi.fn().mockResolvedValue({ lifecycle: 'completed' })
     const server = createPlanMcpServer({ generate, approve, updateStepStatus })
     const client = new Client({ name: 'plan-test', version: '1.0.0' })
@@ -47,7 +51,8 @@ describe('Session Plan MCP server', () => {
     expect(approve).toHaveBeenCalledOnce()
     expect(updateStepStatus).toHaveBeenCalledWith({
       title: 'Analyze the data',
-      status: 'completed'
+      status: 'completed',
+      expectedArtifactVersionId: 'version-1'
     })
     const forged = await client.callTool({
       name: 'generate_plan',

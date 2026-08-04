@@ -49,6 +49,7 @@ type PlanMcpHandler = Readonly<{
     title: string
     status: SessionPlanStepStatus
     notes?: string
+    expectedArtifactVersionId?: string
   }) => Promise<unknown>
 }>
 
@@ -66,7 +67,16 @@ const toolResult = (result: unknown) => ({
   content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
 })
 
+const projectionVersionId = (result: unknown): string | undefined => {
+  if (typeof result !== 'object' || result === null) return undefined
+  const projection = (result as { projection?: unknown }).projection
+  if (typeof projection !== 'object' || projection === null) return undefined
+  const versionId = (projection as { artifactVersionId?: unknown }).artifactVersionId
+  return typeof versionId === 'string' ? versionId : undefined
+}
+
 const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServer => {
+  let executionArtifactVersionId: string | undefined
   const server = new ModelContextProtocolServer({
     name: PLAN_MCP_SERVER_NAME,
     version: '1.0.0'
@@ -86,14 +96,16 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
         feasibility !== undefined
       if (approve === true) {
         if (hasContent) throw new Error('Approval cannot be combined with Plan content.')
-        return toolResult(await handler.approve())
+        const result = await handler.approve()
+        executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
+        return toolResult(result)
       }
       if (!task_summary || !phases || !desired_outputs || !feasibility) {
         throw new Error('A complete Plan document is required.')
       }
-      return toolResult(
-        await handler.generate({ task_summary, phases, desired_outputs, feasibility })
-      )
+      const result = await handler.generate({ task_summary, phases, desired_outputs, feasibility })
+      executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
+      return toolResult(result)
     }
   )
   server.registerTool(
@@ -103,7 +115,13 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
       description: 'Update one exact step title on the server-bound active Plan.',
       inputSchema: updateStepStatusToolSchema
     },
-    async (input) => toolResult(await handler.updateStepStatus(input))
+    async (input) =>
+      toolResult(
+        await handler.updateStepStatus({
+          ...input,
+          expectedArtifactVersionId: executionArtifactVersionId
+        })
+      )
   )
   return server
 }
@@ -140,13 +158,30 @@ const callPlanRpc = async (
   return payload.result
 }
 
+const executionVersionByEnvironment = new WeakMap<PlanMcpEnvironment, string>()
+
 const createPlanMcpServerForEnvironment = (
   environment: PlanMcpEnvironment
 ): ModelContextProtocolServer =>
   createPlanMcpServer({
-    generate: (content) => callPlanRpc(environment, 'generate', content),
-    approve: () => callPlanRpc(environment, 'approve'),
-    updateStepStatus: (input) => callPlanRpc(environment, 'updateStepStatus', input)
+    generate: async (content) => {
+      const result = await callPlanRpc(environment, 'generate', content)
+      const versionId = projectionVersionId(result)
+      if (versionId) executionVersionByEnvironment.set(environment, versionId)
+      return result
+    },
+    approve: async () => {
+      const result = await callPlanRpc(environment, 'approve')
+      const versionId = projectionVersionId(result)
+      if (versionId) executionVersionByEnvironment.set(environment, versionId)
+      return result
+    },
+    updateStepStatus: (input) =>
+      callPlanRpc(environment, 'updateStepStatus', {
+        ...input,
+        expectedArtifactVersionId:
+          input.expectedArtifactVersionId ?? executionVersionByEnvironment.get(environment)
+      })
   })
 
 const createPlanMcpServerConfig = ({
