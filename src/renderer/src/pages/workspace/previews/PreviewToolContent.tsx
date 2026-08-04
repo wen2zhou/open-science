@@ -7,6 +7,7 @@ import { NotebookPreview } from '../NotebookPreview'
 import type { NotebookPreviewItem } from '../NotebookPreview'
 import { ProjectFilesView } from '../ProjectFilesView'
 import { SessionReviewerPanel } from '../SessionReviewerPanel'
+import { respondToSessionPlan } from '../session-plan/respond-to-session-plan'
 import { PlanPreviewSurface } from '../session-plan/SessionPlanSurfaces'
 
 const isNotebookPreviewItem = (item: PreviewToolItem): item is NotebookPreviewItem =>
@@ -53,18 +54,10 @@ export const PreviewToolContent = ({
 
   const respondPlan = async (decision: 'approved' | 'rejected'): Promise<void> => {
     if (!planProjection || !item.projectId) return
-    try {
-      await window.api.acp.respondPlan({
-        projectId: item.projectId,
-        sessionId: item.sessionId,
-        artifactVersionId: planProjection.artifactVersionId,
-        expectedRevision: planProjection.revision,
-        decision
-      })
-    } finally {
-      const current = await window.api.acp.getPlanProjection(item.projectId, item.sessionId)
-      if (current) useSessionStore.getState().setActivePlanProjection(item.sessionId, current)
-    }
+    await respondToSessionPlan(
+      { projectId: item.projectId, sessionId: item.sessionId, projection: planProjection },
+      decision
+    )
   }
 
   // Remount the Files tool per project so its transient dialog cannot outlive the project it opened.

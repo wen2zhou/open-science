@@ -22,7 +22,13 @@ export type GeneratePlanContent = Readonly<{
 export type PlanDocumentV1 = GeneratePlanContent & Readonly<{ schema_version: 1 }>
 
 export type PlanLifecycle =
-  'awaiting_approval' | 'approved' | 'in_progress' | 'interrupted' | 'completed' | 'rejected'
+  | 'awaiting_approval'
+  | 'approved'
+  | 'in_progress'
+  | 'interrupted'
+  | 'completed'
+  | 'blocked'
+  | 'rejected'
 
 export type ActivePlanProjection = Readonly<{
   artifactId: string
@@ -149,5 +155,6 @@ export const derivePlanLifecycle = (
   const values = planStepTitles(document).map((title) => statuses[title]?.status)
   if (values.every((status) => status === 'completed' || status === 'skipped')) return 'completed'
   if (values.includes('in_progress')) return interactionIsLive ? 'in_progress' : 'interrupted'
+  if (values.includes('blocked')) return 'blocked'
   return 'approved'
 }

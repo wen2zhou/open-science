@@ -89,6 +89,28 @@ describe('session store', () => {
     expect(toPersistedSession(projection)).not.toHaveProperty('runtimeContext')
   })
 
+  it('returns a settled blocked Plan session to idle', () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: 'blocked-plan-session',
+          projectId: 'default',
+          status: 'running'
+        } as ChatSession
+      ]
+    })
+
+    useSessionStore.getState().setActivePlanProjection(
+      'blocked-plan-session',
+      {
+        lifecycle: 'blocked',
+        approval: 'approved'
+      } as NonNullable<ChatSession['activePlanProjection']>
+    )
+
+    expect(useSessionStore.getState().sessions[0].status).toBe('idle')
+  })
+
   it('uses the provided session id when the first user message creates a session', () => {
     const result = useSessionStore.getState().appendUserMessage({
       sessionId: 'transport-session-1',

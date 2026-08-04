@@ -46,6 +46,7 @@ import type {
 } from '../../../../shared/handoff-lifecycle'
 import { HandoffLifecycleStatus } from './HandoffLifecycleStatus'
 import { WorkspacePlanCard } from './session-plan/SessionPlanSurfaces'
+import { respondToSessionPlan } from './session-plan/respond-to-session-plan'
 import { useHandoffLifecycleEvents } from './useHandoffLifecycleEvents'
 import { MAX_ARTIFACT_VERSION_DESCRIPTOR_IDS } from '../../../../shared/artifacts'
 import {
@@ -686,22 +687,10 @@ const WorkspaceMessageScrollerImpl = ({
   const respondActivePlan = async (decision: 'approved' | 'rejected'): Promise<void> => {
     const plan = activeSession?.activePlanProjection
     if (!activeSession || !plan) return
-    try {
-      await window.api.acp.respondPlan({
-        projectId: activeSession.projectId,
-        sessionId: activeSession.id,
-        artifactVersionId: plan.artifactVersionId,
-        expectedRevision: plan.revision,
-        decision
-      })
-    } catch (error) {
-      const current = await window.api.acp.getPlanProjection(
-        activeSession.projectId,
-        activeSession.id
-      )
-      if (current) useSessionStore.getState().setActivePlanProjection(activeSession.id, current)
-      throw error
-    }
+    await respondToSessionPlan(
+      { projectId: activeSession.projectId, sessionId: activeSession.id, projection: plan },
+      decision
+    )
   }
 
   return (

@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { createPlanDocumentV1, PlanCommandError } from './contract'
+import { createPlanDocumentV1, derivePlanLifecycle, PlanCommandError } from './contract'
 
 describe('Plan document V1', () => {
   it('adds the server-owned schema version to a valid single-step plan', () => {
@@ -146,5 +146,35 @@ describe('Plan document V1', () => {
     expect(() => createPlanDocumentV1(input)).toThrow(
       expect.objectContaining<Partial<PlanCommandError>>({ code: 'invalid-plan', message })
     )
+  })
+})
+
+describe('derived Plan lifecycle', () => {
+  it('derives blocked once blocked work has no remaining active execution', () => {
+    const document = createPlanDocumentV1({
+      task_summary: 'Analyze data',
+      phases: [
+        {
+          name: 'Analysis',
+          delegations: [
+            {
+              name: 'Primary agent',
+              steps: [
+                { title: 'Inspect inputs', description: 'Check the data.' },
+                { title: 'Analyze data', description: 'Produce the result.' }
+              ]
+            }
+          ]
+        }
+      ],
+      desired_outputs: [],
+      feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+    })
+
+    expect(
+      derivePlanLifecycle(document, 'approved', {
+        'Inspect inputs': { status: 'blocked' }
+      })
+    ).toBe('blocked')
   })
 })

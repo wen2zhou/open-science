@@ -72,6 +72,8 @@ const multiLevelProjection: ActivePlanProjection = {
     feasibility: { confidence: 'medium', rationale: 'Cohort definitions may need confirmation.' }
   },
   stepStatuses: {
+    'Read the dictionary': { status: 'completed', updatedAt: 40, notes: 'Internal result.' },
+    'Validate inputs': { status: 'in_progress', updatedAt: 41, notes: 'Internal progress.' },
     'Compare cohorts': { status: 'blocked', updatedAt: 42, notes: 'Cohort B is undefined.' }
   },
   counts: { phases: 2, delegations: 3, steps: 4, completed: 0 }
@@ -141,11 +143,15 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByText('Desired outputs')).toBeTruthy()
     expect(screen.getByText('Review-ready report')).toBeTruthy()
     expect(screen.getByText('Cohort B is undefined.')).toBeTruthy()
+    expect(screen.queryByText('Internal result.')).toBeNull()
+    expect(screen.queryByText('Internal progress.')).toBeNull()
     expect(screen.getByText('SCOPE & FEASIBILITY · MEDIUM CONFIDENCE')).toBeTruthy()
     expect(document.querySelector('[data-slot="scroll-area"]')).not.toBeNull()
     expect(screen.getAllByRole('button').every((button) => button.dataset.slot === 'button')).toBe(
       true
     )
+    expect(screen.getByRole('button', { name: 'Download Plan' }).dataset.size).toBe('icon-sm')
+    expect(screen.getByRole('button', { name: 'Download Plan' }).textContent).toBe('')
     fireEvent.click(screen.getByRole('button', { name: 'Download Plan' }))
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
@@ -159,6 +165,41 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByText('Awaiting plan approval')).toBeTruthy()
     expect(screen.getByText('0/1 done')).toBeTruthy()
     expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('0')
+  })
+
+  it('uses the confirmed parallel and blocked progress copy', () => {
+    const { rerender } = render(
+      <PlanProgressDock
+        projection={{
+          ...multiLevelProjection,
+          lifecycle: 'in_progress',
+          stepStatuses: {
+            'Validate inputs': { status: 'in_progress', updatedAt: 1 },
+            'Compare cohorts': { status: 'in_progress', updatedAt: 2 }
+          }
+        }}
+        onOpen={vi.fn()}
+      />
+    )
+    expect(screen.getByText('2 steps running in parallel')).toBeTruthy()
+
+    rerender(
+      <PlanProgressDock
+        projection={{
+          ...multiLevelProjection,
+          lifecycle: 'blocked',
+          stepStatuses: {
+            'Compare cohorts': {
+              status: 'blocked',
+              updatedAt: 3,
+              notes: 'Cohort boundary is unclear'
+            }
+          }
+        }}
+        onOpen={vi.fn()}
+      />
+    )
+    expect(screen.getByText('Blocked · Cohort boundary is unclear')).toBeTruthy()
   })
 
   it('shows a stable invalid-schema state while preserving immutable download', () => {

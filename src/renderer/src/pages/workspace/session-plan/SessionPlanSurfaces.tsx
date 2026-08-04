@@ -22,6 +22,8 @@ const lifecycleLabel = (projection: ActivePlanProjection): string => {
       return 'Plan ready for review'
     case 'completed':
       return 'Plan completed'
+    case 'blocked':
+      return 'Plan blocked'
     case 'rejected':
       return 'Plan rejected'
     case 'approved':
@@ -36,10 +38,17 @@ const lifecycleLabel = (projection: ActivePlanProjection): string => {
 const progressTitle = (projection: ActivePlanProjection): string => {
   if (projection.lifecycle === 'awaiting_approval') return 'Awaiting plan approval'
   if (projection.lifecycle === 'completed') return `Completed · ${projection.counts.steps} steps`
-  const running = Object.entries(projection.stepStatuses).find(
+  if (projection.lifecycle === 'blocked') {
+    const blocked = Object.entries(projection.stepStatuses).find(
+      ([, value]) => value.status === 'blocked'
+    )
+    return blocked ? `Blocked · ${blocked[1].notes ?? blocked[0]}` : 'Plan blocked'
+  }
+  const running = Object.entries(projection.stepStatuses).filter(
     ([, value]) => value.status === 'in_progress'
   )
-  return running?.[0] ?? lifecycleLabel(projection)
+  if (running.length > 1) return `${running.length} steps running in parallel`
+  return running[0]?.[0] ?? lifecycleLabel(projection)
 }
 
 const WorkspacePlanCard = ({
@@ -267,15 +276,22 @@ const PlanPreviewSurface = ({
           plan-{projection.artifactVersionId}.json
         </span>
         <div className="flex items-center gap-1">
-          <Button
-            type="button"
-            aria-label="Download Plan"
-            variant="ghost"
-            onClick={() => void download()}
-          >
-            <Download className="size-4" aria-hidden="true" />
-            Download
-          </Button>
+          <TooltipProvider delayDuration={200}>
+            <Tooltip>
+              <TooltipTrigger asChild>
+                <Button
+                  type="button"
+                  aria-label="Download Plan"
+                  variant="ghost"
+                  size="icon-sm"
+                  onClick={() => void download()}
+                >
+                  <Download className="size-4" aria-hidden="true" />
+                </Button>
+              </TooltipTrigger>
+              <TooltipContent className="z-[70]">Download</TooltipContent>
+            </Tooltip>
+          </TooltipProvider>
           {planDocument && projection.approval === 'pending' && onRespond ? (
             <>
               <Button type="button" variant="outline" onClick={() => void onRespond('rejected')}>
@@ -355,7 +371,8 @@ const PlanPreviewSurface = ({
                           <div>
                             <div className="text-sm font-medium">{step.title}</div>
                             <div className="text-xs text-muted-foreground">{step.description}</div>
-                            {runtime?.notes ? (
+                            {runtime?.notes &&
+                            (runtime.status === 'blocked' || runtime.status === 'skipped') ? (
                               <div className="mt-1.5 rounded-md bg-muted px-2 py-1.5 text-[11px] text-muted-foreground">
                                 {runtime.notes}
                               </div>
