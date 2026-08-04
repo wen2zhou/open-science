@@ -46,17 +46,26 @@ export const PreviewToolContent = ({
   item: PreviewToolItem
 }): React.JSX.Element | null => {
   const activeProjectId = useNavigationStore((state) => state.activeProjectId)
-  const planProjection = useSessionStore(
-    (state) => state.sessions.find((session) => session.id === item.sessionId)?.activePlanProjection
+  const planSession = useSessionStore((state) =>
+    state.sessions.find((session) => session.id === item.sessionId)
   )
   const isPlanExpanded = usePreviewWorkbenchStore((state) => state.expandedToolItemId === item.id)
   const setToolItemExpanded = usePreviewWorkbenchStore((state) => state.setToolItemExpanded)
+  const activePlanProjection = planSession?.activePlanProjection
+  const planProjection = item.planArtifactVersionId
+    ? (planSession?.planHistoryProjections?.find(
+        (projection) => projection.artifactVersionId === item.planArtifactVersionId
+      ) ??
+      (activePlanProjection?.artifactVersionId === item.planArtifactVersionId
+        ? activePlanProjection
+        : undefined))
+    : activePlanProjection
 
   const respondPlan = async (decision: 'approved' | 'rejected'): Promise<void> => {
     if (!planProjection || !item.projectId) return
     await respondToSessionPlan(
       { projectId: item.projectId, sessionId: item.sessionId, projection: planProjection },
-      decision
+      { decision }
     )
   }
 
@@ -70,14 +79,17 @@ export const PreviewToolContent = ({
   }
 
   if (item.toolKind === 'plan') {
-    return planProjection ? (
+    if (!planProjection || !planSession) return null
+    const stale = planProjection.artifactVersionId !== activePlanProjection?.artifactVersionId
+    return (
       <PlanPreviewSurface
         projection={planProjection}
+        stale={stale}
         isFullScreen={isPlanExpanded}
         onRespond={respondPlan}
         onToggleFullScreen={() => setToolItemExpanded(isPlanExpanded ? null : item.id)}
       />
-    ) : null
+    )
   }
 
   if (!isNotebookPreviewItem(item)) return null

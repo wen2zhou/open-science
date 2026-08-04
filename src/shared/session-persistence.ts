@@ -126,6 +126,8 @@ export type PersistedChatMessage = {
   status: PersistedMessageStatus
   streamId?: string
   responseToMessageId?: string
+  // Immutable Plan Artifact Version answered by an inline Plan response.
+  responseToPlanVersionId?: string
   eventIds: string[]
   // Links a message to session-level artifact metadata without duplicating file records per message.
   artifactIds?: string[]
@@ -954,6 +956,7 @@ const sanitizeMessage = (
   }
   const streamId = asString(message.streamId)
   const responseToMessageId = asString(message.responseToMessageId)
+  const responseToPlanVersionId = asString(message.responseToPlanVersionId)
   const artifactIds = asStringArray(message.artifactIds)
   const uploads = Array.isArray(message.uploads)
     ? message.uploads
@@ -976,6 +979,7 @@ const sanitizeMessage = (
 
   if (streamId) sanitized.streamId = streamId
   if (responseToMessageId) sanitized.responseToMessageId = responseToMessageId
+  if (responseToPlanVersionId) sanitized.responseToPlanVersionId = responseToPlanVersionId
   if (artifactIds.length > 0) sanitized.artifactIds = artifactIds
   if (uploads.length > 0) sanitized.uploads = uploads
   if (parts.length > 0) sanitized.parts = parts

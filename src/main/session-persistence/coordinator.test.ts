@@ -154,6 +154,48 @@ const createProjectReconciliationSnapshot = (): ArtifactProjectReconciliationSna
   ({}) as ArtifactProjectReconciliationSnapshot
 
 describe('SessionPersistenceCoordinator', () => {
+  it('atomically appends inline Plan feedback as a bound user Message without changing Plan authority', async () => {
+    let durable = createSession({
+      status: 'waiting-plan-approval',
+      runtimeContext: { version: 1, revision: 2, plan: createRuntimePlan() }
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await coordinator.appendPlanResponseMessage({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: 'plan-version-1',
+      expectedRevision: 2,
+      interactionId: 'interaction-1',
+      content: 'Split the analysis by cohort.'
+    })
+
+    expect(durable.messages).toContainEqual(
+      expect.objectContaining({
+        role: 'user',
+        content: 'Split the analysis by cohort.',
+        responseToMessageId: 'interaction-1',
+        responseToPlanVersionId: 'plan-version-1',
+        status: 'complete'
+      })
+    )
+    expect(durable.runtimeContext).toEqual({
+      version: 1,
+      revision: 2,
+      plan: createRuntimePlan()
+    })
+    expect(durable.status).toBe('waiting-plan-approval')
+  })
+
   it('atomically reads and patches main-owned runtime context with a new revision', async () => {
     const previousUpdatedAt = Date.now() + 10_000
     let durable = createSession({ updatedAt: previousUpdatedAt })

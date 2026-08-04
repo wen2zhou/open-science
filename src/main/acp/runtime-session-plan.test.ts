@@ -37,6 +37,7 @@ const createRuntimeHarness = (options: {
   activeProjection?: ActivePlanProjection
 }): Readonly<{
   runtime: AcpRuntime
+  service: Record<string, ReturnType<typeof vi.fn>>
   updateStepStatus: ReturnType<typeof vi.fn>
 }> => {
   const generated = projection('version-1')
@@ -44,7 +45,27 @@ const createRuntimeHarness = (options: {
   const updateStepStatus = vi.fn(async () => ({ projection: approved, changed: true }))
   const service = {
     generate: vi.fn(async () => ({ projection: generated, pauseInteraction: true as const })),
-    respond: vi.fn(async () => ({ projection: approved, changed: true })),
+    respond: vi.fn(async (input: { feedback?: string }) =>
+      input.feedback
+        ? {
+            kind: 'feedback' as const,
+            routeToInteractionId: 'interaction-1',
+            artifactVersionId: generated.artifactVersionId,
+            text: input.feedback,
+            message: {
+              id: 'plan-response-1',
+              role: 'user' as const,
+              content: input.feedback,
+              status: 'complete' as const,
+              eventIds: [],
+              responseToMessageId: 'interaction-1',
+              responseToPlanVersionId: generated.artifactVersionId,
+              createdAt: 10,
+              updatedAt: 10
+            }
+          }
+        : { projection: approved, changed: true }
+    ),
     getProjection: vi.fn(async () => options.activeProjection ?? generated),
     updateStepStatus,
     checkTurnCompletion: vi.fn(async () => ({ allow: true }))
@@ -59,7 +80,7 @@ const createRuntimeHarness = (options: {
     planApprovalWaiters: new Map(),
     callbacks: { onEvent: options.onEvent }
   })
-  return { runtime: target as unknown as AcpRuntime, updateStepStatus }
+  return { runtime: target as unknown as AcpRuntime, service, updateStepStatus }
 }
 
 describe('AcpRuntime Session Plan seam', () => {
@@ -115,6 +136,69 @@ describe('AcpRuntime Session Plan seam', () => {
 
     expect(updateStepStatus).toHaveBeenCalledWith(
       expect.objectContaining({ artifactVersionId: 'version-1', expectedRevision: 4 })
+    )
+  })
+
+  it('routes inline revision feedback to the paused Plan interaction and projects its durable user Message', async () => {
+    const onEvent = vi.fn()
+    const { runtime, service } = createRuntimeHarness({ onEvent })
+    const pending = runtime.callSessionPlan({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      operation: 'generate',
+      input: {}
+    })
+    await Promise.resolve()
+    onEvent.mockClear()
+
+    await expect(
+      runtime.respondSessionPlan({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: 'version-1',
+        expectedRevision: 1,
+        feedback: 'Split the analysis by cohort.'
+      })
+    ).resolves.toMatchObject({ kind: 'feedback', routeToInteractionId: 'interaction-1' })
+    await expect(pending).resolves.toMatchObject({
+      kind: 'feedback',
+      text: 'Split the analysis by cohort.'
+    })
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'message',
+        role: 'user',
+        messageId: 'plan-response-1',
+        text: 'Split the analysis by cohort.'
+      })
+    )
+
+    await expect(
+      runtime.respondSessionPlan({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: 'version-1',
+        expectedRevision: 1,
+        feedback: 'Try another revision.'
+      })
+    ).rejects.toThrow('no longer available')
+    expect(service.respond).toHaveBeenCalledTimes(1)
+
+    onEvent.mockClear()
+    service.generate.mockRejectedValueOnce(new Error('replacement failed'))
+    await expect(
+      runtime.callSessionPlan({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        operation: 'generate',
+        input: {}
+      })
+    ).rejects.toThrow('replacement failed')
+    expect(onEvent).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'plan',
+        planProjection: expect.objectContaining({ artifactVersionId: 'version-1' })
+      })
     )
   })
 })

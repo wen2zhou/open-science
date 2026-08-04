@@ -68,13 +68,22 @@ export type PlanCommandErrorCode = (typeof PLAN_COMMAND_ERROR_CODES)[number]
 export const isPlanCommandErrorCode = (value: unknown): value is PlanCommandErrorCode =>
   typeof value === 'string' && PLAN_COMMAND_ERROR_CODES.includes(value as PlanCommandErrorCode)
 
-export type PlanResponseCommand = Readonly<{
+type PlanResponseIdentity = Readonly<{
   projectId: string
   sessionId: string
   artifactVersionId: string
   expectedRevision: number
-  decision: 'approved' | 'rejected'
 }>
+
+export type PlanResponseCommand =
+  | (PlanResponseIdentity & Readonly<{ decision: 'approved' | 'rejected'; feedback?: never }>)
+  | (PlanResponseIdentity & Readonly<{ feedback: string; decision?: never }>)
+
+const PLAN_APPROVAL_RESPONSE =
+  /^(?:approve|approved|go ahead|proceed|looks good|do it|continue)[.!]?$/i
+
+export const isPlanApprovalResponse = (text: string): boolean =>
+  PLAN_APPROVAL_RESPONSE.test(text.trim())
 
 export class PlanCommandError extends Error {
   constructor(

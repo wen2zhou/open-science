@@ -3,9 +3,21 @@ import { describe, expect, it } from 'vitest'
 import {
   createPlanDocumentV1,
   derivePlanLifecycle,
+  isPlanApprovalResponse,
   parsePlanDocumentV1,
   PlanCommandError
 } from './contract'
+
+describe('Plan response text', () => {
+  it.each(['approve', 'Approved.', 'go ahead!', 'proceed', 'looks good', 'do it.', 'continue!'])(
+    'recognizes prototype approval phrase %s',
+    (text) => expect(isPlanApprovalResponse(text)).toBe(true)
+  )
+
+  it('keeps change requests on the feedback path', () => {
+    expect(isPlanApprovalResponse('Approve after splitting by cohort.')).toBe(false)
+  })
+})
 
 describe('Plan document V1', () => {
   it('adds the server-owned schema version to a valid single-step plan', () => {

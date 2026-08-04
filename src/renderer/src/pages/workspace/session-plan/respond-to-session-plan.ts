@@ -17,15 +17,16 @@ const refreshSessionPlanProjection = async ({
 
 export const respondToSessionPlan = async (
   target: SessionPlanResponseTarget,
-  decision: 'approved' | 'rejected'
+  response: 'approved' | 'rejected' | { decision: 'approved' | 'rejected' } | { feedback: string }
 ): Promise<void> => {
+  const payload = typeof response === 'string' ? { decision: response } : response
   try {
     await window.api.acp.respondPlan({
       projectId: target.projectId,
       sessionId: target.sessionId,
       artifactVersionId: target.projection.artifactVersionId,
       expectedRevision: target.projection.revision,
-      decision
+      ...payload
     })
   } catch (error) {
     try {

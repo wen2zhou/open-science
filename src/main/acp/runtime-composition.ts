@@ -73,7 +73,7 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
   profileService?: ProfileService
   sessionPersistenceCoordinator?: Pick<
     SessionPersistenceCoordinator,
-    'readSessionRuntimeContext' | 'patchSessionRuntimeContext'
+    'readSessionRuntimeContext' | 'patchSessionRuntimeContext' | 'appendPlanResponseMessage'
   >
 }
 

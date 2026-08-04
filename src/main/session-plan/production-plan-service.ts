@@ -11,7 +11,7 @@ type ProductionPlanServiceDependencies = Readonly<{
   provenance: Pick<ArtifactProvenanceRepository, 'resolveVersionContent'>
   sessions: Pick<
     SessionPersistenceCoordinator,
-    'readSessionRuntimeContext' | 'patchSessionRuntimeContext'
+    'readSessionRuntimeContext' | 'patchSessionRuntimeContext' | 'appendPlanResponseMessage'
   >
 }>
 
@@ -42,6 +42,15 @@ const createProductionPlanService = ({
         expectedRevision,
         patch: { plan },
         sessionStatus
+      }),
+    persistPlanResponseMessage: (input) =>
+      sessions.appendPlanResponseMessage({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        artifactVersionId: input.responseToPlanVersionId,
+        expectedRevision: input.expectedRevision,
+        interactionId: input.interactionId,
+        content: input.content
       }),
     isRevisionConflict: (error) => error instanceof SessionRuntimeContextRevisionConflictError
   })

@@ -1000,6 +1000,7 @@ describe('WorkspaceMessageScroller artifact click behavior', () => {
         feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
       },
       stepStatuses: {},
+      stepStates: { 'Analyze the data': { status: 'not_started' } },
       counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
     }
     const session = createSession({

@@ -1,4 +1,4 @@
-import { createHash } from 'node:crypto'
+import { createHash, randomUUID } from 'node:crypto'
 
 import type { ProjectFilesChangedEvent } from '../../shared/project-files'
 import type { ProjectFileSource } from '../../shared/project-files'
@@ -6,6 +6,7 @@ import type { ArtifactVersionFile } from '../../shared/artifact-provenance'
 import type {
   LoadAllSessionsResult,
   PersistedArtifact,
+  PersistedChatMessage,
   PersistedChatSession,
   PersistedSessionStatus,
   SaveSessionOptions,
@@ -147,6 +148,15 @@ type PatchSessionRuntimeContextCommand = Readonly<{
   expectedRevision: number
   patch: SessionRuntimeContextPatch
   sessionStatus?: PersistedSessionStatus
+}>
+
+type AppendPlanResponseMessageCommand = Readonly<{
+  projectId: string
+  sessionId: string
+  artifactVersionId: string
+  expectedRevision: number
+  interactionId: string
+  content: string
 }>
 
 class SessionRuntimeContextRevisionConflictError extends Error {
@@ -742,6 +752,54 @@ class SessionPersistenceCoordinator {
         updatedAt: Math.max(session.updatedAt + 1, Date.now())
       })
       return cloneRuntimeContext(runtimeContext)
+    })
+  }
+
+  appendPlanResponseMessage(
+    command: AppendPlanResponseMessageCommand
+  ): Promise<PersistedChatMessage> {
+    return this.enqueue(async () => {
+      const { projectId, sessionId, artifactVersionId, expectedRevision, interactionId } = command
+      const content = command.content.trim()
+      if (!content) throw new Error('Plan response content must be non-empty.')
+      if (this.deletedProjects.has(projectId)) {
+        throw new Error('Cannot mutate a session whose project has been deleted.')
+      }
+      if (this.deletedSessions.has(sessionKey(projectId, sessionId))) {
+        throw new Error('Cannot mutate a session that has been deleted.')
+      }
+      const session = await this.loadRuntimeContextSession(projectId, sessionId, 'patch')
+      const context = session.runtimeContext ?? emptySessionRuntimeContext()
+      if (context.revision !== expectedRevision) {
+        throw new SessionRuntimeContextRevisionConflictError(expectedRevision, context.revision)
+      }
+      if (context.plan?.artifactVersionId !== artifactVersionId) {
+        throw new Error('A newer Session Plan is active.')
+      }
+      if (context.plan.approval !== 'pending') {
+        throw new Error('Session Plan approval is already decided.')
+      }
+
+      const timestamp = Math.max(session.updatedAt + 1, Date.now())
+      const message = {
+        id: `plan-response-${randomUUID()}`,
+        role: 'user' as const,
+        content,
+        status: 'complete' as const,
+        eventIds: [],
+        responseToMessageId: interactionId,
+        responseToPlanVersionId: artifactVersionId,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+      const durable = materializeSessionConversationGraph({
+        ...session,
+        messages: [...session.messages, message],
+        updatedAt: timestamp
+      })
+      await this.repository.saveSession(durable)
+      this.upsertSessionMetadata(durable)
+      return message
     })
   }
 

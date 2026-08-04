@@ -6,12 +6,13 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 import {
+  isPlanApprovalResponse,
   parsePlanDocumentV1,
   type ActivePlanProjection,
   type PlanDocumentV1
 } from '../../../../../shared/session-plan/contract'
 
-type PlanSurfaceProps = Readonly<{ projection: ActivePlanProjection }>
+type PlanSurfaceProps = Readonly<{ projection: ActivePlanProjection; stale?: boolean }>
 
 const plural = (count: number, singular: string): string =>
   `${count} ${singular}${count === 1 ? '' : 's'}`
@@ -78,18 +79,21 @@ const STEP_STATUS_PRESENTATION: Record<
 
 const WorkspacePlanCard = ({
   projection,
+  stale = false,
   onOpen,
   onRespond,
-  onSubmitApprovalText
+  onSubmitResponse
 }: PlanSurfaceProps &
   Readonly<{
     onOpen: () => void
     onRespond: (decision: 'approved' | 'rejected') => Promise<void>
-    onSubmitApprovalText?: (text: string) => Promise<void>
+    onSubmitResponse?: (text: string) => Promise<void>
   }>): React.JSX.Element => {
-  const decisionPending = projection.approval === 'pending'
+  const decisionPending = projection.approval === 'pending' && !stale
   const [responseText, setResponseText] = useState('')
   const [decisionBusy, setDecisionBusy] = useState(false)
+  const [revisionPendingFor, setRevisionPendingFor] = useState<ActivePlanProjection>()
+  const revisionPending = revisionPendingFor === projection
   const [decisionError, setDecisionError] = useState<string>()
   const respond = async (decision: 'approved' | 'rejected'): Promise<void> => {
     if (decisionBusy) return
@@ -104,11 +108,20 @@ const WorkspacePlanCard = ({
     }
   }
   return (
-    <article className="mt-4 overflow-hidden rounded-lg border border-border bg-card shadow-card">
+    <article
+      className={`mt-4 overflow-hidden rounded-lg border bg-card shadow-card ${stale ? 'border-amber-300' : 'border-border'}`}
+    >
+      {stale ? (
+        <div className="border-b border-amber-300 bg-amber-50 px-3.5 py-2 text-xs text-amber-800">
+          ⚠ A newer plan is active. This plan can no longer be approved.
+        </div>
+      ) : null}
       <div className="p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-56 flex-1">
-            <div className="text-xs text-muted-foreground">{lifecycleLabel(projection)}</div>
+            <div className="text-xs text-muted-foreground">
+              {revisionPending ? 'Revising plan…' : lifecycleLabel(projection)}
+            </div>
             <div className="mt-1 text-[17px] font-medium text-foreground">
               {projection.document.task_summary}
             </div>
@@ -131,7 +144,7 @@ const WorkspacePlanCard = ({
                 <button
                   type="button"
                   className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50"
-                  disabled={decisionBusy}
+                  disabled={decisionBusy || revisionPending}
                   onClick={() => void respond('rejected')}
                 >
                   Dismiss
@@ -139,7 +152,7 @@ const WorkspacePlanCard = ({
                 <button
                   type="button"
                   className="h-8 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50"
-                  disabled={decisionBusy}
+                  disabled={decisionBusy || revisionPending}
                   onClick={() => void respond('approved')}
                 >
                   Approve
@@ -156,14 +169,22 @@ const WorkspacePlanCard = ({
             className="mt-3 border-t border-border pt-3"
             onSubmit={(event) => {
               event.preventDefault()
-              if (decisionBusy) return
-              if (responseText.trim().toLowerCase() !== 'approve') {
-                setDecisionError('This Plan version supports explicit approval only.')
-                return
-              }
+              if (decisionBusy || revisionPending) return
+              const text = responseText.trim()
+              if (!text) return
               setDecisionBusy(true)
               setDecisionError(undefined)
-              void (onSubmitApprovalText?.(responseText) ?? onRespond('approved'))
+              const approvalResponse = isPlanApprovalResponse(text)
+              void (
+                onSubmitResponse?.(text) ??
+                (approvalResponse
+                  ? onRespond('approved')
+                  : Promise.reject(new Error('Unable to send Plan feedback.')))
+              )
+                .then(() => {
+                  setResponseText('')
+                  if (!approvalResponse) setRevisionPendingFor(projection)
+                })
                 .catch((error: unknown) =>
                   setDecisionError(
                     error instanceof Error ? error.message : 'Unable to update the Plan.'
@@ -175,14 +196,25 @@ const WorkspacePlanCard = ({
             <label className="sr-only" htmlFor={`plan-response-${projection.artifactVersionId}`}>
               Respond to Plan
             </label>
-            <input
-              id={`plan-response-${projection.artifactVersionId}`}
-              className="h-9 w-full rounded bg-transparent text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
-              placeholder="Describe changes, or type “approve”…"
-              value={responseText}
-              disabled={decisionBusy}
-              onChange={(event) => setResponseText(event.target.value)}
-            />
+            <div className="flex items-center gap-2">
+              <span aria-hidden="true">✎</span>
+              <textarea
+                id={`plan-response-${projection.artifactVersionId}`}
+                rows={1}
+                className="min-h-9 flex-1 resize-none rounded bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                placeholder="Describe changes, or type “approve”…"
+                value={responseText}
+                disabled={decisionBusy || revisionPending}
+                onChange={(event) => setResponseText(event.target.value)}
+              />
+              <button
+                type="submit"
+                className="h-8 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
+                disabled={decisionBusy || revisionPending || responseText.trim().length === 0}
+              >
+                Send
+              </button>
+            </div>
             {decisionError ? (
               <p role="alert" className="mt-1 text-xs text-destructive">
                 {decisionError}
@@ -265,6 +297,7 @@ const countLabel = (count: number): string =>
 
 const PlanPreviewSurface = ({
   projection,
+  stale = false,
   isFullScreen = false,
   onDownload,
   onRespond,
@@ -304,7 +337,7 @@ const PlanPreviewSurface = ({
             <Download className="size-4" aria-hidden="true" />
             Download
           </Button>
-          {planDocument && projection.approval === 'pending' && onRespond ? (
+          {planDocument && !stale && projection.approval === 'pending' && onRespond ? (
             <>
               <Button type="button" variant="outline" onClick={() => void onRespond('rejected')}>
                 Dismiss
@@ -340,6 +373,11 @@ const PlanPreviewSurface = ({
           ) : null}
         </div>
       </header>
+      {stale ? (
+        <div className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+          ⚠ This plan has been replaced by another plan and is no longer current.
+        </div>
+      ) : null}
       {planDocument ? (
         <ScrollArea className="min-h-0 flex-1">
           <div className="px-8 py-8">
