@@ -46,7 +46,6 @@ export type PlanCommandErrorCode =
   | 'invalid-transition'
   | 'plan-not-approved'
   | 'artifact-unavailable'
-  | 'explicit-continuation-required'
   | 'revision-conflict'
 
 export type PlanResponseCommand = Readonly<{
@@ -56,11 +55,6 @@ export type PlanResponseCommand = Readonly<{
   expectedRevision: number
   decision: 'approved' | 'rejected'
 }>
-
-export const isExplicitPlanContinuation = (text: string): boolean =>
-  /\b(?:continue|resume|proceed|go\s+ahead|carry\s+on|start\s+the\s+plan|execute\s+the\s+plan)\b/iu.test(
-    text.trim()
-  )
 
 export class PlanCommandError extends Error {
   constructor(
@@ -121,6 +115,15 @@ export const planStepTitles = (document: PlanDocumentV1): string[] =>
     phase.delegations.flatMap((delegation) => delegation.steps.map((step) => step.title))
   )
 
+export const isPlanComplete = (
+  document: PlanDocumentV1,
+  statuses: Readonly<Record<string, Readonly<{ status: SessionPlanStepStatus }>>>
+): boolean =>
+  planStepTitles(document).every((title) => {
+    const status = statuses[title]?.status
+    return status === 'completed' || status === 'skipped'
+  })
+
 export const derivePlanLifecycle = (
   document: PlanDocumentV1,
   approval: SessionPlanApproval,
@@ -130,7 +133,7 @@ export const derivePlanLifecycle = (
   if (approval === 'pending') return 'awaiting_approval'
   if (approval === 'rejected') return 'rejected'
   const values = planStepTitles(document).map((title) => statuses[title]?.status)
-  if (values.every((status) => status === 'completed' || status === 'skipped')) return 'completed'
+  if (isPlanComplete(document, statuses)) return 'completed'
   if (values.includes('in_progress')) return interactionIsLive ? 'in_progress' : 'interrupted'
   return 'approved'
 }

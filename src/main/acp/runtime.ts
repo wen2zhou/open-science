@@ -2735,14 +2735,6 @@ class AcpRuntime {
       throw new Error(`ACP session not found: ${request.sessionId}`)
     }
 
-    if (publishUserMessage && this.planService) {
-      await this.planService.assertInteractionMayStart(
-        this.resolveSessionProjectName(request.sessionId),
-        request.sessionId,
-        request.text
-      )
-    }
-
     if (this.hasSessionInteractionInFlight(request.sessionId)) {
       throw new Error('An ACP prompt is already running for this session')
     }

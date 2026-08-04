@@ -8,7 +8,7 @@ import type {
 import {
   createPlanDocumentV1,
   derivePlanLifecycle,
-  isExplicitPlanContinuation,
+  isPlanComplete,
   PlanCommandError,
   planStepTitles,
   type ActivePlanProjection,
@@ -66,8 +66,7 @@ const parseDocument = (content: string): PlanDocumentV1 => {
       desired_outputs: parsed.desired_outputs,
       feasibility: parsed.feasibility
     })
-  } catch (error) {
-    if (error instanceof PlanCommandError) throw error
+  } catch {
     throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')
   }
 }
@@ -228,20 +227,6 @@ class PlanService {
     return { allow: projection.lifecycle === 'completed', lifecycle: projection.lifecycle }
   }
 
-  async assertInteractionMayStart(
-    projectId: string,
-    sessionId: string,
-    text: string
-  ): Promise<void> {
-    const projection = await this.getProjection(projectId, sessionId, false)
-    if (projection?.requiresExplicitContinuation && !isExplicitPlanContinuation(text)) {
-      throw new PlanCommandError(
-        'explicit-continuation-required',
-        'Send an explicit continuation message to resume the approved Plan.'
-      )
-    }
-  }
-
   private async loadActive(input: PlanIdentityCommand): Promise<{
     context: SessionRuntimeContext
     plan: SessionPlanRuntimeContext
@@ -361,10 +346,7 @@ class PlanService {
       requiresExplicitContinuation:
         !interactionIsLive &&
         plan.approval === 'approved' &&
-        !titles.every((title) => {
-          const status = plan.stepStatuses[title]?.status
-          return status === 'completed' || status === 'skipped'
-        }),
+        !isPlanComplete(document, plan.stepStatuses),
       document,
       stepStatuses: plan.stepStatuses,
       counts: {

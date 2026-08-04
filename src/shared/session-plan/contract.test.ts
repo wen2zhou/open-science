@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { createPlanDocumentV1, isExplicitPlanContinuation } from './contract'
+import { createPlanDocumentV1, isPlanComplete } from './contract'
 
 describe('Plan document V1', () => {
   it('adds the server-owned schema version to a valid single-step plan', () => {
@@ -40,9 +40,33 @@ describe('Plan document V1', () => {
     })
   })
 
-  it('distinguishes explicit restart continuation from unrelated conversation', () => {
-    expect(isExplicitPlanContinuation('Please resume the approved plan.')).toBe(true)
-    expect(isExplicitPlanContinuation('Go ahead with the plan')).toBe(true)
-    expect(isExplicitPlanContinuation('What files are in this project?')).toBe(false)
+  it('uses one completion rule for durable status facts', () => {
+    const document = createPlanDocumentV1({
+      task_summary: 'Prepare a result',
+      phases: [
+        {
+          name: 'Analysis',
+          delegations: [
+            {
+              name: 'Primary agent',
+              steps: [
+                { title: 'Analyze', description: 'Analyze the inputs.' },
+                { title: 'Summarize', description: 'Summarize the result.' }
+              ]
+            }
+          ]
+        }
+      ],
+      desired_outputs: [],
+      feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+    })
+
+    expect(
+      isPlanComplete(document, {
+        Analyze: { status: 'completed' },
+        Summarize: { status: 'skipped' }
+      })
+    ).toBe(true)
+    expect(isPlanComplete(document, { Analyze: { status: 'completed' } })).toBe(false)
   })
 })

@@ -25,6 +25,7 @@ const setup = (): {
   service: PlanService
   dependencies: PlanServiceDependencies
   context: () => SessionRuntimeContext
+  setContext: (next: SessionRuntimeContext) => void
   status: () => string
 } => {
   let context: SessionRuntimeContext = { version: 1, revision: 0 }
@@ -63,6 +64,9 @@ const setup = (): {
     service: new PlanService(dependencies),
     dependencies,
     context: () => context,
+    setContext: (next) => {
+      context = next
+    },
     status: () => persistedStatus
   }
 }
@@ -309,16 +313,6 @@ describe('PlanService', () => {
       lifecycle: 'approved',
       requiresExplicitContinuation: true
     })
-    await expect(
-      service.assertInteractionMayStart('project-1', 'session-1', 'What files are available?')
-    ).rejects.toMatchObject({ code: 'explicit-continuation-required' })
-    await expect(
-      service.assertInteractionMayStart(
-        'project-1',
-        'session-1',
-        'Please resume the approved plan.'
-      )
-    ).resolves.toBeUndefined()
   })
 
   it('drops unreadable restored Plan authority instead of exposing it as executable', async () => {
@@ -332,6 +326,38 @@ describe('PlanService', () => {
     vi.mocked(dependencies.readArtifactVersion).mockResolvedValueOnce({
       content: '{"schema_version":1}',
       checksum: '0'.repeat(64)
+    })
+
+    await expect(service.getProjection('project-1', 'session-1')).resolves.toBeNull()
+    expect(context().plan).toBeUndefined()
+    expect(status()).toBe('idle')
+  })
+
+  it('drops checksum-valid restored Plan authority when the document structure is corrupt', async () => {
+    const { service, dependencies, context, setContext, status } = setup()
+    await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const corrupt = JSON.stringify({
+      schema_version: 1,
+      task_summary: 'Missing phases',
+      phases: [],
+      desired_outputs: [],
+      feasibility: { confidence: 'high', rationale: 'Invalid structure.' }
+    })
+    vi.mocked(dependencies.readArtifactVersion).mockResolvedValueOnce({
+      content: corrupt,
+      checksum: createHash('sha256').update(corrupt).digest('hex')
+    })
+    setContext({
+      ...context(),
+      plan: {
+        ...context().plan!,
+        artifactChecksum: createHash('sha256').update(corrupt).digest('hex')
+      }
     })
 
     await expect(service.getProjection('project-1', 'session-1')).resolves.toBeNull()
