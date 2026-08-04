@@ -139,7 +139,11 @@ import {
 import { AcpSessionConfigurator, type AcpSessionConfigurationFacts } from './session-configurator'
 import { createProductionPlanService } from '../session-plan/production-plan-service'
 import type { PlanResponseResult, PlanService } from '../session-plan/plan-service'
-import type { GeneratePlanContent, PlanResponseCommand } from '../../shared/session-plan/contract'
+import type {
+  ActivePlanProjection,
+  GeneratePlanContent,
+  PlanResponseCommand
+} from '../../shared/session-plan/contract'
 import type { SessionPlanStepStatus } from '../../shared/session-persistence'
 import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 
@@ -889,7 +893,12 @@ class AcpRuntime {
       expectedRevision: projection.revision
     }
     if (input.operation === 'approve') {
-      const result = await service.respond({ ...identity, decision: 'approved' })
+      const interactionIsLive = this.planApprovalWaiters.has(input.sessionId)
+      const result = await service.respond({
+        ...identity,
+        decision: 'approved',
+        interactionIsLive
+      })
       this.resolvePlanApprovalWaiter(input.sessionId, result)
       this.publishPlanProjection(input.sessionId, result.projection)
       return result
@@ -914,13 +923,12 @@ class AcpRuntime {
   getSessionPlanProjection(
     projectId: string,
     sessionId: string
-  ): ReturnType<PlanService['getProjection']> {
+  ): Promise<ActivePlanProjection | null> {
+    const interactionIsLive =
+      this.planApprovalWaiters.has(sessionId) || this.getInFlightSessionIds().includes(sessionId)
     return (
-      this.planService?.getProjection(
-        projectId,
-        sessionId,
-        this.getInFlightSessionIds().includes(sessionId)
-      ) ?? Promise.resolve(null)
+      this.planService?.getProjection(projectId, sessionId, interactionIsLive) ??
+      Promise.resolve(null)
     )
   }
 
@@ -929,9 +937,10 @@ class AcpRuntime {
     if (input.decision === undefined && !this.planApprovalWaiters.has(input.sessionId)) {
       throw new Error('The paused Session Plan interaction is no longer available.')
     }
-    const result = await this.planService.respond(input)
+    const interactionIsLive = this.planApprovalWaiters.has(input.sessionId)
+    const result = await this.planService.respond({ ...input, interactionIsLive })
     if ('projection' in result) {
-      this.resolvePlanApprovalWaiter(input.sessionId, result)
+      if (interactionIsLive) this.resolvePlanApprovalWaiter(input.sessionId, result)
       this.publishPlanProjection(input.sessionId, result.projection)
       return result
     }

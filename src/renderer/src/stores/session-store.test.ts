@@ -51,6 +51,7 @@ const createPlanProjection = (artifactVersionId: string): ActivePlanProjection =
   revision: 1,
   approval: 'pending',
   lifecycle: 'awaiting_approval',
+  requiresExplicitContinuation: false,
   document: {
     schema_version: 1,
     task_summary: `Plan ${artifactVersionId}`,

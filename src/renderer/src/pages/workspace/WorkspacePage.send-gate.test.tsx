@@ -133,6 +133,9 @@ describe('WorkspacePage send gate while compacting', () => {
     runtime.nativeContextCompactionSessionIds = ['sess-a']
 
     window.api = {
+      acp: {
+        getPlanProjection: vi.fn(() => Promise.resolve(null))
+      },
       notebook: {
         onAvailable: vi.fn(() => vi.fn()),
         getReference: vi.fn(() => Promise.resolve(null))
@@ -198,6 +201,18 @@ describe('WorkspacePage send gate while compacting', () => {
       useSessionStore.getState().finishRun('sess-a')
     })
     expect(conversationProps.canSendMessage).toBe(true)
+  })
+
+  it('unlocks a waiting Session after main drops unreadable Plan authority', async () => {
+    useSessionStore.setState({
+      sessions: [createSession({ status: 'waiting-plan-approval' })],
+      selectedSessionId: 'sess-a'
+    })
+
+    await renderPage()
+
+    expect(window.api.acp.getPlanProjection).toHaveBeenCalledWith('proj-1', 'sess-a')
+    expect(useSessionStore.getState().sessions[0]?.status).toBe('idle')
   })
 
   it('blocks message-branch changes only while the project-scoped review is running', async () => {

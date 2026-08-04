@@ -9,6 +9,7 @@ import type {
 import {
   createPlanDocumentV1,
   derivePlanLifecycle,
+  isPlanComplete,
   parsePlanDocumentV1,
   PlanCommandError,
   projectPlanStepStates,
@@ -42,7 +43,7 @@ type PlanServiceDependencies = Readonly<{
     projectId: string
     sessionId: string
     expectedRevision: number
-    plan: SessionPlanRuntimeContext
+    plan: SessionPlanRuntimeContext | undefined
     sessionStatus: 'waiting-plan-approval' | 'running' | 'idle'
   }) => Promise<SessionRuntimeContext>
   isRevisionConflict: (error: unknown) => boolean
@@ -80,8 +81,7 @@ const sha256 = (value: string): string => createHash('sha256').update(value).dig
 const parseDocument = (content: string): PlanDocumentV1 => {
   try {
     return parsePlanDocumentV1(JSON.parse(content))
-  } catch (error) {
-    if (error instanceof PlanCommandError) throw error
+  } catch {
     throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')
   }
 }
@@ -163,13 +163,18 @@ class PlanService {
   }
 
   async respond(
-    input: PlanIdentityCommand & Readonly<{ decision: 'approved' | 'rejected' }>
+    input: PlanIdentityCommand &
+      Readonly<{ decision: 'approved' | 'rejected'; interactionIsLive?: boolean }>
   ): Promise<PlanDecisionResult>
   async respond(
     input: PlanIdentityCommand & Readonly<{ feedback: string }>
   ): Promise<PlanFeedbackResult>
-  async respond(input: PlanResponseCommand): Promise<PlanResponseResult>
-  async respond(input: PlanResponseCommand): Promise<PlanResponseResult> {
+  async respond(
+    input: PlanResponseCommand & Readonly<{ interactionIsLive?: boolean }>
+  ): Promise<PlanResponseResult>
+  async respond(
+    input: PlanResponseCommand & Readonly<{ interactionIsLive?: boolean }>
+  ): Promise<PlanResponseResult> {
     const { context, plan, document } = await this.loadActive(input, input.decision)
     if (input.decision === undefined) {
       if (plan.approval !== 'pending') {
@@ -202,7 +207,10 @@ class PlanService {
       }
     }
     if (plan.approval === input.decision) {
-      return { projection: this.project(document, plan, context.revision), changed: false }
+      return {
+        projection: this.project(document, plan, context.revision, input.interactionIsLive),
+        changed: false
+      }
     }
     if (plan.approval !== 'pending') {
       throw new PlanCommandError('approval-already-decided', 'Plan approval is irreversible.')
@@ -211,9 +219,12 @@ class PlanService {
     const next = await this.patch(
       input,
       updated,
-      input.decision === 'approved' ? 'running' : 'idle'
+      input.decision === 'approved' && input.interactionIsLive ? 'running' : 'idle'
     )
-    return { projection: this.project(document, updated, next.revision), changed: true }
+    return {
+      projection: this.project(document, updated, next.revision, input.interactionIsLive),
+      changed: true
+    }
   }
 
   async updateStepStatus(
@@ -261,8 +272,14 @@ class PlanService {
   ): Promise<ActivePlanProjection | null> {
     const context = await this.dependencies.readRuntimeContext(projectId, sessionId)
     if (!context.plan) return null
-    const document = await this.readDocument(projectId, sessionId, context.plan)
-    return this.project(document, context.plan, context.revision, interactionIsLive)
+    try {
+      const document = await this.readDocument(projectId, sessionId, context.plan)
+      return this.project(document, context.plan, context.revision, interactionIsLive)
+    } catch (error) {
+      if (!(error instanceof PlanCommandError) || error.code !== 'artifact-unavailable') throw error
+      await this.dropUnavailableAuthority(projectId, sessionId, context)
+      return null
+    }
   }
 
   async checkTurnCompletion(input: {
@@ -304,17 +321,54 @@ class PlanService {
     }
   }
 
+  private async dropUnavailableAuthority(
+    projectId: string,
+    sessionId: string,
+    observed: SessionRuntimeContext
+  ): Promise<void> {
+    let current = observed
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        await this.dependencies.patchRuntimeContext({
+          projectId,
+          sessionId,
+          expectedRevision: current.revision,
+          plan: undefined,
+          sessionStatus: 'idle'
+        })
+        return
+      } catch (error) {
+        if (!this.dependencies.isRevisionConflict(error)) throw error
+        const latest = await this.dependencies.readRuntimeContext(projectId, sessionId)
+        if (!latest.plan || !observed.plan) return
+        if (
+          latest.plan.artifactId !== observed.plan.artifactId ||
+          latest.plan.artifactVersionId !== observed.plan.artifactVersionId ||
+          latest.plan.artifactChecksum !== observed.plan.artifactChecksum
+        ) {
+          return
+        }
+        current = latest
+      }
+    }
+  }
+
   private async readDocument(
     projectId: string,
     sessionId: string,
     plan: SessionPlanRuntimeContext
   ): Promise<PlanDocumentV1> {
-    const result = await this.dependencies.readArtifactVersion({
-      projectId,
-      sessionId,
-      artifactId: plan.artifactId,
-      artifactVersionId: plan.artifactVersionId
-    })
+    let result: { content: string; checksum: string }
+    try {
+      result = await this.dependencies.readArtifactVersion({
+        projectId,
+        sessionId,
+        artifactId: plan.artifactId,
+        artifactVersionId: plan.artifactVersionId
+      })
+    } catch {
+      throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')
+    }
     if (
       result.checksum !== plan.artifactChecksum ||
       sha256(result.content) !== plan.artifactChecksum
@@ -407,6 +461,10 @@ class PlanService {
       revision,
       approval: plan.approval,
       lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, interactionIsLive),
+      requiresExplicitContinuation:
+        !interactionIsLive &&
+        plan.approval === 'approved' &&
+        !isPlanComplete(document, plan.stepStatuses),
       document,
       stepStatuses: plan.stepStatuses,
       stepStates: projectPlanStepStates(document, plan.stepStatuses),

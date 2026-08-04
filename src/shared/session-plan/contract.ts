@@ -44,6 +44,7 @@ export type ActivePlanProjection = Readonly<{
   revision: number
   approval: SessionPlanApproval
   lifecycle: PlanLifecycle
+  requiresExplicitContinuation: boolean
   document: PlanDocumentV1
   stepStatuses: SessionPlanRuntimeContext['stepStatuses']
   stepStates: Readonly<Record<string, PlanStepProjection>>
@@ -212,6 +213,15 @@ export const projectPlanStepStates = (
   )
 }
 
+export const isPlanComplete = (
+  document: PlanDocumentV1,
+  statuses: Readonly<Record<string, Readonly<{ status: SessionPlanStepStatus }>>>
+): boolean =>
+  planStepTitles(document).every((title) => {
+    const status = statuses[title]?.status
+    return status === 'completed' || status === 'skipped'
+  })
+
 export const derivePlanLifecycle = (
   document: PlanDocumentV1,
   approval: SessionPlanApproval,
@@ -221,7 +231,7 @@ export const derivePlanLifecycle = (
   if (approval === 'pending') return 'awaiting_approval'
   if (approval === 'rejected') return 'rejected'
   const values = planStepTitles(document).map((title) => statuses[title]?.status)
-  if (values.every((status) => status === 'completed' || status === 'skipped')) return 'completed'
+  if (isPlanComplete(document, statuses)) return 'completed'
   if (values.includes('in_progress')) return interactionIsLive ? 'in_progress' : 'interrupted'
   if (values.includes('blocked')) return 'blocked'
   return 'approved'

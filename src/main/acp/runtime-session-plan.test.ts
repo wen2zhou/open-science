@@ -10,6 +10,7 @@ const projection = (artifactVersionId: string, revision = 1): ActivePlanProjecti
   revision,
   approval: 'pending',
   lifecycle: 'awaiting_approval',
+  requiresExplicitContinuation: false,
   document: {
     schema_version: 1,
     task_summary: 'Analyze one dataset',
@@ -32,14 +33,21 @@ const projection = (artifactVersionId: string, revision = 1): ActivePlanProjecti
   counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
 })
 
+type PlanServiceMock = Record<
+  'generate' | 'respond' | 'getProjection' | 'updateStepStatus' | 'checkTurnCompletion',
+  ReturnType<typeof vi.fn>
+>
+
+type RuntimeHarness = Readonly<{
+  runtime: AcpRuntime
+  service: PlanServiceMock
+  updateStepStatus: ReturnType<typeof vi.fn>
+}>
+
 const createRuntimeHarness = (options: {
   onEvent?: () => void
   activeProjection?: ActivePlanProjection
-}): Readonly<{
-  runtime: AcpRuntime
-  service: Record<string, ReturnType<typeof vi.fn>>
-  updateStepStatus: ReturnType<typeof vi.fn>
-}> => {
+}): RuntimeHarness => {
   const generated = projection('version-1')
   const approved = { ...generated, approval: 'approved' as const, lifecycle: 'approved' as const }
   const updateStepStatus = vi.fn(async () => ({ projection: approved, changed: true }))
@@ -78,6 +86,7 @@ const createRuntimeHarness = (options: {
     },
     artifactTurns: { promptMessageIdFor: () => 'interaction-1' },
     planApprovalWaiters: new Map(),
+    getInFlightSessionIds: () => [],
     callbacks: { onEvent: options.onEvent }
   })
   return { runtime: target as unknown as AcpRuntime, service, updateStepStatus }
@@ -199,6 +208,22 @@ describe('AcpRuntime Session Plan seam', () => {
         kind: 'plan',
         planProjection: expect.objectContaining({ artifactVersionId: 'version-1' })
       })
+    )
+  })
+
+  it('marks approval as passive when restart left no in-process approval waiter', async () => {
+    const { runtime, service } = createRuntimeHarness({})
+
+    await runtime.respondSessionPlan({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 1,
+      decision: 'approved'
+    })
+
+    expect(service.respond).toHaveBeenCalledWith(
+      expect.objectContaining({ interactionIsLive: false })
     )
   })
 })

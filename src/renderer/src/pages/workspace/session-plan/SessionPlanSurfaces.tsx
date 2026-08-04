@@ -39,6 +39,9 @@ const lifecycleLabel = (projection: ActivePlanProjection): string => {
 const progressTitle = (projection: ActivePlanProjection): string => {
   if (projection.lifecycle === 'awaiting_approval') return 'Awaiting plan approval'
   if (projection.lifecycle === 'completed') return `Completed · ${projection.counts.steps} steps`
+  if (projection.requiresExplicitContinuation) {
+    return 'Ready to continue · Send a message to resume'
+  }
   if (projection.lifecycle === 'blocked') {
     const blocked = Object.entries(projection.stepStatuses).find(
       ([, value]) => value.status === 'blocked'
@@ -223,9 +226,11 @@ const WorkspacePlanCard = ({
           </form>
         ) : (
           <div className="mt-3 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary">
-            {projection.lifecycle === 'completed'
-              ? 'Completed · This plan remains active until a new plan is generated.'
-              : `${lifecycleLabel(projection)}.`}
+            {projection.requiresExplicitContinuation
+              ? 'Approved · Send a message to continue this plan.'
+              : projection.lifecycle === 'completed'
+                ? 'Completed · This plan remains active until a new plan is generated.'
+                : `${lifecycleLabel(projection)}.`}
           </div>
         )}
       </div>
@@ -381,6 +386,11 @@ const PlanPreviewSurface = ({
       {planDocument ? (
         <ScrollArea className="min-h-0 flex-1">
           <div className="px-8 py-8">
+            {projection.requiresExplicitContinuation ? (
+              <div className="mb-5 rounded-lg border border-border bg-bg-200 px-3 py-2 text-xs text-muted-foreground">
+                Plan approved. Send an explicit continuation message to resume execution.
+              </div>
+            ) : null}
             <h1 className="text-[22px] font-semibold">{planDocument.task_summary}</h1>
             <p className="mt-1 text-sm text-muted-foreground">
               Complete {countLabel(planDocument.phases.length)}{' '}

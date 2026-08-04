@@ -4,6 +4,7 @@ import {
   createPlanDocumentV1,
   derivePlanLifecycle,
   isPlanApprovalResponse,
+  isPlanComplete,
   parsePlanDocumentV1,
   PlanCommandError
 } from './contract'
@@ -196,6 +197,7 @@ describe('derived Plan lifecycle', () => {
   it('derives blocked once blocked work has no remaining active execution', () => {
     const document = createPlanDocumentV1({
       task_summary: 'Analyze data',
+
       phases: [
         {
           name: 'Analysis',
@@ -219,5 +221,35 @@ describe('derived Plan lifecycle', () => {
         'Inspect inputs': { status: 'blocked' }
       })
     ).toBe('blocked')
+  })
+
+  it('uses one completion rule for durable status facts', () => {
+    const document = createPlanDocumentV1({
+      task_summary: 'Prepare a result',
+      phases: [
+        {
+          name: 'Analysis',
+          delegations: [
+            {
+              name: 'Primary agent',
+              steps: [
+                { title: 'Analyze', description: 'Analyze the inputs.' },
+                { title: 'Summarize', description: 'Summarize the result.' }
+              ]
+            }
+          ]
+        }
+      ],
+      desired_outputs: [],
+      feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+    })
+
+    expect(
+      isPlanComplete(document, {
+        Analyze: { status: 'completed' },
+        Summarize: { status: 'skipped' }
+      })
+    ).toBe(true)
+    expect(isPlanComplete(document, { Analyze: { status: 'completed' } })).toBe(false)
   })
 })

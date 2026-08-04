@@ -468,8 +468,32 @@ const normalizeMessageAfterRestore = (message: PersistedChatMessage): PersistedC
 
 // Restores interrupted sessions as retryable errors because runtime state is gone.
 const normalizeSessionAfterRestore = (session: PersistedChatSession): PersistedChatSession => {
+  if (
+    session.status === 'waiting-plan-approval' &&
+    session.runtimeContext?.plan?.approval === 'pending'
+  ) {
+    return {
+      ...session,
+      activeRun: undefined,
+      messages: session.messages.map(normalizeMessageAfterRestore)
+    }
+  }
   if (!isSessionInterrupted(session.status)) {
     return session
+  }
+
+  // An approved Plan is durable execution authority, but its provider interaction is not. Restore
+  // the Session as idle so the Plan projection can ask for an explicit continuation without also
+  // presenting a generic runtime failure or implying that execution restarted on its own.
+  if (session.runtimeContext?.plan?.approval === 'approved') {
+    return {
+      ...session,
+      status: 'idle',
+      activeRun: undefined,
+      error: undefined,
+      errorReportable: undefined,
+      messages: session.messages.map(normalizeMessageAfterRestore)
+    }
   }
 
   // Runtime state cannot survive process shutdown, so restore interrupted turns as retryable errors.
