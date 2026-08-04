@@ -56,6 +56,33 @@ describe('session store', () => {
     expect(useSessionStore.getState().selectedSessionId).toBeUndefined()
   })
 
+  it('hydrates runtime context as a read projection but never authors it in a renderer save', () => {
+    useSessionStore.getState().hydrateSessions(
+      [
+        {
+          id: 'session-with-runtime-context',
+          projectId: 'default',
+          title: 'Plan approval',
+          cwd: '/workspace',
+          status: 'waiting-plan-approval',
+          runtimeContext: {
+            version: 1,
+            revision: 2,
+            plan: { artifactVersionId: 'plan-version-1', approval: 'pending' }
+          },
+          messages: [],
+          createdAt: 1,
+          updatedAt: 2
+        }
+      ],
+      { version: SESSION_MANIFEST_VERSION }
+    )
+
+    const projection = useSessionStore.getState().sessions[0]
+    expect(projection.runtimeContext).toMatchObject({ revision: 2 })
+    expect(toPersistedSession(projection)).not.toHaveProperty('runtimeContext')
+  })
+
   it('uses the provided session id when the first user message creates a session', () => {
     const result = useSessionStore.getState().appendUserMessage({
       sessionId: 'transport-session-1',

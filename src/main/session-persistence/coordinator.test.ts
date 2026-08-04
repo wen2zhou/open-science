@@ -19,6 +19,7 @@ import {
   UploadRepository
 } from '../uploads/repository'
 import {
+  SessionRuntimeContextRevisionConflictError,
   SessionPersistenceCoordinator,
   type SessionDeletionHandlers,
   type SessionFileIndex,
@@ -141,6 +142,251 @@ const createProjectReconciliationSnapshot = (): ArtifactProjectReconciliationSna
   ({}) as ArtifactProjectReconciliationSnapshot
 
 describe('SessionPersistenceCoordinator', () => {
+  it('atomically reads and patches main-owned runtime context with a new revision', async () => {
+    const previousUpdatedAt = Date.now() + 10_000
+    let durable = createSession({ updatedAt: previousUpdatedAt })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await expect(coordinator.readSessionRuntimeContext('project-1', 'session-1')).resolves.toEqual({
+      version: 1,
+      revision: 0
+    })
+    await expect(
+      coordinator.patchSessionRuntimeContext({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        expectedRevision: 0,
+        patch: { plan: { artifactVersionId: 'plan-version-1', approval: 'pending' } }
+      })
+    ).resolves.toEqual({
+      version: 1,
+      revision: 1,
+      plan: { artifactVersionId: 'plan-version-1', approval: 'pending' }
+    })
+    await expect(coordinator.readSessionRuntimeContext('project-1', 'session-1')).resolves.toEqual({
+      version: 1,
+      revision: 1,
+      plan: { artifactVersionId: 'plan-version-1', approval: 'pending' }
+    })
+    expect(durable.updatedAt).toBeGreaterThan(previousUpdatedAt)
+  })
+
+  it('rejects stale and duplicate runtime context patches without overwriting durable authority', async () => {
+    let durable = createSession({
+      runtimeContext: { version: 1, revision: 4, plan: { approval: 'pending' } }
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+    const command = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      expectedRevision: 4,
+      patch: { plan: { approval: 'approved' } }
+    } as const
+
+    await expect(coordinator.patchSessionRuntimeContext(command)).resolves.toMatchObject({
+      revision: 5,
+      plan: { approval: 'approved' }
+    })
+    await expect(coordinator.patchSessionRuntimeContext(command)).rejects.toMatchObject({
+      code: 'revision-conflict',
+      expectedRevision: 4,
+      actualRevision: 5
+    })
+    expect(repository.saveSession).toHaveBeenCalledOnce()
+    expect(durable.runtimeContext).toMatchObject({
+      revision: 5,
+      plan: { approval: 'approved' }
+    })
+    expect(SessionRuntimeContextRevisionConflictError).toBeTypeOf('function')
+  })
+
+  it('preserves authoritative runtime context and approval waiting status on a stale renderer save', async () => {
+    let durable = createSession({
+      title: 'Before rename',
+      status: 'waiting-plan-approval',
+      runtimeContext: { version: 1, revision: 2, plan: { approval: 'pending' } }
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+    const staleRendererSnapshot = createSession({
+      title: 'Renamed by renderer',
+      status: 'idle',
+      runtimeContext: { version: 1, revision: 0, plan: { approval: 'forged' } }
+    })
+
+    await expect(coordinator.saveSession(staleRendererSnapshot)).resolves.toMatchObject({
+      title: 'Renamed by renderer',
+      status: 'waiting-plan-approval',
+      runtimeContext: { version: 1, revision: 2, plan: { approval: 'pending' } }
+    })
+    expect(durable.runtimeContext).toEqual({
+      version: 1,
+      revision: 2,
+      plan: { approval: 'pending' }
+    })
+  })
+
+  it('does not let a renderer whole-session save create runtime authority', async () => {
+    let durable: PersistedChatSession | undefined
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({ status: 'missing' as const })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    const result = await coordinator.saveSession(
+      createSession({
+        status: 'waiting-plan-approval',
+        runtimeContext: { version: 1, revision: 9, plan: { approval: 'forged' } }
+      })
+    )
+
+    expect(result.runtimeContext).toBeUndefined()
+    expect(result.status).toBe('idle')
+    expect(durable?.runtimeContext).toBeUndefined()
+  })
+
+  it('commits approval waiting state with context only after the atomic write succeeds', async () => {
+    let durable = createSession()
+    let failNextSave = true
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        if (failNextSave) {
+          failNextSave = false
+          throw new Error('partial write rejected')
+        }
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+    const command = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      expectedRevision: 0,
+      patch: { plan: { approval: 'pending' } },
+      sessionStatus: 'waiting-plan-approval'
+    } as const
+
+    await expect(coordinator.patchSessionRuntimeContext(command)).rejects.toThrow(
+      'partial write rejected'
+    )
+    expect(durable).toMatchObject({ status: 'idle' })
+    expect(durable.runtimeContext).toBeUndefined()
+
+    await expect(coordinator.patchSessionRuntimeContext(command)).resolves.toMatchObject({
+      revision: 1,
+      plan: { approval: 'pending' }
+    })
+    expect(durable).toMatchObject({
+      status: 'waiting-plan-approval',
+      runtimeContext: { revision: 1, plan: { approval: 'pending' } }
+    })
+  })
+
+  it('serializes a runtime patch before concurrent Session deletion and never revives it', async () => {
+    let durable: PersistedChatSession | undefined = createSession()
+    const saveGate = createDeferred<void>()
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () =>
+        durable ? { status: 'found' as const, session: durable } : { status: 'missing' as const }
+      ),
+      saveSession: vi.fn(async (session) => {
+        await saveGate.promise
+        durable = structuredClone(session)
+      }),
+      deleteSession: vi.fn(async () => {
+        durable = undefined
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    const patch = coordinator.patchSessionRuntimeContext({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      expectedRevision: 0,
+      patch: { plan: { approval: 'pending' } }
+    })
+    const deletion = coordinator.deleteSession('project-1', 'session-1')
+    await vi.waitFor(() => expect(repository.saveSession).toHaveBeenCalledOnce())
+    saveGate.resolve()
+
+    await expect(patch).resolves.toMatchObject({ revision: 1 })
+    await expect(deletion).resolves.toBeUndefined()
+    expect(durable).toBeUndefined()
+    await expect(
+      coordinator.patchSessionRuntimeContext({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        expectedRevision: 1,
+        patch: { plan: undefined }
+      })
+    ).rejects.toThrow(/deleted/)
+  })
+
+  it('removes embedded runtime context with Project Session authority', async () => {
+    let durable: PersistedChatSession | undefined = createSession({
+      runtimeContext: { version: 1, revision: 7, plan: { approval: 'approved' } }
+    })
+    const repository = createSessionRepository({
+      loadProjectWithDiagnostics: vi.fn(async () => ({
+        sessions: durable ? [durable] : [],
+        isComplete: true
+      })),
+      loadSessionWithDiagnostics: vi.fn(async () =>
+        durable ? { status: 'found' as const, session: durable } : { status: 'missing' as const }
+      ),
+      deleteProjectSessions: vi.fn(async () => {
+        durable = undefined
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await expect(coordinator.deleteProjectSessions('project-1')).resolves.toEqual({
+      status: 'completed'
+    })
+    expect(durable).toBeUndefined()
+    await expect(
+      coordinator.patchSessionRuntimeContext({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        expectedRevision: 7,
+        patch: { plan: undefined }
+      })
+    ).rejects.toThrow(/project.*deleted/i)
+  })
+
   it('exposes Session metadata from the latest complete load without reading storage again', async () => {
     const session = createSession({ title: 'Cached session' })
     const loadAllWithDiagnostics = vi.fn().mockResolvedValue({

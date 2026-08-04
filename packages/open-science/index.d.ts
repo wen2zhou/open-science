@@ -26,7 +26,7 @@ export type Session = {
   id: string
   projectId: string
   title: string
-  status: 'idle' | 'running' | 'waiting-permission' | 'error'
+  status: 'idle' | 'running' | 'waiting-permission' | 'waiting-plan-approval' | 'error'
   permissionProfile?: PermissionProfile
   createdAt: number
   updatedAt: number

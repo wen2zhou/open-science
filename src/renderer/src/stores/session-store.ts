@@ -365,6 +365,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
     branchSwitchBlocked,
     conversationGraphSyncBlocked,
     pendingContextReplayMessageId,
+    runtimeContext,
     messages,
     ...persistedSession
   } = session
@@ -379,6 +380,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
   void branchSwitchBlocked
   void conversationGraphSyncBlocked
   void pendingContextReplayMessageId
+  void runtimeContext
 
   // Persist a bounded projection of tool activities so the transcript survives restarts.
   const persistedActivities = activities

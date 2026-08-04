@@ -7,14 +7,20 @@ import type {
   LoadAllSessionsResult,
   PersistedArtifact,
   PersistedChatSession,
+  PersistedSessionStatus,
   SaveSessionOptions,
   SaveSessionManifestRequest,
+  SessionRuntimeContext,
+  SessionRuntimeContextPatch,
   SessionLoadFailure,
   SessionLoadWarning
 } from '../../shared/session-persistence'
 import type { ManagedFileSoftDeleteToken } from '../project-files/repository'
 import type { ProjectSessionDeletionState } from './repository'
-import { materializeSessionConversationGraph } from '../../shared/session-persistence'
+import {
+  materializeSessionConversationGraph,
+  sanitizeSessionRuntimeContext
+} from '../../shared/session-persistence'
 import {
   FinalizedArtifactBindingConflictError,
   type SessionDeletionReceipt
@@ -134,6 +140,33 @@ type SessionDeletionHandlers = {
   commit(sessionIds: string[]): Promise<void>
   reconcile(existingSessionIds: string[]): Promise<void>
 }
+
+type PatchSessionRuntimeContextCommand = Readonly<{
+  projectId: string
+  sessionId: string
+  expectedRevision: number
+  patch: SessionRuntimeContextPatch
+  sessionStatus?: PersistedSessionStatus
+}>
+
+class SessionRuntimeContextRevisionConflictError extends Error {
+  readonly code = 'revision-conflict' as const
+
+  constructor(
+    readonly expectedRevision: number,
+    readonly actualRevision: number
+  ) {
+    super(
+      `Session runtime context revision conflict: expected ${expectedRevision}, actual ${actualRevision}.`
+    )
+    this.name = 'SessionRuntimeContextRevisionConflictError'
+  }
+}
+
+const emptySessionRuntimeContext = (): SessionRuntimeContext => ({ version: 1, revision: 0 })
+
+const cloneRuntimeContext = (context: SessionRuntimeContext): SessionRuntimeContext =>
+  structuredClone(context)
 
 const hasLegacySessionUpload = (session: PersistedChatSession): boolean =>
   [...session.messages, ...(session.conversationGraph?.messages ?? [])].some((message) =>
@@ -648,6 +681,73 @@ class SessionPersistenceCoordinator {
   // Persists authoritative JSON before updating the derived index. If indexing fails, the save stays
   // durable, the caller receives the error for its normal retry path, and Files is reset to show its
   // incomplete state rather than silently presenting stale metadata as complete.
+  readSessionRuntimeContext(projectId: string, sessionId: string): Promise<SessionRuntimeContext> {
+    return this.enqueue(async () => {
+      const loaded = await this.repository.loadSessionWithDiagnostics(projectId, sessionId)
+      if (loaded.status === 'unreadable') {
+        throw new Error(
+          'Cannot read Session runtime context because its durable JSON is unreadable.'
+        )
+      }
+      if (loaded.status === 'missing') {
+        throw new Error('Cannot read runtime context for a missing Session.')
+      }
+      return cloneRuntimeContext(loaded.session.runtimeContext ?? emptySessionRuntimeContext())
+    })
+  }
+
+  patchSessionRuntimeContext(
+    command: PatchSessionRuntimeContextCommand
+  ): Promise<SessionRuntimeContext> {
+    return this.enqueue(async () => {
+      const { projectId, sessionId, expectedRevision, patch, sessionStatus } = command
+      if (this.deletedProjects.has(projectId)) {
+        throw new Error('Cannot mutate a session whose project has been deleted.')
+      }
+      if (this.deletedSessions.has(sessionKey(projectId, sessionId))) {
+        throw new Error('Cannot mutate a session that has been deleted.')
+      }
+      if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
+        throw new Error('Session runtime context expected revision must be a non-negative integer.')
+      }
+      if ('version' in patch || 'revision' in patch) {
+        throw new Error('Session runtime context patches cannot author reserved envelope fields.')
+      }
+
+      const loaded = await this.repository.loadSessionWithDiagnostics(projectId, sessionId)
+      if (loaded.status === 'unreadable') {
+        throw new Error(
+          'Cannot patch Session runtime context because its durable JSON is unreadable.'
+        )
+      }
+      if (loaded.status === 'missing') {
+        throw new Error('Cannot patch runtime context for a missing Session.')
+      }
+
+      const current = loaded.session.runtimeContext ?? emptySessionRuntimeContext()
+      if (current.revision !== expectedRevision) {
+        throw new SessionRuntimeContextRevisionConflictError(expectedRevision, current.revision)
+      }
+
+      const candidate: Record<string, unknown> = { ...current }
+      for (const [owner, value] of Object.entries(patch)) {
+        if (value === undefined) delete candidate[owner]
+        else candidate[owner] = value
+      }
+      candidate.revision = current.revision + 1
+      const runtimeContext = sanitizeSessionRuntimeContext(candidate)
+      if (!runtimeContext) throw new Error('Session runtime context patch is not JSON-safe.')
+
+      await this.repository.saveSession({
+        ...loaded.session,
+        ...(sessionStatus ? { status: sessionStatus } : {}),
+        runtimeContext,
+        updatedAt: Math.max(loaded.session.updatedAt + 1, Date.now())
+      })
+      return cloneRuntimeContext(runtimeContext)
+    })
+  }
+
   saveSession(
     session: PersistedChatSession,
     options: SaveSessionOptions = {}
@@ -660,7 +760,33 @@ class SessionPersistenceCoordinator {
         throw new Error('Cannot save a session that has been deleted.')
       }
 
-      const materializedSession = materializeSessionConversationGraph(session)
+      // Whole-session saves are renderer-owned projections. Resolve main authority on every save so
+      // a window holding an old snapshot cannot clear, forge, or roll back runtime context. An
+      // unreadable primary fails closed because overwriting it would silently destroy that authority.
+      const authoritative = await this.repository.loadSessionWithDiagnostics(
+        session.projectId,
+        session.id
+      )
+      if (authoritative.status === 'unreadable') {
+        throw new Error(
+          'Cannot save Session projection because main-owned runtime context is unreadable.'
+        )
+      }
+      const { runtimeContext: _submittedRuntimeContext, ...rendererOwnedSession } = session
+      const authority = authoritative.status === 'found' ? authoritative.session : undefined
+      const mainOwnedStatus =
+        authority?.status === 'waiting-plan-approval' ||
+        rendererOwnedSession.status === 'waiting-plan-approval'
+          ? (authority?.status ?? 'idle')
+          : undefined
+      const mergedSession: PersistedChatSession = {
+        ...rendererOwnedSession,
+        ...(authority?.runtimeContext ? { runtimeContext: authority.runtimeContext } : {}),
+        // Awaiting Plan approval is main-owned blocking state and must survive the same stale save.
+        ...(mainOwnedStatus ? { status: mainOwnedStatus } : {})
+      }
+
+      const materializedSession = materializeSessionConversationGraph(mergedSession)
       let durableSession = this.uploads
         ? await this.uploads.upgradeLegacySessionUploads(materializedSession, {
             mode: 'live-save'
@@ -1157,8 +1283,9 @@ class SessionPersistenceCoordinator {
 
 const sessionKey = (projectId: string, sessionId: string): string => `${projectId}:${sessionId}`
 
-export { SessionPersistenceCoordinator }
+export { SessionPersistenceCoordinator, SessionRuntimeContextRevisionConflictError }
 export type {
+  PatchSessionRuntimeContextCommand,
   ProjectSessionDeletionResult,
   SessionDeletionHandlers,
   SessionFileIndex,

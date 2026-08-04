@@ -573,6 +573,56 @@ describe('sanitizeActivityGroup', () => {
 })
 
 describe('normalizeSessionFile with activities', () => {
+  it('round-trips a main-owned runtime context and preserves plan approval waiting across restart', () => {
+    const persisted = createSessionFile({
+      ...(createSessionWithActivity(undefined) as PersistedChatSession),
+      activities: undefined,
+      status: 'waiting-plan-approval',
+      runtimeContext: {
+        version: 1,
+        revision: 3,
+        plan: {
+          artifactVersionId: 'plan-version-1',
+          approval: 'pending'
+        }
+      }
+    })
+
+    const restored = normalizeSessionFile(persisted)
+
+    expect(restored).toMatchObject({
+      status: 'waiting-plan-approval',
+      runtimeContext: {
+        version: 1,
+        revision: 3,
+        plan: {
+          artifactVersionId: 'plan-version-1',
+          approval: 'pending'
+        }
+      }
+    })
+    expect(restored?.error).toBeUndefined()
+  })
+
+  it('drops unknown or damaged runtime context without losing the conversation', () => {
+    const unknown = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      runtimeContext: { version: 99, revision: 8, plan: { approval: 'approved' } }
+    })
+    const damaged = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      title: 'Conversation survives',
+      runtimeContext: { version: 1, revision: -1, plan: { approval: 'approved' } }
+    })
+
+    expect(unknown).toMatchObject({ id: 'session-1', messages: [] })
+    expect(unknown?.runtimeContext).toBeUndefined()
+    expect(damaged).toMatchObject({ title: 'Conversation survives', messages: [] })
+    expect(damaged?.runtimeContext).toBeUndefined()
+  })
+
   it('restores a persisted session with its activities intact', () => {
     const activities = getRestoredActivities(
       createSessionWithActivity({

@@ -28,7 +28,7 @@ export type TaskSessionSummary = {
   id: string
   projectId: string
   title: string
-  status: 'idle' | 'running' | 'waiting-permission' | 'error'
+  status: 'idle' | 'running' | 'waiting-permission' | 'waiting-plan-approval' | 'error'
   permissionProfile?: PermissionProfileId
   createdAt: number
   updatedAt: number
