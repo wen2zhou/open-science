@@ -69,44 +69,65 @@ const requireText = (value: unknown, label: string): string => {
   if (typeof value !== 'string' || value.trim().length === 0) {
     throw new PlanCommandError('invalid-plan', `${label} must be non-empty.`)
   }
-  return value
+  return value.trim()
 }
 
-export const createPlanDocumentV1 = (input: GeneratePlanContent): PlanDocumentV1 => {
-  requireText(input.task_summary, 'task_summary')
+const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+export const createPlanDocumentV1 = (input: unknown): PlanDocumentV1 => {
+  if (!isRecord(input)) {
+    throw new PlanCommandError('invalid-plan', 'Plan document must be an object.')
+  }
+  const taskSummary = requireText(input.task_summary, 'task_summary')
   if (!Array.isArray(input.phases) || input.phases.length === 0) {
     throw new PlanCommandError('invalid-plan', 'A Plan requires at least one phase.')
   }
   const titles = new Set<string>()
-  for (const phase of input.phases) {
-    requireText(phase.name, 'phase name')
+  const phases = input.phases.map((phaseValue) => {
+    const phase = isRecord(phaseValue) ? phaseValue : {}
+    const name = requireText(phase.name, 'phase name')
     if (!Array.isArray(phase.delegations) || phase.delegations.length === 0) {
       throw new PlanCommandError('invalid-plan', 'Each phase requires at least one delegation.')
     }
-    for (const delegation of phase.delegations) {
-      requireText(delegation.name, 'delegation name')
+    const delegations = phase.delegations.map((delegationValue) => {
+      const delegation = isRecord(delegationValue) ? delegationValue : {}
+      const delegationName = requireText(delegation.name, 'delegation name')
       if (!Array.isArray(delegation.steps) || delegation.steps.length === 0) {
         throw new PlanCommandError('invalid-plan', 'Each delegation requires at least one step.')
       }
-      for (const step of delegation.steps) {
-        requireText(step.title, 'step title')
-        requireText(step.description, 'step description')
-        if (titles.has(step.title)) {
-          throw new PlanCommandError('invalid-plan', `Duplicate step title: ${step.title}`)
+      const steps = delegation.steps.map((stepValue) => {
+        const step = isRecord(stepValue) ? stepValue : {}
+        const title = requireText(step.title, 'step title')
+        const description = requireText(step.description, 'step description')
+        if (titles.has(title)) {
+          throw new PlanCommandError('invalid-plan', `Duplicate step title: ${title}`)
         }
-        titles.add(step.title)
-      }
-    }
-  }
+        titles.add(title)
+        return { title, description }
+      })
+      return { name: delegationName, steps }
+    })
+    return { name, delegations }
+  })
   if (!Array.isArray(input.desired_outputs)) {
     throw new PlanCommandError('invalid-plan', 'desired_outputs must be an array.')
   }
-  input.desired_outputs.forEach((output) => requireText(output, 'desired output'))
-  if (!['high', 'medium', 'low'].includes(input.feasibility?.confidence)) {
+  const desiredOutputs = input.desired_outputs.map((output) =>
+    requireText(output, 'desired output')
+  )
+  const feasibility = isRecord(input.feasibility) ? input.feasibility : {}
+  if (!['high', 'medium', 'low'].includes(feasibility.confidence as string)) {
     throw new PlanCommandError('invalid-plan', 'feasibility confidence is invalid.')
   }
-  requireText(input.feasibility.rationale, 'feasibility rationale')
-  return { schema_version: 1, ...input }
+  const rationale = requireText(feasibility.rationale, 'feasibility rationale')
+  return {
+    schema_version: 1,
+    task_summary: taskSummary,
+    phases,
+    desired_outputs: desiredOutputs,
+    feasibility: { confidence: feasibility.confidence as PlanConfidence, rationale }
+  }
 }
 
 export const planStepTitles = (document: PlanDocumentV1): string[] =>

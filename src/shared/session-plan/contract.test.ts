@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest'
 
-import { createPlanDocumentV1 } from './contract'
+import { createPlanDocumentV1, PlanCommandError } from './contract'
 
 describe('Plan document V1', () => {
   it('adds the server-owned schema version to a valid single-step plan', () => {
@@ -38,5 +38,86 @@ describe('Plan document V1', () => {
       desired_outputs: ['Analysis result'],
       feasibility: { confidence: 'high', rationale: 'The required inputs are available.' }
     })
+  })
+
+  it('accepts an empty desired-output list and preserves every phase, delegation, and step', () => {
+    const document = createPlanDocumentV1({
+      task_summary: 'Compare two cohorts',
+      phases: [
+        {
+          name: 'Preparation',
+          delegations: [
+            {
+              name: 'Data intake',
+              steps: [
+                { title: 'Read the dictionary', description: 'Confirm field meanings.' },
+                { title: 'Validate inputs', description: 'Check both cohorts.' }
+              ]
+            }
+          ]
+        },
+        {
+          name: 'Analysis',
+          delegations: [
+            {
+              name: 'Comparison',
+              steps: [{ title: 'Compare cohorts', description: 'Calculate differences.' }]
+            },
+            {
+              name: 'Evidence review',
+              steps: [{ title: 'Review evidence', description: 'Check supporting evidence.' }]
+            }
+          ]
+        }
+      ],
+      desired_outputs: [],
+      feasibility: { confidence: 'medium', rationale: 'Inputs may need confirmation.' }
+    })
+
+    expect(document.phases).toHaveLength(2)
+    expect(document.phases[0].delegations).toHaveLength(1)
+    expect(document.phases[1].delegations).toHaveLength(2)
+    expect(document.phases[0].delegations[0].steps).toHaveLength(2)
+    expect(document.desired_outputs).toEqual([])
+  })
+
+  it.each([
+    [undefined, 'Plan document must be an object.'],
+    [{}, 'task_summary must be non-empty.'],
+    [
+      {
+        task_summary: 'Analyze data',
+        phases: [{ name: 'Analysis', delegations: 'not-an-array' }],
+        desired_outputs: [],
+        feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+      },
+      'Each phase requires at least one delegation.'
+    ],
+    [
+      {
+        task_summary: 'Analyze data',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Primary agent',
+                steps: [
+                  { title: 'Analyze data', description: 'First description.' },
+                  { title: ' Analyze data ', description: 'Second description.' }
+                ]
+              }
+            ]
+          }
+        ],
+        desired_outputs: [],
+        feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+      },
+      'Duplicate step title: Analyze data'
+    ]
+  ])('returns structured invalid-plan for malformed runtime input %#', (input, message) => {
+    expect(() => createPlanDocumentV1(input)).toThrow(
+      expect.objectContaining<Partial<PlanCommandError>>({ code: 'invalid-plan', message })
+    )
   })
 })

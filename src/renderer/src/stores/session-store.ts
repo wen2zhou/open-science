@@ -1903,7 +1903,15 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
               status:
                 projection.lifecycle === 'awaiting_approval'
                   ? 'waiting-plan-approval'
-                  : session.status,
+                  : projection.lifecycle === 'rejected'
+                    ? 'idle'
+                    : projection.lifecycle === 'completed'
+                      ? session.activeRun
+                        ? 'running'
+                        : 'idle'
+                      : projection.approval === 'approved'
+                        ? 'running'
+                        : session.status,
               updatedAt: Date.now()
             }
           : session

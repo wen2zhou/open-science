@@ -1,6 +1,6 @@
 import { selectProjectSessionReviews, useReviewStore } from '@/stores/review-store'
 import { useNavigationStore } from '@/stores/navigation-store'
-import type { PreviewToolItem } from '@/stores/preview-workbench-store'
+import { type PreviewToolItem, usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
 import { useSessionStore } from '@/stores/session-store'
 
 import { NotebookPreview } from '../NotebookPreview'
@@ -48,6 +48,24 @@ export const PreviewToolContent = ({
   const planProjection = useSessionStore(
     (state) => state.sessions.find((session) => session.id === item.sessionId)?.activePlanProjection
   )
+  const isPlanExpanded = usePreviewWorkbenchStore((state) => state.expandedToolItemId === item.id)
+  const setToolItemExpanded = usePreviewWorkbenchStore((state) => state.setToolItemExpanded)
+
+  const respondPlan = async (decision: 'approved' | 'rejected'): Promise<void> => {
+    if (!planProjection || !item.projectId) return
+    try {
+      await window.api.acp.respondPlan({
+        projectId: item.projectId,
+        sessionId: item.sessionId,
+        artifactVersionId: planProjection.artifactVersionId,
+        expectedRevision: planProjection.revision,
+        decision
+      })
+    } finally {
+      const current = await window.api.acp.getPlanProjection(item.projectId, item.sessionId)
+      if (current) useSessionStore.getState().setActivePlanProjection(item.sessionId, current)
+    }
+  }
 
   // Remount the Files tool per project so its transient dialog cannot outlive the project it opened.
   if (item.toolKind === 'files') {
@@ -59,7 +77,14 @@ export const PreviewToolContent = ({
   }
 
   if (item.toolKind === 'plan') {
-    return planProjection ? <PlanPreviewSurface projection={planProjection} /> : null
+    return planProjection ? (
+      <PlanPreviewSurface
+        projection={planProjection}
+        isFullScreen={isPlanExpanded}
+        onRespond={respondPlan}
+        onToggleFullScreen={() => setToolItemExpanded(isPlanExpanded ? null : item.id)}
+      />
+    ) : null
   }
 
   if (!isNotebookPreviewItem(item)) return null

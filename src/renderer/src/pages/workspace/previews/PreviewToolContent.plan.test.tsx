@@ -1,0 +1,127 @@
+// @vitest-environment jsdom
+
+import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/react'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+
+import type { ActivePlanProjection } from '../../../../../shared/session-plan/contract'
+import { usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
+import { useSessionStore } from '@/stores/session-store'
+
+vi.mock('../NotebookPreview', () => ({ NotebookPreview: () => null }))
+vi.mock('../ProjectFilesView', () => ({ ProjectFilesView: () => null }))
+vi.mock('../SessionReviewerPanel', () => ({ SessionReviewerPanel: () => null }))
+
+import { PreviewToolContent } from './PreviewToolContent'
+
+const pendingProjection: ActivePlanProjection = {
+  artifactId: 'artifact-1',
+  artifactVersionId: 'version-1',
+  artifactChecksum: 'a'.repeat(64),
+  revision: 3,
+  approval: 'pending',
+  lifecycle: 'awaiting_approval',
+  document: {
+    schema_version: 1,
+    task_summary: 'Analyze one dataset',
+    phases: [
+      {
+        name: 'Analysis',
+        delegations: [
+          {
+            name: 'Primary agent',
+            steps: [{ title: 'Analyze the data', description: 'Produce the result.' }]
+          }
+        ]
+      }
+    ],
+    desired_outputs: [],
+    feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+  },
+  stepStatuses: {},
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+}
+
+const approvedProjection: ActivePlanProjection = {
+  ...pendingProjection,
+  revision: 4,
+  approval: 'approved',
+  lifecycle: 'approved'
+}
+
+const respondPlan = vi.fn()
+const getPlanProjection = vi.fn()
+const saveBlobFile = vi.fn()
+
+beforeEach(() => {
+  respondPlan.mockReset().mockResolvedValue({ projection: approvedProjection, changed: true })
+  getPlanProjection.mockReset().mockResolvedValue(approvedProjection)
+  saveBlobFile.mockReset().mockResolvedValue({ saved: true })
+  Object.defineProperty(window, 'api', {
+    configurable: true,
+    value: { acp: { respondPlan, getPlanProjection }, saveBlobFile }
+  })
+  useSessionStore.setState({
+    sessions: [
+      {
+        id: 'session-1',
+        projectId: 'project-1',
+        status: 'waiting-plan-approval',
+        activePlanProjection: pendingProjection
+      } as never
+    ]
+  })
+  usePreviewWorkbenchStore.setState({ expandedToolItemId: null })
+})
+
+afterEach(cleanup)
+
+describe('Plan Preview workbench integration', () => {
+  it('uses the shared full-screen state and applies the approved projection', async () => {
+    render(
+      <PreviewToolContent
+        item={{
+          id: 'tool:session-1:plan',
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          type: 'tool',
+          toolKind: 'plan',
+          title: 'Session Plan'
+        }}
+      />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Enter full screen' }))
+    expect(usePreviewWorkbenchStore.getState().expandedToolItemId).toBe('tool:session-1:plan')
+    expect(screen.getByRole('button', { name: 'Exit full screen' })).toBeTruthy()
+
+    fireEvent.click(screen.getByRole('button', { name: 'Download Plan' }))
+    await waitFor(() => expect(saveBlobFile).toHaveBeenCalledOnce())
+    expect(saveBlobFile).toHaveBeenCalledWith(
+      expect.objectContaining({
+        suggestedName: 'plan-version-1.json',
+        mimeType: 'application/json'
+      })
+    )
+    const savedRequest = saveBlobFile.mock.calls[0][0] as { data: ArrayBuffer }
+    expect(savedRequest.data.byteLength).toBeGreaterThan(0)
+    expect(JSON.parse(new TextDecoder().decode(savedRequest.data))).toEqual(
+      pendingProjection.document
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    await waitFor(() =>
+      expect(respondPlan).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: 'version-1',
+        expectedRevision: 3,
+        decision: 'approved'
+      })
+    )
+    await waitFor(() =>
+      expect(useSessionStore.getState().sessions[0].activePlanProjection).toBe(approvedProjection)
+    )
+    expect(useSessionStore.getState().sessions[0].status).toBe('running')
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+  })
+})

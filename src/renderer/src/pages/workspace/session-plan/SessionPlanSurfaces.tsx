@@ -1,4 +1,12 @@
-import type { ActivePlanProjection } from '../../../../../shared/session-plan/contract'
+import { Download, Maximize2, Minimize2 } from 'lucide-react'
+
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
+
+import {
+  createPlanDocumentV1,
+  type ActivePlanProjection,
+  type PlanDocumentV1
+} from '../../../../../shared/session-plan/contract'
 import { useState } from 'react'
 
 type PlanSurfaceProps = Readonly<{ projection: ActivePlanProjection }>
@@ -197,53 +205,197 @@ const PlanProgressDock = ({
   )
 }
 
-const PlanPreviewSurface = ({ projection }: PlanSurfaceProps): React.JSX.Element => (
-  <div className="h-full overflow-auto bg-bg-10 px-8 py-8 text-foreground">
-    <h1 className="text-[22px] font-semibold">{projection.document.task_summary}</h1>
-    <p className="mt-1 text-sm text-muted-foreground">
-      Complete phases in order. Delegations within a phase may run in parallel.
-    </p>
-    {projection.document.phases.map((phase, phaseIndex) => (
-      <section key={phase.name} className="mt-7 border-t border-border pt-6">
-        <div className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground">
-          PHASE {phaseIndex + 1}
+type PlanPreviewSurfaceProps = PlanSurfaceProps &
+  Readonly<{
+    isFullScreen?: boolean
+    onDownload?: () => Promise<void>
+    onRespond?: (decision: 'approved' | 'rejected') => Promise<void>
+    onToggleFullScreen?: () => void
+  }>
+
+const validatedPreviewDocument = (value: unknown): PlanDocumentV1 | null => {
+  if (
+    typeof value !== 'object' ||
+    value === null ||
+    !('schema_version' in value) ||
+    value.schema_version !== 1
+  ) {
+    return null
+  }
+  try {
+    return createPlanDocumentV1(value)
+  } catch {
+    return null
+  }
+}
+
+const stepMark = (status: string | undefined): string => {
+  if (status === 'completed') return '✓'
+  if (status === 'in_progress') return '●'
+  if (status === 'blocked') return '!'
+  if (status === 'skipped') return '–'
+  return ''
+}
+
+const PlanPreviewSurface = ({
+  projection,
+  isFullScreen = false,
+  onDownload,
+  onRespond,
+  onToggleFullScreen
+}: PlanPreviewSurfaceProps): React.JSX.Element => {
+  const document = validatedPreviewDocument(projection.document)
+  if (!document) {
+    return (
+      <div className="flex h-full items-center justify-center bg-bg-10 p-8">
+        <div
+          role="alert"
+          className="max-w-sm rounded-lg border border-destructive/30 bg-destructive/10 px-4 py-3 text-sm text-destructive"
+        >
+          Invalid Plan document. This preview cannot be displayed.
         </div>
-        <h2 className="mt-1 text-lg font-medium">{phase.name}</h2>
-        {phase.delegations.map((delegation) => (
-          <div key={delegation.name} className="mt-4 border-l border-border pl-5">
-            <div className="font-medium">{delegation.name}</div>
-            {delegation.steps.map((step) => {
-              const runtime = projection.stepStatuses[step.title]
-              return (
-                <div key={step.title} className="mt-3 grid grid-cols-[18px_1fr] gap-2">
-                  <span className="mt-0.5 grid size-4 place-items-center rounded border border-border text-[10px]">
-                    {runtime?.status === 'completed'
-                      ? '✓'
-                      : runtime?.status === 'in_progress'
-                        ? '●'
-                        : ''}
-                  </span>
-                  <div>
-                    <div className="text-sm font-medium">{step.title}</div>
-                    <div className="text-xs text-muted-foreground">{step.description}</div>
-                  </div>
-                </div>
-              )
-            })}
-          </div>
-        ))}
-      </section>
-    ))}
-    <div className="mt-7 rounded-lg bg-muted p-4">
-      <div className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
-        SCOPE &amp; FEASIBILITY · {projection.document.feasibility.confidence.toUpperCase()}{' '}
-        CONFIDENCE
       </div>
-      <p className="mt-1 text-xs text-muted-foreground">
-        {projection.document.feasibility.rationale}
-      </p>
+    )
+  }
+
+  const download =
+    onDownload ??
+    (async (): Promise<void> => {
+      const bytes = new TextEncoder().encode(JSON.stringify(document, null, 2))
+      await window.api.saveBlobFile({
+        suggestedName: `plan-${projection.artifactVersionId}.json`,
+        mimeType: 'application/json',
+        data: bytes.buffer.slice(
+          bytes.byteOffset,
+          bytes.byteOffset + bytes.byteLength
+        ) as ArrayBuffer
+      })
+    })
+
+  return (
+    <div className="flex h-full min-h-0 flex-col bg-bg-10 text-foreground">
+      <header className="flex h-11 shrink-0 items-center justify-between border-b border-border px-3">
+        <span className="truncate text-xs text-muted-foreground">
+          plan-{projection.artifactVersionId}.json
+        </span>
+        <div className="flex items-center gap-1">
+          <button
+            type="button"
+            aria-label="Download Plan"
+            className="flex h-8 items-center gap-1.5 rounded-lg px-2.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+            onClick={() => void download()}
+          >
+            <Download className="size-4" aria-hidden="true" />
+            Download
+          </button>
+          {projection.approval === 'pending' && onRespond ? (
+            <>
+              <button
+                type="button"
+                className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                onClick={() => void onRespond('rejected')}
+              >
+                Dismiss
+              </button>
+              <button
+                type="button"
+                className="h-8 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground hover:bg-primary/80 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                onClick={() => void onRespond('approved')}
+              >
+                Approve
+              </button>
+            </>
+          ) : null}
+          {onToggleFullScreen ? (
+            <TooltipProvider delayDuration={200}>
+              <Tooltip>
+                <TooltipTrigger asChild>
+                  <button
+                    type="button"
+                    aria-label={isFullScreen ? 'Exit full screen' : 'Enter full screen'}
+                    className="grid size-8 place-items-center rounded-md hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                    onClick={onToggleFullScreen}
+                  >
+                    {isFullScreen ? (
+                      <Minimize2 className="size-4" aria-hidden="true" />
+                    ) : (
+                      <Maximize2 className="size-4" aria-hidden="true" />
+                    )}
+                  </button>
+                </TooltipTrigger>
+                <TooltipContent className="z-[70]">
+                  {isFullScreen ? 'Exit full screen' : 'Enter full screen'}
+                </TooltipContent>
+              </Tooltip>
+            </TooltipProvider>
+          ) : null}
+        </div>
+      </header>
+      <div className="min-h-0 flex-1 overflow-auto px-8 py-8">
+        <h1 className="text-[22px] font-semibold">{document.task_summary}</h1>
+        <p className="mt-1 text-sm text-muted-foreground">
+          Complete phases in order. Delegations within a phase may run in parallel.
+        </p>
+        {document.phases.map((phase, phaseIndex) => (
+          <section key={`${phaseIndex}:${phase.name}`} className="mt-7 border-t border-border pt-6">
+            <div className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground">
+              PHASE {phaseIndex + 1}
+            </div>
+            <h2 className="mt-1 text-lg font-medium">{phase.name}</h2>
+            {phase.delegations.map((delegation, delegationIndex) => (
+              <div
+                key={`${delegationIndex}:${delegation.name}`}
+                className="relative mt-4 border-l border-border pl-5"
+              >
+                <span
+                  aria-hidden="true"
+                  className="absolute left-[-4px] top-2 size-[7px] rounded-full bg-foreground"
+                />
+                <div className="font-medium">{delegation.name}</div>
+                {delegation.steps.map((step) => {
+                  const runtime = projection.stepStatuses[step.title]
+                  return (
+                    <div key={step.title} className="mt-3 grid grid-cols-[18px_1fr] gap-2">
+                      <span className="mt-0.5 grid size-4 place-items-center rounded border border-border text-[10px]">
+                        {stepMark(runtime?.status)}
+                      </span>
+                      <div>
+                        <div className="text-sm font-medium">{step.title}</div>
+                        <div className="text-xs text-muted-foreground">{step.description}</div>
+                        {runtime?.notes ? (
+                          <div className="mt-1.5 rounded-md bg-muted px-2 py-1.5 text-[11px] text-muted-foreground">
+                            {runtime.notes}
+                          </div>
+                        ) : null}
+                      </div>
+                    </div>
+                  )
+                })}
+              </div>
+            ))}
+          </section>
+        ))}
+        <section className="mt-7 border-t border-border pt-6">
+          <h2 className="text-sm font-medium">Desired outputs</h2>
+          {document.desired_outputs.length > 0 ? (
+            <ul className="mt-2 list-disc space-y-1 pl-5 text-xs text-muted-foreground">
+              {document.desired_outputs.map((output) => (
+                <li key={output}>{output}</li>
+              ))}
+            </ul>
+          ) : (
+            <p className="mt-2 text-xs text-muted-foreground">No desired outputs specified.</p>
+          )}
+        </section>
+        <div className="mt-7 rounded-lg bg-muted p-4">
+          <div className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
+            SCOPE &amp; FEASIBILITY · {document.feasibility.confidence.toUpperCase()} CONFIDENCE
+          </div>
+          <p className="mt-1 text-xs text-muted-foreground">{document.feasibility.rationale}</p>
+        </div>
+      </div>
     </div>
-  </div>
-)
+  )
+}
 
 export { PlanPreviewSurface, PlanProgressDock, WorkspacePlanCard }

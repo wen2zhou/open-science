@@ -21,7 +21,12 @@ const content = {
   feasibility: { confidence: 'high' as const, rationale: 'Inputs are available.' }
 }
 
-const setup = () => {
+const setup = (): {
+  service: PlanService
+  dependencies: PlanServiceDependencies
+  context: () => SessionRuntimeContext
+  status: () => string
+} => {
   let context: SessionRuntimeContext = { version: 1, revision: 0 }
   let persistedStatus = 'running'
   let bytes = ''
@@ -162,6 +167,47 @@ describe('PlanService', () => {
     ).rejects.toMatchObject({ code: 'artifact-unavailable' })
     expect(context().plan).toBeUndefined()
     expect(dependencies.patchRuntimeContext).not.toHaveBeenCalled()
+  })
+
+  it('returns invalid-plan without writing an Artifact or replacing the active Plan', async () => {
+    const { service, dependencies, context } = setup()
+    await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const activePlan = context().plan
+    vi.mocked(dependencies.writeArtifactForActiveTurn).mockClear()
+    vi.mocked(dependencies.patchRuntimeContext).mockClear()
+
+    await expect(
+      service.generate({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        interactionId: 'interaction-2',
+        content: {
+          ...content,
+          phases: [
+            {
+              name: 'Analysis',
+              delegations: [
+                {
+                  name: 'Primary agent',
+                  steps: [
+                    { title: 'Analyze the data', description: 'First.' },
+                    { title: ' Analyze the data ', description: 'Duplicate.' }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      })
+    ).rejects.toMatchObject({ code: 'invalid-plan' })
+    expect(dependencies.writeArtifactForActiveTurn).not.toHaveBeenCalled()
+    expect(dependencies.patchRuntimeContext).not.toHaveBeenCalled()
+    expect(context().plan).toBe(activePlan)
   })
 
   it('distinguishes a CAS conflict from an unrelated persistence failure', async () => {
