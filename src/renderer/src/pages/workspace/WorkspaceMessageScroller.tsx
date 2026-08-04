@@ -52,6 +52,7 @@ import {
   createArtifactVersionLocator,
   type ArtifactVersionDescriptor
 } from '../../../../shared/artifact-provenance'
+import { isPlanApprovalResponse } from '../../../../shared/session-plan/contract'
 
 type WorkspaceMessageScrollerProps = {
   activeSession: ChatSession | undefined
@@ -683,7 +684,9 @@ const WorkspaceMessageScrollerImpl = ({
     }
   }
 
-  const respondActivePlan = async (decision: 'approved' | 'rejected'): Promise<void> => {
+  const sendActivePlanResponse = async (
+    response: { decision: 'approved' | 'rejected' } | { feedback: string }
+  ): Promise<void> => {
     const plan = activeSession?.activePlanProjection
     if (!activeSession || !plan) return
     try {
@@ -692,7 +695,7 @@ const WorkspaceMessageScrollerImpl = ({
         sessionId: activeSession.id,
         artifactVersionId: plan.artifactVersionId,
         expectedRevision: plan.revision,
-        decision
+        ...response
       })
     } catch (error) {
       const current = await window.api.acp.getPlanProjection(
@@ -702,6 +705,15 @@ const WorkspaceMessageScrollerImpl = ({
       if (current) useSessionStore.getState().setActivePlanProjection(activeSession.id, current)
       throw error
     }
+  }
+
+  const respondActivePlan = (decision: 'approved' | 'rejected'): Promise<void> =>
+    sendActivePlanResponse({ decision })
+
+  const submitActivePlanResponse = async (text: string): Promise<void> => {
+    await sendActivePlanResponse(
+      isPlanApprovalResponse(text) ? { decision: 'approved' } : { feedback: text }
+    )
   }
 
   return (
@@ -896,6 +908,31 @@ const WorkspaceMessageScrollerImpl = ({
                   </MessageScrollerItem>
                 ))}
 
+                {activeSession?.planHistoryProjections?.map((historicalPlan) => (
+                  <MessageScrollerItem
+                    key={`plan-${historicalPlan.artifactVersionId}`}
+                    messageId={`plan-${historicalPlan.artifactVersionId}`}
+                    className="min-w-0 px-4 md:px-6"
+                  >
+                    <WorkspacePlanCard
+                      projection={historicalPlan}
+                      stale
+                      onOpen={() => {
+                        usePreviewWorkbenchStore
+                          .getState()
+                          .upsertAndActivateItem(
+                            createSessionPlanPreviewItem(
+                              activeSession.id,
+                              activeSession.projectId,
+                              historicalPlan.artifactVersionId
+                            )
+                          )
+                      }}
+                      onRespond={async () => undefined}
+                    />
+                  </MessageScrollerItem>
+                ))}
+
                 {activeSession?.activePlanProjection ? (
                   <MessageScrollerItem
                     messageId={`plan-${activeSession.activePlanProjection.artifactVersionId}`}
@@ -913,10 +950,7 @@ const WorkspaceMessageScrollerImpl = ({
                           )
                       }}
                       onRespond={respondActivePlan}
-                      onSubmitApprovalText={async (text) => {
-                        if (text.trim().toLowerCase() !== 'approve') return
-                        await respondActivePlan('approved')
-                      }}
+                      onSubmitResponse={submitActivePlanResponse}
                     />
                   </MessageScrollerItem>
                 ) : null}

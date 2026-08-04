@@ -62,6 +62,7 @@ export type PreviewToolItem = PreviewItemBase & {
   reviewerSessionId?: string
   reviewerReviewId?: string
   reviewerActiveFindingId?: string
+  planArtifactVersionId?: string
 }
 
 export type PreviewItem = PreviewFileItem | PreviewToolItem
@@ -180,13 +181,18 @@ const createNotebookPreviewItem = (notebook: NotebookSessionReference): PreviewT
   notebook
 })
 
-const createSessionPlanPreviewItem = (sessionId: string, projectId: string): PreviewToolItem => ({
-  id: `tool:${sessionId}:plan`,
+const createSessionPlanPreviewItem = (
+  sessionId: string,
+  projectId: string,
+  artifactVersionId?: string
+): PreviewToolItem => ({
+  id: `tool:${sessionId}:plan${artifactVersionId ? `:${artifactVersionId}` : ''}`,
   projectId,
   sessionId,
   type: 'tool',
   toolKind: 'plan',
-  title: 'Session Plan'
+  title: 'Session Plan',
+  ...(artifactVersionId ? { planArtifactVersionId: artifactVersionId } : {})
 })
 
 // Builds the stable project-level preview tab that owns the file library surface.

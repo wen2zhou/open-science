@@ -7,6 +7,7 @@ import {
   type PersistedChatSession
 } from '../../../shared/session-persistence'
 import type { UploadedAttachment } from '../../../shared/uploads'
+import type { ActivePlanProjection } from '../../../shared/session-plan/contract'
 import {
   createInitialSessionState,
   toPersistedSession,
@@ -41,6 +42,34 @@ const createUploadAttachment = (
   mimeType: 'image/png',
   size: 1234,
   ...overrides
+})
+
+const createPlanProjection = (artifactVersionId: string): ActivePlanProjection => ({
+  artifactId: `artifact-${artifactVersionId}`,
+  artifactVersionId,
+  artifactChecksum: 'a'.repeat(64),
+  revision: 1,
+  approval: 'pending',
+  lifecycle: 'awaiting_approval',
+  document: {
+    schema_version: 1,
+    task_summary: `Plan ${artifactVersionId}`,
+    phases: [
+      {
+        name: 'Analysis',
+        delegations: [
+          {
+            name: 'Primary agent',
+            steps: [{ title: `Step ${artifactVersionId}`, description: 'Do the work.' }]
+          }
+        ]
+      }
+    ],
+    desired_outputs: [],
+    feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+  },
+  stepStatuses: {},
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
 })
 
 describe('session store', () => {
@@ -87,6 +116,61 @@ describe('session store', () => {
     const projection = useSessionStore.getState().sessions[0]
     expect(projection.runtimeContext).toMatchObject({ revision: 2 })
     expect(toPersistedSession(projection)).not.toHaveProperty('runtimeContext')
+  })
+
+  it('retains a replaced Plan projection as read-only UI history without authoring it in Session JSON', () => {
+    useSessionStore.getState().hydrateSessions(
+      [
+        {
+          id: 'session-1',
+          projectId: 'project-1',
+          title: 'Plan replacement',
+          cwd: '/workspace',
+          status: 'idle',
+          messages: [],
+          createdAt: 1,
+          updatedAt: 2
+        }
+      ],
+      { version: SESSION_MANIFEST_VERSION }
+    )
+    const original = createPlanProjection('version-1')
+    const replacement = createPlanProjection('version-2')
+
+    useSessionStore.getState().setActivePlanProjection('session-1', original)
+    useSessionStore.getState().setActivePlanProjection('session-1', replacement)
+
+    const session = useSessionStore.getState().sessions[0]
+    expect(session.activePlanProjection).toBe(replacement)
+    expect(session.planHistoryProjections).toEqual([original])
+    expect(toPersistedSession(session)).not.toHaveProperty('planHistoryProjections')
+  })
+
+  it('releases renderer Composer blocking when the active Plan is rejected', () => {
+    useSessionStore.getState().hydrateSessions(
+      [
+        {
+          id: 'session-1',
+          projectId: 'project-1',
+          title: 'Plan rejection',
+          cwd: '/workspace',
+          status: 'waiting-plan-approval',
+          messages: [],
+          createdAt: 1,
+          updatedAt: 2
+        }
+      ],
+      { version: SESSION_MANIFEST_VERSION }
+    )
+    const rejected = {
+      ...createPlanProjection('version-1'),
+      approval: 'rejected' as const,
+      lifecycle: 'rejected' as const
+    }
+
+    useSessionStore.getState().setActivePlanProjection('session-1', rejected)
+
+    expect(useSessionStore.getState().sessions[0].status).toBe('idle')
   })
 
   it('uses the provided session id when the first user message creates a session', () => {

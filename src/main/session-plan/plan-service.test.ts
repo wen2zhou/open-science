@@ -21,10 +21,31 @@ const content = {
   feasibility: { confidence: 'high' as const, rationale: 'Inputs are available.' }
 }
 
-const setup = () => {
+const setup = (): {
+  service: PlanService
+  dependencies: PlanServiceDependencies
+  context: () => SessionRuntimeContext
+  status: () => string
+  persistedPlanResponses: Array<{
+    projectId: string
+    sessionId: string
+    content: string
+    responseToPlanVersionId: string
+    interactionId: string
+    expectedRevision: number
+  }>
+} => {
   let context: SessionRuntimeContext = { version: 1, revision: 0 }
   let persistedStatus = 'running'
   let bytes = ''
+  const persistedPlanResponses: Array<{
+    projectId: string
+    sessionId: string
+    content: string
+    responseToPlanVersionId: string
+    interactionId: string
+    expectedRevision: number
+  }> = []
   const dependencies: PlanServiceDependencies = {
     writeArtifactForActiveTurn: vi.fn(async (_sessionId, input) => {
       bytes = input.content
@@ -47,6 +68,20 @@ const setup = () => {
       return context
     }),
     isRevisionConflict: (error) => error instanceof Error && error.message === 'revision conflict',
+    persistPlanResponseMessage: vi.fn(async (message) => {
+      persistedPlanResponses.push(message)
+      return {
+        id: 'plan-response-1',
+        role: 'user' as const,
+        content: message.content,
+        status: 'complete' as const,
+        eventIds: [],
+        responseToMessageId: message.interactionId,
+        responseToPlanVersionId: message.responseToPlanVersionId,
+        createdAt: 42,
+        updatedAt: 42
+      }
+    }),
     now: () => 42,
     createId: () => 'a91f30c2'
   }
@@ -54,7 +89,8 @@ const setup = () => {
     service: new PlanService(dependencies),
     dependencies,
     context: () => context,
-    status: () => persistedStatus
+    status: () => persistedStatus,
+    persistedPlanResponses
   }
 }
 
@@ -145,6 +181,85 @@ describe('PlanService', () => {
     ).rejects.toMatchObject({ code: 'approval-already-decided' })
   })
 
+  it('rejects irreversibly, releases the Session block, and treats duplicate delivery as idempotent', async () => {
+    const { service, context, status } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision
+    }
+
+    const rejected = await service.respond({ ...identity, decision: 'rejected' })
+    expect(rejected).toMatchObject({ changed: true, projection: { lifecycle: 'rejected' } })
+    expect(status()).toBe('idle')
+    expect(context().plan?.approval).toBe('rejected')
+
+    const duplicate = await service.respond({
+      ...identity,
+      decision: 'rejected'
+    })
+    expect(duplicate.changed).toBe(false)
+    await expect(
+      service.respond({
+        ...identity,
+        expectedRevision: rejected.projection.revision,
+        decision: 'approved'
+      })
+    ).rejects.toMatchObject({ code: 'approval-already-decided' })
+  })
+
+  it('persists revision feedback as a user Message bound to the pending Plan and routes it to its interaction', async () => {
+    const { service, persistedPlanResponses, context } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+
+    const response = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      feedback: 'Split the analysis by cohort.'
+    })
+
+    expect(response).toEqual({
+      kind: 'feedback',
+      routeToInteractionId: 'interaction-1',
+      artifactVersionId: 'version-1',
+      text: 'Split the analysis by cohort.',
+      message: expect.objectContaining({
+        id: 'plan-response-1',
+        role: 'user',
+        responseToPlanVersionId: 'version-1'
+      })
+    })
+    expect(persistedPlanResponses).toEqual([
+      {
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        content: 'Split the analysis by cohort.',
+        responseToPlanVersionId: 'version-1',
+        interactionId: 'interaction-1',
+        expectedRevision: 1
+      }
+    ])
+    expect(context().plan).toMatchObject({
+      artifactVersionId: 'version-1',
+      approval: 'pending',
+      stepStatuses: {}
+    })
+  })
+
   it('does not change the active Plan when durable Artifact verification fails', async () => {
     const { service, dependencies, context } = setup()
     vi.mocked(dependencies.readArtifactVersion).mockResolvedValueOnce({
@@ -231,6 +346,13 @@ describe('PlanService', () => {
       interactionId: 'interaction-2',
       content
     })
+    expect(replacement.projection).toMatchObject({
+      artifactId: 'artifact-2',
+      artifactVersionId: 'version-2',
+      approval: 'pending',
+      stepStatuses: {},
+      lifecycle: 'awaiting_approval'
+    })
     await expect(
       reconstructed.updateStepStatus({
         projectId: 'project-1',
@@ -241,5 +363,39 @@ describe('PlanService', () => {
         status: 'completed'
       })
     ).rejects.toMatchObject({ code: 'stale-plan' })
+  })
+
+  it('restores the original approval surface when replacement Artifact verification fails', async () => {
+    const { service, dependencies, context } = setup()
+    const original = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    vi.mocked(dependencies.writeArtifactForActiveTurn).mockResolvedValueOnce({
+      artifactId: 'artifact-2',
+      versionId: 'version-2',
+      checksum: 'b'.repeat(64),
+      name: 'plan-replacement.json'
+    })
+    vi.mocked(dependencies.readArtifactVersion).mockResolvedValueOnce({
+      content: '{"corrupt":true}',
+      checksum: 'b'.repeat(64)
+    })
+
+    await expect(
+      service.generate({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        interactionId: 'interaction-1',
+        content: { ...content, task_summary: 'Replacement' }
+      })
+    ).rejects.toMatchObject({ code: 'artifact-unavailable' })
+    expect(context().plan).toMatchObject({
+      artifactVersionId: original.projection.artifactVersionId,
+      approval: 'pending',
+      stepStatuses: {}
+    })
   })
 })

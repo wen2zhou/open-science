@@ -45,9 +45,18 @@ export const PreviewToolContent = ({
   item: PreviewToolItem
 }): React.JSX.Element | null => {
   const activeProjectId = useNavigationStore((state) => state.activeProjectId)
-  const planProjection = useSessionStore(
-    (state) => state.sessions.find((session) => session.id === item.sessionId)?.activePlanProjection
+  const planSession = useSessionStore((state) =>
+    state.sessions.find((session) => session.id === item.sessionId)
   )
+  const activePlanProjection = planSession?.activePlanProjection
+  const planProjection = item.planArtifactVersionId
+    ? (planSession?.planHistoryProjections?.find(
+        (projection) => projection.artifactVersionId === item.planArtifactVersionId
+      ) ??
+      (activePlanProjection?.artifactVersionId === item.planArtifactVersionId
+        ? activePlanProjection
+        : undefined))
+    : activePlanProjection
 
   // Remount the Files tool per project so its transient dialog cannot outlive the project it opened.
   if (item.toolKind === 'files') {
@@ -59,7 +68,36 @@ export const PreviewToolContent = ({
   }
 
   if (item.toolKind === 'plan') {
-    return planProjection ? <PlanPreviewSurface projection={planProjection} /> : null
+    if (!planProjection || !planSession) return null
+    const stale = planProjection.artifactVersionId !== activePlanProjection?.artifactVersionId
+    return (
+      <PlanPreviewSurface
+        projection={planProjection}
+        stale={stale}
+        onDownload={() => {
+          const bytes = new TextEncoder().encode(
+            `${JSON.stringify(planProjection.document, null, 2)}\n`
+          )
+          void window.api.saveBlobFile({
+            suggestedName: `plan-${planProjection.artifactVersionId.slice(0, 8)}.json`,
+            mimeType: 'application/json',
+            data: bytes.buffer.slice(
+              bytes.byteOffset,
+              bytes.byteOffset + bytes.byteLength
+            ) as ArrayBuffer
+          })
+        }}
+        onRespond={(decision) => {
+          void window.api.acp.respondPlan({
+            projectId: planSession.projectId,
+            sessionId: planSession.id,
+            artifactVersionId: planProjection.artifactVersionId,
+            expectedRevision: planProjection.revision,
+            decision
+          })
+        }}
+      />
+    )
   }
 
   if (!isNotebookPreviewItem(item)) return null

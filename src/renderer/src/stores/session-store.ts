@@ -89,6 +89,7 @@ export type ChatSession = Omit<
   messages: ChatMessage[]
   activities?: ToolActivity[]
   activePlanProjection?: ActivePlanProjection
+  planHistoryProjections?: ActivePlanProjection[]
   isPending?: boolean
   // Transient: set at hydration when a session was interrupted by an app restart, so the UI can
   // offer an explicit Resume affordance. Never persisted (stripped in stripTransientSessionState).
@@ -369,6 +370,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
     conversationGraphSyncBlocked,
     pendingContextReplayMessageId,
     activePlanProjection,
+    planHistoryProjections,
     runtimeContext,
     messages,
     ...persistedSession
@@ -385,6 +387,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
   void conversationGraphSyncBlocked
   void pendingContextReplayMessageId
   void activePlanProjection
+  void planHistoryProjections
   void runtimeContext
 
   // Persist a bounded projection of tool activities so the transcript survives restarts.
@@ -1897,15 +1900,32 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
     set((state) => ({
       sessions: state.sessions.map((session) =>
         session.id === sessionId
-          ? {
-              ...session,
-              activePlanProjection: projection,
-              status:
-                projection.lifecycle === 'awaiting_approval'
-                  ? 'waiting-plan-approval'
-                  : session.status,
-              updatedAt: Date.now()
-            }
+          ? (() => {
+              const previous = session.activePlanProjection
+              const replaced =
+                previous && previous.artifactVersionId !== projection.artifactVersionId
+                  ? [
+                      ...(session.planHistoryProjections ?? []).filter(
+                        (item) => item.artifactVersionId !== previous.artifactVersionId
+                      ),
+                      previous
+                    ]
+                  : session.planHistoryProjections
+              return {
+                ...session,
+                ...(replaced ? { planHistoryProjections: replaced } : {}),
+                activePlanProjection: projection,
+                status:
+                  projection.lifecycle === 'awaiting_approval'
+                    ? 'waiting-plan-approval'
+                    : projection.lifecycle === 'rejected'
+                      ? 'idle'
+                      : session.status === 'waiting-plan-approval'
+                        ? 'running'
+                        : session.status,
+                updatedAt: Date.now()
+              }
+            })()
           : session
       )
     }))

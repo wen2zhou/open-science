@@ -138,8 +138,8 @@ import {
 } from './backend-generation-owner'
 import { AcpSessionConfigurator, type AcpSessionConfigurationFacts } from './session-configurator'
 import { createProductionPlanService } from '../session-plan/production-plan-service'
-import type { PlanService } from '../session-plan/plan-service'
-import type { GeneratePlanContent } from '../../shared/session-plan/contract'
+import type { PlanResponseResult, PlanService } from '../session-plan/plan-service'
+import type { GeneratePlanContent, PlanResponseCommand } from '../../shared/session-plan/contract'
 import type { SessionPlanStepStatus } from '../../shared/session-persistence'
 import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 
@@ -309,7 +309,7 @@ type AcpRuntimePlanOptions = {
   registerSessionAlias?: (aliasSessionId: string, sessionId: string) => void
   sessions: Pick<
     SessionPersistenceCoordinator,
-    'readSessionRuntimeContext' | 'patchSessionRuntimeContext'
+    'readSessionRuntimeContext' | 'patchSessionRuntimeContext' | 'appendPlanResponseMessage'
   >
 }
 
@@ -857,12 +857,19 @@ class AcpRuntime {
       }
       const interactionId = this.artifactTurns?.promptMessageIdFor(input.sessionId)
       if (!interactionId) throw new Error('No active interaction can generate a Session Plan.')
-      const result = await service.generate({
-        projectId: input.projectId,
-        sessionId: input.sessionId,
-        interactionId,
-        content: input.input as GeneratePlanContent
-      })
+      let result: Awaited<ReturnType<PlanService['generate']>>
+      try {
+        result = await service.generate({
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          interactionId,
+          content: input.input as GeneratePlanContent
+        })
+      } catch (error) {
+        const current = await service.getProjection(input.projectId, input.sessionId)
+        if (current) this.publishPlanProjection(input.sessionId, current)
+        throw error
+      }
       const approval = new Promise((resolve, reject) => {
         this.planApprovalWaiters.set(input.sessionId, { interactionId, resolve, reject })
       })
@@ -900,21 +907,44 @@ class AcpRuntime {
     return result
   }
 
-  getSessionPlanProjection(projectId: string, sessionId: string) {
+  getSessionPlanProjection(
+    projectId: string,
+    sessionId: string
+  ): Promise<import('../../shared/session-plan/contract').ActivePlanProjection | null> {
     return this.planService?.getProjection(projectId, sessionId) ?? Promise.resolve(null)
   }
 
-  async respondSessionPlan(input: {
-    projectId: string
-    sessionId: string
-    artifactVersionId: string
-    expectedRevision: number
-    decision: 'approved' | 'rejected'
-  }) {
+  async respondSessionPlan(input: PlanResponseCommand): Promise<PlanResponseResult> {
     if (!this.planService) throw new Error('Session Plan capability is not configured.')
+    if (input.decision === undefined && !this.planApprovalWaiters.has(input.sessionId)) {
+      throw new Error('The paused Session Plan interaction is no longer available.')
+    }
     const result = await this.planService.respond(input)
+    if ('projection' in result) {
+      this.resolvePlanApprovalWaiter(input.sessionId, result)
+      this.publishPlanProjection(input.sessionId, result.projection)
+      return result
+    }
+    const waiter = this.planApprovalWaiters.get(input.sessionId)
+    if (!waiter || waiter.interactionId !== result.routeToInteractionId) {
+      throw new Error('The paused Session Plan interaction is no longer available.')
+    }
+    try {
+      this.callbacks.onEvent?.({
+        id: `session-plan-response-${result.message.id}`,
+        timestamp: result.message.createdAt,
+        kind: 'message',
+        level: 'info',
+        sessionId: input.sessionId,
+        promptMessageId: result.message.responseToMessageId,
+        messageId: result.message.id,
+        role: 'user',
+        text: result.message.content
+      })
+    } catch (error) {
+      safeLogError('Session Plan response projection callback failed', errorLogFields(error))
+    }
     this.resolvePlanApprovalWaiter(input.sessionId, result)
-    this.publishPlanProjection(input.sessionId, result.projection)
     return result
   }
 

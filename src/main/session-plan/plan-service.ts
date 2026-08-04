@@ -1,6 +1,7 @@
 import { createHash, randomUUID } from 'node:crypto'
 
 import type {
+  PersistedChatMessage,
   SessionPlanRuntimeContext,
   SessionPlanStepStatus,
   SessionRuntimeContext
@@ -12,7 +13,8 @@ import {
   planStepTitles,
   type ActivePlanProjection,
   type GeneratePlanContent,
-  type PlanDocumentV1
+  type PlanDocumentV1,
+  type PlanResponseCommand
 } from '../../shared/session-plan/contract'
 
 type ArtifactWriteResult = Readonly<{
@@ -42,6 +44,14 @@ type PlanServiceDependencies = Readonly<{
     sessionStatus: 'waiting-plan-approval' | 'running' | 'idle'
   }) => Promise<SessionRuntimeContext>
   isRevisionConflict: (error: unknown) => boolean
+  persistPlanResponseMessage: (input: {
+    projectId: string
+    sessionId: string
+    content: string
+    responseToPlanVersionId: string
+    interactionId: string
+    expectedRevision: number
+  }) => Promise<PersistedChatMessage>
   now?: () => number
   createId?: () => string
 }>
@@ -53,14 +63,23 @@ type PlanIdentityCommand = Readonly<{
   expectedRevision: number
 }>
 
+type PlanDecisionResult = { projection: ActivePlanProjection; changed: boolean }
+type PlanFeedbackResult = {
+  kind: 'feedback'
+  routeToInteractionId: string
+  artifactVersionId: string
+  text: string
+  message: PersistedChatMessage
+}
+type PlanResponseResult = PlanDecisionResult | PlanFeedbackResult
+
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex')
 
 const parseDocument = (content: string): PlanDocumentV1 => {
   try {
     const parsed = JSON.parse(content) as PlanDocumentV1
     if (parsed.schema_version !== 1) throw new Error('unsupported schema')
-    const { schema_version: _schemaVersion, ...candidate } = parsed
-    return createPlanDocumentV1(candidate)
+    return createPlanDocumentV1(parsed)
   } catch (error) {
     if (error instanceof PlanCommandError) throw error
     throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')
@@ -70,6 +89,10 @@ const parseDocument = (content: string): PlanDocumentV1 => {
 class PlanService {
   private readonly now: () => number
   private readonly createId: () => string
+  private readonly livePlanInteractions = new Map<
+    string,
+    { artifactVersionId: string; interactionId: string }
+  >()
 
   constructor(private readonly dependencies: PlanServiceDependencies) {
     this.now = dependencies.now ?? Date.now
@@ -132,13 +155,52 @@ class PlanService {
       }
       throw error
     }
+    this.livePlanInteractions.set(input.sessionId, {
+      artifactVersionId: plan.artifactVersionId,
+      interactionId: input.interactionId
+    })
     return { projection: this.project(document, plan, next.revision), pauseInteraction: true }
   }
 
   async respond(
     input: PlanIdentityCommand & Readonly<{ decision: 'approved' | 'rejected' }>
-  ): Promise<{ projection: ActivePlanProjection; changed: boolean }> {
-    const { context, plan, document } = await this.loadActive(input)
+  ): Promise<PlanDecisionResult>
+  async respond(
+    input: PlanIdentityCommand & Readonly<{ feedback: string }>
+  ): Promise<PlanFeedbackResult>
+  async respond(input: PlanResponseCommand): Promise<PlanResponseResult>
+  async respond(input: PlanResponseCommand): Promise<PlanResponseResult> {
+    const { context, plan, document } = await this.loadActive(input, input.decision)
+    if (input.decision === undefined) {
+      if (plan.approval !== 'pending') {
+        throw new PlanCommandError('approval-already-decided', 'Plan approval is irreversible.')
+      }
+      const text = input.feedback.trim()
+      if (!text) throw new PlanCommandError('invalid-plan', 'Plan feedback must be non-empty.')
+      const live = this.livePlanInteractions.get(input.sessionId)
+      if (!live || live.artifactVersionId !== input.artifactVersionId) {
+        throw new PlanCommandError(
+          'stale-plan',
+          'The Plan interaction is no longer available for revision feedback.'
+        )
+      }
+      const message = await this.dependencies.persistPlanResponseMessage({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        content: text,
+        responseToPlanVersionId: input.artifactVersionId,
+        interactionId: live.interactionId,
+        expectedRevision: context.revision
+      })
+      this.livePlanInteractions.delete(input.sessionId)
+      return {
+        kind: 'feedback',
+        routeToInteractionId: live.interactionId,
+        artifactVersionId: input.artifactVersionId,
+        text,
+        message
+      }
+    }
     if (plan.approval === input.decision) {
       return { projection: this.project(document, plan, context.revision), changed: false }
     }
@@ -206,7 +268,10 @@ class PlanService {
     return { allow: projection.lifecycle === 'completed', lifecycle: projection.lifecycle }
   }
 
-  private async loadActive(input: PlanIdentityCommand): Promise<{
+  private async loadActive(
+    input: PlanIdentityCommand,
+    idempotentDecision?: 'approved' | 'rejected'
+  ): Promise<{
     context: SessionRuntimeContext
     plan: SessionPlanRuntimeContext
     document: PlanDocumentV1
@@ -217,7 +282,7 @@ class PlanService {
     if (plan.artifactVersionId !== input.artifactVersionId) {
       throw new PlanCommandError('stale-plan', 'A newer Plan is active.')
     }
-    if (context.revision !== input.expectedRevision) {
+    if (context.revision !== input.expectedRevision && plan.approval !== idempotentDecision) {
       throw new PlanCommandError('revision-conflict', 'The Plan revision is stale.')
     }
     return {
@@ -297,4 +362,4 @@ class PlanService {
 }
 
 export { PlanService }
-export type { PlanServiceDependencies }
+export type { PlanResponseResult, PlanServiceDependencies }

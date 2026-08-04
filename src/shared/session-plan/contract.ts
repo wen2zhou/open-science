@@ -47,13 +47,22 @@ export type PlanCommandErrorCode =
   | 'artifact-unavailable'
   | 'revision-conflict'
 
-export type PlanResponseCommand = Readonly<{
+type PlanResponseIdentity = Readonly<{
   projectId: string
   sessionId: string
   artifactVersionId: string
   expectedRevision: number
-  decision: 'approved' | 'rejected'
 }>
+
+export type PlanResponseCommand =
+  | (PlanResponseIdentity & Readonly<{ decision: 'approved' | 'rejected'; feedback?: never }>)
+  | (PlanResponseIdentity & Readonly<{ feedback: string; decision?: never }>)
+
+const PLAN_APPROVAL_RESPONSE =
+  /^(?:approve|approved|go ahead|proceed|looks good|do it|continue)[.!]?$/i
+
+export const isPlanApprovalResponse = (text: string): boolean =>
+  PLAN_APPROVAL_RESPONSE.test(text.trim())
 
 export class PlanCommandError extends Error {
   constructor(
