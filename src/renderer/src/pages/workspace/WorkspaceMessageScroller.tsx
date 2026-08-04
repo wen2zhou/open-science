@@ -917,12 +917,7 @@ const WorkspaceMessageScrollerImpl = ({
                       onSubmitApprovalText={async (text) => {
                         const plan = activeSession.activePlanProjection
                         if (!plan) return
-                        useSessionStore.getState().appendUserMessage({
-                          sessionId: activeSession.id,
-                          projectId: activeSession.projectId,
-                          content: text
-                        })
-                        await flushSessionPersistence()
+                        if (text.trim().toLowerCase() !== 'approve') return
                         await window.api.acp.respondPlan({
                           projectId: activeSession.projectId,
                           sessionId: activeSession.id,
