@@ -27,6 +27,7 @@ import {
 import type { ProfileService } from '../specialist/service'
 import { resolveConfigRoot, resolveDataRoot } from '../storage-root'
 import type { UploadRepository } from '../uploads/repository'
+import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 import { AgentMcpHttpHost } from './mcp-http-host'
 import { projectRegistrySessionGrants } from './permission-broker'
 import { AcpRuntime, type AcpRuntimeCallbacks } from './runtime'
@@ -70,6 +71,10 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
   onDisconnected?: () => void
   beforeSessionDelete?: (sessionId: string) => Promise<void>
   profileService?: ProfileService
+  sessionPersistenceCoordinator?: Pick<
+    SessionPersistenceCoordinator,
+    'readSessionRuntimeContext' | 'patchSessionRuntimeContext'
+  >
 }
 
 // Composes the compatibility façade while the coordinator remains the cross-generation Session owner.
@@ -93,7 +98,8 @@ const createAcpRuntime = ({
   onAllSessionsCancellationRequested,
   onDisconnected,
   beforeSessionDelete,
-  profileService
+  profileService,
+  sessionPersistenceCoordinator
 }: AcpRuntimeCompositionOptions): AcpRuntimeCoordinator => {
   const configRoot = resolveConfigRoot()
   const dataRoot = resolveDataRoot()
@@ -178,6 +184,16 @@ const createAcpRuntime = ({
             notebookRpcServer.releaseSessionCapabilities(sessionId),
           authorizeReferencedUploads: authorizeSkillImportReferencedUploads
         },
+        ...(sessionPersistenceCoordinator
+          ? {
+              plan: {
+                mcpEntryPath,
+                getRpcConnection: ({ sessionId, projectId }) =>
+                  notebookRpcServer.issuePlanConnection(sessionId, projectId),
+                sessions: sessionPersistenceCoordinator
+              }
+            }
+          : {}),
         callbacks: runtimeCallbacks,
         permissionGrantStore,
         permissionGrantRegistry,

@@ -431,6 +431,7 @@ const WorkspacePage = ({
     (state) => state.markSpecialistSwitchResetRequired
   )
   const setFixLoopActive = useSessionStore((state) => state.setFixLoopActive)
+  const setActivePlanProjection = useSessionStore((state) => state.setActivePlanProjection)
   // Only sessions belonging to the active project are shown in this workspace.
   const sessions = useMemo(
     () => allSessions.filter((session) => session.projectId === scopedProjectId),
@@ -653,6 +654,20 @@ const WorkspacePage = ({
     () => sessions.find((session) => session.id === selectedSessionId),
     [selectedSessionId, sessions]
   )
+
+  useEffect(() => {
+    if (!activeSession || activeSession.activePlanProjection) return
+    let cancelled = false
+    void window.api.acp
+      .getPlanProjection(activeSession.projectId, activeSession.id)
+      .then((projection) => {
+        if (!cancelled && projection) setActivePlanProjection(activeSession.id, projection)
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [activeSession, setActivePlanProjection])
   const activeSessionHasSendPreparation = activeSession
     ? sendPreparationInFlightSessionIds.includes(activeSession.id)
     : false
@@ -727,7 +742,10 @@ const WorkspacePage = ({
   })
   const handleReviewUpdate = useReviewStore((state) => state.handleReviewUpdate)
   // Composer controls follow only the selected session and persistence readiness.
-  const canEditDraft = isSessionPersistenceReady && !activeSessionHasSendPreparation
+  const canEditDraft =
+    isSessionPersistenceReady &&
+    !activeSessionHasSendPreparation &&
+    activeSession?.status !== 'waiting-plan-approval'
   const isUploadingAttachments = attachmentTransfers.some(
     (transfer) =>
       transfer.status === 'queued' ||

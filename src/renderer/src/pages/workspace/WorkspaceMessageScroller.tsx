@@ -7,7 +7,8 @@ import {
 } from '@/components/ui/message-scroller'
 import {
   usePreviewWorkbenchStore,
-  createSessionReviewerPreviewItem
+  createSessionReviewerPreviewItem,
+  createSessionPlanPreviewItem
 } from '@/stores/preview-workbench-store'
 import { selectProjectSessionReviews, useReviewStore } from '@/stores/review-store'
 import { useSettingsStore } from '@/stores/settings-store'
@@ -44,6 +45,7 @@ import type {
   HandoffRetryRequest
 } from '../../../../shared/handoff-lifecycle'
 import { HandoffLifecycleStatus } from './HandoffLifecycleStatus'
+import { WorkspacePlanCard } from './session-plan/SessionPlanSurfaces'
 import { useHandoffLifecycleEvents } from './useHandoffLifecycleEvents'
 import { MAX_ARTIFACT_VERSION_DESCRIPTOR_IDS } from '../../../../shared/artifacts'
 import {
@@ -872,6 +874,41 @@ const WorkspaceMessageScrollerImpl = ({
                     </div>
                   </MessageScrollerItem>
                 ))}
+
+                {activeSession?.activePlanProjection ? (
+                  <MessageScrollerItem
+                    messageId={`plan-${activeSession.activePlanProjection.artifactVersionId}`}
+                    className="min-w-0 px-4 md:px-6"
+                  >
+                    <WorkspacePlanCard
+                      projection={activeSession.activePlanProjection}
+                      onOpen={() => {
+                        const projection = activeSession.activePlanProjection
+                        if (!projection) return
+                        usePreviewWorkbenchStore
+                          .getState()
+                          .upsertAndActivateItem(
+                            createSessionPlanPreviewItem(
+                              projection,
+                              activeSession.id,
+                              activeSession.projectId
+                            )
+                          )
+                      }}
+                      onRespond={(decision) => {
+                        const plan = activeSession.activePlanProjection
+                        if (!plan) return
+                        void window.api.acp.respondPlan({
+                          projectId: activeSession.projectId,
+                          sessionId: activeSession.id,
+                          artifactVersionId: plan.artifactVersionId,
+                          expectedRevision: plan.revision,
+                          decision
+                        })
+                      }}
+                    />
+                  </MessageScrollerItem>
+                ) : null}
 
                 {showAgentLoadingMessage && activeSession ? (
                   <WorkspaceAgentLoadingRow sessionId={activeSession.id} />

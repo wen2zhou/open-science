@@ -327,6 +327,7 @@ export type AcpRuntimeEvent = {
   // separate recovery path from automatic context-overflow compaction. Completion contents and
   // prompt text deliberately remain in the main-process recovery store, not this event.
   handoffFailure?: AcpHandoffFailure
+  planProjection?: import('./session-plan/contract').ActivePlanProjection
   // Set on an error event whose failure originates upstream of the app — the agent relayed a
   // model/provider error (bad key, rate limit, quota, provider 5xx/overloaded, wrong model id). The
   // renderer uses this to withhold the "Report error" affordance: a provider-side problem is the user's

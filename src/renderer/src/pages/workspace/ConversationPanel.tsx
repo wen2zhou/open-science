@@ -65,6 +65,11 @@ import { ReportErrorDialog } from './ReportErrorDialog'
 import { SessionInterruptedBanner } from './SessionInterruptedBanner'
 import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
+import { PlanProgressDock } from './session-plan/SessionPlanSurfaces'
+import {
+  createSessionPlanPreviewItem,
+  usePreviewWorkbenchStore
+} from '@/stores/preview-workbench-store'
 import { WorkspaceMessageEditStateProvider } from './workspace-message-edit-state'
 import { workspaceHandoffLifecycleClient } from './handoff-lifecycle-source'
 
@@ -545,6 +550,22 @@ const ConversationPanel = ({
 
                   {/* Composer keeps draft input local until submit delegates to the session store.
                       Enter-to-send is owned by ComposerEditor; the form only guards native submit. */}
+                  {activeSession?.activePlanProjection ? (
+                    <PlanProgressDock
+                      projection={activeSession.activePlanProjection}
+                      onOpen={() => {
+                        usePreviewWorkbenchStore
+                          .getState()
+                          .upsertAndActivateItem(
+                            createSessionPlanPreviewItem(
+                              activeSession.activePlanProjection!,
+                              activeSession.id,
+                              activeSession.projectId
+                            )
+                          )
+                      }}
+                    />
+                  ) : null}
                   <form
                     className="relative z-10 flex flex-col gap-2 rounded-2xl border border-border-200 bg-bg-000 px-3 py-2"
                     onSubmit={(event) => event.preventDefault()}

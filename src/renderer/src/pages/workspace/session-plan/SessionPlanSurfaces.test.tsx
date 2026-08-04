@@ -1,0 +1,65 @@
+// @vitest-environment jsdom
+
+import { fireEvent, render, screen } from '@testing-library/react'
+import { describe, expect, it, vi } from 'vitest'
+
+import type { ActivePlanProjection } from '../../../../../shared/session-plan/contract'
+import { PlanPreviewSurface, PlanProgressDock, WorkspacePlanCard } from './SessionPlanSurfaces'
+
+const projection: ActivePlanProjection = {
+  artifactId: 'artifact-1',
+  artifactVersionId: 'version-1',
+  artifactChecksum: 'a'.repeat(64),
+  revision: 3,
+  approval: 'pending',
+  lifecycle: 'awaiting_approval',
+  document: {
+    schema_version: 1,
+    task_summary: 'Analyze one dataset',
+    phases: [
+      {
+        name: 'Analysis',
+        delegations: [
+          {
+            name: 'Primary agent',
+            steps: [{ title: 'Analyze the data', description: 'Produce the result.' }]
+          }
+        ]
+      }
+    ],
+    desired_outputs: ['Analysis result'],
+    feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+  },
+  stepStatuses: {},
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+}
+
+describe('Session Plan renderer surfaces', () => {
+  it('renders the compact English proposal card and shares approval with Open', () => {
+    const onOpen = vi.fn()
+    const onRespond = vi.fn()
+    render(<WorkspacePlanCard projection={projection} onOpen={onOpen} onRespond={onRespond} />)
+
+    expect(screen.getByText('Plan ready for review')).toBeTruthy()
+    expect(screen.getByText('Analyze one dataset')).toBeTruthy()
+    expect(screen.getByText('1 phase · 1 delegation · 1 step')).toBeTruthy()
+    expect(screen.getByText(/high confidence/u)).toBeTruthy()
+    fireEvent.click(screen.getByRole('button', { name: 'Open' }))
+    fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
+    expect(onOpen).toHaveBeenCalledOnce()
+    expect(onRespond).toHaveBeenCalledWith('approved')
+  })
+
+  it('renders the three-level Plan preview and Variant B progress dock', () => {
+    const { rerender } = render(<PlanPreviewSurface projection={projection} />)
+    expect(screen.getByText('PHASE 1')).toBeTruthy()
+    expect(screen.getByText('Primary agent')).toBeTruthy()
+    expect(screen.getByText('Analyze the data')).toBeTruthy()
+    expect(screen.getByText('SCOPE & FEASIBILITY · HIGH CONFIDENCE')).toBeTruthy()
+
+    rerender(<PlanProgressDock projection={projection} onOpen={vi.fn()} />)
+    expect(screen.getByText('Awaiting plan approval')).toBeTruthy()
+    expect(screen.getByText('0/1 done')).toBeTruthy()
+    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('0')
+  })
+})

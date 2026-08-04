@@ -448,6 +448,11 @@ const applyWorkspaceRuntimeEvent = async (
     return true
   }
 
+  if (event.kind === 'plan' && event.sessionId && event.planProjection) {
+    store.setActivePlanProjection(event.sessionId, event.planProjection)
+    return true
+  }
+
   if (event.kind === 'stop' && event.sessionId) {
     activityGroupToolCallIdsBySession.delete(event.sessionId)
     const deferredArtifacts = deferredArtifactEventsBySession.get(event.sessionId)

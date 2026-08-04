@@ -73,6 +73,49 @@ afterEach(async () => {
 })
 
 describe('notebook local RPC server', () => {
+  it('binds Plan calls to the issued Session capability and rejects the master token', async () => {
+    const root = await createStorageRoot()
+    const call = vi.fn(async (input: unknown) => input)
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const server = new NotebookLocalRpcServer(service, {
+      token: 'master-token',
+      planService: { call }
+    })
+    const connection = await server.issuePlanConnection('session-1', 'project-1')
+    const request = (token: string) =>
+      fetch(connection.endpoint, {
+        method: 'POST',
+        headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+        body: JSON.stringify({
+          method: 'planCall',
+          params: {
+            projectId: 'forged-project',
+            sessionId: 'forged-session',
+            operation: 'approve'
+          }
+        })
+      })
+
+    try {
+      expect((await request('master-token')).status).toBe(401)
+      expect((await request(connection.token)).status).toBe(200)
+      expect(call).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        operation: 'approve',
+        input: undefined
+      })
+    } finally {
+      connection.release?.()
+      await server.close()
+    }
+  })
+
   it('propagates a local socket through every issued capability connection', async () => {
     const root = await createStorageRoot()
     const service = new NotebookRuntimeService({

@@ -63,6 +63,14 @@ const registerAcpIpcHandlerSet = (
   ipcMainHandle('acp:respond-permission', (_event, response: AcpPermissionResponse) =>
     runtime.respondToPermission(response)
   )
+  ipcMainHandle('acp:get-plan-projection', (_event, projectId: string, sessionId: string) =>
+    runtime.getSessionPlanProjection(projectId, sessionId)
+  )
+  ipcMainHandle(
+    'acp:respond-plan',
+    (_event, request: Parameters<AcpRuntimeCoordinator['respondSessionPlan']>[0]) =>
+      runtime.respondSessionPlan(request)
+  )
   ipcMainHandle('acp:set-permission-profile', (_event, request: AcpSetPermissionProfileRequest) =>
     runtime.setPermissionProfile(request)
   )

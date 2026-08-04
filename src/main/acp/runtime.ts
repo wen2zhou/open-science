@@ -137,6 +137,11 @@ import {
   type AcpBackendGenerationView
 } from './backend-generation-owner'
 import { AcpSessionConfigurator, type AcpSessionConfigurationFacts } from './session-configurator'
+import { createProductionPlanService } from '../session-plan/production-plan-service'
+import type { PlanService } from '../session-plan/plan-service'
+import type { GeneratePlanContent } from '../../shared/session-plan/contract'
+import type { SessionPlanStepStatus } from '../../shared/session-persistence'
+import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 
 export type AcpRuntimeCallbacks = {
   onStateChanged?: (state: AcpStateSnapshot) => void
@@ -173,6 +178,7 @@ type AcpRuntimeOptions = {
   uploads?: AcpRuntimeUploadOptions
   notebook?: AcpRuntimeNotebookOptions
   skillImport?: AcpRuntimeSkillImportOptions
+  plan?: AcpRuntimePlanOptions
   skills?: AcpRuntimeSkillsOptions
   // The agent backend to drive. Defaults to Claude Code; selecting another (opencode) swaps only the
   // framework-coupled behavior (spawn, session meta, permission-mode mapping) via AgentFramework.
@@ -293,6 +299,19 @@ type AcpRuntimeSkillImportOptions = {
   ) => Promise<() => void>
 }
 
+type AcpRuntimePlanOptions = {
+  mcpEntryPath: string
+  mcpCommand?: string
+  getRpcConnection: (binding: {
+    sessionId: string
+    projectId: string
+  }) => Promise<NotebookRpcConnection>
+  sessions: Pick<
+    SessionPersistenceCoordinator,
+    'readSessionRuntimeContext' | 'patchSessionRuntimeContext'
+  >
+}
+
 type SessionAttachmentResponse = {
   sessionId: string
   modes?: SessionModeState | null
@@ -332,6 +351,15 @@ const ARTIFACT_FILE_SYSTEM_PROMPT_APPEND = [
   'After using the tool, mention the generated filename rather than an absolute filesystem path. The app will display the generated file list below your message.',
   'Never write files inside a skill directory — loaded skills are read-only; route any file a skill generates through `write_artifact_file`.',
   '</open_science_artifact_instructions>'
+].join('\n')
+
+const SESSION_PLAN_SYSTEM_PROMPT_APPEND = [
+  '<open_science_session_plan_instructions>',
+  'For a complex task, discover applicable skills before deciding whether a Session Plan is useful.',
+  'When a plan is useful, call `generate_plan` from the `open-science-plan` server with a complete plan, then wait for the user to approve or dismiss it before executing any plan step.',
+  'After approval, call `update_step_status` with the exact step title when work starts and when it completes, is blocked, or is skipped.',
+  'Do not call `end_turn` while an approved Session Plan still has unfinished steps.',
+  '</open_science_session_plan_instructions>'
 ].join('\n')
 
 // Steers the agent away from reading large attached data files in their entirety, since a single big
@@ -539,6 +567,8 @@ class AcpRuntime {
   private readonly artifactRepository: ArtifactRepository | undefined
   private readonly artifactRunRegistry: ArtifactRunRegistry | undefined
   private readonly artifactTurns: ArtifactTurnOwner | undefined
+  private readonly planService: PlanService | undefined
+  private readonly planApprovalWaiters = new Map<string, (result: unknown) => void>()
   private readonly promptContentOwner: AcpPromptContentOwner
 
   // Wires runtime dependencies and forwards permission prompts into the event stream.
@@ -587,6 +617,7 @@ class AcpRuntime {
       artifacts: options.artifacts,
       notebook: options.notebook,
       skillImport: options.skillImport,
+      plan: options.plan,
       mcpHttpHost: options.mcpHttpHost
     })
     this.artifactRepository = options.artifacts
@@ -611,6 +642,16 @@ class AcpRuntime {
                   }
                 }
               : {})
+          })
+        : undefined
+    this.planService =
+      options.plan && this.artifactTurns && options.artifacts?.provenance?.resolveVersionContent
+        ? createProductionPlanService({
+            artifactTurns: this.artifactTurns,
+            provenance: {
+              resolveVersionContent: options.artifacts.provenance.resolveVersionContent
+            },
+            sessions: options.plan.sessions
           })
         : undefined
     const uploadRepository = options.uploads?.repository
@@ -791,6 +832,88 @@ class AcpRuntime {
         this.framework.contextCompaction.kind === 'native-command' ? sessionIds : [],
       promptInFlight: promptInFlightSessionIds.length > 0,
       promptInFlightSessionIds
+    })
+  }
+
+  async callSessionPlan(input: {
+    projectId: string
+    sessionId: string
+    operation: 'generate' | 'approve' | 'updateStepStatus'
+    input?: unknown
+  }): Promise<unknown> {
+    const service = this.planService
+    if (!service) throw new Error('Session Plan capability is not configured.')
+    if (input.operation === 'generate') {
+      const interactionId = this.artifactTurns?.promptMessageIdFor(input.sessionId)
+      if (!interactionId) throw new Error('No active interaction can generate a Session Plan.')
+      const result = await service.generate({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        interactionId,
+        content: input.input as GeneratePlanContent
+      })
+      const approval = new Promise((resolve) => {
+        this.planApprovalWaiters.set(input.sessionId, resolve)
+      })
+      this.publishPlanProjection(input.sessionId, result.projection)
+      return approval
+    }
+    const projection = await service.getProjection(input.projectId, input.sessionId)
+    if (!projection) throw new Error('The Session has no active Plan.')
+    const identity = {
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      artifactVersionId: projection.artifactVersionId,
+      expectedRevision: projection.revision
+    }
+    if (input.operation === 'approve') {
+      const result = await service.respond({ ...identity, decision: 'approved' })
+      this.publishPlanProjection(input.sessionId, result.projection)
+      this.planApprovalWaiters.get(input.sessionId)?.(result)
+      this.planApprovalWaiters.delete(input.sessionId)
+      return result
+    }
+    const update = input.input as {
+      title: string
+      status: SessionPlanStepStatus
+      notes?: string
+    }
+    const result = await service.updateStepStatus({ ...identity, ...update })
+    this.publishPlanProjection(input.sessionId, result.projection)
+    return result
+  }
+
+  getSessionPlanProjection(projectId: string, sessionId: string) {
+    return this.planService?.getProjection(projectId, sessionId) ?? Promise.resolve(null)
+  }
+
+  async respondSessionPlan(input: {
+    projectId: string
+    sessionId: string
+    artifactVersionId: string
+    expectedRevision: number
+    decision: 'approved' | 'rejected'
+  }) {
+    if (!this.planService) throw new Error('Session Plan capability is not configured.')
+    const result = await this.planService.respond(input)
+    this.publishPlanProjection(input.sessionId, result.projection)
+    this.planApprovalWaiters.get(input.sessionId)?.(result)
+    this.planApprovalWaiters.delete(input.sessionId)
+    return result
+  }
+
+  private publishPlanProjection(
+    sessionId: string,
+    projection: import('../../shared/session-plan/contract').ActivePlanProjection
+  ): void {
+    this.callbacks.onEvent?.({
+      id: `session-plan-${projection.artifactVersionId}-${projection.revision}`,
+      timestamp: Date.now(),
+      kind: 'plan',
+      level: 'info',
+      sessionId,
+      title: 'Session Plan updated',
+      planProjection: projection
     })
   }
 
@@ -2961,6 +3084,17 @@ class AcpRuntime {
         }
 
         if (message.kind === 'stop') {
+          if (message.response.stopReason === 'end_turn' && this.planService) {
+            const completion = await this.planService.checkTurnCompletion({
+              projectId: this.resolveSessionProjectName(request.sessionId),
+              sessionId: request.sessionId
+            })
+            if (!completion.allow) {
+              throw new Error(
+                `The active Session Plan is not complete (${completion.lifecycle ?? 'incomplete'}).`
+              )
+            }
+          }
           const codexTurnCount = message.response._meta?.[ACP_MODEL_TURN_COUNT_META_KEY]
           const reportedTurnCount =
             promptFramework === 'codex' &&
@@ -3586,7 +3720,8 @@ class AcpRuntime {
       LARGE_DATA_FILE_SYSTEM_PROMPT_APPEND,
       ...(this.artifactToolingAvailable() ? [ARTIFACT_FILE_SYSTEM_PROMPT_APPEND] : []),
       ...(this.notebookToolingAvailable() ? [NOTEBOOK_SYSTEM_PROMPT_APPEND] : []),
-      ...(this.skillImportToolingAvailable() ? [SKILL_IMPORT_SYSTEM_PROMPT_APPEND] : [])
+      ...(this.skillImportToolingAvailable() ? [SKILL_IMPORT_SYSTEM_PROMPT_APPEND] : []),
+      ...(this.planService ? [SESSION_PLAN_SYSTEM_PROMPT_APPEND] : [])
     ]
   }
 

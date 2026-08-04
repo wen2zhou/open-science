@@ -1,0 +1,198 @@
+import type { ActivePlanProjection } from '../../../../../shared/session-plan/contract'
+
+type PlanSurfaceProps = Readonly<{ projection: ActivePlanProjection }>
+
+const plural = (count: number, singular: string): string =>
+  `${count} ${singular}${count === 1 ? '' : 's'}`
+
+const lifecycleLabel = (projection: ActivePlanProjection): string => {
+  switch (projection.lifecycle) {
+    case 'awaiting_approval':
+      return 'Plan ready for review'
+    case 'completed':
+      return 'Plan completed'
+    case 'rejected':
+      return 'Plan rejected'
+    case 'approved':
+      return 'Plan approved'
+    case 'interrupted':
+      return 'Plan interrupted'
+    default:
+      return 'Plan in progress'
+  }
+}
+
+const progressTitle = (projection: ActivePlanProjection): string => {
+  if (projection.lifecycle === 'awaiting_approval') return 'Awaiting plan approval'
+  if (projection.lifecycle === 'completed') return `Completed · ${projection.counts.steps} steps`
+  const running = Object.entries(projection.stepStatuses).find(
+    ([, value]) => value.status === 'in_progress'
+  )
+  return running?.[0] ?? lifecycleLabel(projection)
+}
+
+const WorkspacePlanCard = ({
+  projection,
+  onOpen,
+  onRespond
+}: PlanSurfaceProps &
+  Readonly<{
+    onOpen: () => void
+    onRespond: (decision: 'approved' | 'rejected') => void
+  }>): React.JSX.Element => {
+  const decisionPending = projection.approval === 'pending'
+  return (
+    <article className="mt-4 overflow-hidden rounded-lg border border-border bg-card shadow-card">
+      <div className="p-4">
+        <div className="flex flex-wrap items-start justify-between gap-4">
+          <div className="min-w-56 flex-1">
+            <div className="text-xs text-muted-foreground">{lifecycleLabel(projection)}</div>
+            <div className="mt-1 text-[17px] font-medium text-foreground">
+              {projection.document.task_summary}
+            </div>
+            <div className="mt-1 text-xs text-muted-foreground">
+              {plural(projection.counts.phases, 'phase')} ·{' '}
+              {plural(projection.counts.delegations, 'delegation')} ·{' '}
+              {plural(projection.counts.steps, 'step')}
+            </div>
+          </div>
+          <div className="flex gap-2">
+            <button
+              type="button"
+              className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted"
+              onClick={onOpen}
+            >
+              Open
+            </button>
+            {decisionPending ? (
+              <>
+                <button
+                  type="button"
+                  className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted"
+                  onClick={() => onRespond('rejected')}
+                >
+                  Dismiss
+                </button>
+                <button
+                  type="button"
+                  className="h-8 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground"
+                  onClick={() => onRespond('approved')}
+                >
+                  Approve
+                </button>
+              </>
+            ) : null}
+          </div>
+        </div>
+        <div className="mt-3 inline-flex rounded-full bg-primary/10 px-2 py-1 text-[11px] font-medium text-primary">
+          ● {projection.document.feasibility.confidence} confidence
+        </div>
+        {decisionPending ? (
+          <div className="mt-3 border-t border-border pt-3">
+            <label className="sr-only" htmlFor={`plan-response-${projection.artifactVersionId}`}>
+              Respond to Plan
+            </label>
+            <input
+              id={`plan-response-${projection.artifactVersionId}`}
+              className="h-9 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              placeholder="Describe changes, or type “approve”…"
+            />
+          </div>
+        ) : (
+          <div className="mt-3 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary">
+            {projection.lifecycle === 'completed'
+              ? 'Completed · This plan remains active until a new plan is generated.'
+              : `${lifecycleLabel(projection)}.`}
+          </div>
+        )}
+      </div>
+    </article>
+  )
+}
+
+const PlanProgressDock = ({
+  projection,
+  onOpen
+}: PlanSurfaceProps & Readonly<{ onOpen: () => void }>): React.JSX.Element => {
+  const percent =
+    projection.counts.steps === 0
+      ? 0
+      : Math.round((projection.counts.completed / projection.counts.steps) * 100)
+  const running = Object.values(projection.stepStatuses).filter(
+    (value) => value.status === 'in_progress'
+  ).length
+  return (
+    <div className="mb-2 grid grid-cols-[auto_minmax(120px,1fr)_auto] items-center gap-3 rounded-xl border border-border bg-bg-200/95 px-3 py-2 shadow-card">
+      <div className="min-w-0">
+        <strong className="block truncate text-xs">{progressTitle(projection)}</strong>
+        <span className="text-[11px] text-muted-foreground">
+          {running > 0 ? `${running} running · ` : ''}
+          {projection.counts.completed}/{projection.counts.steps} done
+        </span>
+      </div>
+      <div
+        role="progressbar"
+        aria-valuemin={0}
+        aria-valuemax={100}
+        aria-valuenow={percent}
+        className="h-1.5 overflow-hidden rounded-full bg-border"
+      >
+        <div className="h-full rounded-full bg-primary" style={{ width: `${percent}%` }} />
+      </div>
+      <button type="button" className="text-xs font-medium text-primary" onClick={onOpen}>
+        Open plan
+      </button>
+    </div>
+  )
+}
+
+const PlanPreviewSurface = ({ projection }: PlanSurfaceProps): React.JSX.Element => (
+  <div className="h-full overflow-auto bg-bg-10 px-8 py-8 text-foreground">
+    <h1 className="text-[22px] font-semibold">{projection.document.task_summary}</h1>
+    <p className="mt-1 text-sm text-muted-foreground">
+      Complete phases in order. Delegations within a phase may run in parallel.
+    </p>
+    {projection.document.phases.map((phase, phaseIndex) => (
+      <section key={phase.name} className="mt-7 border-t border-border pt-6">
+        <div className="text-[10px] font-semibold tracking-[0.1em] text-muted-foreground">
+          PHASE {phaseIndex + 1}
+        </div>
+        <h2 className="mt-1 text-lg font-medium">{phase.name}</h2>
+        {phase.delegations.map((delegation) => (
+          <div key={delegation.name} className="mt-4 border-l border-border pl-5">
+            <div className="font-medium">{delegation.name}</div>
+            {delegation.steps.map((step) => {
+              const runtime = projection.stepStatuses[step.title]
+              return (
+                <div key={step.title} className="mt-3 grid grid-cols-[18px_1fr] gap-2">
+                  <span className="mt-0.5 grid size-4 place-items-center rounded border border-border text-[10px]">
+                    {runtime?.status === 'completed'
+                      ? '✓'
+                      : runtime?.status === 'in_progress'
+                        ? '●'
+                        : ''}
+                  </span>
+                  <div>
+                    <div className="text-sm font-medium">{step.title}</div>
+                    <div className="text-xs text-muted-foreground">{step.description}</div>
+                  </div>
+                </div>
+              )
+            })}
+          </div>
+        ))}
+      </section>
+    ))}
+    <div className="mt-7 rounded-lg bg-muted p-4">
+      <div className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
+        SCOPE &amp; FEASIBILITY · {projection.document.feasibility.confidence.toUpperCase()}{' '}
+        CONFIDENCE
+      </div>
+      <p className="mt-1 text-xs text-muted-foreground">
+        {projection.document.feasibility.rationale}
+      </p>
+    </div>
+  </div>
+)
+
+export { PlanPreviewSurface, PlanProgressDock, WorkspacePlanCard }

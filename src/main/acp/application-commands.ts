@@ -21,6 +21,7 @@ import {
 import { canSatisfyHumanApproval } from '../caller-context'
 import type { AcpHandlerWorkflows } from './handler-workflows'
 import type { AcpRuntimeCoordinator } from './runtime-coordinator'
+import type { ActivePlanProjection } from '../../shared/session-plan/contract'
 
 const acpCommands = Object.freeze({
   getState: defineApplicationCommand<'acp:get-state', readonly [], AcpStateSnapshot>(
@@ -83,7 +84,17 @@ const acpCommands = Object.freeze({
     'acp:revoke-permission-grant',
     readonly [request: AcpRevokePermissionGrantRequest],
     AcpStateSnapshot
-  >('acp:revoke-permission-grant')
+  >('acp:revoke-permission-grant'),
+  getPlanProjection: defineApplicationCommand<
+    'acp:get-plan-projection',
+    readonly [projectId: string, sessionId: string],
+    ActivePlanProjection | null
+  >('acp:get-plan-projection'),
+  respondPlan: defineApplicationCommand<
+    'acp:respond-plan',
+    readonly [request: Parameters<AcpRuntimeCoordinator['respondSessionPlan']>[0]],
+    unknown
+  >('acp:respond-plan')
 })
 
 const acpApplicationCommands = defineApplicationCommandGroup('acp', [
@@ -99,7 +110,9 @@ const acpApplicationCommands = defineApplicationCommandGroup('acp', [
   acpCommands.deleteSession,
   acpCommands.respondPermission,
   acpCommands.setPermissionProfile,
-  acpCommands.revokePermissionGrant
+  acpCommands.revokePermissionGrant,
+  acpCommands.getPlanProjection,
+  acpCommands.respondPlan
 ] as const)
 
 type AcpApplicationCommandRuntime = Pick<
@@ -114,7 +127,8 @@ type AcpApplicationCommandRuntime = Pick<
   | 'respondToPermission'
   | 'setPermissionProfile'
   | 'revokePermissionGrant'
->
+> &
+  Partial<Pick<AcpRuntimeCoordinator, 'getSessionPlanProjection' | 'respondSessionPlan'>>
 
 type AcpApplicationCommandDependencies = Readonly<{
   runtime: AcpApplicationCommandRuntime
@@ -156,7 +170,19 @@ const registerAcpCommands = (
       'acp:set-permission-profile': (invocation) =>
         dependencies.runtime.setPermissionProfile(invocation.args[0]),
       'acp:revoke-permission-grant': (invocation) =>
-        dependencies.runtime.revokePermissionGrant(invocation.args[0])
+        dependencies.runtime.revokePermissionGrant(invocation.args[0]),
+      'acp:get-plan-projection': (invocation) =>
+        dependencies.runtime.getSessionPlanProjection?.(invocation.args[0], invocation.args[1]) ??
+        Promise.resolve(null),
+      'acp:respond-plan': (invocation) => {
+        if (!canSatisfyHumanApproval(invocation.callerContext)) {
+          throw new Error('Only a current human caller can respond to a Session Plan.')
+        }
+        if (!dependencies.runtime.respondSessionPlan) {
+          throw new Error('Session Plan capability is not configured.')
+        }
+        return dependencies.runtime.respondSessionPlan(invocation.args[0])
+      }
     })
     return scope.complete()
   } catch (error) {

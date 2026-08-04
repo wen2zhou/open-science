@@ -31,6 +31,39 @@ const createOwner = (
   })
 
 describe('ACP session capability owner', () => {
+  it('provisions the Session Plan capability over stdio with server-owned identity', async () => {
+    const owner = createOwner({
+      artifacts: undefined,
+      notebook: undefined,
+      skillImport: undefined,
+      plan: {
+        mcpEntryPath: '/app/main.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:4', token: 'plan' })
+      }
+    })
+
+    const provision = await owner.provision({
+      stableAppSessionId: 'session-1',
+      framework: { ...opencodeFramework, acceptsStdioMcp: true },
+      nativeMcpEnabled: true,
+      bridgeMcpAliasesEnabled: false,
+      policy: CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY,
+      sessionCwd: '/workspace',
+      projectName: 'project-1'
+    })
+
+    expect(provision.descriptor.capabilities).toEqual(['plan'])
+    expect(provision.mcpServers).toEqual([
+      expect.objectContaining({
+        name: 'open_science_plan',
+        env: expect.arrayContaining([
+          { name: 'OPEN_SCIENCE_PLAN_PROJECT_ID', value: 'project-1' },
+          { name: 'OPEN_SCIENCE_PLAN_SESSION_ID', value: 'session-1' }
+        ])
+      })
+    ])
+  })
+
   it('refreshes preference-backed availability before backend guidance is projected', async () => {
     let skillImportEnabled = false
     const owner = createOwner({

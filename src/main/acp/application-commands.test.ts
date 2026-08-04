@@ -50,6 +50,8 @@ const createDependencies = (): AcpApplicationCommandDependencies => ({
     cancelPrompt: vi.fn(async () => snapshot),
     deleteSession: vi.fn(async () => snapshot),
     respondToPermission: vi.fn(async () => snapshot),
+    getSessionPlanProjection: vi.fn(async () => null),
+    respondSessionPlan: vi.fn(async () => ({ projection: {} as never, changed: true })),
     setPermissionProfile: vi.fn(async () => snapshot),
     revokePermissionGrant: vi.fn(async () => snapshot)
   },
@@ -86,9 +88,11 @@ describe('ACP application commands', () => {
       'acp:create-session',
       'acp:delete-session',
       'acp:disconnect',
+      'acp:get-plan-projection',
       'acp:get-state',
       'acp:reset-session-context',
       'acp:respond-permission',
+      'acp:respond-plan',
       'acp:resume-session',
       'acp:revoke-permission-grant',
       'acp:send-prompt',
@@ -245,6 +249,30 @@ describe('ACP application commands', () => {
     ).rejects.toThrow('Caller authorization is no longer current.')
 
     expect(dependencies.runtime.respondToPermission).toHaveBeenCalledTimes(humanCallers.length)
+  })
+
+  it('routes Plan approval only from a current human through the runtime owner', async () => {
+    const dependencies = createDependencies()
+    const router = createApplicationCommandRouter()
+    registerAcpCommands(router.registrar, dependencies)
+    const request = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 2,
+      decision: 'approved' as const
+    }
+
+    await expect(
+      router.dispatcher.invoke(acpCommands.respondPlan, invocation([request]))
+    ).resolves.toMatchObject({ changed: true })
+    expect(dependencies.runtime.respondSessionPlan).toHaveBeenCalledWith(request)
+    await expect(
+      router.dispatcher.invoke(
+        acpCommands.respondPlan,
+        invocation([request], createTaskCallerContext())
+      )
+    ).rejects.toThrow('Only a current human caller can respond to a Session Plan.')
   })
 
   it('keeps permission-profile changes on their separate current policy', async () => {

@@ -7,6 +7,7 @@ import type {
 } from '@agentclientprotocol/sdk'
 
 import type { ArtifactFile } from '../../../shared/artifacts'
+import type { ActivePlanProjection } from '../../../shared/session-plan/contract'
 import { sanitizeActivityGroupTitle } from '../../../shared/activity-groups'
 import {
   MAX_ACP_SESSION_IMAGE_BYTES,
@@ -87,6 +88,7 @@ export type ChatSession = Omit<
   permissionProfile?: PermissionProfileId
   messages: ChatMessage[]
   activities?: ToolActivity[]
+  activePlanProjection?: ActivePlanProjection
   isPending?: boolean
   // Transient: set at hydration when a session was interrupted by an app restart, so the UI can
   // offer an explicit Resume affordance. Never persisted (stripped in stripTransientSessionState).
@@ -292,6 +294,7 @@ type SessionStore = SessionStoreData & {
   markSpecialistSwitchResetRequired: (sessionId: string) => void
   clearSpecialistSwitchResetRequired: (sessionId: string) => void
   upsertToolActivity: (input: UpsertToolActivityInput) => void
+  setActivePlanProjection: (sessionId: string, projection: ActivePlanProjection) => void
   beginActivityGroup: (
     sessionId: string,
     groupId: string,
@@ -365,6 +368,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
     branchSwitchBlocked,
     conversationGraphSyncBlocked,
     pendingContextReplayMessageId,
+    activePlanProjection,
     runtimeContext,
     messages,
     ...persistedSession
@@ -380,6 +384,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
   void branchSwitchBlocked
   void conversationGraphSyncBlocked
   void pendingContextReplayMessageId
+  void activePlanProjection
   void runtimeContext
 
   // Persist a bounded projection of tool activities so the transcript survives restarts.
@@ -1885,6 +1890,24 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
           updatedAt: Date.now()
         }
       })
+    }))
+  },
+
+  setActivePlanProjection: (sessionId, projection) => {
+    set((state) => ({
+      sessions: state.sessions.map((session) =>
+        session.id === sessionId
+          ? {
+              ...session,
+              activePlanProjection: projection,
+              status:
+                projection.lifecycle === 'awaiting_approval'
+                  ? 'waiting-plan-approval'
+                  : session.status,
+              updatedAt: Date.now()
+            }
+          : session
+      )
     }))
   },
 

@@ -6,6 +6,7 @@ import { NotebookPreview } from '../NotebookPreview'
 import type { NotebookPreviewItem } from '../NotebookPreview'
 import { ProjectFilesView } from '../ProjectFilesView'
 import { SessionReviewerPanel } from '../SessionReviewerPanel'
+import { PlanPreviewSurface } from '../session-plan/SessionPlanSurfaces'
 
 const isNotebookPreviewItem = (item: PreviewToolItem): item is NotebookPreviewItem =>
   item.toolKind === 'notebook' && Boolean(item.notebook)
@@ -51,6 +52,10 @@ export const PreviewToolContent = ({
 
   if (item.toolKind === 'reviewer') {
     return <SessionReviewerContent item={item} projectId={activeProjectId} />
+  }
+
+  if (item.toolKind === 'plan' && item.planProjection) {
+    return <PlanPreviewSurface projection={item.planProjection} />
   }
 
   if (!isNotebookPreviewItem(item)) return null
