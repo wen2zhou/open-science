@@ -683,6 +683,27 @@ const WorkspaceMessageScrollerImpl = ({
     }
   }
 
+  const respondActivePlan = async (decision: 'approved' | 'rejected'): Promise<void> => {
+    const plan = activeSession?.activePlanProjection
+    if (!activeSession || !plan) return
+    try {
+      await window.api.acp.respondPlan({
+        projectId: activeSession.projectId,
+        sessionId: activeSession.id,
+        artifactVersionId: plan.artifactVersionId,
+        expectedRevision: plan.revision,
+        decision
+      })
+    } catch (error) {
+      const current = await window.api.acp.getPlanProjection(
+        activeSession.projectId,
+        activeSession.id
+      )
+      if (current) useSessionStore.getState().setActivePlanProjection(activeSession.id, current)
+      throw error
+    }
+  }
+
   return (
     <>
       <MessageScrollerProvider
@@ -891,40 +912,10 @@ const WorkspaceMessageScrollerImpl = ({
                             createSessionPlanPreviewItem(activeSession.id, activeSession.projectId)
                           )
                       }}
-                      onRespond={async (decision) => {
-                        const plan = activeSession.activePlanProjection
-                        if (!plan) return
-                        try {
-                          await window.api.acp.respondPlan({
-                            projectId: activeSession.projectId,
-                            sessionId: activeSession.id,
-                            artifactVersionId: plan.artifactVersionId,
-                            expectedRevision: plan.revision,
-                            decision
-                          })
-                        } catch (error) {
-                          const current = await window.api.acp.getPlanProjection(
-                            activeSession.projectId,
-                            activeSession.id
-                          )
-                          if (current)
-                            useSessionStore
-                              .getState()
-                              .setActivePlanProjection(activeSession.id, current)
-                          throw error
-                        }
-                      }}
+                      onRespond={respondActivePlan}
                       onSubmitApprovalText={async (text) => {
-                        const plan = activeSession.activePlanProjection
-                        if (!plan) return
                         if (text.trim().toLowerCase() !== 'approve') return
-                        await window.api.acp.respondPlan({
-                          projectId: activeSession.projectId,
-                          sessionId: activeSession.id,
-                          artifactVersionId: plan.artifactVersionId,
-                          expectedRevision: plan.revision,
-                          decision: 'approved'
-                        })
+                        await respondActivePlan('approved')
                       }}
                     />
                   </MessageScrollerItem>
