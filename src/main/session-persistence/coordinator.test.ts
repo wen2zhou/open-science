@@ -219,9 +219,11 @@ describe('SessionPersistenceCoordinator', () => {
   })
 
   it('preserves authoritative runtime context and approval waiting status on a stale renderer save', async () => {
+    const previousUpdatedAt = Date.now() + 10_000
     let durable = createSession({
       title: 'Before rename',
       status: 'waiting-plan-approval',
+      updatedAt: previousUpdatedAt,
       runtimeContext: { version: 1, revision: 2, plan: { approval: 'pending' } }
     })
     const repository = createSessionRepository({
@@ -250,6 +252,7 @@ describe('SessionPersistenceCoordinator', () => {
       revision: 2,
       plan: { approval: 'pending' }
     })
+    expect(durable.updatedAt).toBeGreaterThan(previousUpdatedAt)
   })
 
   it('does not let a renderer whole-session save create runtime authority', async () => {

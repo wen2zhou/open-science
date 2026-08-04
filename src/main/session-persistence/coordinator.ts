@@ -678,21 +678,27 @@ class SessionPersistenceCoordinator {
     })
   }
 
-  // Persists authoritative JSON before updating the derived index. If indexing fails, the save stays
-  // durable, the caller receives the error for its normal retry path, and Files is reset to show its
-  // incomplete state rather than silently presenting stale metadata as complete.
+  private async loadRuntimeContextSession(
+    projectId: string,
+    sessionId: string,
+    operation: 'read' | 'patch'
+  ): Promise<PersistedChatSession> {
+    const loaded = await this.repository.loadSessionWithDiagnostics(projectId, sessionId)
+    if (loaded.status === 'unreadable') {
+      throw new Error(
+        `Cannot ${operation} Session runtime context because its durable JSON is unreadable.`
+      )
+    }
+    if (loaded.status === 'missing') {
+      throw new Error(`Cannot ${operation} runtime context for a missing Session.`)
+    }
+    return loaded.session
+  }
+
   readSessionRuntimeContext(projectId: string, sessionId: string): Promise<SessionRuntimeContext> {
     return this.enqueue(async () => {
-      const loaded = await this.repository.loadSessionWithDiagnostics(projectId, sessionId)
-      if (loaded.status === 'unreadable') {
-        throw new Error(
-          'Cannot read Session runtime context because its durable JSON is unreadable.'
-        )
-      }
-      if (loaded.status === 'missing') {
-        throw new Error('Cannot read runtime context for a missing Session.')
-      }
-      return cloneRuntimeContext(loaded.session.runtimeContext ?? emptySessionRuntimeContext())
+      const session = await this.loadRuntimeContextSession(projectId, sessionId, 'read')
+      return cloneRuntimeContext(session.runtimeContext ?? emptySessionRuntimeContext())
     })
   }
 
@@ -710,21 +716,12 @@ class SessionPersistenceCoordinator {
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
         throw new Error('Session runtime context expected revision must be a non-negative integer.')
       }
-      if ('version' in patch || 'revision' in patch) {
-        throw new Error('Session runtime context patches cannot author reserved envelope fields.')
+      if (Object.keys(patch).some((owner) => owner !== 'plan')) {
+        throw new Error('Session runtime context patch contains an unknown authority owner.')
       }
 
-      const loaded = await this.repository.loadSessionWithDiagnostics(projectId, sessionId)
-      if (loaded.status === 'unreadable') {
-        throw new Error(
-          'Cannot patch Session runtime context because its durable JSON is unreadable.'
-        )
-      }
-      if (loaded.status === 'missing') {
-        throw new Error('Cannot patch runtime context for a missing Session.')
-      }
-
-      const current = loaded.session.runtimeContext ?? emptySessionRuntimeContext()
+      const session = await this.loadRuntimeContextSession(projectId, sessionId, 'patch')
+      const current = session.runtimeContext ?? emptySessionRuntimeContext()
       if (current.revision !== expectedRevision) {
         throw new SessionRuntimeContextRevisionConflictError(expectedRevision, current.revision)
       }
@@ -739,15 +736,18 @@ class SessionPersistenceCoordinator {
       if (!runtimeContext) throw new Error('Session runtime context patch is not JSON-safe.')
 
       await this.repository.saveSession({
-        ...loaded.session,
+        ...session,
         ...(sessionStatus ? { status: sessionStatus } : {}),
         runtimeContext,
-        updatedAt: Math.max(loaded.session.updatedAt + 1, Date.now())
+        updatedAt: Math.max(session.updatedAt + 1, Date.now())
       })
       return cloneRuntimeContext(runtimeContext)
     })
   }
 
+  // Persists authoritative JSON before updating the derived index. If indexing fails, the save stays
+  // durable, the caller receives the error for its normal retry path, and Files is reset to show its
+  // incomplete state rather than silently presenting stale metadata as complete.
   saveSession(
     session: PersistedChatSession,
     options: SaveSessionOptions = {}
@@ -783,7 +783,11 @@ class SessionPersistenceCoordinator {
         ...rendererOwnedSession,
         ...(authority?.runtimeContext ? { runtimeContext: authority.runtimeContext } : {}),
         // Awaiting Plan approval is main-owned blocking state and must survive the same stale save.
-        ...(mainOwnedStatus ? { status: mainOwnedStatus } : {})
+        ...(mainOwnedStatus ? { status: mainOwnedStatus } : {}),
+        updatedAt:
+          authority?.runtimeContext || mainOwnedStatus
+            ? Math.max(rendererOwnedSession.updatedAt, (authority?.updatedAt ?? -1) + 1, Date.now())
+            : rendererOwnedSession.updatedAt
       }
 
       const materializedSession = materializeSessionConversationGraph(mergedSession)

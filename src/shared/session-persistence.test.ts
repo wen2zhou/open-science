@@ -608,7 +608,7 @@ describe('normalizeSessionFile with activities', () => {
     const unknown = normalizeSessionFile({
       ...createSessionWithActivity(undefined),
       activities: undefined,
-      runtimeContext: { version: 99, revision: 8, plan: { approval: 'approved' } }
+      runtimeContext: { version: 1, revision: 8, alienAuthority: { active: true } }
     })
     const damaged = normalizeSessionFile({
       ...createSessionWithActivity(undefined),

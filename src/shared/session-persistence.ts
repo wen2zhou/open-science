@@ -54,17 +54,19 @@ export type SessionRuntimeContextValue =
   | SessionRuntimeContextValue[]
   | { [key: string]: SessionRuntimeContextValue }
 
+export type SessionRuntimeContextOwner = 'plan'
+
 // Main-owned mutable authority embedded in the Session record. Owner modules use top-level keys
 // (for example `plan`); renderer consumers receive this only as a read projection. Versioning lets a
 // future incompatible envelope fail closed instead of reviving authority under unknown semantics.
 export type SessionRuntimeContext = Readonly<{
   version: 1
   revision: number
-  [owner: string]: SessionRuntimeContextValue
+  plan?: SessionRuntimeContextValue
 }>
 
 export type SessionRuntimeContextPatch = Readonly<
-  Record<string, SessionRuntimeContextValue | undefined>
+  Partial<Record<SessionRuntimeContextOwner, SessionRuntimeContextValue | undefined>>
 >
 
 // Stores artifact references only; file bytes stay on disk under the managed artifact root.
@@ -336,15 +338,19 @@ export const sanitizeSessionRuntimeContext = (
   const revision = asNumber(value.revision)
   if (revision === undefined || !Number.isSafeInteger(revision) || revision < 0) return undefined
 
-  const result: Record<string, SessionRuntimeContextValue> = { version: 1, revision }
+  const result: { version: 1; revision: number; plan?: SessionRuntimeContextValue } = {
+    version: 1,
+    revision
+  }
   const budget = { remaining: 2_000 }
   for (const [owner, ownerValue] of Object.entries(value)) {
     if (owner === 'version' || owner === 'revision') continue
+    if (owner !== 'plan') return undefined
     const sanitized = sanitizeRuntimeContextValue(ownerValue, budget)
     if (sanitized === undefined) return undefined
-    result[owner] = sanitized
+    result.plan = sanitized
   }
-  return result as SessionRuntimeContext
+  return result
 }
 
 // Accepts only artifact references, never arbitrary file payload shapes.
