@@ -28,13 +28,17 @@ const projection = (artifactVersionId: string, revision = 1): ActivePlanProjecti
     feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
   },
   stepStatuses: {},
+  stepStates: { 'Analyze the data': { status: 'not_started' } },
   counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
 })
 
 const createRuntimeHarness = (options: {
   onEvent?: () => void
   activeProjection?: ActivePlanProjection
-}): { runtime: AcpRuntime; updateStepStatus: ReturnType<typeof vi.fn> } => {
+}): Readonly<{
+  runtime: AcpRuntime
+  updateStepStatus: ReturnType<typeof vi.fn>
+}> => {
   const generated = projection('version-1')
   const approved = { ...generated, approval: 'approved' as const, lifecycle: 'approved' as const }
   const updateStepStatus = vi.fn(async () => ({ projection: approved, changed: true }))
@@ -48,6 +52,9 @@ const createRuntimeHarness = (options: {
   const target = Object.create(AcpRuntime.prototype) as Record<string, unknown>
   Object.assign(target, {
     planService: service,
+    sessionInteractions: {
+      snapshot: () => [{ kind: 'prompt', sessionId: 'session-1' }]
+    },
     artifactTurns: { promptMessageIdFor: () => 'interaction-1' },
     planApprovalWaiters: new Map(),
     callbacks: { onEvent: options.onEvent }

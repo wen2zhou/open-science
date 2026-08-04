@@ -4,6 +4,7 @@ import { dirname, join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { NotebookRunInputFile } from '../../shared/notebook'
+import { PlanCommandError } from '../../shared/session-plan/contract'
 import { fetchLocalRpc } from '../local-rpc-transport'
 import { NotebookLocalRpcServer } from './local-rpc-server'
 import { NotebookControlCompletionCapturedError, NotebookRuntimeService } from './runtime-service'
@@ -109,6 +110,18 @@ describe('notebook local RPC server', () => {
         sessionId: 'session-1',
         operation: 'approve',
         input: undefined
+      })
+
+      call.mockRejectedValueOnce(
+        new PlanCommandError('dependency-not-satisfied', 'A previous step is unfinished.')
+      )
+      const rejected = await request(connection.token)
+      expect(rejected.status).toBe(500)
+      await expect(rejected.json()).resolves.toEqual({
+        error: {
+          code: 'dependency-not-satisfied',
+          message: 'A previous step is unfinished.'
+        }
       })
     } finally {
       connection.release?.()

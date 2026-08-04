@@ -36,6 +36,7 @@ import {
   type LocalRpcListenOptions
 } from '../local-rpc-transport'
 import { createLogger, errorLogFields } from '../logger'
+import { PlanCommandError } from '../../shared/session-plan/contract'
 
 const log = createLogger('notebook:local-rpc')
 
@@ -722,9 +723,11 @@ class NotebookLocalRpcServer {
         return
       }
       const message = error instanceof Error ? error.message : String(error)
+      const serializedError =
+        error instanceof PlanCommandError ? { code: error.code, message } : message
 
       writeJson(response, error instanceof RpcHttpError ? error.statusCode : 500, {
-        error: message
+        error: serializedError
       })
     } finally {
       releaseArtifactRequest?.()

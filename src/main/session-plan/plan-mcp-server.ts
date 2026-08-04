@@ -5,8 +5,10 @@ import { z } from 'zod'
 
 import {
   createPlanDocumentV1,
+  isPlanCommandErrorCode,
   PlanCommandError,
-  type GeneratePlanContent
+  type GeneratePlanContent,
+  type PlanCommandErrorCode
 } from '../../shared/session-plan/contract'
 import type { SessionPlanStepStatus } from '../../shared/session-persistence'
 import { fetchLocalRpc, type LocalRpcTransport } from '../local-rpc-transport'
@@ -55,21 +57,35 @@ type PlanMcpEnvironment = LocalRpcTransport &
 type PlanMcpServerConfigRequest = PlanMcpEnvironment &
   Readonly<{ command: string; entryPath: string }>
 
-const toolResult = (result: unknown): { content: { type: 'text'; text: string }[] } => ({
+type PlanToolCallResult = Readonly<{
+  isError?: true
+  structuredContent?: Readonly<{
+    error: Readonly<{ code: PlanCommandErrorCode; message: string }>
+  }>
+  content: Array<{ type: 'text'; text: string }>
+}>
+
+const toolResult = (result: unknown): PlanToolCallResult => ({
   content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
 })
 
-const planErrorToolResult = (
-  error: PlanCommandError
-): { content: { type: 'text'; text: string }[]; isError: true } => ({
-  content: [
-    {
-      type: 'text',
-      text: JSON.stringify({ error: { code: error.code, message: error.message } }, null, 2)
-    }
-  ],
-  isError: true
-})
+const structuredPlanErrorResult = (error: PlanCommandError): PlanToolCallResult => {
+  const payload = { error: { code: error.code, message: error.message } }
+  return {
+    isError: true,
+    structuredContent: payload,
+    content: [{ type: 'text' as const, text: JSON.stringify(payload) }]
+  }
+}
+
+const handlePlanToolCall = async (call: () => Promise<unknown>): Promise<PlanToolCallResult> => {
+  try {
+    return toolResult(await call())
+  } catch (error) {
+    if (error instanceof PlanCommandError) return structuredPlanErrorResult(error)
+    throw error
+  }
+}
 
 const projectionVersionId = (result: unknown): string | undefined => {
   if (typeof result !== 'object' || result === null) return undefined
@@ -93,13 +109,13 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
       inputSchema: generatePlanToolSchema
     },
     async ({ approve, task_summary, phases, desired_outputs, feasibility }) => {
-      try {
-        const hasContent =
-          task_summary !== undefined ||
-          phases !== undefined ||
-          desired_outputs !== undefined ||
-          feasibility !== undefined
-        if (approve === true) {
+      const hasContent =
+        task_summary !== undefined ||
+        phases !== undefined ||
+        desired_outputs !== undefined ||
+        feasibility !== undefined
+      if (approve === true) {
+        return handlePlanToolCall(async () => {
           if (hasContent) {
             throw new PlanCommandError(
               'invalid-plan',
@@ -108,8 +124,10 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
           }
           const result = await handler.approve()
           executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
-          return toolResult(result)
-        }
+          return result
+        })
+      }
+      return handlePlanToolCall(async () => {
         const document = createPlanDocumentV1({
           task_summary,
           phases,
@@ -118,11 +136,8 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
         })
         const result = await handler.generate(document)
         executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
-        return toolResult(result)
-      } catch (error) {
-        if (error instanceof PlanCommandError) return planErrorToolResult(error)
-        throw error
-      }
+        return result
+      })
     }
   )
   server.registerTool(
@@ -133,8 +148,8 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
       inputSchema: updateStepStatusToolSchema
     },
     async (input) =>
-      toolResult(
-        await handler.updateStepStatus({
+      handlePlanToolCall(() =>
+        handler.updateStepStatus({
           ...input,
           expectedArtifactVersionId: executionArtifactVersionId
         })
@@ -168,9 +183,24 @@ const callPlanRpc = async (
     },
     'Session Plan RPC'
   )
-  const payload = (await response.json()) as { result?: unknown; error?: string }
+  const payload = (await response.json()) as {
+    result?: unknown
+    error?: string | { code?: unknown; message?: unknown }
+  }
   if (!response.ok || payload.error) {
-    throw new Error(payload.error ?? `Session Plan RPC failed with status ${response.status}`)
+    if (
+      typeof payload.error === 'object' &&
+      payload.error !== null &&
+      isPlanCommandErrorCode(payload.error.code) &&
+      typeof payload.error.message === 'string'
+    ) {
+      throw new PlanCommandError(payload.error.code, payload.error.message)
+    }
+    throw new Error(
+      typeof payload.error === 'string'
+        ? payload.error
+        : `Session Plan RPC failed with status ${response.status}`
+    )
   }
   return payload.result
 }

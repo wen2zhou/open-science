@@ -10,7 +10,6 @@ import {
   type ActivePlanProjection,
   type PlanDocumentV1
 } from '../../../../../shared/session-plan/contract'
-import type { SessionPlanStepStatus } from '../../../../../shared/session-persistence'
 
 type PlanSurfaceProps = Readonly<{ projection: ActivePlanProjection }>
 
@@ -45,11 +44,36 @@ const progressTitle = (projection: ActivePlanProjection): string => {
     )
     return blocked ? `Blocked · ${blocked[1].notes ?? blocked[0]}` : 'Plan blocked'
   }
+  if (projection.lifecycle === 'interrupted') return 'Plan interrupted'
   const running = Object.entries(projection.stepStatuses).filter(
     ([, value]) => value.status === 'in_progress'
   )
   if (running.length > 1) return `${running.length} steps running in parallel`
-  return running[0]?.[0] ?? lifecycleLabel(projection)
+  if (running.length === 1) return running[0][0]
+  return lifecycleLabel(projection)
+}
+
+const stepStatusLabel = (status: ActivePlanProjection['stepStates'][string]['status']): string =>
+  status.replaceAll('_', ' ')
+
+type StepProjectionStatus = ActivePlanProjection['stepStates'][string]['status']
+
+const STEP_STATUS_PRESENTATION: Record<
+  StepProjectionStatus,
+  Readonly<{ mark: string; className: string }>
+> = {
+  completed: { mark: '✓', className: 'border-primary bg-primary text-primary-foreground' },
+  in_progress: {
+    mark: '●',
+    className: 'rounded-full border-primary/30 bg-primary/10 text-primary'
+  },
+  blocked: {
+    mark: '!',
+    className: 'border-destructive/30 bg-destructive/10 text-destructive'
+  },
+  skipped: { mark: '–', className: 'bg-muted text-muted-foreground' },
+  not_run: { mark: '', className: 'bg-muted text-muted-foreground' },
+  not_started: { mark: '', className: 'border-border text-muted-foreground' }
 }
 
 const WorkspacePlanCard = ({
@@ -185,9 +209,11 @@ const PlanProgressDock = ({
     projection.counts.steps === 0
       ? 0
       : Math.round((projection.counts.completed / projection.counts.steps) * 100)
-  const running = Object.values(projection.stepStatuses).filter(
-    (value) => value.status === 'in_progress'
-  ).length
+  const running =
+    projection.lifecycle === 'in_progress'
+      ? Object.values(projection.stepStatuses).filter((value) => value.status === 'in_progress')
+          .length
+      : 0
   return (
     <div className="mb-2 grid grid-cols-[auto_minmax(120px,1fr)_auto] items-center gap-3 rounded-xl border border-border bg-bg-200/95 px-3 py-2 shadow-card">
       <div className="min-w-0">
@@ -236,14 +262,6 @@ const validatedPreviewDocument = (value: unknown): PlanDocumentV1 | null => {
 const countLabel = (count: number): string =>
   ['zero', 'one', 'two', 'three', 'four', 'five', 'six', 'seven', 'eight', 'nine', 'ten'][count] ??
   String(count)
-
-const stepMark = (status: SessionPlanStepStatus | undefined): string => {
-  if (status === 'completed') return '✓'
-  if (status === 'in_progress') return '●'
-  if (status === 'blocked') return '!'
-  if (status === 'skipped') return '–'
-  return ''
-}
 
 const PlanPreviewSurface = ({
   projection,
@@ -357,18 +375,26 @@ const PlanPreviewSurface = ({
                     </div>
                     {delegation.steps.map((step) => {
                       const runtime = projection.stepStatuses[step.title]
+                      const state = projection.stepStates?.[step.title] ?? {
+                        status: runtime?.status ?? ('not_started' as const),
+                        ...(runtime?.notes ? { notes: runtime.notes } : {})
+                      }
+                      const presentation = STEP_STATUS_PRESENTATION[state.status]
                       return (
                         <div key={step.title} className="mt-3 grid grid-cols-[18px_1fr] gap-2">
-                          <span className="mt-0.5 grid size-4 place-items-center rounded border border-border text-[10px]">
-                            {stepMark(runtime?.status)}
+                          <span
+                            aria-label={`${step.title} status: ${stepStatusLabel(state.status)}`}
+                            className={`mt-0.5 grid size-4 place-items-center rounded border text-[10px] ${presentation.className}`}
+                          >
+                            {presentation.mark}
                           </span>
                           <div>
                             <div className="text-sm font-medium">{step.title}</div>
                             <div className="text-xs text-muted-foreground">{step.description}</div>
-                            {runtime?.notes &&
-                            (runtime.status === 'blocked' || runtime.status === 'skipped') ? (
+                            {state.notes &&
+                            (state.status === 'blocked' || state.status === 'skipped') ? (
                               <div className="mt-1.5 rounded-md bg-muted px-2 py-1.5 text-[11px] text-muted-foreground">
-                                {runtime.notes}
+                                {state.notes}
                               </div>
                             ) : null}
                           </div>

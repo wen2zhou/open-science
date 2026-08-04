@@ -10,6 +10,7 @@ import {
   derivePlanLifecycle,
   parsePlanDocumentV1,
   PlanCommandError,
+  projectPlanStepStates,
   planStepTitles,
   type ActivePlanProjection,
   type GeneratePlanContent,
@@ -167,12 +168,14 @@ class PlanService {
     const sameTerminal =
       previous === input.status && ['completed', 'blocked', 'skipped'].includes(input.status)
     if (sameTerminal) {
-      return { projection: this.project(document, plan, context.revision), changed: false }
+      return { projection: this.project(document, plan, context.revision, true), changed: false }
     }
+    const startsStep = !previous && (input.status === 'in_progress' || input.status === 'skipped')
     const valid =
-      (!previous && (input.status === 'in_progress' || input.status === 'skipped')) ||
+      startsStep ||
       (previous === 'in_progress' && ['in_progress', 'completed', 'blocked'].includes(input.status))
     if (!valid) throw new PlanCommandError('invalid-transition', 'Invalid Plan step transition.')
+    if (startsStep) this.requireStartDependencies(document, plan, input.title)
     const updated: SessionPlanRuntimeContext = {
       ...plan,
       stepStatuses: {
@@ -185,14 +188,18 @@ class PlanService {
       }
     }
     const next = await this.patch(input, updated, 'running')
-    return { projection: this.project(document, updated, next.revision), changed: true }
+    return { projection: this.project(document, updated, next.revision, true), changed: true }
   }
 
-  async getProjection(projectId: string, sessionId: string): Promise<ActivePlanProjection | null> {
+  async getProjection(
+    projectId: string,
+    sessionId: string,
+    interactionIsLive = false
+  ): Promise<ActivePlanProjection | null> {
     const context = await this.dependencies.readRuntimeContext(projectId, sessionId)
     if (!context.plan) return null
     const document = await this.readDocument(projectId, sessionId, context.plan)
-    return this.project(document, context.plan, context.revision)
+    return this.project(document, context.plan, context.revision, interactionIsLive)
   }
 
   async checkTurnCompletion(input: {
@@ -201,7 +208,13 @@ class PlanService {
   }): Promise<{ allow: boolean; lifecycle?: ActivePlanProjection['lifecycle'] }> {
     const projection = await this.getProjection(input.projectId, input.sessionId)
     if (!projection || projection.approval !== 'approved') return { allow: true }
-    return { allow: projection.lifecycle === 'completed', lifecycle: projection.lifecycle }
+    const cleanlyBlocked =
+      projection.lifecycle === 'blocked' &&
+      !Object.values(projection.stepStates).some((step) => step.status === 'not_started')
+    return {
+      allow: projection.lifecycle === 'completed' || cleanlyBlocked,
+      lifecycle: projection.lifecycle
+    }
   }
 
   private async loadActive(input: PlanIdentityCommand): Promise<{
@@ -269,10 +282,56 @@ class PlanService {
     }
   }
 
+  private requireStartDependencies(
+    document: PlanDocumentV1,
+    plan: SessionPlanRuntimeContext,
+    title: string
+  ): void {
+    const phaseIndex = document.phases.findIndex((phase) =>
+      phase.delegations.some((delegation) => delegation.steps.some((step) => step.title === title))
+    )
+    const phase = document.phases[phaseIndex]
+    const delegation = phase.delegations.find((candidate) =>
+      candidate.steps.some((step) => step.title === title)
+    )!
+    const stepIndex = delegation.steps.findIndex((step) => step.title === title)
+    const isNormallyFinished = (stepTitle: string): boolean => {
+      const status = plan.stepStatuses[stepTitle]?.status
+      return status === 'completed' || status === 'skipped'
+    }
+    const priorStepSatisfied = delegation.steps
+      .slice(0, stepIndex)
+      .every((step) => isNormallyFinished(step.title))
+    const priorPhasesSatisfied = document.phases
+      .slice(0, phaseIndex)
+      .every((priorPhase) =>
+        priorPhase.delegations.every((priorDelegation) =>
+          priorDelegation.steps.every((step) => isNormallyFinished(step.title))
+        )
+      )
+    const blockedTitle = Object.entries(plan.stepStatuses).find(
+      ([, value]) => value.status === 'blocked'
+    )?.[0]
+    const delegationStartedBeforeBlock = delegation.steps.some(
+      (step) => plan.stepStatuses[step.title] !== undefined
+    )
+    if (
+      !priorStepSatisfied ||
+      !priorPhasesSatisfied ||
+      (blockedTitle !== undefined && !delegationStartedBeforeBlock)
+    ) {
+      throw new PlanCommandError(
+        'dependency-not-satisfied',
+        'The Plan step dependencies are not satisfied.'
+      )
+    }
+  }
+
   private project(
     document: PlanDocumentV1,
     plan: SessionPlanRuntimeContext,
-    revision: number
+    revision: number,
+    interactionIsLive = false
   ): ActivePlanProjection {
     const titles = planStepTitles(document)
     return {
@@ -281,14 +340,18 @@ class PlanService {
       artifactChecksum: plan.artifactChecksum,
       revision,
       approval: plan.approval,
-      lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, true),
+      lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, interactionIsLive),
       document,
       stepStatuses: plan.stepStatuses,
+      stepStates: projectPlanStepStates(document, plan.stepStatuses),
       counts: {
         phases: document.phases.length,
         delegations: document.phases.reduce((sum, phase) => sum + phase.delegations.length, 0),
         steps: titles.length,
-        completed: titles.filter((title) => plan.stepStatuses[title]?.status === 'completed').length
+        completed: titles.filter((title) => {
+          const status = plan.stepStatuses[title]?.status
+          return status === 'completed' || status === 'skipped'
+        }).length
       }
     }
   }

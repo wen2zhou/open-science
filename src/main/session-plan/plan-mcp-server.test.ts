@@ -2,7 +2,8 @@ import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { describe, expect, it, vi } from 'vitest'
 
-import { createPlanMcpServer } from './plan-mcp-server'
+import { PlanCommandError } from '../../shared/session-plan/contract'
+import { callPlanRpc, createPlanMcpServer } from './plan-mcp-server'
 
 describe('Session Plan MCP server', () => {
   it('exposes server-bound generation, approval, and exact-title status commands', async () => {
@@ -77,7 +78,60 @@ describe('Session Plan MCP server', () => {
       }
     })
     expect(generate).toHaveBeenCalledOnce()
+
+    updateStepStatus.mockRejectedValueOnce(
+      new PlanCommandError('dependency-not-satisfied', 'A previous step is unfinished.')
+    )
+    const rejected = await client.callTool({
+      name: 'update_step_status',
+      arguments: { title: 'Analyze the data', status: 'in_progress' }
+    })
+    expect(rejected).toMatchObject({
+      isError: true,
+      structuredContent: {
+        error: {
+          code: 'dependency-not-satisfied',
+          message: 'A previous step is unfinished.'
+        }
+      }
+    })
     await client.close()
     await server.close()
+  })
+
+  it('reconstructs structured Plan errors returned by the local RPC boundary', async () => {
+    vi.stubGlobal(
+      'fetch',
+      vi.fn().mockResolvedValue(
+        new Response(
+          JSON.stringify({
+            error: {
+              code: 'dependency-not-satisfied',
+              message: 'A previous step is unfinished.'
+            }
+          }),
+          { status: 500, headers: { 'content-type': 'application/json' } }
+        )
+      )
+    )
+    try {
+      await expect(
+        callPlanRpc(
+          {
+            endpoint: 'http://127.0.0.1:1234',
+            token: 'token',
+            projectId: 'project-1',
+            sessionId: 'session-1'
+          },
+          'updateStepStatus',
+          { title: 'Analyze the data', status: 'in_progress' }
+        )
+      ).rejects.toMatchObject({
+        code: 'dependency-not-satisfied',
+        message: 'A previous step is unfinished.'
+      })
+    } finally {
+      vi.unstubAllGlobals()
+    }
   })
 })
