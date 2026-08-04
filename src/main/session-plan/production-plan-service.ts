@@ -3,6 +3,7 @@ import { readFile } from 'node:fs/promises'
 import type { ArtifactTurnOwner } from '../acp/artifact-turn-owner'
 import type { ArtifactProvenanceRepository } from '../artifacts/provenance-repository'
 import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
+import { SessionRuntimeContextRevisionConflictError } from '../session-persistence/coordinator'
 import { PlanService } from './plan-service'
 
 type ProductionPlanServiceDependencies = Readonly<{
@@ -41,7 +42,8 @@ const createProductionPlanService = ({
         expectedRevision,
         patch: { plan },
         sessionStatus
-      })
+      }),
+    isRevisionConflict: (error) => error instanceof SessionRuntimeContextRevisionConflictError
   })
 
 export { createProductionPlanService }

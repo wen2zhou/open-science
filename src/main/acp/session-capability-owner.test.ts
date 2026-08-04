@@ -64,6 +64,38 @@ describe('ACP session capability owner', () => {
     ])
   })
 
+  it('aliases a provisional Plan capability to the stable app Session on commit', async () => {
+    const registerSessionAlias = vi.fn()
+    const owner = createOwner({
+      artifacts: undefined,
+      notebook: undefined,
+      skillImport: undefined,
+      plan: {
+        mcpEntryPath: '/app/main.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:4', token: 'plan' }),
+        registerSessionAlias
+      }
+    })
+
+    const provision = await owner.provision({
+      framework: { ...opencodeFramework, acceptsStdioMcp: true },
+      nativeMcpEnabled: true,
+      bridgeMcpAliasesEnabled: false,
+      policy: CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY,
+      sessionCwd: '/workspace',
+      projectName: 'project-1'
+    })
+    const planServer = provision.mcpServers[0]
+    expect(planServer && 'env' in planServer).toBe(true)
+    const provisionalId = (planServer && 'env' in planServer ? planServer.env : undefined)?.find(
+      (entry) => entry.name === 'OPEN_SCIENCE_PLAN_SESSION_ID'
+    )?.value
+    provision.commit('session-1')
+
+    expect(provisionalId).toMatch(/^plan-session-/u)
+    expect(registerSessionAlias).toHaveBeenCalledWith(provisionalId, 'session-1')
+  })
+
   it('refreshes preference-backed availability before backend guidance is projected', async () => {
     let skillImportEnabled = false
     const owner = createOwner({

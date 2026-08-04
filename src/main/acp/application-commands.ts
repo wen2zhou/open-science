@@ -127,8 +127,9 @@ type AcpApplicationCommandRuntime = Pick<
   | 'respondToPermission'
   | 'setPermissionProfile'
   | 'revokePermissionGrant'
-> &
-  Partial<Pick<AcpRuntimeCoordinator, 'getSessionPlanProjection' | 'respondSessionPlan'>>
+  | 'getSessionPlanProjection'
+  | 'respondSessionPlan'
+>
 
 type AcpApplicationCommandDependencies = Readonly<{
   runtime: AcpApplicationCommandRuntime
@@ -172,14 +173,10 @@ const registerAcpCommands = (
       'acp:revoke-permission-grant': (invocation) =>
         dependencies.runtime.revokePermissionGrant(invocation.args[0]),
       'acp:get-plan-projection': (invocation) =>
-        dependencies.runtime.getSessionPlanProjection?.(invocation.args[0], invocation.args[1]) ??
-        Promise.resolve(null),
+        dependencies.runtime.getSessionPlanProjection(invocation.args[0], invocation.args[1]),
       'acp:respond-plan': (invocation) => {
         if (!canSatisfyHumanApproval(invocation.callerContext)) {
           throw new Error('Only a current human caller can respond to a Session Plan.')
-        }
-        if (!dependencies.runtime.respondSessionPlan) {
-          throw new Error('Session Plan capability is not configured.')
         }
         return dependencies.runtime.respondSessionPlan(invocation.args[0])
       }

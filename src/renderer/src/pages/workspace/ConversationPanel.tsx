@@ -557,11 +557,7 @@ const ConversationPanel = ({
                         usePreviewWorkbenchStore
                           .getState()
                           .upsertAndActivateItem(
-                            createSessionPlanPreviewItem(
-                              activeSession.activePlanProjection!,
-                              activeSession.id,
-                              activeSession.projectId
-                            )
+                            createSessionPlanPreviewItem(activeSession.id, activeSession.projectId)
                           )
                       }}
                     />

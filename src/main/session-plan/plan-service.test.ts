@@ -46,6 +46,7 @@ const setup = () => {
       persistedStatus = sessionStatus
       return context
     }),
+    isRevisionConflict: (error) => error instanceof Error && error.message === 'revision conflict',
     now: () => 42,
     createId: () => 'a91f30c2'
   }
@@ -70,7 +71,11 @@ describe('PlanService', () => {
 
     expect(dependencies.writeArtifactForActiveTurn).toHaveBeenCalledWith(
       'session-1',
-      expect.objectContaining({ filename: 'plan-a91f30c2.json', mimeType: 'application/json' })
+      expect.objectContaining({
+        filename: 'plan-a91f30c2.json',
+        mimeType: 'application/json',
+        kind: 'plan'
+      })
     )
     expect(dependencies.readArtifactVersion).toHaveBeenCalledWith({
       projectId: 'project-1',
@@ -157,5 +162,33 @@ describe('PlanService', () => {
     ).rejects.toMatchObject({ code: 'artifact-unavailable' })
     expect(context().plan).toBeUndefined()
     expect(dependencies.patchRuntimeContext).not.toHaveBeenCalled()
+  })
+
+  it('distinguishes a CAS conflict from an unrelated persistence failure', async () => {
+    const conflict = setup()
+    vi.mocked(conflict.dependencies.patchRuntimeContext).mockRejectedValueOnce(
+      new Error('revision conflict')
+    )
+    await expect(
+      conflict.service.generate({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        interactionId: 'interaction-1',
+        content
+      })
+    ).rejects.toMatchObject({ code: 'revision-conflict' })
+
+    const storage = setup()
+    vi.mocked(storage.dependencies.patchRuntimeContext).mockRejectedValueOnce(
+      new Error('disk unavailable')
+    )
+    await expect(
+      storage.service.generate({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        interactionId: 'interaction-1',
+        content
+      })
+    ).rejects.toThrow('disk unavailable')
   })
 })

@@ -888,22 +888,47 @@ const WorkspaceMessageScrollerImpl = ({
                         usePreviewWorkbenchStore
                           .getState()
                           .upsertAndActivateItem(
-                            createSessionPlanPreviewItem(
-                              projection,
-                              activeSession.id,
-                              activeSession.projectId
-                            )
+                            createSessionPlanPreviewItem(activeSession.id, activeSession.projectId)
                           )
                       }}
-                      onRespond={(decision) => {
+                      onRespond={async (decision) => {
                         const plan = activeSession.activePlanProjection
                         if (!plan) return
-                        void window.api.acp.respondPlan({
+                        try {
+                          await window.api.acp.respondPlan({
+                            projectId: activeSession.projectId,
+                            sessionId: activeSession.id,
+                            artifactVersionId: plan.artifactVersionId,
+                            expectedRevision: plan.revision,
+                            decision
+                          })
+                        } catch (error) {
+                          const current = await window.api.acp.getPlanProjection(
+                            activeSession.projectId,
+                            activeSession.id
+                          )
+                          if (current)
+                            useSessionStore
+                              .getState()
+                              .setActivePlanProjection(activeSession.id, current)
+                          throw error
+                        }
+                      }}
+                      onSubmitApprovalText={async (text) => {
+                        const plan = activeSession.activePlanProjection
+                        if (!plan) return
+                        useSessionStore.getState().appendUserMessage({
+                          sessionId: activeSession.id,
+                          projectId: activeSession.projectId,
+                          content: text
+                        })
+                        await flushSessionPersistence()
+                        await window.api.acp.respondPlan({
                           projectId: activeSession.projectId,
                           sessionId: activeSession.id,
                           artifactVersionId: plan.artifactVersionId,
                           expectedRevision: plan.revision,
-                          decision
+                          decision: 'approved'
                         })
                       }}
                     />

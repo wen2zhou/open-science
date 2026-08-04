@@ -1,6 +1,6 @@
 // @vitest-environment jsdom
 
-import { fireEvent, render, screen } from '@testing-library/react'
+import { fireEvent, render, screen, waitFor } from '@testing-library/react'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ActivePlanProjection } from '../../../../../shared/session-plan/contract'
@@ -37,7 +37,7 @@ const projection: ActivePlanProjection = {
 describe('Session Plan renderer surfaces', () => {
   it('renders the compact English proposal card and shares approval with Open', () => {
     const onOpen = vi.fn()
-    const onRespond = vi.fn()
+    const onRespond = vi.fn().mockResolvedValue(undefined)
     render(<WorkspacePlanCard projection={projection} onOpen={onOpen} onRespond={onRespond} />)
 
     expect(screen.getByText('Plan ready for review')).toBeTruthy()
@@ -48,6 +48,25 @@ describe('Session Plan renderer surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     expect(onOpen).toHaveBeenCalledOnce()
     expect(onRespond).toHaveBeenCalledWith('approved')
+  })
+
+  it('submits explicit approval text through the shared approval transition', async () => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const onSubmitApprovalText = vi.fn().mockResolvedValue(undefined)
+    const view = render(
+      <WorkspacePlanCard
+        projection={projection}
+        onOpen={vi.fn()}
+        onRespond={onRespond}
+        onSubmitApprovalText={onSubmitApprovalText}
+      />
+    )
+
+    const input = view.container.querySelector('input')!
+    fireEvent.change(input, { target: { value: 'approve' } })
+    fireEvent.submit(input.closest('form')!)
+    await waitFor(() => expect(onSubmitApprovalText).toHaveBeenCalledWith('approve'))
+    expect(onRespond).not.toHaveBeenCalled()
   })
 
   it('renders the three-level Plan preview and Variant B progress dock', () => {

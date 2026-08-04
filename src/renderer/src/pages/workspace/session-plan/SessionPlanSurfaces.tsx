@@ -1,4 +1,5 @@
 import type { ActivePlanProjection } from '../../../../../shared/session-plan/contract'
+import { useState } from 'react'
 
 type PlanSurfaceProps = Readonly<{ projection: ActivePlanProjection }>
 
@@ -34,13 +35,30 @@ const progressTitle = (projection: ActivePlanProjection): string => {
 const WorkspacePlanCard = ({
   projection,
   onOpen,
-  onRespond
+  onRespond,
+  onSubmitApprovalText
 }: PlanSurfaceProps &
   Readonly<{
     onOpen: () => void
-    onRespond: (decision: 'approved' | 'rejected') => void
+    onRespond: (decision: 'approved' | 'rejected') => Promise<void>
+    onSubmitApprovalText?: (text: string) => Promise<void>
   }>): React.JSX.Element => {
   const decisionPending = projection.approval === 'pending'
+  const [responseText, setResponseText] = useState('')
+  const [decisionBusy, setDecisionBusy] = useState(false)
+  const [decisionError, setDecisionError] = useState<string>()
+  const respond = async (decision: 'approved' | 'rejected'): Promise<void> => {
+    if (decisionBusy) return
+    setDecisionBusy(true)
+    setDecisionError(undefined)
+    try {
+      await onRespond(decision)
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : 'Unable to update the Plan.')
+    } finally {
+      setDecisionBusy(false)
+    }
+  }
   return (
     <article className="mt-4 overflow-hidden rounded-lg border border-border bg-card shadow-card">
       <div className="p-4">
@@ -59,7 +77,7 @@ const WorkspacePlanCard = ({
           <div className="flex gap-2">
             <button
               type="button"
-              className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted"
+              className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               onClick={onOpen}
             >
               Open
@@ -68,15 +86,17 @@ const WorkspacePlanCard = ({
               <>
                 <button
                   type="button"
-                  className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted"
-                  onClick={() => onRespond('rejected')}
+                  className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50"
+                  disabled={decisionBusy}
+                  onClick={() => void respond('rejected')}
                 >
                   Dismiss
                 </button>
                 <button
                   type="button"
-                  className="h-8 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground"
-                  onClick={() => onRespond('approved')}
+                  className="h-8 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50"
+                  disabled={decisionBusy}
+                  onClick={() => void respond('approved')}
                 >
                   Approve
                 </button>
@@ -88,16 +108,43 @@ const WorkspacePlanCard = ({
           ● {projection.document.feasibility.confidence} confidence
         </div>
         {decisionPending ? (
-          <div className="mt-3 border-t border-border pt-3">
+          <form
+            className="mt-3 border-t border-border pt-3"
+            onSubmit={(event) => {
+              event.preventDefault()
+              if (decisionBusy) return
+              if (responseText.trim().toLowerCase() !== 'approve') {
+                setDecisionError('This Plan version supports explicit approval only.')
+                return
+              }
+              setDecisionBusy(true)
+              setDecisionError(undefined)
+              void (onSubmitApprovalText?.(responseText) ?? onRespond('approved'))
+                .catch((error: unknown) =>
+                  setDecisionError(
+                    error instanceof Error ? error.message : 'Unable to update the Plan.'
+                  )
+                )
+                .finally(() => setDecisionBusy(false))
+            }}
+          >
             <label className="sr-only" htmlFor={`plan-response-${projection.artifactVersionId}`}>
               Respond to Plan
             </label>
             <input
               id={`plan-response-${projection.artifactVersionId}`}
-              className="h-9 w-full bg-transparent text-sm outline-none placeholder:text-muted-foreground"
+              className="h-9 w-full rounded bg-transparent text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
               placeholder="Describe changes, or type “approve”…"
+              value={responseText}
+              disabled={decisionBusy}
+              onChange={(event) => setResponseText(event.target.value)}
             />
-          </div>
+            {decisionError ? (
+              <p role="alert" className="mt-1 text-xs text-destructive">
+                {decisionError}
+              </p>
+            ) : null}
+          </form>
         ) : (
           <div className="mt-3 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary">
             {projection.lifecycle === 'completed'
@@ -139,7 +186,11 @@ const PlanProgressDock = ({
       >
         <div className="h-full rounded-full bg-primary" style={{ width: `${percent}%` }} />
       </div>
-      <button type="button" className="text-xs font-medium text-primary" onClick={onOpen}>
+      <button
+        type="button"
+        className="rounded text-xs font-medium text-primary focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        onClick={onOpen}
+      >
         Open plan
       </button>
     </div>

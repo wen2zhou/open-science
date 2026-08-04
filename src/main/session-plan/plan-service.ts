@@ -25,7 +25,7 @@ type ArtifactWriteResult = Readonly<{
 type PlanServiceDependencies = Readonly<{
   writeArtifactForActiveTurn: (
     sessionId: string,
-    input: { filename: string; content: string; mimeType: string }
+    input: { filename: string; content: string; mimeType: string; kind: 'plan' }
   ) => Promise<ArtifactWriteResult>
   readArtifactVersion: (input: {
     projectId: string
@@ -41,6 +41,7 @@ type PlanServiceDependencies = Readonly<{
     plan: SessionPlanRuntimeContext
     sessionStatus: 'waiting-plan-approval' | 'running' | 'idle'
   }) => Promise<SessionRuntimeContext>
+  isRevisionConflict: (error: unknown) => boolean
   now?: () => number
   createId?: () => string
 }>
@@ -86,7 +87,8 @@ class PlanService {
     const artifact = await this.dependencies.writeArtifactForActiveTurn(input.sessionId, {
       filename: `plan-${this.createId()}.json`,
       content: serialized,
-      mimeType: 'application/json'
+      mimeType: 'application/json',
+      kind: 'plan'
     })
     if (!artifact.artifactId || !artifact.versionId || !artifact.checksum) {
       throw new PlanCommandError('artifact-unavailable', 'Plan Artifact provenance is incomplete.')
@@ -124,8 +126,11 @@ class PlanService {
         plan,
         sessionStatus: 'waiting-plan-approval'
       })
-    } catch {
-      throw new PlanCommandError('revision-conflict', 'The Session Plan changed concurrently.')
+    } catch (error) {
+      if (this.dependencies.isRevisionConflict(error)) {
+        throw new PlanCommandError('revision-conflict', 'The Session Plan changed concurrently.')
+      }
+      throw error
     }
     return { projection: this.project(document, plan, next.revision), pauseInteraction: true }
   }
@@ -258,8 +263,11 @@ class PlanService {
         plan,
         sessionStatus
       })
-    } catch {
-      throw new PlanCommandError('revision-conflict', 'The Plan revision changed concurrently.')
+    } catch (error) {
+      if (this.dependencies.isRevisionConflict(error)) {
+        throw new PlanCommandError('revision-conflict', 'The Plan revision changed concurrently.')
+      }
+      throw error
     }
   }
 

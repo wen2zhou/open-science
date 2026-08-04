@@ -1,6 +1,7 @@
 import { selectProjectSessionReviews, useReviewStore } from '@/stores/review-store'
 import { useNavigationStore } from '@/stores/navigation-store'
 import type { PreviewToolItem } from '@/stores/preview-workbench-store'
+import { useSessionStore } from '@/stores/session-store'
 
 import { NotebookPreview } from '../NotebookPreview'
 import type { NotebookPreviewItem } from '../NotebookPreview'
@@ -44,6 +45,9 @@ export const PreviewToolContent = ({
   item: PreviewToolItem
 }): React.JSX.Element | null => {
   const activeProjectId = useNavigationStore((state) => state.activeProjectId)
+  const planProjection = useSessionStore(
+    (state) => state.sessions.find((session) => session.id === item.sessionId)?.activePlanProjection
+  )
 
   // Remount the Files tool per project so its transient dialog cannot outlive the project it opened.
   if (item.toolKind === 'files') {
@@ -54,8 +58,8 @@ export const PreviewToolContent = ({
     return <SessionReviewerContent item={item} projectId={activeProjectId} />
   }
 
-  if (item.toolKind === 'plan' && item.planProjection) {
-    return <PlanPreviewSurface projection={item.planProjection} />
+  if (item.toolKind === 'plan') {
+    return planProjection ? <PlanPreviewSurface projection={planProjection} /> : null
   }
 
   if (!isNotebookPreviewItem(item)) return null

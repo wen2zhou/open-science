@@ -306,6 +306,7 @@ type AcpRuntimePlanOptions = {
     sessionId: string
     projectId: string
   }) => Promise<NotebookRpcConnection>
+  registerSessionAlias?: (aliasSessionId: string, sessionId: string) => void
   sessions: Pick<
     SessionPersistenceCoordinator,
     'readSessionRuntimeContext' | 'patchSessionRuntimeContext'
@@ -568,7 +569,10 @@ class AcpRuntime {
   private readonly artifactRunRegistry: ArtifactRunRegistry | undefined
   private readonly artifactTurns: ArtifactTurnOwner | undefined
   private readonly planService: PlanService | undefined
-  private readonly planApprovalWaiters = new Map<string, (result: unknown) => void>()
+  private readonly planApprovalWaiters = new Map<
+    string,
+    { resolve: (result: unknown) => void; reject: (error: Error) => void }
+  >()
   private readonly promptContentOwner: AcpPromptContentOwner
 
   // Wires runtime dependencies and forwards permission prompts into the event stream.
@@ -844,6 +848,9 @@ class AcpRuntime {
     const service = this.planService
     if (!service) throw new Error('Session Plan capability is not configured.')
     if (input.operation === 'generate') {
+      if (this.planApprovalWaiters.has(input.sessionId)) {
+        throw new Error('A Session Plan is already awaiting approval.')
+      }
       const interactionId = this.artifactTurns?.promptMessageIdFor(input.sessionId)
       if (!interactionId) throw new Error('No active interaction can generate a Session Plan.')
       const result = await service.generate({
@@ -852,8 +859,8 @@ class AcpRuntime {
         interactionId,
         content: input.input as GeneratePlanContent
       })
-      const approval = new Promise((resolve) => {
-        this.planApprovalWaiters.set(input.sessionId, resolve)
+      const approval = new Promise((resolve, reject) => {
+        this.planApprovalWaiters.set(input.sessionId, { resolve, reject })
       })
       this.publishPlanProjection(input.sessionId, result.projection)
       return approval
@@ -869,7 +876,7 @@ class AcpRuntime {
     if (input.operation === 'approve') {
       const result = await service.respond({ ...identity, decision: 'approved' })
       this.publishPlanProjection(input.sessionId, result.projection)
-      this.planApprovalWaiters.get(input.sessionId)?.(result)
+      this.planApprovalWaiters.get(input.sessionId)?.resolve(result)
       this.planApprovalWaiters.delete(input.sessionId)
       return result
     }
@@ -897,7 +904,7 @@ class AcpRuntime {
     if (!this.planService) throw new Error('Session Plan capability is not configured.')
     const result = await this.planService.respond(input)
     this.publishPlanProjection(input.sessionId, result.projection)
-    this.planApprovalWaiters.get(input.sessionId)?.(result)
+    this.planApprovalWaiters.get(input.sessionId)?.resolve(result)
     this.planApprovalWaiters.delete(input.sessionId)
     return result
   }
@@ -915,6 +922,13 @@ class AcpRuntime {
       title: 'Session Plan updated',
       planProjection: projection
     })
+  }
+
+  private rejectPlanApprovalWaiter(sessionId: string, reason: string): void {
+    const waiter = this.planApprovalWaiters.get(sessionId)
+    if (!waiter) return
+    this.planApprovalWaiters.delete(sessionId)
+    waiter.reject(new Error(reason))
   }
 
   // Lists sessions with an in-flight prompt, for the pre-migration active-session warning.
@@ -2532,6 +2546,9 @@ class AcpRuntime {
 
     runCleanup('permission-context', () => this.permissionContext.dispose())
     runCleanup('reviewer-state', () => this.reviewerSessions.clear())
+    for (const sessionId of this.planApprovalWaiters.keys()) {
+      this.rejectPlanApprovalWaiter(sessionId, 'The Session Plan interaction was disconnected.')
+    }
     this.sessionInteractions.supersedeAll()
     // Context usage belongs to this live agent-context generation. Invalidate it before teardown,
     // including when a later session.dispose throws. A reconnect may resume the native context or
@@ -3334,6 +3351,10 @@ class AcpRuntime {
             sessionId: activeSession.sessionId
           }),
         onAccepted: () => {
+          this.rejectPlanApprovalWaiter(
+            request.sessionId,
+            'The Session Plan interaction was cancelled.'
+          )
           this.cancelPermissionFlowForSession(request.sessionId)
           this.pushEvent({
             kind: 'system',
@@ -3376,6 +3397,7 @@ class AcpRuntime {
     const target = this.sessionRegistry.lookup(request.sessionId)
     const session = target?.attachment?.session
 
+    this.rejectPlanApprovalWaiter(request.sessionId, 'The Session Plan interaction was deleted.')
     this.cancelPermissionFlowForSession(request.sessionId)
 
     if (session) {

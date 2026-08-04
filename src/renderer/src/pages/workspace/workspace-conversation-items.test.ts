@@ -100,6 +100,10 @@ describe('workspace conversation items', () => {
           id: 'plan-status',
           providerToolName: 'mcp.open-science-plan.update_step_status'
         }),
+        createActivity({
+          id: 'plan-opencode',
+          providerToolName: 'open_science_plan_generate_plan'
+        }),
         createActivity({ id: 'failed-plan', providerToolName: 'generate_plan', status: 'failed' })
       ]
     }

@@ -40,7 +40,7 @@ const KNOWN_TITLE_TOOL_NAMES = new Set(['ToolSearch'])
 const NOTEBOOK_PROVIDER_TOOL_PATTERN =
   /^(?:mcp__|mcp\.)?open[-_]science[-_]notebook(?:__|\.)([^.]+)$/iu
 const PLAN_PROVIDER_TOOL_PATTERN =
-  /^(?:(?:mcp__|mcp\.)?open[-_]science[-_]plan(?:__|\.)|)(?:generate_plan|update_step_status)$/iu
+  /^(?:(?:mcp__|mcp\.)?open[-_]science[-_]plan(?:__|\.|_)|)(?:generate_plan|update_step_status)$/iu
 
 const isSuccessfulPlanActivity = (activity: ToolActivity): boolean =>
   activity.status !== 'failed' &&

@@ -5,7 +5,6 @@ import type { ProjectFileOriginSession } from '../../../shared/project-files'
 import type { FindingLocator } from '../../../shared/reviewer'
 import type { UploadedAttachment } from '../../../shared/uploads'
 import { getUploadedAttachmentPath } from '../../../shared/uploads'
-import type { ActivePlanProjection } from '../../../shared/session-plan/contract'
 
 export type PreviewPanelState = 'open' | 'collapsed'
 export type PreviewFileFormat =
@@ -58,7 +57,6 @@ export type PreviewToolItem = PreviewItemBase & {
   type: 'tool'
   toolKind?: 'notebook' | 'files' | 'reviewer' | 'plan'
   notebook?: NotebookSessionReference
-  planProjection?: ActivePlanProjection
   // Reviewer-specific: which session's reviews to show, which review to select, and the active
   // finding to scroll to.
   reviewerSessionId?: string
@@ -182,18 +180,13 @@ const createNotebookPreviewItem = (notebook: NotebookSessionReference): PreviewT
   notebook
 })
 
-const createSessionPlanPreviewItem = (
-  projection: ActivePlanProjection,
-  sessionId: string,
-  projectId: string
-): PreviewToolItem => ({
+const createSessionPlanPreviewItem = (sessionId: string, projectId: string): PreviewToolItem => ({
   id: `tool:${sessionId}:plan`,
   projectId,
   sessionId,
   type: 'tool',
   toolKind: 'plan',
-  title: 'Session Plan',
-  planProjection: projection
+  title: 'Session Plan'
 })
 
 // Builds the stable project-level preview tab that owns the file library surface.

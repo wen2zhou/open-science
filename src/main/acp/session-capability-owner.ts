@@ -122,6 +122,7 @@ export type SessionCapabilityPlanOptions = {
     sessionId: string
     projectId: string
   }) => Promise<NotebookRpcConnection>
+  registerSessionAlias?: (aliasSessionId: string, sessionId: string) => void
 }
 
 type BuildSessionCapabilitiesRequest = {
@@ -492,7 +493,15 @@ export class AcpSessionCapabilityOwner {
         this.options.skillImport?.registerSessionAlias
       )
     }
-    if (routingIds.plan) this.planRoutingIds.set(appSessionId, routingIds.plan)
+    if (routingIds.plan) {
+      this.planRoutingIds.set(appSessionId, routingIds.plan)
+      this.registerAlias(
+        'plan',
+        routingIds.plan,
+        appSessionId,
+        this.options.plan?.registerSessionAlias
+      )
+    }
     this.descriptors.set(appSessionId, descriptor)
     this.committedSessionIds.add(appSessionId)
     this.commitNotebookRelease(appSessionId, request.notebookRelease)
