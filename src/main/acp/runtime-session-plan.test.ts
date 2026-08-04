@@ -34,7 +34,7 @@ const projection = (artifactVersionId: string, revision = 1): ActivePlanProjecti
 const createRuntimeHarness = (options: {
   onEvent?: () => void
   activeProjection?: ActivePlanProjection
-}) => {
+}): { runtime: AcpRuntime; updateStepStatus: ReturnType<typeof vi.fn> } => {
   const generated = projection('version-1')
   const approved = { ...generated, approval: 'approved' as const, lifecycle: 'approved' as const }
   const updateStepStatus = vi.fn(async () => ({ projection: approved, changed: true }))
@@ -52,7 +52,7 @@ const createRuntimeHarness = (options: {
     planApprovalWaiters: new Map(),
     callbacks: { onEvent: options.onEvent }
   })
-  return { runtime: target as unknown as AcpRuntime, service, updateStepStatus }
+  return { runtime: target as unknown as AcpRuntime, updateStepStatus }
 }
 
 describe('AcpRuntime Session Plan seam', () => {

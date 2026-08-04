@@ -220,6 +220,13 @@ describe('WorkspacePage customize prefill', () => {
     expect(conversationProps.draftDoc).toEqual({ nodes: [] })
   })
 
+  it('renders a selected session when an older preload omits plan projection hydration', async () => {
+    useSessionStore.setState({ selectedSessionId: 'sess-a' })
+
+    await expect(renderPage()).resolves.toBeUndefined()
+    expect(container.querySelector('[data-testid="conversation"]')).not.toBeNull()
+  })
+
   it('uses the normal picked-Skill mechanism: the chip is a real skill node, not parsed text', async () => {
     useNavigationStore.setState({ pendingCustomizePrefill: 'proj-1' })
     await renderPage()

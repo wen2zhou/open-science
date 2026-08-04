@@ -63,7 +63,7 @@ type PlanMcpEnvironment = LocalRpcTransport &
 type PlanMcpServerConfigRequest = PlanMcpEnvironment &
   Readonly<{ command: string; entryPath: string }>
 
-const toolResult = (result: unknown) => ({
+const toolResult = (result: unknown): { content: { type: 'text'; text: string }[] } => ({
   content: [{ type: 'text' as const, text: JSON.stringify(result, null, 2) }]
 })
 
