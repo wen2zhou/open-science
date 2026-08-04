@@ -87,7 +87,7 @@ describe('notebook local RPC server', () => {
       planService: { call }
     })
     const connection = await server.issuePlanConnection('session-1', 'project-1')
-    const request = (token: string) =>
+    const request = (token: string): Promise<Response> =>
       fetch(connection.endpoint, {
         method: 'POST',
         headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },

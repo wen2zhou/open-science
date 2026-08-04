@@ -900,7 +900,10 @@ class AcpRuntime {
     return result
   }
 
-  getSessionPlanProjection(projectId: string, sessionId: string) {
+  getSessionPlanProjection(
+    projectId: string,
+    sessionId: string
+  ): ReturnType<PlanService['getProjection']> {
     return this.planService?.getProjection(projectId, sessionId) ?? Promise.resolve(null)
   }
 
@@ -910,7 +913,7 @@ class AcpRuntime {
     artifactVersionId: string
     expectedRevision: number
     decision: 'approved' | 'rejected'
-  }) {
+  }): ReturnType<PlanService['respond']> {
     if (!this.planService) throw new Error('Session Plan capability is not configured.')
     const result = await this.planService.respond(input)
     this.resolvePlanApprovalWaiter(input.sessionId, result)
