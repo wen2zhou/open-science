@@ -614,12 +614,17 @@ describe('normalizeSessionFile with activities', () => {
       ...createSessionWithActivity(undefined),
       activities: undefined,
       title: 'Conversation survives',
+      status: 'waiting-plan-approval',
       runtimeContext: { version: 1, revision: -1, plan: { approval: 'approved' } }
     })
 
     expect(unknown).toMatchObject({ id: 'session-1', messages: [] })
     expect(unknown?.runtimeContext).toBeUndefined()
-    expect(damaged).toMatchObject({ title: 'Conversation survives', messages: [] })
+    expect(damaged).toMatchObject({
+      title: 'Conversation survives',
+      status: 'idle',
+      messages: []
+    })
     expect(damaged?.runtimeContext).toBeUndefined()
   })
 

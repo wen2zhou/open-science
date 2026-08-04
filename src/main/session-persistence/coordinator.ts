@@ -773,6 +773,7 @@ class SessionPersistenceCoordinator {
         )
       }
       const { runtimeContext: _submittedRuntimeContext, ...rendererOwnedSession } = session
+      void _submittedRuntimeContext
       const authority = authoritative.status === 'found' ? authoritative.session : undefined
       const mainOwnedStatus =
         authority?.status === 'waiting-plan-approval' ||

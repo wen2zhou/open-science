@@ -1237,6 +1237,12 @@ const sanitizeSession = (
   if (contextUsage) sanitized.contextUsage = contextUsage
   const runtimeContext = sanitizeSessionRuntimeContext(session.runtimeContext)
   if (runtimeContext) sanitized.runtimeContext = runtimeContext
+  if (sanitized.status === 'waiting-plan-approval' && runtimeContext?.plan === undefined) {
+    // Approval waiting is meaningful only with restorable main-owned Plan authority. A corrupt or
+    // unknown context must not leave the conversation permanently blocked with nothing to approve.
+    sanitized.status = 'idle'
+    sanitized.activeRun = undefined
+  }
 
   // Normalize interrupted runtime state before constructing a graph for legacy sessions. Otherwise
   // the compatibility message list becomes an error while the newly-created canonical graph retains
