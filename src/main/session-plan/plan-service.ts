@@ -171,13 +171,12 @@ class PlanService {
     if (sameTerminal) {
       return { projection: this.project(document, plan, context.revision, true), changed: false }
     }
+    const startsStep = !previous && (input.status === 'in_progress' || input.status === 'skipped')
     const valid =
-      (!previous && (input.status === 'in_progress' || input.status === 'skipped')) ||
+      startsStep ||
       (previous === 'in_progress' && ['in_progress', 'completed', 'blocked'].includes(input.status))
     if (!valid) throw new PlanCommandError('invalid-transition', 'Invalid Plan step transition.')
-    if (!previous && (input.status === 'in_progress' || input.status === 'skipped')) {
-      this.requireStartDependencies(document, plan, input.title)
-    }
+    if (startsStep) this.requireStartDependencies(document, plan, input.title)
     const updated: SessionPlanRuntimeContext = {
       ...plan,
       stepStatuses: {
