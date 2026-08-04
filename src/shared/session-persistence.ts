@@ -56,17 +56,36 @@ export type SessionRuntimeContextValue =
 
 export type SessionRuntimeContextOwner = 'plan'
 
+export type SessionPlanApproval = 'pending' | 'approved' | 'rejected'
+export type SessionPlanStepStatus = 'in_progress' | 'completed' | 'blocked' | 'skipped'
+export type SessionPlanRuntimeContext = Readonly<{
+  artifactId: string
+  artifactVersionId: string
+  artifactChecksum: string
+  approval: SessionPlanApproval
+  stepStatuses: Readonly<
+    Record<
+      string,
+      Readonly<{
+        status: SessionPlanStepStatus
+        updatedAt: number
+        notes?: string
+      }>
+    >
+  >
+}>
+
 // Main-owned mutable authority embedded in the Session record. Owner modules use top-level keys
 // (for example `plan`); renderer consumers receive this only as a read projection. Versioning lets a
 // future incompatible envelope fail closed instead of reviving authority under unknown semantics.
 export type SessionRuntimeContext = Readonly<{
   version: 1
   revision: number
-  plan?: SessionRuntimeContextValue
+  plan?: SessionPlanRuntimeContext
 }>
 
 export type SessionRuntimeContextPatch = Readonly<
-  Partial<Record<SessionRuntimeContextOwner, SessionRuntimeContextValue | undefined>>
+  Partial<Record<SessionRuntimeContextOwner, SessionPlanRuntimeContext | undefined>>
 >
 
 // Stores artifact references only; file bytes stay on disk under the managed artifact root.
@@ -331,6 +350,75 @@ const sanitizeRuntimeContextValue = (
   return result
 }
 
+const SESSION_PLAN_APPROVALS = new Set<SessionPlanApproval>(['pending', 'approved', 'rejected'])
+const SESSION_PLAN_STEP_STATUSES = new Set<SessionPlanStepStatus>([
+  'in_progress',
+  'completed',
+  'blocked',
+  'skipped'
+])
+
+const sanitizeSessionPlanRuntimeContext = (
+  value: unknown
+): SessionPlanRuntimeContext | undefined => {
+  if (!isRecord(value)) return undefined
+  if (
+    Object.keys(value).some(
+      (field) =>
+        ![
+          'artifactId',
+          'artifactVersionId',
+          'artifactChecksum',
+          'approval',
+          'stepStatuses'
+        ].includes(field)
+    )
+  ) {
+    return undefined
+  }
+
+  const artifactId = asString(value.artifactId)
+  const artifactVersionId = asString(value.artifactVersionId)
+  const artifactChecksum = asString(value.artifactChecksum)
+  const approval = asString(value.approval) as SessionPlanApproval | undefined
+  if (
+    !artifactId ||
+    !artifactVersionId ||
+    !artifactChecksum ||
+    !approval ||
+    !SESSION_PLAN_APPROVALS.has(approval) ||
+    !isRecord(value.stepStatuses)
+  ) {
+    return undefined
+  }
+
+  const stepStatuses: Record<
+    string,
+    { status: SessionPlanStepStatus; updatedAt: number; notes?: string }
+  > = {}
+  for (const [title, rawStatus] of Object.entries(value.stepStatuses)) {
+    if (!title || !isRecord(rawStatus)) return undefined
+    if (Object.keys(rawStatus).some((field) => !['status', 'updatedAt', 'notes'].includes(field))) {
+      return undefined
+    }
+    const status = asString(rawStatus.status) as SessionPlanStepStatus | undefined
+    const updatedAt = asNumber(rawStatus.updatedAt)
+    const notes = rawStatus.notes === undefined ? undefined : asString(rawStatus.notes)
+    if (
+      !status ||
+      !SESSION_PLAN_STEP_STATUSES.has(status) ||
+      updatedAt === undefined ||
+      updatedAt < 0 ||
+      (rawStatus.notes !== undefined && notes === undefined)
+    ) {
+      return undefined
+    }
+    stepStatuses[title] = { status, updatedAt, ...(notes !== undefined ? { notes } : {}) }
+  }
+
+  return { artifactId, artifactVersionId, artifactChecksum, approval, stepStatuses }
+}
+
 export const sanitizeSessionRuntimeContext = (
   value: unknown
 ): SessionRuntimeContext | undefined => {
@@ -338,7 +426,7 @@ export const sanitizeSessionRuntimeContext = (
   const revision = asNumber(value.revision)
   if (revision === undefined || !Number.isSafeInteger(revision) || revision < 0) return undefined
 
-  const result: { version: 1; revision: number; plan?: SessionRuntimeContextValue } = {
+  const result: { version: 1; revision: number; plan?: SessionPlanRuntimeContext } = {
     version: 1,
     revision
   }
@@ -346,9 +434,11 @@ export const sanitizeSessionRuntimeContext = (
   for (const [owner, ownerValue] of Object.entries(value)) {
     if (owner === 'version' || owner === 'revision') continue
     if (owner !== 'plan') return undefined
-    const sanitized = sanitizeRuntimeContextValue(ownerValue, budget)
-    if (sanitized === undefined) return undefined
-    result.plan = sanitized
+    const sanitizedJson = sanitizeRuntimeContextValue(ownerValue, budget)
+    if (sanitizedJson === undefined) return undefined
+    const plan = sanitizeSessionPlanRuntimeContext(sanitizedJson)
+    if (!plan) return undefined
+    result.plan = plan
   }
   return result
 }

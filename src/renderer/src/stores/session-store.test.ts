@@ -68,7 +68,13 @@ describe('session store', () => {
           runtimeContext: {
             version: 1,
             revision: 2,
-            plan: { artifactVersionId: 'plan-version-1', approval: 'pending' }
+            plan: {
+              artifactId: 'plan-1',
+              artifactVersionId: 'plan-version-1',
+              artifactChecksum: 'a'.repeat(64),
+              approval: 'pending',
+              stepStatuses: {}
+            }
           },
           messages: [],
           createdAt: 1,

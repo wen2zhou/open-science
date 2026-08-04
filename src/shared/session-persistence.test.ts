@@ -8,7 +8,8 @@ import {
   normalizeSessionFile,
   sanitizeMessageImages,
   sanitizeToolActivity,
-  type PersistedChatSession
+  type PersistedChatSession,
+  type SessionPlanRuntimeContext
 } from './session-persistence'
 import { createLinearConversationGraph } from './conversation-graph'
 
@@ -26,6 +27,14 @@ const createSessionWithActivity = (activity: unknown): Record<string, unknown> =
 
 const getRestoredActivities = (session: unknown): PersistedChatSession['activities'] =>
   normalizeSessionFile(session)?.activities
+
+const createRuntimePlan = (): SessionPlanRuntimeContext => ({
+  artifactId: 'plan-1',
+  artifactVersionId: 'plan-version-1',
+  artifactChecksum: 'a'.repeat(64),
+  approval: 'pending',
+  stepStatuses: {}
+})
 
 describe('message part persistence', () => {
   it('preserves a linked-folder reference as root id plus relative path', () => {
@@ -581,10 +590,7 @@ describe('normalizeSessionFile with activities', () => {
       runtimeContext: {
         version: 1,
         revision: 3,
-        plan: {
-          artifactVersionId: 'plan-version-1',
-          approval: 'pending'
-        }
+        plan: createRuntimePlan()
       }
     })
 
@@ -595,10 +601,7 @@ describe('normalizeSessionFile with activities', () => {
       runtimeContext: {
         version: 1,
         revision: 3,
-        plan: {
-          artifactVersionId: 'plan-version-1',
-          approval: 'pending'
-        }
+        plan: createRuntimePlan()
       }
     })
     expect(restored?.error).toBeUndefined()
@@ -617,6 +620,12 @@ describe('normalizeSessionFile with activities', () => {
       status: 'waiting-plan-approval',
       runtimeContext: { version: 1, revision: -1, plan: { approval: 'approved' } }
     })
+    const malformedPlan = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      status: 'waiting-plan-approval',
+      runtimeContext: { version: 1, revision: 2, plan: null }
+    })
 
     expect(unknown).toMatchObject({ id: 'session-1', messages: [] })
     expect(unknown?.runtimeContext).toBeUndefined()
@@ -626,6 +635,8 @@ describe('normalizeSessionFile with activities', () => {
       messages: []
     })
     expect(damaged?.runtimeContext).toBeUndefined()
+    expect(malformedPlan).toMatchObject({ status: 'idle', messages: [] })
+    expect(malformedPlan?.runtimeContext).toBeUndefined()
   })
 
   it('restores a persisted session with its activities intact', () => {
