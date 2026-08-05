@@ -197,6 +197,36 @@ describe('ACP application commands', () => {
     expect(request.continuation.originatingTurnToken).toBe('renderer-forged-turn')
   })
 
+  it('accepts explicit Plan continuation authority only from a current human caller', async () => {
+    const dependencies = createDependencies()
+    const router = createApplicationCommandRouter()
+    registerAcpCommands(router.registrar, dependencies)
+    const request = {
+      sessionId: 'session-1',
+      text: 'continue',
+      planContinuation: {
+        projectId: 'project-1',
+        artifactVersionId: 'version-1',
+        expectedRevision: 4
+      }
+    }
+
+    await expect(
+      router.dispatcher.invoke(
+        acpCommands.sendPrompt,
+        invocation([request], createWebCallerContext('local-web'))
+      )
+    ).resolves.toBe(snapshot)
+    await expect(
+      router.dispatcher.invoke(
+        acpCommands.sendPrompt,
+        invocation([request], createTaskCallerContext())
+      )
+    ).rejects.toThrow('Only a current human caller can continue a Session Plan.')
+
+    expect(dependencies.workflows.sendPrompt).toHaveBeenCalledTimes(1)
+  })
+
   it('accepts permission responses only from a current human-originated caller', async () => {
     const dependencies = createDependencies()
     const router = createApplicationCommandRouter()

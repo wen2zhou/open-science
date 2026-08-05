@@ -292,6 +292,17 @@ class PlanService {
     }
   }
 
+  async authorizeContinuation(input: PlanIdentityCommand): Promise<ActivePlanProjection> {
+    const { context, plan, document } = await this.loadActive(input)
+    if (plan.approval !== 'approved') {
+      throw new PlanCommandError('plan-not-approved', 'The Plan must be approved before execution.')
+    }
+    if (isPlanComplete(document, plan.stepStatuses)) {
+      throw new PlanCommandError('invalid-transition', 'The Plan is already complete.')
+    }
+    return this.project(document, plan, context.revision, true)
+  }
+
   async checkTurnCompletion(input: {
     projectId: string
     sessionId: string

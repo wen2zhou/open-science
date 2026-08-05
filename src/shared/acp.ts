@@ -498,6 +498,17 @@ export type AcpSetPermissionProfileRequest = {
 export type AcpPromptRequest = {
   sessionId: string
   text: string
+  // Explicit, immutable execution authority for continuing an approved incomplete Session Plan.
+  // Main validates this identity before admitting the prompt; ordinary messages omit it and cannot
+  // mutate Plan step state through MCP.
+  planContinuation?: {
+    projectId: string
+    artifactVersionId: string
+    expectedRevision: number
+    // One explicit user action may approve a pending Plan and start this interaction. Main activates
+    // the interaction before committing approval so approval never races a second renderer request.
+    approvePending?: true
+  }
   // An application-owned continuation retains the originating user request but must not create a
   // second visible user-message event. It is never accepted from renderer IPC.
   continuation?: {

@@ -94,8 +94,9 @@ const createRuntimeHarness = (options: {
     planService: service,
     sessionInteractions: {
       snapshot: () => [{ kind: 'prompt', sessionId: 'session-1' }],
-      current: () => undefined
+      current: () => ({ kind: 'prompt', sessionId: 'session-1', sequence: 7 })
     },
+    planExecutionBindings: new Map(),
     artifactTurns: { promptMessageIdFor: () => 'interaction-1' },
     planApprovalWaiters: new Map(),
     callbacks: { onEvent: options.onEvent },
@@ -139,25 +140,88 @@ describe('AcpRuntime Session Plan seam', () => {
     await expect(pending).resolves.toMatchObject({ changed: true })
   })
 
-  it('passes the MCP server-bound execution version instead of substituting the active version', async () => {
+  it('rejects an MCP server-bound execution version after a replacement became active', async () => {
     const { runtime, updateStepStatus } = createRuntimeHarness({
       activeProjection: projection('version-2', 4)
     })
+    ;(
+      runtime as unknown as {
+        planExecutionBindings: Map<
+          string,
+          { interactionSequence: number; artifactVersionId: string }
+        >
+      }
+    ).planExecutionBindings.set('session-1', {
+      interactionSequence: 7,
+      artifactVersionId: 'version-1'
+    })
 
-    await runtime.callSessionPlan({
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      operation: 'updateStepStatus',
-      input: {
-        title: 'Analyze the data',
-        status: 'completed',
-        expectedArtifactVersionId: 'version-1'
+    await expect(
+      runtime.callSessionPlan({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        operation: 'updateStepStatus',
+        input: {
+          title: 'Analyze the data',
+          status: 'completed',
+          expectedArtifactVersionId: 'version-1'
+        }
+      })
+    ).rejects.toMatchObject({ code: 'interaction-mismatch' })
+    expect(updateStepStatus).not.toHaveBeenCalled()
+  })
+
+  it('rejects Plan execution from an ordinary interaction without explicit continuation authority', async () => {
+    const { runtime, updateStepStatus } = createRuntimeHarness({
+      activeProjection: {
+        ...projection('version-1', 4),
+        approval: 'approved',
+        lifecycle: 'approved',
+        requiresExplicitContinuation: true
       }
     })
 
-    expect(updateStepStatus).toHaveBeenCalledWith(
-      expect.objectContaining({ artifactVersionId: 'version-1', expectedRevision: 4 })
-    )
+    await expect(
+      runtime.callSessionPlan({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        operation: 'updateStepStatus',
+        input: { title: 'Analyze the data', status: 'in_progress' }
+      })
+    ).rejects.toMatchObject({ code: 'continuation-required' })
+    expect(updateStepStatus).not.toHaveBeenCalled()
+  })
+
+  it('rejects a Plan version bound to a different interaction', async () => {
+    const { runtime, updateStepStatus } = createRuntimeHarness({
+      activeProjection: {
+        ...projection('version-2', 4),
+        approval: 'approved',
+        lifecycle: 'approved',
+        requiresExplicitContinuation: true
+      }
+    })
+    ;(
+      runtime as unknown as {
+        planExecutionBindings: Map<
+          string,
+          { interactionSequence: number; artifactVersionId: string }
+        >
+      }
+    ).planExecutionBindings.set('session-1', {
+      interactionSequence: 6,
+      artifactVersionId: 'version-2'
+    })
+
+    await expect(
+      runtime.callSessionPlan({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        operation: 'updateStepStatus',
+        input: { title: 'Analyze the data', status: 'in_progress' }
+      })
+    ).rejects.toMatchObject({ code: 'interaction-mismatch' })
+    expect(updateStepStatus).not.toHaveBeenCalled()
   })
 
   it('routes inline revision feedback to the paused Plan interaction and projects its durable user Message', async () => {

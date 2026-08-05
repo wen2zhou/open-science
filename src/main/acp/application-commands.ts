@@ -154,12 +154,19 @@ const registerAcpCommands = (
         dependencies.runtime.resetSessionContext(invocation.args[0]),
       'acp:compact-session': (invocation) =>
         dependencies.runtime.compactSession(invocation.args[0]),
-      'acp:send-prompt': (invocation) =>
-        dependencies.workflows.sendPrompt({
+      'acp:send-prompt': (invocation) => {
+        if (
+          invocation.args[0].planContinuation &&
+          !canSatisfyHumanApproval(invocation.callerContext)
+        ) {
+          throw new Error('Only a current human caller can continue a Session Plan.')
+        }
+        return dependencies.workflows.sendPrompt({
           ...invocation.args[0],
           continuation: undefined,
           suppressUserMessage: undefined
-        }),
+        })
+      },
       'acp:cancel': (invocation) => dependencies.runtime.cancelPrompt(invocation.args[0]),
       'acp:delete-session': (invocation) => dependencies.runtime.deleteSession(invocation.args[0]),
       'acp:respond-permission': (invocation) => {
