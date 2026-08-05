@@ -303,7 +303,7 @@ describe('session store', () => {
     expect(session.activeRun).toBeUndefined()
   })
 
-  it('keeps an orphaned pending Plan idle when no response interaction is active', () => {
+  it('keeps a restored pending Plan awaiting review when no response interaction is active', () => {
     useSessionStore.getState().hydrateSessions([
       {
         id: 'session-1',
@@ -311,6 +311,30 @@ describe('session store', () => {
         title: 'Orphaned Plan',
         cwd: '/workspace',
         status: 'waiting-plan-approval',
+        messages: [],
+        createdAt: 1,
+        updatedAt: 2
+      }
+    ])
+
+    useSessionStore
+      .getState()
+      .setActivePlanProjection('session-1', createPlanProjection('version-1'))
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'waiting-plan-approval',
+      activePlanProjection: { approval: 'pending' }
+    })
+  })
+
+  it('keeps a pending Plan idle after its Agent interaction ended without a decision', () => {
+    useSessionStore.getState().hydrateSessions([
+      {
+        id: 'session-1',
+        projectId: 'project-1',
+        title: 'Settled Plan interaction',
+        cwd: '/workspace',
+        status: 'idle',
         messages: [],
         createdAt: 1,
         updatedAt: 2

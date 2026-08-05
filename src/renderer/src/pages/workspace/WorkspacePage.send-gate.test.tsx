@@ -34,6 +34,9 @@ let conversationProps: {
   compactContextDisabledReason?: string
   onDraftDocChange: (doc: ComposerDoc) => void
   onSendMessage: (forcedSkillIds: string[]) => void
+  onRespondToRestoredPlan: (
+    response: { decision: 'approved' | 'rejected' } | { feedback: string }
+  ) => Promise<void>
 }
 
 const runtime = vi.hoisted(() => ({
@@ -247,6 +250,65 @@ describe('WorkspacePage send gate while compacting', () => {
     expect(useSessionStore.getState().sessions[0]?.status).toBe('idle')
   })
 
+  it('sends restored Plan-card feedback as a fresh user turn', async () => {
+    const pending = planProjection('pending')
+    useSessionStore.setState({
+      sessions: [createSession({ status: 'waiting-plan-approval', activePlanProjection: pending })],
+      selectedSessionId: 'sess-a'
+    })
+    runtime.sendMessage.mockResolvedValue({ sessionId: 'sess-a', messageId: 'message-1' })
+    await renderPage()
+
+    await act(async () => {
+      await conversationProps.onRespondToRestoredPlan({
+        feedback: 'Split the analysis by cohort.'
+      })
+    })
+
+    expect(runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'sess-a',
+        text: 'Split the analysis by cohort.',
+        attachments: [],
+        projectId: 'proj-1',
+        planContinuation: {
+          artifactVersionId: 'plan-version-1',
+          revision: 3,
+          pendingAction: 'review'
+        }
+      })
+    )
+  })
+
+  it.each([
+    ['approved', 'Approve the current Plan and continue.', 'approve'],
+    ['rejected', 'Dismiss the current Plan.', 'reject']
+  ] as const)('starts a fresh Plan interaction for restored %s', async (decision, text, action) => {
+    const pending = planProjection('pending')
+    useSessionStore.setState({
+      sessions: [createSession({ status: 'waiting-plan-approval', activePlanProjection: pending })],
+      selectedSessionId: 'sess-a'
+    })
+    runtime.sendMessage.mockResolvedValue({ sessionId: 'sess-a', messageId: 'message-1' })
+    await renderPage()
+
+    await act(async () => {
+      await conversationProps.onRespondToRestoredPlan({ decision })
+    })
+
+    expect(runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'sess-a',
+        text,
+        planContinuation: {
+          artifactVersionId: 'plan-version-1',
+          revision: 3,
+          pendingAction: action
+        }
+      })
+    )
+  })
+
   it('sends approved-Plan continuation language as an ordinary Message for the Agent to interpret', async () => {
     useSessionStore.setState({
       sessions: [createSession({ activePlanProjection: planProjection('approved') })],
@@ -286,11 +348,11 @@ describe('WorkspacePage send gate while compacting', () => {
     )
   })
 
-  it('sends pending-Plan approval language as an ordinary user Message', async () => {
+  it('sends approval language as an ordinary user Message after a Plan interaction ends', async () => {
     window.api.acp.respondPlan = vi.fn()
     const pending = planProjection('pending')
     useSessionStore.setState({
-      sessions: [createSession({ status: 'waiting-plan-approval', activePlanProjection: pending })],
+      sessions: [createSession({ status: 'idle', activePlanProjection: pending })],
       selectedSessionId: 'sess-a'
     })
     runtime.sendMessage.mockResolvedValue({ sessionId: 'sess-a', messageId: 'message-1' })
@@ -315,10 +377,10 @@ describe('WorkspacePage send gate while compacting', () => {
     )
   })
 
-  it('does not convert a plain pending-Plan approval Message into a UI decision', async () => {
+  it('does not convert a plain orphaned-Plan approval Message into a UI decision', async () => {
     const pending = planProjection('pending')
     useSessionStore.setState({
-      sessions: [createSession({ status: 'waiting-plan-approval', activePlanProjection: pending })],
+      sessions: [createSession({ status: 'idle', activePlanProjection: pending })],
       selectedSessionId: 'sess-a'
     })
     window.api.acp.respondPlan = vi.fn()

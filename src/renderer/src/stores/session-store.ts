@@ -2035,10 +2035,12 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
                 ...session,
                 ...(replaced ? { planHistoryProjections: replaced } : {}),
                 activePlanProjection: projection,
+                // Restart recovery preserves waiting-plan-approval after clearing activeRun. A Plan
+                // whose Agent ended without a decision has already settled to idle and stays read-only.
                 status: session.compacting
                   ? session.status
                   : projection.lifecycle === 'awaiting_approval'
-                    ? session.activeRun
+                    ? session.activeRun || session.status === 'waiting-plan-approval'
                       ? 'waiting-plan-approval'
                       : 'idle'
                     : projection.lifecycle === 'rejected'

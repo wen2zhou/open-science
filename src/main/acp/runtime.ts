@@ -2856,7 +2856,7 @@ class AcpRuntime {
       throw new Error('Session Plan capability is not configured.')
     }
     let authorizedPlanContinuation =
-      request.planContinuation && !request.planContinuation.approvePending
+      request.planContinuation && request.planContinuation.pendingAction === undefined
         ? await this.planService!.authorizeContinuation({
             projectId: request.planContinuation.projectId,
             sessionId: request.sessionId,
@@ -2864,6 +2864,27 @@ class AcpRuntime {
             expectedRevision: request.planContinuation.expectedRevision
           })
         : undefined
+    let protectedPendingPlan: ActivePlanProjection | undefined
+    if (request.planContinuation?.pendingAction === 'review') {
+      const projection = await this.planService!.getProjection(
+        request.planContinuation.projectId,
+        request.sessionId,
+        { interactionIsLive: false }
+      )
+      if (!projection) {
+        throw new PlanCommandError('no-active-plan', 'The Session has no active Plan.')
+      }
+      if (projection.artifactVersionId !== request.planContinuation.artifactVersionId) {
+        throw new PlanCommandError('stale-plan', 'A newer Plan is active.')
+      }
+      if (projection.revision !== request.planContinuation.expectedRevision) {
+        throw new PlanCommandError('revision-conflict', 'The Plan revision is stale.')
+      }
+      if (projection.approval !== 'pending') {
+        throw new PlanCommandError('approval-already-decided', 'Plan approval is irreversible.')
+      }
+      protectedPendingPlan = projection
+    }
 
     // Reserve this attempt before Specialist/skill authorization can yield. A newer preflight may
     // supersede the reservation without publishing an in-flight turn, preserving the existing
@@ -2990,18 +3011,28 @@ class AcpRuntime {
     let promptInteraction: AcpPromptSessionInteractionScope | undefined
     try {
       promptInteraction = this.sessionInteractions.activatePrompt(promptReservation)
-      if (request.planContinuation?.approvePending) {
-        const approval = await this.planService!.respond({
-          projectId: request.planContinuation.projectId,
+      const pendingPlanContinuation = request.planContinuation
+      const pendingDecision = pendingPlanContinuation?.pendingAction
+      if (
+        pendingPlanContinuation &&
+        (pendingDecision === 'approve' || pendingDecision === 'reject')
+      ) {
+        const decision = await this.planService!.respond({
+          projectId: pendingPlanContinuation.projectId,
           sessionId: request.sessionId,
-          artifactVersionId: request.planContinuation.artifactVersionId,
-          expectedRevision: request.planContinuation.expectedRevision,
-          decision: 'approved',
+          artifactVersionId: pendingPlanContinuation.artifactVersionId,
+          expectedRevision: pendingPlanContinuation.expectedRevision,
+          decision: pendingDecision === 'approve' ? 'approved' : 'rejected',
           interactionIsLive: true
         })
-        authorizedPlanContinuation = approval.projection
-        this.resolvePlanApprovalWaiter(request.sessionId, approval)
-        this.publishPlanProjection(request.sessionId, approval.projection)
+        if (pendingDecision === 'approve') {
+          authorizedPlanContinuation = decision.projection
+        } else {
+          protectedPendingPlan = decision.projection
+          this.planExecutionBindings.delete(request.sessionId)
+        }
+        this.resolvePlanApprovalWaiter(request.sessionId, decision)
+        this.publishPlanProjection(request.sessionId, decision.projection)
       }
       if (authorizedPlanContinuation) {
         this.planExecutionBindings.set(request.sessionId, {
@@ -3159,12 +3190,11 @@ class AcpRuntime {
         ? this.buildSpecialistHandoffContinuationText(request)
         : request.text
       const nudgedText = await this.applySkillNudge(promptRequestText, forced)
+      const planContextProjection = authorizedPlanContinuation ?? protectedPendingPlan
       // A history preamble (transcript replayed after a context reset) leads, then the framework guidance
       // prefix, then the nudged user text. Absent segments drop out so the normal turn is unchanged.
       const promptText = [
-        authorizedPlanContinuation
-          ? formatPlanProtectedContext(authorizedPlanContinuation)
-          : undefined,
+        planContextProjection ? formatPlanProtectedContext(planContextProjection) : undefined,
         request.historyPreamble,
         promptPrefix,
         nudgedText

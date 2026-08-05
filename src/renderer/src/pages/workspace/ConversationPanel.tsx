@@ -153,6 +153,11 @@ type ConversationPanelProps = {
   onSendMessage: (forcedSkillIds: string[]) => void
   // Sends this draft as a one-turn request to plan before execution.
   onPlanFirst?: (forcedSkillIds: string[]) => void
+  // A restored pending Plan has no live tool-call waiter. Every card action starts a fresh,
+  // identity-bound Plan interaction instead of trying to resume the expired one.
+  onRespondToRestoredPlan: (
+    response: { decision: 'approved' | 'rejected' } | { feedback: string }
+  ) => Promise<void>
   // Starts a new session from this session's visible branch, then sends the current draft there.
   // Optional while callers migrate to the split send affordance.
   onBranchInNewSession?: (forcedSkillIds: string[]) => void
@@ -225,6 +230,7 @@ const ConversationPanel = ({
   onDraftDocChange,
   onSendMessage,
   onPlanFirst,
+  onRespondToRestoredPlan,
   onBranchInNewSession,
   onStageAttachmentFiles,
   onRemoveAttachment,
@@ -273,10 +279,8 @@ const ConversationPanel = ({
   // Unconditional hook: check if the active session has any jobs (running or finished).
   const allJobsForSession = useSessionJobStore((s) => s.allJobsForSession)
   const hasAnyJobs = activeSession !== undefined && allJobsForSession(activeSession.id).length > 0
-  const activePendingPlan =
-    activeSession?.activePlanProjection?.approval === 'pending'
-      ? activeSession.activePlanProjection
-      : undefined
+  const activeBranchPlan = selectActiveBranchPlan(activeSession)
+  const activePendingPlan = activeBranchPlan?.approval === 'pending' ? activeBranchPlan : undefined
   const activePendingPlanKey = activePendingPlan
     ? `${activePendingPlan.artifactVersionId}:${activePendingPlan.revision}`
     : undefined
@@ -284,11 +288,9 @@ const ConversationPanel = ({
   const pendingPlan =
     activePendingPlanKey &&
     resolvedPlanKey !== activePendingPlanKey &&
-    activeSession?.status === 'waiting-plan-approval' &&
-    activeSession.activeRun
+    activeSession?.status === 'waiting-plan-approval'
       ? activePendingPlan
       : undefined
-  const activeBranchPlan = selectActiveBranchPlan(activeSession)
   const resolvedRunError = normalizeRunFailureError(activeSession?.error)
   // Only unknown/opaque ACP-layer failures offer the "Report error → GitHub issue" affordance. The
   // reportability is resolved at failure time and persisted on the session: a model-provider error is
@@ -348,6 +350,10 @@ const ConversationPanel = ({
     response: { decision: 'approved' | 'rejected' } | { feedback: string }
   ): Promise<void> => {
     if (!activeSession || !pendingPlan) return
+    if (!activeSession.activeRun) {
+      await onRespondToRestoredPlan(response)
+      return
+    }
     await respondToSessionPlan(
       {
         projectId: activeSession.projectId,
