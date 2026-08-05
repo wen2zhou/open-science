@@ -36,7 +36,7 @@ const projection: ActivePlanProjection = {
   },
   stepStatuses: {},
   stepStates: { 'Analyze the data': { status: 'not_started' } },
-  counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
 }
 
 const multiLevelProjection: ActivePlanProjection = {
@@ -85,7 +85,7 @@ const multiLevelProjection: ActivePlanProjection = {
     'Compare cohorts': { status: 'blocked', notes: 'Cohort B is undefined.' },
     'Review evidence': { status: 'not_run' }
   },
-  counts: { phases: 2, delegations: 3, steps: 4, completed: 0 }
+  counts: { phases: 2, delegations: 3, steps: 4, completed: 0, inProgress: 0 }
 }
 
 describe('Session Plan renderer surfaces', () => {
@@ -312,7 +312,7 @@ describe('Session Plan renderer surfaces', () => {
         'Skipped step': { status: 'skipped', notes: 'Visible skipped note.' },
         'Not run step': { status: 'not_run' }
       },
-      counts: { phases: 1, delegations: 1, steps: 6, completed: 1 }
+      counts: { phases: 1, delegations: 1, steps: 6, completed: 1, inProgress: 0 }
     }
 
     render(<PlanPreviewSurface projection={statusProjection} />)
@@ -349,13 +349,14 @@ describe('Session Plan renderer surfaces', () => {
             'Analyze the data': { status: 'in_progress' },
             'Review evidence': { status: 'in_progress' }
           },
-          counts: { phases: 1, delegations: 2, steps: 2, completed: 0 }
+          counts: { phases: 1, delegations: 2, steps: 2, completed: 0, inProgress: 2 }
         }}
         onOpen={onOpen}
       />
     )
 
-    const chip = screen.getByRole('button', { name: /open plan, step 0 of 2/i })
+    const chip = screen.getByRole('button', { name: /open plan, step 0 of 2, 2 running/i })
+    expect(chip.textContent).toContain('2 running')
     fireEvent.click(chip)
     expect(onOpen).toHaveBeenCalledOnce()
   })

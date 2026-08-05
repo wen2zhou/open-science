@@ -545,6 +545,10 @@ const sanitizeHistoricalPlanProjection = (
         completed: titles.filter((title) => {
           const status = runtimePlan.stepStatuses[title]?.status
           return status === 'completed' || status === 'skipped'
+        }).length,
+        inProgress: titles.filter((title) => {
+          const status = runtimePlan.stepStatuses[title]?.status
+          return status === 'in_progress'
         }).length
       }
     }

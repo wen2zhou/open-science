@@ -30,7 +30,7 @@ const projection = (artifactVersionId: string, revision = 1): ActivePlanProjecti
   },
   stepStatuses: {},
   stepStates: { 'Analyze the data': { status: 'not_started' } },
-  counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
 })
 
 type PlanServiceMock = Record<

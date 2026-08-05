@@ -66,7 +66,7 @@ const createHistoricalPlan = (): ActivePlanProjection => ({
   },
   stepStatuses: { 'Analyze data': { status: 'completed', updatedAt: 4 } },
   stepStates: { 'Analyze data': { status: 'completed' } },
-  counts: { phases: 1, delegations: 1, steps: 1, completed: 1 }
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 1, inProgress: 0 }
 })
 
 describe('branch Plan history persistence', () => {
@@ -80,7 +80,7 @@ describe('branch Plan history persistence', () => {
         {
           ...valid,
           stepStates: { 'Analyze data': { status: 'not_started' } },
-          counts: { phases: 99, delegations: 99, steps: 99, completed: 0 }
+          counts: { phases: 99, delegations: 99, steps: 99, completed: 0, inProgress: 0 }
         }
       ]
     })

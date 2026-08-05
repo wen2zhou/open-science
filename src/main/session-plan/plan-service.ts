@@ -507,7 +507,9 @@ class PlanService {
         completed: titles.filter((title) => {
           const status = plan.stepStatuses[title]?.status
           return status === 'completed' || status === 'skipped'
-        }).length
+        }).length,
+        inProgress: titles.filter((title) => plan.stepStatuses[title]?.status === 'in_progress')
+          .length
       }
     }
   }

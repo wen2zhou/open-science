@@ -1619,7 +1619,7 @@ describe('ACP runtime session management', () => {
       },
       stepStatuses: {},
       stepStates: { Analyze: { status: 'not_started' } },
-      counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+      counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
     } satisfies ActivePlanProjection
     const respond = vi.fn(async () => ({ projection: approved, changed: true }))
     Object.assign(runtime as unknown as { planService: unknown }, {
@@ -3673,7 +3673,7 @@ describe('ACP runtime session management', () => {
       },
       stepStatuses: { Analyze: { status: 'blocked', updatedAt: 42, notes: 'Input missing' } },
       stepStates: { Analyze: { status: 'blocked', notes: 'Input missing' } },
-      counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+      counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
     } satisfies ActivePlanProjection
     Object.assign(runtime as unknown as { planService: unknown }, {
       planService: { getProjection: vi.fn(async () => projection) }
@@ -12211,7 +12211,7 @@ describe('ACP runtime session management', () => {
         'Analyze the data': { status: 'in_progress', updatedAt: 42 }
       },
       stepStates: { 'Analyze the data': { status: 'in_progress' } },
-      counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+      counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
     } satisfies ActivePlanProjection
     const getProjection = vi.fn(async () => interruptedProjection)
     Object.assign(runtime as unknown as { planService: unknown }, {
@@ -12280,7 +12280,7 @@ describe('ACP runtime session management', () => {
         },
         stepStatuses: {},
         stepStates: { 'Analyze data': { status: 'not_started' } },
-        counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+        counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
       } satisfies ActivePlanProjection
       const authorizeContinuation = vi.fn(async () => active)
       Object.assign(runtime as unknown as { planService: unknown }, {
@@ -12368,7 +12368,7 @@ describe('ACP runtime session management', () => {
         },
         stepStatuses: {},
         stepStates: { Analyze: { status: 'not_started' } },
-        counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+        counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
       } satisfies ActivePlanProjection
       Object.assign(runtime as unknown as { planService: unknown }, {
         planService: {

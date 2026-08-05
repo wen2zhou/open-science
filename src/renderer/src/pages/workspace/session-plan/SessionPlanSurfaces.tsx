@@ -214,17 +214,31 @@ const WorkspacePlanCard = ({
 const PlanProgressChip = ({
   projection,
   onOpen
-}: PlanSurfaceProps & Readonly<{ onOpen: () => void }>): React.JSX.Element => (
-  <button
-    type="button"
-    className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-normal text-text-100 transition-colors duration-200 ease-out hover:bg-bg-300 hover:text-text-000 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-    aria-label={`Open plan, step ${projection.counts.completed} of ${projection.counts.steps}`}
-    onClick={onOpen}
-  >
-    <ListChecks className="size-3.5" strokeWidth={2} aria-hidden="true" />
-    step {projection.counts.completed}/{projection.counts.steps}
-  </button>
-)
+}: PlanSurfaceProps & Readonly<{ onOpen: () => void }>): React.JSX.Element => {
+  const running = projection.counts.inProgress
+  const isRunning = projection.lifecycle === 'in_progress' && running > 0
+  const accessibleName = `Open plan, step ${projection.counts.completed} of ${projection.counts.steps}${
+    isRunning ? `, ${running} running` : ''
+  }`
+  return (
+    <button
+      type="button"
+      className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-normal text-text-100 transition-colors duration-200 ease-out hover:bg-bg-300 hover:text-text-000 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+      aria-label={accessibleName}
+      onClick={onOpen}
+    >
+      {isRunning ? (
+        <span
+          aria-hidden="true"
+          className="size-1.5 shrink-0 rounded-full bg-primary motion-safe:animate-pulse"
+        />
+      ) : null}
+      <ListChecks className="size-3.5" strokeWidth={2} aria-hidden="true" />
+      step {projection.counts.completed}/{projection.counts.steps}
+      {isRunning ? <span className="font-medium text-primary">· {running} running</span> : null}
+    </button>
+  )
+}
 
 type PlanPreviewSurfaceProps = PlanSurfaceProps &
   Readonly<{

@@ -150,7 +150,7 @@ const completedPlanProjection: ActivePlanProjection = {
   },
   stepStatuses: { 'Analyze data': { status: 'completed', updatedAt: 1 } },
   stepStates: { 'Analyze data': { status: 'completed' } },
-  counts: { phases: 1, delegations: 1, steps: 1, completed: 1 }
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 1, inProgress: 0 }
 }
 
 const renderPanel = (props: Partial<Parameters<typeof ConversationPanel>[0]> = {}): void => {

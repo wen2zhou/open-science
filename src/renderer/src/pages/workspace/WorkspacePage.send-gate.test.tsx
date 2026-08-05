@@ -142,7 +142,7 @@ const planProjection = (approval: 'pending' | 'approved', revision = 3): ActiveP
   },
   stepStatuses: {},
   stepStates: { Analyze: { status: 'not_started' } },
-  counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
 })
 
 describe('WorkspacePage send gate while compacting', () => {

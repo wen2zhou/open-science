@@ -38,7 +38,7 @@ describe('protected Plan context', () => {
       }),
       stepStatuses: { Analyze: { status: 'blocked', updatedAt: 42, notes: 'Input missing' } },
       stepStates: { Analyze: { status: 'blocked', notes: 'Input missing' } },
-      counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+      counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
     })
 
     expect(summary).toContain('artifact_id=artifact-1')

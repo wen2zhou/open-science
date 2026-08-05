@@ -104,7 +104,13 @@ export type ActivePlanProjection = Readonly<{
   document: PlanDocumentV1
   stepStatuses: SessionPlanRuntimeContext['stepStatuses']
   stepStates: Readonly<Record<string, PlanStepProjection>>
-  counts: Readonly<{ phases: number; delegations: number; steps: number; completed: number }>
+  counts: Readonly<{
+    phases: number
+    delegations: number
+    steps: number
+    completed: number
+    inProgress: number
+  }>
 }>
 
 const compactPlanContextText = (value: string): string =>

@@ -20,7 +20,7 @@ const planProjection: ActivePlanProjection = {
   },
   stepStatuses: {},
   stepStates: {},
-  counts: { phases: 0, delegations: 0, steps: 0, completed: 0 }
+  counts: { phases: 0, delegations: 0, steps: 0, completed: 0, inProgress: 0 }
 }
 
 describe('AcpRuntimeSnapshotOwner', () => {
