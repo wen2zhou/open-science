@@ -1120,4 +1120,64 @@ describe('PlanService', () => {
     expect(context().plan).toBeUndefined()
     expect(status()).toBe('idle')
   })
+
+  it('drives deterministic fake-Agent blocked and completed acceptance flows', async () => {
+    const run = async (terminal: 'blocked' | 'completed'): Promise<ActivePlanProjection> => {
+      const { service } = setup()
+      const fakeAgent = {
+        generate: () =>
+          service.generate({
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            interactionId: `interaction-${terminal}`,
+            content
+          }),
+        approve: (projection: ActivePlanProjection) =>
+          service.respond({
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            artifactVersionId: projection.artifactVersionId,
+            expectedRevision: projection.revision,
+            decision: 'approved',
+            interactionIsLive: true
+          }),
+        update: (
+          projection: ActivePlanProjection,
+          status: 'in_progress' | 'blocked' | 'completed'
+        ) =>
+          service.updateStepStatus({
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            artifactVersionId: projection.artifactVersionId,
+            expectedRevision: projection.revision,
+            title: 'Analyze the data',
+            status,
+            ...(status === 'blocked' ? { notes: 'Deterministic fixture input is missing.' } : {})
+          })
+      }
+
+      const generated = await fakeAgent.generate()
+      expect(generated.projection).toMatchObject({
+        lifecycle: 'awaiting_approval',
+        approval: 'pending'
+      })
+      const approved = await fakeAgent.approve(generated.projection)
+      const executing = await fakeAgent.update(approved.projection, 'in_progress')
+      return (await fakeAgent.update(executing.projection, terminal)).projection
+    }
+
+    await expect(run('blocked')).resolves.toMatchObject({
+      lifecycle: 'blocked',
+      stepStates: {
+        'Analyze the data': {
+          status: 'blocked',
+          notes: 'Deterministic fixture input is missing.'
+        }
+      }
+    })
+    await expect(run('completed')).resolves.toMatchObject({
+      lifecycle: 'completed',
+      counts: { completed: 1, steps: 1 }
+    })
+  })
 })

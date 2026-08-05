@@ -1581,6 +1581,83 @@ describe('ACP runtime session management', () => {
     }
   )
 
+  it('activates one interaction before durably approving approve-and-continue', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s1'])
+    const events: AcpRuntimeEvent[] = []
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      framework: opencodeFramework,
+      callbacks: { onEvent: (event) => events.push(event) }
+    })
+    const approved = {
+      artifactId: 'artifact-1',
+      artifactVersionId: 'version-1',
+      artifactChecksum: 'a'.repeat(64),
+      revision: 5,
+      approval: 'approved',
+      lifecycle: 'approved',
+      requiresExplicitContinuation: false,
+      document: {
+        schema_version: 1,
+        task_summary: 'Analyze data',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Main Agent',
+                steps: [{ title: 'Analyze', description: 'Analyze the data.' }]
+              }
+            ]
+          }
+        ],
+        desired_outputs: ['Result'],
+        feasibility: { confidence: 'high', rationale: 'Ready.' }
+      },
+      stepStatuses: {},
+      stepStates: { Analyze: { status: 'not_started' } },
+      counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+    } satisfies ActivePlanProjection
+    const respond = vi.fn(async () => ({ projection: approved, changed: true }))
+    Object.assign(runtime as unknown as { planService: unknown }, {
+      planService: {
+        respond,
+        checkTurnCompletion: vi.fn(async () => ({ allow: true })),
+        getProjection: vi.fn(async () => approved)
+      }
+    })
+
+    await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+    await runtime.sendPrompt({
+      sessionId: 's1',
+      text: 'approve and continue',
+      planContinuation: {
+        projectId: 'project-1',
+        artifactVersionId: 'version-1',
+        expectedRevision: 4,
+        approvePending: true
+      }
+    })
+
+    expect(respond).toHaveBeenCalledWith(
+      expect.objectContaining({
+        decision: 'approved',
+        interactionIsLive: true,
+        expectedRevision: 4
+      })
+    )
+    expect(fakeAgent.prompts[0]?.text).toContain('artifact_version_id=version-1')
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'plan',
+        planProjection: expect.objectContaining({ approval: 'approved', revision: 5 })
+      })
+    )
+  })
+
   it('gives OpenCode stable underscore names for app-owned action MCPs on create and resume', async () => {
     const root = await createTemporaryRoot()
     const process = new FakeAgentProcess()
@@ -3509,6 +3586,54 @@ describe('ACP runtime session management', () => {
 
     await runtime.compactSession({ sessionId: session.sessionId })
     expect(agent.prompts.at(-1)).toEqual({ sessionId: 'remote-session-1', text: '/compact' })
+  })
+
+  it('keeps the native compaction control command exact when a durable Plan is unfinished', async () => {
+    const process = new FakeAgentProcess()
+    const agent = startFakeAgent(process, ['remote-session-1'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      framework: claudeCodeFramework
+    })
+    const projection = {
+      artifactId: 'artifact-1',
+      artifactVersionId: 'version-2',
+      artifactChecksum: 'a'.repeat(64),
+      revision: 7,
+      approval: 'approved',
+      lifecycle: 'blocked',
+      requiresExplicitContinuation: true,
+      document: {
+        schema_version: 1,
+        task_summary: 'Analyze data',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Main Agent',
+                steps: [{ title: 'Analyze', description: 'Analyze the data.' }]
+              }
+            ]
+          }
+        ],
+        desired_outputs: ['Result'],
+        feasibility: { confidence: 'high', rationale: 'Ready.' }
+      },
+      stepStatuses: { Analyze: { status: 'blocked', updatedAt: 42, notes: 'Input missing' } },
+      stepStates: { Analyze: { status: 'blocked', notes: 'Input missing' } },
+      counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+    } satisfies ActivePlanProjection
+    Object.assign(runtime as unknown as { planService: unknown }, {
+      planService: { getProjection: vi.fn(async () => projection) }
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+    await runtime.compactSession({ sessionId: session.sessionId })
+
+    expect(agent.prompts.at(-1)?.text).toBe('/compact')
   })
 
   it('clears the previous context usage before a context reset replacement reports usage', async () => {

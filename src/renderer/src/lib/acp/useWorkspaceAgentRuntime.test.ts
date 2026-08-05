@@ -3460,6 +3460,127 @@ describe('recovering from a request-size overflow', () => {
     expect(runtime.sendPrompt.mock.calls[0]?.[5]).toBeUndefined()
   })
 
+  it('does not synthesize Plan authority when an unrelated message overflows', async () => {
+    seedOverflowedConversation()
+    useSessionStore.getState().setActivePlanProjection('session-1', {
+      artifactVersionId: 'plan-version-1',
+      revision: 9,
+      approval: 'approved',
+      lifecycle: 'blocked'
+    } as never)
+    const nativeSnapshot = {
+      ...createSnapshot(['session-1']),
+      nativeContextCompactionSessionIds: ['session-1'],
+      promptInFlight: true,
+      promptInFlightSessionIds: ['session-1']
+    }
+    const compactedSnapshot = {
+      ...nativeSnapshot,
+      promptInFlight: false,
+      promptInFlightSessionIds: []
+    }
+    const runtime = {
+      state: nativeSnapshot,
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      compactSession: vi.fn().mockResolvedValue(compactedSnapshot),
+      sendPrompt: vi.fn().mockResolvedValue(compactedSnapshot)
+    }
+
+    expect(await recoverContextOverflowWorkspaceSession(runtime, 'session-1')).toBe(true)
+    await flushRuntimeTasks()
+
+    expect(runtime.sendPrompt.mock.calls[0]?.[10]).toBeUndefined()
+  })
+
+  it('refreshes explicit Plan authority after a step update advances the revision', async () => {
+    seedOverflowedConversation()
+    useSessionStore.getState().setActivePlanProjection('session-1', {
+      artifactVersionId: 'plan-version-1',
+      revision: 12,
+      approval: 'approved',
+      lifecycle: 'in_progress'
+    } as never)
+    const nativeSnapshot = {
+      ...createSnapshot(['session-1']),
+      nativeContextCompactionSessionIds: ['session-1'],
+      promptInFlight: true,
+      promptInFlightSessionIds: ['session-1']
+    }
+    const compactedSnapshot = {
+      ...nativeSnapshot,
+      promptInFlight: false,
+      promptInFlightSessionIds: []
+    }
+    const runtime = {
+      state: nativeSnapshot,
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      compactSession: vi.fn().mockResolvedValue(compactedSnapshot),
+      sendPrompt: vi.fn().mockResolvedValue(compactedSnapshot)
+    }
+
+    expect(
+      await recoverContextOverflowWorkspaceSession(runtime, 'session-1', undefined, undefined, {
+        artifactVersionId: 'plan-version-1',
+        revision: 9
+      })
+    ).toBe(true)
+    await flushRuntimeTasks()
+
+    expect(runtime.sendPrompt.mock.calls[0]?.[10]).toEqual({
+      projectId: 'default-project',
+      artifactVersionId: 'plan-version-1',
+      expectedRevision: 12
+    })
+  })
+
+  it('converts approve-and-continue provenance to current approved authority on overflow', async () => {
+    seedOverflowedConversation()
+    useSessionStore.getState().setActivePlanProjection('session-1', {
+      artifactVersionId: 'plan-version-1',
+      revision: 10,
+      approval: 'approved',
+      lifecycle: 'approved'
+    } as never)
+    const nativeSnapshot = {
+      ...createSnapshot(['session-1']),
+      nativeContextCompactionSessionIds: ['session-1'],
+      promptInFlight: true,
+      promptInFlightSessionIds: ['session-1']
+    }
+    const compactedSnapshot = {
+      ...nativeSnapshot,
+      promptInFlight: false,
+      promptInFlightSessionIds: []
+    }
+    const runtime = {
+      state: nativeSnapshot,
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      compactSession: vi.fn().mockResolvedValue(compactedSnapshot),
+      sendPrompt: vi.fn().mockResolvedValue(compactedSnapshot)
+    }
+
+    expect(
+      await recoverContextOverflowWorkspaceSession(runtime, 'session-1', undefined, undefined, {
+        artifactVersionId: 'plan-version-1',
+        revision: 9,
+        approvePending: true
+      })
+    ).toBe(true)
+    await flushRuntimeTasks()
+
+    expect(runtime.sendPrompt.mock.calls[0]?.[10]).toEqual({
+      projectId: 'default-project',
+      artifactVersionId: 'plan-version-1',
+      expectedRevision: 10
+    })
+  })
+
   it('preserves the failed turn when compaction still reports runtime ownership', async () => {
     seedOverflowedConversation()
     const prematureSnapshot = {

@@ -45,7 +45,9 @@ type SendWorkspaceMessageInput = {
   // It is mutually exclusive with `sessionId`, which continues an existing app Session.
   branchSourceSessionId?: string
   text: string
-  planContinuation?: Pick<ActivePlanProjection, 'artifactVersionId' | 'revision'>
+  planContinuation?: Pick<ActivePlanProjection, 'artifactVersionId' | 'revision'> & {
+    approvePending?: true
+  }
   attachments?: UploadedAttachment[]
   cwd?: string
   // Durable owning project stamped on new sessions.
@@ -1165,7 +1167,8 @@ const sendWorkspaceMessage = async (
       ? runtime.sendPrompt(...sendPromptArguments, {
           projectId: sessionProjectName!,
           artifactVersionId: planContinuation.artifactVersionId,
-          expectedRevision: planContinuation.revision
+          expectedRevision: planContinuation.revision,
+          ...(planContinuation.approvePending ? { approvePending: true as const } : {})
         })
       : runtime.sendPrompt(...sendPromptArguments)
 
@@ -1428,7 +1431,8 @@ const recoverContextOverflowWorkspaceSession = async (
   runtime: WorkspaceMessageRuntime,
   sessionId: string,
   supportsImageInput?: boolean,
-  cancelledSessionIds?: Set<string>
+  cancelledSessionIds?: Set<string>,
+  planContinuation?: SendWorkspaceMessageInput['planContinuation']
 ): Promise<boolean> => {
   const session = useSessionStore.getState().sessions.find((item) => item.id === sessionId)
 
@@ -1519,6 +1523,21 @@ const recoverContextOverflowWorkspaceSession = async (
   // replayed as a text preamble via forceHistoryReplay (session.messages was captured before removal).
   useSessionStore.getState().removeMessage(sessionId, interruptedTurn.id)
 
+  // Captured provenance proves that the interrupted turn was explicitly authorized. Durable status
+  // updates may have advanced the revision since admission, so refresh only the matching approved
+  // Artifact Version and strip one-shot pending approval intent before retrying.
+  const activePlan = session.activePlanProjection
+  const retryPlanContinuation =
+    planContinuation &&
+    activePlan?.artifactVersionId === planContinuation.artifactVersionId &&
+    activePlan.approval === 'approved' &&
+    !['completed', 'rejected'].includes(activePlan.lifecycle)
+      ? {
+          artifactVersionId: activePlan.artifactVersionId,
+          revision: activePlan.revision
+        }
+      : planContinuation
+
   const retried = await sendWorkspaceMessage(retryRuntime, {
     sessionId,
     text: interruptedTurn.content,
@@ -1534,7 +1553,8 @@ const recoverContextOverflowWorkspaceSession = async (
     forceHistoryReplay: !nativeCompacted,
     allowCompactionRecovery: true,
     supportsImageInput,
-    agentModel: session.agentModel
+    agentModel: session.agentModel,
+    ...(retryPlanContinuation ? { planContinuation: retryPlanContinuation } : {})
   })
 
   if (!retried) restoreRemovedTurnProjection(session)
@@ -1843,6 +1863,11 @@ const useWorkspaceAgentRuntime = (): {
   const overflowRecoveryCooldownSessionIds = useRef(new Set<string>())
   const activeOverflowRecoverySessionIds = useRef(new Set<string>())
   const cancelledOverflowRecoverySessionIds = useRef(new Set<string>())
+  // Overflow retry may replay only authority carried by the interrupted human turn. Never infer
+  // authority from the currently active Plan, because an unrelated message can overflow too.
+  const planContinuationBySessionId = useRef(
+    new Map<string, NonNullable<SendWorkspaceMessageInput['planContinuation']>>()
+  )
 
   // Auto-recovers when a conversation outgrows the provider's request-size limit: asks capable agents
   // to compact natively, with context replacement + text replay as a fallback. Runs
@@ -1860,12 +1885,14 @@ const useWorkspaceAgentRuntime = (): {
         // Cancellation intent belongs only to this live attempt; never let a stale marker from an
         // already-settled recovery abort a later overflow retry.
         cancelledOverflowRecoverySessionIds.current.delete(sessionId)
+        const planContinuation = planContinuationBySessionId.current.get(sessionId)
         return recoverContextOverflowWorkspaceSession(
           recoveryRuntime,
           sessionId,
           supportsImageInput,
-          cancelledOverflowRecoverySessionIds.current
-        )
+          cancelledOverflowRecoverySessionIds.current,
+          planContinuation
+        ).finally(() => planContinuationBySessionId.current.delete(sessionId))
       }
     )
     // eslint-disable-next-line react-hooks/exhaustive-deps -- runtime is read fresh; fire on new events.
@@ -1902,8 +1929,13 @@ const useWorkspaceAgentRuntime = (): {
 
   // Creates a session if needed, records the user message, then starts the prompt in the background.
   const sendMessage = useCallback(
-    (input: SendWorkspaceMessageInput): Promise<SendWorkspaceMessageResult | undefined> =>
-      sendWorkspaceMessage(
+    (input: SendWorkspaceMessageInput): Promise<SendWorkspaceMessageResult | undefined> => {
+      if (input.sessionId && input.planContinuation) {
+        planContinuationBySessionId.current.set(input.sessionId, input.planContinuation)
+      } else if (input.sessionId) {
+        planContinuationBySessionId.current.delete(input.sessionId)
+      }
+      return sendWorkspaceMessage(
         runtime,
         {
           ...input,
@@ -1914,7 +1946,8 @@ const useWorkspaceAgentRuntime = (): {
         },
         handleSendPreparationStateChange,
         drainRuntimeEvents
-      ),
+      )
+    },
     [
       runtime,
       supportsImageInput,

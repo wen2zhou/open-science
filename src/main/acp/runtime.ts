@@ -2829,27 +2829,27 @@ class AcpRuntime {
       throw new Error('An ACP prompt is already running for this session')
     }
 
-    const authorizedPlanContinuation = request.planContinuation
-      ? await (() => {
-          if (!this.planService) {
-            throw new Error('Session Plan capability is not configured.')
-          }
-          if (
-            request.planContinuation.projectId !== this.resolveSessionProjectName(request.sessionId)
-          ) {
-            throw new PlanCommandError(
-              'interaction-mismatch',
-              'The Plan continuation belongs to a different Project.'
-            )
-          }
-          return this.planService.authorizeContinuation({
+    if (
+      request.planContinuation &&
+      request.planContinuation.projectId !== this.resolveSessionProjectName(request.sessionId)
+    ) {
+      throw new PlanCommandError(
+        'interaction-mismatch',
+        'The Plan continuation belongs to a different Project.'
+      )
+    }
+    if (request.planContinuation && !this.planService) {
+      throw new Error('Session Plan capability is not configured.')
+    }
+    let authorizedPlanContinuation =
+      request.planContinuation && !request.planContinuation.approvePending
+        ? await this.planService!.authorizeContinuation({
             projectId: request.planContinuation.projectId,
             sessionId: request.sessionId,
             artifactVersionId: request.planContinuation.artifactVersionId,
             expectedRevision: request.planContinuation.expectedRevision
           })
-        })()
-      : undefined
+        : undefined
 
     // Reserve this attempt before Specialist/skill authorization can yield. A newer preflight may
     // supersede the reservation without publishing an in-flight turn, preserving the existing
@@ -2973,9 +2973,22 @@ class AcpRuntime {
     }
     activeSession = refreshedActiveSession
 
-    let promptInteraction: AcpPromptSessionInteractionScope
+    let promptInteraction: AcpPromptSessionInteractionScope | undefined
     try {
       promptInteraction = this.sessionInteractions.activatePrompt(promptReservation)
+      if (request.planContinuation?.approvePending) {
+        const approval = await this.planService!.respond({
+          projectId: request.planContinuation.projectId,
+          sessionId: request.sessionId,
+          artifactVersionId: request.planContinuation.artifactVersionId,
+          expectedRevision: request.planContinuation.expectedRevision,
+          decision: 'approved',
+          interactionIsLive: true
+        })
+        authorizedPlanContinuation = approval.projection
+        this.resolvePlanApprovalWaiter(request.sessionId, approval)
+        this.publishPlanProjection(request.sessionId, approval.projection)
+      }
       if (authorizedPlanContinuation) {
         this.planExecutionBindings.set(request.sessionId, {
           interactionSequence: promptInteraction.sequence,
@@ -2985,9 +2998,10 @@ class AcpRuntime {
       this.sessionRegistry.select(request.sessionId)
       this.handoffContinuity.recordAdmittedPrompt(request)
     } catch (error) {
-      this.sessionInteractions.release(promptReservation)
+      this.sessionInteractions.release(promptInteraction ?? promptReservation)
       throw error
     }
+    if (!promptInteraction) throw new Error('ACP prompt interaction was not activated.')
     const promptTurn = promptInteraction.sequence
     const skillImportTurnToken = promptInteraction.turnToken
     const promptEventIdentity = promptInteraction.promptMessageId

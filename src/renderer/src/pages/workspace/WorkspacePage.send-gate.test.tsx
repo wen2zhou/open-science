@@ -284,15 +284,13 @@ describe('WorkspacePage send gate while compacting', () => {
     )
   })
 
-  it('durably approves before dispatching approve-and-continue with the new revision', async () => {
+  it('submits approve-and-continue as one interaction admission operation', async () => {
+    window.api.acp.respondPlan = vi.fn()
     const pending = planProjection('pending')
-    const approved = planProjection('approved', 4)
     useSessionStore.setState({
       sessions: [createSession({ status: 'waiting-plan-approval', activePlanProjection: pending })],
       selectedSessionId: 'sess-a'
     })
-    window.api.acp.respondPlan = vi.fn(() => Promise.resolve({ changed: true }))
-    window.api.acp.getPlanProjection = vi.fn(() => Promise.resolve(approved))
     runtime.sendMessage.mockResolvedValue({ sessionId: 'sess-a', messageId: 'message-1' })
     await renderPage()
 
@@ -304,20 +302,15 @@ describe('WorkspacePage send gate while compacting', () => {
       await vi.waitFor(() => expect(runtime.sendMessage).toHaveBeenCalledOnce())
     })
 
-    expect(window.api.acp.respondPlan).toHaveBeenCalledWith(
-      expect.objectContaining({
-        artifactVersionId: 'plan-version-1',
-        expectedRevision: 3,
-        decision: 'approved'
-      })
-    )
+    expect(window.api.acp.respondPlan).not.toHaveBeenCalled()
     expect(runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        planContinuation: { artifactVersionId: 'plan-version-1', revision: 4 }
+        planContinuation: {
+          artifactVersionId: 'plan-version-1',
+          revision: 3,
+          approvePending: true
+        }
       })
-    )
-    expect(vi.mocked(window.api.acp.respondPlan).mock.invocationCallOrder[0]).toBeLessThan(
-      runtime.sendMessage.mock.invocationCallOrder[0]
     )
   })
 

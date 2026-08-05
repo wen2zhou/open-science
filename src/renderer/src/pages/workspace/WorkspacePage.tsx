@@ -1397,20 +1397,10 @@ const WorkspacePage = ({
     // Shared by the normal send path and the Retry recovery action so the logic stays in sync.
     const dispatchSend = (sessionId: string | undefined): void => {
       const send = async (): ReturnType<typeof sendMessage> => {
-        let continuationProjection = planMessageIntent === 'continue' ? activePlan : undefined
-        if (planMessageIntent === 'approve-and-continue' && activeSession && activePlan) {
-          await respondToSessionPlan(
-            {
-              projectId: activeSession.projectId,
-              sessionId: activeSession.id,
-              projection: activePlan
-            },
-            { decision: 'approved' }
-          )
-          continuationProjection = useSessionStore
-            .getState()
-            .sessions.find((candidate) => candidate.id === activeSession.id)?.activePlanProjection
-        }
+        const continuationProjection =
+          planMessageIntent === 'continue' || planMessageIntent === 'approve-and-continue'
+            ? activePlan
+            : undefined
         return sendMessage({
           sessionId,
           ...(branchInNewSession && activeSession
@@ -1431,7 +1421,10 @@ const WorkspacePage = ({
             ? {
                 planContinuation: {
                   artifactVersionId: continuationProjection.artifactVersionId,
-                  revision: continuationProjection.revision
+                  revision: continuationProjection.revision,
+                  ...(planMessageIntent === 'approve-and-continue'
+                    ? { approvePending: true as const }
+                    : {})
                 }
               }
             : {}),

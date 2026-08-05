@@ -505,6 +505,9 @@ export type AcpPromptRequest = {
     projectId: string
     artifactVersionId: string
     expectedRevision: number
+    // One explicit user action may approve a pending Plan and start this interaction. Main activates
+    // the interaction before committing approval so approval never races a second renderer request.
+    approvePending?: true
   }
   // An application-owned continuation retains the originating user request but must not create a
   // second visible user-message event. It is never accepted from renderer IPC.
