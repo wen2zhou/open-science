@@ -24,6 +24,7 @@ import {
   GitBranch,
   Image as ImageIcon,
   Loader2,
+  ListChecks,
   Menu,
   PanelRight,
   Plus,
@@ -66,6 +67,7 @@ import { SessionInterruptedBanner } from './SessionInterruptedBanner'
 import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
 import { PlanProgressChip, WorkspacePlanCard } from './session-plan/SessionPlanSurfaces'
+import { selectActiveBranchPlan } from './session-plan/active-branch-plan'
 import { isPlanProgressVisible } from './session-plan/plan-progress'
 import { respondToSessionPlan } from './session-plan/respond-to-session-plan'
 import {
@@ -149,6 +151,8 @@ type ConversationPanelProps = {
   autoReviewEnabled: boolean
   onDraftDocChange: (doc: ComposerDoc) => void
   onSendMessage: (forcedSkillIds: string[]) => void
+  // Sends this draft as a one-turn request to plan before execution.
+  onPlanFirst?: (forcedSkillIds: string[]) => void
   // Starts a new session from this session's visible branch, then sends the current draft there.
   // Optional while callers migrate to the split send affordance.
   onBranchInNewSession?: (forcedSkillIds: string[]) => void
@@ -220,6 +224,7 @@ const ConversationPanel = ({
   autoReviewEnabled,
   onDraftDocChange,
   onSendMessage,
+  onPlanFirst,
   onBranchInNewSession,
   onStageAttachmentFiles,
   onRemoveAttachment,
@@ -283,6 +288,7 @@ const ConversationPanel = ({
     activeSession.activeRun
       ? activePendingPlan
       : undefined
+  const activeBranchPlan = selectActiveBranchPlan(activeSession)
   const resolvedRunError = normalizeRunFailureError(activeSession?.error)
   // Only unknown/opaque ACP-layer failures offer the "Report error → GitHub issue" affordance. The
   // reportability is resolved at failure time and persisted on the session: a model-provider error is
@@ -359,6 +365,16 @@ const ConversationPanel = ({
       .upsertAndActivateItem(
         createSessionPlanPreviewItem(activeSession.id, activeSession.projectId)
       )
+  }
+
+  const hasTextDraft = draftDoc.nodes.some(
+    (node) => node.type === 'text' && node.text.trim().length > 0
+  )
+  const canPlanFirst = canSendMessage && hasTextDraft && onPlanFirst !== undefined
+
+  const handlePlanFirst = (): void => {
+    if (!canPlanFirst || !onPlanFirst) return
+    onPlanFirst(docToSkillIds(draftDoc))
   }
 
   // Converts the hidden file input selection into the shared staging callback.
@@ -505,9 +521,7 @@ const ConversationPanel = ({
                     Notebook that becomes available after jobs still receives its entrance animation. */}
                 {notebookReference ||
                 hasAnyJobs ||
-                (activeSession?.activePlanProjection
-                  ? isPlanProgressVisible(activeSession.activePlanProjection)
-                  : false) ? (
+                (activeBranchPlan ? isPlanProgressVisible(activeBranchPlan) : false) ? (
                   <div
                     key={notebookReference ? `notebook-${notebookReference.sessionId}` : 'jobs'}
                     className={cn(
@@ -517,17 +531,19 @@ const ConversationPanel = ({
                         : 'mb-2 min-h-9 items-center rounded-lg border border-border-200 bg-bg-000 shadow-card'
                     )}
                   >
-                    {activeSession?.activePlanProjection &&
-                    isPlanProgressVisible(activeSession.activePlanProjection) ? (
+                    {activeSession &&
+                    activeBranchPlan &&
+                    isPlanProgressVisible(activeBranchPlan) ? (
                       <PlanProgressChip
-                        projection={activeSession.activePlanProjection}
+                        projection={activeBranchPlan}
                         onOpen={() => {
                           usePreviewWorkbenchStore
                             .getState()
                             .upsertAndActivateItem(
                               createSessionPlanPreviewItem(
                                 activeSession.id,
-                                activeSession.projectId
+                                activeSession.projectId,
+                                activeBranchPlan.artifactVersionId
                               )
                             )
                         }}
@@ -771,12 +787,11 @@ const ConversationPanel = ({
                                   <button
                                     type="button"
                                     disabled={
-                                      isUploadingAttachments ||
-                                      (!canEditDraft && !activeSession?.activePlanProjection)
+                                      isUploadingAttachments || (!canEditDraft && !activeBranchPlan)
                                     }
                                     className={composerIconButtonClassName}
                                     aria-label={
-                                      activeSession?.activePlanProjection
+                                      activeBranchPlan
                                         ? 'Add attachment, view plan, or request review'
                                         : 'Add attachment or request review'
                                     }
@@ -787,7 +802,7 @@ const ConversationPanel = ({
                                 </DropdownMenuTrigger>
                               </TooltipTrigger>
                               <TooltipContent side="top">
-                                {activeSession?.activePlanProjection
+                                {activeBranchPlan
                                   ? 'Add attachment, view plan, or request review'
                                   : 'Add attachment or request review'}
                               </TooltipContent>
@@ -810,7 +825,7 @@ const ConversationPanel = ({
                               file. Large files are linked, not embedded.
                             </div>
                             <DropdownMenuSeparator />
-                            {activeSession?.activePlanProjection ? (
+                            {activeSession && activeBranchPlan ? (
                               <>
                                 <DropdownMenuItem
                                   data-testid="menu-view-plan"
@@ -820,7 +835,8 @@ const ConversationPanel = ({
                                       .upsertAndActivateItem(
                                         createSessionPlanPreviewItem(
                                           activeSession.id,
-                                          activeSession.projectId
+                                          activeSession.projectId,
+                                          activeBranchPlan.artifactVersionId
                                         )
                                       )
                                   }}
@@ -831,8 +847,8 @@ const ConversationPanel = ({
                                   />
                                   <span className="flex-1">View plan</span>
                                   <span className="text-[11px] text-text-300">
-                                    {activeSession.activePlanProjection.counts.completed}/
-                                    {activeSession.activePlanProjection.counts.steps}
+                                    {activeBranchPlan.counts.completed}/
+                                    {activeBranchPlan.counts.steps}
                                   </span>
                                 </DropdownMenuItem>
                                 <DropdownMenuSeparator />
@@ -926,7 +942,9 @@ const ConversationPanel = ({
                             data-testid="composer-running-control-slot"
                             className={cn(
                               'flex shrink-0 justify-end',
-                              onBranchInNewSession ? 'w-16 [@media(pointer:coarse)]:mx-3' : 'w-8'
+                              onPlanFirst || onBranchInNewSession
+                                ? 'w-16 [@media(pointer:coarse)]:mx-3'
+                                : 'w-8'
                             )}
                           >
                             <button
@@ -938,7 +956,7 @@ const ConversationPanel = ({
                               <Square className="size-3.5" strokeWidth={2.2} aria-hidden="true" />
                             </button>
                           </div>
-                        ) : onBranchInNewSession ? (
+                        ) : onPlanFirst || onBranchInNewSession ? (
                           <TooltipProvider delayDuration={200}>
                             <div
                               role="group"
@@ -976,7 +994,10 @@ const ConversationPanel = ({
                                         type="button"
                                         variant="ghost"
                                         size="icon"
-                                        disabled={!canSendMessage}
+                                        disabled={
+                                          !canPlanFirst &&
+                                          (!canSendMessage || !onBranchInNewSession)
+                                        }
                                         className={composerSplitSendMenuButtonClassName}
                                         aria-label="More send options"
                                         aria-haspopup="menu"
@@ -994,8 +1015,20 @@ const ConversationPanel = ({
                                 </Tooltip>
                                 <DropdownMenuContent side="top" align="end" className="w-56">
                                   <DropdownMenuItem
+                                    data-testid="menu-plan-first"
+                                    disabled={!canPlanFirst}
+                                    onSelect={handlePlanFirst}
+                                    className="whitespace-nowrap [@media(pointer:coarse)]:min-h-11"
+                                  >
+                                    <ListChecks
+                                      className="mr-2 size-4 text-text-300"
+                                      aria-hidden="true"
+                                    />
+                                    Plan first
+                                  </DropdownMenuItem>
+                                  <DropdownMenuItem
                                     data-testid="menu-branch-in-new-session"
-                                    disabled={!canSendMessage}
+                                    disabled={!canSendMessage || !onBranchInNewSession}
                                     onSelect={handleBranchInNewSession}
                                     className="whitespace-nowrap [@media(pointer:coarse)]:min-h-11"
                                   >

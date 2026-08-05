@@ -2447,6 +2447,55 @@ describe('ACP runtime session management', () => {
     )
   })
 
+  it('adds the hidden Plan mode context only to the requested turn and preserves user Messages', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['remote-session-1'])
+    const events: AcpRuntimeEvent[] = []
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      callbacks: { onEvent: (event) => events.push(event) }
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    await runtime.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'Analyze this dataset',
+      turnIntent: 'plan-first'
+    })
+    await runtime.sendPrompt({ sessionId: session.sessionId, text: 'Here are more details' })
+
+    const planPrompt = fakeAgent.prompts[0].text
+    expect(planPrompt).toContain('## Plan mode (ACTIVE — MANDATORY)')
+    expect(planPrompt).toContain(
+      'Review the Skills available in the current session to confirm the catalog has what the task needs.'
+    )
+    expect(planPrompt).toContain('directly ask the user in an ordinary response')
+    expect(planPrompt).toContain('complete revised plan')
+    expect(planPrompt).toContain('creates a new immutable plan and re-requests approval')
+    expect(planPrompt).toContain(
+      'Do NOT run code without an approved plan. Always call `mcp__open-science-plan__generate_plan` first.'
+    )
+    for (const forbidden of [
+      'search_skills',
+      'ask_user',
+      'read_file',
+      'save_artifacts',
+      'end_turn',
+      'agent framework'
+    ]) {
+      expect(planPrompt).not.toContain(forbidden)
+    }
+    expect(planPrompt).toContain('Analyze this dataset')
+    expect(fakeAgent.prompts[1].text).toBe('Here are more details')
+    expect(
+      events
+        .filter((event) => event.kind === 'message' && event.role === 'user')
+        .map((event) => event.text)
+    ).toEqual(['Analyze this dataset', 'Here are more details'])
+  })
+
   it('keeps a text-only prompt free of omitted ambient context', async () => {
     const root = await createTemporaryRoot()
     const ambientSecret = 'AMBIENT_FILE_MUST_NOT_ENTER_PROMPT'

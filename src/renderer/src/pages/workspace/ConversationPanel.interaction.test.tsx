@@ -7,6 +7,10 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { ConversationPanel } from './ConversationPanel'
 import { emptyDoc } from './composer/composer-doc'
 
+import {
+  createInitialPreviewWorkbenchState,
+  usePreviewWorkbenchStore
+} from '@/stores/preview-workbench-store'
 import type { ChatSession } from '@/stores/session-store'
 import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
 
@@ -254,6 +258,7 @@ beforeEach(() => {
   root = createRoot(container)
   onStageAttachmentFiles.mockClear()
   respondToSessionPlanMock.mockReset().mockResolvedValue(undefined)
+  usePreviewWorkbenchStore.setState(createInitialPreviewWorkbenchState())
   mockHasRunningJobs = false
   mockAllJobs = []
 })
@@ -386,6 +391,86 @@ describe('ConversationPanel composer intake', () => {
 
     // A plain-text draft carries no chips, so the send handler receives an empty id list.
     expect(onSendMessage).toHaveBeenCalledWith([])
+  })
+
+  it('offers Plan first for a text draft in a new conversation while Branch stays disabled', () => {
+    const onPlanFirst = vi.fn()
+    renderPanel({
+      canSendMessage: true,
+      draftDoc: {
+        nodes: [
+          { type: 'skill', id: 'skill-analysis', name: 'analysis' },
+          { type: 'text', text: ' analyze this dataset' }
+        ]
+      },
+      onPlanFirst
+    })
+
+    const trigger = container.querySelector(
+      '[data-testid="branch-send-menu-trigger"]'
+    ) as HTMLButtonElement
+    const planItem = container.querySelector('[data-testid="menu-plan-first"]') as HTMLButtonElement
+    const branchItem = container.querySelector(
+      '[data-testid="menu-branch-in-new-session"]'
+    ) as HTMLButtonElement
+
+    expect(trigger).not.toBeNull()
+    expect(planItem.textContent).toContain('Plan first')
+    expect(planItem.disabled).toBe(false)
+    expect(branchItem.disabled).toBe(true)
+
+    act(() => planItem.click())
+    expect(onPlanFirst).toHaveBeenCalledWith(['skill-analysis'])
+  })
+
+  it('enables both Plan first and Branch in new session for an existing Session text draft', () => {
+    const session: ChatSession = {
+      id: 'session-existing',
+      projectId: 'project-a',
+      title: 'Existing session',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 2
+    }
+    renderPanel({
+      activeSession: session,
+      canSendMessage: true,
+      draftDoc: { nodes: [{ type: 'text', text: 'analyze this dataset' }] },
+      onPlanFirst: vi.fn(),
+      onBranchInNewSession: vi.fn()
+    })
+
+    expect(
+      (container.querySelector('[data-testid="menu-plan-first"]') as HTMLButtonElement).disabled
+    ).toBe(false)
+    expect(
+      (container.querySelector('[data-testid="menu-branch-in-new-session"]') as HTMLButtonElement)
+        .disabled
+    ).toBe(false)
+  })
+
+  it('disables Plan first for an attachment-only draft', () => {
+    renderPanel({
+      canSendMessage: true,
+      attachments: [
+        {
+          id: 'upload-1',
+          sessionId: '.pending',
+          name: 'data.csv',
+          originalName: 'data.csv',
+          path: '/uploads/data.csv',
+          size: 12,
+          mimeType: 'text/csv'
+        }
+      ],
+      onPlanFirst: vi.fn()
+    })
+
+    expect(
+      (container.querySelector('[data-testid="menu-plan-first"]') as HTMLButtonElement).disabled
+    ).toBe(true)
   })
 
   it('adds a branch option beside Send only when a branch handler is available', () => {
@@ -696,6 +781,92 @@ describe('ConversationPanel + menu', () => {
     expect(container.textContent).not.toContain('Plan ready for review')
     expect(container.querySelector('[role="textbox"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="menu-view-plan"]')).not.toBeNull()
+  })
+
+  it('shows and opens only the active Message Branch Plan while retaining an open Preview', () => {
+    const planA: ActivePlanProjection = {
+      ...completedPlanProjection,
+      artifactId: 'artifact-a',
+      artifactVersionId: 'version-a',
+      originatingPromptMessageId: 'prompt-a',
+      lifecycle: 'approved'
+    }
+    const planB: ActivePlanProjection = {
+      ...completedPlanProjection,
+      artifactId: 'artifact-b',
+      artifactVersionId: 'version-b',
+      originatingPromptMessageId: 'prompt-b',
+      lifecycle: 'approved'
+    }
+    const baseSession: ChatSession = {
+      id: 'session-plan-branches',
+      projectId: 'project-a',
+      title: 'Branched plans',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      activePlanProjection: planB,
+      planHistoryProjections: [planA],
+      createdAt: 1,
+      updatedAt: 2
+    }
+
+    renderPanel({
+      activeSession: {
+        ...baseSession,
+        messages: [
+          {
+            id: 'prompt-a',
+            role: 'user',
+            content: 'Plan branch A',
+            status: 'complete',
+            eventIds: [],
+            createdAt: 1,
+            updatedAt: 1
+          }
+        ]
+      }
+    })
+
+    act(() => {
+      ;(
+        container.querySelector('button[aria-label^="Open plan, step"]') as HTMLButtonElement
+      ).click()
+    })
+    expect(usePreviewWorkbenchStore.getState().activeItemId).toBe(
+      'tool:session-plan-branches:plan:version-a'
+    )
+
+    usePreviewWorkbenchStore.setState(createInitialPreviewWorkbenchState())
+    act(() => {
+      ;(container.querySelector('[data-testid="menu-view-plan"]') as HTMLButtonElement).click()
+    })
+    expect(usePreviewWorkbenchStore.getState().activeItemId).toBe(
+      'tool:session-plan-branches:plan:version-a'
+    )
+
+    renderPanel({
+      activeSession: {
+        ...baseSession,
+        messages: [
+          {
+            id: 'prompt-c',
+            role: 'user',
+            content: 'Branch without a Plan',
+            status: 'complete',
+            eventIds: [],
+            createdAt: 1,
+            updatedAt: 1
+          }
+        ]
+      }
+    })
+
+    expect(container.querySelector('[data-testid="menu-view-plan"]')).toBeNull()
+    expect(container.querySelector('button[aria-label^="Open plan, step"]')).toBeNull()
+    expect(usePreviewWorkbenchStore.getState().activeItemId).toBe(
+      'tool:session-plan-branches:plan:version-a'
+    )
   })
 
   it('Attach files item triggers the hidden file input (onStageAttachmentFiles path)', () => {

@@ -138,7 +138,10 @@ import {
 } from './backend-generation-owner'
 import { AcpSessionConfigurator, type AcpSessionConfigurationFacts } from './session-configurator'
 import { createProductionPlanService } from '../session-plan/production-plan-service'
-import { SESSION_PLAN_SYSTEM_PROMPT_APPEND } from '../session-plan/guidance'
+import {
+  PLAN_FIRST_TURN_PROMPT_REMINDER,
+  SESSION_PLAN_SYSTEM_PROMPT_APPEND
+} from '../session-plan/guidance'
 import type { PlanResponseResult, PlanService } from '../session-plan/plan-service'
 import type {
   ActivePlanProjection,
@@ -3115,11 +3118,15 @@ class AcpRuntime {
       // Framework-neutral delivery of system-prompt guidance: Claude carries appends in session _meta;
       // frameworks without a session preset carry the guidance as a prompt prefix.
       const specialistSkillGuidance = this.specialistSkillGuidance(currentSpecialistSkills)
+      const turnPromptReminders = [
+        specialistSkillGuidance,
+        request.turnIntent === 'plan-first' ? PLAN_FIRST_TURN_PROMPT_REMINDER : undefined
+      ].filter((reminder): reminder is string => Boolean(reminder))
       const { promptPrefix: frameworkPromptPrefix } = this.framework.buildSessionSetup({
         systemPromptAppends: this.backend.prompt.persistentSystemPrompt
           ? []
           : this.getSystemPromptAppends(),
-        turnPromptReminders: specialistSkillGuidance ? [specialistSkillGuidance] : [],
+        turnPromptReminders,
         sessionOptions: this.backend.session.options
       })
       // For Codex/OpenCode, prepend the per-session specialist identity prefix (set at createSession).

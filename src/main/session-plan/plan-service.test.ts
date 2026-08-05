@@ -192,11 +192,13 @@ describe('PlanService', () => {
     expect(context().plan).toMatchObject({
       artifactId: 'artifact-1',
       artifactVersionId: 'version-1',
+      originatingPromptMessageId: 'interaction-1',
       approval: 'pending',
       stepStatuses: {}
     })
     expect(status()).toBe('waiting-plan-approval')
     expect(result.projection.lifecycle).toBe('awaiting_approval')
+    expect(result.projection.originatingPromptMessageId).toBe('interaction-1')
     expect(result.pauseInteraction).toBe(true)
   })
 

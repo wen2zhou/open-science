@@ -498,6 +498,8 @@ export type AcpSetPermissionProfileRequest = {
 export type AcpPromptRequest = {
   sessionId: string
   text: string
+  // Closed, application-owned behavior requested for this Conversation Turn only.
+  turnIntent?: 'plan-first'
   // Explicit, immutable execution authority for continuing an approved incomplete Session Plan.
   // Main validates this identity before admitting the prompt; ordinary messages omit it and cannot
   // mutate Plan step state through MCP.

@@ -96,6 +96,7 @@ export type ActivePlanProjection = Readonly<{
   artifactId: string
   artifactVersionId: string
   artifactChecksum: string
+  originatingPromptMessageId?: string
   revision: number
   approval: SessionPlanApproval
   lifecycle: PlanLifecycle
