@@ -3541,9 +3541,9 @@ describe('recovering from a request-size overflow', () => {
     seedOverflowedConversation()
     useSessionStore.getState().setActivePlanProjection('session-1', {
       artifactVersionId: 'plan-version-1',
-      revision: 10,
-      approval: 'approved',
-      lifecycle: 'approved'
+      revision: 9,
+      approval: 'pending',
+      lifecycle: 'awaiting_approval'
     } as never)
     const nativeSnapshot = {
       ...createSnapshot(['session-1']),
@@ -3561,7 +3561,15 @@ describe('recovering from a request-size overflow', () => {
       createSession: vi.fn(),
       resumeSession: vi.fn(),
       resetSessionContext: vi.fn(),
-      compactSession: vi.fn().mockResolvedValue(compactedSnapshot),
+      compactSession: vi.fn().mockImplementation(async () => {
+        useSessionStore.getState().setActivePlanProjection('session-1', {
+          artifactVersionId: 'plan-version-1',
+          revision: 10,
+          approval: 'approved',
+          lifecycle: 'approved'
+        } as never)
+        return compactedSnapshot
+      }),
       sendPrompt: vi.fn().mockResolvedValue(compactedSnapshot)
     }
 

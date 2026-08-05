@@ -1943,8 +1943,9 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
                 ...session,
                 ...(replaced ? { planHistoryProjections: replaced } : {}),
                 activePlanProjection: projection,
-                status:
-                  projection.lifecycle === 'awaiting_approval'
+                status: session.compacting
+                  ? session.status
+                  : projection.lifecycle === 'awaiting_approval'
                     ? 'waiting-plan-approval'
                     : projection.lifecycle === 'rejected' || projection.lifecycle === 'blocked'
                       ? 'idle'

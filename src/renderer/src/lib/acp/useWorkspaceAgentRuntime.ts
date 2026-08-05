@@ -1526,7 +1526,9 @@ const recoverContextOverflowWorkspaceSession = async (
   // Captured provenance proves that the interrupted turn was explicitly authorized. Durable status
   // updates may have advanced the revision since admission, so refresh only the matching approved
   // Artifact Version and strip one-shot pending approval intent before retrying.
-  const activePlan = session.activePlanProjection
+  const activePlan = useSessionStore
+    .getState()
+    .sessions.find((item) => item.id === sessionId)?.activePlanProjection
   const retryPlanContinuation =
     planContinuation &&
     activePlan?.artifactVersionId === planContinuation.artifactVersionId &&
