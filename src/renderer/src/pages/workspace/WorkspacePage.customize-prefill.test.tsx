@@ -128,6 +128,7 @@ describe('WorkspacePage customize prefill', () => {
     vi.clearAllMocks()
     runtime.sendMessage.mockResolvedValue({ sessionId: 'sess-a', messageId: 'm1' })
     window.api = {
+      acp: { getPlanProjection: vi.fn(() => Promise.resolve(null)) },
       notebook: {
         onAvailable: vi.fn(() => vi.fn()),
         getReference: vi.fn(() => Promise.resolve(null))

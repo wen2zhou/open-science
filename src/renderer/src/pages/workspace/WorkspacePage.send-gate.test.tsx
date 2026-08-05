@@ -133,6 +133,7 @@ describe('WorkspacePage send gate while compacting', () => {
     runtime.nativeContextCompactionSessionIds = ['sess-a']
 
     window.api = {
+      acp: { getPlanProjection: vi.fn(() => Promise.resolve(null)) },
       notebook: {
         onAvailable: vi.fn(() => vi.fn()),
         getReference: vi.fn(() => Promise.resolve(null))
