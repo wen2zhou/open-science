@@ -31,10 +31,22 @@ const projection = (artifactVersionId: string, revision = 1): ActivePlanProjecti
   counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
 })
 
+type RuntimePlanHarness = Readonly<{
+  runtime: AcpRuntime
+  service: Readonly<{
+    generate: ReturnType<typeof vi.fn>
+    respond: ReturnType<typeof vi.fn>
+    getProjection: ReturnType<typeof vi.fn>
+    updateStepStatus: ReturnType<typeof vi.fn>
+    checkTurnCompletion: ReturnType<typeof vi.fn>
+  }>
+  updateStepStatus: ReturnType<typeof vi.fn>
+}>
+
 const createRuntimeHarness = (options: {
   onEvent?: (event?: unknown) => void
   activeProjection?: ActivePlanProjection
-}) => {
+}): RuntimePlanHarness => {
   const generated = projection('version-1')
   const approved = { ...generated, approval: 'approved' as const, lifecycle: 'approved' as const }
   const updateStepStatus = vi.fn(async () => ({ projection: approved, changed: true }))
@@ -121,36 +133,6 @@ describe('AcpRuntime Session Plan seam', () => {
 
     expect(updateStepStatus).toHaveBeenCalledWith(
       expect.objectContaining({ artifactVersionId: 'version-1', expectedRevision: 4 })
-    )
-  })
-
-  it('publishes an interrupted projection through the provider-neutral terminal seam', async () => {
-    const onEvent = vi.fn()
-    const running = {
-      ...projection('version-1', 4),
-      approval: 'approved' as const,
-      lifecycle: 'in_progress' as const,
-      stepStatuses: {
-        'Analyze the data': { status: 'in_progress' as const, updatedAt: 42 }
-      }
-    }
-    const { runtime, service } = createRuntimeHarness({ onEvent, activeProjection: running })
-
-    await (
-      runtime as unknown as {
-        publishTerminalPlanProjection: (sessionId: string) => Promise<void>
-      }
-    ).publishTerminalPlanProjection('session-1')
-
-    expect(service.getProjection).toHaveBeenCalledWith('project-1', 'session-1', {
-      interactionIsLive: false
-    })
-    expect(onEvent).toHaveBeenCalledWith(
-      expect.objectContaining({
-        kind: 'plan',
-        sessionId: 'session-1',
-        planProjection: expect.objectContaining({ lifecycle: 'interrupted' })
-      })
     )
   })
 })

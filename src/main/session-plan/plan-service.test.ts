@@ -21,7 +21,14 @@ const content = {
   feasibility: { confidence: 'high' as const, rationale: 'Inputs are available.' }
 }
 
-const setup = () => {
+type PlanServiceHarness = Readonly<{
+  service: PlanService
+  dependencies: PlanServiceDependencies
+  context: () => SessionRuntimeContext
+  status: () => string
+}>
+
+const setup = (): PlanServiceHarness => {
   let context: SessionRuntimeContext = { version: 1, revision: 0 }
   let persistedStatus = 'running'
   let bytes = ''

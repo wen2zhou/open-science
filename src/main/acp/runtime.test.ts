@@ -44,6 +44,7 @@ import { BEGIN_ACTIVITY_GROUP_TOOL_NAME } from '../../shared/activity-groups'
 import type { UploadedAttachment } from '../../shared/uploads'
 import { projectConversationMessage } from '../../shared/conversation-graph'
 import type { PersistedChatSession } from '../../shared/session-persistence'
+import type { ActivePlanProjection } from '../../shared/session-plan/contract'
 import { UploadRepository } from '../uploads/repository'
 import { stageUploadFixtures } from '../uploads/repository.test-utils'
 import { MAX_INLINE_IMAGE_TOTAL_BASE64_BYTES } from '../uploads/attachment-media'
@@ -11987,6 +11988,70 @@ describe('ACP runtime session management', () => {
     ).rejects.toThrow()
 
     expect(runtime.getSnapshot().contextUsageBySession.s1).toEqual(beforeFailure)
+  })
+
+  it('publishes an interrupted Plan after a provider prompt fails and releases the interaction', async () => {
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, ['s1'], {
+      onPrompt: () => {
+        throw new Error('provider rejected prompt')
+      }
+    })
+    const events: AcpRuntimeEvent[] = []
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      framework: opencodeFramework,
+      callbacks: { onEvent: (event) => events.push(event) }
+    })
+    const interruptedProjection = {
+      artifactId: 'artifact-version-1',
+      artifactVersionId: 'version-1',
+      artifactChecksum: 'a'.repeat(64),
+      revision: 4,
+      approval: 'approved',
+      lifecycle: 'interrupted',
+      document: {
+        schema_version: 1,
+        task_summary: 'Analyze one dataset',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Primary agent',
+                steps: [{ title: 'Analyze the data', description: 'Produce the result.' }]
+              }
+            ]
+          }
+        ],
+        desired_outputs: ['Analysis result'],
+        feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+      },
+      stepStatuses: {
+        'Analyze the data': { status: 'in_progress', updatedAt: 42 }
+      },
+      counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+    } satisfies ActivePlanProjection
+    const getProjection = vi.fn(async () => interruptedProjection)
+    Object.assign(runtime as unknown as { planService: unknown }, {
+      planService: { getProjection }
+    })
+
+    await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+    await expect(runtime.sendPrompt({ sessionId: 's1', text: 'run the plan' })).rejects.toThrow()
+
+    expect(getProjection).toHaveBeenCalledWith('project-1', 's1', {
+      interactionIsLive: false
+    })
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'plan',
+        sessionId: 's1',
+        planProjection: expect.objectContaining({ lifecycle: 'interrupted' })
+      })
+    )
   })
 
   it('retains partial turn context when an Agent prompt fails after streaming updates', async () => {

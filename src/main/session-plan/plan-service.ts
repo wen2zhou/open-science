@@ -59,8 +59,12 @@ const parseDocument = (content: string): PlanDocumentV1 => {
   try {
     const parsed = JSON.parse(content) as PlanDocumentV1
     if (parsed.schema_version !== 1) throw new Error('unsupported schema')
-    const { schema_version: _schemaVersion, ...candidate } = parsed
-    return createPlanDocumentV1(candidate)
+    return createPlanDocumentV1({
+      task_summary: parsed.task_summary,
+      phases: parsed.phases,
+      desired_outputs: parsed.desired_outputs,
+      feasibility: parsed.feasibility
+    })
   } catch (error) {
     if (error instanceof PlanCommandError) throw error
     throw new PlanCommandError('artifact-unavailable', 'The active Plan Artifact is unreadable.')
