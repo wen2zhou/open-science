@@ -653,7 +653,8 @@ class AcpRuntime {
         ? createProductionPlanService({
             artifactTurns: this.artifactTurns,
             provenance: {
-              resolveVersionContent: options.artifacts.provenance.resolveVersionContent
+              resolveVersionContent: (request) =>
+                options.artifacts!.provenance!.resolveVersionContent!(request)
             },
             sessions: options.plan.sessions
           })

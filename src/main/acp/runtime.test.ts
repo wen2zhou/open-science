@@ -6,6 +6,7 @@ import type {
   SessionModeState,
   SessionNotification
 } from '@agentclientprotocol/sdk'
+import { createHash } from 'node:crypto'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { mkdir, mkdtemp, readFile, readdir, realpath, rm, stat, writeFile } from 'node:fs/promises'
@@ -36,6 +37,8 @@ import {
 } from '../agent-framework'
 import { ArtifactRepository } from '../artifacts/repository'
 import { ArtifactProvenanceRepository } from '../artifacts/provenance-repository'
+import { ArtifactRunRegistry } from '../artifacts/run-registry'
+import type { ArtifactVersionFile } from '../../shared/artifact-provenance'
 import type { ArtifactRunClaim } from '../artifacts/run-registry'
 import { createPngBytes, createPngInlineSource } from '../artifacts/artifact-test-fixtures'
 import { writeArtifactFileForCurrentRun } from '../artifacts/mcp-server'
@@ -18055,5 +18058,136 @@ describe('Specialist Skill scoping', () => {
     expect(agent.newSessions[1]?._meta).not.toMatchObject({
       claudeCode: { options: { skills: expect.anything() } }
     })
+  })
+
+  it('keeps the Artifact provenance receiver when constructing the production Plan service', async () => {
+    const root = await createTemporaryRoot()
+    const planPath = join(root, 'plan.json')
+    let serializedPlan = ''
+    const checksum = (value: string): string => createHash('sha256').update(value).digest('hex')
+    const provenance = {
+      listRunVersions: async (): Promise<ArtifactVersionFile[]> => [],
+      writeAppGeneratedVersion: async (
+        input: Parameters<ArtifactProvenanceRepository['writeAppGeneratedVersion']>[0]
+      ): Promise<ArtifactVersionFile> => {
+        serializedPlan = input.content
+        await writeFile(planPath, serializedPlan, 'utf8')
+        return {
+          id: 'version-1',
+          projectName: 'project-1',
+          sessionId: 'session-1',
+          name: input.filename,
+          path: planPath,
+          fileUrl: `file://${planPath}`,
+          mimeType: input.contentType,
+          size: Buffer.byteLength(serializedPlan),
+          mtimeMs: 1,
+          artifactId: 'artifact-1',
+          versionId: 'version-1',
+          versionNumber: 1,
+          checksum: checksum(serializedPlan),
+          createdAt: new Date(0).toISOString()
+        }
+      },
+      async resolveVersionContent(this: unknown) {
+        expect(this).toBe(provenance)
+        return { path: planPath, filename: 'plan.json', checksum: checksum(serializedPlan) }
+      }
+    }
+    let context: import('../../shared/session-persistence').SessionRuntimeContext = {
+      version: 1,
+      revision: 0
+    }
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'project-1',
+        mcpEntryPath: '/unused',
+        repository: new ArtifactRepository(root),
+        runRegistry: new ArtifactRunRegistry(),
+        provenance
+      },
+      plan: {
+        mcpEntryPath: '/unused',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:1', token: 'token' }),
+        sessions: {
+          readSessionRuntimeContext: async () => context,
+          patchSessionRuntimeContext: async ({ patch }) => {
+            context = { version: 1, revision: context.revision + 1, ...patch }
+            return context
+          },
+          appendPlanResponseMessage: async () => {
+            throw new Error('not used in this test')
+          }
+        }
+      }
+    })
+    const internals = runtime as unknown as {
+      artifactTurns: {
+        open(request: {
+          appSessionId: string
+          artifactStorageSessionId: string
+          projectId: string
+          agentName: string
+        }): Promise<unknown>
+        dispose(handle: unknown): Promise<void>
+      }
+      planService: {
+        generate(input: {
+          projectId: string
+          sessionId: string
+          interactionId: string
+          content: {
+            task_summary: string
+            phases: Array<{
+              name: string
+              delegations: Array<{
+                name: string
+                steps: Array<{ title: string; description: string }>
+              }>
+            }>
+            desired_outputs: string[]
+            feasibility: { confidence: 'high'; rationale: string }
+          }
+        }): Promise<{ projection: { artifactVersionId: string } }>
+      }
+    }
+    const turn = await internals.artifactTurns.open({
+      appSessionId: 'session-1',
+      artifactStorageSessionId: 'session-1',
+      projectId: 'project-1',
+      agentName: 'Main Agent'
+    })
+
+    try {
+      await expect(
+        internals.planService.generate({
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          interactionId: 'interaction-1',
+          content: {
+            task_summary: 'Analyze one dataset',
+            phases: [
+              {
+                name: 'Analysis',
+                delegations: [
+                  {
+                    name: 'Primary agent',
+                    steps: [{ title: 'Analyze the data', description: 'Produce the result.' }]
+                  }
+                ]
+              }
+            ],
+            desired_outputs: ['Analysis result'],
+            feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+          }
+        })
+      ).resolves.toMatchObject({ projection: { artifactVersionId: 'version-1' } })
+    } finally {
+      await internals.artifactTurns.dispose(turn)
+    }
   })
 })
