@@ -590,6 +590,31 @@ describe('workspace agent message sending', () => {
     vi.unstubAllGlobals()
   })
 
+  it('binds an explicit continuation prompt to the durable active Plan version', async () => {
+    const sendPrompt = vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
+    const runtime = {
+      state: createSnapshot(['transport-session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt
+    }
+
+    await sendWorkspaceMessage(runtime, {
+      sessionId: 'transport-session-1',
+      text: 'continue',
+      cwd: '/workspace/project',
+      projectId: 'project-1',
+      planContinuation: { artifactVersionId: 'plan-version-1', revision: 9 }
+    })
+
+    expect(sendPrompt.mock.calls[0]?.[10]).toEqual({
+      projectId: 'project-1',
+      artifactVersionId: 'plan-version-1',
+      expectedRevision: 9
+    })
+  })
+
   it('rebuilds Agent and Notebook context before continuing a switched Branch', async () => {
     useSessionStore.getState().appendUserMessage({
       sessionId: 'transport-session-1',

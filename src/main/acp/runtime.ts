@@ -145,6 +145,7 @@ import type {
   GeneratePlanContent,
   PlanResponseCommand
 } from '../../shared/session-plan/contract'
+import { formatPlanProtectedContext, PlanCommandError } from '../../shared/session-plan/contract'
 import type { SessionPlanStepStatus } from '../../shared/session-persistence'
 import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 
@@ -573,6 +574,10 @@ class AcpRuntime {
       reject: (error: Error) => void
     }
   >()
+  private readonly planExecutionBindings = new Map<
+    string,
+    { interactionSequence: number; artifactVersionId: string }
+  >()
   private readonly promptContentOwner: AcpPromptContentOwner
 
   // Wires runtime dependencies and forwards permission prompts into the event stream.
@@ -890,6 +895,10 @@ class AcpRuntime {
         decision: 'approved',
         interactionIsLive
       })
+      this.bindPlanExecutionToCurrentInteraction(
+        input.sessionId,
+        result.projection.artifactVersionId
+      )
       this.resolvePlanApprovalWaiter(input.sessionId, result)
       this.publishPlanProjection(input.sessionId, result.projection)
       return result
@@ -899,6 +908,30 @@ class AcpRuntime {
       status: SessionPlanStepStatus
       notes?: string
       expectedArtifactVersionId?: string
+    }
+    const interaction = this.sessionInteractions.current(input.sessionId)
+    const binding = this.planExecutionBindings.get(input.sessionId)
+    if (!binding) {
+      throw new PlanCommandError(
+        'continuation-required',
+        'Continuing this Plan requires an explicit user continuation.'
+      )
+    }
+    if (!interaction || binding.interactionSequence !== interaction.sequence) {
+      throw new PlanCommandError(
+        'interaction-mismatch',
+        'This interaction is not authorized to execute the active Plan.'
+      )
+    }
+    if (
+      binding.artifactVersionId !== projection.artifactVersionId ||
+      (update.expectedArtifactVersionId !== undefined &&
+        update.expectedArtifactVersionId !== binding.artifactVersionId)
+    ) {
+      throw new PlanCommandError(
+        'interaction-mismatch',
+        'This interaction is bound to a different Plan Artifact Version.'
+      )
     }
     const result = await service.updateStepStatus({
       ...identity,
@@ -930,6 +963,12 @@ class AcpRuntime {
     const interactionIsLive = this.planApprovalWaiters.has(input.sessionId)
     const result = await this.planService.respond({ ...input, interactionIsLive })
     if ('projection' in result) {
+      if (interactionIsLive && result.projection.approval === 'approved') {
+        this.bindPlanExecutionToCurrentInteraction(
+          input.sessionId,
+          result.projection.artifactVersionId
+        )
+      }
       if (interactionIsLive) this.resolvePlanApprovalWaiter(input.sessionId, result)
       this.publishPlanProjection(input.sessionId, result.projection)
       return result
@@ -995,6 +1034,18 @@ class AcpRuntime {
     if (!waiter) return
     this.planApprovalWaiters.delete(sessionId)
     waiter.resolve(result)
+  }
+
+  private bindPlanExecutionToCurrentInteraction(
+    sessionId: string,
+    artifactVersionId: string
+  ): void {
+    const interaction = this.sessionInteractions.current(sessionId)
+    if (!interaction || interaction.kind !== 'prompt') return
+    this.planExecutionBindings.set(sessionId, {
+      interactionSequence: interaction.sequence,
+      artifactVersionId
+    })
   }
 
   private rejectPlanApprovalWaiter(sessionId: string, reason: string): void {
@@ -2778,6 +2829,28 @@ class AcpRuntime {
       throw new Error('An ACP prompt is already running for this session')
     }
 
+    const authorizedPlanContinuation = request.planContinuation
+      ? await (() => {
+          if (!this.planService) {
+            throw new Error('Session Plan capability is not configured.')
+          }
+          if (
+            request.planContinuation.projectId !== this.resolveSessionProjectName(request.sessionId)
+          ) {
+            throw new PlanCommandError(
+              'interaction-mismatch',
+              'The Plan continuation belongs to a different Project.'
+            )
+          }
+          return this.planService.authorizeContinuation({
+            projectId: request.planContinuation.projectId,
+            sessionId: request.sessionId,
+            artifactVersionId: request.planContinuation.artifactVersionId,
+            expectedRevision: request.planContinuation.expectedRevision
+          })
+        })()
+      : undefined
+
     // Reserve this attempt before Specialist/skill authorization can yield. A newer preflight may
     // supersede the reservation without publishing an in-flight turn, preserving the existing
     // last-admitted-preflight behavior while preventing a stale attempt from using a replaced session.
@@ -2903,6 +2976,12 @@ class AcpRuntime {
     let promptInteraction: AcpPromptSessionInteractionScope
     try {
       promptInteraction = this.sessionInteractions.activatePrompt(promptReservation)
+      if (authorizedPlanContinuation) {
+        this.planExecutionBindings.set(request.sessionId, {
+          interactionSequence: promptInteraction.sequence,
+          artifactVersionId: authorizedPlanContinuation.artifactVersionId
+        })
+      }
       this.sessionRegistry.select(request.sessionId)
       this.handoffContinuity.recordAdmittedPrompt(request)
     } catch (error) {
@@ -3050,7 +3129,14 @@ class AcpRuntime {
       const nudgedText = await this.applySkillNudge(promptRequestText, forced)
       // A history preamble (transcript replayed after a context reset) leads, then the framework guidance
       // prefix, then the nudged user text. Absent segments drop out so the normal turn is unchanged.
-      const promptText = [request.historyPreamble, promptPrefix, nudgedText]
+      const promptText = [
+        authorizedPlanContinuation
+          ? formatPlanProtectedContext(authorizedPlanContinuation)
+          : undefined,
+        request.historyPreamble,
+        promptPrefix,
+        nudgedText
+      ]
         .filter((segment): segment is string => Boolean(segment))
         .join('\n\n')
       revokeReferencedUploadGrant = await this.authorizeReferencedSkillUploads(
@@ -3174,7 +3260,12 @@ class AcpRuntime {
         }
 
         if (message.kind === 'stop') {
-          if (message.response.stopReason === 'end_turn' && this.planService) {
+          const planExecutionBinding = this.planExecutionBindings.get(request.sessionId)
+          if (
+            message.response.stopReason === 'end_turn' &&
+            this.planService &&
+            planExecutionBinding?.interactionSequence === promptInteraction.sequence
+          ) {
             const completion = await this.planService.checkTurnCompletion({
               projectId: this.resolveSessionProjectName(request.sessionId),
               sessionId: request.sessionId
@@ -3378,6 +3469,10 @@ class AcpRuntime {
       const ownsInteraction =
         this.sessionInteractions.current(request.sessionId) === promptInteraction
       if (ownsInteraction) {
+        const planBinding = this.planExecutionBindings.get(request.sessionId)
+        if (planBinding?.interactionSequence === promptInteraction.sequence) {
+          this.planExecutionBindings.delete(request.sessionId)
+        }
         const planWaiter = this.planApprovalWaiters.get(request.sessionId)
         if (planWaiter?.interactionId === promptInteraction.promptMessageId) {
           this.rejectPlanApprovalWaiter(

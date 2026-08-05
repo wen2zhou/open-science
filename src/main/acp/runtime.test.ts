@@ -12064,6 +12064,88 @@ describe('ACP runtime session management', () => {
     ['Codex', codexFramework],
     ['OpenCode', opencodeFramework]
   ] as const)(
+    'binds %s explicit continuation to one durable Plan version and protected context',
+    async (_name, framework) => {
+      const process = new FakeAgentProcess()
+      const fakeAgent = startFakeAgent(process, ['s1'], {
+        modes:
+          framework.id === 'codex'
+            ? createModes(['read-only', 'agent', 'agent-full-access'], 'agent')
+            : undefined
+      })
+      const runtime = new AcpRuntime({
+        appVersion: '0.1.0',
+        defaultCwd: '/workspace',
+        spawnAgent: () => asAgentProcess(process),
+        framework
+      })
+      const active = {
+        artifactId: 'artifact-1',
+        artifactVersionId: 'version-7',
+        artifactChecksum: 'a'.repeat(64),
+        revision: 11,
+        approval: 'approved',
+        lifecycle: 'approved',
+        requiresExplicitContinuation: false,
+        document: {
+          schema_version: 1,
+          task_summary: 'Analyze one dataset',
+          phases: [
+            {
+              name: 'Analysis',
+              delegations: [
+                {
+                  name: 'Primary agent',
+                  steps: [{ title: 'Analyze data', description: 'Produce the result.' }]
+                }
+              ]
+            }
+          ],
+          desired_outputs: ['Analysis result'],
+          feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+        },
+        stepStatuses: {},
+        stepStates: { 'Analyze data': { status: 'not_started' } },
+        counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+      } satisfies ActivePlanProjection
+      const authorizeContinuation = vi.fn(async () => active)
+      Object.assign(runtime as unknown as { planService: unknown }, {
+        planService: {
+          authorizeContinuation,
+          checkTurnCompletion: vi.fn(async () => ({ allow: true })),
+          getProjection: vi.fn(async () => active)
+        }
+      })
+
+      await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+      await runtime.sendPrompt({
+        sessionId: 's1',
+        text: 'continue',
+        planContinuation: {
+          projectId: 'project-1',
+          artifactVersionId: 'version-7',
+          expectedRevision: 11
+        }
+      })
+
+      expect(authorizeContinuation).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sessionId: 's1',
+        artifactVersionId: 'version-7',
+        expectedRevision: 11
+      })
+      expect(fakeAgent.prompts[0]?.text).toContain('<open_science_protected_plan_context>')
+      expect(fakeAgent.prompts[0]?.text).toContain('artifact_version_id=version-7')
+      expect(fakeAgent.prompts[0]?.text).toContain('Analyze data: not_started')
+      expect(fakeAgent.prompts[0]?.text).toContain('continue')
+    }
+  )
+
+  it.each([
+    ['Claude Code', claudeCodeFramework],
+    ['Codex', codexFramework],
+    ['OpenCode', opencodeFramework]
+  ] as const)(
     'routes %s normal terminal stops through the Session Plan completion gate',
     async (_name, framework) => {
       const process = new FakeAgentProcess()
@@ -12085,20 +12167,87 @@ describe('ACP runtime session management', () => {
         lifecycle: 'in_progress' as const
       }))
       const getProjection = vi.fn(async () => null)
+      const authorized = {
+        artifactId: 'artifact-1',
+        artifactVersionId: 'version-1',
+        artifactChecksum: 'a'.repeat(64),
+        revision: 2,
+        approval: 'approved',
+        lifecycle: 'approved',
+        requiresExplicitContinuation: false,
+        document: {
+          schema_version: 1,
+          task_summary: 'Analyze data',
+          phases: [
+            {
+              name: 'Analysis',
+              delegations: [
+                {
+                  name: 'Main Agent',
+                  steps: [{ title: 'Analyze', description: 'Analyze the data.' }]
+                }
+              ]
+            }
+          ],
+          desired_outputs: ['Result'],
+          feasibility: { confidence: 'high', rationale: 'Ready.' }
+        },
+        stepStatuses: {},
+        stepStates: { Analyze: { status: 'not_started' } },
+        counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+      } satisfies ActivePlanProjection
       Object.assign(runtime as unknown as { planService: unknown }, {
-        planService: { checkTurnCompletion, getProjection }
+        planService: {
+          authorizeContinuation: vi.fn(async () => authorized),
+          checkTurnCompletion,
+          getProjection
+        }
       })
 
       await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
-      await expect(runtime.sendPrompt({ sessionId: 's1', text: 'finish early' })).rejects.toThrow(
-        'The active Session Plan is not complete (in_progress).'
-      )
+      await expect(
+        runtime.sendPrompt({
+          sessionId: 's1',
+          text: 'finish early',
+          planContinuation: {
+            projectId: 'project-1',
+            artifactVersionId: 'version-1',
+            expectedRevision: 2
+          }
+        })
+      ).rejects.toThrow('The active Session Plan is not complete (in_progress).')
       expect(checkTurnCompletion).toHaveBeenCalledWith({
         projectId: 'project-1',
         sessionId: 's1'
       })
     }
   )
+
+  it('lets an unrelated ordinary message finish without resuming an approved Plan', async () => {
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['s1'])
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      framework: opencodeFramework
+    })
+    const checkTurnCompletion = vi.fn(async () => ({
+      allow: false,
+      lifecycle: 'approved' as const
+    }))
+    Object.assign(runtime as unknown as { planService: unknown }, {
+      planService: { checkTurnCompletion, getProjection: vi.fn(async () => null) }
+    })
+
+    await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+    await expect(
+      runtime.sendPrompt({ sessionId: 's1', text: 'What is the weather?' })
+    ).resolves.toMatchObject({ stopReason: 'end_turn' })
+
+    expect(checkTurnCompletion).not.toHaveBeenCalled()
+    expect(fakeAgent.prompts[0]?.text).not.toContain('<open_science_protected_plan_context>')
+  })
 
   it('projects an abnormal provider terminal stop as interrupted instead of checking normal completion', async () => {
     const process = new FakeAgentProcess()

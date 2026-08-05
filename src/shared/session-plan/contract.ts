@@ -51,6 +51,28 @@ export type ActivePlanProjection = Readonly<{
   counts: Readonly<{ phases: number; delegations: number; steps: number; completed: number }>
 }>
 
+const compactPlanContextText = (value: string): string =>
+  value.replace(/\s+/g, ' ').trim().slice(0, 500)
+
+export const formatPlanProtectedContext = (projection: ActivePlanProjection): string => {
+  const steps = planStepTitles(projection.document).map((title) => {
+    const state = projection.stepStates[title] ?? { status: 'not_started' as const }
+    const notes = state.notes ? ` — ${compactPlanContextText(state.notes)}` : ''
+    return `- ${compactPlanContextText(title)}: ${state.status}${notes}`
+  })
+  return [
+    '<open_science_protected_plan_context>',
+    `artifact_id=${projection.artifactId}`,
+    `artifact_version_id=${projection.artifactVersionId}`,
+    `artifact_checksum=${projection.artifactChecksum}`,
+    `revision=${projection.revision} approval=${projection.approval} lifecycle=${projection.lifecycle}`,
+    `task=${compactPlanContextText(projection.document.task_summary)}`,
+    ...steps,
+    'Do not execute this Plan without interaction-bound authority from Open Science.',
+    '</open_science_protected_plan_context>'
+  ].join('\n')
+}
+
 export const PLAN_COMMAND_ERROR_CODES = [
   'invalid-plan',
   'no-active-plan',
@@ -61,7 +83,9 @@ export const PLAN_COMMAND_ERROR_CODES = [
   'dependency-not-satisfied',
   'plan-not-approved',
   'artifact-unavailable',
-  'revision-conflict'
+  'revision-conflict',
+  'continuation-required',
+  'interaction-mismatch'
 ] as const
 
 export type PlanCommandErrorCode = (typeof PLAN_COMMAND_ERROR_CODES)[number]
@@ -83,8 +107,28 @@ export type PlanResponseCommand =
 const PLAN_APPROVAL_RESPONSE =
   /^(?:approve|approved|go ahead|proceed|looks good|do it|continue)[.!]?$/i
 
+const PLAN_APPROVE_AND_CONTINUE_RESPONSE =
+  /^(?:approve(?:d)?\s+(?:and|&)\s+(?:continue|proceed)|continue|proceed)[.!]?$/i
+
+const PLAN_CONTINUATION_RESPONSE = /^(?:continue|proceed|resume(?:\s+(?:this|the)\s+plan)?)[.!]?$/i
+
+export type PlanMessageIntent = 'none' | 'approve' | 'continue' | 'approve-and-continue'
+
 export const isPlanApprovalResponse = (text: string): boolean =>
   PLAN_APPROVAL_RESPONSE.test(text.trim())
+
+export const parsePlanMessageIntent = (
+  text: string,
+  approval: SessionPlanApproval
+): PlanMessageIntent => {
+  const normalized = text.trim()
+  if (approval === 'pending') {
+    if (PLAN_APPROVE_AND_CONTINUE_RESPONSE.test(normalized)) return 'approve-and-continue'
+    return isPlanApprovalResponse(normalized) ? 'approve' : 'none'
+  }
+  if (approval === 'approved' && PLAN_CONTINUATION_RESPONSE.test(normalized)) return 'continue'
+  return 'none'
+}
 
 export class PlanCommandError extends Error {
   constructor(

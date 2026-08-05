@@ -8,6 +8,7 @@ import type {
   AcpMessageImage,
   AcpContextUsage
 } from '../../../../shared/acp'
+import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
 import {
   DEFAULT_PERMISSION_PROFILE,
   type PermissionProfileId,
@@ -44,6 +45,7 @@ type SendWorkspaceMessageInput = {
   // It is mutually exclusive with `sessionId`, which continues an existing app Session.
   branchSourceSessionId?: string
   text: string
+  planContinuation?: Pick<ActivePlanProjection, 'artifactVersionId' | 'revision'>
   attachments?: UploadedAttachment[]
   cwd?: string
   // Durable owning project stamped on new sessions.
@@ -712,7 +714,8 @@ const sendWorkspaceMessage = async (
     truncateFromMessageId,
     allowCompactionRecovery,
     requireExistingSession,
-    specialistId
+    specialistId,
+    planContinuation
   }: SendWorkspaceMessageInput,
   onSendPreparationStateChange?: SendPreparationStateChange,
   drainRuntimeEvents?: RuntimeEventDrain
@@ -847,7 +850,8 @@ const sendWorkspaceMessage = async (
     }
 
     // Existing sessions keep their own project; new/pending ones fall back to the caller's project.
-    const sessionProjectName = projectName ?? currentSession?.projectId
+    const sessionProjectName = projectName ?? currentSession?.projectId ?? projectId
+    if (planContinuation && !sessionProjectName) return undefined
 
     if (currentSession?.isPending) {
       const retryCwd = targetCwd || currentSession.cwd || undefined
@@ -1145,19 +1149,27 @@ const sendWorkspaceMessage = async (
     const priorErrorEventId = latestPromptFailureEventId(runtime.state.events, targetSessionId)
 
     // The hook returns after local state is updated; event listeners handle the streamed result.
-    void runtime
-      .sendPrompt(
-        targetSessionId,
-        content,
-        promptAttachments,
-        forcedSkillIds,
-        referencedArtifacts,
-        historyPreamble,
-        historyAttachments,
-        historyImages,
-        resumeFallback,
-        getPromptProvenanceContext(targetSessionId, appended.messageId)
-      )
+    const sendPromptArguments = [
+      targetSessionId,
+      content,
+      promptAttachments,
+      forcedSkillIds,
+      referencedArtifacts,
+      historyPreamble,
+      historyAttachments,
+      historyImages,
+      resumeFallback,
+      getPromptProvenanceContext(targetSessionId, appended.messageId)
+    ] as const
+    const promptRequest = planContinuation
+      ? runtime.sendPrompt(...sendPromptArguments, {
+          projectId: sessionProjectName!,
+          artifactVersionId: planContinuation.artifactVersionId,
+          expectedRevision: planContinuation.revision
+        })
+      : runtime.sendPrompt(...sendPromptArguments)
+
+    void promptRequest
       .then((snapshot) => {
         if (branchContextResetPerformed) {
           useSessionStore.getState().clearBranchContextReset(targetSessionId)

@@ -967,6 +967,93 @@ describe('PlanService', () => {
     })
   })
 
+  it('authorizes explicit continuation only for the durable approved incomplete version', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const approved = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved',
+      interactionIsLive: false
+    })
+
+    await expect(
+      service.authorizeContinuation({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: generated.projection.artifactVersionId,
+        expectedRevision: approved.projection.revision
+      })
+    ).resolves.toMatchObject({
+      artifactVersionId: generated.projection.artifactVersionId,
+      approval: 'approved',
+      requiresExplicitContinuation: false
+    })
+    await expect(
+      service.authorizeContinuation({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: 'stale-version',
+        expectedRevision: approved.projection.revision
+      })
+    ).rejects.toMatchObject({ code: 'stale-plan' })
+  })
+
+  it('rejects continuation before approval and after completion', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+
+    await expect(
+      service.authorizeContinuation({
+        ...identity,
+        expectedRevision: generated.projection.revision
+      })
+    ).rejects.toMatchObject({ code: 'plan-not-approved' })
+
+    const approved = await service.respond({
+      ...identity,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved',
+      interactionIsLive: false
+    })
+    const started = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: approved.projection.revision,
+      title: 'Analyze the data',
+      status: 'in_progress'
+    })
+    const completed = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: started.projection.revision,
+      title: 'Analyze the data',
+      status: 'completed'
+    })
+
+    await expect(
+      service.authorizeContinuation({
+        ...identity,
+        expectedRevision: completed.projection.revision
+      })
+    ).rejects.toMatchObject({ code: 'invalid-transition' })
+  })
+
   it('drops unreadable restored Plan authority instead of exposing it as executable', async () => {
     const { service, dependencies, context, status } = setup()
     await service.generate({

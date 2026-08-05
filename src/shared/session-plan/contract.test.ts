@@ -3,8 +3,10 @@ import { describe, expect, it } from 'vitest'
 import {
   createPlanDocumentV1,
   derivePlanLifecycle,
+  formatPlanProtectedContext,
   isPlanApprovalResponse,
   isPlanComplete,
+  parsePlanMessageIntent,
   parsePlanDocumentV1,
   PlanCommandError
 } from './contract'
@@ -17,6 +19,58 @@ describe('Plan response text', () => {
 
   it('keeps change requests on the feedback path', () => {
     expect(isPlanApprovalResponse('Approve after splitting by cohort.')).toBe(false)
+  })
+
+  it.each([
+    ['approve and continue', 'pending', 'approve-and-continue'],
+    ['Approve & proceed!', 'pending', 'approve-and-continue'],
+    ['continue', 'approved', 'continue'],
+    ['resume this plan.', 'approved', 'continue'],
+    ['continue', 'pending', 'approve-and-continue'],
+    ['approve', 'pending', 'approve'],
+    ['What is the weather?', 'approved', 'none'],
+    ['continue with a different task', 'approved', 'none']
+  ] as const)('classifies %s against a %s Plan as %s', (text, approval, expected) =>
+    expect(parsePlanMessageIntent(text, approval)).toBe(expected)
+  )
+})
+
+describe('protected Plan context', () => {
+  it('retains immutable identity, approval, lifecycle, and the latest step notes', () => {
+    const summary = formatPlanProtectedContext({
+      artifactId: 'artifact-1',
+      artifactVersionId: 'version-3',
+      artifactChecksum: 'a'.repeat(64),
+      revision: 8,
+      approval: 'approved',
+      lifecycle: 'blocked',
+      requiresExplicitContinuation: true,
+      document: createPlanDocumentV1({
+        task_summary: 'Analyze data',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Main Agent',
+                steps: [{ title: 'Analyze', description: 'Analyze the data.' }]
+              }
+            ]
+          }
+        ],
+        desired_outputs: ['Result'],
+        feasibility: { confidence: 'high', rationale: 'Ready.' }
+      }),
+      stepStatuses: { Analyze: { status: 'blocked', updatedAt: 42, notes: 'Input missing' } },
+      stepStates: { Analyze: { status: 'blocked', notes: 'Input missing' } },
+      counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+    })
+
+    expect(summary).toContain('artifact_id=artifact-1')
+    expect(summary).toContain('artifact_version_id=version-3')
+    expect(summary).toContain('revision=8 approval=approved lifecycle=blocked')
+    expect(summary).toContain('Analyze: blocked — Input missing')
+    expect(summary).toContain('Do not execute this Plan without interaction-bound authority')
   })
 })
 

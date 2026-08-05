@@ -4,6 +4,7 @@ const SESSION_PLAN_SYSTEM_PROMPT_APPEND = [
   'Do not generate a Plan for simple lookups, single computations, basic file inspection, or other straightforward tasks.',
   'For work that may need a Plan, discover applicable skills before generating it.',
   'When a Plan is useful, call `generate_plan` from the `open-science-plan` server with a complete Plan, then wait for the user to approve or dismiss it before executing any Plan step.',
+  'After a restart or interruption, do not resume an approved unfinished Plan from an unrelated user message. Open Science grants Plan execution authority only when the user explicitly says to continue or resume that Plan.',
   'After approval, call `update_step_status` with the exact step title when work starts and when it completes, is blocked, or is skipped.',
   'Do not call `end_turn` while an approved Session Plan still has unfinished steps.',
   '</open_science_session_plan_instructions>'

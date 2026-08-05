@@ -20,6 +20,7 @@ import {
   type ChatSession
 } from '@/stores/session-store'
 import type { ReviewWithChecks } from '../../../../shared/reviewer'
+import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
 
 import { type ComposerDoc } from './composer/composer-doc'
 
@@ -32,6 +33,7 @@ let conversationProps: {
   canCompactContext: boolean
   compactContextDisabledReason?: string
   onDraftDocChange: (doc: ComposerDoc) => void
+  onSendMessage: (forcedSkillIds: string[]) => void
 }
 
 const runtime = vi.hoisted(() => ({
@@ -112,6 +114,36 @@ const createSession = (overrides: Partial<ChatSession> = {}): ChatSession => {
 }
 
 const textDoc = (text: string): ComposerDoc => ({ nodes: [{ type: 'text', text }] })
+
+const planProjection = (approval: 'pending' | 'approved', revision = 3): ActivePlanProjection => ({
+  artifactId: 'plan-artifact-1',
+  artifactVersionId: 'plan-version-1',
+  artifactChecksum: 'a'.repeat(64),
+  revision,
+  approval,
+  lifecycle: approval === 'pending' ? 'awaiting_approval' : 'approved',
+  requiresExplicitContinuation: approval === 'approved',
+  document: {
+    schema_version: 1,
+    task_summary: 'Analyze data',
+    phases: [
+      {
+        name: 'Analysis',
+        delegations: [
+          {
+            name: 'Main Agent',
+            steps: [{ title: 'Analyze', description: 'Analyze the data.' }]
+          }
+        ]
+      }
+    ],
+    desired_outputs: ['Result'],
+    feasibility: { confidence: 'high', rationale: 'Ready.' }
+  },
+  stepStatuses: {},
+  stepStates: { Analyze: { status: 'not_started' } },
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 0 }
+})
 
 describe('WorkspacePage send gate while compacting', () => {
   let container: HTMLDivElement
@@ -213,6 +245,103 @@ describe('WorkspacePage send gate while compacting', () => {
 
     expect(window.api.acp.getPlanProjection).toHaveBeenCalledWith('proj-1', 'sess-a')
     expect(useSessionStore.getState().sessions[0]?.status).toBe('idle')
+  })
+
+  it('starts an approved Plan only for an explicit continuation message', async () => {
+    useSessionStore.setState({
+      sessions: [createSession({ activePlanProjection: planProjection('approved') })],
+      selectedSessionId: 'sess-a'
+    })
+    runtime.sendMessage.mockResolvedValue({ sessionId: 'sess-a', messageId: 'message-1' })
+    await renderPage()
+
+    await act(async () => {
+      conversationProps.onDraftDocChange(textDoc('continue'))
+    })
+    await act(async () => {
+      conversationProps.onSendMessage([])
+      await Promise.resolve()
+    })
+
+    expect(runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'continue',
+        planContinuation: { artifactVersionId: 'plan-version-1', revision: 3 }
+      })
+    )
+
+    runtime.sendMessage.mockClear()
+    await act(async () => {
+      conversationProps.onDraftDocChange(textDoc('What is the weather?'))
+    })
+    await act(async () => {
+      conversationProps.onSendMessage([])
+      await Promise.resolve()
+    })
+
+    expect(runtime.sendMessage).toHaveBeenCalledWith(
+      expect.not.objectContaining({ planContinuation: expect.anything() })
+    )
+  })
+
+  it('durably approves before dispatching approve-and-continue with the new revision', async () => {
+    const pending = planProjection('pending')
+    const approved = planProjection('approved', 4)
+    useSessionStore.setState({
+      sessions: [createSession({ status: 'waiting-plan-approval', activePlanProjection: pending })],
+      selectedSessionId: 'sess-a'
+    })
+    window.api.acp.respondPlan = vi.fn(() => Promise.resolve({ changed: true }))
+    window.api.acp.getPlanProjection = vi.fn(() => Promise.resolve(approved))
+    runtime.sendMessage.mockResolvedValue({ sessionId: 'sess-a', messageId: 'message-1' })
+    await renderPage()
+
+    await act(async () => {
+      conversationProps.onDraftDocChange(textDoc('approve and continue'))
+    })
+    await act(async () => {
+      conversationProps.onSendMessage([])
+      await vi.waitFor(() => expect(runtime.sendMessage).toHaveBeenCalledOnce())
+    })
+
+    expect(window.api.acp.respondPlan).toHaveBeenCalledWith(
+      expect.objectContaining({
+        artifactVersionId: 'plan-version-1',
+        expectedRevision: 3,
+        decision: 'approved'
+      })
+    )
+    expect(runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        planContinuation: { artifactVersionId: 'plan-version-1', revision: 4 }
+      })
+    )
+    expect(vi.mocked(window.api.acp.respondPlan).mock.invocationCallOrder[0]).toBeLessThan(
+      runtime.sendMessage.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('records a plain approval without starting a continuation interaction', async () => {
+    const pending = planProjection('pending')
+    const approved = planProjection('approved', 4)
+    useSessionStore.setState({
+      sessions: [createSession({ status: 'waiting-plan-approval', activePlanProjection: pending })],
+      selectedSessionId: 'sess-a'
+    })
+    window.api.acp.respondPlan = vi.fn(() => Promise.resolve({ changed: true }))
+    window.api.acp.getPlanProjection = vi.fn(() => Promise.resolve(approved))
+    await renderPage()
+
+    await act(async () => {
+      conversationProps.onDraftDocChange(textDoc('approve'))
+    })
+    await act(async () => {
+      conversationProps.onSendMessage([])
+      await vi.waitFor(() => expect(window.api.acp.respondPlan).toHaveBeenCalledOnce())
+    })
+
+    expect(runtime.sendMessage).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions[0]?.activePlanProjection).toBe(approved)
   })
 
   it('blocks message-branch changes only while the project-scoped review is running', async () => {
