@@ -4,7 +4,8 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { ActivePlanProjection } from '../../../../../shared/session-plan/contract'
-import { PlanPreviewSurface, PlanProgressDock, WorkspacePlanCard } from './SessionPlanSurfaces'
+import { PlanPreviewSurface, PlanProgressChip, WorkspacePlanCard } from './SessionPlanSurfaces'
+import { isPlanProgressVisible } from './plan-progress'
 
 afterEach(cleanup)
 
@@ -188,11 +189,11 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
   })
 
-  it('renders the three-level Plan preview and Variant B progress dock', () => {
+  it('renders the three-level Plan preview', () => {
     const onDownload = vi.fn().mockResolvedValue(undefined)
     const onToggleFullScreen = vi.fn()
     const onRespond = vi.fn().mockResolvedValue(undefined)
-    const { rerender } = render(
+    render(
       <PlanPreviewSurface
         projection={multiLevelProjection}
         onDownload={onDownload}
@@ -234,11 +235,6 @@ describe('Session Plan renderer surfaces', () => {
     expect(onRespond).toHaveBeenNthCalledWith(1, 'rejected')
     expect(onRespond).toHaveBeenNthCalledWith(2, 'approved')
     expect(onToggleFullScreen).toHaveBeenCalledOnce()
-
-    rerender(<PlanProgressDock projection={projection} onOpen={vi.fn()} />)
-    expect(screen.getByText('Awaiting plan approval')).toBeTruthy()
-    expect(screen.getByText('0/1 done')).toBeTruthy()
-    expect(screen.getByRole('progressbar').getAttribute('aria-valuenow')).toBe('0')
   })
 
   it('overlays every public step status while hiding ordinary status notes', () => {
@@ -303,9 +299,10 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.queryByText('Hidden completed note.')).toBeNull()
   })
 
-  it('shows parallel-running count and copy in the Variant B progress dock', () => {
+  it('renders the progress chip with completed/total steps and opens on click', () => {
+    const onOpen = vi.fn()
     render(
-      <PlanProgressDock
+      <PlanProgressChip
         projection={{
           ...projection,
           approval: 'approved',
@@ -320,15 +317,16 @@ describe('Session Plan renderer surfaces', () => {
           },
           counts: { phases: 1, delegations: 2, steps: 2, completed: 0 }
         }}
-        onOpen={vi.fn()}
+        onOpen={onOpen}
       />
     )
 
-    expect(screen.getByText('2 steps running in parallel')).toBeTruthy()
-    expect(screen.getByText('2 running · 0/2 done')).toBeTruthy()
+    const chip = screen.getByRole('button', { name: /open plan, step 0 of 2/i })
+    fireEvent.click(chip)
+    expect(onOpen).toHaveBeenCalledOnce()
   })
 
-  it('distinguishes running, parallel, blocked, and completed results on the Plan card', () => {
+  it('renders the lifecycle label on the Plan card without a status banner', () => {
     const { rerender } = render(
       <WorkspacePlanCard
         projection={{
@@ -344,32 +342,8 @@ describe('Session Plan renderer surfaces', () => {
         onRespond={vi.fn()}
       />
     )
-    expect(
-      screen.getByText('Approved · The current interaction is executing the plan.')
-    ).toBeTruthy()
-
-    rerender(
-      <WorkspacePlanCard
-        projection={{
-          ...multiLevelProjection,
-          approval: 'approved',
-          lifecycle: 'in_progress',
-          stepStatuses: {
-            'Compare cohorts': { status: 'in_progress', updatedAt: 1 },
-            'Review evidence': { status: 'in_progress', updatedAt: 1 }
-          },
-          stepStates: {
-            'Read the dictionary': { status: 'completed' },
-            'Validate inputs': { status: 'completed' },
-            'Compare cohorts': { status: 'in_progress' },
-            'Review evidence': { status: 'in_progress' }
-          }
-        }}
-        onOpen={vi.fn()}
-        onRespond={vi.fn()}
-      />
-    )
-    expect(screen.getByText('Approved · Two delegations are running in parallel.')).toBeTruthy()
+    expect(screen.getByText('Plan in progress')).toBeTruthy()
+    expect(screen.queryByText(/Send a message to continue/u)).toBeNull()
 
     rerender(
       <WorkspacePlanCard
@@ -378,9 +352,8 @@ describe('Session Plan renderer surfaces', () => {
         onRespond={vi.fn()}
       />
     )
-    expect(
-      screen.getByText('Blocked · Unreachable downstream steps remain unrecorded.')
-    ).toBeTruthy()
+    expect(screen.getByText('Plan blocked')).toBeTruthy()
+    expect(screen.queryByText(/Unreachable downstream/u)).toBeNull()
 
     rerender(
       <WorkspacePlanCard
@@ -394,14 +367,13 @@ describe('Session Plan renderer surfaces', () => {
         onRespond={vi.fn()}
       />
     )
-    expect(
-      screen.getByText('Completed · This plan remains active until a new plan is generated.')
-    ).toBeTruthy()
+    expect(screen.getByText('Plan completed')).toBeTruthy()
+    expect(screen.queryByText(/remains active until a new plan/u)).toBeNull()
   })
 
-  it('does not describe retained interrupted work as currently running', () => {
-    const { container } = render(
-      <PlanProgressDock
+  it('shows the progress chip for interrupted work without a running label', () => {
+    render(
+      <PlanProgressChip
         projection={{
           ...projection,
           approval: 'approved',
@@ -417,29 +389,26 @@ describe('Session Plan renderer surfaces', () => {
       />
     )
 
-    expect(container.textContent).toContain('Plan interrupted')
-    expect(container.textContent).toContain('0/1 done')
-    expect(container.textContent).not.toMatch(/running/u)
+    expect(screen.getByRole('button', { name: /open plan, step 0 of 1/i })).toBeTruthy()
+    expect(screen.queryByText(/running/u)).toBeNull()
   })
 
-  it('uses the confirmed blocked progress copy', () => {
-    render(
-      <PlanProgressDock
-        projection={{
-          ...multiLevelProjection,
-          lifecycle: 'blocked',
-          stepStatuses: {
-            'Compare cohorts': {
-              status: 'blocked',
-              updatedAt: 3,
-              notes: 'Cohort boundary is unclear'
-            }
-          }
-        }}
-        onOpen={vi.fn()}
-      />
+  it('hides the progress chip for awaiting-approval and terminal lifecycles', () => {
+    const approved = {
+      ...projection,
+      approval: 'approved' as const,
+      lifecycle: 'approved' as const
+    }
+    expect(isPlanProgressVisible(approved)).toBe(true)
+    expect(isPlanProgressVisible({ ...approved, lifecycle: 'in_progress' as const })).toBe(true)
+    expect(isPlanProgressVisible({ ...approved, lifecycle: 'interrupted' as const })).toBe(true)
+
+    expect(isPlanProgressVisible({ ...approved, lifecycle: 'awaiting_approval' as const })).toBe(
+      false
     )
-    expect(screen.getByText('Blocked · Cohort boundary is unclear')).toBeTruthy()
+    expect(isPlanProgressVisible({ ...approved, lifecycle: 'completed' as const })).toBe(false)
+    expect(isPlanProgressVisible({ ...approved, lifecycle: 'blocked' as const })).toBe(false)
+    expect(isPlanProgressVisible({ ...approved, lifecycle: 'rejected' as const })).toBe(false)
   })
 
   it('shows a stable invalid-schema state while preserving immutable download', () => {
@@ -496,10 +465,11 @@ describe('Session Plan renderer surfaces', () => {
         onRespond={vi.fn().mockResolvedValue(undefined)}
       />
     )
-    expect(screen.getByText('Approved · Send a message to continue this plan.')).toBeTruthy()
+    expect(screen.getByText('Plan interrupted')).toBeTruthy()
+    expect(screen.queryByText(/Send a message to continue/u)).toBeNull()
 
-    rerender(<PlanProgressDock projection={restored} onOpen={vi.fn()} />)
-    expect(screen.getByText('Ready to continue · Send a message to resume')).toBeTruthy()
+    rerender(<PlanProgressChip projection={restored} onOpen={vi.fn()} />)
+    expect(screen.getByRole('button', { name: /open plan, step 0 of 1/i })).toBeTruthy()
 
     rerender(<PlanPreviewSurface projection={restored} />)
     expect(

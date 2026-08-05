@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Download, Maximize2, Minimize2 } from 'lucide-react'
+import { Download, ListChecks, Maximize2, Minimize2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -34,52 +34,6 @@ const lifecycleLabel = (projection: ActivePlanProjection): string => {
     default:
       return 'Plan in progress'
   }
-}
-
-const progressTitle = (projection: ActivePlanProjection): string => {
-  if (projection.lifecycle === 'awaiting_approval') return 'Awaiting plan approval'
-  if (projection.lifecycle === 'completed') return `Completed · ${projection.counts.steps} steps`
-  if (projection.requiresExplicitContinuation) {
-    return 'Ready to continue · Send a message to resume'
-  }
-  if (projection.lifecycle === 'blocked') {
-    const blocked = Object.entries(projection.stepStatuses).find(
-      ([, value]) => value.status === 'blocked'
-    )
-    return blocked ? `Blocked · ${blocked[1].notes ?? blocked[0]}` : 'Plan blocked'
-  }
-  if (projection.lifecycle === 'interrupted') return 'Plan interrupted'
-  const running = Object.entries(projection.stepStatuses).filter(
-    ([, value]) => value.status === 'in_progress'
-  )
-  if (running.length > 1) return `${running.length} steps running in parallel`
-  if (running.length === 1) return running[0][0]
-  return lifecycleLabel(projection)
-}
-
-const planCardResult = (projection: ActivePlanProjection): string => {
-  if (projection.requiresExplicitContinuation) {
-    return 'Approved · Send a message to continue this plan.'
-  }
-  if (projection.lifecycle === 'completed') {
-    return 'Completed · This plan remains active until a new plan is generated.'
-  }
-  if (projection.lifecycle === 'blocked') {
-    return 'Blocked · Unreachable downstream steps remain unrecorded.'
-  }
-  if (projection.lifecycle === 'in_progress') {
-    const runningDelegations = projection.document.phases.flatMap((phase) =>
-      phase.delegations.filter((delegation) =>
-        delegation.steps.some(
-          (step) => projection.stepStatuses[step.title]?.status === 'in_progress'
-        )
-      )
-    ).length
-    return runningDelegations > 1
-      ? `Approved · ${runningDelegations === 2 ? 'Two' : runningDelegations} delegations are running in parallel.`
-      : 'Approved · The current interaction is executing the plan.'
-  }
-  return `${lifecycleLabel(projection)}.`
 }
 
 const stepStatusLabel = (status: ActivePlanProjection['stepStates'][string]['status']): string =>
@@ -249,57 +203,26 @@ const WorkspacePlanCard = ({
               </p>
             ) : null}
           </form>
-        ) : (
-          <div className="mt-3 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary">
-            {planCardResult(projection)}
-          </div>
-        )}
+        ) : null}
       </div>
     </article>
   )
 }
 
-const PlanProgressDock = ({
+const PlanProgressChip = ({
   projection,
   onOpen
-}: PlanSurfaceProps & Readonly<{ onOpen: () => void }>): React.JSX.Element => {
-  const percent =
-    projection.counts.steps === 0
-      ? 0
-      : Math.round((projection.counts.completed / projection.counts.steps) * 100)
-  const running =
-    projection.lifecycle === 'in_progress'
-      ? Object.values(projection.stepStatuses).filter((value) => value.status === 'in_progress')
-          .length
-      : 0
-  return (
-    <div className="mb-2 grid grid-cols-[auto_minmax(120px,1fr)_auto] items-center gap-3 rounded-xl border border-border bg-bg-200/95 px-3 py-2 shadow-card">
-      <div className="min-w-0">
-        <strong className="block truncate text-xs">{progressTitle(projection)}</strong>
-        <span className="text-[11px] text-muted-foreground">
-          {running > 0 ? `${running} running · ` : ''}
-          {projection.counts.completed}/{projection.counts.steps} done
-        </span>
-      </div>
-      <div
-        role="progressbar"
-        aria-valuemin={0}
-        aria-valuemax={100}
-        aria-valuenow={percent}
-        className="h-1.5 overflow-hidden rounded-full bg-border"
-      >
-        <div className="h-full rounded-full bg-primary" style={{ width: `${percent}%` }} />
-      </div>
-      <button
-        type="button"
-        className="rounded text-xs font-medium text-primary focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-        onClick={onOpen}
-      >
-        Open plan
-      </button>
-    </div>
-  )
-}
+}: PlanSurfaceProps & Readonly<{ onOpen: () => void }>): React.JSX.Element => (
+  <button
+    type="button"
+    className="flex h-7 cursor-pointer items-center gap-1.5 rounded-md px-2 text-[12px] font-normal text-text-100 transition-colors duration-200 ease-out hover:bg-bg-300 hover:text-text-000 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+    aria-label={`Open plan, step ${projection.counts.completed} of ${projection.counts.steps}`}
+    onClick={onOpen}
+  >
+    <ListChecks className="size-3.5" strokeWidth={2} aria-hidden="true" />
+    step {projection.counts.completed}/{projection.counts.steps}
+  </button>
+)
 
 type PlanPreviewSurfaceProps = PlanSurfaceProps &
   Readonly<{
@@ -511,4 +434,4 @@ const PlanPreviewSurface = ({
   )
 }
 
-export { PlanPreviewSurface, PlanProgressDock, WorkspacePlanCard }
+export { PlanPreviewSurface, PlanProgressChip, WorkspacePlanCard }

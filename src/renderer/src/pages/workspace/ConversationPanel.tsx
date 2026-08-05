@@ -65,7 +65,8 @@ import { ReportErrorDialog } from './ReportErrorDialog'
 import { SessionInterruptedBanner } from './SessionInterruptedBanner'
 import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
-import { PlanProgressDock } from './session-plan/SessionPlanSurfaces'
+import { PlanProgressChip } from './session-plan/SessionPlanSurfaces'
+import { isPlanProgressVisible } from './session-plan/plan-progress'
 import {
   createSessionPlanPreviewItem,
   usePreviewWorkbenchStore
@@ -463,7 +464,11 @@ const ConversationPanel = ({
 
                 {/* Switching between a compact job bar and Notebook chrome remounts this layer so a
                     Notebook that becomes available after jobs still receives its entrance animation. */}
-                {notebookReference || hasAnyJobs ? (
+                {notebookReference ||
+                hasAnyJobs ||
+                (activeSession?.activePlanProjection
+                  ? isPlanProgressVisible(activeSession.activePlanProjection)
+                  : false) ? (
                   <div
                     key={notebookReference ? `notebook-${notebookReference.sessionId}` : 'jobs'}
                     className={cn(
@@ -473,6 +478,22 @@ const ConversationPanel = ({
                         : 'mb-2 min-h-9 items-center rounded-lg border border-border-200 bg-bg-000 shadow-card'
                     )}
                   >
+                    {activeSession?.activePlanProjection &&
+                    isPlanProgressVisible(activeSession.activePlanProjection) ? (
+                      <PlanProgressChip
+                        projection={activeSession.activePlanProjection}
+                        onOpen={() => {
+                          usePreviewWorkbenchStore
+                            .getState()
+                            .upsertAndActivateItem(
+                              createSessionPlanPreviewItem(
+                                activeSession.id,
+                                activeSession.projectId
+                              )
+                            )
+                        }}
+                      />
+                    ) : null}
                     {notebookReference ? (
                       <button
                         type="button"
@@ -550,18 +571,6 @@ const ConversationPanel = ({
 
                   {/* Composer keeps draft input local until submit delegates to the session store.
                       Enter-to-send is owned by ComposerEditor; the form only guards native submit. */}
-                  {activeSession?.activePlanProjection ? (
-                    <PlanProgressDock
-                      projection={activeSession.activePlanProjection}
-                      onOpen={() => {
-                        usePreviewWorkbenchStore
-                          .getState()
-                          .upsertAndActivateItem(
-                            createSessionPlanPreviewItem(activeSession.id, activeSession.projectId)
-                          )
-                      }}
-                    />
-                  ) : null}
                   <form
                     className="relative z-10 flex flex-col gap-2 rounded-2xl border border-border-200 bg-bg-000 px-3 py-2"
                     onSubmit={(event) => event.preventDefault()}
@@ -752,7 +761,6 @@ const ConversationPanel = ({
                               <>
                                 <DropdownMenuItem
                                   data-testid="menu-view-plan"
-                                  className="text-primary"
                                   onSelect={() => {
                                     usePreviewWorkbenchStore
                                       .getState()
@@ -765,7 +773,7 @@ const ConversationPanel = ({
                                   }}
                                 >
                                   <BookOpen
-                                    className="mr-2 size-4 text-primary"
+                                    className="mr-2 size-4 text-text-300"
                                     aria-hidden="true"
                                   />
                                   <span className="flex-1">View plan</span>
