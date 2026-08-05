@@ -78,6 +78,9 @@ type PlanResponseResult = PlanDecisionResult | PlanFeedbackResult
 
 const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex')
 
+const isTerminalStepStatus = (status: SessionPlanStepStatus): boolean =>
+  status === 'completed' || status === 'blocked' || status === 'skipped'
+
 const parseDocument = (content: string): PlanDocumentV1 => {
   try {
     return parsePlanDocumentV1(JSON.parse(content))
@@ -242,8 +245,7 @@ class PlanService {
       throw new PlanCommandError('unknown-step', `Unknown Plan step: ${input.title}`)
     }
     const previous = plan.stepStatuses[input.title]?.status
-    const sameTerminal =
-      previous === input.status && ['completed', 'blocked', 'skipped'].includes(input.status)
+    const sameTerminal = previous === input.status && isTerminalStepStatus(input.status)
     if (sameTerminal) {
       return { projection: this.project(document, plan, context.revision, true), changed: false }
     }
@@ -294,10 +296,10 @@ class PlanService {
     projectId: string
     sessionId: string
   }): Promise<{ allow: boolean; lifecycle?: ActivePlanProjection['lifecycle'] }> {
-    const projection = await this.getProjection(input.projectId, input.sessionId, {
-      interactionIsLive: true
-    })
-    if (!projection || projection.approval !== 'approved') return { allow: true }
+    const context = await this.dependencies.readRuntimeContext(input.projectId, input.sessionId)
+    if (!context.plan || context.plan.approval !== 'approved') return { allow: true }
+    const document = await this.readDocument(input.projectId, input.sessionId, context.plan)
+    const projection = this.project(document, context.plan, context.revision, true)
     const cleanlyBlocked =
       projection.lifecycle === 'blocked' &&
       !Object.values(projection.stepStates).some((step) => step.status === 'not_started')
@@ -324,7 +326,7 @@ class PlanService {
     }
     const repeatsTerminalStep =
       idempotentStep !== undefined &&
-      ['completed', 'blocked', 'skipped'].includes(idempotentStep.status) &&
+      isTerminalStepStatus(idempotentStep.status) &&
       plan.stepStatuses[idempotentStep.title]?.status === idempotentStep.status
     if (
       context.revision !== input.expectedRevision &&

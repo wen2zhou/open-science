@@ -778,6 +778,34 @@ describe('PlanService', () => {
     ).resolves.toEqual({ allow: true, lifecycle: 'blocked' })
   })
 
+  it('fails the completion gate closed without clearing approved authority when its Artifact is unavailable', async () => {
+    const { service, dependencies, context } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved'
+    })
+    vi.mocked(dependencies.readArtifactVersion).mockRejectedValueOnce(
+      new Error('Artifact storage is unavailable.')
+    )
+
+    await expect(
+      service.checkTurnCompletion({ projectId: 'project-1', sessionId: 'session-1' })
+    ).rejects.toMatchObject({ code: 'artifact-unavailable' })
+    expect(context().plan).toMatchObject({
+      artifactVersionId: generated.projection.artifactVersionId,
+      approval: 'approved'
+    })
+  })
+
   it('supports primary-agent sequential fallback without changing the delegation schema', async () => {
     const { service, identity, approved } = await approveExecutionPlan()
     let revision = approved.projection.revision
