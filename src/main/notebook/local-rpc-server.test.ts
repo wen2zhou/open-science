@@ -129,6 +129,47 @@ describe('notebook local RPC server', () => {
     }
   })
 
+  it('preserves structured Plan error codes across the session-bound RPC transport', async () => {
+    const root = await createStorageRoot()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const server = new NotebookLocalRpcServer(service, {
+      token: 'master-token',
+      planService: {
+        call: async () => {
+          throw new PlanCommandError('stale-plan', 'A newer Plan is active.')
+        }
+      }
+    })
+    const connection = await server.issuePlanConnection('session-1', 'project-1')
+
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'planCall',
+          params: { operation: 'updateStepStatus', input: { title: 'Old step' } }
+        })
+      })
+
+      expect(response.status).toBe(500)
+      await expect(response.json()).resolves.toEqual({
+        error: { code: 'stale-plan', message: 'A newer Plan is active.' }
+      })
+    } finally {
+      connection.release?.()
+      await server.close()
+    }
+  })
+
   it('propagates a local socket through every issued capability connection', async () => {
     const root = await createStorageRoot()
     const service = new NotebookRuntimeService({

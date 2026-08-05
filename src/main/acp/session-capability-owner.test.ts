@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { opencodeFramework } from '../agent-framework'
+import { claudeCodeFramework, codexFramework, opencodeFramework } from '../agent-framework'
 import type { AgentMcpHttpHost } from './mcp-http-host'
 import {
   AcpSessionCapabilityOwner,
@@ -31,6 +31,46 @@ const createOwner = (
   })
 
 describe('ACP session capability owner', () => {
+  it.each([
+    [claudeCodeFramework, 'open-science-plan'],
+    [codexFramework, 'open-science-plan'],
+    [opencodeFramework, 'open_science_plan']
+  ] as const)('projects the same Session Plan tools for %s', async (framework, modelFacingName) => {
+    const release = vi.fn()
+    const owner = createOwner({
+      artifacts: undefined,
+      notebook: undefined,
+      skillImport: undefined,
+      plan: {
+        mcpEntryPath: '/app/main.js',
+        getRpcConnection: async () => ({
+          endpoint: 'http://127.0.0.1:4',
+          token: 'plan',
+          release
+        })
+      }
+    })
+    const provision = await owner.provision({
+      stableAppSessionId: 'session-1',
+      framework,
+      nativeMcpEnabled: true,
+      bridgeMcpAliasesEnabled: false,
+      policy: CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY,
+      sessionCwd: '/workspace',
+      projectName: 'project-1'
+    })
+
+    expect(provision.descriptor).toMatchObject({
+      transport: 'stdio',
+      capabilities: ['plan'],
+      canonicalMcpServerNames: ['open-science-plan'],
+      modelFacingMcpServerNames: [modelFacingName]
+    })
+    provision.commit('session-1')
+    owner.revokeSession('session-1')
+    expect(release).toHaveBeenCalledOnce()
+  })
+
   it('provisions the Session Plan capability over stdio with server-owned identity', async () => {
     const owner = createOwner({
       artifacts: undefined,

@@ -138,6 +138,7 @@ import {
 } from './backend-generation-owner'
 import { AcpSessionConfigurator, type AcpSessionConfigurationFacts } from './session-configurator'
 import { createProductionPlanService } from '../session-plan/production-plan-service'
+import { SESSION_PLAN_SYSTEM_PROMPT_APPEND } from '../session-plan/guidance'
 import type { PlanResponseResult, PlanService } from '../session-plan/plan-service'
 import type {
   ActivePlanProjection,
@@ -356,15 +357,6 @@ const ARTIFACT_FILE_SYSTEM_PROMPT_APPEND = [
   'After using the tool, mention the generated filename rather than an absolute filesystem path. The app will display the generated file list below your message.',
   'Never write files inside a skill directory — loaded skills are read-only; route any file a skill generates through `write_artifact_file`.',
   '</open_science_artifact_instructions>'
-].join('\n')
-
-const SESSION_PLAN_SYSTEM_PROMPT_APPEND = [
-  '<open_science_session_plan_instructions>',
-  'For a complex task, discover applicable skills before deciding whether a Session Plan is useful.',
-  'When a plan is useful, call `generate_plan` from the `open-science-plan` server with a complete plan, then wait for the user to approve or dismiss it before executing any plan step.',
-  'After approval, call `update_step_status` with the exact step title when work starts and when it completes, is blocked, or is skipped.',
-  'Do not call `end_turn` while an approved Session Plan still has unfinished steps.',
-  '</open_science_session_plan_instructions>'
 ].join('\n')
 
 // Steers the agent away from reading large attached data files in their entirety, since a single big
@@ -880,11 +872,9 @@ class AcpRuntime {
       this.publishPlanProjection(input.sessionId, result.projection)
       return approval
     }
-    const projection = await service.getProjection(
-      input.projectId,
-      input.sessionId,
-      this.getInFlightSessionIds().includes(input.sessionId)
-    )
+    const projection = await service.getProjection(input.projectId, input.sessionId, {
+      interactionIsLive: this.sessionInteractions.current(input.sessionId) !== undefined
+    })
     if (!projection) throw new Error('The Session has no active Plan.')
     const identity = {
       projectId: input.projectId,
@@ -924,11 +914,10 @@ class AcpRuntime {
     projectId: string,
     sessionId: string
   ): Promise<ActivePlanProjection | null> {
-    const interactionIsLive =
-      this.planApprovalWaiters.has(sessionId) || this.getInFlightSessionIds().includes(sessionId)
     return (
-      this.planService?.getProjection(projectId, sessionId, interactionIsLive) ??
-      Promise.resolve(null)
+      this.planService?.getProjection(projectId, sessionId, {
+        interactionIsLive: this.sessionInteractions.current(sessionId) !== undefined
+      }) ?? Promise.resolve(null)
     )
   }
 
@@ -983,6 +972,20 @@ class AcpRuntime {
       })
     } catch (error) {
       safeLogError('Session Plan projection callback failed', errorLogFields(error))
+    }
+  }
+
+  private async publishTerminalPlanProjection(sessionId: string): Promise<void> {
+    if (!this.planService) return
+    try {
+      const projection = await this.planService.getProjection(
+        this.resolveSessionProjectName(sessionId),
+        sessionId,
+        { interactionIsLive: false }
+      )
+      if (projection) this.publishPlanProjection(sessionId, projection)
+    } catch (error) {
+      safeLogError('Session Plan terminal projection failed', errorLogFields(error))
     }
   }
 
@@ -3387,6 +3390,7 @@ class AcpRuntime {
         }
       }
       this.sessionInteractions.release(promptInteraction)
+      if (ownsInteraction) await this.publishTerminalPlanProjection(request.sessionId)
       if (ownsInteraction) {
         try {
           this.callbacks.onPromptEnded?.(request.sessionId, skillImportTurnToken)

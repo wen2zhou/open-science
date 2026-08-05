@@ -268,13 +268,18 @@ class PlanService {
   async getProjection(
     projectId: string,
     sessionId: string,
-    interactionIsLive = false
+    options: Readonly<{ interactionIsLive?: boolean }> = {}
   ): Promise<ActivePlanProjection | null> {
     const context = await this.dependencies.readRuntimeContext(projectId, sessionId)
     if (!context.plan) return null
     try {
       const document = await this.readDocument(projectId, sessionId, context.plan)
-      return this.project(document, context.plan, context.revision, interactionIsLive)
+      return this.project(
+        document,
+        context.plan,
+        context.revision,
+        options.interactionIsLive ?? false
+      )
     } catch (error) {
       if (!(error instanceof PlanCommandError) || error.code !== 'artifact-unavailable') throw error
       await this.dropUnavailableAuthority(projectId, sessionId, context)
@@ -286,7 +291,9 @@ class PlanService {
     projectId: string
     sessionId: string
   }): Promise<{ allow: boolean; lifecycle?: ActivePlanProjection['lifecycle'] }> {
-    const projection = await this.getProjection(input.projectId, input.sessionId)
+    const projection = await this.getProjection(input.projectId, input.sessionId, {
+      interactionIsLive: true
+    })
     if (!projection || projection.approval !== 'approved') return { allow: true }
     const cleanlyBlocked =
       projection.lifecycle === 'blocked' &&

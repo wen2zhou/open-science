@@ -45,7 +45,7 @@ type RuntimeHarness = Readonly<{
 }>
 
 const createRuntimeHarness = (options: {
-  onEvent?: () => void
+  onEvent?: (event?: unknown) => void
   activeProjection?: ActivePlanProjection
 }): RuntimeHarness => {
   const generated = projection('version-1')
@@ -74,7 +74,18 @@ const createRuntimeHarness = (options: {
           }
         : { projection: approved, changed: true }
     ),
-    getProjection: vi.fn(async () => options.activeProjection ?? generated),
+    getProjection: vi.fn(
+      async (
+        _projectId: string,
+        _sessionId: string,
+        projectionOptions?: { interactionIsLive?: boolean }
+      ) => {
+        const current = options.activeProjection ?? generated
+        return projectionOptions?.interactionIsLive === false && current.lifecycle === 'in_progress'
+          ? { ...current, lifecycle: 'interrupted' as const }
+          : current
+      }
+    ),
     updateStepStatus,
     checkTurnCompletion: vi.fn(async () => ({ allow: true }))
   }
@@ -82,12 +93,13 @@ const createRuntimeHarness = (options: {
   Object.assign(target, {
     planService: service,
     sessionInteractions: {
-      snapshot: () => [{ kind: 'prompt', sessionId: 'session-1' }]
+      snapshot: () => [{ kind: 'prompt', sessionId: 'session-1' }],
+      current: () => undefined
     },
     artifactTurns: { promptMessageIdFor: () => 'interaction-1' },
     planApprovalWaiters: new Map(),
-    getInFlightSessionIds: () => [],
-    callbacks: { onEvent: options.onEvent }
+    callbacks: { onEvent: options.onEvent },
+    resolveSessionProjectName: () => 'project-1'
   })
   return { runtime: target as unknown as AcpRuntime, service, updateStepStatus }
 }
