@@ -120,6 +120,46 @@ describe('session store', () => {
     expect(toPersistedSession(projection)).not.toHaveProperty('runtimeContext')
   })
 
+  it('keeps a current Plan projection when a durable Session update echoes back', () => {
+    const persistedPlan = {
+      artifactId: 'artifact-version-1',
+      artifactVersionId: 'version-1',
+      artifactChecksum: 'a'.repeat(64),
+      approval: 'pending' as const,
+      stepStatuses: {}
+    }
+    useSessionStore.getState().hydrateSessions([
+      {
+        id: 'session-1',
+        projectId: 'project-1',
+        title: 'Plan approval',
+        cwd: '/workspace',
+        status: 'waiting-plan-approval',
+        runtimeContext: { version: 1, revision: 1, plan: persistedPlan },
+        messages: [],
+        createdAt: 1,
+        updatedAt: 1
+      }
+    ])
+
+    const projection = createPlanProjection('version-1')
+    useSessionStore.getState().setActivePlanProjection('session-1', projection)
+
+    useSessionStore.getState().upsertPersistedSession({
+      id: 'session-1',
+      projectId: 'project-1',
+      title: 'Plan approval',
+      cwd: '/workspace',
+      status: 'waiting-plan-approval',
+      runtimeContext: { version: 1, revision: 1, plan: persistedPlan },
+      messages: [],
+      createdAt: 1,
+      updatedAt: Date.now() + 1
+    })
+
+    expect(useSessionStore.getState().sessions[0].activePlanProjection).toBe(projection)
+  })
+
   it('retains a replaced Plan projection as read-only UI history without authoring it in Session JSON', () => {
     useSessionStore.getState().hydrateSessions(
       [

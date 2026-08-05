@@ -428,6 +428,27 @@ const hydrateSession = (session: PersistedChatSession): ChatSession => ({
   interrupted: session.error === INTERRUPTED_SESSION_ERROR ? true : undefined
 })
 
+// The main process owns Plan authority while the renderer keeps a read-only projection for the UI.
+// A lifecycle save can arrive after the ACP Plan event that populated this projection, so retain it
+// only when the durable authority identifies the exact same Plan revision. A newer or missing Plan
+// must invalidate the old projection and let the workspace read the authoritative state again.
+const matchesPersistedPlanProjection = (
+  projection: ActivePlanProjection | undefined,
+  session: PersistedChatSession
+): projection is ActivePlanProjection => {
+  const runtimeContext = session.runtimeContext
+  const plan = runtimeContext?.plan
+  return Boolean(
+    projection &&
+    plan &&
+    projection.revision === runtimeContext.revision &&
+    projection.artifactId === plan.artifactId &&
+    projection.artifactVersionId === plan.artifactVersionId &&
+    projection.artifactChecksum === plan.artifactChecksum &&
+    projection.approval === plan.approval
+  )
+}
+
 const withTransientSessionState = (
   session: PersistedChatSession,
   source: ChatSession
@@ -1362,9 +1383,16 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       }
 
       const hydratedSession = hydrateSession(session)
-      externallyHydratedSessions.add(hydratedSession)
+      const currentPlanProjection = matchesPersistedPlanProjection(
+        existing?.activePlanProjection,
+        session
+      )
+        ? { activePlanProjection: existing.activePlanProjection }
+        : {}
+      const hydratedWithTransientState = { ...hydratedSession, ...currentPlanProjection }
+      externallyHydratedSessions.add(hydratedWithTransientState)
       const sessions = [
-        hydratedSession,
+        hydratedWithTransientState,
         ...state.sessions.filter((candidate) => candidate.id !== session.id)
       ].sort((left, right) => right.updatedAt - left.updatedAt)
 
