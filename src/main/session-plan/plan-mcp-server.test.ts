@@ -6,6 +6,83 @@ import { PlanCommandError } from '../../shared/session-plan/contract'
 import { callPlanRpc, createPlanMcpServer } from './plan-mcp-server'
 
 describe('Session Plan MCP server', () => {
+  it('advertises the complete nested Plan content schema', async () => {
+    const server = createPlanMcpServer({
+      generate: vi.fn(),
+      approve: vi.fn(),
+      updateStepStatus: vi.fn()
+    })
+    const client = new Client({ name: 'plan-schema-test', version: '1.0.0' })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
+
+    try {
+      const generatePlan = (await client.listTools()).tools.find(
+        (tool) => tool.name === 'generate_plan'
+      )
+      const inputSchema = generatePlan?.inputSchema as {
+        properties?: Record<string, unknown>
+      }
+
+      expect(inputSchema.properties?.task_summary).toMatchObject({
+        type: 'string',
+        description: expect.stringContaining('generation mode')
+      })
+      expect(inputSchema.properties?.phases).toMatchObject({
+        type: 'array',
+        description: expect.stringContaining('one or more delegations'),
+        items: {
+          type: 'object',
+          properties: {
+            name: { type: 'string', description: expect.any(String) },
+            delegations: {
+              type: 'array',
+              description: expect.stringContaining('at least one delegation'),
+              items: {
+                type: 'object',
+                properties: {
+                  name: { type: 'string', description: expect.any(String) },
+                  steps: {
+                    type: 'array',
+                    description: expect.stringContaining('at least one step'),
+                    items: {
+                      type: 'object',
+                      properties: {
+                        title: { type: 'string', description: expect.any(String) },
+                        description: { type: 'string', description: expect.any(String) }
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+        }
+      })
+      expect(inputSchema.properties?.desired_outputs).toMatchObject({
+        type: 'array',
+        description: expect.stringContaining('empty array'),
+        items: { type: 'string', description: expect.any(String) }
+      })
+      expect(inputSchema.properties?.feasibility).toMatchObject({
+        type: 'object',
+        description: expect.any(String),
+        properties: {
+          confidence: {
+            type: 'string',
+            enum: ['high', 'medium', 'low'],
+            description: expect.any(String)
+          },
+          rationale: { type: 'string', description: expect.any(String) }
+        }
+      })
+      expect(inputSchema).not.toHaveProperty('required')
+    } finally {
+      await client.close()
+      await server.close()
+    }
+  })
+
   it('rehydrates structured Plan errors returned by the local RPC adapter', async () => {
     const fetch = vi.fn(async () =>
       Promise.resolve(
@@ -64,10 +141,15 @@ describe('Session Plan MCP server', () => {
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
 
-    expect((await client.listTools()).tools.map((tool) => tool.name)).toEqual([
+    const listedTools = await client.listTools()
+    expect(listedTools.tools.map((tool) => tool.name)).toEqual([
       'generate_plan',
       'update_step_status'
     ])
+    const generateTool = listedTools.tools.find((tool) => tool.name === 'generate_plan')
+    expect(generateTool).toBeDefined()
+    expect(generateTool?.description).toContain('Generation mode')
+    expect(generateTool?.description).toContain('Approval mode')
     await client.callTool({
       name: 'generate_plan',
       arguments: {

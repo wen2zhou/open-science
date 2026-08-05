@@ -5,6 +5,7 @@ import { z } from 'zod'
 
 import {
   createPlanDocumentV1,
+  generatePlanContentToolSchema,
   isPlanCommandErrorCode,
   PlanCommandError,
   type GeneratePlanContent,
@@ -22,12 +23,7 @@ const generatePlanToolSchema = {
   artifact_id: z.never().optional(),
   artifact_version_id: z.never().optional(),
   approve: z.literal(true).optional(),
-  // The shared Plan contract owns semantic validation so every malformed document returns the same
-  // structured invalid-plan result instead of being intercepted as an untyped MCP schema error.
-  task_summary: z.unknown().optional(),
-  phases: z.unknown().optional(),
-  desired_outputs: z.unknown().optional(),
-  feasibility: z.unknown().optional()
+  ...generatePlanContentToolSchema.shape
 }
 
 const updateStepStatusToolSchema = {
@@ -105,7 +101,8 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
     'generate_plan',
     {
       title: 'Generate or approve Session Plan',
-      description: 'Create an immutable execution Plan, or approve the active Plan.',
+      description:
+        'Create an immutable execution Plan, or approve the active Plan. Generation mode: provide task_summary, phases, desired_outputs, and feasibility together in one call. Approval mode: pass only approve:true; do not combine approval with Plan content.',
       inputSchema: generatePlanToolSchema
     },
     async ({ approve, task_summary, phases, desired_outputs, feasibility }) => {

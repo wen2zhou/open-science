@@ -3,21 +3,76 @@ import type {
   SessionPlanRuntimeContext,
   SessionPlanStepStatus
 } from '../session-persistence'
+import { z } from 'zod'
 
-export type PlanConfidence = 'high' | 'medium' | 'low'
+export const planConfidenceSchema = z
+  .enum(['high', 'medium', 'low'])
+  .describe('How confident the planner is that the proposed work can be completed.')
 
-export type GeneratePlanContent = Readonly<{
-  task_summary: string
-  phases: readonly Readonly<{
-    name: string
-    delegations: readonly Readonly<{
-      name: string
-      steps: readonly Readonly<{ title: string; description: string }>[]
-    }>[]
-  }>[]
-  desired_outputs: readonly string[]
-  feasibility: Readonly<{ confidence: PlanConfidence; rationale: string }>
-}>
+export type PlanConfidence = z.infer<typeof planConfidenceSchema>
+
+export const planStepSchema = z
+  .object({
+    title: z.string().describe('A unique, concise step title used for exact status updates.'),
+    description: z
+      .string()
+      .describe('The concrete work to perform and the result this step should produce.')
+  })
+  .describe('One executable step within a delegation.')
+
+export const planDelegationSchema = z
+  .object({
+    name: z.string().describe('A human-readable name for this independent work track.'),
+    steps: z
+      .array(planStepSchema)
+      .describe('The ordered executable steps for this delegation. Include at least one step.')
+  })
+  .describe('An independent work track within a phase.')
+
+export const planPhaseSchema = z
+  .object({
+    name: z.string().describe('A human-readable name for this ordered phase.'),
+    delegations: z
+      .array(planDelegationSchema)
+      .describe(
+        'The independent work tracks that make up this phase. Include at least one delegation.'
+      )
+  })
+  .describe('An ordered phase of the Session Plan.')
+
+export const planFeasibilitySchema = z
+  .object({
+    confidence: planConfidenceSchema,
+    rationale: z
+      .string()
+      .describe('Why the selected confidence level is appropriate for the proposed work.')
+  })
+  .describe('An assessment of whether the Plan can be completed with available inputs.')
+
+export const generatePlanContentSchema = z
+  .object({
+    task_summary: z
+      .string()
+      .describe(
+        "A concise summary of the user's multi-stage objective. Required in generation mode."
+      ),
+    phases: z
+      .array(planPhaseSchema)
+      .describe('The ordered phases of work, each containing one or more delegations.'),
+    desired_outputs: z
+      .array(
+        z.string().describe('A concrete artifact, finding, or decision expected from the Plan.')
+      )
+      .describe(
+        'The artifacts, findings, or decisions expected when the Plan completes. This may be an empty array.'
+      ),
+    feasibility: planFeasibilitySchema
+  })
+  .describe('The four content fields required to generate a complete Session Plan.')
+
+export const generatePlanContentToolSchema = generatePlanContentSchema.partial()
+
+export type GeneratePlanContent = z.infer<typeof generatePlanContentSchema>
 
 export type PlanDocumentV1 = GeneratePlanContent & Readonly<{ schema_version: 1 }>
 
@@ -106,6 +161,11 @@ const requireText = (value: unknown, label: string): string => {
 const isRecord = (value: unknown): value is Readonly<Record<string, unknown>> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
+const parsePlanText = (schema: z.ZodString, value: unknown, label: string): string => {
+  const parsed = schema.safeParse(value)
+  return requireText(parsed.success ? parsed.data : value, label)
+}
+
 export const createPlanDocumentV1 = (input: unknown): PlanDocumentV1 => {
   if (!isRecord(input)) {
     throw new PlanCommandError('invalid-plan', 'Plan document must be an object.')
@@ -113,27 +173,37 @@ export const createPlanDocumentV1 = (input: unknown): PlanDocumentV1 => {
   if ('schema_version' in input && input.schema_version !== 1) {
     throw new PlanCommandError('invalid-plan', 'schema_version must be 1.')
   }
-  const taskSummary = requireText(input.task_summary, 'task_summary')
+  const shape = generatePlanContentSchema.shape
+  const taskSummary = parsePlanText(shape.task_summary, input.task_summary, 'task_summary')
+
   if (!Array.isArray(input.phases) || input.phases.length === 0) {
     throw new PlanCommandError('invalid-plan', 'A Plan requires at least one phase.')
   }
   const titles = new Set<string>()
   const phases = input.phases.map((phaseValue) => {
     const phase = isRecord(phaseValue) ? phaseValue : {}
-    const name = requireText(phase.name, 'phase name')
+    const name = parsePlanText(planPhaseSchema.shape.name, phase.name, 'phase name')
     if (!Array.isArray(phase.delegations) || phase.delegations.length === 0) {
       throw new PlanCommandError('invalid-plan', 'Each phase requires at least one delegation.')
     }
     const delegations = phase.delegations.map((delegationValue) => {
       const delegation = isRecord(delegationValue) ? delegationValue : {}
-      const delegationName = requireText(delegation.name, 'delegation name')
+      const delegationName = parsePlanText(
+        planDelegationSchema.shape.name,
+        delegation.name,
+        'delegation name'
+      )
       if (!Array.isArray(delegation.steps) || delegation.steps.length === 0) {
         throw new PlanCommandError('invalid-plan', 'Each delegation requires at least one step.')
       }
       const steps = delegation.steps.map((stepValue) => {
         const step = isRecord(stepValue) ? stepValue : {}
-        const title = requireText(step.title, 'step title')
-        const description = requireText(step.description, 'step description')
+        const title = parsePlanText(planStepSchema.shape.title, step.title, 'step title')
+        const description = parsePlanText(
+          planStepSchema.shape.description,
+          step.description,
+          'step description'
+        )
         if (titles.has(title)) {
           throw new PlanCommandError('invalid-plan', `Duplicate step title: ${title}`)
         }
@@ -144,24 +214,31 @@ export const createPlanDocumentV1 = (input: unknown): PlanDocumentV1 => {
     })
     return { name, delegations }
   })
+
   if (!Array.isArray(input.desired_outputs)) {
     throw new PlanCommandError('invalid-plan', 'desired_outputs must be an array.')
   }
   const desiredOutputs = input.desired_outputs.map((output) =>
-    requireText(output, 'desired output')
+    parsePlanText(shape.desired_outputs.element, output, 'desired output')
   )
+
   const feasibility = isRecord(input.feasibility) ? input.feasibility : {}
-  if (!['high', 'medium', 'low'].includes(feasibility.confidence as string)) {
+  const confidenceParsed = planFeasibilitySchema.shape.confidence.safeParse(feasibility.confidence)
+  if (!confidenceParsed.success) {
     throw new PlanCommandError('invalid-plan', 'feasibility confidence is invalid.')
   }
-  const rationale = requireText(feasibility.rationale, 'feasibility rationale')
-  return {
-    schema_version: 1,
+  const rationale = parsePlanText(
+    planFeasibilitySchema.shape.rationale,
+    feasibility.rationale,
+    'feasibility rationale'
+  )
+  const content = generatePlanContentSchema.parse({
     task_summary: taskSummary,
     phases,
     desired_outputs: desiredOutputs,
-    feasibility: { confidence: feasibility.confidence as PlanConfidence, rationale }
-  }
+    feasibility: { confidence: confidenceParsed.data, rationale }
+  })
+  return { schema_version: 1, ...content }
 }
 
 export const parsePlanDocumentV1 = (input: unknown): PlanDocumentV1 => {

@@ -22,6 +22,14 @@ const APP_MCP_CODEC_CASES = PRE_REGISTERED_PERMISSION_IDENTITIES.mcp_tool.flatMa
 })
 
 describe('resolveCanonicalMcpToolIdentity', () => {
+  it('documents complete generation and approval call shapes', () => {
+    expect(SESSION_PLAN_SYSTEM_PROMPT_APPEND).toContain(
+      'generation supplies all four Plan fields (`task_summary`, `phases`, `desired_outputs`, and `feasibility`) in one call'
+    )
+    expect(SESSION_PLAN_SYSTEM_PROMPT_APPEND).toContain('Approval passes only `approve:true`')
+    expect(SESSION_PLAN_SYSTEM_PROMPT_APPEND).toContain('do not probe with partial calls')
+  })
+
   it.each([
     [
       'claude-code',

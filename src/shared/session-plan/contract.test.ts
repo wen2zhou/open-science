@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   createPlanDocumentV1,
   derivePlanLifecycle,
+  generatePlanContentSchema,
   isPlanApprovalResponse,
   isPlanComplete,
   parsePlanDocumentV1,
@@ -21,6 +22,34 @@ describe('Plan response text', () => {
 })
 
 describe('Plan document V1', () => {
+  it('publishes one canonical content contract for Plan producers', () => {
+    expect(Object.keys(generatePlanContentSchema.shape)).toEqual([
+      'task_summary',
+      'phases',
+      'desired_outputs',
+      'feasibility'
+    ])
+    expect(generatePlanContentSchema.description).toContain('four content fields')
+    expect(
+      generatePlanContentSchema.safeParse({
+        task_summary: 'Analyze data',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Primary agent',
+                steps: [{ title: 'Analyze data', description: 'Produce the result.' }]
+              }
+            ]
+          }
+        ],
+        desired_outputs: [],
+        feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+      }).success
+    ).toBe(true)
+  })
+
   it('adds the server-owned schema version to a valid single-step plan', () => {
     expect(
       createPlanDocumentV1({
@@ -189,6 +218,22 @@ describe('Plan document V1', () => {
   ])('returns structured invalid-plan for malformed runtime input %#', (input, message) => {
     expect(() => createPlanDocumentV1(input)).toThrow(
       expect.objectContaining<Partial<PlanCommandError>>({ code: 'invalid-plan', message })
+    )
+  })
+
+  it('checks each phase name before validating later phase fields', () => {
+    expect(() =>
+      createPlanDocumentV1({
+        task_summary: 'Analyze data',
+        phases: [{ name: '', delegations: 'not-an-array' }],
+        desired_outputs: [],
+        feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+      })
+    ).toThrow(
+      expect.objectContaining<Partial<PlanCommandError>>({
+        code: 'invalid-plan',
+        message: 'phase name must be non-empty.'
+      })
     )
   })
 })
