@@ -24,6 +24,7 @@ import {
   INTERRUPTED_SESSION_ERROR,
   materializeSessionConversationGraph,
   sanitizeMessageImages,
+  sanitizePlanHistoryProjections,
   sanitizeToolActivity,
   sanitizeActivityGroup,
   type MessagePart,
@@ -387,8 +388,9 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
   void conversationGraphSyncBlocked
   void pendingContextReplayMessageId
   void activePlanProjection
-  void planHistoryProjections
   void runtimeContext
+
+  const persistedPlanHistory = sanitizePlanHistoryProjections(planHistoryProjections)
 
   // Persist a bounded projection of tool activities so the transcript survives restarts.
   const persistedActivities = activities
@@ -401,6 +403,7 @@ const stripTransientSessionState = (session: ChatSession): PersistedChatSession 
   return materializeSessionConversationGraph({
     ...persistedSession,
     messages: messages.map(stripTransientMessageState),
+    ...(persistedPlanHistory ? { planHistoryProjections: persistedPlanHistory } : {}),
     ...(persistedActivities && persistedActivities.length > 0
       ? { activities: persistedActivities }
       : {}),
@@ -1389,7 +1392,15 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       )
         ? { activePlanProjection: existing.activePlanProjection }
         : {}
-      const hydratedWithTransientState = { ...hydratedSession, ...currentPlanProjection }
+      const retainedPlanHistory =
+        !hydratedSession.planHistoryProjections && existing?.planHistoryProjections
+          ? { planHistoryProjections: existing.planHistoryProjections }
+          : {}
+      const hydratedWithTransientState = {
+        ...hydratedSession,
+        ...retainedPlanHistory,
+        ...currentPlanProjection
+      }
       externallyHydratedSessions.add(hydratedWithTransientState)
       const sessions = [
         hydratedWithTransientState,

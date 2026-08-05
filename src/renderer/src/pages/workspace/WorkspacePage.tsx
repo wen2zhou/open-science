@@ -1316,7 +1316,11 @@ const WorkspacePage = ({
   // dispose + resume the Claude ACP session with the new specialist identity. On failure, the
   // draft is preserved, no user turn is created, and a recovery banner is shown (fail-closed —
   // never silently fall back to Main Agent).
-  const sendCurrentMessage = (forcedSkillIds: string[], branchInNewSession = false): void => {
+  const sendCurrentMessage = (
+    forcedSkillIds: string[],
+    options: { branchInNewSession?: boolean; turnIntent?: 'plan-first' } = {}
+  ): void => {
+    const branchInNewSession = options.branchInNewSession === true
     if (!canSendMessage) return
     // A blank New conversation has no source transcript to snapshot; ordinary Send already creates the
     // fresh Session for that case.
@@ -1417,6 +1421,7 @@ const WorkspacePage = ({
           projectName: activeSession?.projectId ?? scopedProjectId,
           permissionProfile: activePermissionProfile,
           forcedSkillIds,
+          ...(options.turnIntent ? { turnIntent: options.turnIntent } : {}),
           ...(continuationProjection
             ? {
                 planContinuation: {
@@ -1596,7 +1601,11 @@ const WorkspacePage = ({
   }
 
   const branchCurrentMessage = (forcedSkillIds: string[]): void => {
-    sendCurrentMessage(forcedSkillIds, true)
+    sendCurrentMessage(forcedSkillIds, { branchInNewSession: true })
+  }
+
+  const planCurrentMessage = (forcedSkillIds: string[]): void => {
+    sendCurrentMessage(forcedSkillIds, { turnIntent: 'plan-first' })
   }
 
   // Opens the rename dialog with the current title prefilled.
@@ -2158,6 +2167,7 @@ const WorkspacePage = ({
             autoReviewEnabled={activeAutoReviewEnabled}
             onDraftDocChange={changeComposerDraftDoc}
             onSendMessage={sendCurrentMessage}
+            onPlanFirst={planCurrentMessage}
             onBranchInNewSession={activeSession ? branchCurrentMessage : undefined}
             onStageAttachmentFiles={stageAttachmentFiles}
             onRemoveAttachment={removeComposerAttachment}

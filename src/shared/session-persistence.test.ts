@@ -12,6 +12,7 @@ import {
   type SessionPlanRuntimeContext
 } from './session-persistence'
 import { createLinearConversationGraph } from './conversation-graph'
+import type { ActivePlanProjection } from './session-plan/contract'
 
 const createSessionWithActivity = (activity: unknown): Record<string, unknown> => ({
   id: 'session-1',
@@ -32,8 +33,104 @@ const createRuntimePlan = (): SessionPlanRuntimeContext => ({
   artifactId: 'plan-1',
   artifactVersionId: 'plan-version-1',
   artifactChecksum: 'a'.repeat(64),
+  originatingPromptMessageId: 'prompt-plan-1',
   approval: 'pending',
   stepStatuses: {}
+})
+
+const createHistoricalPlan = (): ActivePlanProjection => ({
+  artifactId: 'artifact-plan-history',
+  artifactVersionId: 'version-plan-history',
+  artifactChecksum: 'b'.repeat(64),
+  originatingPromptMessageId: 'prompt-plan-history',
+  revision: 3,
+  approval: 'approved',
+  lifecycle: 'completed',
+  requiresExplicitContinuation: false,
+  document: {
+    schema_version: 1,
+    task_summary: 'Analyze the branched dataset',
+    phases: [
+      {
+        name: 'Analysis',
+        delegations: [
+          {
+            name: 'Primary agent',
+            steps: [{ title: 'Analyze data', description: 'Produce the result.' }]
+          }
+        ]
+      }
+    ],
+    desired_outputs: ['Analysis report'],
+    feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
+  },
+  stepStatuses: { 'Analyze data': { status: 'completed', updatedAt: 4 } },
+  stepStates: { 'Analyze data': { status: 'completed' } },
+  counts: { phases: 1, delegations: 1, steps: 1, completed: 1 }
+})
+
+describe('branch Plan history persistence', () => {
+  it('restores only branch-bound projections and recomputes their display state', () => {
+    const valid = createHistoricalPlan()
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      planHistoryProjections: [
+        { ...valid, originatingPromptMessageId: undefined },
+        {
+          ...valid,
+          stepStates: { 'Analyze data': { status: 'not_started' } },
+          counts: { phases: 99, delegations: 99, steps: 99, completed: 0 }
+        }
+      ]
+    })
+
+    expect(restored?.planHistoryProjections).toEqual([valid])
+  })
+
+  it('bounds aggregate history size while retaining the newest exact versions', () => {
+    const history = Array.from({ length: 5 }, (_, index) => {
+      const version = index + 1
+      const plan = createHistoricalPlan()
+      return {
+        ...plan,
+        artifactVersionId: `version-${version}`,
+        originatingPromptMessageId: `prompt-${version}`,
+        document: {
+          ...plan.document,
+          phases: [
+            {
+              ...plan.document.phases[0],
+              delegations: [
+                {
+                  ...plan.document.phases[0].delegations[0],
+                  steps: [
+                    {
+                      title: 'Analyze data',
+                      description: `${version}${'x'.repeat(409_999)}`
+                    }
+                  ]
+                }
+              ]
+            }
+          ]
+        }
+      }
+    })
+
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      planHistoryProjections: history
+    })
+
+    expect(restored?.planHistoryProjections?.map((plan) => plan.artifactVersionId)).toEqual([
+      'version-2',
+      'version-3',
+      'version-4',
+      'version-5'
+    ])
+  })
 })
 
 describe('message part persistence', () => {

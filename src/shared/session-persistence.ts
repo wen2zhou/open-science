@@ -19,6 +19,13 @@ import {
 import type { AgentFrameworkId } from './settings'
 import { sanitizeActivityGroupTitle } from './activity-groups'
 import {
+  parsePlanDocumentV1,
+  planStepTitles,
+  projectPlanStepStates,
+  type ActivePlanProjection,
+  type PlanLifecycle
+} from './session-plan/contract'
+import {
   createLinearConversationGraph,
   projectConversationMessage,
   resolveActiveConversationMessages,
@@ -62,6 +69,8 @@ export type SessionPlanRuntimeContext = Readonly<{
   artifactId: string
   artifactVersionId: string
   artifactChecksum: string
+  // The user Message whose Conversation Turn generated this Plan. Older persisted Plans may omit it.
+  originatingPromptMessageId?: string
   approval: SessionPlanApproval
   stepStatuses: Readonly<
     Record<
@@ -229,6 +238,9 @@ export type PersistedChatSession = {
   // detached restored Session keeps it so the indicator survives an app restart.
   contextUsage?: AcpContextUsage
   runtimeContext?: SessionRuntimeContext
+  // Read-only UI history for branch-specific Plan discovery and exact-version previews. Main-owned
+  // execution authority remains exclusively in runtimeContext.plan.
+  planHistoryProjections?: ActivePlanProjection[]
   messages: PersistedChatMessage[]
   // Session JSON v2 authority. Flat messages/activities remain an active-Branch compatibility view.
   conversationGraph?: PersistedConversationGraph
@@ -359,6 +371,18 @@ const SESSION_PLAN_STEP_STATUSES = new Set<SessionPlanStepStatus>([
   'blocked',
   'skipped'
 ])
+const PLAN_LIFECYCLES = new Set<PlanLifecycle>([
+  'awaiting_approval',
+  'approved',
+  'in_progress',
+  'interrupted',
+  'blocked',
+  'completed',
+  'rejected'
+])
+const MAX_PLAN_HISTORY_PROJECTIONS = 100
+const MAX_PLAN_HISTORY_PROJECTION_JSON_CHARS = 512_000
+const MAX_PLAN_HISTORY_JSON_CHARS = 2_000_000
 
 const sanitizeSessionPlanRuntimeContext = (
   value: unknown
@@ -371,6 +395,7 @@ const sanitizeSessionPlanRuntimeContext = (
           'artifactId',
           'artifactVersionId',
           'artifactChecksum',
+          'originatingPromptMessageId',
           'approval',
           'stepStatuses'
         ].includes(field)
@@ -382,11 +407,16 @@ const sanitizeSessionPlanRuntimeContext = (
   const artifactId = asString(value.artifactId)
   const artifactVersionId = asString(value.artifactVersionId)
   const artifactChecksum = asString(value.artifactChecksum)
+  const originatingPromptMessageId =
+    value.originatingPromptMessageId === undefined
+      ? undefined
+      : asString(value.originatingPromptMessageId)
   const approval = asString(value.approval) as SessionPlanApproval | undefined
   if (
     !artifactId ||
     !artifactVersionId ||
     !artifactChecksum ||
+    (value.originatingPromptMessageId !== undefined && !originatingPromptMessageId) ||
     !approval ||
     !SESSION_PLAN_APPROVALS.has(approval) ||
     !isRecord(value.stepStatuses)
@@ -418,7 +448,14 @@ const sanitizeSessionPlanRuntimeContext = (
     stepStatuses[title] = { status, updatedAt, ...(notes !== undefined ? { notes } : {}) }
   }
 
-  return { artifactId, artifactVersionId, artifactChecksum, approval, stepStatuses }
+  return {
+    artifactId,
+    artifactVersionId,
+    artifactChecksum,
+    ...(originatingPromptMessageId ? { originatingPromptMessageId } : {}),
+    approval,
+    stepStatuses
+  }
 }
 
 export const sanitizeSessionRuntimeContext = (
@@ -443,6 +480,93 @@ export const sanitizeSessionRuntimeContext = (
     result.plan = plan
   }
   return result
+}
+
+// Historical projections are presentation-only snapshots. Rebuild all derived fields from the
+// validated Plan document and statuses so persisted JSON cannot manufacture execution authority or
+// inconsistent counters. A prompt binding is mandatory because unbound history cannot be isolated
+// safely across Message Branches.
+const sanitizeHistoricalPlanProjection = (
+  value: unknown
+): { projection: ActivePlanProjection; jsonChars: number } | undefined => {
+  const sanitizedJson = sanitizeRuntimeContextValue(value, { remaining: 10_000 })
+  if (!isRecord(sanitizedJson)) return undefined
+  const jsonChars = JSON.stringify(sanitizedJson).length
+  if (jsonChars > MAX_PLAN_HISTORY_PROJECTION_JSON_CHARS) return undefined
+
+  const originatingPromptMessageId = asString(sanitizedJson.originatingPromptMessageId)
+  const revision = asNumber(sanitizedJson.revision)
+  const lifecycle = asString(sanitizedJson.lifecycle) as PlanLifecycle | undefined
+  if (
+    !originatingPromptMessageId ||
+    revision === undefined ||
+    !Number.isSafeInteger(revision) ||
+    revision < 0 ||
+    !lifecycle ||
+    !PLAN_LIFECYCLES.has(lifecycle) ||
+    typeof sanitizedJson.requiresExplicitContinuation !== 'boolean'
+  ) {
+    return undefined
+  }
+
+  const runtimePlan = sanitizeSessionPlanRuntimeContext({
+    artifactId: sanitizedJson.artifactId,
+    artifactVersionId: sanitizedJson.artifactVersionId,
+    artifactChecksum: sanitizedJson.artifactChecksum,
+    originatingPromptMessageId,
+    approval: sanitizedJson.approval,
+    stepStatuses: sanitizedJson.stepStatuses
+  })
+  if (!runtimePlan) return undefined
+
+  let document
+  try {
+    document = parsePlanDocumentV1(sanitizedJson.document)
+  } catch {
+    return undefined
+  }
+  const titles = planStepTitles(document)
+  return {
+    jsonChars,
+    projection: {
+      artifactId: runtimePlan.artifactId,
+      artifactVersionId: runtimePlan.artifactVersionId,
+      artifactChecksum: runtimePlan.artifactChecksum,
+      originatingPromptMessageId,
+      revision,
+      approval: runtimePlan.approval,
+      lifecycle,
+      requiresExplicitContinuation: sanitizedJson.requiresExplicitContinuation,
+      document,
+      stepStatuses: runtimePlan.stepStatuses,
+      stepStates: projectPlanStepStates(document, runtimePlan.stepStatuses),
+      counts: {
+        phases: document.phases.length,
+        delegations: document.phases.reduce((sum, phase) => sum + phase.delegations.length, 0),
+        steps: titles.length,
+        completed: titles.filter((title) => {
+          const status = runtimePlan.stepStatuses[title]?.status
+          return status === 'completed' || status === 'skipped'
+        }).length
+      }
+    }
+  }
+}
+
+export const sanitizePlanHistoryProjections = (
+  value: unknown
+): ActivePlanProjection[] | undefined => {
+  if (!Array.isArray(value)) return undefined
+  let remainingPlanHistoryChars = MAX_PLAN_HISTORY_JSON_CHARS
+  const projections: ActivePlanProjection[] = []
+  for (const candidate of value.slice(-MAX_PLAN_HISTORY_PROJECTIONS).toReversed()) {
+    const sanitizedProjection = sanitizeHistoricalPlanProjection(candidate)
+    if (!sanitizedProjection) continue
+    if (sanitizedProjection.jsonChars > remainingPlanHistoryChars) break
+    remainingPlanHistoryChars -= sanitizedProjection.jsonChars
+    projections.unshift(sanitizedProjection.projection)
+  }
+  return projections.length > 0 ? projections : undefined
 }
 
 // Accepts only artifact references, never arbitrary file payload shapes.
@@ -1355,6 +1479,8 @@ const sanitizeSession = (
   if (contextUsage) sanitized.contextUsage = contextUsage
   const runtimeContext = sanitizeSessionRuntimeContext(session.runtimeContext)
   if (runtimeContext) sanitized.runtimeContext = runtimeContext
+  const planHistoryProjections = sanitizePlanHistoryProjections(session.planHistoryProjections)
+  if (planHistoryProjections) sanitized.planHistoryProjections = planHistoryProjections
   if (sanitized.status === 'waiting-plan-approval' && runtimeContext?.plan === undefined) {
     // Approval waiting is meaningful only with restorable main-owned Plan authority. A corrupt or
     // unknown context must not leave the conversation permanently blocked with nothing to approve.

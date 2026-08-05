@@ -590,6 +590,32 @@ describe('workspace agent message sending', () => {
     vi.unstubAllGlobals()
   })
 
+  it('forwards Plan first for an existing Session without storing it on the user Message', async () => {
+    const runtime = {
+      state: createSnapshot(['transport-session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt: vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
+    }
+
+    await sendWorkspaceMessage(runtime, {
+      sessionId: 'transport-session-1',
+      text: 'analyze this dataset',
+      cwd: '/workspace/project',
+      projectId: 'project-1',
+      forcedSkillIds: ['skill-analysis'],
+      turnIntent: 'plan-first'
+    })
+
+    expect(runtime.sendPrompt.mock.calls[0]?.[11]).toBe('plan-first')
+    expect(useSessionStore.getState().sessions[0].messages[0]).toMatchObject({
+      role: 'user',
+      content: 'analyze this dataset'
+    })
+    expect(useSessionStore.getState().sessions[0].messages[0]).not.toHaveProperty('turnIntent')
+  })
+
   it('binds an explicit continuation prompt to the durable active Plan version', async () => {
     const sendPrompt = vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
     const runtime = {
@@ -1155,6 +1181,27 @@ describe('workspace agent message sending', () => {
     )
   })
 
+  it('retains Plan first while a new Session waits for ACP creation', async () => {
+    const created = createDeferred<{ sessionId: string; cwd?: string }>()
+    const runtime = {
+      state: createSnapshot(),
+      createSession: vi.fn(() => created.promise),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt: vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
+    }
+
+    await sendWorkspaceMessage(runtime, {
+      text: 'Plan the analysis',
+      cwd: '/workspace/project',
+      turnIntent: 'plan-first'
+    })
+    created.resolve({ sessionId: 'transport-session-1', cwd: '/workspace/project' })
+    await flushRuntimeTasks()
+
+    expect(runtime.sendPrompt.mock.calls[0]?.[11]).toBe('plan-first')
+  })
+
   it('creates and selects a branched Session before replaying its active history into a fresh ACP session', async () => {
     useSessionStore.getState().appendUserMessage({
       sessionId: 'source-session',
@@ -1184,7 +1231,8 @@ describe('workspace agent message sending', () => {
       text: 'Try a different interpretation',
       cwd: '/ignored-by-source-snapshot',
       projectId: 'wrong-project',
-      projectName: 'wrong-project'
+      projectName: 'wrong-project',
+      turnIntent: 'plan-first'
     })
 
     expect(branched).toBeDefined()
@@ -1227,7 +1275,9 @@ describe('workspace agent message sending', () => {
       [],
       [],
       undefined,
-      expect.objectContaining({ promptMessageId: branched?.messageId })
+      expect.objectContaining({ promptMessageId: branched?.messageId }),
+      undefined,
+      'plan-first'
     )
   })
 

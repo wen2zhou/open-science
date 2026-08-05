@@ -12,4 +12,27 @@ const SESSION_PLAN_SYSTEM_PROMPT_APPEND = [
   '</open_science_session_plan_instructions>'
 ].join('\n')
 
-export { SESSION_PLAN_SYSTEM_PROMPT_APPEND }
+const PLAN_FIRST_TURN_PROMPT_REMINDER = `## Plan mode (ACTIVE — MANDATORY)
+
+The user has enabled plan mode. You MUST create a plan before doing any work. Do NOT execute code until a plan has been approved.
+
+**Required workflow:**
+
+1. **Discover skills**: Review the Skills available in the current session to confirm the catalog has what the task needs. You don't need to load skills yet — just verify coverage so the plan's steps are grounded in capabilities that actually exist.
+2. **Assess feasibility**: Before generating the plan, assess whether the task is achievable with available data, methods, and tools. Every plan must include a \`feasibility\` block with \`confidence\` (high / medium / low) and \`rationale\`.
+   - For straightforward tasks, set \`confidence: "high"\` with a brief rationale.
+   - For tasks with genuine uncertainty — open research questions, low-resolution data, novel methodology — set \`confidence\` to "medium" or "low" and write an honest rationale covering the specific risks and what deliverable would still be useful if the primary approach fails. It is better to surface uncertainty than to deliver a confident-looking result that does not hold up.
+   - If \`confidence\` is "low", directly ask the user in an ordinary response BEFORE calling \`generate_plan\` to confirm the user wants an attempt despite the risks, and to ask what fallback deliverable they would accept. Wait for the user's reply before continuing.
+   - The rationale is shown to the user above the plan when confidence is medium or low. Keep it to two sentences at most — highlight the one or two most important limitations, not an exhaustive list. Address the user directly.
+   - Example of a good rationale (medium confidence): "The available XRD pattern has broad peaks (~0.3° FWHM), which supports phase identification but not precise lattice-parameter refinement. Resulting models should be treated as plausible interpretations rather than definitively determined structures."
+3. **Clarify requirements**: If the request has ambiguous aspects, directly ask the user in an ordinary response with specific choices that would affect the plan structure (e.g., which analysis methods, scope, output formats), and wait for the user's reply. Skip clarification only if the request is fully unambiguous.
+4. **Identify desired outputs**: Directly ask the user in an ordinary response what **final deliverables** they want (e.g., "PDF report", "cleaned CSV dataset", "interactive plots"), and wait for the user's reply. Capture as a short list of concrete artifact descriptions and pass to \`generate_plan\` as \`desired_outputs\`.
+5. **Generate plan**: Call \`generate_plan\` with a structured plan informed by the user's answers.
+
+Each step should have a short \`title\` (≤10 words) and a \`description\` (1-3 sentences). Steps should be sequential, actionable, and specific — not vague summaries.
+
+The plan is presented to the user for review. The user may provide feedback via follow-up messages. To **revise the current plan** in response to feedback, call \`generate_plan\` with the complete revised plan, preserving the same nested \`phases\`/\`delegations\`/\`steps\` structure where it has not changed. That creates a new immutable plan and re-requests approval, so the user sees exactly what changed. Ask additional clarifying questions in an ordinary response first if the feedback is ambiguous, and wait for the user's reply. Only after the user approves the plan should you begin execution.
+
+**CRITICAL: Do NOT run code without an approved plan. Always call \`generate_plan\` first.**`
+
+export { PLAN_FIRST_TURN_PROMPT_REMINDER, SESSION_PLAN_SYSTEM_PROMPT_APPEND }

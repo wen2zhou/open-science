@@ -45,6 +45,7 @@ type SendWorkspaceMessageInput = {
   // It is mutually exclusive with `sessionId`, which continues an existing app Session.
   branchSourceSessionId?: string
   text: string
+  turnIntent?: 'plan-first'
   planContinuation?: Pick<ActivePlanProjection, 'artifactVersionId' | 'revision'> & {
     approvePending?: true
   }
@@ -594,6 +595,7 @@ const startPendingSessionPrompt = (
   forcedSkillIds: string[] | undefined,
   referencedArtifacts: FileReference[] | undefined,
   specialistId: string | undefined,
+  turnIntent: SendWorkspaceMessageInput['turnIntent'],
   historyReplay?: HistoryReplayContext
 ): void => {
   void (async () => {
@@ -667,19 +669,22 @@ const startPendingSessionPrompt = (
     // Baseline the newest prompt-failure event before dispatch so the rejection path can tell this
     // turn's error event from a stale one when it derives the report affordance.
     const priorErrorEventId = latestPromptFailureEventId(runtime.state.events, runtimeSessionId)
-    void runtime
-      .sendPrompt(
-        runtimeSessionId,
-        content,
-        promptAttachments,
-        forcedSkillIds,
-        referencedArtifacts,
-        historyReplay?.historyPreamble,
-        historyReplay?.historyAttachments,
-        historyReplay?.historyImages,
-        undefined,
-        getPromptProvenanceContext(runtimeSessionId, bound.messageId)
-      )
+    const sendPromptArguments = [
+      runtimeSessionId,
+      content,
+      promptAttachments,
+      forcedSkillIds,
+      referencedArtifacts,
+      historyReplay?.historyPreamble,
+      historyReplay?.historyAttachments,
+      historyReplay?.historyImages,
+      undefined,
+      getPromptProvenanceContext(runtimeSessionId, bound.messageId)
+    ] as const
+    const promptRequest = turnIntent
+      ? runtime.sendPrompt(...sendPromptArguments, undefined, turnIntent)
+      : runtime.sendPrompt(...sendPromptArguments)
+    void promptRequest
       .then((snapshot) => {
         useSessionStore.getState().clearPendingContextReplay(runtimeSessionId, bound.messageId)
         return snapshot
@@ -717,7 +722,8 @@ const sendWorkspaceMessage = async (
     allowCompactionRecovery,
     requireExistingSession,
     specialistId,
-    planContinuation
+    planContinuation,
+    turnIntent
   }: SendWorkspaceMessageInput,
   onSendPreparationStateChange?: SendPreparationStateChange,
   drainRuntimeEvents?: RuntimeEventDrain
@@ -828,6 +834,7 @@ const sendWorkspaceMessage = async (
       forcedSkillIds,
       referencedArtifacts,
       pendingSession.specialistId,
+      turnIntent,
       historyReplay
     )
 
@@ -918,6 +925,7 @@ const sendWorkspaceMessage = async (
         forcedSkillIds,
         referencedArtifacts,
         currentSession.pendingContextReplayMessageId ? currentSession.specialistId : undefined,
+        turnIntent,
         historyReplay
       )
       return appended
@@ -1163,14 +1171,19 @@ const sendWorkspaceMessage = async (
       resumeFallback,
       getPromptProvenanceContext(targetSessionId, appended.messageId)
     ] as const
-    const promptRequest = planContinuation
-      ? runtime.sendPrompt(...sendPromptArguments, {
+    const continuation = planContinuation
+      ? {
           projectId: sessionProjectName!,
           artifactVersionId: planContinuation.artifactVersionId,
           expectedRevision: planContinuation.revision,
           ...(planContinuation.approvePending ? { approvePending: true as const } : {})
-        })
-      : runtime.sendPrompt(...sendPromptArguments)
+        }
+      : undefined
+    const promptRequest = turnIntent
+      ? runtime.sendPrompt(...sendPromptArguments, continuation, turnIntent)
+      : continuation
+        ? runtime.sendPrompt(...sendPromptArguments, continuation)
+        : runtime.sendPrompt(...sendPromptArguments)
 
     void promptRequest
       .then((snapshot) => {
@@ -1219,7 +1232,8 @@ const sendWorkspaceMessage = async (
     permissionProfile ?? DEFAULT_PERMISSION_PROFILE,
     forcedSkillIds,
     referencedArtifacts,
-    specialistId ?? undefined
+    specialistId ?? undefined,
+    turnIntent
   )
 
   return pending

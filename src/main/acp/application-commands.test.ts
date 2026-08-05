@@ -197,6 +197,36 @@ describe('ACP application commands', () => {
     expect(request.continuation.originatingTurnToken).toBe('renderer-forged-turn')
   })
 
+  it('accepts only the exact Plan first turn intent at the application-command seam', async () => {
+    const dependencies = createDependencies()
+    const router = createApplicationCommandRouter()
+    registerAcpCommands(router.registrar, dependencies)
+
+    await router.dispatcher.invoke(
+      acpCommands.sendPrompt,
+      invocation([{ sessionId: 'session-1', text: 'Plan this', turnIntent: 'plan-first' }])
+    )
+    await router.dispatcher.invoke(
+      acpCommands.sendPrompt,
+      invocation([
+        {
+          sessionId: 'session-1',
+          text: 'Do not trust this',
+          turnIntent: 'hidden-injection' as 'plan-first'
+        }
+      ])
+    )
+
+    expect(dependencies.workflows.sendPrompt).toHaveBeenNthCalledWith(
+      1,
+      expect.objectContaining({ turnIntent: 'plan-first' })
+    )
+    expect(dependencies.workflows.sendPrompt).toHaveBeenNthCalledWith(
+      2,
+      expect.objectContaining({ turnIntent: undefined })
+    )
+  })
+
   it('accepts explicit Plan continuation authority only from a current human caller', async () => {
     const dependencies = createDependencies()
     const router = createApplicationCommandRouter()

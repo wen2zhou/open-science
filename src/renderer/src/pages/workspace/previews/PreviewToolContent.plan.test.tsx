@@ -4,6 +4,7 @@ import { cleanup, fireEvent, render, screen, waitFor } from '@testing-library/re
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ActivePlanProjection } from '../../../../../shared/session-plan/contract'
+import { normalizeSessionFile } from '../../../../../shared/session-persistence'
 import { usePreviewWorkbenchStore } from '@/stores/preview-workbench-store'
 import { useSessionStore } from '@/stores/session-store'
 
@@ -78,6 +79,51 @@ beforeEach(() => {
 afterEach(cleanup)
 
 describe('Plan Preview workbench integration', () => {
+  it('resolves a persisted historical Plan by exact version after hydration', () => {
+    const historical = {
+      ...approvedProjection,
+      artifactId: 'artifact-history',
+      artifactVersionId: 'version-history',
+      originatingPromptMessageId: 'prompt-history',
+      document: { ...approvedProjection.document, task_summary: 'Historical branch Plan' }
+    }
+    const restored = normalizeSessionFile({
+      id: 'session-1',
+      projectId: 'project-1',
+      title: 'Branched Plans',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      planHistoryProjections: [historical],
+      createdAt: 1,
+      updatedAt: 2
+    })
+    if (!restored) throw new Error('Session fixture did not restore.')
+    useSessionStore.getState().hydrateSessions([restored])
+    useSessionStore.getState().setActivePlanProjection('session-1', {
+      ...approvedProjection,
+      artifactId: 'artifact-current',
+      artifactVersionId: 'version-current',
+      originatingPromptMessageId: 'prompt-current'
+    })
+
+    render(
+      <PreviewToolContent
+        item={{
+          id: 'tool:session-1:plan:version-history',
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          type: 'tool',
+          toolKind: 'plan',
+          title: 'Session Plan',
+          planArtifactVersionId: 'version-history'
+        }}
+      />
+    )
+
+    expect(screen.getByText('Historical branch Plan')).toBeTruthy()
+  })
+
   it('uses the shared full-screen state and applies the approved projection', async () => {
     render(
       <PreviewToolContent

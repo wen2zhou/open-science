@@ -140,6 +140,7 @@ class PlanService {
       artifactId: artifact.artifactId,
       artifactVersionId: artifact.versionId,
       artifactChecksum: artifact.checksum,
+      originatingPromptMessageId: input.interactionId,
       approval: 'pending',
       stepStatuses: {}
     }
@@ -490,6 +491,9 @@ class PlanService {
       artifactId: plan.artifactId,
       artifactVersionId: plan.artifactVersionId,
       artifactChecksum: plan.artifactChecksum,
+      ...(plan.originatingPromptMessageId
+        ? { originatingPromptMessageId: plan.originatingPromptMessageId }
+        : {}),
       revision,
       approval: plan.approval,
       lifecycle: derivePlanLifecycle(document, plan.approval, plan.stepStatuses, interactionIsLive),

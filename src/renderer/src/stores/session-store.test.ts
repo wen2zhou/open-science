@@ -160,7 +160,7 @@ describe('session store', () => {
     expect(useSessionStore.getState().sessions[0].activePlanProjection).toBe(projection)
   })
 
-  it('retains a replaced Plan projection as read-only UI history without authoring it in Session JSON', () => {
+  it('restores branch-bound Plan history after saving and hydrating a Session', () => {
     useSessionStore.getState().hydrateSessions(
       [
         {
@@ -176,8 +176,14 @@ describe('session store', () => {
       ],
       { version: SESSION_MANIFEST_VERSION }
     )
-    const original = createPlanProjection('version-1')
-    const replacement = createPlanProjection('version-2')
+    const original = {
+      ...createPlanProjection('version-1'),
+      originatingPromptMessageId: 'prompt-a'
+    }
+    const replacement = {
+      ...createPlanProjection('version-2'),
+      originatingPromptMessageId: 'prompt-b'
+    }
 
     useSessionStore.getState().setActivePlanProjection('session-1', original)
     useSessionStore.getState().setActivePlanProjection('session-1', replacement)
@@ -185,7 +191,59 @@ describe('session store', () => {
     const session = useSessionStore.getState().sessions[0]
     expect(session.activePlanProjection).toBe(replacement)
     expect(session.planHistoryProjections).toEqual([original])
-    expect(toPersistedSession(session)).not.toHaveProperty('planHistoryProjections')
+    const persisted = toPersistedSession(session)
+    expect(persisted.planHistoryProjections).toEqual([
+      {
+        ...original,
+        stepStates: { 'Step version-1': { status: 'not_started' } }
+      }
+    ])
+
+    useSessionStore.setState(createInitialSessionState())
+    useSessionStore.getState().hydrateSessions([persisted], {
+      version: SESSION_MANIFEST_VERSION
+    })
+
+    expect(useSessionStore.getState().sessions[0].planHistoryProjections).toEqual(
+      persisted.planHistoryProjections
+    )
+  })
+
+  it('does not drop Plan history when a newer durable Session echo omits UI history', () => {
+    useSessionStore.getState().hydrateSessions([
+      {
+        id: 'session-1',
+        projectId: 'project-1',
+        title: 'Plan replacement',
+        cwd: '/workspace',
+        status: 'idle',
+        messages: [],
+        createdAt: 1,
+        updatedAt: 2
+      }
+    ])
+    const original = {
+      ...createPlanProjection('version-1'),
+      originatingPromptMessageId: 'prompt-a'
+    }
+    useSessionStore.getState().setActivePlanProjection('session-1', original)
+    useSessionStore.getState().setActivePlanProjection('session-1', {
+      ...createPlanProjection('version-2'),
+      originatingPromptMessageId: 'prompt-b'
+    })
+
+    useSessionStore.getState().upsertPersistedSession({
+      id: 'session-1',
+      projectId: 'project-1',
+      title: 'Newer durable echo',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      createdAt: 1,
+      updatedAt: Date.now() + 1
+    })
+
+    expect(useSessionStore.getState().sessions[0].planHistoryProjections).toEqual([original])
   })
 
   it('releases renderer Composer blocking when the active Plan is rejected', () => {
