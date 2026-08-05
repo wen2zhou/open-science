@@ -254,7 +254,7 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByText('Cohort B is undefined.')).toBeTruthy()
     expect(screen.queryByText('Internal result.')).toBeNull()
     expect(screen.queryByText('Internal progress.')).toBeNull()
-    expect(screen.getByText('SCOPE & FEASIBILITY · MEDIUM CONFIDENCE')).toBeTruthy()
+    expect(screen.getByText('SCOPE & FEASIBILITY · medium confidence')).toBeTruthy()
     expect(document.querySelector('[data-slot="scroll-area"]')).not.toBeNull()
     expect(screen.getAllByRole('button').every((button) => button.dataset.slot === 'button')).toBe(
       true

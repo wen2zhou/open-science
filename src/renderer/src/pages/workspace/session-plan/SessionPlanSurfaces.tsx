@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { Download, ListChecks, Maximize2, Minimize2 } from 'lucide-react'
+import { Download, Info, ListChecks, Maximize2, Minimize2 } from 'lucide-react'
 
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -413,9 +413,9 @@ const PlanPreviewSurface = ({
               )}
             </section>
             <div className="mt-7 rounded-lg bg-muted p-4">
-              <div className="text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
-                SCOPE &amp; FEASIBILITY · {planDocument.feasibility.confidence.toUpperCase()}{' '}
-                CONFIDENCE
+              <div className="flex items-center gap-1.5 text-[10px] font-semibold tracking-[0.08em] text-muted-foreground">
+                <Info className="size-3 shrink-0" aria-hidden="true" />
+                SCOPE &amp; FEASIBILITY · {planDocument.feasibility.confidence} confidence
               </div>
               <p className="mt-1 text-xs text-muted-foreground">
                 {planDocument.feasibility.rationale}
