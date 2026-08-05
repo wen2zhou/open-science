@@ -149,6 +149,11 @@ type ConversationPanelProps = {
   autoReviewEnabled: boolean
   onDraftDocChange: (doc: ComposerDoc) => void
   onSendMessage: (forcedSkillIds: string[]) => void
+  // A restored pending Plan has no live tool-call waiter. Every card action starts a fresh,
+  // identity-bound Plan interaction instead of trying to resume the expired one.
+  onRespondToRestoredPlan: (
+    response: { decision: 'approved' | 'rejected' } | { feedback: string }
+  ) => Promise<void>
   // Starts a new session from this session's visible branch, then sends the current draft there.
   // Optional while callers migrate to the split send affordance.
   onBranchInNewSession?: (forcedSkillIds: string[]) => void
@@ -220,6 +225,7 @@ const ConversationPanel = ({
   autoReviewEnabled,
   onDraftDocChange,
   onSendMessage,
+  onRespondToRestoredPlan,
   onBranchInNewSession,
   onStageAttachmentFiles,
   onRemoveAttachment,
@@ -279,8 +285,7 @@ const ConversationPanel = ({
   const pendingPlan =
     activePendingPlanKey &&
     resolvedPlanKey !== activePendingPlanKey &&
-    activeSession?.status === 'waiting-plan-approval' &&
-    activeSession.activeRun
+    activeSession?.status === 'waiting-plan-approval'
       ? activePendingPlan
       : undefined
   const resolvedRunError = normalizeRunFailureError(activeSession?.error)
@@ -342,6 +347,10 @@ const ConversationPanel = ({
     response: { decision: 'approved' | 'rejected' } | { feedback: string }
   ): Promise<void> => {
     if (!activeSession || !pendingPlan) return
+    if (!activeSession.activeRun) {
+      await onRespondToRestoredPlan(response)
+      return
+    }
     await respondToSessionPlan(
       {
         projectId: activeSession.projectId,

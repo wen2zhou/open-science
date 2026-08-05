@@ -3537,7 +3537,7 @@ describe('recovering from a request-size overflow', () => {
     })
   })
 
-  it('converts approve-and-continue provenance to current approved authority on overflow', async () => {
+  it('converts a restored approval action to current approved authority on overflow', async () => {
     seedOverflowedConversation()
     useSessionStore.getState().setActivePlanProjection('session-1', {
       artifactVersionId: 'plan-version-1',
@@ -3577,7 +3577,7 @@ describe('recovering from a request-size overflow', () => {
       await recoverContextOverflowWorkspaceSession(runtime, 'session-1', undefined, undefined, {
         artifactVersionId: 'plan-version-1',
         revision: 9,
-        approvePending: true
+        pendingAction: 'approve'
       })
     ).toBe(true)
     await flushRuntimeTasks()

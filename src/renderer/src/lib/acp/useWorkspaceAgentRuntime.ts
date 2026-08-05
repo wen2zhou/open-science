@@ -46,7 +46,7 @@ type SendWorkspaceMessageInput = {
   branchSourceSessionId?: string
   text: string
   planContinuation?: Pick<ActivePlanProjection, 'artifactVersionId' | 'revision'> & {
-    approvePending?: true
+    pendingAction?: 'review' | 'approve' | 'reject'
   }
   attachments?: UploadedAttachment[]
   cwd?: string
@@ -1168,7 +1168,9 @@ const sendWorkspaceMessage = async (
           projectId: sessionProjectName!,
           artifactVersionId: planContinuation.artifactVersionId,
           expectedRevision: planContinuation.revision,
-          ...(planContinuation.approvePending ? { approvePending: true as const } : {})
+          ...(planContinuation.pendingAction
+            ? { pendingAction: planContinuation.pendingAction }
+            : {})
         })
       : runtime.sendPrompt(...sendPromptArguments)
 
@@ -1525,7 +1527,7 @@ const recoverContextOverflowWorkspaceSession = async (
 
   // Captured provenance proves that the interrupted turn was explicitly authorized. Durable status
   // updates may have advanced the revision since admission, so refresh only the matching approved
-  // Artifact Version and strip one-shot pending approval intent before retrying.
+  // Artifact Version and strip the one-shot pending decision before retrying.
   const activePlan = useSessionStore
     .getState()
     .sessions.find((item) => item.id === sessionId)?.activePlanProjection
