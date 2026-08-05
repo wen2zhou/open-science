@@ -33,7 +33,6 @@ import {
 import type { UploadedAttachment } from '../../../../shared/uploads'
 import type { ConversationExportFormat } from '../../../../shared/conversation-export'
 import type { CompletionHandoffLifecycleEvent } from '../../../../shared/specialist'
-import { parsePlanMessageIntent } from '../../../../shared/session-plan/contract'
 
 import { planComposerAttachmentIntake } from './composer-attachment-intake'
 import { stageComposerFile, type ComposerUploadTransfer } from './composer-upload-transfer'
@@ -61,7 +60,6 @@ import { JobDetailModal } from '@/components/JobDetailModal'
 import { getVisiblePermissionRequests } from './session-permissions'
 import { WorkspaceSidebar } from './WorkspaceSidebar'
 import { useJobAnalysisEffect } from '@/lib/compute/useJobAnalysisEffect'
-import { respondToSessionPlan } from './session-plan/respond-to-session-plan'
 
 type WorkspacePageProps = {
   isSessionPersistenceHydrated: boolean
@@ -1363,14 +1361,6 @@ const WorkspacePage = ({
 
     const doc = draftDoc
     const attachmentsForSend = attachments
-    const activePlan = branchInNewSession ? undefined : activeSession?.activePlanProjection
-    const planMessageIntent =
-      activePlan &&
-      attachmentsForSend.length === 0 &&
-      forcedSkillIds.length === 0 &&
-      docToArtifactRefs(doc).length === 0
-        ? parsePlanMessageIntent(docToText(doc), activePlan.approval)
-        : 'none'
     // Capture new-conversation intent before send: auto-review defaults off, so only an explicit
     // "on" needs to be stamped onto the created session (absent = off downstream).
     const wasNewConversation = !activeSession
@@ -1397,10 +1387,6 @@ const WorkspacePage = ({
     // Shared by the normal send path and the Retry recovery action so the logic stays in sync.
     const dispatchSend = (sessionId: string | undefined): void => {
       const send = async (): ReturnType<typeof sendMessage> => {
-        const continuationProjection =
-          planMessageIntent === 'continue' || planMessageIntent === 'approve-and-continue'
-            ? activePlan
-            : undefined
         return sendMessage({
           sessionId,
           ...(branchInNewSession && activeSession
@@ -1417,17 +1403,6 @@ const WorkspacePage = ({
           projectName: activeSession?.projectId ?? scopedProjectId,
           permissionProfile: activePermissionProfile,
           forcedSkillIds,
-          ...(continuationProjection
-            ? {
-                planContinuation: {
-                  artifactVersionId: continuationProjection.artifactVersionId,
-                  revision: continuationProjection.revision,
-                  ...(planMessageIntent === 'approve-and-continue'
-                    ? { approvePending: true as const }
-                    : {})
-                }
-              }
-            : {}),
           // New-conversation only: the UUID is forwarded to createSession; main process reads latest Profile.
           specialistId: draftSpecialistId
         })
@@ -1555,25 +1530,6 @@ const WorkspacePage = ({
         return next
       })
       dispatchSend(sessionId)
-    }
-
-    if (planMessageIntent === 'approve' && activeSession && activePlan) {
-      void respondToSessionPlan(
-        {
-          projectId: activeSession.projectId,
-          sessionId: activeSession.id,
-          projection: activePlan
-        },
-        { decision: 'approved' }
-      )
-        .then(() => {
-          setDraftDoc(emptyDoc)
-          delete composerDraftsRef.current[activeSession.id]
-          setAttachmentError(null)
-        })
-        .catch((error: unknown) => setAttachmentError(getErrorMessage(error)))
-        .finally(() => sendRequestsInFlightRef.current.delete(sendRequestKey))
-      return
     }
 
     // If there is a pending specialist switch for an existing session, run the reconfigure barrier

@@ -7,6 +7,32 @@ type SessionPlanResponseTarget = Readonly<{
   projection: Pick<ActivePlanProjection, 'artifactVersionId' | 'revision'>
 }>
 
+const isRecord = (value: unknown): value is Record<string, unknown> =>
+  typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const projectReturnedFeedbackMessage = (sessionId: string, result: unknown): boolean => {
+  if (!isRecord(result) || result.kind !== 'feedback' || !isRecord(result.message)) return false
+  const message = result.message
+  if (
+    typeof message.id !== 'string' ||
+    typeof message.content !== 'string' ||
+    typeof message.createdAt !== 'number'
+  ) {
+    return false
+  }
+  useSessionStore.getState().appendRoutedUserMessage({
+    sessionId,
+    messageId: message.id,
+    eventId: `session-user-message-${message.id}`,
+    content: message.content,
+    createdAt: message.createdAt,
+    ...(typeof message.responseToMessageId === 'string'
+      ? { responseToMessageId: message.responseToMessageId }
+      : {})
+  })
+  return true
+}
+
 const refreshSessionPlanProjection = async ({
   projectId,
   sessionId
@@ -21,13 +47,29 @@ export const respondToSessionPlan = async (
 ): Promise<void> => {
   const payload = typeof response === 'string' ? { decision: response } : response
   try {
-    await window.api.acp.respondPlan({
-      projectId: target.projectId,
-      sessionId: target.sessionId,
-      artifactVersionId: target.projection.artifactVersionId,
-      expectedRevision: target.projection.revision,
-      ...payload
-    })
+    const request =
+      'feedback' in payload
+        ? { projectId: target.projectId, sessionId: target.sessionId, feedback: payload.feedback }
+        : {
+            projectId: target.projectId,
+            sessionId: target.sessionId,
+            artifactVersionId: target.projection.artifactVersionId,
+            expectedRevision: target.projection.revision,
+            decision: payload.decision
+          }
+    const result = await window.api.acp.respondPlan(request)
+    const projectedReturnedMessage = projectReturnedFeedbackMessage(target.sessionId, result)
+    if ('feedback' in payload && !projectedReturnedMessage) {
+      const localMessageId = `local-user-message-${Date.now()}`
+      useSessionStore.getState().appendRoutedUserMessage({
+        sessionId: target.sessionId,
+        messageId: localMessageId,
+        eventId: localMessageId,
+        content: payload.feedback,
+        createdAt: Date.now()
+      })
+    }
+    if ('feedback' in payload) return
   } catch (error) {
     try {
       await refreshSessionPlanProjection(target)

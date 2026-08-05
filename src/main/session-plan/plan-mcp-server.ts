@@ -22,6 +22,7 @@ const generatePlanToolSchema = {
   plan_id: z.never().optional(),
   artifact_id: z.never().optional(),
   artifact_version_id: z.never().optional(),
+  decision: z.enum(['approved', 'rejected']).optional(),
   approve: z.literal(true).optional(),
   ...generatePlanContentToolSchema.shape
 }
@@ -35,6 +36,7 @@ const updateStepStatusToolSchema = {
 type PlanMcpHandler = Readonly<{
   generate: (content: GeneratePlanContent) => Promise<unknown>
   approve: () => Promise<unknown>
+  reject: () => Promise<unknown>
   updateStepStatus: (input: {
     title: string
     status: SessionPlanStepStatus
@@ -100,27 +102,40 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
   server.registerTool(
     'generate_plan',
     {
-      title: 'Generate or approve Session Plan',
+      title: 'Generate or decide Session Plan',
       description:
-        'Create an immutable execution Plan, or approve the active Plan. Generation mode: provide task_summary, phases, desired_outputs, and feasibility together in one call. Approval mode: pass only approve:true; do not combine approval with Plan content.',
+        'Create an immutable execution Plan or explicitly decide the active Plan. Generation blocks until the user responds. Text responses always return as kind:feedback and remain ordinary user Messages; interpret the full meaning, then call this tool again with only decision:"approved" or decision:"rejected" when the intent is unambiguous, or revise and regenerate when changes are requested. Calling decision:"approved" also binds an already-approved interrupted Plan to the current user interaction. Never execute from message text alone. The legacy approve:true is equivalent to decision:"approved". Do not combine a decision with Plan content.',
       inputSchema: generatePlanToolSchema
     },
-    async ({ approve, task_summary, phases, desired_outputs, feasibility }) => {
+    async ({ decision, approve, task_summary, phases, desired_outputs, feasibility }) => {
       const hasContent =
         task_summary !== undefined ||
         phases !== undefined ||
         desired_outputs !== undefined ||
         feasibility !== undefined
-      if (approve === true) {
+      if (approve === true && decision !== undefined) {
+        return handlePlanToolCall(async () => {
+          throw new PlanCommandError(
+            'invalid-plan',
+            'Use either decision or legacy approve:true, not both.'
+          )
+        })
+      }
+      const resolvedDecision = decision ?? (approve === true ? 'approved' : undefined)
+      if (resolvedDecision !== undefined) {
         return handlePlanToolCall(async () => {
           if (hasContent) {
             throw new PlanCommandError(
               'invalid-plan',
-              'Approval cannot be combined with Plan content.'
+              'A Plan decision cannot be combined with Plan content.'
             )
           }
-          const result = await handler.approve()
-          executionArtifactVersionId = projectionVersionId(result) ?? executionArtifactVersionId
+          const result =
+            resolvedDecision === 'approved' ? await handler.approve() : await handler.reject()
+          executionArtifactVersionId =
+            resolvedDecision === 'approved'
+              ? (projectionVersionId(result) ?? executionArtifactVersionId)
+              : undefined
           return result
         })
       }
@@ -157,7 +172,7 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
 
 const callPlanRpc = async (
   environment: PlanMcpEnvironment,
-  operation: 'generate' | 'approve' | 'updateStepStatus',
+  operation: 'generate' | 'approve' | 'reject' | 'updateStepStatus',
   input?: unknown
 ): Promise<unknown> => {
   const response = await fetchLocalRpc(
@@ -218,6 +233,11 @@ const createPlanMcpServerForEnvironment = (
       const result = await callPlanRpc(environment, 'approve')
       const versionId = projectionVersionId(result)
       if (versionId) executionVersionByEnvironment.set(environment, versionId)
+      return result
+    },
+    reject: async () => {
+      const result = await callPlanRpc(environment, 'reject')
+      executionVersionByEnvironment.delete(environment)
       return result
     },
     updateStepStatus: (input) =>

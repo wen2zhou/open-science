@@ -6,7 +6,6 @@ import { ScrollArea } from '@/components/ui/scroll-area'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 
 import {
-  isPlanApprovalResponse,
   parsePlanDocumentV1,
   type ActivePlanProjection,
   type PlanDocumentV1
@@ -62,36 +61,43 @@ const STEP_STATUS_PRESENTATION: Record<
 const WorkspacePlanCard = ({
   projection,
   stale = false,
+  className = '',
   onOpen,
   onRespond,
-  onSubmitResponse
+  onSubmitResponse,
+  onResolved
 }: PlanSurfaceProps &
   Readonly<{
     onOpen: () => void
     onRespond: (decision: 'approved' | 'rejected') => Promise<void>
     onSubmitResponse?: (text: string) => Promise<void>
+    onResolved?: () => void
+    className?: string
   }>): React.JSX.Element => {
   const decisionPending = projection.approval === 'pending' && !stale
   const [responseText, setResponseText] = useState('')
   const [decisionBusy, setDecisionBusy] = useState(false)
-  const [revisionPendingFor, setRevisionPendingFor] = useState<ActivePlanProjection>()
-  const revisionPending = revisionPendingFor === projection
   const [decisionError, setDecisionError] = useState<string>()
+  const projectionKey = `${projection.artifactVersionId}:${projection.revision}`
+  const [resolvedProjectionKey, setResolvedProjectionKey] = useState<string>()
   const respond = async (decision: 'approved' | 'rejected'): Promise<void> => {
     if (decisionBusy) return
     setDecisionBusy(true)
     setDecisionError(undefined)
     try {
       await onRespond(decision)
+      setResolvedProjectionKey(projectionKey)
+      onResolved?.()
     } catch (error) {
       setDecisionError(error instanceof Error ? error.message : 'Unable to update the Plan.')
     } finally {
       setDecisionBusy(false)
     }
   }
+  if (resolvedProjectionKey === projectionKey) return <></>
   return (
     <article
-      className={`mt-4 overflow-hidden rounded-lg border bg-card shadow-card ${stale ? 'border-amber-300' : 'border-border'}`}
+      className={`overflow-hidden rounded-lg border bg-card shadow-card ${stale ? 'border-amber-300' : 'border-border'} ${className}`}
     >
       {stale ? (
         <div className="border-b border-amber-300 bg-amber-50 px-3.5 py-2 text-xs text-amber-800">
@@ -101,9 +107,7 @@ const WorkspacePlanCard = ({
       <div className="p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-56 flex-1">
-            <div className="text-xs text-muted-foreground">
-              {revisionPending ? 'Revising plan…' : lifecycleLabel(projection)}
-            </div>
+            <div className="text-xs text-muted-foreground">{lifecycleLabel(projection)}</div>
             <div className="mt-1 text-[17px] font-medium text-foreground">
               {projection.document.task_summary}
             </div>
@@ -126,7 +130,7 @@ const WorkspacePlanCard = ({
                 <button
                   type="button"
                   className="h-8 rounded-lg border border-border bg-card px-2.5 text-sm font-medium hover:bg-muted focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50"
-                  disabled={decisionBusy || revisionPending}
+                  disabled={decisionBusy}
                   onClick={() => void respond('rejected')}
                 >
                   Dismiss
@@ -134,7 +138,7 @@ const WorkspacePlanCard = ({
                 <button
                   type="button"
                   className="h-8 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 disabled:opacity-50"
-                  disabled={decisionBusy || revisionPending}
+                  disabled={decisionBusy}
                   onClick={() => void respond('approved')}
                 >
                   Approve
@@ -151,21 +155,19 @@ const WorkspacePlanCard = ({
             className="mt-3 border-t border-border pt-3"
             onSubmit={(event) => {
               event.preventDefault()
-              if (decisionBusy || revisionPending) return
+              if (decisionBusy) return
               const text = responseText.trim()
               if (!text) return
               setDecisionBusy(true)
               setDecisionError(undefined)
-              const approvalResponse = isPlanApprovalResponse(text)
               void (
                 onSubmitResponse?.(text) ??
-                (approvalResponse
-                  ? onRespond('approved')
-                  : Promise.reject(new Error('Unable to send Plan feedback.')))
+                Promise.reject(new Error('Unable to send Plan feedback.'))
               )
                 .then(() => {
                   setResponseText('')
-                  if (!approvalResponse) setRevisionPendingFor(projection)
+                  setResolvedProjectionKey(projectionKey)
+                  onResolved?.()
                 })
                 .catch((error: unknown) =>
                   setDecisionError(
@@ -186,13 +188,13 @@ const WorkspacePlanCard = ({
                 className="min-h-9 flex-1 resize-none rounded bg-transparent py-2 text-sm outline-none placeholder:text-muted-foreground focus-visible:ring-[3px] focus-visible:ring-ring/50"
                 placeholder="Describe changes, or type “approve”…"
                 value={responseText}
-                disabled={decisionBusy || revisionPending}
+                disabled={decisionBusy}
                 onChange={(event) => setResponseText(event.target.value)}
               />
               <button
                 type="submit"
                 className="h-8 rounded-lg bg-primary px-2.5 text-sm font-medium text-primary-foreground disabled:opacity-50"
-                disabled={decisionBusy || revisionPending || responseText.trim().length === 0}
+                disabled={decisionBusy || responseText.trim().length === 0}
               >
                 Send
               </button>
@@ -327,14 +329,15 @@ const PlanPreviewSurface = ({
           ⚠ This plan has been replaced by another plan and is no longer current.
         </div>
       ) : null}
+      {!stale && projection.approval === 'pending' && !onRespond ? (
+        <div className="border-b border-amber-300 bg-amber-50 px-4 py-2 text-xs text-amber-800">
+          This Plan is still pending, but its original Agent interaction has ended. Send a normal
+          message to let the Agent decide how to continue.
+        </div>
+      ) : null}
       {planDocument ? (
         <ScrollArea className="min-h-0 flex-1">
           <div className="px-8 py-8">
-            {projection.requiresExplicitContinuation ? (
-              <div className="mb-5 rounded-lg border border-border bg-bg-200 px-3 py-2 text-xs text-muted-foreground">
-                Plan approved. Send an explicit continuation message to resume execution.
-              </div>
-            ) : null}
             <h1 className="text-[22px] font-semibold">{planDocument.task_summary}</h1>
             <p className="mt-1 text-sm text-muted-foreground">
               Complete {countLabel(planDocument.phases.length)}{' '}

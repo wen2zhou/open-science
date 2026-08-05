@@ -240,6 +240,15 @@ type AppendMessageResult = {
   messageId: string
 }
 
+type AppendRoutedUserMessageInput = {
+  sessionId: string
+  messageId: string
+  eventId: string
+  content: string
+  createdAt: number
+  responseToMessageId?: string
+}
+
 export type SessionHydrationSelection = {
   sessionId: string | undefined
 }
@@ -248,6 +257,7 @@ type SessionStore = SessionStoreData & {
   selectSession: (sessionId: string) => void
   clearSelection: () => void
   appendUserMessage: (input: AppendUserMessageInput) => AppendMessageResult | undefined
+  appendRoutedUserMessage: (input: AppendRoutedUserMessageInput) => AppendMessageResult | undefined
   appendPendingUserMessage: (
     input: AppendPendingUserMessageInput
   ) => AppendMessageResult | undefined
@@ -990,9 +1000,13 @@ const failOpenActivities = (activities: ToolActivity[] | undefined): ToolActivit
       : activity
   )
 
-// Keeps permission waits sticky while tool updates continue to stream in.
+// Keeps human-decision waits sticky while tool updates continue to stream in. In particular, the
+// terminal generate_plan activity arrives after the Plan projection and must not overwrite the
+// composer card's waiting state with `running`.
 const getToolActivitySessionStatus = (session: ChatSession): SessionStatus => {
-  if (session.status === 'waiting-permission') return 'waiting-permission'
+  if (session.status === 'waiting-permission' || session.status === 'waiting-plan-approval') {
+    return session.status
+  }
 
   return session.activeRun ? 'running' : session.status
 }
@@ -1011,6 +1025,73 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
   // Clears visible conversation selection without deleting session history.
   clearSelection: () => {
     set({ selectedSessionId: undefined })
+  },
+
+  // Projects a routed, already-durable user Message into the visible transcript. Unlike a new
+  // prompt this continues the current interaction and must not create another active run.
+  appendRoutedUserMessage: ({
+    sessionId,
+    messageId,
+    eventId,
+    content,
+    createdAt,
+    responseToMessageId
+  }) => {
+    const trimmedContent = content.trim()
+    const session = get().sessions.find((candidate) => candidate.id === sessionId)
+    if (!session || !trimmedContent) return undefined
+    if (session.messages.some((message) => message.id === messageId)) {
+      return { sessionId, messageId }
+    }
+
+    const matchingFeedbackIndex = session.messages.findIndex(
+      (message) =>
+        message.role === 'user' &&
+        message.content.trim() === trimmedContent &&
+        (message.id.startsWith('local-user-message-') ||
+          messageId.startsWith('local-user-message-'))
+    )
+    const matchingFeedback = session.messages[matchingFeedbackIndex]
+    const isLocalMessage = messageId.startsWith('local-user-message-')
+    if (
+      matchingFeedback &&
+      (!matchingFeedback.id.startsWith('local-user-message-') || isLocalMessage)
+    ) {
+      return { sessionId, messageId: matchingFeedback.id }
+    }
+
+    const message: ChatMessage = {
+      id: messageId,
+      role: 'user',
+      content: trimmedContent,
+      status: 'complete',
+      eventIds: [eventId],
+      sortIndex: createSortIndex(),
+      createdAt,
+      updatedAt: createdAt,
+      ...(responseToMessageId ? { responseToMessageId } : {})
+    }
+    const messages = matchingFeedback
+      ? session.messages.map((existing, index) =>
+          index === matchingFeedbackIndex
+            ? { ...message, sortIndex: matchingFeedback.sortIndex }
+            : existing
+        )
+      : [...session.messages, message]
+    set({
+      sessions: get().sessions.map((candidate) =>
+        candidate.id === sessionId
+          ? {
+              ...candidate,
+              status: candidate.activeRun ? 'running' : candidate.status,
+              messages,
+              conversationGraph: synchronizeSessionGraph(candidate, messages, createdAt),
+              updatedAt: Math.max(candidate.updatedAt, createdAt)
+            }
+          : candidate
+      )
+    })
+    return { sessionId, messageId }
   },
 
   // Appends a user prompt, creating the session if this is its first message.
@@ -1946,16 +2027,24 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
                 status: session.compacting
                   ? session.status
                   : projection.lifecycle === 'awaiting_approval'
-                    ? 'waiting-plan-approval'
-                    : projection.lifecycle === 'rejected' || projection.lifecycle === 'blocked'
-                      ? 'idle'
-                      : projection.lifecycle === 'completed'
-                        ? session.activeRun
-                          ? 'running'
-                          : 'idle'
-                        : projection.approval === 'approved'
-                          ? 'running'
-                          : session.status,
+                    ? session.activeRun
+                      ? 'waiting-plan-approval'
+                      : 'idle'
+                    : projection.lifecycle === 'rejected'
+                      ? session.activeRun
+                        ? 'running'
+                        : 'idle'
+                      : projection.lifecycle === 'blocked'
+                        ? 'idle'
+                        : projection.lifecycle === 'completed'
+                          ? session.activeRun
+                            ? 'running'
+                            : 'idle'
+                          : projection.approval === 'approved'
+                            ? session.activeRun
+                              ? 'running'
+                              : 'idle'
+                            : session.status,
                 updatedAt: Date.now()
               }
             })()

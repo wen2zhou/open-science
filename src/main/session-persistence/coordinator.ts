@@ -150,11 +150,9 @@ type PatchSessionRuntimeContextCommand = Readonly<{
   sessionStatus?: PersistedSessionStatus
 }>
 
-type AppendPlanResponseMessageCommand = Readonly<{
+type AppendUserMessageToInteractionCommand = Readonly<{
   projectId: string
   sessionId: string
-  artifactVersionId: string
-  expectedRevision: number
   interactionId: string
   content: string
 }>
@@ -755,13 +753,13 @@ class SessionPersistenceCoordinator {
     })
   }
 
-  appendPlanResponseMessage(
-    command: AppendPlanResponseMessageCommand
+  appendUserMessageToInteraction(
+    command: AppendUserMessageToInteractionCommand
   ): Promise<PersistedChatMessage> {
     return this.enqueue(async () => {
-      const { projectId, sessionId, artifactVersionId, expectedRevision, interactionId } = command
+      const { projectId, sessionId, interactionId } = command
       const content = command.content.trim()
-      if (!content) throw new Error('Plan response content must be non-empty.')
+      if (!content) throw new Error('User Message content must be non-empty.')
       if (this.deletedProjects.has(projectId)) {
         throw new Error('Cannot mutate a session whose project has been deleted.')
       }
@@ -769,26 +767,14 @@ class SessionPersistenceCoordinator {
         throw new Error('Cannot mutate a session that has been deleted.')
       }
       const session = await this.loadRuntimeContextSession(projectId, sessionId, 'patch')
-      const context = session.runtimeContext ?? emptySessionRuntimeContext()
-      if (context.revision !== expectedRevision) {
-        throw new SessionRuntimeContextRevisionConflictError(expectedRevision, context.revision)
-      }
-      if (context.plan?.artifactVersionId !== artifactVersionId) {
-        throw new Error('A newer Session Plan is active.')
-      }
-      if (context.plan.approval !== 'pending') {
-        throw new Error('Session Plan approval is already decided.')
-      }
-
       const timestamp = Math.max(session.updatedAt + 1, Date.now())
-      const message = {
-        id: `plan-response-${randomUUID()}`,
-        role: 'user' as const,
+      const message: PersistedChatMessage = {
+        id: `message-${randomUUID()}`,
+        role: 'user',
         content,
-        status: 'complete' as const,
+        status: 'complete',
         eventIds: [],
         responseToMessageId: interactionId,
-        responseToPlanVersionId: artifactVersionId,
         createdAt: timestamp,
         updatedAt: timestamp
       }

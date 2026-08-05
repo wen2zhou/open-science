@@ -315,7 +315,7 @@ type AcpRuntimePlanOptions = {
   registerSessionAlias?: (aliasSessionId: string, sessionId: string) => void
   sessions: Pick<
     SessionPersistenceCoordinator,
-    'readSessionRuntimeContext' | 'patchSessionRuntimeContext' | 'appendPlanResponseMessage'
+    'readSessionRuntimeContext' | 'patchSessionRuntimeContext' | 'appendUserMessageToInteraction'
   >
 }
 
@@ -848,7 +848,7 @@ class AcpRuntime {
   async callSessionPlan(input: {
     projectId: string
     sessionId: string
-    operation: 'generate' | 'approve' | 'updateStepStatus'
+    operation: 'generate' | 'approve' | 'reject' | 'updateStepStatus'
     input?: unknown
   }): Promise<unknown> {
     const service = this.planService
@@ -888,17 +888,22 @@ class AcpRuntime {
       artifactVersionId: projection.artifactVersionId,
       expectedRevision: projection.revision
     }
-    if (input.operation === 'approve') {
-      const interactionIsLive = this.planApprovalWaiters.has(input.sessionId)
+    if (input.operation === 'approve' || input.operation === 'reject') {
+      const interactionIsLive = this.sessionInteractions.current(input.sessionId) !== undefined
+      const decision = input.operation === 'approve' ? 'approved' : 'rejected'
       const result = await service.respond({
         ...identity,
-        decision: 'approved',
+        decision,
         interactionIsLive
       })
-      this.bindPlanExecutionToCurrentInteraction(
-        input.sessionId,
-        result.projection.artifactVersionId
-      )
+      if (decision === 'approved') {
+        this.bindPlanExecutionToCurrentInteraction(
+          input.sessionId,
+          result.projection.artifactVersionId
+        )
+      } else {
+        this.planExecutionBindings.delete(input.sessionId)
+      }
       this.resolvePlanApprovalWaiter(input.sessionId, result)
       this.publishPlanProjection(input.sessionId, result.projection)
       return result
@@ -908,6 +913,12 @@ class AcpRuntime {
       status: SessionPlanStepStatus
       notes?: string
       expectedArtifactVersionId?: string
+    }
+    if (projection.approval !== 'approved') {
+      throw new PlanCommandError(
+        'plan-not-approved',
+        'The Plan is still pending. Interpret the user Message, then call generate_plan with decision:"approved" or decision:"rejected" before updating steps.'
+      )
     }
     const interaction = this.sessionInteractions.current(input.sessionId)
     const binding = this.planExecutionBindings.get(input.sessionId)
@@ -978,8 +989,8 @@ class AcpRuntime {
       throw new Error('The paused Session Plan interaction is no longer available.')
     }
     try {
-      this.callbacks.onEvent?.({
-        id: `session-plan-response-${result.message.id}`,
+      this.pushEvent({
+        id: `session-user-message-${result.message.id}`,
         timestamp: result.message.createdAt,
         kind: 'message',
         level: 'info',
@@ -990,7 +1001,7 @@ class AcpRuntime {
         text: result.message.content
       })
     } catch (error) {
-      safeLogError('Session Plan response projection callback failed', errorLogFields(error))
+      safeLogError('Routed user Message projection callback failed', errorLogFields(error))
     }
     this.resolvePlanApprovalWaiter(input.sessionId, result)
     return result
@@ -1001,7 +1012,7 @@ class AcpRuntime {
     projection: import('../../shared/session-plan/contract').ActivePlanProjection
   ): void {
     try {
-      this.callbacks.onEvent?.({
+      this.pushEvent({
         id: `session-plan-${projection.artifactVersionId}-${projection.revision}`,
         timestamp: Date.now(),
         kind: 'plan',

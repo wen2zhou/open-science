@@ -7,8 +7,7 @@ import {
 } from '@/components/ui/message-scroller'
 import {
   usePreviewWorkbenchStore,
-  createSessionReviewerPreviewItem,
-  createSessionPlanPreviewItem
+  createSessionReviewerPreviewItem
 } from '@/stores/preview-workbench-store'
 import { selectProjectSessionReviews, useReviewStore } from '@/stores/review-store'
 import { useSettingsStore } from '@/stores/settings-store'
@@ -45,15 +44,12 @@ import type {
   HandoffRetryRequest
 } from '../../../../shared/handoff-lifecycle'
 import { HandoffLifecycleStatus } from './HandoffLifecycleStatus'
-import { WorkspacePlanCard } from './session-plan/SessionPlanSurfaces'
-import { respondToSessionPlan } from './session-plan/respond-to-session-plan'
 import { useHandoffLifecycleEvents } from './useHandoffLifecycleEvents'
 import { MAX_ARTIFACT_VERSION_DESCRIPTOR_IDS } from '../../../../shared/artifacts'
 import {
   createArtifactVersionLocator,
   type ArtifactVersionDescriptor
 } from '../../../../shared/artifact-provenance'
-import { isPlanApprovalResponse } from '../../../../shared/session-plan/contract'
 
 type WorkspaceMessageScrollerProps = {
   activeSession: ChatSession | undefined
@@ -685,26 +681,6 @@ const WorkspaceMessageScrollerImpl = ({
     }
   }
 
-  const sendActivePlanResponse = async (
-    response: { decision: 'approved' | 'rejected' } | { feedback: string }
-  ): Promise<void> => {
-    const plan = activeSession?.activePlanProjection
-    if (!activeSession || !plan) return
-    await respondToSessionPlan(
-      { projectId: activeSession.projectId, sessionId: activeSession.id, projection: plan },
-      response
-    )
-  }
-
-  const respondActivePlan = (decision: 'approved' | 'rejected'): Promise<void> =>
-    sendActivePlanResponse({ decision })
-
-  const submitActivePlanResponse = async (text: string): Promise<void> => {
-    await sendActivePlanResponse(
-      isPlanApprovalResponse(text) ? { decision: 'approved' } : { feedback: text }
-    )
-  }
-
   return (
     <>
       <MessageScrollerProvider
@@ -896,53 +872,6 @@ const WorkspaceMessageScrollerImpl = ({
                     </div>
                   </MessageScrollerItem>
                 ))}
-
-                {activeSession?.planHistoryProjections?.map((historicalPlan) => (
-                  <MessageScrollerItem
-                    key={`plan-${historicalPlan.artifactVersionId}`}
-                    messageId={`plan-${historicalPlan.artifactVersionId}`}
-                    className="min-w-0 px-4 md:px-6"
-                  >
-                    <WorkspacePlanCard
-                      projection={historicalPlan}
-                      stale
-                      onOpen={() => {
-                        usePreviewWorkbenchStore
-                          .getState()
-                          .upsertAndActivateItem(
-                            createSessionPlanPreviewItem(
-                              activeSession.id,
-                              activeSession.projectId,
-                              historicalPlan.artifactVersionId
-                            )
-                          )
-                      }}
-                      onRespond={async () => undefined}
-                    />
-                  </MessageScrollerItem>
-                ))}
-
-                {activeSession?.activePlanProjection ? (
-                  <MessageScrollerItem
-                    messageId={`plan-${activeSession.activePlanProjection.artifactVersionId}`}
-                    className="min-w-0 px-4 md:px-6"
-                  >
-                    <WorkspacePlanCard
-                      projection={activeSession.activePlanProjection}
-                      onOpen={() => {
-                        const projection = activeSession.activePlanProjection
-                        if (!projection) return
-                        usePreviewWorkbenchStore
-                          .getState()
-                          .upsertAndActivateItem(
-                            createSessionPlanPreviewItem(activeSession.id, activeSession.projectId)
-                          )
-                      }}
-                      onRespond={respondActivePlan}
-                      onSubmitResponse={submitActivePlanResponse}
-                    />
-                  </MessageScrollerItem>
-                ) : null}
 
                 {showAgentLoadingMessage && activeSession ? (
                   <WorkspaceAgentLoadingRow sessionId={activeSession.id} />

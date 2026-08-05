@@ -5,36 +5,10 @@ import {
   derivePlanLifecycle,
   generatePlanContentSchema,
   formatPlanProtectedContext,
-  isPlanApprovalResponse,
   isPlanComplete,
-  parsePlanMessageIntent,
   parsePlanDocumentV1,
   PlanCommandError
 } from './contract'
-
-describe('Plan response text', () => {
-  it.each(['approve', 'Approved.', 'go ahead!', 'proceed', 'looks good', 'do it.', 'continue!'])(
-    'recognizes prototype approval phrase %s',
-    (text) => expect(isPlanApprovalResponse(text)).toBe(true)
-  )
-
-  it('keeps change requests on the feedback path', () => {
-    expect(isPlanApprovalResponse('Approve after splitting by cohort.')).toBe(false)
-  })
-
-  it.each([
-    ['approve and continue', 'pending', 'approve-and-continue'],
-    ['Approve & proceed!', 'pending', 'approve-and-continue'],
-    ['continue', 'approved', 'continue'],
-    ['resume this plan.', 'approved', 'continue'],
-    ['continue', 'pending', 'approve-and-continue'],
-    ['approve', 'pending', 'approve'],
-    ['What is the weather?', 'approved', 'none'],
-    ['continue with a different task', 'approved', 'none']
-  ] as const)('classifies %s against a %s Plan as %s', (text, approval, expected) =>
-    expect(parsePlanMessageIntent(text, approval)).toBe(expected)
-  )
-})
 
 describe('protected Plan context', () => {
   it('retains immutable identity, approval, lifecycle, and the latest step notes', () => {

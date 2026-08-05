@@ -68,6 +68,8 @@ export const PreviewToolContent = ({
       { decision }
     )
   }
+  const canRespondToPlan =
+    planSession?.status === 'waiting-plan-approval' && planSession.activeRun !== undefined
 
   // Remount the Files tool per project so its transient dialog cannot outlive the project it opened.
   if (item.toolKind === 'files') {
@@ -86,7 +88,7 @@ export const PreviewToolContent = ({
         projection={planProjection}
         stale={stale}
         isFullScreen={isPlanExpanded}
-        onRespond={respondPlan}
+        onRespond={canRespondToPlan ? respondPlan : undefined}
         onToggleFullScreen={() => setToolItemExpanded(isPlanExpanded ? null : item.id)}
       />
     )

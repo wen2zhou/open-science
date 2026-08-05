@@ -10,6 +10,7 @@ describe('Session Plan MCP server', () => {
     const server = createPlanMcpServer({
       generate: vi.fn(),
       approve: vi.fn(),
+      reject: vi.fn(),
       updateStepStatus: vi.fn()
     })
     const client = new Client({ name: 'plan-schema-test', version: '1.0.0' })
@@ -128,15 +129,18 @@ describe('Session Plan MCP server', () => {
     }
   })
 
-  it('exposes server-bound generation, approval, and exact-title status commands', async () => {
+  it('exposes server-bound generation, decisions, and exact-title status commands', async () => {
     const generate = vi.fn().mockResolvedValue({
       projection: { artifactVersionId: 'version-1', lifecycle: 'approved' }
     })
     const approve = vi.fn().mockResolvedValue({
       projection: { artifactVersionId: 'version-1', lifecycle: 'approved' }
     })
+    const reject = vi.fn().mockResolvedValue({
+      projection: { artifactVersionId: 'version-1', lifecycle: 'rejected' }
+    })
     const updateStepStatus = vi.fn().mockResolvedValue({ lifecycle: 'completed' })
-    const server = createPlanMcpServer({ generate, approve, updateStepStatus })
+    const server = createPlanMcpServer({ generate, approve, reject, updateStepStatus })
     const client = new Client({ name: 'plan-test', version: '1.0.0' })
     const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
     await Promise.all([server.connect(serverTransport), client.connect(clientTransport)])
@@ -148,8 +152,8 @@ describe('Session Plan MCP server', () => {
     ])
     const generateTool = listedTools.tools.find((tool) => tool.name === 'generate_plan')
     expect(generateTool).toBeDefined()
-    expect(generateTool?.description).toContain('Generation mode')
-    expect(generateTool?.description).toContain('Approval mode')
+    expect(generateTool?.description).toContain('kind:feedback')
+    expect(generateTool?.description).toContain('decision:"approved"')
     await client.callTool({
       name: 'generate_plan',
       arguments: {
@@ -169,7 +173,7 @@ describe('Session Plan MCP server', () => {
         feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
       }
     })
-    await client.callTool({ name: 'generate_plan', arguments: { approve: true } })
+    await client.callTool({ name: 'generate_plan', arguments: { decision: 'approved' } })
     await client.callTool({
       name: 'update_step_status',
       arguments: { title: 'Analyze the data', status: 'completed' }
@@ -177,6 +181,7 @@ describe('Session Plan MCP server', () => {
 
     expect(generate).toHaveBeenCalledOnce()
     expect(approve).toHaveBeenCalledOnce()
+    expect(reject).not.toHaveBeenCalled()
     expect(updateStepStatus).toHaveBeenCalledWith({
       title: 'Analyze the data',
       status: 'completed',
@@ -206,6 +211,9 @@ describe('Session Plan MCP server', () => {
     })
     expect(generate).toHaveBeenCalledOnce()
 
+    await client.callTool({ name: 'generate_plan', arguments: { decision: 'rejected' } })
+    expect(reject).toHaveBeenCalledOnce()
+
     updateStepStatus.mockRejectedValueOnce(
       new PlanCommandError('dependency-not-satisfied', 'A previous step is unfinished.')
     )
@@ -230,6 +238,7 @@ describe('Session Plan MCP server', () => {
     const server = createPlanMcpServer({
       generate: vi.fn(),
       approve: vi.fn(),
+      reject: vi.fn(),
       updateStepStatus: vi.fn(async () => {
         throw new PlanCommandError('stale-plan', 'A newer Plan is active.')
       })
@@ -246,7 +255,7 @@ describe('Session Plan MCP server', () => {
     expect(JSON.parse((mixed as { content: Array<{ text: string }> }).content[0].text)).toEqual({
       error: {
         code: 'invalid-plan',
-        message: 'Approval cannot be combined with Plan content.'
+        message: 'A Plan decision cannot be combined with Plan content.'
       }
     })
 

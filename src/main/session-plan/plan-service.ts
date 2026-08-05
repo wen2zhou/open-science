@@ -47,13 +47,11 @@ type PlanServiceDependencies = Readonly<{
     sessionStatus: 'waiting-plan-approval' | 'running' | 'idle'
   }) => Promise<SessionRuntimeContext>
   isRevisionConflict: (error: unknown) => boolean
-  persistPlanResponseMessage: (input: {
+  persistUserMessage: (input: {
     projectId: string
     sessionId: string
     content: string
-    responseToPlanVersionId: string
     interactionId: string
-    expectedRevision: number
   }) => Promise<PersistedChatMessage>
   now?: () => number
   createId?: () => string
@@ -96,7 +94,6 @@ class PlanService {
     string,
     { artifactVersionId: string; interactionId: string }
   >()
-
   constructor(private readonly dependencies: PlanServiceDependencies) {
     this.now = dependencies.now ?? Date.now
     this.createId = dependencies.createId ?? (() => randomUUID().slice(0, 8))
@@ -170,7 +167,7 @@ class PlanService {
       Readonly<{ decision: 'approved' | 'rejected'; interactionIsLive?: boolean }>
   ): Promise<PlanDecisionResult>
   async respond(
-    input: PlanIdentityCommand & Readonly<{ feedback: string }>
+    input: Readonly<{ projectId: string; sessionId: string; feedback: string }>
   ): Promise<PlanFeedbackResult>
   async respond(
     input: PlanResponseCommand & Readonly<{ interactionIsLive?: boolean }>
@@ -178,38 +175,40 @@ class PlanService {
   async respond(
     input: PlanResponseCommand & Readonly<{ interactionIsLive?: boolean }>
   ): Promise<PlanResponseResult> {
-    const { context, plan, document } = await this.loadActive(input, input.decision)
     if (input.decision === undefined) {
+      const context = await this.dependencies.readRuntimeContext(input.projectId, input.sessionId)
+      const plan = context.plan
+      if (!plan) throw new PlanCommandError('no-active-plan', 'The Session has no active Plan.')
       if (plan.approval !== 'pending') {
         throw new PlanCommandError('approval-already-decided', 'Plan approval is irreversible.')
       }
       const text = input.feedback.trim()
       if (!text) throw new PlanCommandError('invalid-plan', 'Plan feedback must be non-empty.')
       const live = this.livePlanInteractions.get(input.sessionId)
-      if (!live || live.artifactVersionId !== input.artifactVersionId) {
+      if (!live || live.artifactVersionId !== plan.artifactVersionId) {
         throw new PlanCommandError(
           'stale-plan',
           'The Plan interaction is no longer available for revision feedback.'
         )
       }
-      const message = await this.dependencies.persistPlanResponseMessage({
+      const message = await this.dependencies.persistUserMessage({
         projectId: input.projectId,
         sessionId: input.sessionId,
         content: text,
-        responseToPlanVersionId: input.artifactVersionId,
-        interactionId: live.interactionId,
-        expectedRevision: context.revision
+        interactionId: live.interactionId
       })
       this.livePlanInteractions.delete(input.sessionId)
       return {
         kind: 'feedback',
         routeToInteractionId: live.interactionId,
-        artifactVersionId: input.artifactVersionId,
+        artifactVersionId: plan.artifactVersionId,
         text,
         message
       }
     }
+    const { context, plan, document } = await this.loadActive(input, input.decision)
     if (plan.approval === input.decision) {
+      this.livePlanInteractions.delete(input.sessionId)
       return {
         projection: this.project(document, plan, context.revision, input.interactionIsLive),
         changed: false
@@ -219,11 +218,8 @@ class PlanService {
       throw new PlanCommandError('approval-already-decided', 'Plan approval is irreversible.')
     }
     const updated = { ...plan, approval: input.decision }
-    const next = await this.patch(
-      input,
-      updated,
-      input.decision === 'approved' && input.interactionIsLive ? 'running' : 'idle'
-    )
+    const next = await this.patch(input, updated, input.interactionIsLive ? 'running' : 'idle')
+    this.livePlanInteractions.delete(input.sessionId)
     return {
       projection: this.project(document, updated, next.revision, input.interactionIsLive),
       changed: true

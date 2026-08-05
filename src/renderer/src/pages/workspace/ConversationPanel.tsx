@@ -65,8 +65,9 @@ import { ReportErrorDialog } from './ReportErrorDialog'
 import { SessionInterruptedBanner } from './SessionInterruptedBanner'
 import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
-import { PlanProgressChip } from './session-plan/SessionPlanSurfaces'
+import { PlanProgressChip, WorkspacePlanCard } from './session-plan/SessionPlanSurfaces'
 import { isPlanProgressVisible } from './session-plan/plan-progress'
+import { respondToSessionPlan } from './session-plan/respond-to-session-plan'
 import {
   createSessionPlanPreviewItem,
   usePreviewWorkbenchStore
@@ -267,6 +268,21 @@ const ConversationPanel = ({
   // Unconditional hook: check if the active session has any jobs (running or finished).
   const allJobsForSession = useSessionJobStore((s) => s.allJobsForSession)
   const hasAnyJobs = activeSession !== undefined && allJobsForSession(activeSession.id).length > 0
+  const activePendingPlan =
+    activeSession?.activePlanProjection?.approval === 'pending'
+      ? activeSession.activePlanProjection
+      : undefined
+  const activePendingPlanKey = activePendingPlan
+    ? `${activePendingPlan.artifactVersionId}:${activePendingPlan.revision}`
+    : undefined
+  const [resolvedPlanKey, setResolvedPlanKey] = useState<string>()
+  const pendingPlan =
+    activePendingPlanKey &&
+    resolvedPlanKey !== activePendingPlanKey &&
+    activeSession?.status === 'waiting-plan-approval' &&
+    activeSession.activeRun
+      ? activePendingPlan
+      : undefined
   const resolvedRunError = normalizeRunFailureError(activeSession?.error)
   // Only unknown/opaque ACP-layer failures offer the "Report error → GitHub issue" affordance. The
   // reportability is resolved at failure time and persisted on the session: a model-provider error is
@@ -320,6 +336,29 @@ const ConversationPanel = ({
   const handleBranchInNewSession = (): void => {
     if (!canSendMessage || !onBranchInNewSession) return
     onBranchInNewSession(docToSkillIds(draftDoc))
+  }
+
+  const respondToPendingPlan = async (
+    response: { decision: 'approved' | 'rejected' } | { feedback: string }
+  ): Promise<void> => {
+    if (!activeSession || !pendingPlan) return
+    await respondToSessionPlan(
+      {
+        projectId: activeSession.projectId,
+        sessionId: activeSession.id,
+        projection: pendingPlan
+      },
+      response
+    )
+  }
+
+  const openPendingPlan = (): void => {
+    if (!activeSession || !pendingPlan) return
+    usePreviewWorkbenchStore
+      .getState()
+      .upsertAndActivateItem(
+        createSessionPlanPreviewItem(activeSession.id, activeSession.projectId)
+      )
   }
 
   // Converts the hidden file input selection into the shared staging callback.
@@ -569,10 +608,24 @@ const ConversationPanel = ({
                     </div>
                   ) : null}
 
+                  {pendingPlan ? (
+                    <WorkspacePlanCard
+                      className="relative z-10"
+                      projection={pendingPlan}
+                      onOpen={openPendingPlan}
+                      onRespond={(decision) => respondToPendingPlan({ decision })}
+                      onSubmitResponse={(text) => respondToPendingPlan({ feedback: text })}
+                      onResolved={() => setResolvedPlanKey(activePendingPlanKey)}
+                    />
+                  ) : null}
+
                   {/* Composer keeps draft input local until submit delegates to the session store.
                       Enter-to-send is owned by ComposerEditor; the form only guards native submit. */}
                   <form
-                    className="relative z-10 flex flex-col gap-2 rounded-2xl border border-border-200 bg-bg-000 px-3 py-2"
+                    className={cn(
+                      'relative z-10 flex flex-col gap-2 rounded-2xl border border-border-200 bg-bg-000 px-3 py-2',
+                      pendingPlan && 'hidden'
+                    )}
                     onSubmit={(event) => event.preventDefault()}
                     {...dropZoneProps}
                   >

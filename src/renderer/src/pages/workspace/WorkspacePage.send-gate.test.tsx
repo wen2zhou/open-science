@@ -247,7 +247,7 @@ describe('WorkspacePage send gate while compacting', () => {
     expect(useSessionStore.getState().sessions[0]?.status).toBe('idle')
   })
 
-  it('starts an approved Plan only for an explicit continuation message', async () => {
+  it('sends approved-Plan continuation language as an ordinary Message for the Agent to interpret', async () => {
     useSessionStore.setState({
       sessions: [createSession({ activePlanProjection: planProjection('approved') })],
       selectedSessionId: 'sess-a'
@@ -265,9 +265,11 @@ describe('WorkspacePage send gate while compacting', () => {
 
     expect(runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        text: 'continue',
-        planContinuation: { artifactVersionId: 'plan-version-1', revision: 3 }
+        text: 'continue'
       })
+    )
+    expect(runtime.sendMessage).toHaveBeenCalledWith(
+      expect.not.objectContaining({ planContinuation: expect.anything() })
     )
 
     runtime.sendMessage.mockClear()
@@ -284,7 +286,7 @@ describe('WorkspacePage send gate while compacting', () => {
     )
   })
 
-  it('submits approve-and-continue as one interaction admission operation', async () => {
+  it('sends pending-Plan approval language as an ordinary user Message', async () => {
     window.api.acp.respondPlan = vi.fn()
     const pending = planProjection('pending')
     useSessionStore.setState({
@@ -305,24 +307,22 @@ describe('WorkspacePage send gate while compacting', () => {
     expect(window.api.acp.respondPlan).not.toHaveBeenCalled()
     expect(runtime.sendMessage).toHaveBeenCalledWith(
       expect.objectContaining({
-        planContinuation: {
-          artifactVersionId: 'plan-version-1',
-          revision: 3,
-          approvePending: true
-        }
+        text: 'approve and continue'
       })
+    )
+    expect(runtime.sendMessage).toHaveBeenCalledWith(
+      expect.not.objectContaining({ planContinuation: expect.anything() })
     )
   })
 
-  it('records a plain approval without starting a continuation interaction', async () => {
+  it('does not convert a plain pending-Plan approval Message into a UI decision', async () => {
     const pending = planProjection('pending')
-    const approved = planProjection('approved', 4)
     useSessionStore.setState({
       sessions: [createSession({ status: 'waiting-plan-approval', activePlanProjection: pending })],
       selectedSessionId: 'sess-a'
     })
-    window.api.acp.respondPlan = vi.fn(() => Promise.resolve({ changed: true }))
-    window.api.acp.getPlanProjection = vi.fn(() => Promise.resolve(approved))
+    window.api.acp.respondPlan = vi.fn()
+    runtime.sendMessage.mockResolvedValue({ sessionId: 'sess-a', messageId: 'message-1' })
     await renderPage()
 
     await act(async () => {
@@ -330,11 +330,14 @@ describe('WorkspacePage send gate while compacting', () => {
     })
     await act(async () => {
       conversationProps.onSendMessage([])
-      await vi.waitFor(() => expect(window.api.acp.respondPlan).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(runtime.sendMessage).toHaveBeenCalledOnce())
     })
 
-    expect(runtime.sendMessage).not.toHaveBeenCalled()
-    expect(useSessionStore.getState().sessions[0]?.activePlanProjection).toBe(approved)
+    expect(window.api.acp.respondPlan).not.toHaveBeenCalled()
+    expect(runtime.sendMessage).toHaveBeenCalledWith(expect.objectContaining({ text: 'approve' }))
+    expect(runtime.sendMessage).toHaveBeenCalledWith(
+      expect.not.objectContaining({ planContinuation: expect.anything() })
+    )
   })
 
   it('blocks message-branch changes only while the project-scoped review is running', async () => {

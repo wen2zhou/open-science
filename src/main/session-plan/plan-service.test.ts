@@ -65,14 +65,6 @@ type PlanServiceHarness = Readonly<{
   dependencies: PlanServiceDependencies
   context: () => SessionRuntimeContext
   status: () => string
-  persistedPlanResponses: Array<{
-    projectId: string
-    sessionId: string
-    content: string
-    responseToPlanVersionId: string
-    interactionId: string
-    expectedRevision: number
-  }>
   setContext: (next: SessionRuntimeContext) => void
 }>
 
@@ -80,14 +72,6 @@ const setup = (): PlanServiceHarness => {
   let context: SessionRuntimeContext = { version: 1, revision: 0 }
   let persistedStatus = 'running'
   let bytes = ''
-  const persistedPlanResponses: Array<{
-    projectId: string
-    sessionId: string
-    content: string
-    responseToPlanVersionId: string
-    interactionId: string
-    expectedRevision: number
-  }> = []
   const dependencies: PlanServiceDependencies = {
     writeArtifactForActiveTurn: vi.fn(async (_sessionId, input) => {
       bytes = input.content
@@ -114,20 +98,16 @@ const setup = (): PlanServiceHarness => {
       return context
     }),
     isRevisionConflict: (error) => error instanceof Error && error.message === 'revision conflict',
-    persistPlanResponseMessage: vi.fn(async (message) => {
-      persistedPlanResponses.push(message)
-      return {
-        id: 'plan-response-1',
-        role: 'user' as const,
-        content: message.content,
-        status: 'complete' as const,
-        eventIds: [],
-        responseToMessageId: message.interactionId,
-        responseToPlanVersionId: message.responseToPlanVersionId,
-        createdAt: 42,
-        updatedAt: 42
-      }
-    }),
+    persistUserMessage: vi.fn(async (message) => ({
+      id: 'message-1',
+      role: 'user' as const,
+      content: message.content,
+      status: 'complete' as const,
+      eventIds: [],
+      responseToMessageId: message.interactionId,
+      createdAt: 42,
+      updatedAt: 42
+    })),
     now: () => 42,
     createId: () => 'a91f30c2'
   }
@@ -136,7 +116,6 @@ const setup = (): PlanServiceHarness => {
     dependencies,
     context: () => context,
     status: () => persistedStatus,
-    persistedPlanResponses,
     setContext: (next) => {
       context = next
     }
@@ -431,9 +410,30 @@ describe('PlanService', () => {
     ).rejects.toMatchObject({ code: 'approval-already-decided' })
   })
 
-  it('persists revision feedback as a user Message bound to the pending Plan and routes it to its interaction', async () => {
-    const { service, persistedPlanResponses, context } = setup()
+  it('returns a live rejected interaction to running until the agent turn actually ends', async () => {
+    const { service, status } = setup()
     const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+
+    await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      decision: 'rejected',
+      interactionIsLive: true
+    })
+
+    expect(status()).toBe('running')
+  })
+
+  it('persists revision feedback as a standard user Message for the live blocked interaction', async () => {
+    const { service, dependencies } = setup()
+    await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
       interactionId: 'interaction-1',
@@ -443,36 +443,20 @@ describe('PlanService', () => {
     const response = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
-      artifactVersionId: generated.projection.artifactVersionId,
-      expectedRevision: generated.projection.revision,
       feedback: 'Split the analysis by cohort.'
     })
 
-    expect(response).toEqual({
+    expect(response).toMatchObject({
       kind: 'feedback',
       routeToInteractionId: 'interaction-1',
-      artifactVersionId: 'version-1',
       text: 'Split the analysis by cohort.',
-      message: expect.objectContaining({
-        id: 'plan-response-1',
-        role: 'user',
-        responseToPlanVersionId: 'version-1'
-      })
+      message: { role: 'user', content: 'Split the analysis by cohort.' }
     })
-    expect(persistedPlanResponses).toEqual([
-      {
-        projectId: 'project-1',
-        sessionId: 'session-1',
-        content: 'Split the analysis by cohort.',
-        responseToPlanVersionId: 'version-1',
-        interactionId: 'interaction-1',
-        expectedRevision: 1
-      }
-    ])
-    expect(context().plan).toMatchObject({
-      artifactVersionId: 'version-1',
-      approval: 'pending',
-      stepStatuses: {}
+    expect(dependencies.persistUserMessage).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      content: 'Split the analysis by cohort.',
+      interactionId: 'interaction-1'
     })
   })
 

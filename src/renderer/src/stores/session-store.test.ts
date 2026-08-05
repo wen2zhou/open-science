@@ -215,6 +215,60 @@ describe('session store', () => {
     expect(useSessionStore.getState().sessions[0].status).toBe('idle')
   })
 
+  it('keeps an approved Plan idle when no execution turn is active', () => {
+    useSessionStore.getState().hydrateSessions([
+      {
+        id: 'session-1',
+        projectId: 'project-1',
+        title: 'Plan approval',
+        cwd: '/workspace',
+        status: 'waiting-plan-approval',
+        messages: [],
+        createdAt: 1,
+        updatedAt: 2
+      }
+    ])
+    const approved = {
+      ...createPlanProjection('version-1'),
+      approval: 'approved' as const,
+      lifecycle: 'approved' as const,
+      requiresExplicitContinuation: true
+    }
+
+    useSessionStore.getState().setActivePlanProjection('session-1', approved)
+
+    const session = useSessionStore.getState().sessions[0]
+    expect(session).toMatchObject({
+      status: 'idle',
+      activePlanProjection: { approval: 'approved', requiresExplicitContinuation: true }
+    })
+    expect(session.activeRun).toBeUndefined()
+  })
+
+  it('keeps an orphaned pending Plan idle when no response interaction is active', () => {
+    useSessionStore.getState().hydrateSessions([
+      {
+        id: 'session-1',
+        projectId: 'project-1',
+        title: 'Orphaned Plan',
+        cwd: '/workspace',
+        status: 'waiting-plan-approval',
+        messages: [],
+        createdAt: 1,
+        updatedAt: 2
+      }
+    ])
+
+    useSessionStore
+      .getState()
+      .setActivePlanProjection('session-1', createPlanProjection('version-1'))
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'idle',
+      activePlanProjection: { approval: 'pending' }
+    })
+  })
+
   it('returns a settled blocked Plan session to idle', () => {
     useSessionStore.setState({
       sessions: [
@@ -868,6 +922,29 @@ describe('session store', () => {
 
     useSessionStore.getState().clearPermissionPending('transport-session-1')
     expect(useSessionStore.getState().sessions[0].status).toBe('running')
+  })
+
+  it('keeps Plan approval waiting sticky across late generate_plan activity updates', () => {
+    useSessionStore.getState().appendUserMessage({
+      sessionId: 'transport-session-1',
+      content: 'Create a plan'
+    })
+    useSessionStore
+      .getState()
+      .setActivePlanProjection('transport-session-1', createPlanProjection('version-1'))
+
+    useSessionStore.getState().upsertToolActivity({
+      sessionId: 'transport-session-1',
+      toolCallId: 'generate-plan-call',
+      eventId: 'generate-plan-completed',
+      providerToolName: 'generate_plan',
+      status: 'completed'
+    })
+
+    expect(useSessionStore.getState().sessions[0]).toMatchObject({
+      status: 'waiting-plan-approval',
+      activePlanProjection: { lifecycle: 'awaiting_approval' }
+    })
   })
 
   it('upserts transient tool activities without duplicating repeated events', () => {

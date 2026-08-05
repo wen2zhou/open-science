@@ -973,7 +973,7 @@ describe('WorkspaceMessageScroller artifact click behavior', () => {
     expect(thumbnailReads).toHaveLength(1)
   })
 
-  it('opens the active Plan card in the Preview workbench', async () => {
+  it('does not leave the active Plan card in the transcript', async () => {
     const { WorkspaceMessageScroller } = await import('./WorkspaceMessageScroller')
     const activePlanProjection: ActivePlanProjection = {
       artifactId: 'artifact-plan',
@@ -1017,21 +1017,10 @@ describe('WorkspaceMessageScroller artifact click behavior', () => {
         <WorkspaceMessageScroller activeSession={session} onSendEditedMessage={vi.fn()} />
       )
     })
-    await act(async () => {
-      const openButton = [...container.querySelectorAll<HTMLButtonElement>('button')].find(
-        (button) => button.textContent === 'Open'
-      )
-      openButton?.dispatchEvent(new MouseEvent('click', { bubbles: true }))
-    })
-
-    expect(createSessionPlanPreviewItem).toHaveBeenCalledWith('session-plan', 'project-plan')
-    expect(upsertAndActivateItem).toHaveBeenCalledWith({
-      id: 'tool:session-plan:plan',
-      sessionId: 'session-plan',
-      projectId: 'project-plan',
-      type: 'tool',
-      toolKind: 'plan',
-      title: 'Plan'
-    })
+    expect(container.textContent).not.toContain('Plan ready for review')
+    expect(container.textContent).not.toContain('Analyze the dataset')
+    expect(createSessionPlanPreviewItem).not.toHaveBeenCalled()
+    expect(upsertAndActivateItem).not.toHaveBeenCalled()
   })
+
 })

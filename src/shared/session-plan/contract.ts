@@ -157,33 +157,14 @@ type PlanResponseIdentity = Readonly<{
 
 export type PlanResponseCommand =
   | (PlanResponseIdentity & Readonly<{ decision: 'approved' | 'rejected'; feedback?: never }>)
-  | (PlanResponseIdentity & Readonly<{ feedback: string; decision?: never }>)
-
-const PLAN_APPROVAL_RESPONSE =
-  /^(?:approve|approved|go ahead|proceed|looks good|do it|continue)[.!]?$/i
-
-const PLAN_APPROVE_AND_CONTINUE_RESPONSE =
-  /^(?:approve(?:d)?\s+(?:and|&)\s+(?:continue|proceed)|continue|proceed)[.!]?$/i
-
-const PLAN_CONTINUATION_RESPONSE = /^(?:continue|proceed|resume(?:\s+(?:this|the)\s+plan)?)[.!]?$/i
-
-export type PlanMessageIntent = 'none' | 'approve' | 'continue' | 'approve-and-continue'
-
-export const isPlanApprovalResponse = (text: string): boolean =>
-  PLAN_APPROVAL_RESPONSE.test(text.trim())
-
-export const parsePlanMessageIntent = (
-  text: string,
-  approval: SessionPlanApproval
-): PlanMessageIntent => {
-  const normalized = text.trim()
-  if (approval === 'pending') {
-    if (PLAN_APPROVE_AND_CONTINUE_RESPONSE.test(normalized)) return 'approve-and-continue'
-    return isPlanApprovalResponse(normalized) ? 'approve' : 'none'
-  }
-  if (approval === 'approved' && PLAN_CONTINUATION_RESPONSE.test(normalized)) return 'continue'
-  return 'none'
-}
+  | Readonly<{
+      projectId: string
+      sessionId: string
+      feedback: string
+      decision?: never
+      artifactVersionId?: never
+      expectedRevision?: never
+    }>
 
 export class PlanCommandError extends Error {
   constructor(

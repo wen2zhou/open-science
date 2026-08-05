@@ -68,6 +68,7 @@ beforeEach(() => {
         id: 'session-1',
         projectId: 'project-1',
         status: 'waiting-plan-approval',
+        activeRun: { promptMessageId: 'interaction-1', startedAt: 1 },
         activePlanProjection: pendingProjection
       } as never
     ]
@@ -125,5 +126,35 @@ describe('Plan Preview workbench integration', () => {
     )
     expect(useSessionStore.getState().sessions[0].status).toBe('running')
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+  })
+
+  it('makes an orphaned pending Plan read-only instead of offering ineffective controls', () => {
+    useSessionStore.setState({
+      sessions: [
+        {
+          id: 'session-1',
+          projectId: 'project-1',
+          status: 'idle',
+          activePlanProjection: pendingProjection
+        } as never
+      ]
+    })
+
+    render(
+      <PreviewToolContent
+        item={{
+          id: 'tool:session-1:plan',
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          type: 'tool',
+          toolKind: 'plan',
+          title: 'Session Plan'
+        }}
+      />
+    )
+
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
+    expect(screen.getByText(/original Agent interaction has ended/u)).toBeTruthy()
   })
 })

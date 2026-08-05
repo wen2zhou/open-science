@@ -114,7 +114,7 @@ type NotebookLocalRpcServerOptions = {
     call(input: {
       projectId: string
       sessionId: string
-      operation: 'generate' | 'approve' | 'updateStepStatus'
+      operation: 'generate' | 'approve' | 'reject' | 'updateStepStatus'
       input?: unknown
     }): Promise<unknown>
   }
@@ -791,14 +791,14 @@ class NotebookLocalRpcServer {
       if (
         typeof params.projectId !== 'string' ||
         typeof params.sessionId !== 'string' ||
-        !['generate', 'approve', 'updateStepStatus'].includes(String(params.operation))
+        !['generate', 'approve', 'reject', 'updateStepStatus'].includes(String(params.operation))
       ) {
         throw new Error('Session Plan RPC params are invalid.')
       }
       return this.planService.call({
         projectId: params.projectId,
         sessionId: params.sessionId,
-        operation: params.operation as 'generate' | 'approve' | 'updateStepStatus',
+        operation: params.operation as 'generate' | 'approve' | 'reject' | 'updateStepStatus',
         input: params.input
       })
     }

@@ -104,7 +104,22 @@ describe('Session Plan renderer surfaces', () => {
     expect(onRespond).toHaveBeenCalledWith('approved')
   })
 
-  it('submits inline revision feedback through the Plan response transport', async () => {
+  it.each([
+    ['Approve', 'approved'],
+    ['Dismiss', 'rejected']
+  ] as const)('removes the card after a successful %s response', async (buttonName, decision) => {
+    const onRespond = vi.fn().mockResolvedValue(undefined)
+    const view = render(
+      <WorkspacePlanCard projection={projection} onOpen={vi.fn()} onRespond={onRespond} />
+    )
+
+    fireEvent.click(screen.getByRole('button', { name: buttonName }))
+
+    await waitFor(() => expect(onRespond).toHaveBeenCalledWith(decision))
+    expect(view.container.querySelector('article')).toBeNull()
+  })
+
+  it('submits inline revision feedback as a user Message', async () => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const onSubmitResponse = vi.fn().mockResolvedValue(undefined)
     const view = render(
@@ -122,23 +137,34 @@ describe('Session Plan renderer surfaces', () => {
     await waitFor(() =>
       expect(onSubmitResponse).toHaveBeenCalledWith('Split the analysis by cohort.')
     )
-    expect(screen.getByText('Revising plan…')).toBeTruthy()
-    expect(input.disabled).toBe(true)
-    expect(screen.getByRole('button', { name: 'Approve' }).hasAttribute('disabled')).toBe(true)
+    expect(view.container.querySelector('article')).toBeNull()
     expect(onRespond).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: /request changes/i })).toBeNull()
-
-    view.rerender(
-      <WorkspacePlanCard
-        projection={{ ...projection }}
-        onOpen={vi.fn()}
-        onRespond={onRespond}
-        onSubmitResponse={onSubmitResponse}
-      />
-    )
-    await waitFor(() => expect(screen.getByText('Plan ready for review')).toBeTruthy())
-    expect(input.disabled).toBe(false)
   })
+
+  it.each(['looks good', 'dismiss', '批准执行', '取消计划', '先修改后再批准'])(
+    'submits natural-language text %s as feedback without inferring a decision',
+    async (text) => {
+      const onRespond = vi.fn().mockResolvedValue(undefined)
+      const onSubmitResponse = vi.fn().mockResolvedValue(undefined)
+      const view = render(
+        <WorkspacePlanCard
+          projection={projection}
+          onOpen={vi.fn()}
+          onRespond={onRespond}
+          onSubmitResponse={onSubmitResponse}
+        />
+      )
+
+      const input = view.container.querySelector('textarea')!
+      fireEvent.change(input, { target: { value: text } })
+      fireEvent.submit(input.closest('form')!)
+
+      await waitFor(() => expect(onSubmitResponse).toHaveBeenCalledWith(text))
+      expect(onRespond).not.toHaveBeenCalled()
+      expect(view.container.querySelector('article')).toBeNull()
+    }
+  )
 
   it('keeps a replaced card readable with the exact stale warning and no approval entry points', () => {
     render(
@@ -187,6 +213,14 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByRole('button', { name: 'Download Plan' })).toBeTruthy()
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
+  })
+
+  it('explains why a pending Preview without a live response handler is read-only', () => {
+    render(<PlanPreviewSurface projection={projection} />)
+
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
+    expect(screen.getByText(/original Agent interaction has ended/u)).toBeTruthy()
   })
 
   it('renders the three-level Plan preview', () => {
@@ -472,8 +506,6 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByRole('button', { name: /open plan, step 0 of 1/i })).toBeTruthy()
 
     rerender(<PlanPreviewSurface projection={restored} />)
-    expect(
-      screen.getByText('Plan approved. Send an explicit continuation message to resume execution.')
-    ).toBeTruthy()
+    expect(screen.queryByText(/explicit continuation message/u)).toBeNull()
   })
 })

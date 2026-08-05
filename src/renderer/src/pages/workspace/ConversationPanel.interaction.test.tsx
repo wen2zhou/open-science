@@ -106,6 +106,14 @@ vi.mock('./PermissionApprovalControls', () => ({
   PermissionApprovalControls: (): null => null
 }))
 
+const { respondToSessionPlanMock } = vi.hoisted(() => ({
+  respondToSessionPlanMock: vi.fn().mockResolvedValue(undefined)
+}))
+
+vi.mock('./session-plan/respond-to-session-plan', () => ({
+  respondToSessionPlan: respondToSessionPlanMock
+}))
+
 let container: HTMLDivElement
 let root: Root
 
@@ -245,6 +253,7 @@ beforeEach(() => {
   document.body.appendChild(container)
   root = createRoot(container)
   onStageAttachmentFiles.mockClear()
+  respondToSessionPlanMock.mockReset().mockResolvedValue(undefined)
   mockHasRunningJobs = false
   mockAllJobs = []
 })
@@ -530,7 +539,7 @@ describe('ConversationPanel + menu', () => {
     ).toBe(true)
   })
 
-  it('shows View plan for every active Plan lifecycle and hides it when no Plan was generated', () => {
+  it('replaces the composer with a pending Plan card and restores it immediately after approval', async () => {
     renderPanel()
     expect(container.querySelector('[data-testid="menu-view-plan"]')).toBeNull()
 
@@ -540,6 +549,7 @@ describe('ConversationPanel + menu', () => {
       title: 'Planned session',
       cwd: '/workspace',
       status: 'waiting-plan-approval',
+      activeRun: { promptMessageId: 'interaction-1', startedAt: 1 },
       messages: [],
       createdAt: 1,
       updatedAt: 2,
@@ -551,12 +561,31 @@ describe('ConversationPanel + menu', () => {
     }
     renderPanel({ activeSession: session, canEditDraft: false })
 
-    expect(container.querySelector('[data-testid="menu-view-plan"]')?.textContent).toContain(
-      'View plan'
+    const pendingEditor = container.querySelector('[role="textbox"]')
+    expect(pendingEditor?.closest('form')?.classList.contains('hidden')).toBe(true)
+    expect(container.textContent).toContain('Plan ready for review')
+    const pendingPlanCard = [...container.querySelectorAll('article')].find((article) =>
+      article.textContent?.includes('Plan ready for review')
     )
+    expect(pendingPlanCard?.classList.contains('relative')).toBe(true)
+    expect(pendingPlanCard?.classList.contains('z-10')).toBe(true)
     expect(
-      (container.querySelector('[data-testid="composer-plus-trigger"]') as HTMLButtonElement)
-        .disabled
+      container
+        .querySelector('[data-testid="composer-plus-trigger"]')
+        ?.closest('form')
+        ?.classList.contains('hidden')
+    ).toBe(true)
+
+    await act(async () => {
+      ;[...container.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent === 'Approve')
+        ?.click()
+      await Promise.resolve()
+    })
+
+    expect(container.textContent).not.toContain('Plan ready for review')
+    expect(
+      container.querySelector('[role="textbox"]')?.closest('form')?.classList.contains('hidden')
     ).toBe(false)
 
     renderPanel({
@@ -566,6 +595,106 @@ describe('ConversationPanel + menu', () => {
         activePlanProjection: completedPlanProjection
       }
     })
+    expect(container.textContent).not.toContain('Plan approved')
+    expect(
+      container.querySelector('[role="textbox"]')?.closest('form')?.classList.contains('hidden')
+    ).toBe(false)
+    expect(container.querySelector('[data-testid="menu-view-plan"]')).not.toBeNull()
+  })
+
+  it('routes Plan revision notes through the blocked Plan interaction', async () => {
+    const session: ChatSession = {
+      id: 'session-plan-feedback',
+      projectId: 'project-a',
+      title: 'Plan feedback',
+      cwd: '/workspace',
+      status: 'waiting-plan-approval',
+      activeRun: { promptMessageId: 'interaction-1', startedAt: 1 },
+      messages: [],
+      createdAt: 1,
+      updatedAt: 2,
+      activePlanProjection: {
+        ...completedPlanProjection,
+        approval: 'pending',
+        lifecycle: 'awaiting_approval'
+      }
+    }
+    renderPanel({ activeSession: session, canEditDraft: false })
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(textarea, 'Split the analysis by cohort.')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea
+        .closest('form')
+        ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(respondToSessionPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({ projectId: 'project-a', sessionId: 'session-plan-feedback' }),
+      { feedback: 'Split the analysis by cohort.' }
+    )
+  })
+
+  it('routes approval-like card text as a user Message instead of a UI decision', async () => {
+    const session: ChatSession = {
+      id: 'session-plan-text-approval',
+      projectId: 'project-a',
+      title: 'Plan text approval',
+      cwd: '/workspace',
+      status: 'waiting-plan-approval',
+      activeRun: { promptMessageId: 'interaction-1', startedAt: 1 },
+      messages: [],
+      createdAt: 1,
+      updatedAt: 2,
+      activePlanProjection: {
+        ...completedPlanProjection,
+        approval: 'pending',
+        lifecycle: 'awaiting_approval'
+      }
+    }
+    renderPanel({ activeSession: session, canEditDraft: false })
+
+    const textarea = container.querySelector('textarea') as HTMLTextAreaElement
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(textarea, '批准执行')
+      textarea.dispatchEvent(new Event('input', { bubbles: true }))
+      textarea
+        .closest('form')
+        ?.dispatchEvent(new Event('submit', { bubbles: true, cancelable: true }))
+      await Promise.resolve()
+    })
+
+    expect(respondToSessionPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'session-plan-text-approval' }),
+      { feedback: '批准执行' }
+    )
+  })
+
+  it('does not reopen an actionable Plan card after its Agent interaction has ended', () => {
+    const session: ChatSession = {
+      id: 'session-orphaned-plan',
+      projectId: 'project-a',
+      title: 'Orphaned pending Plan',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      createdAt: 1,
+      updatedAt: 2,
+      activePlanProjection: {
+        ...completedPlanProjection,
+        approval: 'pending',
+        lifecycle: 'awaiting_approval'
+      }
+    }
+
+    renderPanel({ activeSession: session, canEditDraft: true })
+
+    expect(container.textContent).not.toContain('Plan ready for review')
+    expect(container.querySelector('[role="textbox"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="menu-view-plan"]')).not.toBeNull()
   })
 

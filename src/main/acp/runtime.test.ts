@@ -18393,7 +18393,7 @@ describe('Specialist Skill scoping', () => {
             context = { version: 1, revision: context.revision + 1, ...patch }
             return context
           },
-          appendPlanResponseMessage: async () => {
+          appendUserMessageToInteraction: async () => {
             throw new Error('not used in this test')
           }
         }

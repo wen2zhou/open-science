@@ -281,7 +281,7 @@ describe('ACP application commands', () => {
     expect(dependencies.runtime.respondToPermission).toHaveBeenCalledTimes(humanCallers.length)
   })
 
-  it('routes version-bound Plan decisions and inline feedback only from a current human', async () => {
+  it('routes Plan decisions and revision feedback only from a current human', async () => {
     const dependencies = createDependencies()
     const router = createApplicationCommandRouter()
     registerAcpCommands(router.registrar, dependencies)
@@ -300,8 +300,6 @@ describe('ACP application commands', () => {
     const feedback = {
       projectId: 'project-1',
       sessionId: 'session-1',
-      artifactVersionId: 'version-1',
-      expectedRevision: 2,
       feedback: 'Split the analysis by cohort.'
     }
     await router.dispatcher.invoke(acpCommands.respondPlan, invocation([feedback]))

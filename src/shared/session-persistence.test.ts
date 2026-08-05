@@ -77,31 +77,6 @@ describe('message part persistence', () => {
 })
 
 describe('message terminal time persistence', () => {
-  it('preserves the Plan Artifact Version answered by an inline user response', () => {
-    const restored = normalizeSessionFile({
-      ...createSessionWithActivity(undefined),
-      activities: undefined,
-      messages: [
-        {
-          id: 'plan-feedback-1',
-          role: 'user',
-          content: 'Split the analysis by cohort.',
-          status: 'complete',
-          eventIds: [],
-          responseToPlanVersionId: 'plan-version-1',
-          createdAt: 10,
-          updatedAt: 10
-        }
-      ]
-    })
-
-    expect(restored?.messages[0]).toMatchObject({
-      role: 'user',
-      content: 'Split the analysis by cohort.',
-      responseToPlanVersionId: 'plan-version-1'
-    })
-  })
-
   it('backfills stable terminal timestamps for legacy agent messages', () => {
     const restored = normalizeSessionFile({
       ...createSessionWithActivity(undefined),

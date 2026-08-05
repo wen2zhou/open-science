@@ -154,7 +154,7 @@ const createProjectReconciliationSnapshot = (): ArtifactProjectReconciliationSna
   ({}) as ArtifactProjectReconciliationSnapshot
 
 describe('SessionPersistenceCoordinator', () => {
-  it('atomically appends inline Plan feedback as a bound user Message without changing Plan authority', async () => {
+  it('persists blocked Plan feedback as a standard user Message without changing Plan authority', async () => {
     let durable = createSession({
       status: 'waiting-plan-approval',
       runtimeContext: { version: 1, revision: 2, plan: createRuntimePlan() }
@@ -170,11 +170,9 @@ describe('SessionPersistenceCoordinator', () => {
     })
     const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
 
-    await coordinator.appendPlanResponseMessage({
+    await coordinator.appendUserMessageToInteraction({
       projectId: 'project-1',
       sessionId: 'session-1',
-      artifactVersionId: 'plan-version-1',
-      expectedRevision: 2,
       interactionId: 'interaction-1',
       content: 'Split the analysis by cohort.'
     })
@@ -184,7 +182,6 @@ describe('SessionPersistenceCoordinator', () => {
         role: 'user',
         content: 'Split the analysis by cohort.',
         responseToMessageId: 'interaction-1',
-        responseToPlanVersionId: 'plan-version-1',
         status: 'complete'
       })
     )
