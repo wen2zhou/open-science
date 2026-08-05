@@ -57,6 +57,31 @@ const progressTitle = (projection: ActivePlanProjection): string => {
   return lifecycleLabel(projection)
 }
 
+const planCardResult = (projection: ActivePlanProjection): string => {
+  if (projection.requiresExplicitContinuation) {
+    return 'Approved · Send a message to continue this plan.'
+  }
+  if (projection.lifecycle === 'completed') {
+    return 'Completed · This plan remains active until a new plan is generated.'
+  }
+  if (projection.lifecycle === 'blocked') {
+    return 'Blocked · Unreachable downstream steps remain unrecorded.'
+  }
+  if (projection.lifecycle === 'in_progress') {
+    const runningDelegations = projection.document.phases.flatMap((phase) =>
+      phase.delegations.filter((delegation) =>
+        delegation.steps.some(
+          (step) => projection.stepStatuses[step.title]?.status === 'in_progress'
+        )
+      )
+    ).length
+    return runningDelegations > 1
+      ? `Approved · ${runningDelegations === 2 ? 'Two' : runningDelegations} delegations are running in parallel.`
+      : 'Approved · The current interaction is executing the plan.'
+  }
+  return `${lifecycleLabel(projection)}.`
+}
+
 const stepStatusLabel = (status: ActivePlanProjection['stepStates'][string]['status']): string =>
   status.replaceAll('_', ' ')
 
@@ -226,11 +251,7 @@ const WorkspacePlanCard = ({
           </form>
         ) : (
           <div className="mt-3 rounded-lg bg-primary/10 px-3 py-2 text-xs text-primary">
-            {projection.requiresExplicitContinuation
-              ? 'Approved · Send a message to continue this plan.'
-              : projection.lifecycle === 'completed'
-                ? 'Completed · This plan remains active until a new plan is generated.'
-                : `${lifecycleLabel(projection)}.`}
+            {planCardResult(projection)}
           </div>
         )}
       </div>

@@ -12056,6 +12056,89 @@ describe('ACP runtime session management', () => {
     )
   })
 
+  it.each([
+    ['Claude Code', claudeCodeFramework],
+    ['Codex', codexFramework],
+    ['OpenCode', opencodeFramework]
+  ] as const)(
+    'routes %s normal terminal stops through the Session Plan completion gate',
+    async (_name, framework) => {
+      const process = new FakeAgentProcess()
+      startFakeAgent(process, ['s1'], {
+        modes:
+          framework.id === 'codex'
+            ? createModes(['read-only', 'agent', 'agent-full-access'], 'agent')
+            : undefined,
+        onPrompt: () => ({ stopReason: 'end_turn' })
+      })
+      const runtime = new AcpRuntime({
+        appVersion: '0.1.0',
+        defaultCwd: '/workspace',
+        spawnAgent: () => asAgentProcess(process),
+        framework
+      })
+      const checkTurnCompletion = vi.fn(async () => ({
+        allow: false,
+        lifecycle: 'in_progress' as const
+      }))
+      const getProjection = vi.fn(async () => null)
+      Object.assign(runtime as unknown as { planService: unknown }, {
+        planService: { checkTurnCompletion, getProjection }
+      })
+
+      await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+      await expect(runtime.sendPrompt({ sessionId: 's1', text: 'finish early' })).rejects.toThrow(
+        'The active Session Plan is not complete (in_progress).'
+      )
+      expect(checkTurnCompletion).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sessionId: 's1'
+      })
+    }
+  )
+
+  it('projects an abnormal provider terminal stop as interrupted instead of checking normal completion', async () => {
+    const process = new FakeAgentProcess()
+    startFakeAgent(process, ['s1'], {
+      modes: createModes(['read-only', 'agent', 'agent-full-access'], 'agent'),
+      onPrompt: () => ({ stopReason: 'max_tokens' })
+    })
+    const events: AcpRuntimeEvent[] = []
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      framework: codexFramework,
+      callbacks: { onEvent: (event) => events.push(event) }
+    })
+    const checkTurnCompletion = vi.fn(async () => ({ allow: true }))
+    const getProjection = vi.fn(
+      async () =>
+        ({
+          lifecycle: 'interrupted'
+        }) as ActivePlanProjection
+    )
+    Object.assign(runtime as unknown as { planService: unknown }, {
+      planService: { checkTurnCompletion, getProjection }
+    })
+
+    await runtime.createSession({ cwd: '/workspace', projectName: 'project-1' })
+    await expect(
+      runtime.sendPrompt({ sessionId: 's1', text: 'run the plan' })
+    ).resolves.toMatchObject({ stopReason: 'max_tokens' })
+
+    expect(checkTurnCompletion).not.toHaveBeenCalled()
+    expect(getProjection).toHaveBeenCalledWith('project-1', 's1', {
+      interactionIsLive: false
+    })
+    expect(events).toContainEqual(
+      expect.objectContaining({
+        kind: 'plan',
+        planProjection: expect.objectContaining({ lifecycle: 'interrupted' })
+      })
+    )
+  })
+
   it('retains partial turn context when an Agent prompt fails after streaming updates', async () => {
     const process = new FakeAgentProcess()
     let promptAttempt = 0

@@ -328,6 +328,77 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.getByText('2 running · 0/2 done')).toBeTruthy()
   })
 
+  it('distinguishes running, parallel, blocked, and completed results on the Plan card', () => {
+    const { rerender } = render(
+      <WorkspacePlanCard
+        projection={{
+          ...projection,
+          approval: 'approved',
+          lifecycle: 'in_progress',
+          stepStatuses: {
+            'Analyze the data': { status: 'in_progress', updatedAt: 1 }
+          },
+          stepStates: { 'Analyze the data': { status: 'in_progress' } }
+        }}
+        onOpen={vi.fn()}
+        onRespond={vi.fn()}
+      />
+    )
+    expect(
+      screen.getByText('Approved · The current interaction is executing the plan.')
+    ).toBeTruthy()
+
+    rerender(
+      <WorkspacePlanCard
+        projection={{
+          ...multiLevelProjection,
+          approval: 'approved',
+          lifecycle: 'in_progress',
+          stepStatuses: {
+            'Compare cohorts': { status: 'in_progress', updatedAt: 1 },
+            'Review evidence': { status: 'in_progress', updatedAt: 1 }
+          },
+          stepStates: {
+            'Read the dictionary': { status: 'completed' },
+            'Validate inputs': { status: 'completed' },
+            'Compare cohorts': { status: 'in_progress' },
+            'Review evidence': { status: 'in_progress' }
+          }
+        }}
+        onOpen={vi.fn()}
+        onRespond={vi.fn()}
+      />
+    )
+    expect(screen.getByText('Approved · Two delegations are running in parallel.')).toBeTruthy()
+
+    rerender(
+      <WorkspacePlanCard
+        projection={{ ...multiLevelProjection, approval: 'approved', lifecycle: 'blocked' }}
+        onOpen={vi.fn()}
+        onRespond={vi.fn()}
+      />
+    )
+    expect(
+      screen.getByText('Blocked · Unreachable downstream steps remain unrecorded.')
+    ).toBeTruthy()
+
+    rerender(
+      <WorkspacePlanCard
+        projection={{
+          ...projection,
+          approval: 'approved',
+          lifecycle: 'completed',
+          counts: { ...projection.counts, completed: 1 }
+        }}
+        onOpen={vi.fn()}
+        onRespond={vi.fn()}
+      />
+    )
+    expect(
+      screen.getByText('Completed · This plan remains active until a new plan is generated.')
+    ).toBeTruthy()
+  })
+
   it('does not describe retained interrupted work as currently running', () => {
     const { container } = render(
       <PlanProgressDock

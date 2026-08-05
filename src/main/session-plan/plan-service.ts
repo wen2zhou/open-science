@@ -231,7 +231,10 @@ class PlanService {
     input: PlanIdentityCommand &
       Readonly<{ title: string; status: SessionPlanStepStatus; notes?: string }>
   ): Promise<{ projection: ActivePlanProjection; changed: boolean }> {
-    const { context, plan, document } = await this.loadActive(input)
+    const { context, plan, document } = await this.loadActive(input, undefined, {
+      title: input.title,
+      status: input.status
+    })
     if (plan.approval !== 'approved') {
       throw new PlanCommandError('plan-not-approved', 'The Plan must be approved before execution.')
     }
@@ -306,7 +309,8 @@ class PlanService {
 
   private async loadActive(
     input: PlanIdentityCommand,
-    idempotentDecision?: 'approved' | 'rejected'
+    idempotentDecision?: 'approved' | 'rejected',
+    idempotentStep?: Readonly<{ title: string; status: SessionPlanStepStatus }>
   ): Promise<{
     context: SessionRuntimeContext
     plan: SessionPlanRuntimeContext
@@ -318,7 +322,15 @@ class PlanService {
     if (plan.artifactVersionId !== input.artifactVersionId) {
       throw new PlanCommandError('stale-plan', 'A newer Plan is active.')
     }
-    if (context.revision !== input.expectedRevision && plan.approval !== idempotentDecision) {
+    const repeatsTerminalStep =
+      idempotentStep !== undefined &&
+      ['completed', 'blocked', 'skipped'].includes(idempotentStep.status) &&
+      plan.stepStatuses[idempotentStep.title]?.status === idempotentStep.status
+    if (
+      context.revision !== input.expectedRevision &&
+      plan.approval !== idempotentDecision &&
+      !repeatsTerminalStep
+    ) {
       throw new PlanCommandError('revision-conflict', 'The Plan revision is stale.')
     }
     return {

@@ -304,6 +304,102 @@ describe('PlanService', () => {
     })
   })
 
+  it('accepts duplicate terminal delivery with the original revision without rewriting the record', async () => {
+    const { service, context } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const approved = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved'
+    })
+    const running = await service.updateStepStatus({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: approved.projection.revision,
+      title: 'Analyze the data',
+      status: 'in_progress'
+    })
+    const terminalCommand = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: running.projection.revision,
+      title: 'Analyze the data',
+      status: 'completed' as const
+    }
+    const completed = await service.updateStepStatus(terminalCommand)
+    const revisionAfterCompletion = context().revision
+
+    await expect(service.updateStepStatus(terminalCommand)).resolves.toMatchObject({
+      changed: false,
+      projection: { revision: completed.projection.revision, lifecycle: 'completed' }
+    })
+    expect(context().revision).toBe(revisionAfterCompletion)
+  })
+
+  it('retries in-progress work and rejects every transition away from a terminal status', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const approved = await service.respond({
+      ...identity,
+      expectedRevision: generated.projection.revision,
+      decision: 'approved'
+    })
+    const running = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: approved.projection.revision,
+      title: 'Analyze the data',
+      status: 'in_progress',
+      notes: 'First attempt.'
+    })
+    const retried = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: running.projection.revision,
+      title: 'Analyze the data',
+      status: 'in_progress',
+      notes: 'Retry after interruption.'
+    })
+    expect(retried.projection.stepStatuses['Analyze the data']).toMatchObject({
+      status: 'in_progress',
+      notes: 'Retry after interruption.'
+    })
+    const completed = await service.updateStepStatus({
+      ...identity,
+      expectedRevision: retried.projection.revision,
+      title: 'Analyze the data',
+      status: 'completed'
+    })
+
+    for (const status of ['in_progress', 'blocked', 'skipped'] as const) {
+      await expect(
+        service.updateStepStatus({
+          ...identity,
+          expectedRevision: completed.projection.revision,
+          title: 'Analyze the data',
+          status
+        })
+      ).rejects.toMatchObject({ code: 'invalid-transition' })
+    }
+  })
+
   it('rejects irreversibly, releases the Session block, and treats duplicate delivery as idempotent', async () => {
     const { service, context, status } = setup()
     const generated = await service.generate({
