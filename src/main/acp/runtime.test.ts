@@ -11185,7 +11185,24 @@ describe('ACP runtime session management', () => {
             emitRawSDKMessages: [{ type: 'result' }],
             options: {
               settingSources: ['user'],
-              tools: { type: 'preset', preset: 'claude_code' }
+              tools: { type: 'preset', preset: 'claude_code' },
+              disallowedTools: [
+                'Agent',
+                'Task',
+                'Workflow',
+                'SendMessage',
+                'TeamCreate',
+                'TeamDelete'
+              ],
+              managedSettings: {
+                disableAgentView: true,
+                disableWorkflows: true,
+                workflowKeywordTriggerEnabled: false
+              },
+              env: {
+                CLAUDE_CODE_DISABLE_AGENT_VIEW: '1',
+                CLAUDE_CODE_DISABLE_WORKFLOWS: '1'
+              }
             }
           },
           systemPrompt: {

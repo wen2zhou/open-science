@@ -23,6 +23,26 @@ import { renderAppMcpToolReferences } from './app-mcp-names'
 // default changes, while reviewer sessions can still replace this with `tools: []` at their boundary.
 const CLAUDE_CODE_BUILTIN_TOOLS = { type: 'preset', preset: 'claude_code' } as const
 
+// Claude's Agent tool (formerly Task), Workflows, and team messaging can create or control work
+// outside the app-owned Frame/Attempt graph. Keep the complete ordinary Claude Code preset,
+// including TaskOutput/TaskStop for background shell jobs, but remove native delegation entry points.
+const CLAUDE_CODE_NATIVE_DELEGATION_TOOLS = Object.freeze([
+  'Agent',
+  'Task',
+  'Workflow',
+  'SendMessage',
+  'TeamCreate',
+  'TeamDelete'
+] as const)
+
+const recordValue = (value: unknown): Record<string, unknown> =>
+  value !== null && typeof value === 'object' && !Array.isArray(value)
+    ? (value as Record<string, unknown>)
+    : {}
+
+const stringArrayValue = (value: unknown): string[] =>
+  Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
+
 // Claude Code adapter. A faithful extraction of behavior currently inline in AcpRuntime /
 // agent-process / provider-env — moving the runtime onto AgentFramework must not change it.
 export const claudeCodeFramework: AgentFramework = {
@@ -35,7 +55,7 @@ export const claudeCodeFramework: AgentFramework = {
     failureTextPrefix: 'Compacting failed'
   },
   supportsSkills: true,
-  supportsDelegatedWork: false,
+  supportsDelegatedWork: true,
   // Claude launches stdio MCP servers directly — the app's artifact/notebook tooling relies on this.
   acceptsStdioMcp: true,
   // The adapter advertises an `effort` select (category thought_level) and applies changes to live
@@ -65,6 +85,24 @@ export const claudeCodeFramework: AgentFramework = {
   buildSessionSetup(ctx: SessionSetupContext): SessionSetup {
     // settingSources:['user'] excludes workspace settings that could override the active provider.
     // Shared mode adds app-owned settings/plugins at the SDK flag layer via sessionOptions.
+    const sessionOptions = ctx.sessionOptions ?? {}
+    const disallowedTools = Object.freeze([
+      ...new Set([
+        ...stringArrayValue(sessionOptions.disallowedTools),
+        ...CLAUDE_CODE_NATIVE_DELEGATION_TOOLS
+      ])
+    ])
+    const managedSettings = Object.freeze({
+      ...recordValue(sessionOptions.managedSettings),
+      disableAgentView: true,
+      disableWorkflows: true,
+      workflowKeywordTriggerEnabled: false
+    })
+    const env = Object.freeze({
+      ...recordValue(sessionOptions.env),
+      CLAUDE_CODE_DISABLE_AGENT_VIEW: '1',
+      CLAUDE_CODE_DISABLE_WORKFLOWS: '1'
+    })
     const meta: Record<string, unknown> = {
       claudeCode: {
         // The ACP usage total omits Claude SDK's agentic turn count. Request only terminal result
@@ -73,7 +111,10 @@ export const claudeCodeFramework: AgentFramework = {
         options: {
           tools: CLAUDE_CODE_BUILTIN_TOOLS,
           settingSources: ['user'],
-          ...ctx.sessionOptions,
+          ...sessionOptions,
+          disallowedTools,
+          managedSettings,
+          env,
           ...(ctx.skillWhitelist !== undefined ? { skills: ctx.skillWhitelist } : {})
         }
       }
@@ -110,3 +151,5 @@ export const claudeCodeFramework: AgentFramework = {
     return resolvePermissionProfileApplication(profile, modes)
   }
 }
+
+export { CLAUDE_CODE_NATIVE_DELEGATION_TOOLS }

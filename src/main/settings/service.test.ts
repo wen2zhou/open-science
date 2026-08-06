@@ -4469,7 +4469,7 @@ describe('checkEnvironment', () => {
 })
 
 describe('SettingsService: managed-runtime flags', () => {
-  it('advertises delegated work only for the certified Codex framework', async () => {
+  it('advertises delegated work only for certified frameworks', async () => {
     const snapshot = await createService().getSettingsView()
 
     expect(
@@ -4478,7 +4478,7 @@ describe('SettingsService: managed-runtime flags', () => {
         supportsDelegatedWork
       }))
     ).toEqual([
-      { id: 'claude-code', supportsDelegatedWork: false },
+      { id: 'claude-code', supportsDelegatedWork: true },
       { id: 'opencode', supportsDelegatedWork: false },
       { id: 'codex', supportsDelegatedWork: true }
     ])
