@@ -4479,7 +4479,7 @@ describe('SettingsService: managed-runtime flags', () => {
       }))
     ).toEqual([
       { id: 'claude-code', supportsDelegatedWork: true },
-      { id: 'opencode', supportsDelegatedWork: false },
+      { id: 'opencode', supportsDelegatedWork: true },
       { id: 'codex', supportsDelegatedWork: true }
     ])
   })

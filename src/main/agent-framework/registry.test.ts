@@ -18,6 +18,16 @@ describe('agent framework registry', () => {
     })
   })
 
+  it('admits delegated work for every certified framework', () => {
+    expect(
+      listAgentFrameworks().map(({ id, supportsDelegatedWork }) => ({ id, supportsDelegatedWork }))
+    ).toEqual([
+      { id: 'claude-code', supportsDelegatedWork: true },
+      { id: 'opencode', supportsDelegatedWork: true },
+      { id: 'codex', supportsDelegatedWork: true }
+    ])
+  })
+
   it('declares native compaction commands separately from host-owned auto thresholds', () => {
     expect(getAgentFramework('claude-code').contextCompaction).toEqual({
       kind: 'native-command',
