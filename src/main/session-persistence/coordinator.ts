@@ -1292,8 +1292,32 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
   }
 
   appendPendingMessage(key: SessionKey, input: AppendPendingMessageInput): Promise<void> {
-    return this.mutateDelegatedWork(key, input.expectedRevision, (_graph, records) => {
+    return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) => {
       const { record } = assertCurrentRunningAttempt(records, input.frameId, input.attemptId)
+      const frame = graph.frames.find((candidate) => candidate.id === input.frameId)
+      if (!frame?.parentFrameId) throw new Error('Pending Message requires a delegate Frame.')
+      const downward =
+        input.message.sourceFrameId === frame.parentFrameId &&
+        input.message.sourceAttemptId === undefined &&
+        input.message.targetFrameId === frame.id &&
+        input.message.targetAttemptId === input.attemptId
+      const upward =
+        input.message.sourceFrameId === frame.id &&
+        input.message.sourceAttemptId === input.attemptId &&
+        input.message.targetFrameId === frame.parentFrameId &&
+        input.message.targetAttemptId === undefined
+      if (!downward && !upward) {
+        throw new Error('Pending Message does not match the authenticated parent relationship.')
+      }
+      if (
+        !input.message.id.trim() ||
+        !input.message.text.trim() ||
+        (input.message.kind !== 'info' && input.message.kind !== 'question') ||
+        !Number.isFinite(input.message.createdAt) ||
+        input.message.deliveredAt !== undefined
+      ) {
+        throw new Error('Pending Message is invalid at admission.')
+      }
       if (
         records.some((candidate) =>
           candidate.pendingMessages.some(({ id }) => id === input.message.id)

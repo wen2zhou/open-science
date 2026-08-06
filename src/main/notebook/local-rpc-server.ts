@@ -159,6 +159,8 @@ type NotebookRpcSessionBinding = {
   sessionId: string
   projectId?: string
   agentFrameId?: string
+  delegatedWorkRole?: 'main' | 'delegate'
+  delegatedWorkAttemptId?: string
   allowedMethods?: ReadonlySet<string>
   activeControlInvocation?: TrustedControlInvocationIdentity
   delegatedNotebook?: {
@@ -612,7 +614,11 @@ class NotebookLocalRpcServer {
   async issueControlConnection(
     sessionId: string,
     projectId: string,
-    agentFrameId = `root-frame-${sessionId}`
+    agentFrameId = `root-frame-${sessionId}`,
+    delegatedWorkIdentity: Readonly<{
+      role: 'main' | 'delegate'
+      attemptId?: string
+    }> = { role: 'main' }
   ): Promise<
     NotebookRpcConnection & {
       beginControlInvocation(context: TrustedControlInvocationIdentity): () => void
@@ -625,6 +631,10 @@ class NotebookLocalRpcServer {
       sessionId,
       projectId,
       agentFrameId,
+      delegatedWorkRole: delegatedWorkIdentity.role,
+      ...(delegatedWorkIdentity.attemptId
+        ? { delegatedWorkAttemptId: delegatedWorkIdentity.attemptId }
+        : {}),
       allowedMethods: CONTROL_RPC_METHODS
     }
     this.sessionRpcCapabilities.set(token, binding)
@@ -846,6 +856,8 @@ class NotebookLocalRpcServer {
                   project_id: sessionBinding.projectId,
                   session_id: sessionBinding.sessionId,
                   frame_id: sessionBinding.agentFrameId,
+                  caller_role: sessionBinding.delegatedWorkRole,
+                  attempt_id: sessionBinding.delegatedWorkAttemptId,
                   origin_message_id:
                     sessionBinding.activeControlInvocation?.originatingUserMessageId,
                   tool_invocation_id: sessionBinding.activeControlInvocation?.toolInvocationId
@@ -1290,13 +1302,16 @@ class NotebookLocalRpcServer {
         typeof params.origin_message_id === 'string' ? params.origin_message_id : ''
       const toolInvocationId =
         typeof params.tool_invocation_id === 'string' ? params.tool_invocation_id : ''
+      const role = params.caller_role === 'delegate' ? 'delegate' : 'main'
+      const attemptId = typeof params.attempt_id === 'string' ? params.attempt_id : undefined
       if (!projectId || !sessionId || !frameId || !originMessageId || !toolInvocationId) {
         throw new RpcHttpError(403, 'delegated-work caller identity is incomplete.')
       }
       const caller: AuthenticatedDelegateCaller = {
         session: { projectId, sessionId },
         frameId,
-        role: 'main',
+        role,
+        ...(attemptId ? { attemptId } : {}),
         originMessageId,
         toolInvocationId
       }
@@ -1320,10 +1335,14 @@ class NotebookLocalRpcServer {
         }
         const target = typeof params.target === 'string' ? params.target : ''
         const message = typeof params.message === 'string' ? params.message : ''
+        if (params.kind !== undefined && params.kind !== 'info' && params.kind !== 'question') {
+          throw new Error('host.send_message kind must be info or question.')
+        }
+        const kind = params.kind === 'question' ? 'question' : 'info'
         if (!target || !message.trim()) {
           throw new Error('host.send_message requires a target Frame and non-empty message.')
         }
-        return this.delegatedWorkService.sendMessage(caller, target, message)
+        return this.delegatedWorkService.sendMessage(caller, target, message, kind)
       }
       if (op === 'children' || op === 'collect') {
         if (

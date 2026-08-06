@@ -424,4 +424,90 @@ describe('authenticated delegatedWorkCall route', () => {
     endInvocation()
     connection.release()
   })
+
+  it('routes a Delegate question to its authenticated parent and ignores forged caller fields', async () => {
+    const session = { projectId: 'project-1', sessionId: 'session-1' }
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session,
+      rootFrameId: 'root-frame-session-1',
+      originMessageId: 'origin-message-1'
+    })
+    const deliveries: unknown[] = []
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      deliverToParent: async (delivery) => {
+        deliveries.push(delivery)
+      }
+    })
+    const dispatched = await work.delegate(
+      {
+        session,
+        frameId: 'root-frame-session-1',
+        role: 'main',
+        originMessageId: 'origin-message-1',
+        toolInvocationId: 'dispatch-call'
+      },
+      { task: 'Initial task' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    const child = dispatched.children[0]
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: work
+    })
+    const connection = await server.issueControlConnection(
+      session.sessionId,
+      session.projectId,
+      child.frameId,
+      { role: 'delegate', attemptId: child.attemptId }
+    )
+    const endInvocation = connection.beginControlInvocation({
+      turnId: 'child-turn',
+      controlInvocationGeneration: 1,
+      toolInvocationId: 'child-question',
+      originatingUserMessageId: 'forged-origin-is-ignored-for-parent-routing'
+    })
+
+    const response = await fetch(connection.endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        method: 'delegatedWorkCall',
+        params: {
+          op: 'send_message',
+          target: 'parent',
+          message: 'Which cohort?',
+          kind: 'question',
+          project_id: 'forged-project',
+          session_id: 'forged-session',
+          frame_id: 'forged-frame',
+          attempt_id: 'forged-attempt',
+          caller_role: 'main'
+        }
+      })
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      result: { kind: 'queued', targetFrameId: 'root-frame-session-1' }
+    })
+    expect(deliveries).toEqual([
+      expect.objectContaining({
+        sourceFrameId: child.frameId,
+        sourceAttemptId: child.attemptId,
+        targetFrameId: 'root-frame-session-1',
+        text: 'Which cohort?',
+        kind: 'question'
+      })
+    ])
+    endInvocation()
+    connection.release()
+  })
 })

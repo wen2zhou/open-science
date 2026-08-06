@@ -16,6 +16,7 @@ type AuthenticatedDelegateCaller = Readonly<{
   role: 'main' | 'delegate' | 'reviewer'
   originMessageId: string
   toolInvocationId: string
+  attemptId?: string
 }>
 
 type DurableDelegateRequest = Readonly<{
@@ -63,7 +64,30 @@ type DurableChild = {
   context?: string
   inputs: readonly string[]
   attempts: DurableAttempt[]
+  pendingMessages: DurablePendingMessage[]
 }
+
+type DurablePendingMessage = Readonly<{
+  id: string
+  sourceFrameId: string
+  sourceAttemptId?: string
+  targetFrameId: string
+  targetAttemptId?: string
+  text: string
+  kind: 'info' | 'question'
+  createdAt: number
+  deliveredAt?: number
+}>
+
+type ParentMessageDelivery = Readonly<{
+  messageId: string
+  session: SessionKey
+  sourceFrameId: string
+  sourceAttemptId: string
+  targetFrameId: string
+  text: string
+  kind: 'info' | 'question'
+}>
 
 type DurableMessage = {
   id: string
@@ -135,6 +159,17 @@ type DelegatedWorkDurableRecords = Readonly<{
   continueChild(input: ContinueChildInput): Promise<void>
   startRuntime(frameId: string, attemptId: string, runtimeSegmentId: string): Promise<void>
   terminalize(input: TerminalInput): Promise<void>
+  appendPendingMessage(
+    frameId: string,
+    attemptId: string,
+    message: DurablePendingMessage
+  ): Promise<void>
+  markMessageDelivered(
+    frameId: string,
+    attemptId: string,
+    messageId: string,
+    deliveredAt: number
+  ): Promise<void>
   snapshot(): Promise<DurableSnapshot>
 }>
 
@@ -172,10 +207,17 @@ type DurableDelegateOutcome =
     }>
   | Readonly<{ kind: 'results'; children: readonly DurableDelegateResult[] }>
 
-type DurableSendMessageOutcome = Readonly<{
-  kind: 'continued'
-  child: Readonly<{ frameId: string; attemptId: string; status: 'running' }>
-}>
+type DurableSendMessageOutcome =
+  | Readonly<{
+      kind: 'queued'
+      messageId: string
+      targetFrameId: string
+      attemptId?: string
+    }>
+  | Readonly<{
+      kind: 'continued'
+      child: Readonly<{ frameId: string; attemptId: string; status: 'running' }>
+    }>
 
 type ReadOnlyAgentFrameDetail = Readonly<{
   frameId: string
@@ -208,8 +250,9 @@ type DurableDelegatedWork = Readonly<{
   ): Promise<readonly DurableDelegateResult[]>
   sendMessage(
     caller: AuthenticatedDelegateCaller,
-    targetFrameId: string,
-    message: string
+    targetFrameId: string | 'parent',
+    message: string,
+    kind?: 'info' | 'question'
   ): Promise<DurableSendMessageOutcome>
   sessionSummary(session: SessionKey): Promise<SessionSubagentSummary>
   readAgentFrame(
@@ -324,7 +367,8 @@ const createInMemoryDelegatedWorkRecords = (input: {
               runtimeSegmentIds: [],
               startedAt: child.startedAt
             }
-          ]
+          ],
+          pendingMessages: []
         }))
       )
       state.messages.push(
@@ -392,6 +436,37 @@ const createInMemoryDelegatedWorkRecords = (input: {
         attempt.error = { ...terminal.error }
       }
     },
+    async appendPendingMessage(frameId, attemptId, message) {
+      const child = state.records.find((candidate) => candidate.frameId === frameId)
+      const attempt = child && currentAttempt(child)
+      if (!child || !attempt || attempt.id !== attemptId || attempt.status !== 'running') {
+        throw new DurableDelegatedWorkError(
+          'conflict',
+          'Pending Message Attempt is not current and running.'
+        )
+      }
+      if (
+        state.records.some((record) => record.pendingMessages.some(({ id }) => id === message.id))
+      ) {
+        throw new Error(`Pending Message already exists: ${message.id}`)
+      }
+      child.pendingMessages.push(structuredClone(message))
+    },
+    async markMessageDelivered(frameId, attemptId, messageId, deliveredAt) {
+      const child = state.records.find((candidate) => candidate.frameId === frameId)
+      const attempt = child && currentAttempt(child)
+      if (!child || !attempt || attempt.id !== attemptId || attempt.status !== 'running') {
+        throw new DurableDelegatedWorkError(
+          'conflict',
+          'Pending Message Attempt is not current and running.'
+        )
+      }
+      const index = child.pendingMessages.findIndex(({ id }) => id === messageId)
+      const message = child.pendingMessages[index]
+      if (!message) throw new Error(`Pending Message not found: ${messageId}`)
+      if (message.deliveredAt !== undefined) return
+      child.pendingMessages[index] = { ...message, deliveredAt }
+    },
     snapshot: async () => structuredClone(state)
   }
 }
@@ -422,6 +497,7 @@ const createDurableDelegatedWork = (options: {
     frameId: string
     attemptId: string
   }) => Promise<void> | void
+  deliverToParent?: (delivery: ParentMessageDelivery) => Promise<void>
   now?: () => number
   createId?: (kind: 'frame' | 'attempt' | 'message' | 'runtime') => string
   collectPollIntervalMs?: number
@@ -436,6 +512,7 @@ const createDurableDelegatedWork = (options: {
     {
       attemptId: string
       completion: Promise<void>
+      deliver(message: string): Promise<void>
       cancel(): Promise<void>
       reservation: DelegateCapacityReservation
       slotId: string
@@ -570,13 +647,23 @@ const createDurableDelegatedWork = (options: {
     const attempt = currentAttempt(child)
     const runtimeSegmentId = createId('runtime')
     let handle: ReturnType<DelegateExecution['run']> | undefined
+    let resolveHandle!: (value: ReturnType<DelegateExecution['run']>) => void
+    let rejectHandle!: (error: unknown) => void
+    const deliveryHandle = new Promise<ReturnType<DelegateExecution['run']>>((resolve, reject) => {
+      resolveHandle = resolve
+      rejectHandle = reject
+    })
+    void deliveryHandle.catch(() => undefined)
     let cancelRequested = false
     const completion = (async () => {
       try {
         await options.workspace?.prepare(session, child.frameId, child.inputs)
         await options.records.startRuntime(child.frameId, attempt.id, runtimeSegmentId)
         const latest = await snapshotChild(child.frameId)
-        if (cancelRequested || !latest || currentAttempt(latest).status !== 'running') return
+        if (cancelRequested || !latest || currentAttempt(latest).status !== 'running') {
+          rejectHandle(new Error('delegate execution is no longer running'))
+          return
+        }
         const executionInput: DelegateExecutionInput = {
           session,
           frameId: child.frameId,
@@ -591,6 +678,7 @@ const createDurableDelegatedWork = (options: {
           continuation
         }
         handle = options.execution.run(executionInput, slotId)
+        resolveHandle(handle)
         await Promise.race([handle.accepted, handle.completion.then(() => undefined)])
         const outcome = await handle.completion
         if (outcome.status === 'completed') {
@@ -619,6 +707,7 @@ const createDurableDelegatedWork = (options: {
           })
         }
       } catch (error) {
+        rejectHandle(error)
         const latest = await snapshotChild(child.frameId)
         if (latest && currentAttempt(latest).status === 'running') {
           await options.records.terminalize({
@@ -640,8 +729,12 @@ const createDurableDelegatedWork = (options: {
     running.set(child.frameId, {
       attemptId: attempt.id,
       completion,
+      async deliver(message) {
+        await (await deliveryHandle).sendMessage(message)
+      },
       async cancel() {
         cancelRequested = true
+        rejectHandle(new Error('delegate execution was cancelled before message delivery'))
         await handle?.cancel()
       },
       reservation,
@@ -882,7 +975,8 @@ const createDurableDelegatedWork = (options: {
           runtimeSegmentIds: [],
           startedAt: admission.startedAt
         }
-      ]
+      ],
+      pendingMessages: []
     }))
     const completions = children.map((child, index) => {
       launch(child, caller.session, reservation, reservation.slotIds[index])
@@ -961,8 +1055,9 @@ const createDurableDelegatedWork = (options: {
     },
     sendMessage(
       caller: AuthenticatedDelegateCaller,
-      targetFrameId: string,
-      message: string
+      targetFrameId: string | 'parent',
+      message: string,
+      kind: 'info' | 'question' = 'info'
     ): Promise<DurableSendMessageOutcome> {
       const invocationKey = [
         caller.session.projectId,
@@ -974,14 +1069,90 @@ const createDurableDelegatedWork = (options: {
       const existing = messageOutcomes.get(invocationKey)
       if (existing) return existing
       const outcome = (async () => {
+        if (typeof message !== 'string' || !message.trim()) {
+          throw new DurableDelegatedWorkError('admission_rejection', 'message cannot be empty')
+        }
+        if (kind !== 'info' && kind !== 'question') {
+          throw new DurableDelegatedWorkError(
+            'admission_rejection',
+            'message kind must be info or question'
+          )
+        }
+        if (targetFrameId === 'parent') {
+          const snapshot = await options.records.snapshot()
+          const source = snapshot.records.find(
+            (candidate) => candidate.frameId === caller.frameId
+          ) as DurableChild | undefined
+          const sourceAttempt = source && currentAttempt(source)
+          if (
+            caller.role !== 'delegate' ||
+            !sameSession(snapshot.session, caller.session) ||
+            !source ||
+            source.parentFrameId !== snapshot.rootFrameId ||
+            sourceAttempt?.status !== 'running' ||
+            sourceAttempt.id !== caller.attemptId ||
+            !caller.toolInvocationId.trim()
+          ) {
+            throw new DurableDelegatedWorkError(
+              'authorization',
+              'delegate message is outside its authenticated current parent relationship'
+            )
+          }
+          const pendingMessage: DurablePendingMessage = {
+            id: createId('message'),
+            sourceFrameId: source.frameId,
+            sourceAttemptId: sourceAttempt.id,
+            targetFrameId: source.parentFrameId,
+            text: message.trim(),
+            kind,
+            createdAt: now()
+          }
+          await options.records.appendPendingMessage(
+            source.frameId,
+            sourceAttempt.id,
+            pendingMessage
+          )
+          if (!options.deliverToParent) {
+            throw new DurableDelegatedWorkError(
+              'execution_failure',
+              'parent app-owned message delivery is unavailable'
+            )
+          }
+          try {
+            await options.deliverToParent({
+              messageId: pendingMessage.id,
+              session: caller.session,
+              sourceFrameId: source.frameId,
+              sourceAttemptId: sourceAttempt.id,
+              targetFrameId: source.parentFrameId,
+              text: pendingMessage.text,
+              kind: pendingMessage.kind
+            })
+            await options.records.markMessageDelivered(
+              source.frameId,
+              sourceAttempt.id,
+              pendingMessage.id,
+              now()
+            )
+          } catch (error) {
+            if (error instanceof DurableDelegatedWorkError) throw error
+            throw new DurableDelegatedWorkError(
+              'execution_failure',
+              `parent message delivery failed: ${error instanceof Error ? error.message : String(error)}`
+            )
+          }
+          return {
+            kind: 'queued' as const,
+            messageId: pendingMessage.id,
+            targetFrameId: source.parentFrameId,
+            attemptId: sourceAttempt.id
+          }
+        }
         if (caller.role !== 'main') {
           throw new DurableDelegatedWorkError(
             'authorization',
             'only the Main Agent can continue delegated work'
           )
-        }
-        if (typeof message !== 'string' || !message.trim()) {
-          throw new DurableDelegatedWorkError('admission_rejection', 'message cannot be empty')
         }
         const snapshot = await options.records.snapshot()
         if (
@@ -995,7 +1166,7 @@ const createDurableDelegatedWork = (options: {
             'continuation caller is outside the active root conversation'
           )
         }
-        const child = snapshot.records.find(
+        let child = snapshot.records.find(
           (candidate) =>
             candidate.frameId === targetFrameId && candidate.parentFrameId === caller.frameId
         ) as DurableChild | undefined
@@ -1005,12 +1176,58 @@ const createDurableDelegatedWork = (options: {
             `caller cannot access child ${targetFrameId}`
           )
         }
-        const previous = currentAttempt(child)
+        let previous = currentAttempt(child)
         if (previous.status === 'running') {
-          throw new DurableDelegatedWorkError(
-            'conflict',
-            'running child messaging is not a terminal continuation'
-          )
+          const pendingMessage: DurablePendingMessage = {
+            id: createId('message'),
+            sourceFrameId: caller.frameId,
+            targetFrameId: child.frameId,
+            targetAttemptId: previous.id,
+            text: message.trim(),
+            kind,
+            createdAt: now()
+          }
+          try {
+            await options.records.appendPendingMessage(child.frameId, previous.id, pendingMessage)
+          } catch (error) {
+            const latest = await snapshotChild(child.frameId)
+            if (latest && currentAttempt(latest).status !== 'running') {
+              child = latest
+              previous = currentAttempt(latest)
+            } else {
+              throw error
+            }
+          }
+          if (previous.status === 'running') {
+            const active = running.get(child.frameId)
+            if (!active || active.attemptId !== previous.id) {
+              throw new DurableDelegatedWorkError(
+                'conflict',
+                'the target Attempt is no longer available for delivery'
+              )
+            }
+            try {
+              await active.deliver(pendingMessage.text)
+              await options.records.markMessageDelivered(
+                child.frameId,
+                previous.id,
+                pendingMessage.id,
+                now()
+              )
+            } catch (error) {
+              if (error instanceof DurableDelegatedWorkError) throw error
+              throw new DurableDelegatedWorkError(
+                'execution_failure',
+                `message delivery failed: ${error instanceof Error ? error.message : String(error)}`
+              )
+            }
+            return {
+              kind: 'queued' as const,
+              messageId: pendingMessage.id,
+              targetFrameId: child.frameId,
+              attemptId: previous.id
+            }
+          }
         }
         const priorExecution = running.get(targetFrameId)
         if (priorExecution?.attemptId === previous.id) await priorExecution.completion
@@ -1169,7 +1386,9 @@ export type {
   DurableSendMessageOutcome,
   DurableDelegatedWork,
   DurableMessage,
+  DurablePendingMessage,
   DurableSnapshot,
+  ParentMessageDelivery,
   ReadOnlyAgentFrameDetail,
   RecoveryOutcome,
   SpecialistDelegationProfile,

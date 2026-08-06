@@ -149,6 +149,27 @@ const createSessionDelegatedWorkRecords = (
         })
       )
     },
+    async appendPendingMessage(frameId, attemptId, message) {
+      await mutate((expectedRevision) =>
+        options.commands.appendPendingMessage(key, {
+          expectedRevision,
+          frameId,
+          attemptId,
+          message
+        })
+      )
+    },
+    async markMessageDelivered(frameId, attemptId, messageId, deliveredAt) {
+      await mutate((expectedRevision) =>
+        options.commands.markMessageDelivered(key, {
+          expectedRevision,
+          frameId,
+          attemptId,
+          messageId,
+          deliveredAt
+        })
+      )
+    },
     async snapshot(): Promise<DurableSnapshot> {
       const session = await load()
       const graph = materializeSessionConversationGraph(session).conversationGraph
@@ -181,7 +202,8 @@ const createSessionDelegatedWorkRecords = (
                 ...attempt,
                 resolvedAgent: structuredClone(attempt.resolvedAgent),
                 runtimeSegmentIds: [...attempt.runtimeSegmentIds]
-              }))
+              })),
+              pendingMessages: record.pendingMessages.map((message) => ({ ...message }))
             }
           ]
         }),

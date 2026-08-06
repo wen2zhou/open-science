@@ -35,6 +35,292 @@ const specialist = (overrides: Partial<SpecialistFixture> = {}): SpecialistFixtu
 })
 
 describe('durable delegated work', () => {
+  it('durably delivers each Main message to the current running child Attempt', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let nextId = 0
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      now: () => 100 + nextId,
+      createId: (kind) => `${kind}-${++nextId}`
+    })
+    const dispatched = await work.delegate(caller, { task: 'Long investigation' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+
+    await expect(
+      work.sendMessage(
+        { ...caller, toolInvocationId: 'message-one' },
+        dispatched.children[0].frameId,
+        'Use newer evidence',
+        'info'
+      )
+    ).resolves.toMatchObject({ kind: 'queued', messageId: expect.any(String) })
+    await work.sendMessage(
+      { ...caller, toolInvocationId: 'message-two' },
+      dispatched.children[0].frameId,
+      'Use newer evidence',
+      'info'
+    )
+
+    expect(execution.controls()[0].deliveredMessages()).toEqual([
+      'Use newer evidence',
+      'Use newer evidence'
+    ])
+    const pending = (await records.snapshot()).records[0].pendingMessages
+    expect(pending).toHaveLength(2)
+    expect(new Set(pending.map(({ id }) => id)).size).toBe(2)
+    expect(pending).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          sourceFrameId: caller.frameId,
+          targetFrameId: dispatched.children[0].frameId,
+          targetAttemptId: dispatched.children[0].attemptId,
+          text: 'Use newer evidence',
+          kind: 'info',
+          deliveredAt: expect.any(Number)
+        })
+      ])
+    )
+  })
+
+  it('delivers a running Delegate question only to its authenticated parent with attribution', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const deliveries: unknown[] = []
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      deliverToParent: async (delivery) => {
+        deliveries.push(delivery)
+      }
+    })
+    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    const child = dispatched.children[0]
+    const delegateCaller: AuthenticatedDelegateCaller = {
+      session: caller.session,
+      frameId: child.frameId,
+      attemptId: child.attemptId,
+      role: 'delegate',
+      originMessageId: caller.originMessageId,
+      toolInvocationId: 'child-question'
+    }
+
+    await expect(
+      work.sendMessage(delegateCaller, 'parent', 'Which cohort?', 'question')
+    ).resolves.toMatchObject({
+      kind: 'queued',
+      targetFrameId: caller.frameId,
+      attemptId: child.attemptId
+    })
+    expect(deliveries).toEqual([
+      expect.objectContaining({
+        session: caller.session,
+        sourceFrameId: child.frameId,
+        sourceAttemptId: child.attemptId,
+        targetFrameId: caller.frameId,
+        text: 'Which cohort?',
+        kind: 'question'
+      })
+    ])
+    expect((await records.snapshot()).records[0].pendingMessages).toEqual([
+      expect.objectContaining({
+        sourceFrameId: child.frameId,
+        sourceAttemptId: child.attemptId,
+        targetFrameId: caller.frameId,
+        deliveredAt: expect.any(Number)
+      })
+    ])
+
+    await expect(
+      work.sendMessage(
+        {
+          ...delegateCaller,
+          session: { ...caller.session, sessionId: 'forged' },
+          toolInvocationId: 'forged'
+        },
+        'parent',
+        'Forged',
+        'info'
+      )
+    ).rejects.toMatchObject({ code: 'authorization' })
+    await expect(
+      work.sendMessage(
+        { ...delegateCaller, attemptId: 'superseded-attempt', toolInvocationId: 'stale' },
+        'parent',
+        'Late',
+        'info'
+      )
+    ).rejects.toMatchObject({ code: 'authorization' })
+  })
+
+  it('deduplicates one successful message invocation by identity, not by text', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    const messageCaller = { ...caller, toolInvocationId: 'stable-message-call' }
+
+    const [first, duplicate] = await Promise.all([
+      work.sendMessage(messageCaller, dispatched.children[0].frameId, 'Same text'),
+      work.sendMessage(messageCaller, dispatched.children[0].frameId, 'Same text')
+    ])
+
+    expect(duplicate).toEqual(first)
+    expect(execution.controls()[0].deliveredMessages()).toEqual(['Same text'])
+    expect((await records.snapshot()).records[0].pendingMessages).toHaveLength(1)
+  })
+
+  it('retains uncertain delivery as undelivered history and does not replay it after restart', async () => {
+    const baseExecution = createDeterministicDelegateExecution()
+    const execution = {
+      ...baseExecution,
+      run(input: Parameters<typeof baseExecution.run>[0], slotId: string) {
+        const handle = baseExecution.run(input, slotId)
+        return {
+          ...handle,
+          sendMessage: async () => Promise.reject(new Error('provider unavailable'))
+        }
+      }
+    }
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    await expect.poll(() => baseExecution.controls()).toHaveLength(1)
+    baseExecution.controls()[0].accept()
+
+    await expect(
+      work.sendMessage(
+        { ...caller, toolInvocationId: 'failed-message' },
+        dispatched.children[0].frameId,
+        'Additional context'
+      )
+    ).rejects.toMatchObject({
+      code: 'execution_failure',
+      message: expect.stringContaining('provider unavailable')
+    })
+    expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
+      'deliveredAt'
+    )
+
+    const restartedExecution = createDeterministicDelegateExecution()
+    const restarted = createDurableDelegatedWork({ execution: restartedExecution, records })
+    await restarted.recoverInterrupted()
+    expect(restartedExecution.controls()).toEqual([])
+    expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
+      'deliveredAt'
+    )
+  })
+
+  it('uses same-Frame continuation when the target terminalizes during message admission', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const durableRecords = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let raced = false
+    const records: typeof durableRecords = {
+      ...durableRecords,
+      async appendPendingMessage(frameId, attemptId, message) {
+        if (!raced) {
+          raced = true
+          await durableRecords.terminalize({
+            frameId,
+            attemptId,
+            status: 'cancelled',
+            endedAt: message.createdAt,
+            cancellationReason: 'main_agent_stop'
+          })
+          execution.control(attemptId).cancel()
+        }
+        await durableRecords.appendPendingMessage(frameId, attemptId, message)
+      }
+    }
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+
+    await expect(
+      work.sendMessage(
+        { ...caller, toolInvocationId: 'racing-message' },
+        dispatched.children[0].frameId,
+        'Continue after terminal'
+      )
+    ).resolves.toMatchObject({
+      kind: 'continued',
+      child: { frameId: dispatched.children[0].frameId, status: 'running' }
+    })
+    expect((await records.snapshot()).records[0]).toMatchObject({
+      attempts: [{ status: 'cancelled' }, { status: 'running' }],
+      pendingMessages: []
+    })
+  })
+
+  it('rejects late delivery after cancellation without fabricating deliveredAt', async () => {
+    const baseExecution = createDeterministicDelegateExecution()
+    let releaseDelivery!: () => void
+    const deliveryGate = new Promise<void>((resolve) => {
+      releaseDelivery = resolve
+    })
+    const execution = {
+      ...baseExecution,
+      run(input: Parameters<typeof baseExecution.run>[0], slotId: string) {
+        const handle = baseExecution.run(input, slotId)
+        return { ...handle, sendMessage: async () => deliveryGate }
+      }
+    }
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    await expect.poll(() => baseExecution.controls()).toHaveLength(1)
+    baseExecution.controls()[0].accept()
+    const delivery = work.sendMessage(
+      { ...caller, toolInvocationId: 'late-message' },
+      dispatched.children[0].frameId,
+      'Too late'
+    )
+    await expect
+      .poll(async () => (await records.snapshot()).records[0].pendingMessages)
+      .toHaveLength(1)
+
+    await work.stopChildren(caller, [dispatched.children[0].frameId])
+    releaseDelivery()
+
+    await expect(delivery).rejects.toMatchObject({
+      code: 'conflict',
+      message: expect.stringContaining('not current and running')
+    })
+    expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
+      'deliveredAt'
+    )
+  })
   it('defaults an omitted profile to Main Agent without consulting a Specialist resolver', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({
@@ -1385,7 +1671,7 @@ describe('durable delegated work', () => {
     expect(execution.reservationCounts()).toEqual([1])
   })
 
-  it('rejects the terminal-continuation path while the latest Attempt is running', async () => {
+  it('queues a message without creating a continuation while the latest Attempt is running', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({
       session: caller.session,
@@ -1401,7 +1687,11 @@ describe('durable delegated work', () => {
         dispatched.children[0].frameId,
         'Do not overlap'
       )
-    ).rejects.toMatchObject({ code: 'conflict' })
+    ).resolves.toMatchObject({
+      kind: 'queued',
+      targetFrameId: dispatched.children[0].frameId,
+      attemptId: dispatched.children[0].attemptId
+    })
     expect((await records.snapshot()).records[0].attempts).toHaveLength(1)
     expect((await records.snapshot()).messages).toHaveLength(1)
     expect(execution.reservationCounts()).toEqual([1])

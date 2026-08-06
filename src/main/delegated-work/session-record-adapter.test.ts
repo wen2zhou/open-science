@@ -97,6 +97,60 @@ const createHarness = (): Readonly<{
 }
 
 describe('Session delegated-work adapter', () => {
+  it('persists successful running-child delivery against the addressed Attempt', async () => {
+    const { coordinator, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const records = createSessionDelegatedWorkRecords(
+      { commands: coordinator, readSession, frameworkId: 'codex', createId: () => 'child-branch' },
+      key
+    )
+    const ids = {
+      frame: ['child-frame'],
+      attempt: ['attempt-1'],
+      message: ['prompt-1', 'pending-1'],
+      runtime: ['runtime-1']
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      now: () => 50,
+      createId: (kind) => ids[kind].shift()!
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'dispatch'
+    }
+    await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.control('attempt-1').accept()
+
+    await work.sendMessage(
+      { ...caller, toolInvocationId: 'message-call' },
+      'child-frame',
+      'Additional evidence',
+      'info'
+    )
+
+    expect((await readSession()).runtimeContext?.delegatedWork?.records[0].pendingMessages).toEqual(
+      [
+        {
+          id: 'pending-1',
+          sourceFrameId: rootFrameId,
+          targetFrameId: 'child-frame',
+          targetAttemptId: 'attempt-1',
+          text: 'Additional evidence',
+          kind: 'info',
+          createdAt: 50,
+          deliveredAt: 50
+        }
+      ]
+    )
+    expect(execution.control('attempt-1').deliveredMessages()).toEqual(['Additional evidence'])
+  })
   it('starts an admitted array against revisioned Session records without sibling conflicts', async () => {
     const { coordinator, readSession } = createHarness()
     const execution = createDeterministicDelegateExecution()

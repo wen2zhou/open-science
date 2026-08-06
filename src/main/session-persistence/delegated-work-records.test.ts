@@ -378,6 +378,67 @@ describe('delegated-work Session records', () => {
     expect(recovered.record.pendingMessages[0]).not.toHaveProperty('deliveredAt')
   })
 
+  it('marks only the addressed upward message and fences late delivery after terminal', async () => {
+    const { coordinator } = createHarness()
+    const rootFrameId = createRootSession().conversationGraph!.rootFrameId
+    await coordinator.createChildren(key, {
+      expectedRevision: 0,
+      parentFrameId: rootFrameId,
+      originMessageId: rootPrompt.id,
+      children: [child(1)]
+    })
+    for (const [revision, id] of [
+      [1, 'question-1'],
+      [2, 'question-2']
+    ] as const) {
+      await coordinator.appendPendingMessage(key, {
+        expectedRevision: revision,
+        frameId: 'child-frame-1',
+        attemptId: 'attempt-1',
+        message: {
+          id,
+          sourceFrameId: 'child-frame-1',
+          sourceAttemptId: 'attempt-1',
+          targetFrameId: rootFrameId,
+          text: 'Same question',
+          kind: 'question',
+          createdAt: 20
+        }
+      })
+    }
+
+    await coordinator.markMessageDelivered(key, {
+      expectedRevision: 3,
+      frameId: 'child-frame-1',
+      attemptId: 'attempt-1',
+      messageId: 'question-2',
+      deliveredAt: 21
+    })
+    await coordinator.transitionAttempt(key, {
+      expectedRevision: 4,
+      frameId: 'child-frame-1',
+      attemptId: 'attempt-1',
+      status: 'cancelled',
+      endedAt: 22,
+      cancellationReason: 'main_agent_stop'
+    })
+
+    await expect(
+      coordinator.markMessageDelivered(key, {
+        expectedRevision: 5,
+        frameId: 'child-frame-1',
+        attemptId: 'attempt-1',
+        messageId: 'question-1',
+        deliveredAt: 23
+      })
+    ).rejects.toMatchObject({ code: 'attempt-conflict' })
+    const [record] = await coordinator.readChildren(key, rootFrameId)
+    expect(record.record.pendingMessages).toEqual([
+      expect.not.objectContaining({ deliveredAt: expect.any(Number) }),
+      expect.objectContaining({ id: 'question-2', deliveredAt: 21 })
+    ])
+  })
+
   it('runs delegated-work interruption recovery at the startup hydration boundary', async () => {
     const { coordinator } = createHarness()
     const rootFrameId = createRootSession().conversationGraph!.rootFrameId
