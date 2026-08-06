@@ -1083,6 +1083,41 @@ async function hostStopChild(frameIds) {
   }))
 }
 
+async function delegatedObservationRpc(op, frameIds = undefined) {
+  if (!RPC_ENDPOINT) throw new Error(`host.${op} is unavailable: control RPC endpoint not set`)
+  const res = await capturedRpcFetch(RPC_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
+    body: JSON.stringify({
+      method: 'delegatedWorkCall',
+      params: { op, ...(frameIds !== undefined ? { frame_ids: frameIds } : {}) }
+    })
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok || body.error) {
+    throw new Error(`host.${op}: ${body.error || 'HTTP ' + res.status}`)
+  }
+  return (body.result || []).map((child) => ({
+    frame_id: child.frameId,
+    attempt_id: child.attemptId,
+    ...(child.title !== undefined ? { title: child.title } : {}),
+    status: child.status,
+    ...(child.terminalMessageId ? { terminal_message_id: child.terminalMessageId } : {}),
+    ...(child.response !== undefined ? { response: child.response } : {}),
+    ...(op === 'collect' ? { artifacts_created: child.artifactsCreated || [] } : {}),
+    ...(child.cancellationReason ? { cancellation_reason: child.cancellationReason } : {}),
+    ...(child.error ? { error: child.error } : {})
+  }))
+}
+
+async function hostChildren(frameIds = undefined) {
+  return delegatedObservationRpc('children', frameIds)
+}
+
+async function hostCollect(frameIds) {
+  return delegatedObservationRpc('collect', frameIds)
+}
+
 // host.agents namespace. Methods and filter/write fields are snake_case; returned records are
 // camelCase. list_skills/list_connectors accept an optional stable id or unique public name.
 // create/update/attach_*/detach_* are the ordinary-mutation surface (issue 03); they return a real
@@ -1275,6 +1310,8 @@ const sandbox = {
     compute: hostCompute,
     agents: hostAgents,
     delegate: hostDelegate,
+    children: hostChildren,
+    collect: hostCollect,
     stop_child: hostStopChild
   },
   console,

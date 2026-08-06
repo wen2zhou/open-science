@@ -91,6 +91,90 @@ describe('repl_loop local RPC transport', () => {
       )
     }
   }, 60_000)
+
+  it('exposes host.children and host.collect with snake-case durable projections', async () => {
+    const received: Array<{ method?: string; params?: Record<string, unknown> }> = []
+    const server = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => (body += chunk))
+      request.on('end', () => {
+        const call = JSON.parse(body)
+        received.push(call)
+        const result =
+          call.params.op === 'children'
+            ? [
+                {
+                  frameId: 'child-1',
+                  attemptId: 'attempt-1',
+                  title: 'Source trace',
+                  status: 'running'
+                }
+              ]
+            : [
+                {
+                  frameId: 'child-1',
+                  attemptId: 'attempt-1',
+                  status: 'completed',
+                  terminalMessageId: 'message-1',
+                  response: 'Durable answer',
+                  artifactsCreated: []
+                }
+              ]
+        response
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ result }))
+      })
+    })
+    const connection = await listenForLocalRpc(server, {
+      name: 'repl-loop-delegated-work-test',
+      transport: 'pipe'
+    })
+    const { child, send } = startLoop({
+      OPEN_SCIENCE_MCP_RPC_ENDPOINT: connection.endpoint,
+      OPEN_SCIENCE_MCP_RPC_SOCKET_PATH: connection.socketPath,
+      OPEN_SCIENCE_MCP_RPC_TOKEN: 'test-token',
+      OPEN_SCIENCE_NOTEBOOK_SESSION_ID: 'session-1'
+    })
+
+    try {
+      const output = await send(
+        "return { children: await host.children(), results: await host.collect(['child-1']) }"
+      )
+      expect(output.error).toBeNull()
+      expect(JSON.parse(output.result ?? '{}')).toEqual({
+        children: [
+          {
+            frame_id: 'child-1',
+            attempt_id: 'attempt-1',
+            title: 'Source trace',
+            status: 'running'
+          }
+        ],
+        results: [
+          {
+            frame_id: 'child-1',
+            attempt_id: 'attempt-1',
+            status: 'completed',
+            terminal_message_id: 'message-1',
+            response: 'Durable answer',
+            artifacts_created: []
+          }
+        ]
+      })
+      expect(received).toEqual([
+        { method: 'delegatedWorkCall', params: { op: 'children' } },
+        {
+          method: 'delegatedWorkCall',
+          params: { op: 'collect', frame_ids: ['child-1'] }
+        }
+      ])
+    } finally {
+      child.kill()
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      )
+    }
+  }, 60_000)
 })
 
 gate('repl_loop.js', () => {

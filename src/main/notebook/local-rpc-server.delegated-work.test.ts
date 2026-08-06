@@ -150,7 +150,7 @@ describe('authenticated delegatedWorkCall route', () => {
     const delegate = vi.fn()
     server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
       transport: 'tcp',
-      delegatedWorkService: { delegate }
+      delegatedWorkService: { delegate, children: vi.fn(), collect: vi.fn() }
     })
     const connection = await server.issueControlConnection('session-1', 'project-1')
 
@@ -278,6 +278,77 @@ describe('authenticated delegatedWorkCall route', () => {
     })
     expect(execution.reservationCounts()).toEqual([])
     expect((await records.snapshot()).records).toEqual([])
+    endInvocation()
+    connection.release()
+  })
+
+  it('authenticates detached children and collect operations through the active control capability', async () => {
+    const session = { projectId: 'trusted-project', sessionId: 'trusted-session' }
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session,
+      rootFrameId: 'trusted-root-frame',
+      originMessageId: 'trusted-origin-message'
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: work
+    })
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'trusted-project',
+      'trusted-root-frame'
+    )
+    const endInvocation = connection.beginControlInvocation({
+      turnId: 'turn-1',
+      controlInvocationGeneration: 1,
+      toolInvocationId: 'trusted-tool-call',
+      originatingUserMessageId: 'trusted-origin-message'
+    })
+    const call = async (params: Record<string, unknown>): Promise<unknown> => {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ method: 'delegatedWorkCall', params })
+      })
+      expect(response.status).toBe(200)
+      return (await response.json()).result
+    }
+
+    const receipt = (await call({
+      op: 'delegate',
+      request: { task: 'Detached source check', name: 'Source check' },
+      options: { wait: false }
+    })) as { children: Array<{ frameId: string; attemptId: string }> }
+    const frameId = receipt.children[0].frameId
+    await expect(
+      call({
+        op: 'children',
+        frame_ids: [frameId],
+        project_id: 'forged-project',
+        session_id: 'forged-session',
+        frame_id: 'forged-parent'
+      })
+    ).resolves.toEqual([
+      {
+        frameId,
+        attemptId: receipt.children[0].attemptId,
+        title: 'Source check',
+        status: 'running'
+      }
+    ])
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Durable RPC answer')
+
+    await expect(call({ op: 'collect', frame_ids: [frameId] })).resolves.toMatchObject([
+      { frameId, status: 'completed', response: 'Durable RPC answer', artifactsCreated: [] }
+    ])
+
     endInvocation()
     connection.release()
   })

@@ -366,6 +366,7 @@ const createDurableDelegatedWork = (options: {
   }) => Promise<void> | void
   now?: () => number
   createId?: (kind: 'frame' | 'attempt' | 'message' | 'runtime') => string
+  collectPollIntervalMs?: number
 }): DurableDelegatedWork => {
   const now = options.now ?? Date.now
   const createId = options.createId ?? ((kind: string) => `${kind}-${randomUUID()}`)
@@ -430,17 +431,57 @@ const createDurableDelegatedWork = (options: {
     (await options.records.snapshot()).records.find((child) => child.frameId === frameId) as
       DurableChild | undefined
 
-  const projectResult = async (frameId: string): Promise<DurableDelegateResult | undefined> => {
+  const authenticatedSnapshot = async (
+    caller: AuthenticatedDelegateCaller
+  ): Promise<DurableSnapshot> => {
     const snapshot = await options.records.snapshot()
-    const child = snapshot.records.find((candidate) => candidate.frameId === frameId)
-    if (!child) return undefined
-    const attempt = currentAttempt(child as DurableChild)
+    if (
+      caller.role !== 'main' ||
+      !sameSession(snapshot.session, caller.session) ||
+      caller.frameId !== snapshot.rootFrameId ||
+      !snapshot.originMessageIds.includes(caller.originMessageId) ||
+      !caller.toolInvocationId.trim()
+    ) {
+      throw new DurableDelegatedWorkError(
+        'authorization',
+        'delegated children are outside the authenticated parent conversation'
+      )
+    }
+    return snapshot
+  }
+
+  const selectAuthorizedChildren = (
+    snapshot: DurableSnapshot,
+    caller: AuthenticatedDelegateCaller,
+    frameIds?: readonly string[]
+  ): readonly DurableChild[] => {
+    const directChildren = snapshot.records.filter(
+      (child) => child.parentFrameId === caller.frameId
+    ) as readonly DurableChild[]
+    if (!frameIds) return directChildren
+    const selected = frameIds.map((frameId) =>
+      directChildren.find((child) => child.frameId === frameId)
+    )
+    if (selected.some((child) => !child)) {
+      throw new DurableDelegatedWorkError(
+        'authorization',
+        'one or more requested children are outside the authenticated parent conversation'
+      )
+    }
+    return selected as readonly DurableChild[]
+  }
+
+  const projectSnapshotResult = (
+    snapshot: DurableSnapshot,
+    child: DurableChild
+  ): DurableDelegateResult | undefined => {
+    const attempt = currentAttempt(child)
     if (attempt.status === 'running') return undefined
     const terminalMessage = attempt.terminalMessageId
       ? snapshot.messages.find((message) => message.id === attempt.terminalMessageId)
       : undefined
     return {
-      frameId,
+      frameId: child.frameId,
       attemptId: attempt.id,
       status: attempt.status,
       ...(attempt.terminalMessageId ? { terminalMessageId: attempt.terminalMessageId } : {}),
@@ -451,40 +492,11 @@ const createDurableDelegatedWork = (options: {
     }
   }
 
-  const authorizedChildren = async (
-    caller: AuthenticatedDelegateCaller,
-    frameIds?: readonly string[]
-  ): Promise<readonly DurableChild[]> => {
-    if (caller.role !== 'main') {
-      throw new DurableDelegatedWorkError(
-        'authorization',
-        'only the Main Agent can inspect children'
-      )
-    }
+  const projectResult = async (frameId: string): Promise<DurableDelegateResult | undefined> => {
     const snapshot = await options.records.snapshot()
-    if (!sameSession(snapshot.session, caller.session) || caller.frameId !== snapshot.rootFrameId) {
-      throw new DurableDelegatedWorkError(
-        'authorization',
-        'caller cannot access delegated children'
-      )
-    }
-    if (!frameIds) {
-      return snapshot.records.filter(
-        (child) => child.parentFrameId === caller.frameId
-      ) as DurableChild[]
-    }
-    return frameIds.map((frameId) => {
-      const child = snapshot.records.find(
-        (candidate) => candidate.frameId === frameId && candidate.parentFrameId === caller.frameId
-      )
-      if (!child) {
-        throw new DurableDelegatedWorkError(
-          'authorization',
-          `caller cannot access child ${frameId}`
-        )
-      }
-      return child as DurableChild
-    })
+    const child = snapshot.records.find((candidate) => candidate.frameId === frameId)
+    if (!child) return undefined
+    return projectSnapshotResult(snapshot, child as DurableChild)
   }
 
   const launch = (
@@ -848,9 +860,12 @@ const createDurableDelegatedWork = (options: {
       void outcome.catch(() => invocationOutcomes.delete(invocationKey))
       return outcome
     },
-    async children(caller, frameIds) {
-      const children = await authorizedChildren(caller, frameIds)
-      return children.map((child) => {
+    async children(
+      caller: AuthenticatedDelegateCaller,
+      frameIds?: readonly string[]
+    ): Promise<readonly DurableChildSummary[]> {
+      const snapshot = await authenticatedSnapshot(caller)
+      return selectAuthorizedChildren(snapshot, caller, frameIds).map((child) => {
         const attempt = currentAttempt(child)
         return {
           frameId: child.frameId,
@@ -860,36 +875,25 @@ const createDurableDelegatedWork = (options: {
         }
       })
     },
-    async collect(caller, frameIds) {
-      if (frameIds.length === 0) {
+    async collect(
+      caller: AuthenticatedDelegateCaller,
+      frameIds: readonly string[]
+    ): Promise<readonly DurableDelegateResult[]> {
+      if (!Array.isArray(frameIds) || frameIds.length === 0) {
         throw new DurableDelegatedWorkError(
           'admission_rejection',
           'collect requires at least one child'
         )
       }
-      const children = await authorizedChildren(caller, frameIds)
-      await Promise.all(
-        children.map(async (child) => {
-          if (currentAttempt(child).status !== 'running') return
-          const active = running.get(child.frameId)
-          if (!active) {
-            if (await projectResult(child.frameId)) return
-            throw new DurableDelegatedWorkError(
-              'durability_failure',
-              `running delegated child ${child.frameId} has no active execution`
-            )
-          }
-          await active.completion
-        })
-      )
-      const results = await Promise.all(frameIds.map(projectResult))
-      if (results.some((result) => !result)) {
-        throw new DurableDelegatedWorkError(
-          'durability_failure',
-          'delegated work did not reach a durable terminal state'
-        )
+      for (;;) {
+        const snapshot = await authenticatedSnapshot(caller)
+        const children = selectAuthorizedChildren(snapshot, caller, frameIds)
+        const results = children.map((child) => projectSnapshotResult(snapshot, child))
+        if (results.every((result) => result !== undefined)) {
+          return results as readonly DurableDelegateResult[]
+        }
+        await new Promise((resolve) => setTimeout(resolve, options.collectPollIntervalMs ?? 10))
       }
-      return results as DurableDelegateResult[]
     },
     async sessionSummary(session: SessionKey): Promise<SessionSubagentSummary> {
       const snapshot = await options.records.snapshot()

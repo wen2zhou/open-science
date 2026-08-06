@@ -287,4 +287,76 @@ describe('Session delegated-work adapter', () => {
       )
       .toBe('Source Auditor')
   })
+
+  it('preserves detached child identity, title, status, and collect result across Session reopen', async () => {
+    const { coordinator, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    let nextBranch = 1
+    const records = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => `child-branch-${nextBranch++}`
+      },
+      key
+    )
+    let nextMessage = 1
+    const dispatchingWork = createDurableDelegatedWork({
+      execution,
+      records,
+      createId: (kind) =>
+        kind === 'message'
+          ? `child-message-${nextMessage++}`
+          : { frame: 'child-frame', attempt: 'child-attempt', runtime: 'child-runtime' }[kind]
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'detached-tool-call'
+    }
+
+    const receipt = await dispatchingWork.delegate(
+      caller,
+      { task: 'Detached trace', name: 'Stable trace' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Persisted answer')
+    await expect
+      .poll(async () => (await dispatchingWork.children(caller))[0]?.status)
+      .toBe('completed')
+
+    const reopenedRecords = createSessionDelegatedWorkRecords(
+      { commands: coordinator, readSession, frameworkId: 'codex' },
+      key
+    )
+    const reopenedWork = createDurableDelegatedWork({
+      execution: createDeterministicDelegateExecution(),
+      records: reopenedRecords
+    })
+
+    await expect(reopenedWork.children(caller)).resolves.toEqual([
+      {
+        frameId: receipt.children[0].frameId,
+        attemptId: receipt.children[0].attemptId,
+        title: 'Stable trace',
+        status: 'completed'
+      }
+    ])
+    await expect(reopenedWork.collect(caller, [receipt.children[0].frameId])).resolves.toEqual([
+      {
+        frameId: receipt.children[0].frameId,
+        attemptId: receipt.children[0].attemptId,
+        status: 'completed',
+        terminalMessageId: expect.any(String),
+        response: 'Persisted answer',
+        artifactsCreated: []
+      }
+    ])
+  })
 })

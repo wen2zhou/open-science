@@ -967,4 +967,256 @@ describe('durable delegated work', () => {
 
     expect(observedStatuses).toEqual([['cancelled']])
   })
+
+  it('lists only the authenticated Main Agent direct children in durable admission order', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const first = await work.delegate(
+      caller,
+      { task: 'First task', name: 'First' },
+      { wait: false }
+    )
+    const second = await work.delegate(
+      { ...caller, toolInvocationId: 'tool-call-2' },
+      { task: 'Second task', name: 'Second' },
+      { wait: false }
+    )
+
+    await expect(work.children(caller)).resolves.toEqual([
+      {
+        frameId: first.children[0].frameId,
+        attemptId: first.children[0].attemptId,
+        title: 'First',
+        status: 'running'
+      },
+      {
+        frameId: second.children[0].frameId,
+        attemptId: second.children[0].attemptId,
+        title: 'Second',
+        status: 'running'
+      }
+    ])
+    await expect(
+      work.children({ ...caller, session: { ...caller.session, sessionId: 'session-2' } })
+    ).rejects.toMatchObject({ code: 'authorization' })
+    await expect(work.children({ ...caller, frameId: 'other-parent' })).rejects.toMatchObject({
+      code: 'authorization'
+    })
+  })
+
+  it('projects explicitly requested direct children in request order and rejects the whole unauthorized set', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const first = await work.delegate(caller, { task: 'First' }, { wait: false })
+    const second = await work.delegate(
+      { ...caller, toolInvocationId: 'tool-call-2' },
+      { task: 'Second' },
+      { wait: false }
+    )
+    const firstId = first.children[0].frameId
+    const secondId = second.children[0].frameId
+
+    await expect(work.children(caller, [secondId, firstId])).resolves.toEqual([
+      {
+        frameId: secondId,
+        attemptId: second.children[0].attemptId,
+        title: 'Second',
+        status: 'running'
+      },
+      {
+        frameId: firstId,
+        attemptId: first.children[0].attemptId,
+        title: 'First',
+        status: 'running'
+      }
+    ])
+    await expect(work.children(caller, [firstId, 'unknown-frame'])).rejects.toMatchObject({
+      code: 'authorization'
+    })
+
+    const unrelatedParentView = createDurableDelegatedWork({
+      execution: createDeterministicDelegateExecution(),
+      records: {
+        ...records,
+        async snapshot() {
+          const snapshot = await records.snapshot()
+          return {
+            ...snapshot,
+            records: snapshot.records.map((child) => ({
+              ...child,
+              parentFrameId: child.frameId === firstId ? 'another-parent' : child.parentFrameId
+            }))
+          }
+        }
+      }
+    })
+    await expect(unrelatedParentView.children(caller, [firstId])).rejects.toMatchObject({
+      code: 'authorization'
+    })
+    await expect(unrelatedParentView.collect(caller, [firstId])).rejects.toMatchObject({
+      code: 'authorization'
+    })
+  })
+
+  it('collects durable terminal results after reopen only when every requested child is terminal', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const dispatchingWork = createDurableDelegatedWork({ execution, records })
+    const first = await dispatchingWork.delegate(caller, { task: 'First' }, { wait: false })
+    const second = await dispatchingWork.delegate(
+      { ...caller, toolInvocationId: 'tool-call-2' },
+      { task: 'Second' },
+      { wait: false }
+    )
+    const firstId = first.children[0].frameId
+    const secondId = second.children[0].frameId
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    execution.controls()[0].accept()
+    execution.controls()[1].accept()
+
+    const reopenedWork = createDurableDelegatedWork({
+      execution: createDeterministicDelegateExecution(),
+      records
+    })
+    let settled = false
+    const pending = reopenedWork.collect(caller, [secondId, firstId]).finally(() => {
+      settled = true
+    })
+    execution.controls()[1].complete('Second durable answer')
+    await expect
+      .poll(async () => (await dispatchingWork.children(caller, [secondId]))[0].status)
+      .toBe('completed')
+    expect(settled).toBe(false)
+
+    execution.controls()[0].complete('First durable answer')
+    await expect(pending).resolves.toEqual([
+      {
+        frameId: secondId,
+        attemptId: second.children[0].attemptId,
+        status: 'completed',
+        terminalMessageId: expect.any(String),
+        response: 'Second durable answer',
+        artifactsCreated: []
+      },
+      {
+        frameId: firstId,
+        attemptId: first.children[0].attemptId,
+        status: 'completed',
+        terminalMessageId: expect.any(String),
+        response: 'First durable answer',
+        artifactsCreated: []
+      }
+    ])
+    await expect(reopenedWork.children(caller)).resolves.toEqual([
+      {
+        frameId: firstId,
+        attemptId: first.children[0].attemptId,
+        title: 'First',
+        status: 'completed'
+      },
+      {
+        frameId: secondId,
+        attemptId: second.children[0].attemptId,
+        title: 'Second',
+        status: 'completed'
+      }
+    ])
+  })
+
+  it('treats cancelled and error children as terminal and rejects unauthorized collect targets', async () => {
+    const execution = createDeterministicDelegateExecution()
+    execution.plan({ status: 'failed', error: new Error('safe provider failure') })
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const failed = await work.delegate(caller, { task: 'Failure' }, { wait: false })
+    const cancelled = await work.delegate(
+      { ...caller, toolInvocationId: 'tool-call-2' },
+      { task: 'Cancellation' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    execution.controls()[1].accept()
+    execution.controls()[1].cancel()
+
+    await expect(
+      work.collect(caller, [cancelled.children[0].frameId, failed.children[0].frameId])
+    ).resolves.toEqual([
+      {
+        frameId: cancelled.children[0].frameId,
+        attemptId: cancelled.children[0].attemptId,
+        status: 'cancelled',
+        artifactsCreated: [],
+        cancellationReason: 'main_agent_stop'
+      },
+      {
+        frameId: failed.children[0].frameId,
+        attemptId: failed.children[0].attemptId,
+        status: 'error',
+        artifactsCreated: [],
+        error: { code: 'execution_failure', message: 'safe provider failure' }
+      }
+    ])
+    await expect(work.collect(caller, [])).rejects.toMatchObject({
+      code: 'admission_rejection'
+    })
+    await expect(
+      work.collect(caller, [failed.children[0].frameId, 'unknown-frame'])
+    ).rejects.toMatchObject({ code: 'authorization' })
+    await expect(
+      work.collect({ ...caller, session: { ...caller.session, sessionId: 'session-2' } }, [
+        failed.children[0].frameId
+      ])
+    ).rejects.toMatchObject({ code: 'authorization' })
+  })
+
+  it('keeps lifecycle state unchanged when a children query fails and allows a clean retry', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const lifecycleWork = createDurableDelegatedWork({ execution, records })
+    const receipt = await lifecycleWork.delegate(caller, { task: 'Keep running' }, { wait: false })
+    let failNextRead = true
+    const observingWork = createDurableDelegatedWork({
+      execution: createDeterministicDelegateExecution(),
+      records: {
+        ...records,
+        async snapshot() {
+          if (failNextRead) {
+            failNextRead = false
+            throw new Error('temporary Session read failure')
+          }
+          return records.snapshot()
+        }
+      }
+    })
+
+    await expect(observingWork.children(caller)).rejects.toThrow('temporary Session read failure')
+    await expect(lifecycleWork.children(caller)).resolves.toMatchObject([
+      { frameId: receipt.children[0].frameId, status: 'running' }
+    ])
+    await expect(observingWork.children(caller)).resolves.toMatchObject([
+      { frameId: receipt.children[0].frameId, status: 'running' }
+    ])
+  })
 })

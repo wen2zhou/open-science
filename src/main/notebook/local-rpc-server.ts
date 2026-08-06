@@ -40,8 +40,7 @@ import { createLogger, errorLogFields } from '../logger'
 import { PlanCommandError } from '../../shared/session-plan/contract'
 import type {
   AuthenticatedDelegateCaller,
-  DurableDelegateOutcome,
-  DurableDelegateRequest
+  DurableDelegatedWork
 } from '../delegated-work/durable-delegated-work'
 
 const log = createLogger('notebook:local-rpc')
@@ -139,17 +138,8 @@ type NotebookLocalRpcServerOptions = {
     read(op: unknown, context: TrustedCallingSession): Promise<unknown>
     dispatch?(op: unknown, context: TrustedCallingSession): Promise<unknown>
   }
-  delegatedWorkService?: {
-    delegate(
-      caller: AuthenticatedDelegateCaller,
-      request: DurableDelegateRequest | readonly DurableDelegateRequest[],
-      options?: Readonly<{ wait?: boolean }>
-    ): Promise<DurableDelegateOutcome>
-    stopChildren?(
-      caller: AuthenticatedDelegateCaller,
-      frameIds: readonly string[]
-    ): Promise<readonly Readonly<{ frameId: string; status: 'cancelled' | 'already_terminal' }>[]>
-  }
+  delegatedWorkService?: Pick<DurableDelegatedWork, 'delegate'> &
+    Partial<Pick<DurableDelegatedWork, 'children' | 'collect' | 'stopChildren'>>
 }
 
 type NotebookRpcPayload = {
@@ -1189,13 +1179,36 @@ class NotebookLocalRpcServer {
         }
         return this.delegatedWorkService.stopChildren(caller, params.frame_ids as string[])
       }
+      const op = params.op === undefined ? 'delegate' : params.op
+      if (op === 'children' || op === 'collect') {
+        if (
+          params.frame_ids !== undefined &&
+          (!Array.isArray(params.frame_ids) ||
+            params.frame_ids.some((id) => typeof id !== 'string'))
+        ) {
+          throw new Error(`host.${op} frame_ids must be an array of strings.`)
+        }
+        const frameIds = params.frame_ids as readonly string[] | undefined
+        if (op === 'children') {
+          if (!this.delegatedWorkService.children) {
+            throw new Error('host.children is not configured.')
+          }
+          return this.delegatedWorkService.children(caller, frameIds)
+        }
+        if (!frameIds) throw new Error('host.collect requires frame_ids.')
+        if (!this.delegatedWorkService.collect) {
+          throw new Error('host.collect is not configured.')
+        }
+        return this.delegatedWorkService.collect(caller, frameIds)
+      }
+      if (op !== 'delegate') throw new Error('Delegated Work operation is invalid.')
       if (!isRecord(params.request) && !Array.isArray(params.request)) {
         throw new Error('host.delegate requires one request object or a non-empty request array.')
       }
       if (params.options !== undefined && !isRecord(params.options)) {
         throw new Error('host.delegate options must be an object.')
       }
-      const request = params.request as DurableDelegateRequest | readonly DurableDelegateRequest[]
+      const request = params.request as Parameters<DurableDelegatedWork['delegate']>[1]
       const requestedOptions = isRecord(params.options) ? params.options : {}
       if (requestedOptions.wait !== undefined && typeof requestedOptions.wait !== 'boolean') {
         throw new Error('host.delegate wait must be a boolean.')
