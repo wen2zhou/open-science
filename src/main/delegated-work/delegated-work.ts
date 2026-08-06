@@ -95,6 +95,7 @@ type AttemptRecord = {
   result?: DelegateResult
   execution?: RunningDelegateExecution
   reservation?: DelegateCapacityReservation
+  slotId?: string
   waiters: Array<(result: DelegateResult) => void>
 }
 type ChildRecord = {
@@ -159,9 +160,11 @@ const createDelegatedWork = (options: {
     child: ChildRecord,
     attempt: AttemptRecord,
     reservation: DelegateCapacityReservation,
+    slotId: string,
     continuation: boolean
   ): void => {
     const input: DelegateExecutionInput = {
+      session: child.session,
       frameId: child.frameId,
       attemptId: attempt.id,
       task: child.request.task,
@@ -172,9 +175,10 @@ const createDelegatedWork = (options: {
     }
     let handle: RunningDelegateExecution
     try {
-      handle = reservation.start(input)
+      handle = options.execution.run(input, slotId)
       attempt.execution = handle
       attempt.reservation = reservation
+      attempt.slotId = slotId
     } catch (error) {
       terminalize(child, attempt, {
         frameId: child.frameId,
@@ -185,7 +189,7 @@ const createDelegatedWork = (options: {
           message: error instanceof Error ? error.message : String(error)
         }
       })
-      void reservation.release(child.frameId)
+      void reservation.release(slotId)
       return
     }
     const unsubscribe = handle.subscribe((event) => {
@@ -224,7 +228,7 @@ const createDelegatedWork = (options: {
         })
       } finally {
         unsubscribe()
-        await reservation.release(child.frameId)
+        await reservation.release(slotId)
       }
     })()
   }
@@ -277,7 +281,7 @@ const createDelegatedWork = (options: {
           error instanceof Error ? error.message : String(error)
         )
       }
-      const created = requests.map((request) => {
+      const created = requests.map((request, index) => {
         const frameId = `frame-${state.nextFrame++}`
         const attempt: AttemptRecord = {
           id: `attempt-${state.nextAttempt++}`,
@@ -294,7 +298,7 @@ const createDelegatedWork = (options: {
           awaitingPermission: false
         }
         state.children.push(child)
-        run(child, attempt, reservation, false)
+        run(child, attempt, reservation, reservation.slotIds[index], false)
         return child
       })
       const receipts = created.map((child): DelegateReceipt => ({
@@ -384,7 +388,7 @@ const createDelegatedWork = (options: {
       }
       child.request = { ...child.request, task: message }
       child.attempts.push(continued)
-      run(child, continued, reservation, true)
+      run(child, continued, reservation, reservation.slotIds[0], true)
       return {
         kind: 'continued',
         child: { frameId: child.frameId, attemptId: continued.id, status: 'running' }

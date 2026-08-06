@@ -95,7 +95,13 @@ const delegatedWorkContract = (create: () => Harness): void => {
       await work.delegate(mainCaller, { task: 'permission task' }, { wait: false })
       const control = execution.control('attempt-1')
       control.accept()
-      control.emit({ kind: 'permission', awaiting: true })
+      control.emit({
+        kind: 'permission',
+        awaiting: true,
+        requestId: 'permission-1',
+        title: 'Read a file',
+        options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+      })
 
       await expect(work.children(mainCaller, ['frame-1'])).resolves.toEqual([
         {
@@ -106,7 +112,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
           awaitingPermission: true
         }
       ])
-      control.emit({ kind: 'permission', awaiting: false })
+      control.emit({ kind: 'permission', awaiting: false, requestId: 'permission-1' })
       control.complete('done')
     })
 

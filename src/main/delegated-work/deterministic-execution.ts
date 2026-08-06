@@ -6,6 +6,7 @@ import {
   type DelegateExecutionEvent,
   type DelegateExecutionInput,
   type DelegateExecutionOutcome,
+  type DelegatePermissionResponse,
   type RunningDelegateExecution
 } from './execution-port'
 
@@ -34,6 +35,7 @@ type ExecutionControl = Readonly<{
   fail(error?: Error): void
   cancel(): void
   deliveredMessages(): readonly string[]
+  permissionResponses(): readonly DelegatePermissionResponse[]
 }>
 
 type PlannedExecution =
@@ -56,6 +58,9 @@ const createDeterministicDelegateExecution = (): DeterministicDelegateExecution 
   const released: string[] = []
   const reservationCounts: number[] = []
   let reservationFailure: DelegateExecutionError | undefined
+  let nextSlot = 1
+  const availableSlots = new Set<string>()
+  const slotFrames = new Map<string, string>()
 
   return {
     plan(plan) {
@@ -79,72 +84,91 @@ const createDeterministicDelegateExecution = (): DeterministicDelegateExecution 
         reservationFailure = undefined
         throw error
       }
-      let releasedAll = false
+      const slotIds = Array.from({ length: count }, () => `fake-slot-${nextSlot++}`)
+      for (const slotId of slotIds) availableSlots.add(slotId)
+      const owned = new Set(slotIds)
       return {
-        start(input): RunningDelegateExecution {
-          const acceptance = deferred<void>()
-          const completion = deferred<DelegateExecutionOutcome>()
-          const listeners = new Set<(event: DelegateExecutionEvent) => void>()
-          const messages: string[] = []
-          let terminal = false
-          const control: ExecutionControl = {
-            input,
-            accept: () => acceptance.resolve(),
-            rejectAcceptance: (error = new Error('acceptance failed')) => acceptance.reject(error),
-            emit: (event) => {
-              for (const listener of listeners) listener(event)
-            },
-            complete: (response) => {
-              if (terminal) return
-              terminal = true
-              completion.resolve({ status: 'completed', response })
-            },
-            fail: (error = new Error('execution failed')) => {
-              if (terminal) return
-              terminal = true
-              completion.reject(error)
-            },
-            cancel: () => {
-              if (terminal) return
-              terminal = true
-              completion.resolve({ status: 'cancelled' })
-            },
-            deliveredMessages: () => messages
-          }
-          running.push(control)
-          const planned = plans.shift()
-          if (planned) {
-            queueMicrotask(() => {
-              control.accept()
-              if (planned.status === 'completed') {
-                for (const event of planned.events ?? []) control.emit(event)
-                control.complete(planned.response)
-              } else {
-                control.fail(planned.error)
-              }
-            })
-          }
-          return {
-            accepted: acceptance.promise,
-            completion: completion.promise,
-            subscribe(listener) {
-              listeners.add(listener)
-              return () => listeners.delete(listener)
-            },
-            async sendMessage(message) {
-              messages.push(message)
-            },
-            async cancel() {
-              control.cancel()
-            }
-          }
-        },
-        async release(frameId) {
-          released.push(frameId)
+        slotIds,
+        async release(slotId) {
+          if (!owned.delete(slotId)) return
+          availableSlots.delete(slotId)
+          const frameId = slotFrames.get(slotId)
+          slotFrames.delete(slotId)
+          if (frameId) released.push(frameId)
         },
         async releaseAll() {
-          if (releasedAll) return
-          releasedAll = true
+          for (const slotId of [...owned]) {
+            owned.delete(slotId)
+            availableSlots.delete(slotId)
+          }
+        }
+      }
+    },
+    run(input, slotId): RunningDelegateExecution {
+      if (!availableSlots.delete(slotId)) throw new Error(`unavailable slot: ${slotId}`)
+      slotFrames.set(slotId, input.frameId)
+      const acceptance = deferred<void>()
+      const completion = deferred<DelegateExecutionOutcome>()
+      const listeners = new Set<(event: DelegateExecutionEvent) => void>()
+      const messages: string[] = []
+      const responses: DelegatePermissionResponse[] = []
+      let terminal = false
+      const control: ExecutionControl = {
+        input,
+        accept: () => acceptance.resolve(),
+        rejectAcceptance: (error = new Error('acceptance failed')) => acceptance.reject(error),
+        emit: (event) => {
+          for (const listener of listeners) listener(event)
+        },
+        complete: (response) => {
+          if (terminal) return
+          terminal = true
+          completion.resolve({ status: 'completed', response })
+        },
+        fail: (error = new Error('execution failed')) => {
+          if (terminal) return
+          terminal = true
+          completion.reject(error)
+        },
+        cancel: () => {
+          if (terminal) return
+          terminal = true
+          completion.resolve({ status: 'cancelled' })
+        },
+        deliveredMessages: () => messages,
+        permissionResponses: () => responses
+      }
+      running.push(control)
+      const planned = plans.shift()
+      if (planned) {
+        queueMicrotask(() => {
+          control.accept()
+          if (planned.status === 'completed') {
+            for (const event of planned.events ?? []) control.emit(event)
+            control.complete(planned.response)
+          } else {
+            control.fail(planned.error)
+          }
+        })
+      }
+      return {
+        accepted: acceptance.promise,
+        completion: completion.promise,
+        subscribe(listener) {
+          listeners.add(listener)
+          return () => listeners.delete(listener)
+        },
+        async sendMessage(message) {
+          messages.push(message)
+        },
+        async respondToPermission(response) {
+          responses.push(response)
+          for (const listener of listeners) {
+            listener({ kind: 'permission', awaiting: false, requestId: response.requestId })
+          }
+        },
+        async cancel() {
+          control.cancel()
         }
       }
     }
