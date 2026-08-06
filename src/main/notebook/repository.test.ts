@@ -3,7 +3,9 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
+import type { NotebookRunRecord } from '../../shared/notebook'
 import { NotebookRunRepository, getNotebookSessionRoot } from './repository'
+import { createFrameNotebookLane, createRootNotebookLane } from './lane-identity'
 
 let storageRoot: string | undefined
 
@@ -20,6 +22,83 @@ afterEach(async () => {
 })
 
 describe('notebook run repository', () => {
+  it('isolates Frame workspaces while root keeps the legacy Session work surface', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const rootLane = createRootNotebookLane('default-project', 'session-1')
+    const childLane = createFrameNotebookLane('default-project', 'session-1', 'child-frame-1')
+
+    const rootDocument = await repository.loadOrCreate({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      lane: rootLane
+    })
+    const childDocument = await repository.loadOrCreate({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      lane: childLane
+    })
+
+    expect(rootDocument.notebookSessionRoot).toBe(
+      join(root, 'notebooks', 'default-project', 'session-1')
+    )
+    expect(childDocument.notebookSessionRoot).toBe(
+      join(root, 'notebooks', 'default-project', 'session-1', 'frames', 'child-frame-1')
+    )
+    expect(childDocument.dataRoot).not.toBe(rootDocument.dataRoot)
+  })
+
+  it('aggregates attributed Frame runs with legacy Unattributed Session runs', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const childLane = createFrameNotebookLane('default-project', 'session-1', 'child-frame-1')
+    const run = (runId: string, agentFrameId?: string): NotebookRunRecord => ({
+      runId,
+      cellId: `cell-${runId}`,
+      source: 'agent' as const,
+      kernelKind: 'python' as const,
+      script: '1',
+      status: 'completed' as const,
+      startedAt: runId === 'legacy' ? 1 : 2,
+      text: { stdout: '', stderr: '', traceback: '', plain: [] },
+      outputs: [],
+      artifacts: [],
+      workingFiles: [],
+      ...(agentFrameId ? { agentFrameId, runtimeSegmentId: 'runtime-child' } : {})
+    })
+
+    await repository.loadOrCreate({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace'
+    })
+    await repository.appendRun({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      run: run('legacy')
+    })
+    await repository.loadOrCreate({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      lane: childLane
+    })
+    await repository.appendRun({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane: childLane,
+      run: run('child', 'child-frame-1')
+    })
+
+    const runs = await repository.readSessionRuns('default-project', 'session-1')
+    expect(runs.map(({ runId, agentFrameId }) => ({ runId, agentFrameId }))).toEqual([
+      { runId: 'legacy', agentFrameId: undefined },
+      { runId: 'child', agentFrameId: 'child-frame-1' }
+    ])
+  })
+
   it('creates run.json under the notebook session workspace with runtime and data roots', async () => {
     const root = await createStorageRoot()
     const repository = new NotebookRunRepository(root)

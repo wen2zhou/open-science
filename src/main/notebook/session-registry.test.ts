@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { NotebookSessionRegistry } from './session-registry'
+import { createFrameNotebookLane } from './lane-identity'
 
 type TestSession = {
   sessionId: string
@@ -29,6 +30,29 @@ const testSession = (sessionId: string): TestSession => ({
 })
 
 describe('NotebookSessionRegistry', () => {
+  it('isolates owners in different Project and Agent Frame lanes even when session IDs match', async () => {
+    const registry = new NotebookSessionRegistry<TestSession>()
+    const firstLane = createFrameNotebookLane('project-a', 'session-1', 'frame-a')
+    const secondLane = createFrameNotebookLane('project-a', 'session-1', 'frame-b')
+    const otherProjectLane = createFrameNotebookLane('project-b', 'session-1', 'frame-a')
+    const first = testSession('session-1')
+    const second = testSession('session-1')
+    const otherProject = testSession('session-1')
+
+    await registry.getOrCreate(firstLane, async () => first)
+    await registry.getOrCreate(secondLane, async () => second)
+    await registry.getOrCreate(otherProjectLane, async () => otherProject)
+
+    expect(registry.get(firstLane)).toBe(first)
+    expect(registry.get(secondLane)).toBe(second)
+    expect(registry.get(otherProjectLane)).toBe(otherProject)
+
+    await registry.remove(secondLane)
+    expect(registry.get(firstLane)).toBe(first)
+    expect(registry.get(secondLane)).toBeUndefined()
+    expect(registry.get(otherProjectLane)).toBe(otherProject)
+  })
+
   it('shares one initialization across concurrent admission for the same session ID', async () => {
     const registry = new NotebookSessionRegistry<TestSession>()
     const initialization = deferred<TestSession>()

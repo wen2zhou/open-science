@@ -29,7 +29,8 @@ type ResolveArtifactPath = (request: {
 }) => Promise<string>
 
 type NotebookExportReaderOptions = {
-  repository: Pick<NotebookRunRepository, 'findExisting'>
+  repository: Pick<NotebookRunRepository, 'findExisting'> &
+    Partial<Pick<NotebookRunRepository, 'readSessionRuns'>>
   defaultProjectName: string
   appVersion?: string
   resolveArtifactPath?: ResolveArtifactPath
@@ -183,7 +184,10 @@ class NotebookExportReader {
     if (!document) {
       throw new Error(`Notebook session not found: ${request.sessionId}`)
     }
-    return document
+    const runs = this.options.repository.readSessionRuns
+      ? await this.options.repository.readSessionRuns(projectName, request.sessionId)
+      : document.runs
+    return { ...document, runs }
   }
 }
 

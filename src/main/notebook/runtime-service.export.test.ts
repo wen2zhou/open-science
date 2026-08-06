@@ -40,6 +40,48 @@ const document: NotebookRunDocument = {
 }
 
 describe('NotebookRuntimeService exportIpynb', () => {
+  it('exports root and Frame-lane runs through the same Session work surface', async () => {
+    const childRun = {
+      ...document.runs[0]!,
+      runId: 'run-child',
+      cellId: 'cell-child',
+      script: 'print("child")',
+      startedAt: 3,
+      rootFrameId: 'root-frame-12345678-abcd',
+      agentFrameId: 'child-frame-1',
+      runtimeSegmentId: 'runtime-child'
+    }
+    const repository = {
+      findExisting: vi.fn().mockResolvedValue(document),
+      readSessionRuns: vi.fn().mockResolvedValue([document.runs[0], childRun])
+    } as unknown as NotebookRunRepository
+    const saveIpynb = vi
+      .fn()
+      .mockResolvedValue({ saved: true, filePath: '/downloads/export.ipynb' })
+    const service = new NotebookRuntimeService({
+      configRoot: '/config',
+      dataRoot: '/storage',
+      projectName: 'default-project',
+      repository,
+      saveIpynb
+    })
+
+    await service.exportIpynb({
+      sessionId: '12345678-abcd',
+      workspaceCwd: '/workspace',
+      kernel: 'python'
+    })
+
+    expect(repository.readSessionRuns).toHaveBeenCalledWith('default-project', '12345678-abcd')
+    const exported = JSON.parse(saveIpynb.mock.calls[0]![1] as string) as {
+      cells: Array<{ source: string[]; metadata: { open_science: { agentFrameId?: string } } }>
+    }
+    expect(exported.cells.map((cell) => cell.source.join(''))).toEqual([
+      'print("hello")',
+      'print("child")'
+    ])
+  })
+
   it('loads the durable document and sends a serialized nbformat notebook to the save seam', async () => {
     const repository = {
       findExisting: vi.fn().mockResolvedValue(document)

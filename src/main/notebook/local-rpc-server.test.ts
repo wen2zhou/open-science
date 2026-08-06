@@ -74,6 +74,52 @@ afterEach(async () => {
 })
 
 describe('notebook local RPC server', () => {
+  it('does not let a root Frame capability write through another active Frame lane', async () => {
+    const root = await createStorageRoot()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const execute = vi.spyOn(service, 'execute')
+    const server = new NotebookLocalRpcServer(service, { token: 'master-token' })
+    const connection = await server.issueSessionConnection('session-1', 'default-project')
+    server.setArtifactProvenanceContext('session-1', {
+      rootFrameId: 'root-frame-session-1',
+      agentFrameId: 'child-frame-1',
+      messageBranchId: 'branch-child',
+      runtimeSegmentId: 'runtime-child',
+      promptMessageId: 'message-child'
+    })
+
+    try {
+      const response = await fetchLocalRpc(
+        connection,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${connection.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'execute',
+            params: { sessionId: 'forged', workspaceCwd: '/workspace', code: 'forged = True' }
+          })
+        },
+        'Notebook Frame capability test'
+      )
+
+      expect(response.status).toBe(403)
+      await expect(response.json()).resolves.toEqual({
+        error: 'Notebook RPC capability does not match active Agent Frame.'
+      })
+      expect(execute).not.toHaveBeenCalled()
+    } finally {
+      await server.close()
+    }
+  })
+
   it('binds Plan calls to the issued Session capability and rejects the master token', async () => {
     const root = await createStorageRoot()
     const call = vi.fn(async (input: unknown) => input)

@@ -1049,8 +1049,8 @@ const createApplicationModules = async (
   // The RPC server needs the runtime service to dispatch to, and the runtime service needs the RPC
   // server's (lazily-started) connection for host.mcp() env injection — wire the second half here to
   // avoid a construction cycle.
-  notebookService.setMcpRpcConnectionResolver(({ sessionId, projectId }) =>
-    notebookRpcServer.issueControlConnection(sessionId, projectId)
+  notebookService.setMcpRpcConnectionResolver(({ sessionId, projectId, agentFrameId }) =>
+    notebookRpcServer.issueControlConnection(sessionId, projectId, agentFrameId)
   )
   // The renderer's approval card responds here; the broker resolves the held connector call.
   declareElectronAdapter('connector-approvals', () => {

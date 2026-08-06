@@ -12,6 +12,7 @@ import type {
 import type { NotebookRuntimeBinding, NotebookRuntimeBindings } from '../../shared/notebook-runtime'
 import { getNotebookRunJsonPath, getRuntimeRoot, NotebookRunRepository } from './repository'
 import type { NotebookSessionSnapshot } from './session-aggregate'
+import type { NotebookLaneIdentity } from './lane-identity'
 
 type NotebookHandoffContext = {
   activeRunId?: string
@@ -46,6 +47,7 @@ type NotebookSessionReadSource = {
   readonly dataRoot: string
   readonly runtimeRoot: string
   readonly runJsonPath: string
+  readonly lane?: NotebookLaneIdentity
   snapshot: () => NotebookSessionSnapshot
   kernelStatusEntries: () => Array<[string, NotebookKernelMetadata['lastKnownStatus']]>
   runtimeBindingEntries: () => Array<[NotebookLanguage, NotebookRuntimeBinding]>
@@ -122,9 +124,14 @@ class NotebookSessionReadModel<Session extends NotebookSessionReadSource> {
     const document = await this.options.repository.loadOrCreate({
       projectName: session.projectName,
       sessionId: session.sessionId,
-      workspaceCwd: session.cwd
+      workspaceCwd: session.cwd,
+      lane: session.lane
     })
     const snapshot = session.snapshot()
+    const runs = await this.options.repository.readSessionRuns(
+      session.projectName,
+      session.sessionId
+    )
 
     return {
       id: session.id,
@@ -139,8 +146,8 @@ class NotebookSessionReadModel<Session extends NotebookSessionReadSource> {
       cells: snapshot.cells.map((cell) => ({ ...cell })),
       activeWrite: snapshot.activeWrite ? { ...snapshot.activeWrite } : undefined,
       activeRunId: snapshot.activeRunId,
-      runs: document.runs.map((run) => this.toPublicRunRecord(run)),
-      recentRuns: document.runs.slice(-20).map((run) => this.toPublicRunRecord(run)),
+      runs: runs.map((run) => this.toPublicRunRecord(run)),
+      recentRuns: runs.slice(-20).map((run) => this.toPublicRunRecord(run)),
       environments: this.environmentStatuses(session),
       runtimeBindings: this.options.runtimeBindings(session)
     }

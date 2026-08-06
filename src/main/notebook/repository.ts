@@ -1,4 +1,4 @@
-import { mkdir, readFile, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type {
@@ -10,6 +10,11 @@ import type {
 import { NOTEBOOK_RUN_FILE, NOTEBOOKS_DIR } from '../../shared/notebook'
 import type { NotebookRuntimeBindings } from '../../shared/notebook-runtime'
 import { decodeRunDocumentDataPaths, encodeRunDocumentDataPaths } from './run-document-data-paths'
+import {
+  createFrameNotebookLane,
+  notebookLaneScope,
+  type NotebookLaneIdentity
+} from './lane-identity'
 
 const SAFE_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
@@ -20,12 +25,14 @@ type LoadNotebookRunDocumentRequest = {
   artifactSessionId?: string
   pythonPath?: string
   kernelName?: string
+  lane?: NotebookLaneIdentity
 }
 
 type AppendNotebookRunRequest = {
   projectName: string
   sessionId: string
   run: NotebookRunRecord
+  lane?: NotebookLaneIdentity
 }
 
 type UpdateNotebookRunRequest = AppendNotebookRunRequest
@@ -34,6 +41,7 @@ type UpdateKernelStatusRequest = {
   projectName: string
   sessionId: string
   status: NotebookKernelMetadata['lastKnownStatus']
+  lane?: NotebookLaneIdentity
 }
 
 type NormalizeNotebookRunDocumentRequest = Omit<LoadNotebookRunDocumentRequest, 'workspaceCwd'> & {
@@ -63,25 +71,41 @@ const getRuntimeRoot = (storageRoot: string): string => join(storageRoot, 'runti
 const getNotebookSessionRoot = (
   storageRoot: string,
   projectName: string,
-  sessionId: string
-): string =>
-  join(
+  sessionId: string,
+  lane?: NotebookLaneIdentity
+): string => {
+  const root = join(
     storageRoot,
     NOTEBOOKS_DIR,
     assertSafeNotebookPathSegment(projectName),
     assertSafeNotebookPathSegment(sessionId)
   )
+  if (!lane) return root
+  const scope = notebookLaneScope(lane)
+  if (scope.projectId !== projectName || scope.sessionId !== sessionId) {
+    throw new Error('Notebook lane does not match repository request scope.')
+  }
+  return scope.kind === 'root'
+    ? root
+    : join(root, 'frames', assertSafeNotebookPathSegment(scope.agentFrameId))
+}
 
 // Resolves the persisted run history path for a notebook session.
 const getNotebookRunJsonPath = (
   storageRoot: string,
   projectName: string,
-  sessionId: string
-): string => join(getNotebookSessionRoot(storageRoot, projectName, sessionId), NOTEBOOK_RUN_FILE)
+  sessionId: string,
+  lane?: NotebookLaneIdentity
+): string =>
+  join(getNotebookSessionRoot(storageRoot, projectName, sessionId, lane), NOTEBOOK_RUN_FILE)
 
 // Resolves the notebook-owned data directory used for raw and processed files.
-const getNotebookDataRoot = (storageRoot: string, projectName: string, sessionId: string): string =>
-  join(getNotebookSessionRoot(storageRoot, projectName, sessionId), 'data')
+const getNotebookDataRoot = (
+  storageRoot: string,
+  projectName: string,
+  sessionId: string,
+  lane?: NotebookLaneIdentity
+): string => join(getNotebookSessionRoot(storageRoot, projectName, sessionId, lane), 'data')
 
 // Creates the empty text projection used before an execution has produced output.
 const emptyText = (): NotebookRunRecord['text'] => ({
@@ -137,7 +161,12 @@ const normalizeDocument = (
 ): NotebookRunDocument => {
   const projectName = assertSafeNotebookPathSegment(request.projectName)
   const sessionId = assertSafeNotebookPathSegment(request.sessionId)
-  const notebookSessionRoot = getNotebookSessionRoot(storageRoot, projectName, sessionId)
+  const notebookSessionRoot = getNotebookSessionRoot(
+    storageRoot,
+    projectName,
+    sessionId,
+    request.lane
+  )
 
   return {
     ...document,
@@ -147,7 +176,7 @@ const normalizeDocument = (
     artifactSessionId: request.artifactSessionId ?? document.artifactSessionId,
     workspaceCwd: request.workspaceCwd ?? document.workspaceCwd,
     notebookSessionRoot,
-    dataRoot: getNotebookDataRoot(storageRoot, projectName, sessionId),
+    dataRoot: getNotebookDataRoot(storageRoot, projectName, sessionId, request.lane),
     kernel: {
       ...document.kernel,
       language: 'python',
@@ -172,7 +201,7 @@ class NotebookRunRepository {
   async loadOrCreate(request: LoadNotebookRunDocumentRequest): Promise<NotebookRunDocument> {
     const projectName = assertSafeNotebookPathSegment(request.projectName)
     const sessionId = assertSafeNotebookPathSegment(request.sessionId)
-    const filePath = getNotebookRunJsonPath(this.storageRoot, projectName, sessionId)
+    const filePath = getNotebookRunJsonPath(this.storageRoot, projectName, sessionId, request.lane)
 
     try {
       const rawDocument = await readFile(filePath, 'utf8')
@@ -213,7 +242,7 @@ class NotebookRunRepository {
 
   // Appends a new execution record, including "running" records created before execution starts.
   async appendRun(request: AppendNotebookRunRequest): Promise<NotebookRunDocument> {
-    return this.mutate(request.projectName, request.sessionId, (document) => ({
+    return this.mutate(request.projectName, request.sessionId, request.lane, (document) => ({
       ...document,
       runs: [...document.runs, normalizeRun(document.notebookSessionRoot, request.run)],
       updatedAt: Date.now()
@@ -222,7 +251,7 @@ class NotebookRunRepository {
 
   // Replaces an existing execution record, used to turn the initial "running" entry final.
   async updateRun(request: UpdateNotebookRunRequest): Promise<NotebookRunDocument> {
-    return this.mutate(request.projectName, request.sessionId, (document) => {
+    return this.mutate(request.projectName, request.sessionId, request.lane, (document) => {
       const runIndex = document.runs.findIndex((run) => run.runId === request.run.runId)
 
       if (runIndex === -1) {
@@ -240,7 +269,7 @@ class NotebookRunRepository {
   // Persists the kernel's last-known lifecycle status (e.g. 'restarting' while restart() is in
   // flight, 'terminated' once an idle proc is dropped), read back by state()/getSessionReference().
   async updateKernelStatus(request: UpdateKernelStatusRequest): Promise<NotebookRunDocument> {
-    return this.mutate(request.projectName, request.sessionId, (document) => ({
+    return this.mutate(request.projectName, request.sessionId, request.lane, (document) => ({
       ...document,
       kernel: { ...document.kernel, lastKnownStatus: request.status },
       updatedAt: Date.now()
@@ -252,9 +281,10 @@ class NotebookRunRepository {
   async setRuntimeBindings(
     projectName: string,
     sessionId: string,
-    bindings: NotebookRuntimeBindings
+    bindings: NotebookRuntimeBindings,
+    lane?: NotebookLaneIdentity
   ): Promise<NotebookRunDocument> {
-    return this.mutate(projectName, sessionId, (document) => ({
+    return this.mutate(projectName, sessionId, lane, (document) => ({
       ...document,
       runtimeBindings: bindings,
       updatedAt: Date.now()
@@ -268,9 +298,10 @@ class NotebookRunRepository {
   // and never touches a run that is genuinely live in THIS process.
   async reconcileInterruptedRuns(
     projectName: string,
-    sessionId: string
+    sessionId: string,
+    lane?: NotebookLaneIdentity
   ): Promise<NotebookRunDocument> {
-    return this.mutate(projectName, sessionId, (document) => {
+    return this.mutate(projectName, sessionId, lane, (document) => {
       const now = Date.now()
       const runs = document.runs.map((run) =>
         run.status === 'running' || run.status === 'queued'
@@ -304,11 +335,47 @@ class NotebookRunRepository {
     }
   }
 
+  async readSessionRuns(projectName: string, sessionId: string): Promise<NotebookRunRecord[]> {
+    const documents: NotebookRunDocument[] = []
+    const legacy = await this.findExisting(projectName, sessionId)
+    if (legacy) documents.push(legacy)
+
+    const framesRoot = join(
+      getNotebookSessionRoot(this.storageRoot, projectName, sessionId),
+      'frames'
+    )
+    let entries
+    try {
+      entries = await readdir(framesRoot, { withFileTypes: true })
+    } catch (error) {
+      if (isMissingFileError(error)) return documents.flatMap((document) => document.runs)
+      throw error
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isDirectory()) continue
+      const lane = createFrameNotebookLane(projectName, sessionId, entry.name)
+      const document = await this.loadExisting(projectName, sessionId, lane).catch((error) => {
+        if (isMissingFileError(error)) return undefined
+        throw error
+      })
+      if (document) documents.push(document)
+    }
+    return documents
+      .flatMap((document) => document.runs)
+      .sort(
+        (left, right) => left.startedAt - right.startedAt || left.runId.localeCompare(right.runId)
+      )
+  }
+
   // Loads a history document that must already exist for mutating operations.
-  private async loadExisting(projectName: string, sessionId: string): Promise<NotebookRunDocument> {
+  private async loadExisting(
+    projectName: string,
+    sessionId: string,
+    lane?: NotebookLaneIdentity
+  ): Promise<NotebookRunDocument> {
     const safeProjectName = assertSafeNotebookPathSegment(projectName)
     const safeSessionId = assertSafeNotebookPathSegment(sessionId)
-    const filePath = getNotebookRunJsonPath(this.storageRoot, safeProjectName, safeSessionId)
+    const filePath = getNotebookRunJsonPath(this.storageRoot, safeProjectName, safeSessionId, lane)
     const rawDocument = await readFile(filePath, 'utf8')
     const document = JSON.parse(rawDocument) as NotebookRunDocument
     // Decode before normalization for the same reason as loadOrCreate above.
@@ -318,7 +385,8 @@ class NotebookRunRepository {
       this.storageRoot,
       {
         projectName: safeProjectName,
-        sessionId: safeSessionId
+        sessionId: safeSessionId,
+        lane
       },
       decoded
     )
@@ -332,10 +400,11 @@ class NotebookRunRepository {
   private async mutate(
     projectName: string,
     sessionId: string,
+    lane: NotebookLaneIdentity | undefined,
     transform: (document: NotebookRunDocument) => NotebookRunDocument
   ): Promise<NotebookRunDocument> {
     const operation = this.saveQueue.then(async () => {
-      const document = await this.loadExisting(projectName, sessionId)
+      const document = await this.loadExisting(projectName, sessionId, lane)
       const nextDocument = transform(document)
 
       await this.persist(nextDocument)

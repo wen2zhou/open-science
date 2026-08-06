@@ -39,15 +39,23 @@ export class NotebookSessionRegistry<Session extends NotebookSessionRegistryMemb
 
   constructor(private readonly options: NotebookSessionRegistryOptions = {}) {}
 
-  get(sessionId: string): Session | undefined {
-    return this.sessions.get(sessionId)
+  private key(identity: string | NotebookLaneIdentity): string {
+    return typeof identity === 'string' ? identity : notebookLaneKey(identity)
+  }
+
+  get(identity: string | NotebookLaneIdentity): Session | undefined {
+    return this.sessions.get(this.key(identity))
   }
 
   values(): IterableIterator<Session> {
     return this.sessions.values()
   }
 
-  getOrCreate(sessionId: string, create: () => Promise<Session>): Promise<Session> {
+  getOrCreate(
+    identity: string | NotebookLaneIdentity,
+    create: () => Promise<Session>
+  ): Promise<Session> {
+    const sessionId = this.key(identity)
     if (this.terminal) return Promise.reject(this.disposedError())
 
     const globalGate = this.globalGate
@@ -76,7 +84,8 @@ export class NotebookSessionRegistry<Session extends NotebookSessionRegistryMemb
     return creation
   }
 
-  remove(sessionId: string): Promise<{ reaped: boolean }> {
+  remove(identity: string | NotebookLaneIdentity): Promise<{ reaped: boolean }> {
+    const sessionId = this.key(identity)
     if (this.terminal) return Promise.reject(this.disposedError())
 
     const globalGate = this.globalGate
@@ -275,3 +284,4 @@ export class NotebookSessionRegistry<Session extends NotebookSessionRegistryMemb
     return new Error('Notebook session registry has been disposed.')
   }
 }
+import { notebookLaneKey, type NotebookLaneIdentity } from './lane-identity'

@@ -142,6 +142,98 @@ const lifecycleCallbackHarness = (
 }
 
 describe('notebook runtime service', () => {
+  it('routes root and child Frames through isolated owners while aggregating attributed history', async () => {
+    const root = await createStorageRoot()
+    const executions: NotebookExecutionRequest[] = []
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      environmentStateTracker: verifiedPackageMutationTracker(),
+      executorFactory: () => ({
+        execute: async (request) => {
+          executions.push(request)
+          return {
+            status: 'completed',
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const rootContext = {
+      rootFrameId: 'root-frame-session-1',
+      agentFrameId: 'root-frame-session-1',
+      messageBranchId: 'branch-root',
+      runtimeSegmentId: 'runtime-root',
+      promptMessageId: 'message-root'
+    }
+    const childContext = {
+      rootFrameId: 'root-frame-session-1',
+      agentFrameId: 'child-frame-1',
+      messageBranchId: 'branch-child',
+      runtimeSegmentId: 'runtime-child',
+      promptMessageId: 'message-child'
+    }
+
+    await service.execute({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      code: 'root_value = 1',
+      provenanceContext: rootContext
+    })
+    await service.execute({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      code: 'child_value = 2',
+      provenanceContext: childContext
+    })
+
+    expect(executions.map((request) => request.dataRoot)).toEqual([
+      join(root, 'notebooks', 'default-project', 'session-1', 'data'),
+      join(root, 'notebooks', 'default-project', 'session-1', 'frames', 'child-frame-1', 'data')
+    ])
+    const state = await service.state({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      provenanceContext: rootContext
+    })
+    expect(
+      state.runs.map(({ agentFrameId, runtimeSegmentId }) => ({
+        agentFrameId,
+        runtimeSegmentId
+      }))
+    ).toEqual([
+      { agentFrameId: 'root-frame-session-1', runtimeSegmentId: 'runtime-root' },
+      { agentFrameId: 'child-frame-1', runtimeSegmentId: 'runtime-child' }
+    ])
+
+    await service.shutdown({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      provenanceContext: childContext
+    })
+    await service.execute({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      code: 'root_value += 1',
+      provenanceContext: rootContext
+    })
+    expect(executions.at(-1)?.dataRoot).toBe(
+      join(root, 'notebooks', 'default-project', 'session-1', 'data')
+    )
+  })
+
   it('peeks only actionable in-memory handoff state without creating or reloading a Session', async () => {
     const root = await createStorageRoot()
     const { service } = lifecycleCallbackHarness(root)
@@ -1287,7 +1379,8 @@ describe('notebook runtime service', () => {
     expect(resolveConnection).toHaveBeenCalledOnce()
     expect(resolveConnection).toHaveBeenCalledWith({
       sessionId: 'session-1',
-      projectId: 'default-project'
+      projectId: 'default-project',
+      agentFrameId: 'root-frame-session-1'
     })
     expect(executions.map((request) => request.mcpRpcToken)).toEqual([
       'session-token',

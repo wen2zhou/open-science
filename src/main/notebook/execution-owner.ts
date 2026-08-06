@@ -65,7 +65,7 @@ class NotebookControlCompletionCapturedError extends Error {
   }
 }
 
-type McpRpcConnectionBinding = { sessionId: string; projectId: string }
+type McpRpcConnectionBinding = { sessionId: string; projectId: string; agentFrameId: string }
 type McpRpcConnectionResolver = (
   binding: McpRpcConnectionBinding
 ) => Promise<NotebookSessionMcpRpcConnection>
@@ -509,6 +509,7 @@ class NotebookExecutionOwner {
       await this.options.repository.updateKernelStatus({
         projectName: session.projectName,
         sessionId: session.sessionId,
+        lane: session.lane,
         status
       })
     } catch {

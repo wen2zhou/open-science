@@ -5,6 +5,7 @@ import type { NotebookRunProvenanceContext } from '../../shared/notebook'
 import type { NotebookRpcConnection } from './mcp-server'
 import { NotebookControlCompletionCapturedError } from './execution-owner'
 import {
+  isNotebookLocalRpcMethod,
   opensNotebookInputRun,
   resolveNotebookLocalRpcHandler,
   type NotebookLocalRpcCapability
@@ -150,6 +151,7 @@ type ArtifactRpcCapability = Omit<ArtifactRpcCapabilityBinding, 'allowedMethods'
 type NotebookRpcSessionBinding = {
   sessionId: string
   projectId?: string
+  agentFrameId?: string
   allowedMethods?: ReadonlySet<string>
   activeControlInvocation?: TrustedControlInvocationIdentity
 }
@@ -427,7 +429,8 @@ class NotebookLocalRpcServer {
 
   async issueSessionConnection(
     sessionId: string,
-    projectId: string
+    projectId: string,
+    agentFrameId = `root-frame-${sessionId}`
   ): Promise<NotebookRpcConnection> {
     const connection = await this.ensureStarted()
     // A context reset issues the replacement under the final ACP id, while the original token can be
@@ -437,7 +440,7 @@ class NotebookLocalRpcServer {
 
     const token = randomUUID()
     this.sessionRpcTokens.set(sessionId, token)
-    this.sessionRpcCapabilities.set(token, { sessionId, projectId })
+    this.sessionRpcCapabilities.set(token, { sessionId, projectId, agentFrameId })
     return {
       endpoint: connection.endpoint,
       socketPath: connection.socketPath,
@@ -503,7 +506,8 @@ class NotebookLocalRpcServer {
   // narrower capability cannot invoke Notebook lifecycle or execution RPC methods.
   async issueControlConnection(
     sessionId: string,
-    projectId: string
+    projectId: string,
+    agentFrameId = `root-frame-${sessionId}`
   ): Promise<
     NotebookRpcConnection & {
       beginControlInvocation(context: TrustedControlInvocationIdentity): () => void
@@ -515,6 +519,7 @@ class NotebookLocalRpcServer {
     const binding: NotebookRpcSessionBinding = {
       sessionId,
       projectId,
+      agentFrameId,
       allowedMethods: CONTROL_RPC_METHODS
     }
     this.sessionRpcCapabilities.set(token, binding)
@@ -711,7 +716,19 @@ class NotebookLocalRpcServer {
         }
       }
       // Resolve pre-session aliases before the runtime service looks up persistent state.
-      const result = await this.dispatch(method, this.resolveSessionAlias(params))
+      const resolvedParams = this.resolveSessionAlias(params)
+      const authenticatedBinding = this.sessionRpcCapabilities.get(bearerToken)
+      if (authenticatedBinding?.agentFrameId && isNotebookLocalRpcMethod(method)) {
+        const resolvedSessionId = resolvedParams.sessionId
+        const activeContext =
+          typeof resolvedSessionId === 'string'
+            ? this.artifactProvenanceContexts.get(resolvedSessionId)
+            : undefined
+        if (activeContext && activeContext.agentFrameId !== authenticatedBinding.agentFrameId) {
+          throw new RpcHttpError(403, 'Notebook RPC capability does not match active Agent Frame.')
+        }
+      }
+      const result = await this.dispatch(method, resolvedParams)
 
       writeJson(response, 200, { result })
     } catch (error) {

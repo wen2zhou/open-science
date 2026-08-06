@@ -13,6 +13,8 @@ import type {
 } from '../../shared/notebook'
 import type { NotebookRuntimeBinding } from '../../shared/notebook-runtime'
 import type { TrustedControlInvocationIdentity } from '../../shared/agents-contract'
+import { createRootNotebookLane, type NotebookLaneIdentity } from './lane-identity'
+import { notebookLaneScope } from './lane-identity'
 
 export type NotebookSessionResolvedInterpreter = {
   command: string
@@ -104,6 +106,7 @@ export type NotebookSessionAggregateInit<
   executionCount: number
   executor: NotebookSessionExecutor<Request, Result>
   executorGeneration: NotebookSessionExecutorGeneration
+  lane?: NotebookLaneIdentity
 }
 
 export type NotebookSessionSnapshot = Readonly<{
@@ -150,6 +153,7 @@ export class NotebookSessionAggregate<
   readonly dataRoot: string
   readonly runtimeRoot: string
   readonly runJsonPath: string
+  readonly lane: NotebookLaneIdentity
 
   private cwdValue: string
   private readonly cells = new Map<string, NotebookCell>()
@@ -180,6 +184,7 @@ export class NotebookSessionAggregate<
     this.dataRoot = init.dataRoot
     this.runtimeRoot = init.runtimeRoot
     this.runJsonPath = init.runJsonPath
+    this.lane = init.lane ?? createRootNotebookLane(init.projectName, init.sessionId)
     this.executionCountValue = init.executionCount
     this.executorValue = init.executor
     this.executorGenerationValue = init.executorGeneration
@@ -423,6 +428,7 @@ export class NotebookSessionAggregate<
       | ((binding: {
           sessionId: string
           projectId: string
+          agentFrameId: string
         }) => Promise<NotebookSessionMcpRpcConnection>)
       | undefined
   ): Promise<NotebookSessionMcpRpcConnection | undefined> {
@@ -431,7 +437,8 @@ export class NotebookSessionAggregate<
     try {
       this.mcpRpcConnection = await resolver({
         sessionId: this.sessionId,
-        projectId: this.projectName
+        projectId: this.projectName,
+        agentFrameId: notebookLaneScope(this.lane).agentFrameId
       })
       return this.mcpRpcConnection
     } catch {
