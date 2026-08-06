@@ -1035,7 +1035,15 @@ class AcpRuntime {
     if (!this.artifactTurns) {
       throw new Error('No active assistant turn to attach a generated file to.')
     }
-    return this.artifactTurns.writeForActiveTurn(sessionId, input)
+    const execution = this.sessionInteractions.current(sessionId)
+    if (!execution || execution.kind !== 'prompt') {
+      throw new Error('No active assistant turn to attach a generated file to.')
+    }
+    const artifact = this.artifactTurns.handleForExecution(execution.turnToken)
+    if (this.artifactTurns.snapshot(artifact).phase !== 'open') {
+      throw new Error('No active assistant turn to attach a generated file to.')
+    }
+    return this.artifactTurns.write(artifact, input)
   }
 
   private cancelPermissionFlowForSession(sessionId: string): void {

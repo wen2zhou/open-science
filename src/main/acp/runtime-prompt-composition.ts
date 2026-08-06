@@ -92,10 +92,13 @@ const composeAcpRuntimePromptOwners = (
   }
   const openArtifact = async (
     sessionId: string,
+    executionId: string,
     provenanceContext: AcpPromptRequest['provenanceContext']
   ): Promise<ArtifactTurnHandle | undefined> => {
     if (!base.artifactTurns) return undefined
-    return base.artifactTurns.open({
+    return base.artifactTurns.openExecution({
+      executionId,
+      handoffRouting: 'session-current',
       appSessionId: sessionId,
       artifactStorageSessionId:
         base.sessionCapabilities.artifactRoutingIdFor(sessionId) ?? sessionId,
@@ -213,7 +216,8 @@ const composeAcpRuntimePromptOwners = (
     },
     artifacts: {
       open: openArtifact,
-      promptMessageIdFor: (sessionId) => base.artifactTurns?.promptMessageIdFor(sessionId),
+      promptMessageIdFor: (artifact) =>
+        artifact ? base.artifactTurns?.snapshot(artifact).promptMessageId : undefined,
       publish: publishArtifact,
       dispose: disposeArtifact
     },

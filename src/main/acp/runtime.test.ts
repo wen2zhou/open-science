@@ -20150,7 +20150,15 @@ describe('Specialist Skill scoping', () => {
         }
       }
     })
-    const turn = await owners.artifactTurns!.open({
+    const reservation = owners.sessionInteractions.reservePrompt({
+      sessionId: 'session-1',
+      kind: 'prompt',
+      promptMessageId: 'interaction-1'
+    })
+    const execution = owners.sessionInteractions.activatePrompt(reservation)
+    const turn = await owners.artifactTurns!.openExecution({
+      executionId: execution.turnToken,
+      handoffRouting: 'session-current',
       appSessionId: 'session-1',
       artifactStorageSessionId: 'session-1',
       projectId: 'project-1',
@@ -20183,6 +20191,7 @@ describe('Specialist Skill scoping', () => {
       ).resolves.toMatchObject({ projection: { artifactVersionId: 'version-1' } })
     } finally {
       await owners.artifactTurns!.dispose(turn)
+      owners.sessionInteractions.release(execution)
     }
   })
 })

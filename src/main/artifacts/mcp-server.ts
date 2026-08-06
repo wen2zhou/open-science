@@ -37,6 +37,7 @@ type ArtifactMcpEnvironment = {
 // alias-proof, unlike the static session-creation env which only knows the pre-start alias.
 type ArtifactRunContext = {
   artifactRunId: string
+  executionId?: string
   appSessionId?: string
   rootFrameId?: string
   agentFrameId?: string
@@ -165,6 +166,7 @@ const readCurrentRunContext = async (currentRunFile: string): Promise<ArtifactRu
 
   return {
     artifactRunId,
+    executionId: optionalString('executionId'),
     appSessionId: optionalString('appSessionId'),
     rootFrameId: optionalString('rootFrameId'),
     agentFrameId: optionalString('agentFrameId'),

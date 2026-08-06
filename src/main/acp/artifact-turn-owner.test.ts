@@ -51,6 +51,117 @@ afterEach(async () => {
 })
 
 describe('ArtifactTurnOwner', () => {
+  it('keeps concurrent executions in one Session independently addressable through opaque handles', async () => {
+    const dataRoot = await createRoot()
+    const writes: Array<Record<string, unknown>> = []
+    const issuedBindings: Array<Record<string, unknown>> = []
+    const owner = new ArtifactTurnOwner({
+      dataRoot,
+      repository: new ArtifactRepository(dataRoot),
+      runRegistry: new ArtifactRunRegistry(),
+      now: () => 100,
+      issueRpcCapability: (binding) => {
+        issuedBindings.push(binding)
+        return `capability-${binding.executionId}`
+      },
+      provenance: {
+        listRunVersions: async () => [],
+        writeAppGeneratedVersion: async (request) => {
+          writes.push(request)
+          return artifactVersion({
+            id: `version-${request.artifactRunId}`,
+            versionId: `version-${request.artifactRunId}`,
+            runId: request.artifactRunId,
+            name: request.filename
+          })
+        }
+      }
+    })
+
+    const root = await owner.openExecution({
+      executionId: 'root-execution',
+      appSessionId: 'session-1',
+      artifactStorageSessionId: 'artifact-session-1',
+      projectId: 'project-1',
+      agentName: 'Codex',
+      provenanceContext: {
+        rootFrameId: 'root-frame',
+        agentFrameId: 'root-frame',
+        messageBranchId: 'root-branch',
+        runtimeSegmentId: 'root-segment',
+        promptMessageId: 'root-prompt'
+      }
+    })
+    const parallel = await owner.openExecution({
+      executionId: 'parallel-execution',
+      appSessionId: 'session-1',
+      artifactStorageSessionId: 'artifact-session-1',
+      projectId: 'project-1',
+      agentName: 'Codex',
+      provenanceContext: {
+        rootFrameId: 'root-frame',
+        agentFrameId: 'parallel-frame',
+        messageBranchId: 'parallel-branch',
+        runtimeSegmentId: 'parallel-segment',
+        promptMessageId: 'parallel-prompt'
+      }
+    })
+
+    await Promise.all([
+      owner.write(root, { filename: 'root.txt', content: 'root' }),
+      owner.write(parallel, { filename: 'parallel.txt', content: 'parallel' })
+    ])
+    await owner.finalize(root)
+    await owner.dispose(root)
+
+    expect(owner.snapshot(root)).toMatchObject({
+      executionId: 'root-execution',
+      agentFrameId: 'root-frame',
+      runtimeSegmentId: 'root-segment',
+      promptMessageId: 'root-prompt',
+      phase: 'disposed'
+    })
+    expect(owner.snapshot(parallel)).toMatchObject({
+      executionId: 'parallel-execution',
+      agentFrameId: 'parallel-frame',
+      runtimeSegmentId: 'parallel-segment',
+      promptMessageId: 'parallel-prompt',
+      phase: 'open'
+    })
+    expect(owner.handleForExecution('parallel-execution')).toBe(parallel)
+    expect(writes).toEqual([
+      expect.objectContaining({
+        artifactRunId: 'artifact-run-100-1',
+        agentFrameId: 'root-frame',
+        runtimeSegmentId: 'root-segment',
+        promptMessageId: 'root-prompt'
+      }),
+      expect.objectContaining({
+        artifactRunId: 'artifact-run-100-2',
+        agentFrameId: 'parallel-frame',
+        runtimeSegmentId: 'parallel-segment',
+        promptMessageId: 'parallel-prompt'
+      })
+    ])
+    expect(issuedBindings).toEqual([
+      expect.objectContaining({
+        executionId: 'root-execution',
+        artifactRunId: 'artifact-run-100-1',
+        allowedMethods: ['artifactCreateVersion', 'artifactReplayVersion']
+      }),
+      expect.objectContaining({
+        executionId: 'parallel-execution',
+        artifactRunId: 'artifact-run-100-2',
+        allowedMethods: ['artifactCreateVersion', 'artifactReplayVersion']
+      })
+    ])
+    expect(owner.activeRunIds()).toEqual(['artifact-run-100-2'])
+
+    await owner.dispose(parallel)
+    expect(owner.activeRunIds()).toEqual([])
+    expect(() => owner.handleForExecution('parallel-execution')).toThrow(/No active Artifact turn/)
+  })
+
   it('opens a turn-scoped handoff without exposing its capability or local path in snapshots', async () => {
     const dataRoot = await createRoot()
     const issuedBindings: unknown[] = []
