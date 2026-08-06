@@ -15,6 +15,63 @@ afterEach(async () => {
 })
 
 describe('authenticated delegatedWorkCall route', () => {
+  it('forwards a request array through the authenticated host seam without reordering it', async () => {
+    const delegate = vi.fn(async () => ({
+      kind: 'receipts' as const,
+      children: [
+        { frameId: 'frame-first', attemptId: 'attempt-first', status: 'running' as const },
+        { frameId: 'frame-second', attemptId: 'attempt-second', status: 'running' as const }
+      ]
+    }))
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: { delegate }
+    })
+    const connection = await server.issueControlConnection('session-1', 'project-1', 'root-frame')
+    const endInvocation = connection.beginControlInvocation({
+      turnId: 'turn-1',
+      controlInvocationGeneration: 1,
+      toolInvocationId: 'tool-call-1',
+      originatingUserMessageId: 'origin-message-1'
+    })
+
+    const response = await fetch(connection.endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        method: 'delegatedWorkCall',
+        params: {
+          request: [{ task: 'First' }, { task: 'Second' }],
+          options: { wait: false }
+        }
+      })
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      result: {
+        kind: 'receipts',
+        children: [
+          { frameId: 'frame-first', attemptId: 'attempt-first', status: 'running' },
+          { frameId: 'frame-second', attemptId: 'attempt-second', status: 'running' }
+        ]
+      }
+    })
+    expect(delegate).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session: { projectId: 'project-1', sessionId: 'session-1' },
+        frameId: 'root-frame'
+      }),
+      [{ task: 'First' }, { task: 'Second' }],
+      { wait: false }
+    )
+    endInvocation()
+    connection.release()
+  })
+
   it('derives delegation authority from the active control capability and ignores forged owner fields', async () => {
     const session = { projectId: 'trusted-project', sessionId: 'trusted-session' }
     const execution = createDeterministicDelegateExecution()

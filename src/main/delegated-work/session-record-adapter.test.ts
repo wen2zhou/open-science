@@ -96,6 +96,43 @@ const createHarness = (): Readonly<{
 }
 
 describe('Session delegated-work adapter', () => {
+  it('starts an admitted array against revisioned Session records without sibling conflicts', async () => {
+    const { coordinator, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    let nextBranch = 1
+    const records = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => `child-branch-${nextBranch++}`
+      },
+      key
+    )
+    const work = createDurableDelegatedWork({ execution, records })
+    const batchCaller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'batch-tool-call'
+    }
+
+    const outcome = await work.delegate(
+      batchCaller,
+      [{ task: 'First durable child' }, { task: 'Second durable child' }],
+      { wait: false }
+    )
+
+    expect(outcome.children).toHaveLength(2)
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    await expect(work.children(batchCaller)).resolves.toMatchObject([
+      { title: 'First durable child', status: 'running' },
+      { title: 'Second durable child', status: 'running' }
+    ])
+  })
+
   it('executes and projects one blocking child from the durable Session conversation', async () => {
     const { coordinator, readSession } = createHarness()
     const execution = createDeterministicDelegateExecution()

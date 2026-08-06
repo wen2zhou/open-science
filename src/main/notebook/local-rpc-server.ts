@@ -142,7 +142,7 @@ type NotebookLocalRpcServerOptions = {
   delegatedWorkService?: {
     delegate(
       caller: AuthenticatedDelegateCaller,
-      request: DurableDelegateRequest,
+      request: DurableDelegateRequest | readonly DurableDelegateRequest[],
       options?: Readonly<{ wait?: boolean }>
     ): Promise<DurableDelegateOutcome>
   }
@@ -1165,13 +1165,13 @@ class NotebookLocalRpcServer {
       if (!projectId || !sessionId || !frameId || !originMessageId || !toolInvocationId) {
         throw new RpcHttpError(403, 'host.delegate caller identity is incomplete.')
       }
-      if (!isRecord(params.request)) {
-        throw new Error('host.delegate requires one request object.')
+      if (!isRecord(params.request) && !Array.isArray(params.request)) {
+        throw new Error('host.delegate requires one request object or a non-empty request array.')
       }
       if (params.options !== undefined && !isRecord(params.options)) {
         throw new Error('host.delegate options must be an object.')
       }
-      const request = params.request as DurableDelegateRequest
+      const request = params.request as DurableDelegateRequest | readonly DurableDelegateRequest[]
       const requestedOptions = isRecord(params.options) ? params.options : {}
       if (requestedOptions.wait !== undefined && typeof requestedOptions.wait !== 'boolean') {
         throw new Error('host.delegate wait must be a boolean.')

@@ -5,6 +5,7 @@ import {
   materializeSessionConversationGraph,
   type PersistedChatSession
 } from '../../shared/session-persistence'
+import { SessionRuntimeContextRevisionConflictError } from '../session-persistence/coordinator'
 import type { DelegatedWorkRecordCommands, SessionKey } from './session-records'
 import type {
   AuthenticatedDelegateCaller,
@@ -30,83 +31,109 @@ const createSessionDelegatedWorkRecords = (
     return session
   }
   const revision = async (): Promise<number> => (await load()).runtimeContext?.revision ?? 0
+  let mutationTail: Promise<void> = Promise.resolve()
+  const mutate = <Result>(
+    operation: (expectedRevision: number) => Promise<Result>
+  ): Promise<Result> => {
+    const pending = mutationTail.then(async () => {
+      for (let retries = 0; ; retries += 1) {
+        try {
+          return await operation(await revision())
+        } catch (error) {
+          if (!(error instanceof SessionRuntimeContextRevisionConflictError) || retries >= 2) {
+            throw error
+          }
+        }
+      }
+    })
+    mutationTail = pending.then(
+      () => undefined,
+      () => undefined
+    )
+    return pending
+  }
 
   return {
-    async admitChild(input) {
-      await options.commands.createChildren(key, {
-        expectedRevision: await revision(),
-        parentFrameId: input.caller.frameId,
-        originMessageId: input.caller.originMessageId,
-        children: [
-          {
-            frameId: input.frameId,
+    async admitChildren(input) {
+      await mutate((expectedRevision) =>
+        options.commands.createChildren(key, {
+          expectedRevision,
+          parentFrameId: input.caller.frameId,
+          originMessageId: input.caller.originMessageId,
+          children: input.children.map((child) => ({
+            frameId: child.frameId,
             branchId: createId('branch'),
-            messageId: input.userMessageId,
-            attemptId: input.attemptId,
-            task: input.request.task,
-            name: input.title,
-            context: input.request.context,
-            inputs: input.request.inputs,
-            resolvedAgent: input.resolvedAgent,
-            startedAt: input.startedAt
-          }
-        ]
-      })
+            messageId: child.userMessageId,
+            attemptId: child.attemptId,
+            task: child.request.task,
+            name: child.title,
+            context: child.request.context,
+            inputs: child.request.inputs,
+            resolvedAgent: child.resolvedAgent,
+            startedAt: child.startedAt
+          }))
+        })
+      )
     },
     async startRuntime(frameId, attemptId, runtimeSegmentId) {
-      const session = await load()
-      const attempt = session.runtimeContext?.delegatedWork?.records
+      const attempt = (await load()).runtimeContext?.delegatedWork?.records
         .find((record) => record.agentFrameId === frameId)
         ?.attempts.find((candidate) => candidate.id === attemptId)
-      await options.commands.startAttemptRuntime(key, {
-        expectedRevision: session.runtimeContext?.revision ?? 0,
-        frameId,
-        attemptId,
-        runtimeSegmentId,
-        frameworkId: options.frameworkId,
-        ...(attempt?.resolvedAgent.kind === 'specialist'
-          ? { agentName: attempt.resolvedAgent.displayName }
-          : {}),
-        startedAt: Date.now()
-      })
+      await mutate((expectedRevision) =>
+        options.commands.startAttemptRuntime(key, {
+          expectedRevision,
+          frameId,
+          attemptId,
+          runtimeSegmentId,
+          frameworkId: options.frameworkId,
+          ...(attempt?.resolvedAgent.kind === 'specialist'
+            ? { agentName: attempt.resolvedAgent.displayName }
+            : {}),
+          startedAt: Date.now()
+        })
+      )
     },
     async terminalize(input) {
       if (input.status === 'completed') {
         const attempt = (await load()).runtimeContext?.delegatedWork?.records
           .find((record) => record.agentFrameId === input.frameId)
           ?.attempts.find((candidate) => candidate.id === input.attemptId)
-        await options.commands.applyAgentEvent(key, {
-          expectedRevision: await revision(),
+        await mutate((expectedRevision) =>
+          options.commands.applyAgentEvent(key, {
+            expectedRevision,
+            frameId: input.frameId,
+            attemptId: input.attemptId,
+            event: {
+              kind: 'message',
+              runtimeSegmentId: attempt?.runtimeSegmentIds.at(-1) ?? '',
+              message: {
+                id: input.terminalMessage.id,
+                role: 'agent',
+                content: input.terminalMessage.content,
+                status: 'complete',
+                eventIds: [],
+                createdAt: input.terminalMessage.createdAt,
+                completedAt: input.terminalMessage.createdAt,
+                updatedAt: input.terminalMessage.createdAt
+              }
+            }
+          })
+        )
+      }
+      await mutate((expectedRevision) =>
+        options.commands.transitionAttempt(key, {
+          expectedRevision,
           frameId: input.frameId,
           attemptId: input.attemptId,
-          event: {
-            kind: 'message',
-            runtimeSegmentId: attempt?.runtimeSegmentIds.at(-1) ?? '',
-            message: {
-              id: input.terminalMessage.id,
-              role: 'agent',
-              content: input.terminalMessage.content,
-              status: 'complete',
-              eventIds: [],
-              createdAt: input.terminalMessage.createdAt,
-              completedAt: input.terminalMessage.createdAt,
-              updatedAt: input.terminalMessage.createdAt
-            }
-          }
+          status: input.status,
+          endedAt: input.endedAt,
+          ...(input.status === 'completed'
+            ? { terminalMessageId: input.terminalMessage.id }
+            : input.status === 'cancelled'
+              ? { cancellationReason: input.cancellationReason }
+              : { error: input.error })
         })
-      }
-      await options.commands.transitionAttempt(key, {
-        expectedRevision: await revision(),
-        frameId: input.frameId,
-        attemptId: input.attemptId,
-        status: input.status,
-        endedAt: input.endedAt,
-        ...(input.status === 'completed'
-          ? { terminalMessageId: input.terminalMessage.id }
-          : input.status === 'cancelled'
-            ? { cancellationReason: input.cancellationReason }
-            : { error: input.error })
-      })
+      )
     },
     async snapshot(): Promise<DurableSnapshot> {
       const session = await load()
