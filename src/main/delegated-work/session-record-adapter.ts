@@ -106,33 +106,80 @@ const createSessionDelegatedWorkRecords = (
           startedAt: Date.now()
         })
       )
+      const session = await load()
+      const graph = materializeSessionConversationGraph(session).conversationGraph
+      const frame = graph?.frames.find((candidate) => candidate.id === frameId)
+      const branch = graph?.branches.find((candidate) => candidate.id === frame?.activeBranchId)
+      const promptMessage = graph?.messages.find(
+        (message) => message.id === branch?.headMessageId && message.role === 'user'
+      )
+      if (!graph || !frame || !branch || !promptMessage) {
+        throw new Error('Delegated runtime has no current Frame, Branch, or prompt Message.')
+      }
+      return {
+        rootFrameId: graph.rootFrameId,
+        messageBranchId: branch.id,
+        promptMessageId: promptMessage.id
+      }
+    },
+    async stageTerminalMessage(frameId, attemptId, message) {
+      const attempt = (await load()).runtimeContext?.delegatedWork?.records
+        .find((record) => record.agentFrameId === frameId)
+        ?.attempts.find((candidate) => candidate.id === attemptId)
+      await mutate((expectedRevision) =>
+        options.commands.applyAgentEvent(key, {
+          expectedRevision,
+          frameId,
+          attemptId,
+          event: {
+            kind: 'message',
+            runtimeSegmentId: attempt?.runtimeSegmentIds.at(-1) ?? '',
+            message: {
+              id: message.id,
+              role: 'agent',
+              content: message.content,
+              status: 'complete',
+              eventIds: [],
+              createdAt: message.createdAt,
+              completedAt: message.createdAt,
+              updatedAt: message.createdAt
+            }
+          }
+        })
+      )
     },
     async terminalize(input) {
       if (input.status === 'completed') {
-        const attempt = (await load()).runtimeContext?.delegatedWork?.records
+        const session = await load()
+        const messageExists = session.conversationGraph?.messages.some(
+          (message) => message.id === input.terminalMessage.id
+        )
+        const attempt = session.runtimeContext?.delegatedWork?.records
           .find((record) => record.agentFrameId === input.frameId)
           ?.attempts.find((candidate) => candidate.id === input.attemptId)
-        await mutate((expectedRevision) =>
-          options.commands.applyAgentEvent(key, {
-            expectedRevision,
-            frameId: input.frameId,
-            attemptId: input.attemptId,
-            event: {
-              kind: 'message',
-              runtimeSegmentId: attempt?.runtimeSegmentIds.at(-1) ?? '',
-              message: {
-                id: input.terminalMessage.id,
-                role: 'agent',
-                content: input.terminalMessage.content,
-                status: 'complete',
-                eventIds: [],
-                createdAt: input.terminalMessage.createdAt,
-                completedAt: input.terminalMessage.createdAt,
-                updatedAt: input.terminalMessage.createdAt
+        if (!messageExists) {
+          await mutate((expectedRevision) =>
+            options.commands.applyAgentEvent(key, {
+              expectedRevision,
+              frameId: input.frameId,
+              attemptId: input.attemptId,
+              event: {
+                kind: 'message',
+                runtimeSegmentId: attempt?.runtimeSegmentIds.at(-1) ?? '',
+                message: {
+                  id: input.terminalMessage.id,
+                  role: 'agent',
+                  content: input.terminalMessage.content,
+                  status: 'complete',
+                  eventIds: [],
+                  createdAt: input.terminalMessage.createdAt,
+                  completedAt: input.terminalMessage.createdAt,
+                  updatedAt: input.terminalMessage.createdAt
+                }
               }
-            }
-          })
-        )
+            })
+          )
+        }
       }
       await mutate((expectedRevision) =>
         options.commands.transitionAttempt(key, {
@@ -198,6 +245,7 @@ const createSessionDelegatedWorkRecords = (
               task: firstMessage.delegatedTask ?? firstMessage.content,
               context: firstMessage.delegatedContext,
               inputs: firstMessage.delegatedInputVersionIds ?? [],
+              messageBranchId: frame.activeBranchId,
               attempts: record.attempts.map((attempt) => ({
                 ...attempt,
                 resolvedAgent: structuredClone(attempt.resolvedAgent),

@@ -261,6 +261,10 @@ class ArtifactTurnOwner {
     return handle
   }
 
+  handoffFile(handle: ArtifactTurnHandle): string {
+    return this.resolve(handle).currentRunFile
+  }
+
   snapshot(handle: ArtifactTurnHandle): ArtifactTurnSnapshot {
     const turn = this.resolve(handle)
     return {

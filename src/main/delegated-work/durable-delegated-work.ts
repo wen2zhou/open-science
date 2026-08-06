@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
+import type { ArtifactFile } from '../../shared/artifacts'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import {
   DelegateExecutionError,
@@ -65,6 +66,7 @@ type DurableChild = {
   task: string
   context?: string
   inputs: readonly string[]
+  messageBranchId: string
   attempts: DurableAttempt[]
   pendingMessages: DurablePendingMessage[]
 }
@@ -159,7 +161,12 @@ type ContinueChildInput = Readonly<{
 type DelegatedWorkDurableRecords = Readonly<{
   admitChildren(input: AdmitChildrenInput): Promise<void>
   continueChild(input: ContinueChildInput): Promise<void>
-  startRuntime(frameId: string, attemptId: string, runtimeSegmentId: string): Promise<void>
+  startRuntime(
+    frameId: string,
+    attemptId: string,
+    runtimeSegmentId: string
+  ): Promise<Readonly<{ rootFrameId: string; messageBranchId: string; promptMessageId: string }>>
+  stageTerminalMessage(frameId: string, attemptId: string, message: DurableMessage): Promise<void>
   terminalize(input: TerminalInput): Promise<void>
   appendPendingMessage(
     frameId: string,
@@ -211,7 +218,7 @@ type DurableDelegateResult = Readonly<{
   status: 'completed' | 'cancelled' | 'error'
   terminalMessageId?: string
   response?: string
-  artifactsCreated: readonly never[]
+  artifactsCreated: readonly ArtifactFile[]
   cancellationReason?: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
   error?: Readonly<{ code: string; message: string }>
 }>
@@ -240,7 +247,41 @@ type ReadOnlyAgentFrameDetail = Readonly<{
   title: string
   status: 'running' | 'completed' | 'cancelled' | 'error'
   resolvedAgent: DurableAttempt['resolvedAgent']
-  messages: readonly Readonly<{ role: 'user' | 'assistant'; content: string }>[]
+  messages: readonly Readonly<{
+    role: 'user' | 'assistant'
+    content: string
+    artifacts?: readonly ArtifactFile[]
+  }>[]
+}>
+
+type DelegatedArtifactScope = Readonly<{
+  session: SessionKey
+  executionId: string
+  attemptId: string
+  rootFrameId: string
+  agentFrameId: string
+  messageBranchId: string
+  runtimeSegmentId: string
+  promptMessageId: string
+  agentName: string
+}>
+
+type DelegatedArtifactProjectionScope = DelegatedArtifactScope &
+  Readonly<{
+    runtimeSegmentIds: readonly string[]
+    terminalMessageId?: string
+  }>
+
+type DelegatedArtifactHandle = Readonly<{
+  execution?: Readonly<{ currentRunFile: string }>
+  finalize(terminalMessageId: string): Promise<void>
+  dispose(): Promise<void>
+}>
+
+type DelegatedArtifactEvidence = Readonly<{
+  open(scope: DelegatedArtifactScope): Promise<DelegatedArtifactHandle>
+  revoke?(scope: DelegatedArtifactProjectionScope): Promise<void>
+  project(scope: DelegatedArtifactProjectionScope): Promise<readonly ArtifactFile[]>
 }>
 
 type StopOutcome = Readonly<{
@@ -377,6 +418,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
           task: child.request.task,
           context: child.request.context,
           inputs: [...(child.request.inputs ?? [])],
+          messageBranchId: `branch-${child.frameId}`,
           attempts: [
             {
               id: child.attemptId,
@@ -440,13 +482,36 @@ const createInMemoryDelegatedWorkRecords = (input: {
     },
     async startRuntime(frameId, attemptId, runtimeSegmentId) {
       findRunning(frameId, attemptId).runtimeSegmentIds.push(runtimeSegmentId)
+      const child = state.records.find((candidate) => candidate.frameId === frameId)!
+      const promptMessage = [...state.messages]
+        .reverse()
+        .find((message) => message.frameId === frameId && message.role === 'user')
+      if (!promptMessage) throw new Error('Delegated Attempt has no prompt Message.')
+      return {
+        rootFrameId: state.rootFrameId,
+        messageBranchId: child.messageBranchId,
+        promptMessageId: promptMessage.id
+      }
+    },
+    async stageTerminalMessage(frameId, attemptId, message) {
+      findRunning(frameId, attemptId)
+      if (message.frameId !== frameId || message.role !== 'assistant') {
+        throw new Error('Terminal Message does not belong to the delegated Attempt.')
+      }
+      const existing = state.messages.find((candidate) => candidate.id === message.id)
+      if (existing && JSON.stringify(existing) !== JSON.stringify(message)) {
+        throw new Error('Terminal Message identity is already in use.')
+      }
+      if (!existing) state.messages.push({ ...message })
     },
     async terminalize(terminal) {
       const attempt = findRunning(terminal.frameId, terminal.attemptId)
       attempt.status = terminal.status
       attempt.endedAt = terminal.endedAt
       if (terminal.status === 'completed') {
-        state.messages.push({ ...terminal.terminalMessage })
+        if (!state.messages.some((message) => message.id === terminal.terminalMessage.id)) {
+          state.messages.push({ ...terminal.terminalMessage })
+        }
         attempt.terminalMessageId = terminal.terminalMessage.id
       } else if (terminal.status === 'cancelled') {
         attempt.cancellationReason = terminal.cancellationReason
@@ -516,6 +581,7 @@ const createDurableDelegatedWork = (options: {
     attemptId: string
   }) => Promise<void> | void
   deliverToParent?: (delivery: ParentMessageDelivery) => Promise<void>
+  artifactEvidence?: DelegatedArtifactEvidence
   now?: () => number
   createId?: (kind: 'frame' | 'attempt' | 'message' | 'runtime') => string
   collectPollIntervalMs?: number
@@ -538,6 +604,7 @@ const createDurableDelegatedWork = (options: {
       cancel(): Promise<void>
       reservation: DelegateCapacityReservation
       slotId: string
+      artifact?: DelegatedArtifactHandle
     }
   >()
 
@@ -661,10 +728,49 @@ const createDurableDelegatedWork = (options: {
     return selected as readonly DurableChild[]
   }
 
-  const projectSnapshotResult = (
+  const artifactScope = (
+    snapshot: DurableSnapshot,
+    child: DurableChild,
+    attempt: DurableAttempt
+  ): DelegatedArtifactProjectionScope | undefined => {
+    const runtimeSegmentId = attempt.runtimeSegmentIds.at(-1)
+    const promptMessages = snapshot.messages.filter(
+      (message) => message.frameId === child.frameId && message.role === 'user'
+    )
+    const attemptIndex = child.attempts.findIndex((candidate) => candidate.id === attempt.id)
+    const promptMessageId = promptMessages[attemptIndex]?.id
+    if (!runtimeSegmentId || !promptMessageId) return undefined
+    return {
+      session: snapshot.session,
+      executionId: attempt.id,
+      attemptId: attempt.id,
+      rootFrameId: snapshot.rootFrameId,
+      agentFrameId: child.frameId,
+      messageBranchId: child.messageBranchId,
+      runtimeSegmentId,
+      promptMessageId,
+      agentName:
+        attempt.resolvedAgent.kind === 'specialist'
+          ? attempt.resolvedAgent.displayName
+          : 'Main Agent',
+      runtimeSegmentIds: [...attempt.runtimeSegmentIds],
+      ...(attempt.terminalMessageId ? { terminalMessageId: attempt.terminalMessageId } : {})
+    }
+  }
+
+  const projectArtifacts = async (
+    snapshot: DurableSnapshot,
+    child: DurableChild,
+    attempt: DurableAttempt
+  ): Promise<readonly ArtifactFile[]> => {
+    const scope = artifactScope(snapshot, child, attempt)
+    return scope && options.artifactEvidence ? options.artifactEvidence.project(scope) : []
+  }
+
+  const projectSnapshotResult = async (
     snapshot: DurableSnapshot,
     child: DurableChild
-  ): DurableDelegateResult | undefined => {
+  ): Promise<DurableDelegateResult | undefined> => {
     const attempt = currentAttempt(child)
     if (attempt.status === 'running') return undefined
     const terminalMessage = attempt.terminalMessageId
@@ -676,7 +782,7 @@ const createDurableDelegatedWork = (options: {
       status: attempt.status,
       ...(attempt.terminalMessageId ? { terminalMessageId: attempt.terminalMessageId } : {}),
       ...(terminalMessage ? { response: terminalMessage.content } : {}),
-      artifactsCreated: [],
+      artifactsCreated: await projectArtifacts(snapshot, child, attempt),
       ...(attempt.cancellationReason ? { cancellationReason: attempt.cancellationReason } : {}),
       ...(attempt.error ? { error: attempt.error } : {})
     }
@@ -707,13 +813,39 @@ const createDurableDelegatedWork = (options: {
       rejectHandle = reject
     })
     void deliveryHandle.catch(() => undefined)
+    let artifact: DelegatedArtifactHandle | undefined
     let cancelRequested = false
     const completion = (async () => {
       try {
         await options.workspace?.prepare(session, child.frameId, child.inputs)
-        await options.records.startRuntime(child.frameId, attempt.id, runtimeSegmentId)
+        const context = await options.records.startRuntime(
+          child.frameId,
+          attempt.id,
+          runtimeSegmentId
+        )
         const latest = await snapshotChild(child.frameId)
         if (cancelRequested || !latest || currentAttempt(latest).status !== 'running') {
+          rejectHandle(new Error('delegate execution is no longer running'))
+          return
+        }
+        artifact = await options.artifactEvidence?.open({
+          session,
+          executionId: attempt.id,
+          attemptId: attempt.id,
+          rootFrameId: context.rootFrameId,
+          agentFrameId: child.frameId,
+          messageBranchId: context.messageBranchId,
+          runtimeSegmentId,
+          promptMessageId: context.promptMessageId,
+          agentName:
+            attempt.resolvedAgent.kind === 'specialist'
+              ? attempt.resolvedAgent.displayName
+              : 'Main Agent'
+        })
+        const runningAttempt = running.get(child.frameId)
+        if (runningAttempt?.attemptId === attempt.id) runningAttempt.artifact = artifact
+        const ready = await snapshotChild(child.frameId)
+        if (cancelRequested || !ready || currentAttempt(ready).status !== 'running') {
           rejectHandle(new Error('delegate execution is no longer running'))
           return
         }
@@ -727,6 +859,9 @@ const createDurableDelegatedWork = (options: {
           inputs: child.inputs,
           ...(attempt.resolvedAgent.kind === 'specialist'
             ? { profile: attempt.resolvedAgent.profileId }
+            : {}),
+          ...(artifact?.execution
+            ? { artifactCurrentRunFile: artifact.execution.currentRunFile }
             : {}),
           continuation
         }
@@ -762,6 +897,8 @@ const createDurableDelegatedWork = (options: {
             content: outcome.response,
             createdAt: endedAt
           }
+          await options.records.stageTerminalMessage(child.frameId, attempt.id, terminalMessage)
+          await artifact?.finalize(terminalMessage.id)
           await options.records.terminalize({
             frameId: child.frameId,
             attemptId: attempt.id,
@@ -795,6 +932,7 @@ const createDurableDelegatedWork = (options: {
         }
       } finally {
         clearAttemptPermissions(child.frameId, attempt.id)
+        await artifact?.dispose().catch(() => undefined)
         await reservation.release(slotId).catch(() => undefined)
         if (running.get(child.frameId)?.attemptId === attempt.id) running.delete(child.frameId)
       }
@@ -840,10 +978,14 @@ const createDurableDelegatedWork = (options: {
     if (attempt.status !== 'running') {
       return { frameId: child.frameId, status: 'already_terminal' }
     }
-    const session = (await options.records.snapshot()).session
+    const snapshot = await options.records.snapshot()
+    const session = snapshot.session
     const scope = { session, frameId: child.frameId, attemptId: attempt.id }
     const pendingPermissions = takeAttemptPermissions(child.frameId, attempt.id)
+    const evidenceScope = artifactScope(snapshot, child, attempt)
     try {
+      if (evidenceScope) await options.artifactEvidence?.revoke?.(evidenceScope)
+      await running.get(child.frameId)?.artifact?.dispose()
       await options.revokeAttemptWrites?.(scope)
       await running
         .get(child.frameId)
@@ -1042,6 +1184,7 @@ const createDurableDelegatedWork = (options: {
       task: admission.request.task,
       context: admission.request.context,
       inputs: [...(admission.request.inputs ?? [])],
+      messageBranchId: `branch-${admission.frameId}`,
       attempts: [
         {
           id: admission.attemptId,
@@ -1121,7 +1264,9 @@ const createDurableDelegatedWork = (options: {
       for (;;) {
         const snapshot = await authenticatedSnapshot(caller)
         const children = selectAuthorizedChildren(snapshot, caller, frameIds)
-        const results = children.map((child) => projectSnapshotResult(snapshot, child))
+        const results = await Promise.all(
+          children.map((child) => projectSnapshotResult(snapshot, child))
+        )
         if (results.every((result) => result !== undefined)) {
           return results as readonly DurableDelegateResult[]
         }
@@ -1397,16 +1542,29 @@ const createDurableDelegatedWork = (options: {
       const child = snapshot.records.find((candidate) => candidate.frameId === frameId)
       if (!child) return undefined
       const attempt = currentAttempt(child as DurableChild)
+      const messages = await Promise.all(
+        snapshot.messages
+          .filter((message) => message.frameId === frameId)
+          .map(async ({ id, role, content }) => {
+            const owningAttempt = (child as DurableChild).attempts.find(
+              (candidate) => candidate.terminalMessageId === id
+            )
+            const artifacts = owningAttempt
+              ? await projectArtifacts(snapshot, child as DurableChild, owningAttempt)
+              : []
+            return Object.freeze({
+              role,
+              content,
+              ...(artifacts.length > 0 ? { artifacts } : {})
+            })
+          })
+      )
       return Object.freeze({
         frameId,
         title: child.title,
         status: attempt.status,
         resolvedAgent: Object.freeze(structuredClone(attempt.resolvedAgent)),
-        messages: Object.freeze(
-          snapshot.messages
-            .filter((message) => message.frameId === frameId)
-            .map(({ role, content }) => Object.freeze({ role, content }))
-        )
+        messages: Object.freeze(messages)
       })
     },
     async rootPermissionRequests(session) {
@@ -1420,8 +1578,16 @@ const createDurableDelegatedWork = (options: {
           const attempt = currentAttempts.get(permission.frameId)
           return attempt?.id === permission.attemptId && attempt.status === 'running'
         })
-        .map(({ execution: _execution, ...permission }) =>
-          Object.freeze({ ...permission, options: Object.freeze([...permission.options]) })
+        .map(({ requestId, frameId, attemptId, childTitle, action, riskScope, options }) =>
+          Object.freeze({
+            requestId,
+            frameId,
+            attemptId,
+            childTitle,
+            action,
+            riskScope,
+            options: Object.freeze([...options])
+          })
         )
     },
     async respondToPermission(session, response) {
@@ -1477,6 +1643,8 @@ const createDurableDelegatedWork = (options: {
         const attempt = currentAttempt(child)
         if (attempt.status !== 'running') continue
         const scope = { session: snapshot.session, frameId: child.frameId, attemptId: attempt.id }
+        const evidenceScope = artifactScope(snapshot, child, attempt)
+        if (evidenceScope) await options.artifactEvidence?.revoke?.(evidenceScope)
         await options.revokeAttemptWrites?.(scope)
         await options.settleAttemptCleanup?.(scope)
         try {
@@ -1513,6 +1681,10 @@ const createDurableDelegatedWork = (options: {
 export { DurableDelegatedWorkError, createDurableDelegatedWork, createInMemoryDelegatedWorkRecords }
 export type {
   AuthenticatedDelegateCaller,
+  DelegatedArtifactEvidence,
+  DelegatedArtifactHandle,
+  DelegatedArtifactProjectionScope,
+  DelegatedArtifactScope,
   DelegatedWorkDurableRecords,
   DurableChildSummary,
   DurableDelegateOutcome,

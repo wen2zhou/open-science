@@ -903,16 +903,17 @@ const PermissionApprovalControls = ({
   disabled = false
 }: PermissionApprovalControlsProps): React.JSX.Element | null => {
   const surfaceRef = useRef<HTMLDivElement>(null)
-  const [focusReturnFrom, setFocusReturnFrom] = useState<string>()
+  const focusReturnFromRef = useRef<string | undefined>(undefined)
   useEffect(() => {
+    const focusReturnFrom = focusReturnFromRef.current
     if (!focusReturnFrom || requests.some(({ requestId }) => requestId === focusReturnFrom)) return
-    setFocusReturnFrom(undefined)
+    focusReturnFromRef.current = undefined
     queueMicrotask(() => {
       surfaceRef.current
         ?.querySelector<HTMLButtonElement>('[data-testid="allow-primary"]:not(:disabled)')
         ?.focus()
     })
-  }, [focusReturnFrom, requests])
+  }, [requests])
   if (requests.length === 0) return null
   const firstRootRequest = requests.find((request) => !request.delegated)
   const visibleRequests = requests.filter(
@@ -931,7 +932,9 @@ const PermissionApprovalControls = ({
           onRespond={onRespond}
           notebookLookup={notebookLookup}
           disabled={disabled}
-          onSubmitted={setFocusReturnFrom}
+          onSubmitted={(requestId) => {
+            focusReturnFromRef.current = requestId
+          }}
         />
       ))}
     </div>

@@ -1,10 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import type { ArtifactFile } from '../../shared/artifacts'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
 import {
   createDurableDelegatedWork,
   createInMemoryDelegatedWorkRecords,
-  type AuthenticatedDelegateCaller
+  type AuthenticatedDelegateCaller,
+  type DelegatedArtifactEvidence
 } from './durable-delegated-work'
 
 const caller: AuthenticatedDelegateCaller = {
@@ -492,6 +494,355 @@ describe('durable delegated work', () => {
     expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
       'deliveredAt'
     )
+  })
+
+  it('projects finalized child Artifact evidence from its execution-scoped owner', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const artifacts = [
+      {
+        id: 'artifact-version-1',
+        artifactId: 'artifact-1',
+        versionId: 'artifact-version-1',
+        versionNumber: 1,
+        checksum: 'abc123',
+        createdAt: '2026-08-07T00:00:00.000Z',
+        projectName: 'project-1',
+        sessionId: 'session-1',
+        runId: 'artifact-run-1',
+        name: 'evidence.md',
+        path: '/managed/evidence.md',
+        fileUrl: 'file:///managed/evidence.md',
+        mimeType: 'text/markdown',
+        size: 8,
+        mtimeMs: 1
+      }
+    ]
+    const finalize = vi.fn(async () => undefined)
+    const dispose = vi.fn(async () => undefined)
+    const open = vi.fn(async () => ({ finalize, dispose }))
+    const project = vi.fn(async () => artifacts)
+    const artifactEvidence: DelegatedArtifactEvidence = { open, project }
+    const counts = { frame: 0, attempt: 0, message: 0, runtime: 0 }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      artifactEvidence,
+      createId: (kind) => `${kind}-${++counts[kind]}`
+    })
+
+    const pending = work.delegate(caller, { task: 'Create evidence' })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    expect(open).toHaveBeenCalledWith({
+      session: caller.session,
+      executionId: 'attempt-1',
+      attemptId: 'attempt-1',
+      rootFrameId: 'root-frame',
+      agentFrameId: 'frame-1',
+      messageBranchId: 'branch-frame-1',
+      runtimeSegmentId: 'runtime-1',
+      promptMessageId: 'message-1',
+      agentName: 'Main Agent'
+    })
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Evidence is ready')
+
+    await expect(pending).resolves.toMatchObject({
+      kind: 'results',
+      children: [
+        {
+          status: 'completed',
+          terminalMessageId: 'message-2',
+          artifactsCreated: artifacts
+        }
+      ]
+    })
+    expect(finalize).toHaveBeenCalledTimes(1)
+    expect(dispose).toHaveBeenCalledTimes(1)
+    expect(project).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attemptId: 'attempt-1',
+        runtimeSegmentIds: ['runtime-1'],
+        terminalMessageId: 'message-2'
+      })
+    )
+    await expect(work.readAgentFrame(caller.session, 'frame-1')).resolves.toMatchObject({
+      messages: [
+        { role: 'user', content: 'Create evidence' },
+        { role: 'assistant', content: 'Evidence is ready', artifacts }
+      ]
+    })
+    expect((await records.snapshot()).records[0].attempts[0]).not.toHaveProperty('artifactsCreated')
+  })
+
+  it('revokes a cancelled child Artifact handle before cancellation without affecting its sibling', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const lifecycle: string[] = []
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      artifactEvidence: {
+        open: async ({ attemptId }) => ({
+          execution: { currentRunFile: `/handoff/${attemptId}.json` },
+          finalize: async () => {
+            lifecycle.push(`finalize:${attemptId}`)
+          },
+          dispose: async () => {
+            lifecycle.push(`dispose:${attemptId}`)
+          }
+        }),
+        project: async () => []
+      },
+      createId: (() => {
+        const counts = { frame: 0, attempt: 0, message: 0, runtime: 0 }
+        return (kind) => `${kind}-${++counts[kind]}`
+      })()
+    })
+    const dispatched = await work.delegate(
+      caller,
+      [{ task: 'cancel me' }, { task: 'keep writing' }],
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    expect(execution.controls().map(({ input }) => input.artifactCurrentRunFile)).toEqual([
+      '/handoff/attempt-1.json',
+      '/handoff/attempt-2.json'
+    ])
+    execution.controls()[0].accept()
+    execution.controls()[1].accept()
+
+    await work.stopChildren(caller, [dispatched.children[0].frameId])
+    expect(lifecycle[0]).toBe('dispose:attempt-1')
+    execution.controls()[1].complete('sibling evidence')
+
+    await expect(
+      work.collect(
+        caller,
+        dispatched.children.map(({ frameId }) => frameId)
+      )
+    ).resolves.toMatchObject([
+      { status: 'cancelled' },
+      { status: 'completed', response: 'sibling evidence' }
+    ])
+    expect(lifecycle).toContain('finalize:attempt-2')
+  })
+
+  it('keeps parallel child Artifact projections isolated when siblings finalize out of order', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const finalized = new Set<string>()
+    const evidenceFor = (attemptId: string): ArtifactFile[] => [
+      {
+        id: `version-${attemptId}`,
+        projectName: 'project-1',
+        sessionId: 'session-1',
+        name: `${attemptId}.md`,
+        path: `/managed/${attemptId}.md`,
+        fileUrl: `file:///managed/${attemptId}.md`,
+        size: 1,
+        mtimeMs: 1,
+        versionId: `version-${attemptId}`
+      }
+    ]
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      artifactEvidence: {
+        open: async ({ attemptId }) => ({
+          finalize: async () => {
+            finalized.add(attemptId)
+          },
+          dispose: async () => undefined
+        }),
+        project: async ({ attemptId }) => (finalized.has(attemptId) ? evidenceFor(attemptId) : [])
+      },
+      createId: (() => {
+        const counts = { frame: 0, attempt: 0, message: 0, runtime: 0 }
+        return (kind) => `${kind}-${++counts[kind]}`
+      })()
+    })
+    const dispatched = await work.delegate(caller, [{ task: 'first' }, { task: 'second' }], {
+      wait: false
+    })
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    for (const control of execution.controls()) control.accept()
+    execution.control('attempt-2').complete('second done')
+    execution.control('attempt-1').complete('first done')
+
+    await expect(
+      work.collect(
+        caller,
+        dispatched.children.map(({ frameId }) => frameId)
+      )
+    ).resolves.toMatchObject([
+      { attemptId: 'attempt-1', artifactsCreated: [{ versionId: 'version-attempt-1' }] },
+      { attemptId: 'attempt-2', artifactsCreated: [{ versionId: 'version-attempt-2' }] }
+    ])
+  })
+
+  it('fails completion closed when Artifact finalization fails and preserves owner evidence', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const existing = {
+      id: 'version-existing',
+      projectName: 'project-1',
+      sessionId: 'session-1',
+      name: 'existing.md',
+      path: '/managed/existing.md',
+      fileUrl: 'file:///managed/existing.md',
+      size: 1,
+      mtimeMs: 1,
+      versionId: 'version-existing'
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      artifactEvidence: {
+        open: async () => ({
+          finalize: async () => {
+            throw new Error('Artifact finalization proof failed')
+          },
+          dispose: async () => undefined
+        }),
+        project: async () => [existing]
+      }
+    })
+    const pending = work.delegate(caller, { task: 'fragile Artifact' })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('response written before finalize')
+
+    await expect(pending).resolves.toMatchObject({
+      kind: 'results',
+      children: [
+        {
+          status: 'error',
+          artifactsCreated: [existing],
+          error: { code: 'execution_failure', message: 'Artifact finalization proof failed' }
+        }
+      ]
+    })
+    expect((await records.snapshot()).records[0].attempts[0]).not.toHaveProperty('artifactsCreated')
+  })
+
+  it('revokes an orphan Artifact capability during restart recovery while preserving durable evidence', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const opened = createDurableDelegatedWork({
+      execution,
+      records,
+      artifactEvidence: {
+        open: async () => ({ finalize: async () => undefined, dispose: async () => undefined }),
+        project: async () => []
+      }
+    })
+    await opened.delegate(caller, { task: 'interrupted Artifact' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+
+    const revoke = vi.fn(async () => undefined)
+    const preserved = {
+      id: 'version-preserved',
+      projectName: 'project-1',
+      sessionId: 'session-1',
+      name: 'preserved.md',
+      path: '/managed/preserved.md',
+      fileUrl: 'file:///managed/preserved.md',
+      size: 1,
+      mtimeMs: 1,
+      versionId: 'version-preserved'
+    }
+    const reopened = createDurableDelegatedWork({
+      execution,
+      records,
+      artifactEvidence: {
+        open: async () => ({ finalize: async () => undefined, dispose: async () => undefined }),
+        revoke,
+        project: async () => [preserved]
+      }
+    })
+
+    await expect(reopened.recoverInterrupted()).resolves.toMatchObject({
+      interrupted: [
+        {
+          status: 'cancelled',
+          cancellationReason: 'runtime_interrupted',
+          artifactsCreated: [preserved]
+        }
+      ]
+    })
+    expect(revoke).toHaveBeenCalledWith(
+      expect.objectContaining({
+        attemptId: expect.any(String),
+        agentFrameId: expect.any(String),
+        runtimeSegmentIds: [expect.any(String)]
+      })
+    )
+  })
+
+  it('disposes a capability that finishes opening after its Attempt was cancelled', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let resolveOpen!: (handle: {
+      finalize(terminalMessageId: string): Promise<void>
+      dispose(): Promise<void>
+    }) => void
+    const opening = new Promise<{
+      finalize(terminalMessageId: string): Promise<void>
+      dispose(): Promise<void>
+    }>((resolve) => {
+      resolveOpen = resolve
+    })
+    const dispose = vi.fn(async () => undefined)
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      artifactEvidence: {
+        open: async () => opening,
+        project: async () => []
+      }
+    })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'cancel while opening' },
+      { wait: false }
+    )
+    await expect
+      .poll(async () => (await records.snapshot()).records[0].attempts[0].runtimeSegmentIds)
+      .toHaveLength(1)
+    const stopping = work.stopChildren(caller, [dispatched.children[0].frameId])
+    await expect
+      .poll(async () => (await records.snapshot()).records[0].attempts[0].status)
+      .toBe('cancelled')
+    resolveOpen({ finalize: async () => undefined, dispose })
+
+    await expect(stopping).resolves.toMatchObject([{ status: 'cancelled' }])
+    await expect.poll(() => dispose).toHaveBeenCalled()
+    expect(execution.controls()).toEqual([])
   })
   it('defaults an omitted profile to Main Agent without consulting a Specialist resolver', async () => {
     const execution = createDeterministicDelegateExecution()

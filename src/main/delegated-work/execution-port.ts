@@ -40,6 +40,7 @@ type DelegateExecutionInput = Readonly<{
   inputs: readonly string[]
   profile?: string
   continuation: boolean
+  artifactCurrentRunFile?: string
 }>
 
 type RunningDelegateExecution = Readonly<{
