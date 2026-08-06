@@ -14,7 +14,7 @@ describe('agent framework registry', () => {
       supportedApiTypes: ['responses'],
       supportsSkills: true,
       acceptsStdioMcp: true,
-      supportsDelegatedWork: false
+      supportsDelegatedWork: true
     })
   })
 

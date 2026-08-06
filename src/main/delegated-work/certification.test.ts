@@ -27,7 +27,7 @@ describe('delegated-work framework certification', () => {
     ).toEqual([
       { id: 'claude-code', supportsDelegatedWork: false },
       { id: 'opencode', supportsDelegatedWork: false },
-      { id: 'codex', supportsDelegatedWork: false }
+      { id: 'codex', supportsDelegatedWork: true }
     ])
   })
 

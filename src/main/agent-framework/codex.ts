@@ -62,6 +62,15 @@ const CODEX_MODE_IDS = {
   full: 'agent-full-access'
 } as const satisfies Record<PermissionProfileId, string>
 
+// Open Science owns delegation lifecycle, authority, permission, and evidence. Keep both the stable
+// and preview Codex implementations off in every profile so native children cannot bypass that Host
+// contract. This must live in CODEX_CONFIG (rather than only custom model metadata), because trusted
+// bundled models intentionally do not receive an app-authored model catalog.
+const CODEX_DELEGATION_FEATURES = Object.freeze({
+  multi_agent: false,
+  multi_agent_v2: false
+})
+
 const CODEX_ENV_KEYS = [
   'CODEX_API_KEY',
   'OPENAI_API_KEY',
@@ -159,6 +168,7 @@ const buildCodexConfig = (provider: {
 
   return {
     ...buildCodexModelOptions(provider),
+    features: CODEX_DELEGATION_FEATURES,
     ...(contextWindow
       ? {
           model_context_window: contextWindow,
@@ -373,7 +383,7 @@ export const createCodexFramework = ({
   // owns automatic compaction, so no host trigger threshold is declared here.
   contextCompaction: { kind: 'native-command', command: '/compact' },
   supportsSkills: true,
-  supportsDelegatedWork: false,
+  supportsDelegatedWork: true,
   acceptsStdioMcp: true,
   // codex-acp advertises a thought_level effort option and honors set_config_option on live sessions
   // (verified live: a session accepted effort 'high' over ACP). If a future adapter stops
@@ -414,6 +424,7 @@ export const createCodexFramework = ({
       })
       const codexConfig = {
         ...modelOptions,
+        features: CODEX_DELEGATION_FEATURES,
         ...(persistentSystemPrompt ? { developer_instructions: persistentSystemPrompt } : {})
       }
       const codexConfigJson =
