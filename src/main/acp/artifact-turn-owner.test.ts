@@ -50,7 +50,8 @@ const artifactVersion = (overrides: Partial<ArtifactFile> = {}): ArtifactFile =>
 const openRootExecution = (
   owner: ArtifactTurnOwner,
   request: Omit<Parameters<ArtifactTurnOwner['openRootExecution']>[0], 'executionId'>
-) => owner.openRootExecution({ ...request, executionId: `root-execution-${++executionSequence}` })
+): ReturnType<ArtifactTurnOwner['openRootExecution']> =>
+  owner.openRootExecution({ ...request, executionId: `root-execution-${++executionSequence}` })
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))

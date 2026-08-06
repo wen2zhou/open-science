@@ -17,6 +17,7 @@ import { createLogger, errorLogFields } from '../logger'
 import { extractProviderToolName, extractTerminalMeta } from '../acp/runtime-events'
 import type {
   NewCheck,
+  DelegatedReviewEvidenceScope,
   ReviewCheck,
   ReviewerLogEntry,
   ReviewOutcome,
@@ -36,6 +37,7 @@ import { REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND } from './rubric'
 import { injectAuditorMessage } from './correction'
 import { buildHistoryPreamble } from '../../shared/history-preamble'
 import { getActiveConversationContext } from '../../shared/conversation-graph'
+import { assertDelegatedReviewEvidenceScope } from './scope'
 
 const log = createLogger('reviewer:orchestrator')
 
@@ -59,6 +61,9 @@ export type RunReviewOptions = {
   // review). The scope is resolved from this turn; the row is still grouped under turnMessageId.
   // Defaults to turnMessageId.
   scopeTurnMessageId?: string
+  // Exact child provenance for a delegated turn. When present, scope resolution is pinned to this
+  // Branch and fails before Review persistence unless every completed Attempt/evidence anchor agrees.
+  evidenceScope?: DelegatedReviewEvidenceScope
   // Called once the running Review row has been created and pushed — i.e. the review is confirmed to
   // have started. A failure before this point (scope resolution, the DB insert) throws without calling
   // it, so the caller can report started:false and leave the turn retriable.
@@ -1074,6 +1079,7 @@ const runReviewWithSession = async (
     sessionId,
     turnMessageId,
     scopeTurnMessageId,
+    evidenceScope,
     projectId,
     getSession,
     reviewRepository,
@@ -1102,8 +1108,10 @@ const runReviewWithSession = async (
     session,
     scopeTurnMessageId ?? turnMessageId,
     artifactStorageRoot,
-    artifactVersionContentResolver
+    artifactVersionContentResolver,
+    evidenceScope?.messageBranchId
   )
+  if (evidenceScope) assertDelegatedReviewEvidenceScope(session, scope, evidenceScope)
 
   // Step 2: create the Review row (lifecycle='running') immediately so the renderer shows a spinner.
   const scopeSnapshot = buildReviewScopeSnapshot(session, scope)
@@ -1375,6 +1383,18 @@ export const runReview = async (options: RunReviewOptions): Promise<ReviewWithCh
   } = options
 
   log.info('runReview started', { sessionId, turnMessageId })
+
+  // Delegated review authority is evidence-only. It cannot group another turn under the child scope
+  // or enter the correction loop, whose prompt injection would amount to messaging/changing work.
+  if (
+    options.evidenceScope &&
+    (turnMessageId !== options.evidenceScope.terminalMessageId ||
+      (options.scopeTurnMessageId !== undefined &&
+        options.scopeTurnMessageId !== options.evidenceScope.terminalMessageId) ||
+      mainSessionId !== undefined)
+  ) {
+    throw new Error('Delegated Review authority is limited to its exact terminal evidence scope.')
+  }
 
   const session = await getSession(sessionId)
   if (!session) {

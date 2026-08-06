@@ -1,12 +1,14 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ArtifactFile } from '../../shared/artifacts'
+import type { ReviewWithChecks } from '../../shared/reviewer'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
 import {
   createDurableDelegatedWork,
   createInMemoryDelegatedWorkRecords,
   type AuthenticatedDelegateCaller,
-  type DelegatedArtifactEvidence
+  type DelegatedArtifactEvidence,
+  type DelegatedReviewEvidence
 } from './durable-delegated-work'
 
 const caller: AuthenticatedDelegateCaller = {
@@ -577,6 +579,118 @@ describe('durable delegated work', () => {
       ]
     })
     expect((await records.snapshot()).records[0].attempts[0]).not.toHaveProperty('artifactsCreated')
+  })
+
+  it('reuses existing Review card projection after reopen without changing child lifecycle state', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const persistedReview: ReviewWithChecks = {
+      id: 'review-child-1',
+      projectId: caller.session.projectId,
+      sessionId: caller.session.sessionId,
+      turnMessageId: 'message-2',
+      scope: {
+        turnMessageId: 'message-2',
+        agentFrameId: 'frame-1',
+        messageBranchId: 'branch-frame-1',
+        blocks: [],
+        artifactVersionIds: []
+      },
+      lifecycle: 'complete',
+      outcome: 'flagged',
+      model: 'reviewer-model',
+      reviewerLog: [],
+      createdAt: 20,
+      updatedAt: 21,
+      checks: [
+        {
+          id: 'check-1',
+          reviewId: 'review-child-1',
+          status: 'warn',
+          claim: 'Qualification is missing',
+          evidence: 'The terminal response overstates the result.',
+          resolution: 'open',
+          sortIndex: 0,
+          reflagCount: 0
+        }
+      ]
+    }
+    const project = vi.fn(async () => [persistedReview])
+    const reviewEvidence: DelegatedReviewEvidence = { project }
+    const counts = { frame: 0, attempt: 0, message: 0, runtime: 0 }
+    const first = createDurableDelegatedWork({
+      execution,
+      records,
+      reviewEvidence,
+      createId: (kind) => `${kind}-${++counts[kind]}`
+    })
+
+    const pending = first.delegate(caller, { task: 'Review this child turn' })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Child answer')
+    await pending
+
+    const beforeProjection = structuredClone((await records.snapshot()).records[0].attempts[0])
+    await expect(first.readAgentFrame(caller.session, 'frame-1')).resolves.toMatchObject({
+      status: 'completed',
+      messages: [
+        { role: 'user', content: 'Review this child turn' },
+        { role: 'assistant', content: 'Child answer', reviews: [persistedReview] }
+      ]
+    })
+    expect(project).toHaveBeenCalledWith({
+      session: caller.session,
+      attemptId: 'attempt-1',
+      agentFrameId: 'frame-1',
+      messageBranchId: 'branch-frame-1',
+      terminalMessageId: 'message-2',
+      artifactVersionIds: []
+    })
+
+    const reopened = createDurableDelegatedWork({ execution, records, reviewEvidence })
+    await expect(reopened.readAgentFrame(caller.session, 'frame-1')).resolves.toMatchObject({
+      status: 'completed',
+      messages: [{ role: 'user' }, { role: 'assistant', reviews: [persistedReview] }]
+    })
+    expect((await records.snapshot()).records[0].attempts[0]).toEqual(beforeProjection)
+  })
+
+  it('keeps Reviewer authority read-only across delegated lifecycle commands', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const pending = work.delegate(caller, { task: 'Immutable child lifecycle' })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Done')
+    const completed = await pending
+    const frameId = completed.children[0].frameId
+    const reviewer = {
+      ...caller,
+      role: 'reviewer' as const,
+      toolInvocationId: 'reviewer-forged-command'
+    }
+    const before = await records.snapshot()
+
+    await expect(work.delegate(reviewer, { task: 'forged dispatch' })).rejects.toMatchObject({
+      code: 'authorization'
+    })
+    await expect(work.sendMessage(reviewer, frameId, 'forged resume')).rejects.toMatchObject({
+      code: 'authorization'
+    })
+    await expect(work.stopChildren(reviewer, [frameId])).rejects.toMatchObject({
+      code: 'authorization'
+    })
+    expect(await records.snapshot()).toEqual(before)
   })
 
   it('revokes a cancelled child Artifact handle before cancellation without affecting its sibling', async () => {

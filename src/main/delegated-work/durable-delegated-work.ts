@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { ArtifactFile } from '../../shared/artifacts'
+import type { ReviewWithChecks } from '../../shared/reviewer'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import {
   DelegateExecutionError,
@@ -251,6 +252,8 @@ type ReadOnlyAgentFrameDetail = Readonly<{
     role: 'user' | 'assistant'
     content: string
     artifacts?: readonly ArtifactFile[]
+    // Existing Reviewer projection; renderers reuse ReviewerCard without delegated-only status.
+    reviews?: readonly ReviewWithChecks[]
   }>[]
 }>
 
@@ -282,6 +285,19 @@ type DelegatedArtifactEvidence = Readonly<{
   open(scope: DelegatedArtifactScope): Promise<DelegatedArtifactHandle>
   revoke?(scope: DelegatedArtifactProjectionScope): Promise<void>
   project(scope: DelegatedArtifactProjectionScope): Promise<readonly ArtifactFile[]>
+}>
+
+type DelegatedReviewProjectionScope = Readonly<{
+  session: SessionKey
+  attemptId: string
+  agentFrameId: string
+  messageBranchId: string
+  terminalMessageId: string
+  artifactVersionIds: readonly string[]
+}>
+
+type DelegatedReviewEvidence = Readonly<{
+  project(scope: DelegatedReviewProjectionScope): Promise<readonly ReviewWithChecks[]>
 }>
 
 type StopOutcome = Readonly<{
@@ -582,6 +598,7 @@ const createDurableDelegatedWork = (options: {
   }) => Promise<void> | void
   deliverToParent?: (delivery: ParentMessageDelivery) => Promise<void>
   artifactEvidence?: DelegatedArtifactEvidence
+  reviewEvidence?: DelegatedReviewEvidence
   now?: () => number
   createId?: (kind: 'frame' | 'attempt' | 'message' | 'runtime') => string
   collectPollIntervalMs?: number
@@ -1552,10 +1569,24 @@ const createDurableDelegatedWork = (options: {
             const artifacts = owningAttempt
               ? await projectArtifacts(snapshot, child as DurableChild, owningAttempt)
               : []
+            const reviews =
+              owningAttempt?.status === 'completed' && owningAttempt.terminalMessageId
+                ? await options.reviewEvidence?.project({
+                    session: snapshot.session,
+                    attemptId: owningAttempt.id,
+                    agentFrameId: child.frameId,
+                    messageBranchId: (child as DurableChild).messageBranchId,
+                    terminalMessageId: owningAttempt.terminalMessageId,
+                    artifactVersionIds: artifacts.flatMap((artifact) =>
+                      artifact.versionId ? [artifact.versionId] : []
+                    )
+                  })
+                : undefined
             return Object.freeze({
               role,
               content,
-              ...(artifacts.length > 0 ? { artifacts } : {})
+              ...(artifacts.length > 0 ? { artifacts } : {}),
+              ...(reviews && reviews.length > 0 ? { reviews } : {})
             })
           })
       )
@@ -1685,6 +1716,8 @@ export type {
   DelegatedArtifactHandle,
   DelegatedArtifactProjectionScope,
   DelegatedArtifactScope,
+  DelegatedReviewEvidence,
+  DelegatedReviewProjectionScope,
   DelegatedWorkDurableRecords,
   DurableChildSummary,
   DurableDelegateOutcome,
