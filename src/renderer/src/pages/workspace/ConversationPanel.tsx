@@ -76,6 +76,11 @@ import {
 } from '@/stores/preview-workbench-store'
 import { WorkspaceMessageEditStateProvider } from './workspace-message-edit-state'
 import { workspaceHandoffLifecycleClient } from './handoff-lifecycle-source'
+import {
+  SubagentAvailabilityNotice,
+  SubagentComposerAggregate,
+  SubagentSummaryCard
+} from './SubagentReleaseSurfaces'
 
 const composerInteractiveTransitionClassName = 'transition-colors duration-200 ease-out'
 
@@ -271,6 +276,10 @@ const ConversationPanel = ({
 }: ConversationPanelProps): React.JSX.Element => {
   const specialistItems = useSpecialistStore((state) => state.items)
   const catalogSkills = useSettingsStore((state) => state.skills)
+  const selectedFrameworkId = useSettingsStore((state) => state.agentFrameworkId)
+  const agentFrameworks = useSettingsStore((state) => state.agentFrameworks)
+  const settingsLoaded = useSettingsStore((state) => state.isLoaded)
+  const openSettings = useSettingsStore((state) => state.openSettings)
   const fileInputRef = useRef<HTMLInputElement | null>(null)
   const globalSearchShortcut = window.api?.platform === 'darwin' ? '⌘K' : 'Ctrl+K'
   // Local so the interrupted banner can show a spinner and block a double-resume until the request settles.
@@ -487,6 +496,9 @@ const ConversationPanel = ({
           <WorkspaceMessageScroller
             activeSession={activeSession}
             onSendEditedMessage={onSendEditedMessage}
+            trailingContent={
+              <SubagentSummaryCard session={activeSession} permissions={pendingPermissions} />
+            }
             handoffLifecycleSource={workspaceHandoffLifecycleClient}
             onRetryHandoff={(request) => workspaceHandoffLifecycleClient.retry(request)}
           />
@@ -546,6 +558,14 @@ const ConversationPanel = ({
                       </div>
                     ) : null}
                   </div>
+                ) : null}
+
+                {settingsLoaded ? (
+                  <SubagentAvailabilityNotice
+                    frameworkId={activeSession?.agentFrameworkId ?? selectedFrameworkId}
+                    frameworks={agentFrameworks}
+                    onOpenSettings={openSettings}
+                  />
                 ) : null}
 
                 {/* Permission controls are already filtered to the visible session by the page. */}
@@ -964,6 +984,11 @@ const ConversationPanel = ({
                             Switching in this turn
                           </span>
                         ) : null}
+
+                        <SubagentComposerAggregate
+                          session={activeSession}
+                          permissions={pendingPermissions}
+                        />
 
                         <div className="flex-1" />
 

@@ -7,6 +7,7 @@ import { NotebookPreview } from '../NotebookPreview'
 import type { NotebookPreviewItem } from '../NotebookPreview'
 import { ProjectFilesView } from '../ProjectFilesView'
 import { SessionReviewerPanel } from '../SessionReviewerPanel'
+import { SubagentPreview } from '../SubagentReleaseSurfaces'
 import { respondToSessionPlan } from '../session-plan/respond-to-session-plan'
 import { PlanPreviewSurface } from '../session-plan/SessionPlanSurfaces'
 
@@ -78,6 +79,10 @@ export const PreviewToolContent = ({
 
   if (item.toolKind === 'reviewer') {
     return <SessionReviewerContent item={item} projectId={activeProjectId} />
+  }
+
+  if (item.toolKind === 'subagents') {
+    return <SubagentPreview item={item} />
   }
 
   if (item.toolKind === 'plan') {

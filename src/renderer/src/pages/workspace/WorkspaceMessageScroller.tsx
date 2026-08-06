@@ -13,7 +13,16 @@ import { selectProjectSessionReviews, useReviewStore } from '@/stores/review-sto
 import { useSettingsStore } from '@/stores/settings-store'
 import { useSessionStore, type ChatSession } from '@/stores/session-store'
 import { flushSessionPersistence } from '@/lib/session-persistence/session-persistence'
-import { memo, useCallback, useEffect, useMemo, useRef, useState, type ComponentProps } from 'react'
+import {
+  memo,
+  useCallback,
+  useEffect,
+  useMemo,
+  useRef,
+  useState,
+  type ComponentProps,
+  type ReactNode
+} from 'react'
 
 import { getAgentLoadingPhase } from './agent-loading-message'
 import {
@@ -55,6 +64,7 @@ import {
 type WorkspaceMessageScrollerProps = {
   activeSession: ChatSession | undefined
   onSendEditedMessage: (messageId: string, doc: ComposerDoc) => void
+  trailingContent?: ReactNode
   // Events are read-only projections; retry sends an intent that main validates against its state.
   handoffLifecycleSource?: HandoffLifecycleEventSource
   onRetryHandoff?: (request: HandoffRetryRequest) => Promise<void>
@@ -334,6 +344,7 @@ const EditableWorkspaceMessageItem = (
 const WorkspaceMessageScrollerImpl = ({
   activeSession,
   onSendEditedMessage,
+  trailingContent,
   handoffLifecycleSource,
   onRetryHandoff
 }: WorkspaceMessageScrollerProps): React.JSX.Element => {
@@ -878,6 +889,8 @@ const WorkspaceMessageScrollerImpl = ({
                   </MessageScrollerItem>
                 ))}
 
+                {trailingContent}
+
                 {agentLoadingPhase !== 'hidden' && activeSession ? (
                   <WorkspaceAgentLoadingRow
                     sessionId={activeSession.id}
@@ -946,6 +959,7 @@ const areWorkspaceMessageScrollerPropsEqual = (
   next: WorkspaceMessageScrollerProps
 ): boolean =>
   previous.onSendEditedMessage === next.onSendEditedMessage &&
+  previous.trailingContent === next.trailingContent &&
   areSessionsEqualForTranscript(previous.activeSession, next.activeSession)
 
 const WorkspaceMessageScroller = memo(
