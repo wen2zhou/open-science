@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { createDeterministicDelegateExecution } from './deterministic-execution'
 import {
@@ -15,7 +15,196 @@ const caller: AuthenticatedDelegateCaller = {
   toolInvocationId: 'tool-call-1'
 }
 
+type SpecialistFixture = {
+  id: string
+  name: string
+  displayName: string
+  enabled: boolean
+  setupPending: boolean
+  revision: number
+}
+
+const specialist = (overrides: Partial<SpecialistFixture> = {}): SpecialistFixture => ({
+  id: 'specialist-stable-id',
+  name: 'EVIDENCE_ANALYST',
+  displayName: 'Evidence Analyst',
+  enabled: true,
+  setupPending: false,
+  revision: 7,
+  ...overrides
+})
+
 describe('durable delegated work', () => {
+  it('defaults an omitted profile to Main Agent without consulting a Specialist resolver', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const resolveSpecialist = vi.fn(async () => specialist())
+    const work = createDurableDelegatedWork({ execution, records, resolveSpecialist })
+
+    const outcome = await work.delegate(caller, { task: 'Use the default agent' }, { wait: false })
+
+    expect(resolveSpecialist).not.toHaveBeenCalled()
+    expect((await records.snapshot()).records[0].attempts[0].resolvedAgent).toEqual({
+      kind: 'main'
+    })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    expect(execution.controls()[0].input).not.toHaveProperty('profile')
+    await expect(
+      work.readAgentFrame(caller.session, outcome.children[0].frameId)
+    ).resolves.toMatchObject({ resolvedAgent: { kind: 'main' } })
+  })
+
+  it('resolves an explicit stable Specialist identity and preserves its dispatch snapshot', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const profile = specialist()
+    const resolveSpecialist = vi.fn(async () => profile)
+    const work = createDurableDelegatedWork({ execution, records, resolveSpecialist })
+
+    const outcome = await work.delegate(
+      caller,
+      { task: 'Audit the evidence', profile: 'specialist-stable-id' },
+      { wait: false }
+    )
+
+    expect(resolveSpecialist).toHaveBeenCalledWith('specialist-stable-id')
+    profile.displayName = 'Renamed after dispatch'
+    profile.revision = 8
+    const expectedSnapshot = {
+      kind: 'specialist',
+      profileId: 'specialist-stable-id',
+      revision: 7,
+      displayName: 'Evidence Analyst'
+    }
+    expect((await records.snapshot()).records[0].attempts[0].resolvedAgent).toEqual(
+      expectedSnapshot
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    expect(execution.controls()[0].input.profile).toBe('specialist-stable-id')
+    await expect(
+      work.readAgentFrame(caller.session, outcome.children[0].frameId)
+    ).resolves.toMatchObject({ resolvedAgent: expectedSnapshot })
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Specialist result')
+    await expect
+      .poll(() => work.readAgentFrame(caller.session, outcome.children[0].frameId))
+      .toMatchObject({ status: 'completed', resolvedAgent: expectedSnapshot })
+  })
+
+  it('rejects unknown, disabled, and setup-incomplete Specialists before reservation or mutation', async () => {
+    for (const [profileId, resolved] of [
+      ['unknown-id', undefined],
+      ['disabled-id', specialist({ id: 'disabled-id', enabled: false })],
+      ['setup-incomplete-id', specialist({ id: 'setup-incomplete-id', setupPending: true })]
+    ] as const) {
+      const execution = createDeterministicDelegateExecution()
+      const records = createInMemoryDelegatedWorkRecords({
+        session: caller.session,
+        rootFrameId: caller.frameId,
+        originMessageId: caller.originMessageId
+      })
+      const work = createDurableDelegatedWork({
+        execution,
+        records,
+        resolveSpecialist: async () => resolved
+      })
+
+      await expect(
+        work.delegate(
+          { ...caller, toolInvocationId: `tool-call-${profileId}` },
+          { task: 'Must not run', profile: profileId },
+          { wait: false }
+        )
+      ).rejects.toMatchObject({ code: 'admission_rejection' })
+      expect(execution.reservationCounts()).toEqual([])
+      expect((await records.snapshot()).records).toEqual([])
+    }
+  })
+
+  it('keeps Specialist history stable when the live profile is renamed, disabled, or deleted', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let liveProfile: ReturnType<typeof specialist> | undefined = specialist()
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      resolveSpecialist: async () => liveProfile
+    })
+    const first = await work.delegate(
+      caller,
+      { task: 'Preserve this history', profile: 'specialist-stable-id' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Historical result')
+    await expect
+      .poll(() => work.readAgentFrame(caller.session, first.children[0].frameId))
+      .toMatchObject({ status: 'completed' })
+
+    liveProfile = specialist({ displayName: 'Renamed Specialist', revision: 8 })
+    const afterRename = await work.delegate(
+      { ...caller, toolInvocationId: 'renamed-redispatch' },
+      { task: 'Resolve the renamed profile', profile: 'specialist-stable-id' },
+      { wait: false }
+    )
+    expect((await records.snapshot()).records[1].attempts[0].resolvedAgent).toEqual({
+      kind: 'specialist',
+      profileId: 'specialist-stable-id',
+      revision: 8,
+      displayName: 'Renamed Specialist'
+    })
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    execution.controls()[1].accept()
+    execution.controls()[1].complete('Renamed result')
+    await expect
+      .poll(() => work.readAgentFrame(caller.session, afterRename.children[0].frameId))
+      .toMatchObject({ status: 'completed' })
+
+    liveProfile = specialist({ displayName: 'Renamed Specialist', revision: 8, enabled: false })
+    await expect(
+      work.delegate(
+        { ...caller, toolInvocationId: 'disabled-redispatch' },
+        { task: 'Rejected after disable', profile: 'specialist-stable-id' },
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    liveProfile = undefined
+    await expect(
+      work.delegate(
+        { ...caller, toolInvocationId: 'deleted-redispatch' },
+        { task: 'Rejected after delete', profile: 'specialist-stable-id' },
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+
+    await expect(
+      work.readAgentFrame(caller.session, first.children[0].frameId)
+    ).resolves.toMatchObject({
+      status: 'completed',
+      resolvedAgent: {
+        kind: 'specialist',
+        profileId: 'specialist-stable-id',
+        revision: 7,
+        displayName: 'Evidence Analyst'
+      }
+    })
+    expect((await records.snapshot()).records).toHaveLength(2)
+    expect(execution.reservationCounts()).toEqual([1, 1])
+  })
+
   it('blocks by default and projects the result from the durable terminal Message', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({
@@ -161,6 +350,7 @@ describe('durable delegated work', () => {
     }
 
     expect(execution.controls()).toEqual([])
+    expect(execution.reservationCounts()).toEqual([])
     expect((await records.snapshot()).records).toEqual([])
   })
 
@@ -212,6 +402,7 @@ describe('durable delegated work', () => {
       frameId,
       title: 'One child',
       status: 'running',
+      resolvedAgent: { kind: 'main' },
       messages: [{ role: 'user', content: 'One child' }]
     })
     expect(Object.isFrozen(detail)).toBe(true)

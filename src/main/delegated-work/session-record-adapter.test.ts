@@ -175,4 +175,79 @@ describe('Session delegated-work adapter', () => {
       delegatedInputVersionIds: ['upload-version:one']
     })
   })
+
+  it('persists and projects the dispatch-time Specialist label independently of Session binding', async () => {
+    const { coordinator, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const records = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => 'specialist-branch'
+      },
+      key
+    )
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      resolveSpecialist: async (profileId) => ({
+        id: profileId,
+        name: 'SOURCE_AUDITOR',
+        displayName: 'Source Auditor',
+        enabled: true,
+        setupPending: false,
+        revision: 4
+      }),
+      createId: (kind) =>
+        ({
+          frame: 'specialist-frame',
+          attempt: 'specialist-attempt',
+          message: 'specialist-message',
+          runtime: 'specialist-runtime'
+        })[kind]
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'specialist-tool-call'
+    }
+
+    await work.delegate(
+      caller,
+      { task: 'Audit sources', profile: 'stable-specialist-id' },
+      { wait: false }
+    )
+
+    const expected = {
+      kind: 'specialist',
+      profileId: 'stable-specialist-id',
+      revision: 4,
+      displayName: 'Source Auditor'
+    }
+    expect((await records.snapshot()).records[0].attempts[0].resolvedAgent).toEqual(expected)
+    await expect(work.readAgentFrame(key, 'specialist-frame')).resolves.toMatchObject({
+      resolvedAgent: expected
+    })
+    await expect(work.sessionSummary(key)).resolves.toEqual({
+      runningCount: 1,
+      children: [{ frameId: 'specialist-frame', title: 'Audit sources', status: 'running' }]
+    })
+    expect(
+      (await readSession()).conversationGraph?.frames.find(
+        (frame) => frame.id === 'specialist-frame'
+      )?.agentName
+    ).toBe('Source Auditor')
+    await expect
+      .poll(
+        async () =>
+          (await readSession()).conversationGraph?.runtimeSegments.find(
+            (segment) => segment.id === 'specialist-runtime'
+          )?.agentName
+      )
+      .toBe('Source Auditor')
+  })
 })

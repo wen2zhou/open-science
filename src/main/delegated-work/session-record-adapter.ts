@@ -47,19 +47,26 @@ const createSessionDelegatedWorkRecords = (
             name: input.title,
             context: input.request.context,
             inputs: input.request.inputs,
-            resolvedAgent: { kind: 'main' },
+            resolvedAgent: input.resolvedAgent,
             startedAt: input.startedAt
           }
         ]
       })
     },
     async startRuntime(frameId, attemptId, runtimeSegmentId) {
+      const session = await load()
+      const attempt = session.runtimeContext?.delegatedWork?.records
+        .find((record) => record.agentFrameId === frameId)
+        ?.attempts.find((candidate) => candidate.id === attemptId)
       await options.commands.startAttemptRuntime(key, {
-        expectedRevision: await revision(),
+        expectedRevision: session.runtimeContext?.revision ?? 0,
         frameId,
         attemptId,
         runtimeSegmentId,
         frameworkId: options.frameworkId,
+        ...(attempt?.resolvedAgent.kind === 'specialist'
+          ? { agentName: attempt.resolvedAgent.displayName }
+          : {}),
         startedAt: Date.now()
       })
     },
@@ -131,7 +138,7 @@ const createSessionDelegatedWorkRecords = (
               inputs: firstMessage.delegatedInputVersionIds ?? [],
               attempts: record.attempts.map((attempt) => ({
                 ...attempt,
-                resolvedAgent: { kind: 'main' as const },
+                resolvedAgent: structuredClone(attempt.resolvedAgent),
                 runtimeSegmentIds: [...attempt.runtimeSegmentIds]
               }))
             }

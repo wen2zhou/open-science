@@ -1,5 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
+import type { SpecialistProfileView } from '../../shared/specialist'
 import {
   DelegateExecutionError,
   type DelegateCapacityReservation,
@@ -25,10 +26,26 @@ type DurableDelegateRequest = Readonly<{
   inputs?: readonly string[]
 }>
 
+type SpecialistDelegationProfile = Readonly<
+  Pick<
+    SpecialistProfileView,
+    'id' | 'name' | 'displayName' | 'enabled' | 'setupPending' | 'revision'
+  >
+>
+
+type DurableResolvedAgent =
+  | Readonly<{ kind: 'main' }>
+  | Readonly<{
+      kind: 'specialist'
+      profileId: string
+      revision: number
+      displayName: string
+    }>
+
 type DurableAttempt = {
   id: string
   status: 'running' | 'completed' | 'cancelled' | 'error'
-  resolvedAgent: Readonly<{ kind: 'main' }>
+  resolvedAgent: DurableResolvedAgent
   runtimeSegmentIds: string[]
   startedAt: number
   endedAt?: number
@@ -71,6 +88,7 @@ type AdmitChildInput = Readonly<{
   userMessageId: string
   title: string
   request: DurableDelegateRequest
+  resolvedAgent: DurableResolvedAgent
   startedAt: number
 }>
 
@@ -135,6 +153,7 @@ type ReadOnlyAgentFrameDetail = Readonly<{
   frameId: string
   title: string
   status: 'running' | 'completed' | 'cancelled' | 'error'
+  resolvedAgent: DurableAttempt['resolvedAgent']
   messages: readonly Readonly<{ role: 'user' | 'assistant'; content: string }>[]
 }>
 
@@ -231,7 +250,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
           {
             id: admission.attemptId,
             status: 'running',
-            resolvedAgent: { kind: 'main' },
+            resolvedAgent: structuredClone(admission.resolvedAgent),
             runtimeSegmentIds: [],
             startedAt: admission.startedAt
           }
@@ -271,6 +290,9 @@ const createDurableDelegatedWork = (options: {
   execution: DelegateExecution
   records: DelegatedWorkDurableRecords
   assertAvailable?: (caller: AuthenticatedDelegateCaller) => Promise<void> | void
+  resolveSpecialist?: (
+    profileId: string
+  ) => Promise<SpecialistDelegationProfile | undefined> | SpecialistDelegationProfile | undefined
   validateInput?: (identity: string) => Promise<boolean> | boolean
   workspace?: Readonly<{
     prepare(
@@ -289,6 +311,51 @@ const createDurableDelegatedWork = (options: {
     string,
     { completion: Promise<void>; reservation: DelegateCapacityReservation; slotId: string }
   >()
+
+  const resolveAgent = async (profileId: string | undefined): Promise<DurableResolvedAgent> => {
+    if (profileId === undefined) return { kind: 'main' }
+    if (typeof profileId !== 'string' || !profileId.trim()) {
+      throw new DurableDelegatedWorkError(
+        'admission_rejection',
+        'an explicit Specialist profile identity cannot be empty'
+      )
+    }
+    let profile: SpecialistDelegationProfile | undefined
+    try {
+      profile = await options.resolveSpecialist?.(profileId)
+    } catch (error) {
+      throw new DurableDelegatedWorkError(
+        'admission_rejection',
+        error instanceof Error ? error.message : String(error)
+      )
+    }
+    if (
+      !profile ||
+      profile.id !== profileId ||
+      !profile.enabled ||
+      profile.setupPending === true ||
+      !Number.isSafeInteger(profile.revision) ||
+      profile.revision < 0
+    ) {
+      throw new DurableDelegatedWorkError(
+        'admission_rejection',
+        `Specialist ${profileId} is unavailable for delegated execution`
+      )
+    }
+    const displayName = profile.displayName?.trim() || profile.name.trim()
+    if (!displayName) {
+      throw new DurableDelegatedWorkError(
+        'admission_rejection',
+        `Specialist ${profileId} has no display label`
+      )
+    }
+    return {
+      kind: 'specialist',
+      profileId: profile.id,
+      revision: profile.revision,
+      displayName
+    }
+  }
 
   const snapshotChild = async (frameId: string): Promise<DurableChild | undefined> =>
     (await options.records.snapshot()).records.find((child) => child.frameId === frameId) as
@@ -338,6 +405,9 @@ const createDurableDelegatedWork = (options: {
           task: child.task,
           context: child.context,
           inputs: child.inputs,
+          ...(attempt.resolvedAgent.kind === 'specialist'
+            ? { profile: attempt.resolvedAgent.profileId }
+            : {}),
           continuation: false
         }
         handle = options.execution.run(executionInput, slotId)
@@ -440,12 +510,7 @@ const createDurableDelegatedWork = (options: {
         'an explicit delegate context cannot be empty'
       )
     }
-    if (request.profile !== undefined) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        'explicit Specialist delegation is not available yet'
-      )
-    }
+    const resolvedAgent = await resolveAgent(request.profile)
     if (
       request.inputs !== undefined &&
       (!Array.isArray(request.inputs) ||
@@ -487,6 +552,7 @@ const createDurableDelegatedWork = (options: {
         userMessageId: createId('message'),
         title: request.name?.trim() || request.task.trim(),
         request: { ...request, task: request.task.trim() },
+        resolvedAgent,
         startedAt: now()
       })
     } catch (error) {
@@ -553,6 +619,7 @@ const createDurableDelegatedWork = (options: {
         frameId,
         title: child.title,
         status: attempt.status,
+        resolvedAgent: Object.freeze(structuredClone(attempt.resolvedAgent)),
         messages: Object.freeze(
           snapshot.messages
             .filter((message) => message.frameId === frameId)
@@ -574,5 +641,6 @@ export type {
   DurableMessage,
   DurableSnapshot,
   ReadOnlyAgentFrameDetail,
+  SpecialistDelegationProfile,
   SessionSubagentSummary
 }
