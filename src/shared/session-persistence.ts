@@ -61,7 +61,54 @@ export type SessionRuntimeContextValue =
   | SessionRuntimeContextValue[]
   | { [key: string]: SessionRuntimeContextValue }
 
-export type SessionRuntimeContextOwner = 'plan'
+export type SessionRuntimeContextOwner = 'plan' | 'delegatedWork'
+
+export type DelegatedWorkAttemptStatus = 'running' | 'completed' | 'cancelled' | 'error'
+export type DelegatedWorkCancellationReason =
+  'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
+
+export type DelegatedWorkResolvedAgent =
+  | Readonly<{ kind: 'main' }>
+  | Readonly<{
+      kind: 'specialist'
+      profileId: string
+      revision: number
+      displayName: string
+    }>
+
+export type DelegatedWorkAttemptRecord = Readonly<{
+  id: string
+  status: DelegatedWorkAttemptStatus
+  resolvedAgent: DelegatedWorkResolvedAgent
+  runtimeSegmentIds: readonly string[]
+  startedAt: number
+  endedAt?: number
+  terminalMessageId?: string
+  cancellationReason?: DelegatedWorkCancellationReason
+  error?: Readonly<{ code: string; message: string }>
+}>
+
+export type DelegatedWorkPendingMessage = Readonly<{
+  id: string
+  sourceFrameId: string
+  sourceAttemptId?: string
+  targetFrameId: string
+  targetAttemptId?: string
+  text: string
+  kind: 'info' | 'question'
+  createdAt: number
+  deliveredAt?: number
+}>
+
+export type DelegatedWorkRecord = Readonly<{
+  agentFrameId: string
+  attempts: readonly DelegatedWorkAttemptRecord[]
+  pendingMessages: readonly DelegatedWorkPendingMessage[]
+}>
+
+export type SessionDelegatedWorkRuntimeContext = Readonly<{
+  records: readonly DelegatedWorkRecord[]
+}>
 
 export type SessionPlanApproval = 'pending' | 'approved' | 'rejected'
 export type SessionPlanStepStatus = 'in_progress' | 'completed' | 'blocked' | 'skipped'
@@ -91,10 +138,14 @@ export type SessionRuntimeContext = Readonly<{
   version: 1
   revision: number
   plan?: SessionPlanRuntimeContext
+  delegatedWork?: SessionDelegatedWorkRuntimeContext
 }>
 
 export type SessionRuntimeContextPatch = Readonly<
-  Partial<Record<SessionRuntimeContextOwner, SessionPlanRuntimeContext | undefined>>
+  Partial<{
+    plan: SessionPlanRuntimeContext | undefined
+    delegatedWork: SessionDelegatedWorkRuntimeContext | undefined
+  }>
 >
 
 // Stores artifact references only; file bytes stay on disk under the managed artifact root.
@@ -469,6 +520,225 @@ const sanitizeSessionPlanRuntimeContext = (
   }
 }
 
+const DELEGATED_WORK_ATTEMPT_STATUSES = new Set<DelegatedWorkAttemptStatus>([
+  'running',
+  'completed',
+  'cancelled',
+  'error'
+])
+const DELEGATED_WORK_CANCELLATION_REASONS = new Set<DelegatedWorkCancellationReason>([
+  'main_agent_stop',
+  'session_stop',
+  'runtime_interrupted'
+])
+
+const hasOnlyFields = (value: Record<string, unknown>, fields: readonly string[]): boolean =>
+  Object.keys(value).every((field) => fields.includes(field))
+
+const sanitizeDelegatedWorkResolvedAgent = (
+  value: unknown
+): DelegatedWorkResolvedAgent | undefined => {
+  if (!isRecord(value)) return undefined
+  if (value.kind === 'main' && hasOnlyFields(value, ['kind'])) return { kind: 'main' }
+  if (value.kind !== 'specialist') return undefined
+  if (!hasOnlyFields(value, ['kind', 'profileId', 'revision', 'displayName'])) return undefined
+  const profileId = asString(value.profileId)
+  const revision = asNumber(value.revision)
+  const displayName = asString(value.displayName)
+  if (
+    !profileId ||
+    revision === undefined ||
+    !Number.isSafeInteger(revision) ||
+    revision < 1 ||
+    !displayName
+  ) {
+    return undefined
+  }
+  return { kind: 'specialist', profileId, revision, displayName }
+}
+
+const sanitizeSessionDelegatedWorkRuntimeContext = (
+  value: unknown
+): SessionDelegatedWorkRuntimeContext | undefined => {
+  if (!isRecord(value) || !hasOnlyFields(value, ['records']) || !Array.isArray(value.records)) {
+    return undefined
+  }
+  const frameIds = new Set<string>()
+  const attemptIds = new Set<string>()
+  const pendingMessageIds = new Set<string>()
+  const records: DelegatedWorkRecord[] = []
+  for (const rawRecord of value.records) {
+    if (
+      !isRecord(rawRecord) ||
+      !hasOnlyFields(rawRecord, ['agentFrameId', 'attempts', 'pendingMessages']) ||
+      !Array.isArray(rawRecord.attempts) ||
+      rawRecord.attempts.length === 0 ||
+      !Array.isArray(rawRecord.pendingMessages)
+    ) {
+      return undefined
+    }
+    const agentFrameId = asString(rawRecord.agentFrameId)
+    if (!agentFrameId || frameIds.has(agentFrameId)) return undefined
+    frameIds.add(agentFrameId)
+    const attempts: DelegatedWorkAttemptRecord[] = []
+    let runningCount = 0
+    for (const rawAttempt of rawRecord.attempts) {
+      if (
+        !isRecord(rawAttempt) ||
+        !hasOnlyFields(rawAttempt, [
+          'id',
+          'status',
+          'resolvedAgent',
+          'runtimeSegmentIds',
+          'startedAt',
+          'endedAt',
+          'terminalMessageId',
+          'cancellationReason',
+          'error'
+        ])
+      ) {
+        return undefined
+      }
+      const id = asString(rawAttempt.id)
+      const status = asString(rawAttempt.status) as DelegatedWorkAttemptStatus | undefined
+      const resolvedAgent = sanitizeDelegatedWorkResolvedAgent(rawAttempt.resolvedAgent)
+      const startedAt = asNumber(rawAttempt.startedAt)
+      const runtimeSegmentIds = asStringArray(rawAttempt.runtimeSegmentIds)
+      if (
+        !id ||
+        attemptIds.has(id) ||
+        !status ||
+        !DELEGATED_WORK_ATTEMPT_STATUSES.has(status) ||
+        !resolvedAgent ||
+        startedAt === undefined ||
+        startedAt < 0 ||
+        !Array.isArray(rawAttempt.runtimeSegmentIds) ||
+        runtimeSegmentIds.length !== rawAttempt.runtimeSegmentIds.length ||
+        new Set(runtimeSegmentIds).size !== runtimeSegmentIds.length
+      ) {
+        return undefined
+      }
+      attemptIds.add(id)
+      const endedAt = rawAttempt.endedAt === undefined ? undefined : asNumber(rawAttempt.endedAt)
+      const terminalMessageId =
+        rawAttempt.terminalMessageId === undefined
+          ? undefined
+          : asString(rawAttempt.terminalMessageId)
+      const cancellationReason =
+        rawAttempt.cancellationReason === undefined
+          ? undefined
+          : (asString(rawAttempt.cancellationReason) as DelegatedWorkCancellationReason | undefined)
+      let error: { code: string; message: string } | undefined
+      if (rawAttempt.error !== undefined) {
+        if (!isRecord(rawAttempt.error) || !hasOnlyFields(rawAttempt.error, ['code', 'message'])) {
+          return undefined
+        }
+        const code = asString(rawAttempt.error.code)
+        const message = asString(rawAttempt.error.message)
+        if (!code || !message) return undefined
+        error = { code, message }
+      }
+      if (status === 'running') {
+        runningCount += 1
+        if (
+          endedAt !== undefined ||
+          terminalMessageId !== undefined ||
+          cancellationReason !== undefined ||
+          error !== undefined
+        ) {
+          return undefined
+        }
+      } else if (endedAt === undefined || endedAt < startedAt) {
+        return undefined
+      }
+      if (status === 'completed' && terminalMessageId === undefined) return undefined
+      if (
+        (status === 'cancelled') !== (cancellationReason !== undefined) ||
+        (cancellationReason && !DELEGATED_WORK_CANCELLATION_REASONS.has(cancellationReason)) ||
+        (status === 'error') !== (error !== undefined)
+      ) {
+        return undefined
+      }
+      attempts.push({
+        id,
+        status,
+        resolvedAgent,
+        runtimeSegmentIds,
+        startedAt,
+        ...(endedAt !== undefined ? { endedAt } : {}),
+        ...(terminalMessageId ? { terminalMessageId } : {}),
+        ...(cancellationReason ? { cancellationReason } : {}),
+        ...(error ? { error } : {})
+      })
+    }
+    if (runningCount > 1 || (runningCount === 1 && attempts.at(-1)?.status !== 'running')) {
+      return undefined
+    }
+    const pendingMessages: DelegatedWorkPendingMessage[] = []
+    for (const rawMessage of rawRecord.pendingMessages) {
+      if (
+        !isRecord(rawMessage) ||
+        !hasOnlyFields(rawMessage, [
+          'id',
+          'sourceFrameId',
+          'sourceAttemptId',
+          'targetFrameId',
+          'targetAttemptId',
+          'text',
+          'kind',
+          'createdAt',
+          'deliveredAt'
+        ])
+      ) {
+        return undefined
+      }
+      const id = asString(rawMessage.id)
+      const sourceFrameId = asString(rawMessage.sourceFrameId)
+      const sourceAttemptId =
+        rawMessage.sourceAttemptId === undefined ? undefined : asString(rawMessage.sourceAttemptId)
+      const targetFrameId = asString(rawMessage.targetFrameId)
+      const targetAttemptId =
+        rawMessage.targetAttemptId === undefined ? undefined : asString(rawMessage.targetAttemptId)
+      const text = asString(rawMessage.text)
+      const kind = asString(rawMessage.kind) as 'info' | 'question' | undefined
+      const createdAt = asNumber(rawMessage.createdAt)
+      const deliveredAt =
+        rawMessage.deliveredAt === undefined ? undefined : asNumber(rawMessage.deliveredAt)
+      if (
+        !id ||
+        pendingMessageIds.has(id) ||
+        !sourceFrameId ||
+        (rawMessage.sourceAttemptId !== undefined && !sourceAttemptId) ||
+        !targetFrameId ||
+        (rawMessage.targetAttemptId !== undefined && !targetAttemptId) ||
+        !text ||
+        !kind ||
+        !['info', 'question'].includes(kind) ||
+        createdAt === undefined ||
+        createdAt < 0 ||
+        (rawMessage.deliveredAt !== undefined &&
+          (deliveredAt === undefined || deliveredAt < createdAt))
+      ) {
+        return undefined
+      }
+      pendingMessageIds.add(id)
+      pendingMessages.push({
+        id,
+        sourceFrameId,
+        ...(sourceAttemptId ? { sourceAttemptId } : {}),
+        targetFrameId,
+        ...(targetAttemptId ? { targetAttemptId } : {}),
+        text,
+        kind,
+        createdAt,
+        ...(deliveredAt !== undefined ? { deliveredAt } : {})
+      })
+    }
+    records.push({ agentFrameId, attempts, pendingMessages })
+  }
+  return { records }
+}
+
 export const sanitizeSessionRuntimeContext = (
   value: unknown
 ): SessionRuntimeContext | undefined => {
@@ -476,19 +746,30 @@ export const sanitizeSessionRuntimeContext = (
   const revision = asNumber(value.revision)
   if (revision === undefined || !Number.isSafeInteger(revision) || revision < 0) return undefined
 
-  const result: { version: 1; revision: number; plan?: SessionPlanRuntimeContext } = {
+  const result: {
+    version: 1
+    revision: number
+    plan?: SessionPlanRuntimeContext
+    delegatedWork?: SessionDelegatedWorkRuntimeContext
+  } = {
     version: 1,
     revision
   }
   const budget = { remaining: 2_000 }
   for (const [owner, ownerValue] of Object.entries(value)) {
     if (owner === 'version' || owner === 'revision') continue
-    if (owner !== 'plan') return undefined
+    if (owner !== 'plan' && owner !== 'delegatedWork') return undefined
     const sanitizedJson = sanitizeRuntimeContextValue(ownerValue, budget)
     if (sanitizedJson === undefined) return undefined
-    const plan = sanitizeSessionPlanRuntimeContext(sanitizedJson)
-    if (!plan) return undefined
-    result.plan = plan
+    if (owner === 'plan') {
+      const plan = sanitizeSessionPlanRuntimeContext(sanitizedJson)
+      if (!plan) return undefined
+      result.plan = plan
+    } else {
+      const delegatedWork = sanitizeSessionDelegatedWorkRuntimeContext(sanitizedJson)
+      if (!delegatedWork) return undefined
+      result.delegatedWork = delegatedWork
+    }
   }
   return result
 }
