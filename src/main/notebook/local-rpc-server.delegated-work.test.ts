@@ -152,7 +152,11 @@ describe('authenticated delegatedWorkCall route', () => {
       transport: 'tcp',
       delegatedWorkService: { delegate, children: vi.fn(), collect: vi.fn() }
     })
-    const connection = await server.issueControlConnection('session-1', 'project-1')
+    const connection = await server.issueControlConnection(
+      'session-1',
+      'project-1',
+      'root-frame-session-1'
+    )
 
     const response = await fetch(connection.endpoint, {
       method: 'POST',
@@ -252,7 +256,11 @@ describe('authenticated delegatedWorkCall route', () => {
       transport: 'tcp',
       delegatedWorkService: work
     })
-    const connection = await server.issueControlConnection('session-1', 'project-1')
+    const connection = await server.issueControlConnection(
+      'session-1',
+      'project-1',
+      'root-frame-session-1'
+    )
     const endInvocation = connection.beginControlInvocation({
       turnId: 'turn-1',
       controlInvocationGeneration: 1,

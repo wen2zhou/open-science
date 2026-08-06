@@ -74,6 +74,14 @@ afterEach(async () => {
 })
 
 describe('notebook local RPC server', () => {
+  it('fails closed when a Session capability omits its Frame owner', async () => {
+    const server = new NotebookLocalRpcServer({} as never)
+
+    await expect(server.issueSessionConnection('session-1', 'project-1', '')).rejects.toThrow(
+      'Notebook RPC capabilities require an explicit Agent Frame owner.'
+    )
+  })
+
   it('does not let a root Frame capability write through another active Frame lane', async () => {
     const root = await createStorageRoot()
     const service = new NotebookRuntimeService({
@@ -84,7 +92,11 @@ describe('notebook local RPC server', () => {
     })
     const execute = vi.spyOn(service, 'execute')
     const server = new NotebookLocalRpcServer(service, { token: 'master-token' })
-    const connection = await server.issueSessionConnection('session-1', 'default-project')
+    const connection = await server.issueSessionConnection(
+      'session-1',
+      'default-project',
+      'root-frame-session-1'
+    )
     server.setArtifactProvenanceContext('session-1', {
       rootFrameId: 'root-frame-session-1',
       agentFrameId: 'child-frame-1',
@@ -233,9 +245,17 @@ describe('notebook local RPC server', () => {
       repository: new NotebookRunRepository(root)
     })
     const server = new NotebookLocalRpcServer(service, { transport: 'pipe' })
-    const session = await server.issueSessionConnection('session-1', 'default-project')
+    const session = await server.issueSessionConnection(
+      'session-1',
+      'default-project',
+      'root-frame-session-1'
+    )
     const skillImport = await server.issueSkillImportConnection('session-1')
-    const control = await server.issueControlConnection('session-1', 'default-project')
+    const control = await server.issueControlConnection(
+      'session-1',
+      'default-project',
+      'root-frame-session-1'
+    )
 
     try {
       expect(session.socketPath).toBeTruthy()
@@ -473,7 +493,11 @@ describe('notebook local RPC server', () => {
       onSessionReleased,
       connectorService: { call: connectorCall }
     })
-    const connection = await server.issueSessionConnection('notebook-session-1', 'default-project')
+    const connection = await server.issueSessionConnection(
+      'notebook-session-1',
+      'default-project',
+      'root-frame-notebook-session-1'
+    )
     server.registerSessionAlias('notebook-session-1', 'real-session-1')
 
     try {
@@ -522,10 +546,22 @@ describe('notebook local RPC server', () => {
       token: 'secret-token',
       connectorService: { call: connectorCall }
     })
-    const initial = await server.issueSessionConnection('notebook-session-1', 'default-project')
+    const initial = await server.issueSessionConnection(
+      'notebook-session-1',
+      'default-project',
+      'root-frame-notebook-session-1'
+    )
     server.registerSessionAlias('notebook-session-1', 'real-session-1')
-    const control = await server.issueControlConnection('real-session-1', 'default-project')
-    const replacement = await server.issueSessionConnection('real-session-1', 'default-project')
+    const control = await server.issueControlConnection(
+      'real-session-1',
+      'default-project',
+      'root-frame-real-session-1'
+    )
+    const replacement = await server.issueSessionConnection(
+      'real-session-1',
+      'default-project',
+      'root-frame-real-session-1'
+    )
 
     const callConnector = (token: string): Promise<Response> =>
       fetch(replacement.endpoint, {
@@ -595,7 +631,11 @@ describe('notebook local RPC server', () => {
         clearSession: vi.fn()
       }
     })
-    const control = await server.issueControlConnection('trusted-session', 'default-project')
+    const control = await server.issueControlConnection(
+      'trusted-session',
+      'default-project',
+      'root-frame-trusted-session'
+    )
     server.setArtifactProvenanceContext('trusted-session', {
       rootFrameId: 'root-1',
       agentFrameId: 'agent-1',
@@ -702,8 +742,16 @@ describe('notebook local RPC server', () => {
       token: 'secret-token',
       connectorService: { call: connectorCall }
     })
-    const prior = await server.issueSessionConnection('stable-session', 'default-project')
-    const replacement = await server.issueSessionConnection('stable-session', 'default-project')
+    const prior = await server.issueSessionConnection(
+      'stable-session',
+      'default-project',
+      'root-frame-stable-session'
+    )
+    const replacement = await server.issueSessionConnection(
+      'stable-session',
+      'default-project',
+      'root-frame-stable-session'
+    )
 
     try {
       expect(prior.release).toBeTypeOf('function')
@@ -1532,7 +1580,11 @@ describe('notebook local RPC server', () => {
       token: 'secret-token',
       computeService: fakeComputeService
     })
-    const connection = await server.issueSessionConnection('my-session', 'default-project')
+    const connection = await server.issueSessionConnection(
+      'my-session',
+      'default-project',
+      'root-frame-my-session'
+    )
 
     try {
       // Known session → returns the registered host list.
@@ -1555,7 +1607,8 @@ describe('notebook local RPC server', () => {
       // Unknown session → empty array.
       const otherConnection = await server.issueSessionConnection(
         'other-session',
-        'default-project'
+        'default-project',
+        'root-frame-other-session'
       )
       const noHosts = await fetch(otherConnection.endpoint, {
         method: 'POST',
@@ -1612,7 +1665,11 @@ describe('notebook local RPC server', () => {
       token: 'secret-token',
       computeService: fakeComputeService
     })
-    const connection = await server.issueSessionConnection('my-session', 'default-project')
+    const connection = await server.issueSessionConnection(
+      'my-session',
+      'default-project',
+      'root-frame-my-session'
+    )
 
     try {
       const response = await fetch(connection.endpoint, {
@@ -1666,7 +1723,11 @@ describe('notebook local RPC server', () => {
       token: 'secret-token',
       computeService: fakeComputeService
     })
-    const connection = await server.issueSessionConnection('my-session', 'default-project')
+    const connection = await server.issueSessionConnection(
+      'my-session',
+      'default-project',
+      'root-frame-my-session'
+    )
 
     try {
       const response = await fetch(connection.endpoint, {

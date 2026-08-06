@@ -906,7 +906,11 @@ describe('completion gate tracer bullet', () => {
       token: 'completion-gate-token',
       agentsService: harness.agents
     })
-    const connection = await server.issueControlConnection('trusted-session', 'default-project')
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'default-project',
+      'root-frame-trusted-session'
+    )
     const releaseInvocation = connection.beginControlInvocation(completionContext)
     const loop = startLoop({
       OPEN_SCIENCE_MCP_RPC_ENDPOINT: connection.endpoint,
@@ -1014,7 +1018,11 @@ describe('completion gate tracer bullet', () => {
       token: 'opencode-handoff-token',
       agentsService: agents
     })
-    const connection = await server.issueControlConnection('trusted-session', 'default-project')
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'default-project',
+      'root-frame-trusted-session'
+    )
     const releaseInvocation = connection.beginControlInvocation(completionContext)
     const loop = startLoop({
       OPEN_SCIENCE_MCP_RPC_ENDPOINT: connection.endpoint,

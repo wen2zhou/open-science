@@ -67,6 +67,7 @@ const makeSession = (
     dataRoot: snapshot.dataRoot,
     runtimeRoot: snapshot.runtimeRoot,
     runJsonPath: snapshot.runJsonPath,
+    lane: createFrameNotebookLane(projectName, sessionId, 'root-frame-session-1'),
     snapshot: () => snapshot,
     kernelStatusEntries: () => snapshot.kernelStatuses.map((entry) => [...entry]),
     runtimeBindingEntries: () =>
@@ -165,6 +166,7 @@ describe('NotebookSessionReadModel', () => {
     await repository.loadOrCreate({
       projectName: session.projectName,
       sessionId: session.sessionId,
+      lane: session.lane,
       workspaceCwd: session.cwd,
       pythonPath: join(getRuntimeRoot(storageRoot), 'python')
     })
@@ -212,6 +214,7 @@ describe('NotebookSessionReadModel', () => {
     await repository.loadOrCreate({
       projectName: session.projectName,
       sessionId: session.sessionId,
+      lane: session.lane,
       workspaceCwd: persistedWorkspace
     })
     const durableModel = makeReadModel(storageRoot, undefined, repository)

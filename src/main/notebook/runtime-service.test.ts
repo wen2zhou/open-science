@@ -17,6 +17,7 @@ import {
 } from './runtime-service'
 import { effectiveMirrorAsync, resetAutoMirrorCache } from './mirror-probe'
 import { NotebookRunRepository, getRuntimeRoot } from './repository'
+import { createRootNotebookLane } from './lane-identity'
 import {
   RuntimeOperationJournal,
   operationJournalPath,
@@ -596,6 +597,7 @@ describe('notebook runtime service', () => {
     const document = await repository.loadOrCreate({
       projectName: 'default-project',
       sessionId: 'session-1',
+      lane: createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
       workspaceCwd: root
     })
     expect(document.runs).toHaveLength(1)
@@ -2246,11 +2248,13 @@ describe('notebook runtime service', () => {
     await priorRepo.loadOrCreate({
       projectName: 'default-project',
       sessionId: 'crashed',
+      lane: createRootNotebookLane('default-project', 'crashed', 'root-frame-crashed'),
       workspaceCwd: '/workspace'
     })
     await priorRepo.appendRun({
       projectName: 'default-project',
       sessionId: 'crashed',
+      lane: createRootNotebookLane('default-project', 'crashed', 'root-frame-crashed'),
       run: {
         runId: 'run-1',
         cellId: 'cell-1',
@@ -2625,9 +2629,11 @@ describe('notebook runtime service', () => {
     // does, see createExecutor); this exercises the persistence+notify logic it calls directly.
     await (
       service as unknown as {
-        handleKernelIdleShutdown: (sessionId: string, projectName: string) => Promise<void>
+        handleKernelIdleShutdown: (lane: ReturnType<typeof createRootNotebookLane>) => Promise<void>
       }
-    ).handleKernelIdleShutdown('session-1', 'default-project')
+    ).handleKernelIdleShutdown(
+      createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1')
+    )
 
     const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
     expect(state.kernelStatus).toBe('terminated')
@@ -2845,9 +2851,11 @@ describe('notebook runtime service', () => {
     // 'idle-shutdown reports a terminated kernel status' test above for the same mechanism).
     await (
       service as unknown as {
-        handleKernelIdleShutdown: (sessionId: string, projectName: string) => Promise<void>
+        handleKernelIdleShutdown: (lane: ReturnType<typeof createRootNotebookLane>) => Promise<void>
       }
-    ).handleKernelIdleShutdown('session-1', 'default-project')
+    ).handleKernelIdleShutdown(
+      createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1')
+    )
 
     const afterShutdown = await service.state({ sessionId: 'session-1', workspaceCwd: root })
     expect(afterShutdown.kernelStatus).toBe('terminated')
@@ -2885,9 +2893,11 @@ describe('notebook runtime service', () => {
 
     await (
       service as unknown as {
-        handleKernelIdleShutdown: (sessionId: string, projectName: string) => Promise<void>
+        handleKernelIdleShutdown: (lane: ReturnType<typeof createRootNotebookLane>) => Promise<void>
       }
-    ).handleKernelIdleShutdown('session-1', 'default-project')
+    ).handleKernelIdleShutdown(
+      createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1')
+    )
 
     const afterShutdown = await service.state({ sessionId: 'session-1', workspaceCwd: root })
     expect(afterShutdown.kernelStatus).toBe('terminated')
@@ -3313,9 +3323,15 @@ describe('notebook runtime service', () => {
             // the runtime service's executor-rejection path sets executedOnLiveKernel false.
             await (
               svc as unknown as {
-                handleKernelTerminated: (s: string, p: string, k: string) => Promise<void>
+                handleKernelTerminated: (
+                  lane: ReturnType<typeof createRootNotebookLane>,
+                  k: string
+                ) => Promise<void>
               }
-            ).handleKernelTerminated('session-1', 'default-project', 'python')
+            ).handleKernelTerminated(
+              createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
+              'python'
+            )
             throw new Error('Notebook kernel process exited.')
           },
           shutdown: async () => ({ reaped: true })
@@ -3350,9 +3366,15 @@ describe('notebook runtime service', () => {
             // onTerminated callback fires — the terminatedKernels guard must still keep 'terminated'.
             await (
               svc as unknown as {
-                handleKernelTerminated: (s: string, p: string, k: string) => Promise<void>
+                handleKernelTerminated: (
+                  lane: ReturnType<typeof createRootNotebookLane>,
+                  k: string
+                ) => Promise<void>
               }
-            ).handleKernelTerminated('session-1', 'default-project', 'python')
+            ).handleKernelTerminated(
+              createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
+              'python'
+            )
             return {
               status: 'failed',
               stdout: '',
@@ -3393,9 +3415,15 @@ describe('notebook runtime service', () => {
             if (mode === 'crash') {
               await (
                 svc as unknown as {
-                  handleKernelTerminated: (s: string, p: string, k: string) => Promise<void>
+                  handleKernelTerminated: (
+                    lane: ReturnType<typeof createRootNotebookLane>,
+                    k: string
+                  ) => Promise<void>
                 }
-              ).handleKernelTerminated('session-1', 'default-project', 'python')
+              ).handleKernelTerminated(
+                createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
+                'python'
+              )
               return {
                 status: 'failed',
                 stdout: '',

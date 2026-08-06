@@ -13,8 +13,7 @@ import type {
 } from '../../shared/notebook'
 import type { NotebookRuntimeBinding } from '../../shared/notebook-runtime'
 import type { TrustedControlInvocationIdentity } from '../../shared/agents-contract'
-import { createRootNotebookLane, type NotebookLaneIdentity } from './lane-identity'
-import { notebookLaneScope } from './lane-identity'
+import { notebookLaneScope, type NotebookLaneIdentity } from './lane-identity'
 
 export type NotebookSessionResolvedInterpreter = {
   command: string
@@ -106,7 +105,7 @@ export type NotebookSessionAggregateInit<
   executionCount: number
   executor: NotebookSessionExecutor<Request, Result>
   executorGeneration: NotebookSessionExecutorGeneration
-  lane?: NotebookLaneIdentity
+  lane: NotebookLaneIdentity
 }
 
 export type NotebookSessionSnapshot = Readonly<{
@@ -184,7 +183,8 @@ export class NotebookSessionAggregate<
     this.dataRoot = init.dataRoot
     this.runtimeRoot = init.runtimeRoot
     this.runJsonPath = init.runJsonPath
-    this.lane = init.lane ?? createRootNotebookLane(init.projectName, init.sessionId)
+    this.lane = init.lane
+    notebookLaneScope(this.lane)
     this.executionCountValue = init.executionCount
     this.executorValue = init.executor
     this.executorGenerationValue = init.executorGeneration

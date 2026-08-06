@@ -79,7 +79,11 @@ describe('notebook RPC agentsCall route', () => {
       token: 'tok',
       agentsService: { read }
     })
-    const connection = await server.issueControlConnection('trusted-session', 'default-project')
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'default-project',
+      'root-frame-trusted-session'
+    )
     try {
       const res = await fetch(connection.endpoint, {
         method: 'POST',
@@ -127,7 +131,11 @@ describe('notebook RPC agentsCall route', () => {
       transport: 'tcp',
       agentsService: { read }
     })
-    const connection = await server.issueControlConnection('trusted-session', 'default-project')
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'default-project',
+      'root-frame-trusted-session'
+    )
     try {
       const response = await fetch(connection.endpoint, {
         method: 'POST',
@@ -164,7 +172,11 @@ describe('notebook RPC agentsCall route', () => {
       token: 'tok',
       agentsService: { read }
     })
-    const connection = await server.issueControlConnection('trusted-session', 'default-project')
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'default-project',
+      'root-frame-trusted-session'
+    )
     try {
       await fetch(connection.endpoint, {
         method: 'POST',
@@ -198,7 +210,11 @@ describe('notebook RPC agentsCall route', () => {
       token: 'tok',
       agentsService: { read }
     })
-    const connection = await server.issueControlConnection('trusted-session', 'default-project')
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'default-project',
+      'root-frame-trusted-session'
+    )
     try {
       const res = await fetch(connection.endpoint, {
         method: 'POST',
@@ -224,7 +240,11 @@ describe('notebook RPC agentsCall route', () => {
       token: 'tok',
       agentsService: { read }
     })
-    const connection = await server.issueControlConnection('trusted-session', 'default-project')
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'default-project',
+      'root-frame-trusted-session'
+    )
     try {
       await fetch(connection.endpoint, {
         method: 'POST',
@@ -270,7 +290,11 @@ describe('notebook RPC agentsCall route', () => {
       token: 'tok',
       agentsService: { read, dispatch }
     })
-    const connection = await server.issueControlConnection('trusted-session', 'default-project')
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'default-project',
+      'root-frame-trusted-session'
+    )
     try {
       const res = await fetch(connection.endpoint, {
         method: 'POST',

@@ -25,7 +25,7 @@ type RuntimeBindingSession = Pick<
 > & {
   readonly projectName: string
   readonly sessionId: string
-  readonly lane?: NotebookSessionAggregate['lane']
+  readonly lane: NotebookSessionAggregate['lane']
 }
 
 type RuntimeBindingRepository = Pick<NotebookRunRepository, 'setRuntimeBindings'>

@@ -23,6 +23,7 @@ import {
 import { detectManagedRuntimeMutation } from './managed-runtime-guard'
 import type { NotebookRunRepository } from './repository'
 import { NotebookRunTerminalizationOwner } from './run-terminalization'
+import { notebookLaneScope } from './lane-identity'
 import type {
   NotebookSessionAggregate,
   NotebookSessionExecutionResult,
@@ -166,6 +167,7 @@ class NotebookExecutionOwner {
       executionCount,
       environment,
       ...request.provenanceContext,
+      agentFrameId: notebookLaneScope(session.lane).agentFrameId,
       text: { stdout: '', stderr: '', traceback: '', plain: [] },
       outputs: [],
       artifacts: [],
@@ -337,6 +339,7 @@ class NotebookExecutionOwner {
       startedAt: Date.now(),
       cwdBefore: session.cwd,
       ...request.provenanceContext,
+      agentFrameId: notebookLaneScope(session.lane).agentFrameId,
       text: { stdout: '', stderr: '', traceback: '', plain: [] },
       outputs: [],
       artifacts: [],
@@ -432,6 +435,7 @@ class NotebookExecutionOwner {
       startedAt: Date.now(),
       cwdBefore: session.cwd,
       ...request.provenanceContext,
+      agentFrameId: notebookLaneScope(session.lane).agentFrameId,
       text: { stdout: '', stderr: '', traceback: '', plain: [] },
       outputs: [],
       artifacts: [],

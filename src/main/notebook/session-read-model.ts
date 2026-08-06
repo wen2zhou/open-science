@@ -53,7 +53,7 @@ type NotebookSessionReadSource = {
   readonly dataRoot: string
   readonly runtimeRoot: string
   readonly runJsonPath: string
-  readonly lane?: NotebookLaneIdentity
+  readonly lane: NotebookLaneIdentity
   snapshot: () => NotebookSessionSnapshot
   kernelStatusEntries: () => Array<[string, NotebookKernelMetadata['lastKnownStatus']]>
   runtimeBindingEntries: () => Array<[NotebookLanguage, NotebookRuntimeBinding]>

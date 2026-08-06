@@ -117,7 +117,7 @@ type ArtifactProvenanceRepositoryOptions = {
   storageRoot: string
   getClient: () => Promise<PrismaClient>
   compatibilityRepository?: ArtifactRepository
-  notebookRepository?: Pick<NotebookRunRepository, 'findExisting'>
+  notebookRepository?: Pick<NotebookRunRepository, 'readSessionDocuments'>
   loadSession?: (
     projectId: string,
     appSessionId: string
@@ -1310,7 +1310,7 @@ const resolveRunEnvironmentCapture = (
 
 class ArtifactProvenanceRepository {
   private readonly compatibilityRepository: ArtifactRepository
-  private readonly notebookRepository: Pick<NotebookRunRepository, 'findExisting'>
+  private readonly notebookRepository: Pick<NotebookRunRepository, 'readSessionDocuments'>
   private readonly createId: () => string
   private readonly now: () => Date
   private readonly durability: ArtifactDurability
@@ -2070,10 +2070,20 @@ class ArtifactProvenanceRepository {
       return { state: 'unavailable', reason: 'producer-not-supplied' }
     }
 
-    const document = await this.notebookRepository.findExisting(
+    const documents = await this.notebookRepository.readSessionDocuments(
       request.projectId,
       request.notebookSessionId
     )
+    const document =
+      (request.producerRunId
+        ? documents.find((candidate) =>
+            candidate.runs.some((run) => run.runId === request.producerRunId)
+          )
+        : documents.find((candidate) =>
+            candidate.runs.some((run) => run.agentFrameId === request.agentFrameId)
+          )) ??
+      documents[0] ??
+      null
     const sourceFileObservation = request.sourceFileObservation
       ? await this.verifySourceFileObservation(
           document,

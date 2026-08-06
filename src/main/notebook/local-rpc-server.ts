@@ -467,8 +467,11 @@ class NotebookLocalRpcServer {
   async issueSessionConnection(
     sessionId: string,
     projectId: string,
-    agentFrameId = `root-frame-${sessionId}`
+    agentFrameId: string
   ): Promise<NotebookRpcConnection> {
+    if (!agentFrameId.trim()) {
+      throw new Error('Notebook RPC capabilities require an explicit Agent Frame owner.')
+    }
     const connection = await this.ensureStarted()
     // A context reset issues the replacement under the final ACP id, while the original token can be
     // keyed by its pre-start notebook-session-* alias. Rotate the complete Agent-facing alias closure;
@@ -614,7 +617,7 @@ class NotebookLocalRpcServer {
   async issueControlConnection(
     sessionId: string,
     projectId: string,
-    agentFrameId = `root-frame-${sessionId}`,
+    agentFrameId: string,
     delegatedWorkIdentity: Readonly<{
       role: 'main' | 'delegate'
       attemptId?: string
@@ -625,6 +628,9 @@ class NotebookLocalRpcServer {
       release: () => void
     }
   > {
+    if (!agentFrameId.trim()) {
+      throw new Error('Notebook control capabilities require an explicit Agent Frame owner.')
+    }
     const connection = await this.ensureStarted()
     const token = randomUUID()
     const binding: NotebookRpcSessionBinding = {

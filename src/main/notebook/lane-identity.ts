@@ -28,12 +28,13 @@ const createLane = (scope: NotebookLaneScope): NotebookLaneIdentity => {
 
 export const createRootNotebookLane = (
   projectId: string,
-  sessionId: string
+  sessionId: string,
+  agentFrameId: string
 ): NotebookLaneIdentity =>
   createLane({
     projectId: safeSegment('projectId', projectId),
     sessionId: safeSegment('sessionId', sessionId),
-    agentFrameId: safeSegment('agentFrameId', `root-frame-${sessionId}`),
+    agentFrameId: safeSegment('agentFrameId', agentFrameId),
     kind: 'root'
   })
 

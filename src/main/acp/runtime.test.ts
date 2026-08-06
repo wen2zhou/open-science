@@ -3407,7 +3407,7 @@ describe('ACP runtime session management', () => {
         projectName: 'default-project',
         mcpEntryPath: '/app/out/main/index.js',
         getRpcConnection: ({ sessionId, projectId }) =>
-          notebookRpcServer.issueSessionConnection(sessionId, projectId),
+          notebookRpcServer.issueSessionConnection(sessionId, projectId, `root-frame-${sessionId}`),
         registerSessionAlias: (aliasSessionId, sessionId) =>
           notebookRpcServer.registerSessionAlias(aliasSessionId, sessionId),
         releaseSessionCapabilities: (sessionId) =>

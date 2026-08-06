@@ -7,7 +7,7 @@ import type {
   NotebookWorkingFile
 } from '../../shared/notebook'
 import type { NotebookRunRepository } from './repository'
-import { createRootNotebookLane, type NotebookLaneIdentity } from './lane-identity'
+import type { NotebookLaneIdentity } from './lane-identity'
 
 type NotebookRunIdentity = Readonly<{
   runId: string
@@ -17,7 +17,7 @@ type NotebookRunIdentity = Readonly<{
 type NotebookRunTerminalizationSession = Readonly<{
   projectName: string
   sessionId: string
-  lane?: NotebookLaneIdentity
+  lane: NotebookLaneIdentity
 }>
 
 type NotebookRunTerminalResult = {
@@ -69,7 +69,7 @@ class NotebookRunTerminalizationOwner {
     request: TerminalizeNotebookRunRequest<Result>
   ): Promise<{ run: NotebookRunRecord; result: Result }> {
     const { session, runningRun } = request
-    const lane = session.lane ?? createRootNotebookLane(session.projectName, session.sessionId)
+    const lane = session.lane
     await this.options.repository.appendRun({
       projectName: session.projectName,
       sessionId: session.sessionId,

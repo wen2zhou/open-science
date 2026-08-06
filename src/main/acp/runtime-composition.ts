@@ -170,7 +170,11 @@ const createAcpRuntime = ({
           projectName: DEFAULT_ARTIFACT_PROJECT_NAME,
           mcpEntryPath,
           getRpcConnection: ({ sessionId, projectId }) =>
-            notebookRpcServer.issueSessionConnection(sessionId, projectId),
+            notebookRpcServer.issueSessionConnection(
+              sessionId,
+              projectId,
+              `root-frame-${sessionId}`
+            ),
           registerSessionAlias: (aliasSessionId, sessionId) =>
             notebookRpcServer.registerSessionAlias(aliasSessionId, sessionId),
           releaseSessionCapabilities: (sessionId) =>

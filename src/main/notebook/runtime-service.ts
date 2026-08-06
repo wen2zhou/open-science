@@ -372,19 +372,19 @@ class NotebookRuntimeService {
     const projectName = request.projectName ?? this.options.projectName
     const context = request.provenanceContext
     if (context && context.agentFrameId === context.rootFrameId) {
-      return createRootNotebookLane(projectName, request.sessionId)
+      return createRootNotebookLane(projectName, request.sessionId, context.agentFrameId)
     }
     const frameId = context?.agentFrameId
     return frameId
       ? createFrameNotebookLane(projectName, request.sessionId, frameId)
-      : createRootNotebookLane(projectName, request.sessionId)
+      : createRootNotebookLane(projectName, request.sessionId, `root-frame-${request.sessionId}`)
   }
 
   private rootLane(
     sessionId: string,
     projectName = this.options.projectName
   ): NotebookLaneIdentity {
-    return createRootNotebookLane(projectName, sessionId)
+    return createRootNotebookLane(projectName, sessionId, `root-frame-${sessionId}`)
   }
 
   constructor(private readonly options: NotebookRuntimeServiceOptions) {
@@ -1194,20 +1194,11 @@ class NotebookRuntimeService {
   // an executor-owned timer with nothing waiting on it, so a persistence failure here must not surface
   // anywhere louder than a swallowed no-op.
   private async handleKernelIdleShutdown(
-    laneOrSessionId: NotebookLaneIdentity | string,
-    kindOrProjectName?: KernelProcessKind | string,
-    envOrKind?: string,
-    generationOrEnv?: NotebookSessionExecutorGeneration | string,
-    legacyGeneration?: NotebookSessionExecutorGeneration
+    lane: NotebookLaneIdentity,
+    kind?: KernelProcessKind,
+    env?: string,
+    generation?: NotebookSessionExecutorGeneration
   ): Promise<void> {
-    const legacy = typeof laneOrSessionId === 'string'
-    const lane = legacy
-      ? createRootNotebookLane(kindOrProjectName as string, laneOrSessionId)
-      : laneOrSessionId
-    const kind = (legacy ? envOrKind : kindOrProjectName) as KernelProcessKind | undefined
-    const env = (legacy ? generationOrEnv : envOrKind) as string | undefined
-    const generation = (legacy ? legacyGeneration : generationOrEnv) as
-      NotebookSessionExecutorGeneration | undefined
     const { sessionId, projectId: projectName } = notebookLaneScope(lane)
     const session = this.sessions.get(lane)
     const processKey = kernelProcessKey(kind, env)
@@ -1246,20 +1237,11 @@ class NotebookRuntimeService {
   // execution does not overwrite this back to 'idle' on completion; the next clean run of that key
   // clears it. Best-effort like handleKernelIdleShutdown: it runs off an executor callback.
   private async handleKernelTerminated(
-    laneOrSessionId: NotebookLaneIdentity | string,
-    kindOrProjectName: KernelProcessKind | string,
-    envOrKind?: string,
-    generationOrEnv?: NotebookSessionExecutorGeneration | string,
-    legacyGeneration?: NotebookSessionExecutorGeneration
+    lane: NotebookLaneIdentity,
+    kind: KernelProcessKind,
+    env?: string,
+    generation?: NotebookSessionExecutorGeneration
   ): Promise<void> {
-    const legacy = typeof laneOrSessionId === 'string'
-    const lane = legacy
-      ? createRootNotebookLane(kindOrProjectName, laneOrSessionId)
-      : laneOrSessionId
-    const kind = (legacy ? envOrKind : kindOrProjectName) as KernelProcessKind
-    const env = (legacy ? generationOrEnv : envOrKind) as string | undefined
-    const generation = (legacy ? legacyGeneration : generationOrEnv) as
-      NotebookSessionExecutorGeneration | undefined
     const { sessionId, projectId: projectName } = notebookLaneScope(lane)
     const session = this.sessions.get(lane)
     const processKey = kernelProcessKey(kind, env)
