@@ -5,7 +5,9 @@ import {
   DelegateExecutionError,
   type DelegateCapacityReservation,
   type DelegateExecution,
-  type DelegateExecutionInput
+  type DelegateExecutionInput,
+  type DelegatePermissionResponse,
+  type RunningDelegateExecution
 } from './execution-port'
 
 type SessionKey = Readonly<{ projectId: string; sessionId: string }>
@@ -179,8 +181,22 @@ type SessionSubagentSummary = Readonly<{
     frameId: string
     title: string
     status: 'running' | 'completed' | 'cancelled' | 'error'
+    awaitingPermission?: boolean
   }>[]
 }>
+
+type RootDelegatePermissionRequest = Readonly<{
+  requestId: string
+  frameId: string
+  attemptId: string
+  childTitle: string
+  action: string
+  riskScope: string
+  options: readonly Readonly<{ optionId: string; name: string; kind: string }>[]
+}>
+
+type RootDelegatePermissionResponse = DelegatePermissionResponse &
+  Readonly<{ frameId: string; attemptId: string }>
 
 type DurableChildSummary = Readonly<{
   frameId: string
@@ -259,6 +275,8 @@ type DurableDelegatedWork = Readonly<{
     session: SessionKey,
     frameId: string
   ): Promise<ReadOnlyAgentFrameDetail | undefined>
+  rootPermissionRequests(session: SessionKey): Promise<readonly RootDelegatePermissionRequest[]>
+  respondToPermission(session: SessionKey, response: RootDelegatePermissionResponse): Promise<void>
   stopChildren(
     caller: AuthenticatedDelegateCaller,
     frameIds: readonly string[]
@@ -507,6 +525,10 @@ const createDurableDelegatedWork = (options: {
   const invocationOutcomes = new Map<string, Promise<DurableDelegateOutcome>>()
   const messageOutcomes = new Map<string, Promise<DurableSendMessageOutcome>>()
   const stoppingSessions = new Set<string>()
+  const permissions = new Map<
+    string,
+    RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>
+  >()
   const running = new Map<
     string,
     {
@@ -518,6 +540,37 @@ const createDurableDelegatedWork = (options: {
       slotId: string
     }
   >()
+
+  const permissionKey = (frameId: string, attemptId: string, requestId: string): string =>
+    `${frameId}\u0000${attemptId}\u0000${requestId}`
+  const takeAttemptPermissions = (
+    frameId: string,
+    attemptId: string
+  ): Array<
+    [string, RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>]
+  > => {
+    const prefix = `${frameId}\u0000${attemptId}\u0000`
+    const taken = [...permissions.entries()].filter(([key]) => key.startsWith(prefix))
+    for (const [key] of taken) permissions.delete(key)
+    return taken
+  }
+  const clearAttemptPermissions = (frameId: string, attemptId: string): void => {
+    takeAttemptPermissions(frameId, attemptId)
+  }
+  const restoreAttemptPermissions = (
+    taken: Array<
+      [string, RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>]
+    >
+  ): void => {
+    for (const [key, permission] of taken) {
+      if (!permissions.has(key)) permissions.set(key, permission)
+    }
+  }
+  const riskScope = (options: readonly Readonly<{ kind: string }>[]): string => {
+    const kinds = new Set(options.map(({ kind }) => kind.toLowerCase()))
+    if (kinds.has('allow_always')) return 'This session or this call'
+    return 'This call only'
+  }
 
   const resolveAgent = async (profileId: string | undefined): Promise<DurableResolvedAgent> => {
     if (profileId === undefined) return { kind: 'main' }
@@ -679,6 +732,25 @@ const createDurableDelegatedWork = (options: {
         }
         handle = options.execution.run(executionInput, slotId)
         resolveHandle(handle)
+        const unsubscribe = handle.subscribe((event) => {
+          if (event.kind !== 'permission') return
+          const keyPrefix = permissionKey(child.frameId, attempt.id, event.requestId)
+          if (!event.awaiting) {
+            permissions.delete(keyPrefix)
+            return
+          }
+          permissions.set(keyPrefix, {
+            requestId: event.requestId,
+            frameId: child.frameId,
+            attemptId: attempt.id,
+            childTitle: child.title,
+            action: event.title,
+            riskScope: riskScope(event.options),
+            options: event.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
+            execution: handle!
+          })
+        })
+        void handle.completion.finally(unsubscribe).catch(() => undefined)
         await Promise.race([handle.accepted, handle.completion.then(() => undefined)])
         const outcome = await handle.completion
         if (outcome.status === 'completed') {
@@ -722,6 +794,7 @@ const createDurableDelegatedWork = (options: {
           })
         }
       } finally {
+        clearAttemptPermissions(child.frameId, attempt.id)
         await reservation.release(slotId).catch(() => undefined)
         if (running.get(child.frameId)?.attemptId === attempt.id) running.delete(child.frameId)
       }
@@ -769,13 +842,14 @@ const createDurableDelegatedWork = (options: {
     }
     const session = (await options.records.snapshot()).session
     const scope = { session, frameId: child.frameId, attemptId: attempt.id }
-    await options.revokeAttemptWrites?.(scope)
-    await running
-      .get(child.frameId)
-      ?.cancel()
-      .catch(() => undefined)
-    await options.settleAttemptCleanup?.(scope)
+    const pendingPermissions = takeAttemptPermissions(child.frameId, attempt.id)
     try {
+      await options.revokeAttemptWrites?.(scope)
+      await running
+        .get(child.frameId)
+        ?.cancel()
+        .catch(() => undefined)
+      await options.settleAttemptCleanup?.(scope)
       await options.records.terminalize({
         frameId: child.frameId,
         attemptId: attempt.id,
@@ -789,6 +863,7 @@ const createDurableDelegatedWork = (options: {
       if (latest && currentAttempt(latest).status !== 'running') {
         return { frameId: child.frameId, status: 'already_terminal' }
       }
+      restoreAttemptPermissions(pendingPermissions)
       throw error
     }
   }
@@ -1298,10 +1373,17 @@ const createDurableDelegatedWork = (options: {
       if (!sameSession(snapshot.session, session)) return { runningCount: 0, children: [] }
       const children = snapshot.records.map((child) => {
         const attempt = currentAttempt(child as DurableChild)
+        const awaitingPermission = [...permissions.values()].some(
+          (permission) =>
+            permission.frameId === child.frameId && permission.attemptId === attempt.id
+        )
         return {
           frameId: child.frameId,
           title: child.title,
-          status: attempt.status
+          status: attempt.status,
+          ...(attempt.status === 'running' && awaitingPermission
+            ? { awaitingPermission: true }
+            : {})
         }
       })
       return {
@@ -1326,6 +1408,59 @@ const createDurableDelegatedWork = (options: {
             .map(({ role, content }) => Object.freeze({ role, content }))
         )
       })
+    },
+    async rootPermissionRequests(session) {
+      const snapshot = await options.records.snapshot()
+      if (!sameSession(snapshot.session, session)) return []
+      const currentAttempts = new Map(
+        snapshot.records.map((child) => [child.frameId, currentAttempt(child as DurableChild)])
+      )
+      return [...permissions.values()]
+        .filter((permission) => {
+          const attempt = currentAttempts.get(permission.frameId)
+          return attempt?.id === permission.attemptId && attempt.status === 'running'
+        })
+        .map(({ execution: _execution, ...permission }) =>
+          Object.freeze({ ...permission, options: Object.freeze([...permission.options]) })
+        )
+    },
+    async respondToPermission(session, response) {
+      const snapshot = await options.records.snapshot()
+      const child = sameSession(snapshot.session, session)
+        ? snapshot.records.find((candidate) => candidate.frameId === response.frameId)
+        : undefined
+      const attempt = child && currentAttempt(child as DurableChild)
+      const key = permissionKey(response.frameId, response.attemptId, response.requestId)
+      const permission = permissions.get(key)
+      if (
+        !permission ||
+        !attempt ||
+        attempt.id !== response.attemptId ||
+        attempt.status !== 'running'
+      ) {
+        throw new DurableDelegatedWorkError(
+          'conflict',
+          'permission request is no longer active for the current delegated Attempt'
+        )
+      }
+      permissions.delete(key)
+      try {
+        await permission.execution.respondToPermission({
+          requestId: response.requestId,
+          ...(response.optionId ? { optionId: response.optionId } : {}),
+          ...(response.cancelled ? { cancelled: true } : {})
+        })
+      } catch (error) {
+        const latest = await snapshotChild(response.frameId)
+        if (
+          latest &&
+          currentAttempt(latest).id === response.attemptId &&
+          currentAttempt(latest).status === 'running'
+        ) {
+          permissions.set(key, permission)
+        }
+        throw error
+      }
     },
     async stopChildren(caller, frameIds) {
       return Promise.all(
@@ -1391,6 +1526,8 @@ export type {
   ParentMessageDelivery,
   ReadOnlyAgentFrameDetail,
   RecoveryOutcome,
+  RootDelegatePermissionRequest,
+  RootDelegatePermissionResponse,
   SpecialistDelegationProfile,
   SessionSubagentSummary,
   StopOutcome

@@ -31,9 +31,15 @@ import { WorkspaceToolCodeBlock } from './WorkspaceToolCodeBlock'
 type PermissionApprovalControlsProps = {
   requests: AcpPermissionRequest[]
   onRespond: (requestId: string, optionId?: string) => void | Promise<void>
+  disabled?: boolean
   // Session locator for the notebook env badge; optional so the controls render standalone
   // (isolation tests, sessions without notebook context).
   notebookLookup?: NotebookSessionRequest
+}
+
+type PermissionApprovalCardProps = Omit<PermissionApprovalControlsProps, 'requests'> & {
+  request: AcpPermissionRequest
+  onSubmitted(requestId: string): void
 }
 
 type PermissionOption = AcpPermissionRequest['options'][number]
@@ -542,11 +548,13 @@ const ScopeDropdown = ({
   )
 }
 
-const PermissionApprovalControls = ({
-  requests,
+const PermissionApprovalCard = ({
+  request,
   onRespond,
-  notebookLookup
-}: PermissionApprovalControlsProps): React.JSX.Element | null => {
+  notebookLookup,
+  disabled = false,
+  onSubmitted
+}: PermissionApprovalCardProps): React.JSX.Element => {
   const [scope, setScope] = useState<PermissionScope>('session')
   const [scopeOpen, setScopeOpen] = useState(false)
   const [scopeConfirmation, setScopeConfirmation] = useState<PendingScopeConfirmation | undefined>(
@@ -561,9 +569,6 @@ const PermissionApprovalControls = ({
     if (restoreTriggerFocus) queueMicrotask(() => scopeTriggerRef.current?.focus())
   }, [])
 
-  // Show only the oldest pending request; the rest stay queued.
-  const request = requests[0]
-
   // Default to Session when available: it avoids repeated prompts without silently widening to a
   // whole Project or Global grant. Once remains the fallback for requests without Session scope.
   const availableScopes = request ? getAvailableScopes(request.options) : new Set<PermissionScope>()
@@ -577,17 +582,7 @@ const PermissionApprovalControls = ({
 
   // Reset per-request UI state (scope + open menu) whenever the displayed request changes,
   // so nothing leaks from the previously answered prompt.
-  const requestId = request?.requestId
-  const [lastRequestId, setLastRequestId] = useState(requestId)
-  if (lastRequestId !== requestId) {
-    setLastRequestId(requestId)
-    setScope(defaultScope)
-    setScopeOpen(false)
-    setScopeConfirmation(undefined)
-    setSubmittingRequestId(undefined)
-  }
-
-  if (!request) return null
+  const requestId = request.requestId
 
   // Guard against a stale scope no longer offered by the current request.
   const effectiveScope = availableScopes.has(scope) ? scope : defaultScope
@@ -637,6 +632,7 @@ const PermissionApprovalControls = ({
     submittingRequestIdRef.current = submittedRequestId
     setSubmittingRequestId(submittedRequestId)
     setScopeOpen(false)
+    onSubmitted(submittedRequestId)
 
     const releaseSubmission = (): void => {
       if (submittingRequestIdRef.current !== submittedRequestId) return
@@ -710,7 +706,25 @@ const PermissionApprovalControls = ({
   }
 
   return (
-    <div className="mb-2 flex w-full max-w-full flex-col gap-3 rounded-xl border border-border bg-card p-5 text-xs leading-5 text-card-foreground shadow-dialog outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200">
+    <div
+      data-testid="permission-card"
+      role="group"
+      aria-label={
+        request.delegated
+          ? `${request.delegated.childTitle} permission request: ${presentation.actionTitle}`
+          : `Permission request: ${presentation.actionTitle}`
+      }
+      className="mb-2 flex w-full max-w-full flex-col gap-3 rounded-xl border border-border bg-card p-5 text-xs leading-5 text-card-foreground shadow-dialog outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200"
+    >
+      {request.delegated ? (
+        <div className="flex flex-col gap-1 text-xs">
+          <div className="flex flex-wrap items-center justify-between gap-2">
+            <span className="font-semibold text-foreground">{request.delegated.childTitle}</span>
+            <span className="text-muted-foreground">{request.delegated.riskScope}</span>
+          </div>
+          <span className="break-words text-muted-foreground">{request.title}</span>
+        </div>
+      ) : null}
       {/* Header: plain-language action plus its classification and notebook context. */}
       <div className="flex min-w-0 items-center gap-2">
         <div className="flex min-w-0 items-center gap-1.5">
@@ -795,7 +809,7 @@ const PermissionApprovalControls = ({
                   ? 'bg-destructive text-destructive-foreground hover:bg-destructive/80'
                   : 'bg-primary text-primary-foreground hover:bg-primary/80'
               )}
-              disabled={!allowOptionId || isSubmitting}
+              disabled={disabled || !allowOptionId || isSubmitting}
               onClick={() => {
                 if (!allowOptionId) return
                 respondOnce(allowOptionId)
@@ -831,7 +845,7 @@ const PermissionApprovalControls = ({
                       ? 'bg-destructive text-destructive-foreground hover:bg-destructive/80'
                       : 'bg-primary text-primary-foreground hover:bg-primary/80'
                   )}
-                  disabled={isSubmitting}
+                  disabled={disabled || isSubmitting}
                   onClick={(e) => {
                     // Stop propagation so this click doesn't reach the dropdown's document
                     // click-listener and immediately re-close the menu it just opened.
@@ -856,7 +870,7 @@ const PermissionApprovalControls = ({
             variant="outline"
             data-testid="extra-option"
             className="h-auto min-h-8 min-w-0 max-w-full shrink whitespace-normal break-words py-1"
-            disabled={isSubmitting}
+            disabled={disabled || isSubmitting}
             onClick={() => respondOnce(option.optionId)}
           >
             {getExtraOptionLabel(option)}
@@ -867,7 +881,7 @@ const PermissionApprovalControls = ({
           variant="outline"
           data-testid="deny-button"
           className="px-4"
-          disabled={isSubmitting}
+          disabled={disabled || isSubmitting}
           onClick={() => respondOnce(denyOptionId)}
         >
           Deny
@@ -878,6 +892,48 @@ const PermissionApprovalControls = ({
         onCancel={closeScopeConfirmation}
         onConfirm={confirmBroadScope}
       />
+    </div>
+  )
+}
+
+const PermissionApprovalControls = ({
+  requests,
+  onRespond,
+  notebookLookup,
+  disabled = false
+}: PermissionApprovalControlsProps): React.JSX.Element | null => {
+  const surfaceRef = useRef<HTMLDivElement>(null)
+  const [focusReturnFrom, setFocusReturnFrom] = useState<string>()
+  useEffect(() => {
+    if (!focusReturnFrom || requests.some(({ requestId }) => requestId === focusReturnFrom)) return
+    setFocusReturnFrom(undefined)
+    queueMicrotask(() => {
+      surfaceRef.current
+        ?.querySelector<HTMLButtonElement>('[data-testid="allow-primary"]:not(:disabled)')
+        ?.focus()
+    })
+  }, [focusReturnFrom, requests])
+  if (requests.length === 0) return null
+  const firstRootRequest = requests.find((request) => !request.delegated)
+  const visibleRequests = requests.filter(
+    (request) => request.delegated || request === firstRootRequest
+  )
+  return (
+    <div ref={surfaceRef}>
+      <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        {visibleRequests.filter((request) => request.delegated).length} subagent permission requests
+        pending
+      </span>
+      {visibleRequests.map((request) => (
+        <PermissionApprovalCard
+          key={request.requestId}
+          request={request}
+          onRespond={onRespond}
+          notebookLookup={notebookLookup}
+          disabled={disabled}
+          onSubmitted={setFocusReturnFrom}
+        />
+      ))}
     </div>
   )
 }

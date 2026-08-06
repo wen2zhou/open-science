@@ -423,6 +423,14 @@ export type AcpPermissionRequest = {
   commandPrefix?: string[]
   rawInput?: unknown
   options: AcpPermissionOption[]
+  // App-owned delegated execution attribution. Provider payloads cannot set this projection;
+  // the delegated-work owner binds it from the trusted Frame/Attempt execution handle.
+  delegated?: Readonly<{
+    frameId: string
+    attemptId: string
+    childTitle: string
+    riskScope: string
+  }>
 }
 
 // An Open Science-owned tool grant. `categoryKey` is the broker's opaque matcher key;

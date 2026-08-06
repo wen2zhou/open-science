@@ -35,6 +35,178 @@ const specialist = (overrides: Partial<SpecialistFixture> = {}): SpecialistFixtu
 })
 
 describe('durable delegated work', () => {
+  it('correlates root permission cards to the trusted current Frame and Attempt', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(
+      caller,
+      [
+        { task: 'Inspect alpha', name: 'Alpha child' },
+        { task: 'Inspect beta', name: 'Beta child' }
+      ],
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+
+    execution.controls()[0].emit({
+      kind: 'permission',
+      awaiting: true,
+      requestId: 'permission-alpha',
+      title: 'Read alpha.csv',
+      options: [{ optionId: 'allow-alpha', name: 'Allow once', kind: 'allow_once' }]
+    })
+    execution.controls()[1].emit({
+      kind: 'permission',
+      awaiting: true,
+      requestId: 'permission-beta',
+      title: 'Run beta check',
+      options: [{ optionId: 'deny-beta', name: 'Deny', kind: 'reject_once' }]
+    })
+
+    await expect(work.rootPermissionRequests(caller.session)).resolves.toEqual([
+      {
+        requestId: 'permission-alpha',
+        frameId: dispatched.children[0].frameId,
+        attemptId: dispatched.children[0].attemptId,
+        childTitle: 'Alpha child',
+        action: 'Read alpha.csv',
+        riskScope: 'This call only',
+        options: [{ optionId: 'allow-alpha', name: 'Allow once', kind: 'allow_once' }]
+      },
+      {
+        requestId: 'permission-beta',
+        frameId: dispatched.children[1].frameId,
+        attemptId: dispatched.children[1].attemptId,
+        childTitle: 'Beta child',
+        action: 'Run beta check',
+        riskScope: 'This call only',
+        options: [{ optionId: 'deny-beta', name: 'Deny', kind: 'reject_once' }]
+      }
+    ])
+    await expect(work.sessionSummary(caller.session)).resolves.toMatchObject({
+      children: [
+        { status: 'running', awaitingPermission: true },
+        { status: 'running', awaitingPermission: true }
+      ]
+    })
+
+    await work.respondToPermission(caller.session, {
+      requestId: 'permission-beta',
+      frameId: dispatched.children[1].frameId,
+      attemptId: dispatched.children[1].attemptId,
+      optionId: 'deny-beta'
+    })
+    expect(execution.controls()[0].permissionResponses()).toEqual([])
+    expect(execution.controls()[1].permissionResponses()).toEqual([
+      { requestId: 'permission-beta', optionId: 'deny-beta' }
+    ])
+    await expect(work.rootPermissionRequests(caller.session)).resolves.toMatchObject([
+      { requestId: 'permission-alpha' }
+    ])
+
+    execution.controls()[0].complete('done')
+    execution.controls()[1].complete('denied')
+  })
+
+  it('settles permission response, terminal, and Stop races exactly once', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(caller, { task: 'Risky child' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    const control = execution.controls()[0]
+    control.emit({
+      kind: 'permission',
+      awaiting: true,
+      requestId: 'permission-race',
+      title: 'Run command',
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+    })
+
+    const first = work.respondToPermission(caller.session, {
+      requestId: 'permission-race',
+      frameId: dispatched.children[0].frameId,
+      attemptId: dispatched.children[0].attemptId,
+      optionId: 'allow'
+    })
+    const duplicate = work.respondToPermission(caller.session, {
+      requestId: 'permission-race',
+      frameId: dispatched.children[0].frameId,
+      attemptId: dispatched.children[0].attemptId,
+      cancelled: true
+    })
+    await expect(first).resolves.toBeUndefined()
+    await expect(duplicate).rejects.toMatchObject({ code: 'conflict' })
+    expect(control.permissionResponses()).toEqual([
+      { requestId: 'permission-race', optionId: 'allow' }
+    ])
+
+    control.emit({
+      kind: 'permission',
+      awaiting: true,
+      requestId: 'permission-stop',
+      title: 'Write file',
+      options: [{ optionId: 'allow-write', name: 'Allow', kind: 'allow_once' }]
+    })
+    await work.stopSession(caller.session)
+    await expect(
+      work.respondToPermission(caller.session, {
+        requestId: 'permission-stop',
+        frameId: dispatched.children[0].frameId,
+        attemptId: dispatched.children[0].attemptId,
+        optionId: 'allow-write'
+      })
+    ).rejects.toMatchObject({ code: 'conflict' })
+    await expect(work.rootPermissionRequests(caller.session)).resolves.toEqual([])
+    await expect(
+      work.readAgentFrame(caller.session, dispatched.children[0].frameId)
+    ).resolves.toMatchObject({
+      status: 'cancelled'
+    })
+  })
+
+  it('restores unresolved permission cards when Stop submission fails', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      revokeAttemptWrites: async () => {
+        throw new Error('stop transport unavailable')
+      }
+    })
+    await work.delegate(caller, { task: 'Permission child' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].emit({
+      kind: 'permission',
+      awaiting: true,
+      requestId: 'permission-retry',
+      title: 'Read evidence',
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+    })
+
+    await expect(work.stopSession(caller.session)).rejects.toThrow('stop transport unavailable')
+    await expect(work.rootPermissionRequests(caller.session)).resolves.toMatchObject([
+      { requestId: 'permission-retry' }
+    ])
+    await expect(work.sessionSummary(caller.session)).resolves.toMatchObject({
+      children: [{ status: 'running', awaitingPermission: true }]
+    })
+  })
+
   it('durably delivers each Main message to the current running child Attempt', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({

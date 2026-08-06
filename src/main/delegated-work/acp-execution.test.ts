@@ -52,6 +52,7 @@ const makeHarness = (
     runtimeHome?(input: DelegateExecutionInput): string
     workspace?(input: DelegateExecutionInput): string
     createSessionError?(executionId: string): Error | undefined
+    permissionResponseError?(executionId: string): Error | undefined
   }> = {}
 ): Readonly<{
   execution: ReturnType<typeof createAcpDelegateExecution>
@@ -118,6 +119,8 @@ const makeHarness = (
           prompt.resolve({ stopReason: 'cancelled' })
         },
         respondToPermission: async (response) => {
+          const error = scopePaths.permissionResponseError?.(scope.executionId)
+          if (error) throw error
           responses.push(response)
         },
         deleteSession: async () => {
@@ -318,6 +321,37 @@ describe('ACP delegate execution production adapter', () => {
     expect(controls.get('two')?.prompts).toEqual(['task-two'])
     controls.get('two')?.complete()
     await second.completion
+  })
+
+  it('keeps a permission request retryable when the ACP response transport fails', async () => {
+    let shouldFail = true
+    const { execution, controls } = makeHarness(1, {
+      permissionResponseError: () =>
+        shouldFail ? new Error('response transport failed') : undefined
+    })
+    const reservation = await execution.reserve(1)
+    const running = execution.run(makeInput('permission-retry'), reservation.slotIds[0])
+    await running.accepted
+    controls.get('permission-retry')?.callbacks.onPermissionRequest({
+      requestId: 'permission-1',
+      sessionId: 'provider-permission-retry',
+      toolCallId: 'tool-1',
+      title: 'Read evidence',
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+    })
+
+    await expect(
+      running.respondToPermission({ requestId: 'permission-1', optionId: 'allow' })
+    ).rejects.toThrow('response transport failed')
+    shouldFail = false
+    await expect(
+      running.respondToPermission({ requestId: 'permission-1', optionId: 'allow' })
+    ).resolves.toBeUndefined()
+    expect(controls.get('permission-retry')?.responses).toEqual([
+      { requestId: 'permission-1', optionId: 'allow' }
+    ])
+    controls.get('permission-retry')?.complete()
+    await running.completion
   })
 
   it('revokes writes before cleanup and drops late provider events', async () => {

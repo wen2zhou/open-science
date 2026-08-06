@@ -552,6 +552,7 @@ const ConversationPanel = ({
                 <PermissionApprovalControls
                   requests={pendingPermissions}
                   onRespond={onRespondToPermission}
+                  disabled={isStopping}
                   notebookLookup={
                     activeSession
                       ? {

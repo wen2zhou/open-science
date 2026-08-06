@@ -393,7 +393,14 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         if (!writable || !runtime || !pendingPermissions.delete(response.requestId)) {
           throw new Error(`permission request is not active: ${response.requestId}`)
         }
-        await runtime.respondToPermission(response)
+        try {
+          await runtime.respondToPermission(response)
+        } catch (error) {
+          if (writable && !terminalSettled && !cancelRequested) {
+            pendingPermissions.add(response.requestId)
+          }
+          throw error
+        }
         publish({ kind: 'permission', awaiting: false, requestId: response.requestId })
       },
       async cancel() {
