@@ -175,6 +175,59 @@ describe('repl_loop local RPC transport', () => {
       )
     }
   }, 60_000)
+
+  it('routes host.send_message through delegated work and projects a continuation receipt', async () => {
+    let received: { method?: string; params?: Record<string, unknown> } = {}
+    const server = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => (body += chunk))
+      request.on('end', () => {
+        received = JSON.parse(body)
+        response.writeHead(200, { 'content-type': 'application/json' }).end(
+          JSON.stringify({
+            result: {
+              kind: 'continued',
+              child: { frameId: 'child-frame', attemptId: 'attempt-2', status: 'running' }
+            }
+          })
+        )
+      })
+    })
+    const connection = await listenForLocalRpc(server, {
+      name: 'repl-loop-delegated-work-test',
+      transport: 'pipe'
+    })
+    const { child, send } = startLoop({
+      OPEN_SCIENCE_MCP_RPC_ENDPOINT: connection.endpoint,
+      OPEN_SCIENCE_MCP_RPC_SOCKET_PATH: connection.socketPath,
+      OPEN_SCIENCE_MCP_RPC_TOKEN: 'test-token',
+      OPEN_SCIENCE_NOTEBOOK_SESSION_ID: 'session-1'
+    })
+
+    try {
+      const result = await send(
+        "return JSON.stringify(await host.send_message('child-frame', 'Check a counterexample'))"
+      )
+      expect(result.error).toBeNull()
+      expect(JSON.parse(result.result as string)).toEqual({
+        kind: 'continued',
+        child: { frame_id: 'child-frame', attempt_id: 'attempt-2', status: 'running' }
+      })
+      expect(received).toEqual({
+        method: 'delegatedWorkCall',
+        params: {
+          op: 'send_message',
+          target: 'child-frame',
+          message: 'Check a counterexample'
+        }
+      })
+    } finally {
+      child.kill()
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      )
+    }
+  }, 60_000)
 })
 
 gate('repl_loop.js', () => {

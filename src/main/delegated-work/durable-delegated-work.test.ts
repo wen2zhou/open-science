@@ -1219,4 +1219,261 @@ describe('durable delegated work', () => {
       { frameId: receipt.children[0].frameId, status: 'running' }
     ])
   })
+
+  it('continues a terminal Main Agent child in the same Frame and conversation', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const workspaceFrames: string[] = []
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      workspace: {
+        async prepare(_session, frameId) {
+          workspaceFrames.push(frameId)
+          return { cwd: `/workspaces/${frameId}` }
+        }
+      }
+    })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Inspect the evidence' },
+      { wait: false }
+    )
+    const frameId = dispatched.children[0].frameId
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Initial finding')
+    await expect
+      .poll(() => work.sessionSummary(caller.session))
+      .toMatchObject({
+        runningCount: 0,
+        children: [{ frameId, status: 'completed' }]
+      })
+
+    const continued = await work.sendMessage(
+      { ...caller, toolInvocationId: 'continuation-call' },
+      frameId,
+      'Check a counterexample'
+    )
+
+    expect(continued).toMatchObject({
+      kind: 'continued',
+      child: { frameId, status: 'running' }
+    })
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    expect(execution.controls()[1].input).toMatchObject({
+      frameId,
+      task: 'Check a counterexample',
+      continuation: true
+    })
+    expect(execution.controls()[1].input).not.toHaveProperty('profile')
+    expect(workspaceFrames).toEqual([frameId, frameId])
+    await expect(work.sessionSummary(caller.session)).resolves.toEqual({
+      runningCount: 1,
+      children: [{ frameId, title: 'Inspect the evidence', status: 'running' }]
+    })
+    await expect(work.readAgentFrame(caller.session, frameId)).resolves.toMatchObject({
+      frameId,
+      title: 'Inspect the evidence',
+      status: 'running',
+      resolvedAgent: { kind: 'main' },
+      messages: [
+        { role: 'user', content: 'Inspect the evidence' },
+        { role: 'assistant', content: 'Initial finding' },
+        { role: 'user', content: 'Check a counterexample' }
+      ]
+    })
+    expect((await records.snapshot()).records).toHaveLength(1)
+    expect((await records.snapshot()).records[0].attempts).toHaveLength(2)
+  })
+
+  it('re-resolves a terminal Specialist by stable identity while retaining its prior snapshot', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let liveProfile = specialist()
+    const resolveSpecialist = vi.fn(async () => liveProfile)
+    const work = createDurableDelegatedWork({ execution, records, resolveSpecialist })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Specialist analysis', profile: liveProfile.id },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('First analysis')
+    await expect.poll(async () => (await work.sessionSummary(caller.session)).runningCount).toBe(0)
+    liveProfile = specialist({ displayName: 'Renamed Evidence Analyst', revision: 8 })
+
+    await work.sendMessage(
+      { ...caller, toolInvocationId: 'specialist-continuation' },
+      dispatched.children[0].frameId,
+      'Recheck the analysis'
+    )
+
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    expect(execution.controls()[1].input.profile).toBe('specialist-stable-id')
+    const attempts = (await records.snapshot()).records[0].attempts
+    expect(attempts.map(({ resolvedAgent }) => resolvedAgent)).toEqual([
+      {
+        kind: 'specialist',
+        profileId: 'specialist-stable-id',
+        revision: 7,
+        displayName: 'Evidence Analyst'
+      },
+      {
+        kind: 'specialist',
+        profileId: 'specialist-stable-id',
+        revision: 8,
+        displayName: 'Renamed Evidence Analyst'
+      }
+    ])
+    expect(resolveSpecialist).toHaveBeenLastCalledWith('specialist-stable-id')
+  })
+
+  it('leaves terminal Specialist history unchanged when continuation re-resolution is unavailable', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let liveProfile: ReturnType<typeof specialist> | undefined = specialist()
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      resolveSpecialist: async () => liveProfile
+    })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Preserve terminal evidence', profile: 'specialist-stable-id' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Historical evidence')
+    await expect.poll(async () => (await work.sessionSummary(caller.session)).runningCount).toBe(0)
+    const before = await records.snapshot()
+
+    for (const [toolInvocationId, unavailable] of [
+      ['disabled-continuation', specialist({ enabled: false })],
+      ['deleted-continuation', undefined]
+    ] as const) {
+      liveProfile = unavailable
+      await expect(
+        work.sendMessage(
+          { ...caller, toolInvocationId },
+          dispatched.children[0].frameId,
+          'Must not mutate history'
+        )
+      ).rejects.toMatchObject({ code: 'admission_rejection' })
+      expect(await records.snapshot()).toEqual(before)
+    }
+    expect(execution.reservationCounts()).toEqual([1])
+  })
+
+  it('rejects the terminal-continuation path while the latest Attempt is running', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(caller, { task: 'Still running' }, { wait: false })
+
+    await expect(
+      work.sendMessage(
+        { ...caller, toolInvocationId: 'overlapping-continuation' },
+        dispatched.children[0].frameId,
+        'Do not overlap'
+      )
+    ).rejects.toMatchObject({ code: 'conflict' })
+    expect((await records.snapshot()).records[0].attempts).toHaveLength(1)
+    expect((await records.snapshot()).messages).toHaveLength(1)
+    expect(execution.reservationCounts()).toEqual([1])
+  })
+
+  it('terminalizes only each new Attempt when continuation startup fails', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let prepares = 0
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      workspace: {
+        async prepare() {
+          prepares += 1
+          if (prepares === 2) throw new Error('continuation workspace failed')
+          return { cwd: '/stable-frame-workspace' }
+        }
+      }
+    })
+    const dispatched = await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Preserved answer')
+    await expect.poll(async () => (await work.sessionSummary(caller.session)).runningCount).toBe(0)
+
+    await work.sendMessage(
+      { ...caller, toolInvocationId: 'failed-startup-continuation' },
+      dispatched.children[0].frameId,
+      'Continuation that cannot start'
+    )
+
+    await expect
+      .poll(() => work.sessionSummary(caller.session))
+      .toMatchObject({
+        runningCount: 0,
+        children: [{ frameId: dispatched.children[0].frameId, status: 'error' }]
+      })
+    const snapshot = await records.snapshot()
+    expect(snapshot.records[0].attempts).toMatchObject([
+      { status: 'completed', terminalMessageId: expect.any(String) },
+      {
+        status: 'error',
+        error: { code: 'execution_failure', message: 'continuation workspace failed' }
+      }
+    ])
+    expect(snapshot.messages.map(({ content }) => content)).toEqual([
+      'Initial task',
+      'Preserved answer',
+      'Continuation that cannot start'
+    ])
+    expect(execution.controls()).toHaveLength(1)
+
+    execution.plan({ status: 'failed', error: new Error('continuation provider failed') })
+    await work.sendMessage(
+      { ...caller, toolInvocationId: 'failed-provider-continuation' },
+      dispatched.children[0].frameId,
+      'Retry after workspace recovery'
+    )
+    await expect
+      .poll(async () => (await records.snapshot()).records[0].attempts)
+      .toMatchObject([
+        { status: 'completed', terminalMessageId: expect.any(String) },
+        { status: 'error', error: { message: 'continuation workspace failed' } },
+        {
+          status: 'error',
+          error: { code: 'execution_failure', message: 'continuation provider failed' }
+        }
+      ])
+    expect((await records.snapshot()).messages.map(({ content }) => content)).toEqual([
+      'Initial task',
+      'Preserved answer',
+      'Continuation that cannot start',
+      'Retry after workspace recovery'
+    ])
+  })
 })

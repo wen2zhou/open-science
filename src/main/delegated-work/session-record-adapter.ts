@@ -75,6 +75,20 @@ const createSessionDelegatedWorkRecords = (
         })
       )
     },
+    async continueChild(input) {
+      await mutate((expectedRevision) =>
+        options.commands.startContinuationAttempt(key, {
+          expectedRevision,
+          frameId: input.frameId,
+          previousAttemptId: input.previousAttemptId,
+          attemptId: input.attemptId,
+          messageId: input.userMessageId,
+          message: input.message,
+          resolvedAgent: input.resolvedAgent,
+          startedAt: input.startedAt
+        })
+      )
+    },
     async startRuntime(frameId, attemptId, runtimeSegmentId) {
       const attempt = (await load()).runtimeContext?.delegatedWork?.records
         .find((record) => record.agentFrameId === frameId)

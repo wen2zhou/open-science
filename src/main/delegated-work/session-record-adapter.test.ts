@@ -51,6 +51,7 @@ const createSession = (): PersistedChatSession => ({
 
 const createHarness = (): Readonly<{
   coordinator: SessionPersistenceCoordinator
+  repository: SessionMutationRepository
   readSession(): Promise<PersistedChatSession>
 }> => {
   let durable = createSession()
@@ -92,7 +93,7 @@ const createHarness = (): Readonly<{
     markReconciliationIncomplete: vi.fn()
   }
   const coordinator = new SessionPersistenceCoordinator(repository, fileIndex)
-  return { coordinator, readSession: async () => structuredClone(durable) }
+  return { coordinator, repository, readSession: async () => structuredClone(durable) }
 }
 
 describe('Session delegated-work adapter', () => {
@@ -358,5 +359,190 @@ describe('Session delegated-work adapter', () => {
         artifactsCreated: []
       }
     ])
+  })
+
+  it('atomically appends a continuation Attempt and Message to the existing Frame branch', async () => {
+    const { coordinator, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    let nextBranch = 1
+    const records = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => `child-branch-${nextBranch++}`
+      },
+      key
+    )
+    const ids = {
+      frame: ['child-frame'],
+      attempt: ['attempt-1', 'attempt-2'],
+      message: ['prompt-1', 'answer-1', 'prompt-2'],
+      runtime: ['runtime-1', 'runtime-2']
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      createId: (kind) => ids[kind].shift()!
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'dispatch-call'
+    }
+    const dispatched = await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.control('attempt-1').accept()
+    execution.control('attempt-1').complete('Initial answer')
+    await expect.poll(async () => (await work.sessionSummary(key)).runningCount).toBe(0)
+    const before = await readSession()
+    const frameBefore = before.conversationGraph!.frames.find(({ id }) => id === 'child-frame')!
+
+    await work.sendMessage(
+      { ...caller, toolInvocationId: 'continuation-call' },
+      dispatched.children[0].frameId,
+      'Follow up in place'
+    )
+
+    const after = await readSession()
+    const frameAfter = after.conversationGraph!.frames.find(({ id }) => id === 'child-frame')!
+    expect(after.conversationGraph!.frames.filter(({ kind }) => kind === 'delegate')).toHaveLength(
+      1
+    )
+    expect(frameAfter).toMatchObject({
+      id: frameBefore.id,
+      parentFrameId: frameBefore.parentFrameId,
+      originMessageId: frameBefore.originMessageId,
+      activeBranchId: frameBefore.activeBranchId,
+      delegateName: frameBefore.delegateName,
+      status: 'running'
+    })
+    expect(after.runtimeContext?.delegatedWork?.records[0].attempts).toMatchObject([
+      { id: 'attempt-1', status: 'completed', terminalMessageId: 'answer-1' },
+      { id: 'attempt-2', status: 'running', resolvedAgent: { kind: 'main' } }
+    ])
+    expect(
+      after.conversationGraph!.messages.filter(({ agentFrameId }) => agentFrameId === 'child-frame')
+    ).toMatchObject([
+      { id: 'prompt-1', role: 'user', content: 'Initial task' },
+      { id: 'answer-1', role: 'agent', content: 'Initial answer' },
+      { id: 'prompt-2', role: 'user', content: 'Follow up in place', parentMessageId: 'answer-1' }
+    ])
+  })
+
+  it('reports a clear conflict when concurrent callers continue the same terminal Attempt', async () => {
+    const { coordinator, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const records = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => 'child-branch'
+      },
+      key
+    )
+    const ids = {
+      frame: ['child-frame'],
+      attempt: ['attempt-1', 'attempt-2', 'attempt-3'],
+      message: ['prompt-1', 'answer-1', 'prompt-2', 'prompt-3'],
+      runtime: ['runtime-1', 'runtime-2', 'runtime-3']
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      createId: (kind) => ids[kind].shift()!
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'dispatch-call'
+    }
+    await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.control('attempt-1').accept()
+    execution.control('attempt-1').complete('Initial answer')
+    await expect.poll(async () => (await work.sessionSummary(key)).runningCount).toBe(0)
+
+    const outcomes = await Promise.allSettled([
+      work.sendMessage(
+        { ...caller, toolInvocationId: 'continuation-a' },
+        'child-frame',
+        'First continuation'
+      ),
+      work.sendMessage(
+        { ...caller, toolInvocationId: 'continuation-b' },
+        'child-frame',
+        'Competing continuation'
+      )
+    ])
+
+    expect(outcomes.map(({ status }) => status).sort()).toEqual(['fulfilled', 'rejected'])
+    expect(outcomes.find(({ status }) => status === 'rejected')).toMatchObject({
+      reason: { code: 'conflict' }
+    })
+    expect((await records.snapshot()).records[0].attempts).toHaveLength(2)
+    expect(
+      (await records.snapshot()).messages.filter(
+        ({ frameId, role }) => frameId === 'child-frame' && role === 'user'
+      )
+    ).toHaveLength(2)
+    expect(execution.reservationCounts()).toEqual([1, 1, 1])
+  })
+
+  it('publishes no running continuation when its atomic admission save fails', async () => {
+    const { coordinator, repository, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const records = createSessionDelegatedWorkRecords(
+      { commands: coordinator, readSession, frameworkId: 'codex', createId: () => 'child-branch' },
+      key
+    )
+    const ids = {
+      frame: ['child-frame'],
+      attempt: ['attempt-1', 'attempt-2'],
+      message: ['prompt-1', 'answer-1', 'prompt-2'],
+      runtime: ['runtime-1', 'runtime-2']
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      createId: (kind) => ids[kind].shift()!
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'dispatch-call'
+    }
+    await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.control('attempt-1').accept()
+    execution.control('attempt-1').complete('Stable evidence')
+    await expect.poll(async () => (await work.sessionSummary(key)).runningCount).toBe(0)
+    const before = await readSession()
+    vi.mocked(repository.saveSession).mockRejectedValueOnce(new Error('continuation save failed'))
+
+    await expect(
+      work.sendMessage(
+        { ...caller, toolInvocationId: 'failed-continuation' },
+        'child-frame',
+        'Do not publish this message'
+      )
+    ).rejects.toThrow('continuation save failed')
+
+    expect(await readSession()).toEqual(before)
+    await expect(work.sessionSummary(key)).resolves.toMatchObject({
+      runningCount: 0,
+      children: [{ frameId: 'child-frame', status: 'completed' }]
+    })
+    expect(execution.controls()).toHaveLength(1)
   })
 })

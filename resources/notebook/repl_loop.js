@@ -1118,6 +1118,34 @@ async function hostCollect(frameIds) {
   return delegatedObservationRpc('collect', frameIds)
 }
 
+async function hostSendMessage(target, message) {
+  if (!RPC_ENDPOINT) {
+    throw new Error('host.send_message is unavailable: control RPC endpoint not set')
+  }
+  const res = await capturedRpcFetch(RPC_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
+    body: JSON.stringify({
+      method: 'delegatedWorkCall',
+      params: { op: 'send_message', target, message }
+    })
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok || body.error) {
+    throw new Error(`host.send_message: ${body.error || 'HTTP ' + res.status}`)
+  }
+  const outcome = body.result || {}
+  const child = outcome.child || {}
+  return {
+    kind: outcome.kind,
+    child: {
+      frame_id: child.frameId,
+      attempt_id: child.attemptId,
+      status: child.status
+    }
+  }
+}
+
 // host.agents namespace. Methods and filter/write fields are snake_case; returned records are
 // camelCase. list_skills/list_connectors accept an optional stable id or unique public name.
 // create/update/attach_*/detach_* are the ordinary-mutation surface (issue 03); they return a real
@@ -1312,7 +1340,8 @@ const sandbox = {
     delegate: hostDelegate,
     children: hostChildren,
     collect: hostCollect,
-    stop_child: hostStopChild
+    stop_child: hostStopChild,
+    send_message: hostSendMessage
   },
   console,
   process,

@@ -120,8 +120,19 @@ type TerminalInput =
       error: Readonly<{ code: string; message: string }>
     }>
 
+type ContinueChildInput = Readonly<{
+  frameId: string
+  previousAttemptId: string
+  attemptId: string
+  userMessageId: string
+  message: string
+  resolvedAgent: DurableResolvedAgent
+  startedAt: number
+}>
+
 type DelegatedWorkDurableRecords = Readonly<{
   admitChildren(input: AdmitChildrenInput): Promise<void>
+  continueChild(input: ContinueChildInput): Promise<void>
   startRuntime(frameId: string, attemptId: string, runtimeSegmentId: string): Promise<void>
   terminalize(input: TerminalInput): Promise<void>
   snapshot(): Promise<DurableSnapshot>
@@ -161,6 +172,11 @@ type DurableDelegateOutcome =
     }>
   | Readonly<{ kind: 'results'; children: readonly DurableDelegateResult[] }>
 
+type DurableSendMessageOutcome = Readonly<{
+  kind: 'continued'
+  child: Readonly<{ frameId: string; attemptId: string; status: 'running' }>
+}>
+
 type ReadOnlyAgentFrameDetail = Readonly<{
   frameId: string
   title: string
@@ -190,6 +206,11 @@ type DurableDelegatedWork = Readonly<{
     caller: AuthenticatedDelegateCaller,
     frameIds: readonly string[]
   ): Promise<readonly DurableDelegateResult[]>
+  sendMessage(
+    caller: AuthenticatedDelegateCaller,
+    targetFrameId: string,
+    message: string
+  ): Promise<DurableSendMessageOutcome>
   sessionSummary(session: SessionKey): Promise<SessionSubagentSummary>
   readAgentFrame(
     session: SessionKey,
@@ -318,6 +339,43 @@ const createInMemoryDelegatedWorkRecords = (input: {
         }))
       )
     },
+    async continueChild(input) {
+      const child = state.records.find((candidate) => candidate.frameId === input.frameId)
+      const previous = child && currentAttempt(child)
+      if (
+        !child ||
+        !previous ||
+        previous.id !== input.previousAttemptId ||
+        previous.status === 'running'
+      ) {
+        throw new DurableDelegatedWorkError(
+          'conflict',
+          `child ${input.frameId} is not at the expected terminal Attempt`
+        )
+      }
+      if (
+        state.records.some((record) =>
+          record.attempts.some((attempt) => attempt.id === input.attemptId)
+        ) ||
+        state.messages.some((message) => message.id === input.userMessageId)
+      ) {
+        throw new Error('Duplicate continuation identity.')
+      }
+      child.attempts.push({
+        id: input.attemptId,
+        status: 'running',
+        resolvedAgent: structuredClone(input.resolvedAgent),
+        runtimeSegmentIds: [],
+        startedAt: input.startedAt
+      })
+      state.messages.push({
+        id: input.userMessageId,
+        frameId: input.frameId,
+        role: 'user',
+        content: input.message,
+        createdAt: input.startedAt
+      })
+    },
     async startRuntime(frameId, attemptId, runtimeSegmentId) {
       findRunning(frameId, attemptId).runtimeSegmentIds.push(runtimeSegmentId)
     },
@@ -371,10 +429,12 @@ const createDurableDelegatedWork = (options: {
   const now = options.now ?? Date.now
   const createId = options.createId ?? ((kind: string) => `${kind}-${randomUUID()}`)
   const invocationOutcomes = new Map<string, Promise<DurableDelegateOutcome>>()
+  const messageOutcomes = new Map<string, Promise<DurableSendMessageOutcome>>()
   const stoppingSessions = new Set<string>()
   const running = new Map<
     string,
     {
+      attemptId: string
       completion: Promise<void>
       cancel(): Promise<void>
       reservation: DelegateCapacityReservation
@@ -503,7 +563,9 @@ const createDurableDelegatedWork = (options: {
     child: DurableChild,
     session: SessionKey,
     reservation: DelegateCapacityReservation,
-    slotId: string
+    slotId: string,
+    task = child.task,
+    continuation = false
   ): void => {
     const attempt = currentAttempt(child)
     const runtimeSegmentId = createId('runtime')
@@ -519,13 +581,13 @@ const createDurableDelegatedWork = (options: {
           session,
           frameId: child.frameId,
           attemptId: attempt.id,
-          task: child.task,
-          context: child.context,
+          task,
+          ...(continuation ? {} : { context: child.context }),
           inputs: child.inputs,
           ...(attempt.resolvedAgent.kind === 'specialist'
             ? { profile: attempt.resolvedAgent.profileId }
             : {}),
-          continuation: false
+          continuation
         }
         handle = options.execution.run(executionInput, slotId)
         await Promise.race([handle.accepted, handle.completion.then(() => undefined)])
@@ -571,10 +633,11 @@ const createDurableDelegatedWork = (options: {
         }
       } finally {
         await reservation.release(slotId).catch(() => undefined)
-        running.delete(child.frameId)
+        if (running.get(child.frameId)?.attemptId === attempt.id) running.delete(child.frameId)
       }
     })()
     running.set(child.frameId, {
+      attemptId: attempt.id,
       completion,
       async cancel() {
         cancelRequested = true
@@ -895,6 +958,123 @@ const createDurableDelegatedWork = (options: {
         await new Promise((resolve) => setTimeout(resolve, options.collectPollIntervalMs ?? 10))
       }
     },
+    sendMessage(
+      caller: AuthenticatedDelegateCaller,
+      targetFrameId: string,
+      message: string
+    ): Promise<DurableSendMessageOutcome> {
+      const invocationKey = [
+        caller.session.projectId,
+        caller.session.sessionId,
+        caller.frameId,
+        caller.toolInvocationId,
+        'send-message'
+      ].join('\u0000')
+      const existing = messageOutcomes.get(invocationKey)
+      if (existing) return existing
+      const outcome = (async () => {
+        if (caller.role !== 'main') {
+          throw new DurableDelegatedWorkError(
+            'authorization',
+            'only the Main Agent can continue delegated work'
+          )
+        }
+        if (typeof message !== 'string' || !message.trim()) {
+          throw new DurableDelegatedWorkError('admission_rejection', 'message cannot be empty')
+        }
+        const snapshot = await options.records.snapshot()
+        if (
+          !sameSession(snapshot.session, caller.session) ||
+          caller.frameId !== snapshot.rootFrameId ||
+          !snapshot.originMessageIds.includes(caller.originMessageId) ||
+          !caller.toolInvocationId.trim()
+        ) {
+          throw new DurableDelegatedWorkError(
+            'authorization',
+            'continuation caller is outside the active root conversation'
+          )
+        }
+        const child = snapshot.records.find(
+          (candidate) =>
+            candidate.frameId === targetFrameId && candidate.parentFrameId === caller.frameId
+        ) as DurableChild | undefined
+        if (!child) {
+          throw new DurableDelegatedWorkError(
+            'authorization',
+            `caller cannot access child ${targetFrameId}`
+          )
+        }
+        const previous = currentAttempt(child)
+        if (previous.status === 'running') {
+          throw new DurableDelegatedWorkError(
+            'conflict',
+            'running child messaging is not a terminal continuation'
+          )
+        }
+        const priorExecution = running.get(targetFrameId)
+        if (priorExecution?.attemptId === previous.id) await priorExecution.completion
+        try {
+          await options.assertAvailable?.(caller)
+        } catch (error) {
+          if (error instanceof DurableDelegatedWorkError) throw error
+          throw new DurableDelegatedWorkError(
+            'unsupported_framework',
+            error instanceof Error ? error.message : String(error)
+          )
+        }
+        const resolvedAgent =
+          previous.resolvedAgent.kind === 'main'
+            ? ({ kind: 'main' } as const)
+            : await resolveAgent(previous.resolvedAgent.profileId)
+        let reservation: DelegateCapacityReservation
+        try {
+          reservation = await options.execution.reserve(1)
+        } catch (error) {
+          if (error instanceof DelegateExecutionError) {
+            throw new DurableDelegatedWorkError(error.code, error.message)
+          }
+          throw new DurableDelegatedWorkError(
+            'capacity',
+            error instanceof Error ? error.message : String(error)
+          )
+        }
+        const attemptId = createId('attempt')
+        try {
+          await options.records.continueChild({
+            frameId: targetFrameId,
+            previousAttemptId: previous.id,
+            attemptId,
+            userMessageId: createId('message'),
+            message: message.trim(),
+            resolvedAgent,
+            startedAt: now()
+          })
+        } catch (error) {
+          await reservation.releaseAll()
+          if (
+            error &&
+            typeof error === 'object' &&
+            'code' in error &&
+            (error.code === 'revision-conflict' || error.code === 'attempt-conflict')
+          ) {
+            throw new DurableDelegatedWorkError(
+              'conflict',
+              `child ${targetFrameId} changed while continuation was admitted`
+            )
+          }
+          throw error
+        }
+        const continued = (await snapshotChild(targetFrameId))!
+        launch(continued, caller.session, reservation, reservation.slotIds[0], message.trim(), true)
+        return {
+          kind: 'continued' as const,
+          child: { frameId: targetFrameId, attemptId, status: 'running' as const }
+        }
+      })()
+      messageOutcomes.set(invocationKey, outcome)
+      void outcome.catch(() => messageOutcomes.delete(invocationKey))
+      return outcome
+    },
     async sessionSummary(session: SessionKey): Promise<SessionSubagentSummary> {
       const snapshot = await options.records.snapshot()
       if (!sameSession(snapshot.session, session)) return { runningCount: 0, children: [] }
@@ -985,6 +1165,7 @@ export type {
   DurableDelegateOutcome,
   DurableDelegateRequest,
   DurableDelegateResult,
+  DurableSendMessageOutcome,
   DurableDelegatedWork,
   DurableMessage,
   DurableSnapshot,

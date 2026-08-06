@@ -348,7 +348,79 @@ describe('authenticated delegatedWorkCall route', () => {
     await expect(call({ op: 'collect', frame_ids: [frameId] })).resolves.toMatchObject([
       { frameId, status: 'completed', response: 'Durable RPC answer', artifactsCreated: [] }
     ])
+    endInvocation()
+    connection.release()
+  })
 
+  it('routes an authenticated send_message to terminal-child continuation', async () => {
+    const session = { projectId: 'project-1', sessionId: 'session-1' }
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session,
+      rootFrameId: 'root-frame-session-1',
+      originMessageId: 'origin-message-1'
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(
+      {
+        session,
+        frameId: 'root-frame-session-1',
+        role: 'main',
+        originMessageId: 'origin-message-1',
+        toolInvocationId: 'dispatch-call'
+      },
+      { task: 'Initial task' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Initial answer')
+    await expect.poll(async () => (await work.sessionSummary(session)).runningCount).toBe(0)
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: work
+    })
+    const connection = await server.issueControlConnection(
+      session.sessionId,
+      session.projectId,
+      'root-frame-session-1'
+    )
+    const endInvocation = connection.beginControlInvocation({
+      turnId: 'turn-2',
+      controlInvocationGeneration: 2,
+      toolInvocationId: 'continuation-call',
+      originatingUserMessageId: 'origin-message-1'
+    })
+
+    const response = await fetch(connection.endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        method: 'delegatedWorkCall',
+        params: {
+          op: 'send_message',
+          target: dispatched.children[0].frameId,
+          message: 'Continue through the host'
+        }
+      })
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toMatchObject({
+      result: {
+        kind: 'continued',
+        child: { frameId: dispatched.children[0].frameId, status: 'running' }
+      }
+    })
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    expect(execution.controls()[1].input).toMatchObject({
+      frameId: dispatched.children[0].frameId,
+      task: 'Continue through the host',
+      continuation: true
+    })
     endInvocation()
     connection.release()
   })

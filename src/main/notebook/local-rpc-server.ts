@@ -139,7 +139,7 @@ type NotebookLocalRpcServerOptions = {
     dispatch?(op: unknown, context: TrustedCallingSession): Promise<unknown>
   }
   delegatedWorkService?: Pick<DurableDelegatedWork, 'delegate'> &
-    Partial<Pick<DurableDelegatedWork, 'children' | 'collect' | 'stopChildren'>>
+    Partial<Pick<DurableDelegatedWork, 'children' | 'collect' | 'stopChildren' | 'sendMessage'>>
 }
 
 type NotebookRpcPayload = {
@@ -1180,6 +1180,17 @@ class NotebookLocalRpcServer {
         return this.delegatedWorkService.stopChildren(caller, params.frame_ids as string[])
       }
       const op = params.op === undefined ? 'delegate' : params.op
+      if (op === 'send_message') {
+        if (!this.delegatedWorkService.sendMessage) {
+          throw new Error('host.send_message is unavailable.')
+        }
+        const target = typeof params.target === 'string' ? params.target : ''
+        const message = typeof params.message === 'string' ? params.message : ''
+        if (!target || !message.trim()) {
+          throw new Error('host.send_message requires a target Frame and non-empty message.')
+        }
+        return this.delegatedWorkService.sendMessage(caller, target, message)
+      }
       if (op === 'children' || op === 'collect') {
         if (
           params.frame_ids !== undefined &&
