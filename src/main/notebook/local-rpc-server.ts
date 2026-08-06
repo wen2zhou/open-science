@@ -38,6 +38,11 @@ import {
 } from '../local-rpc-transport'
 import { createLogger, errorLogFields } from '../logger'
 import { PlanCommandError } from '../../shared/session-plan/contract'
+import type {
+  AuthenticatedDelegateCaller,
+  DurableDelegateOutcome,
+  DurableDelegateRequest
+} from '../delegated-work/durable-delegated-work'
 
 const log = createLogger('notebook:local-rpc')
 
@@ -134,6 +139,13 @@ type NotebookLocalRpcServerOptions = {
     read(op: unknown, context: TrustedCallingSession): Promise<unknown>
     dispatch?(op: unknown, context: TrustedCallingSession): Promise<unknown>
   }
+  delegatedWorkService?: {
+    delegate(
+      caller: AuthenticatedDelegateCaller,
+      request: DurableDelegateRequest,
+      options?: Readonly<{ wait?: boolean }>
+    ): Promise<DurableDelegateOutcome>
+  }
 }
 
 type NotebookRpcPayload = {
@@ -173,7 +185,7 @@ const ARTIFACT_RPC_METHODS = new Set<ArtifactRpcMethod>([
 // Capabilities are revoked when the turn ends. This upper bound only limits abandoned tokens, so
 // it must comfortably exceed long notebook executions that remain inside one active turn.
 const DEFAULT_ARTIFACT_RPC_CAPABILITY_TTL_MS = 2 * 60 * 60 * 1_000
-const CONTROL_RPC_METHODS = new Set(['mcpCall', 'computeCall', 'agentsCall'])
+const CONTROL_RPC_METHODS = new Set(['mcpCall', 'computeCall', 'agentsCall', 'delegatedWorkCall'])
 const SKILL_IMPORT_RPC_METHODS = new Set(['skillImport'])
 const PLAN_RPC_METHODS = new Set(['planCall'])
 
@@ -216,6 +228,7 @@ class NotebookLocalRpcServer {
   private readonly artifactProvenance: NotebookLocalRpcServerOptions['artifactProvenance']
   private readonly inputRegistry: NotebookLocalRpcServerOptions['inputRegistry']
   private readonly agentsService: NotebookLocalRpcServerOptions['agentsService']
+  private readonly delegatedWorkService: NotebookLocalRpcServerOptions['delegatedWorkService']
   private server: Server | undefined
   private startPromise: Promise<NotebookRpcConnection> | undefined
   private readonly sessionAliases = new Map<string, string>()
@@ -250,6 +263,7 @@ class NotebookLocalRpcServer {
     this.artifactProvenance = options.artifactProvenance
     this.inputRegistry = options.inputRegistry
     this.agentsService = options.agentsService
+    this.delegatedWorkService = options.delegatedWorkService
   }
 
   issueArtifactRunCapability(
@@ -686,6 +700,18 @@ class NotebookLocalRpcServer {
               'host.agents.switch requires an active trusted control invocation.'
             )
           }
+          if (
+            method === 'delegatedWorkCall' &&
+            (!sessionBinding.projectId ||
+              !sessionBinding.agentFrameId ||
+              !sessionBinding.activeControlInvocation?.toolInvocationId ||
+              !sessionBinding.activeControlInvocation.originatingUserMessageId)
+          ) {
+            throw new RpcHttpError(
+              403,
+              'host.delegate requires an active trusted control invocation.'
+            )
+          }
           // The request body is agent-controlled. Owner fields always come from the unforgeable,
           // per-session capability issued while building this session's Notebook environment.
           params = {
@@ -699,6 +725,16 @@ class NotebookLocalRpcServer {
                   control_invocation_generation:
                     sessionBinding.activeControlInvocation?.controlInvocationGeneration,
                   control_invocation_id: sessionBinding.activeControlInvocation?.toolInvocationId
+                }
+              : {}),
+            ...(method === 'delegatedWorkCall'
+              ? {
+                  project_id: sessionBinding.projectId,
+                  session_id: sessionBinding.sessionId,
+                  frame_id: sessionBinding.agentFrameId,
+                  origin_message_id:
+                    sessionBinding.activeControlInvocation?.originatingUserMessageId,
+                  tool_invocation_id: sessionBinding.activeControlInvocation?.toolInvocationId
                 }
               : {})
           }
@@ -1114,6 +1150,44 @@ class NotebookLocalRpcServer {
                   .map((input) => input.sourceFileId) ?? []
             }
           : { sessionId: resolvedSessionId }
+      )
+    }
+
+    if (method === 'delegatedWorkCall') {
+      if (!this.delegatedWorkService) throw new Error('Delegated Work service is not configured.')
+      const projectId = typeof params.project_id === 'string' ? params.project_id : ''
+      const sessionId = typeof params.session_id === 'string' ? params.session_id : ''
+      const frameId = typeof params.frame_id === 'string' ? params.frame_id : ''
+      const originMessageId =
+        typeof params.origin_message_id === 'string' ? params.origin_message_id : ''
+      const toolInvocationId =
+        typeof params.tool_invocation_id === 'string' ? params.tool_invocation_id : ''
+      if (!projectId || !sessionId || !frameId || !originMessageId || !toolInvocationId) {
+        throw new RpcHttpError(403, 'host.delegate caller identity is incomplete.')
+      }
+      if (!isRecord(params.request)) {
+        throw new Error('host.delegate requires one request object.')
+      }
+      if (params.options !== undefined && !isRecord(params.options)) {
+        throw new Error('host.delegate options must be an object.')
+      }
+      const request = params.request as DurableDelegateRequest
+      const requestedOptions = isRecord(params.options) ? params.options : {}
+      if (requestedOptions.wait !== undefined && typeof requestedOptions.wait !== 'boolean') {
+        throw new Error('host.delegate wait must be a boolean.')
+      }
+      const delegateOptions =
+        typeof requestedOptions.wait === 'boolean' ? { wait: requestedOptions.wait } : {}
+      return this.delegatedWorkService.delegate(
+        {
+          session: { projectId, sessionId },
+          frameId,
+          role: 'main',
+          originMessageId,
+          toolInvocationId
+        },
+        request,
+        delegateOptions
       )
     }
 

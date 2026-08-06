@@ -190,6 +190,10 @@ export type PersistedChatMessage = {
   // Links a message to session-level artifact metadata without duplicating file records per message.
   artifactIds?: string[]
   uploads?: PersistedUploadedAttachment[]
+  // Delegate assignment metadata keeps execution inputs reconstructable without parsing display text.
+  delegatedTask?: string
+  delegatedContext?: string
+  delegatedInputVersionIds?: string[]
   // Bounded raster blocks emitted directly by ACP agent_message_chunk notifications.
   images?: PersistedMessageImage[]
   // Structured mention segments for the styled user bubble; optional for backward compatibility.
@@ -1401,6 +1405,9 @@ const sanitizeMessage = (
   const streamId = asString(message.streamId)
   const responseToMessageId = asString(message.responseToMessageId)
   const artifactIds = asStringArray(message.artifactIds)
+  const delegatedTask = asString(message.delegatedTask)
+  const delegatedContext = asString(message.delegatedContext)
+  const delegatedInputVersionIds = asStringArray(message.delegatedInputVersionIds)
   const uploads = Array.isArray(message.uploads)
     ? message.uploads
         .map((attachment) =>
@@ -1423,6 +1430,11 @@ const sanitizeMessage = (
   if (streamId) sanitized.streamId = streamId
   if (responseToMessageId) sanitized.responseToMessageId = responseToMessageId
   if (artifactIds.length > 0) sanitized.artifactIds = artifactIds
+  if (delegatedTask) sanitized.delegatedTask = delegatedTask
+  if (delegatedContext) sanitized.delegatedContext = delegatedContext
+  if (delegatedInputVersionIds.length > 0) {
+    sanitized.delegatedInputVersionIds = delegatedInputVersionIds
+  }
   if (uploads.length > 0) sanitized.uploads = uploads
   if (parts.length > 0) sanitized.parts = parts
   if (images) sanitized.images = images

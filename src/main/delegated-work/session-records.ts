@@ -20,6 +20,7 @@ type CreateChildRecordInput = Readonly<{
   task: string
   name?: string
   context?: string
+  inputs?: readonly string[]
   resolvedAgent: DelegatedWorkResolvedAgent
   startedAt: number
 }>

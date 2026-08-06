@@ -1032,6 +1032,37 @@ async function agentsRpc(op, params = {}, sessionId = COMPUTE_SESSION_ID) {
   return body.result
 }
 
+async function delegateRpc(request, options = {}) {
+  if (!RPC_ENDPOINT) throw new Error('host.delegate is unavailable: control RPC endpoint not set')
+  const res = await capturedRpcFetch(RPC_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
+    body: JSON.stringify({ method: 'delegatedWorkCall', params: { request, options } })
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok || body.error) {
+    throw new Error(`host.delegate: ${body.error || 'HTTP ' + res.status}`)
+  }
+  const outcome = body.result || {}
+  return {
+    kind: outcome.kind,
+    children: (outcome.children || []).map((child) => ({
+      frame_id: child.frameId,
+      attempt_id: child.attemptId,
+      status: child.status,
+      ...(child.terminalMessageId ? { terminal_message_id: child.terminalMessageId } : {}),
+      ...(child.response !== undefined ? { response: child.response } : {}),
+      ...(outcome.kind === 'results' ? { artifacts_created: child.artifactsCreated || [] } : {}),
+      ...(child.cancellationReason ? { cancellation_reason: child.cancellationReason } : {}),
+      ...(child.error ? { error: child.error } : {})
+    }))
+  }
+}
+
+async function hostDelegate(request, options = {}) {
+  return delegateRpc(request, options)
+}
+
 // host.agents namespace. Methods and filter/write fields are snake_case; returned records are
 // camelCase. list_skills/list_connectors accept an optional stable id or unique public name.
 // create/update/attach_*/detach_* are the ordinary-mutation surface (issue 03); they return a real
@@ -1219,7 +1250,7 @@ const hostCompute = {
 
 // Persistent sandbox: user-declared globals persist across requests (assign to `globalThis`/bare).
 const sandbox = {
-  host: { mcp: hostMcp, compute: hostCompute, agents: hostAgents },
+  host: { mcp: hostMcp, compute: hostCompute, agents: hostAgents, delegate: hostDelegate },
   console,
   process,
   require,

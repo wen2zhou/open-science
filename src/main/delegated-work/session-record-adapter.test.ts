@@ -1,0 +1,178 @@
+import { describe, expect, it, vi } from 'vitest'
+
+import { createLinearConversationGraph } from '../../shared/conversation-graph'
+import {
+  normalizeSessionFile,
+  type PersistedChatMessage,
+  type PersistedChatSession
+} from '../../shared/session-persistence'
+import {
+  SessionPersistenceCoordinator,
+  type SessionFileIndex,
+  type SessionMutationRepository
+} from '../session-persistence/coordinator'
+import { createDeterministicDelegateExecution } from './deterministic-execution'
+import {
+  createDurableDelegatedWork,
+  type AuthenticatedDelegateCaller
+} from './durable-delegated-work'
+import { createSessionDelegatedWorkRecords } from './session-record-adapter'
+
+const key = { projectId: 'project-1', sessionId: 'session-1' } as const
+const rootPrompt: PersistedChatMessage = {
+  id: 'root-prompt',
+  role: 'user',
+  content: 'Coordinate the work.',
+  status: 'complete',
+  eventIds: [],
+  createdAt: 1,
+  updatedAt: 1
+}
+
+const createSession = (): PersistedChatSession => ({
+  id: key.sessionId,
+  projectId: key.projectId,
+  title: 'Delegated research',
+  cwd: '/workspace',
+  status: 'idle',
+  specialistId: 'currently-bound-specialist',
+  messages: [rootPrompt],
+  conversationGraph: createLinearConversationGraph({
+    sessionId: key.sessionId,
+    messages: [rootPrompt],
+    frameworkId: 'codex',
+    createdAt: 1,
+    updatedAt: 1
+  }),
+  filesRevision: 1,
+  createdAt: 1,
+  updatedAt: 2
+})
+
+const createHarness = (): Readonly<{
+  coordinator: SessionPersistenceCoordinator
+  readSession(): Promise<PersistedChatSession>
+}> => {
+  let durable = createSession()
+  const repository: SessionMutationRepository = {
+    loadAllWithDiagnostics: vi.fn(async () => ({
+      result: { sessions: [structuredClone(durable)], manifest: { version: 1 as const } },
+      isComplete: true
+    })),
+    loadProjectWithDiagnostics: vi.fn(async () => ({
+      sessions: [structuredClone(durable)],
+      isComplete: true
+    })),
+    loadCommittedProjectWithDiagnostics: vi.fn(async () => ({
+      sessions: [structuredClone(durable)],
+      isComplete: true
+    })),
+    loadSessionWithDiagnostics: vi.fn(async () => ({
+      status: 'found' as const,
+      session: structuredClone(durable)
+    })),
+    saveSession: vi.fn(async (session) => {
+      durable = structuredClone(session)
+    }),
+    saveCommittedProjectSession: vi.fn(async () => undefined),
+    deleteSession: vi.fn(async () => undefined),
+    deleteProjectSessions: vi.fn(async () => undefined),
+    getProjectSessionDeletionState: vi.fn(async () => 'absent' as const),
+    markCommittedProjectSessionsPrepared: vi.fn(async () => undefined),
+    completeProjectSessionDeletion: vi.fn(async () => undefined),
+    listLegacyProjectSessionTombstones: vi.fn(async () => []),
+    saveManifest: vi.fn(async () => undefined)
+  }
+  const fileIndex: SessionFileIndex = {
+    syncSession: vi.fn(async () => []),
+    softDeleteSession: vi.fn(async () => 'session-delete'),
+    restoreSession: vi.fn(async () => undefined),
+    softDeleteProject: vi.fn(async () => 'project-delete'),
+    reconcileActiveSessions: vi.fn(async () => undefined),
+    markReconciliationIncomplete: vi.fn()
+  }
+  const coordinator = new SessionPersistenceCoordinator(repository, fileIndex)
+  return { coordinator, readSession: async () => structuredClone(durable) }
+}
+
+describe('Session delegated-work adapter', () => {
+  it('executes and projects one blocking child from the durable Session conversation', async () => {
+    const { coordinator, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const records = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => 'child-branch'
+      },
+      key
+    )
+    const workspaceInputs: string[][] = []
+    let nextMessage = 1
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      validateInput: (identity) => identity.startsWith('upload-version:'),
+      workspace: {
+        async prepare(_session, _frameId, inputs) {
+          workspaceInputs.push([...inputs])
+          return { cwd: '/stable-child-workspace' }
+        }
+      },
+      createId: (kind) =>
+        kind === 'message'
+          ? `child-message-${nextMessage++}`
+          : { frame: 'child-frame', attempt: 'child-attempt', runtime: 'child-runtime' }[kind]
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'tool-call-1'
+    }
+
+    const pending = work.delegate(caller, {
+      task: 'Trace the source',
+      context: 'Prefer primary evidence.',
+      inputs: ['upload-version:one']
+    })
+
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    expect(execution.controls()[0].input).toMatchObject({
+      task: 'Trace the source',
+      context: 'Prefer primary evidence.',
+      inputs: ['upload-version:one']
+    })
+    expect((await records.snapshot()).records[0].attempts[0].resolvedAgent).toEqual({
+      kind: 'main'
+    })
+    expect(workspaceInputs).toEqual([['upload-version:one']])
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('Durable answer')
+
+    expect(await pending).toMatchObject({
+      kind: 'results',
+      children: [{ status: 'completed', response: 'Durable answer', artifactsCreated: [] }]
+    })
+    await expect(work.readAgentFrame(key, 'child-frame')).resolves.toMatchObject({
+      status: 'completed',
+      messages: [
+        { role: 'user', content: 'Trace the source\n\nContext:\nPrefer primary evidence.' },
+        { role: 'assistant', content: 'Durable answer' }
+      ]
+    })
+    const restored = normalizeSessionFile(await readSession())
+    expect(
+      restored?.conversationGraph?.messages.find(
+        (message) => message.agentFrameId === 'child-frame' && message.role === 'user'
+      )
+    ).toMatchObject({
+      delegatedTask: 'Trace the source',
+      delegatedContext: 'Prefer primary evidence.',
+      delegatedInputVersionIds: ['upload-version:one']
+    })
+  })
+})
