@@ -1245,6 +1245,9 @@ describe('durable delegated work', () => {
     )
     const frameId = dispatched.children[0].frameId
     await expect.poll(() => execution.controls()).toHaveLength(1)
+    expect(execution.controls()[0].input.runtimeSegmentId).toBe(
+      (await records.snapshot()).records[0].attempts[0].runtimeSegmentIds[0]
+    )
     execution.controls()[0].accept()
     execution.controls()[0].complete('Initial finding')
     await expect
@@ -1265,6 +1268,9 @@ describe('durable delegated work', () => {
       child: { frameId, status: 'running' }
     })
     await expect.poll(() => execution.controls()).toHaveLength(2)
+    expect(execution.controls()[1].input.runtimeSegmentId).toBe(
+      (await records.snapshot()).records[0].attempts[1].runtimeSegmentIds[0]
+    )
     expect(execution.controls()[1].input).toMatchObject({
       frameId,
       task: 'Check a counterexample',

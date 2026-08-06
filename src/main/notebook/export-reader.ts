@@ -184,9 +184,15 @@ class NotebookExportReader {
     if (!document) {
       throw new Error(`Notebook session not found: ${request.sessionId}`)
     }
-    const runs = this.options.repository.readSessionRuns
+    const sessionRuns = this.options.repository.readSessionRuns
       ? await this.options.repository.readSessionRuns(projectName, request.sessionId)
       : document.runs
+    const runs =
+      request.agentFrameFilter === undefined
+        ? sessionRuns
+        : request.agentFrameFilter === null
+          ? sessionRuns.filter((run) => !run.agentFrameId)
+          : sessionRuns.filter((run) => run.agentFrameId === request.agentFrameFilter)
     return { ...document, runs }
   }
 }

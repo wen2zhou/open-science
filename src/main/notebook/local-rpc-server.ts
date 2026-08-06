@@ -5,6 +5,7 @@ import type { NotebookRunProvenanceContext } from '../../shared/notebook'
 import type { NotebookRpcConnection } from './mcp-server'
 import { NotebookControlCompletionCapturedError } from './execution-owner'
 import {
+  NOTEBOOK_LOCAL_RPC_METHODS,
   isNotebookLocalRpcMethod,
   opensNotebookInputRun,
   resolveNotebookLocalRpcHandler,
@@ -160,6 +161,32 @@ type NotebookRpcSessionBinding = {
   agentFrameId?: string
   allowedMethods?: ReadonlySet<string>
   activeControlInvocation?: TrustedControlInvocationIdentity
+  delegatedNotebook?: {
+    attemptId: string
+    workspaceCwd: string
+    provenanceContext: NotebookRunProvenanceContext
+    isAttemptWritable: () => boolean | Promise<boolean>
+    revoked: boolean
+    inFlightRequests: number
+    drainWaiters: Set<() => void>
+  }
+}
+
+type DelegatedNotebookConnectionRequest = Readonly<{
+  projectId: string
+  sessionId: string
+  rootFrameId: string
+  agentFrameId: string
+  attemptId: string
+  messageBranchId: string
+  runtimeSegmentId: string
+  promptMessageId: string
+  workspaceCwd: string
+  isAttemptWritable(): boolean | Promise<boolean>
+}>
+
+type DelegatedNotebookConnection = NotebookRpcConnection & {
+  revoke(): Promise<void>
 }
 
 class RpcHttpError extends Error {
@@ -464,6 +491,76 @@ class NotebookLocalRpcServer {
     }
   }
 
+  // Provisions one fail-closed child capability. The caller supplies the durable Attempt check;
+  // revocation closes admission before tearing down only this Frame's lane and draining its request.
+  async issueDelegatedNotebookConnection(
+    scope: DelegatedNotebookConnectionRequest
+  ): Promise<DelegatedNotebookConnection> {
+    const required = [
+      scope.projectId,
+      scope.sessionId,
+      scope.rootFrameId,
+      scope.agentFrameId,
+      scope.attemptId,
+      scope.messageBranchId,
+      scope.runtimeSegmentId,
+      scope.promptMessageId,
+      scope.workspaceCwd
+    ]
+    if (required.some((value) => !value.trim()) || scope.agentFrameId === scope.rootFrameId) {
+      throw new Error('Delegated Notebook capability scope is incomplete or not a child Frame.')
+    }
+    const connection = await this.ensureStarted()
+    const token = randomUUID()
+    const delegatedNotebook: NonNullable<NotebookRpcSessionBinding['delegatedNotebook']> = {
+      attemptId: scope.attemptId,
+      workspaceCwd: scope.workspaceCwd,
+      provenanceContext: {
+        rootFrameId: scope.rootFrameId,
+        agentFrameId: scope.agentFrameId,
+        messageBranchId: scope.messageBranchId,
+        runtimeSegmentId: scope.runtimeSegmentId,
+        promptMessageId: scope.promptMessageId
+      },
+      isAttemptWritable: scope.isAttemptWritable,
+      revoked: false,
+      inFlightRequests: 0,
+      drainWaiters: new Set()
+    }
+    this.sessionRpcCapabilities.set(token, {
+      sessionId: scope.sessionId,
+      projectId: scope.projectId,
+      agentFrameId: scope.agentFrameId,
+      allowedMethods: new Set(NOTEBOOK_LOCAL_RPC_METHODS),
+      delegatedNotebook
+    })
+    let revokePromise: Promise<void> | undefined
+    const revoke = (): Promise<void> => {
+      if (revokePromise) return revokePromise
+      delegatedNotebook.revoked = true
+      this.sessionRpcCapabilities.delete(token)
+      const drained =
+        delegatedNotebook.inFlightRequests === 0
+          ? Promise.resolve()
+          : new Promise<void>((resolve) => delegatedNotebook.drainWaiters.add(resolve))
+      const shutdown = this.service.shutdown({
+        projectName: scope.projectId,
+        sessionId: scope.sessionId,
+        workspaceCwd: scope.workspaceCwd,
+        provenanceContext: delegatedNotebook.provenanceContext
+      })
+      revokePromise = Promise.all([drained, shutdown]).then(() => undefined)
+      return revokePromise
+    }
+    return {
+      endpoint: connection.endpoint,
+      socketPath: connection.socketPath,
+      token,
+      release: () => void revoke().catch(() => undefined),
+      revoke
+    }
+  }
+
   async issueSkillImportConnection(sessionId: string): Promise<NotebookRpcConnection> {
     const connection = await this.ensureStarted()
     this.revokeSkillImportSessionCapabilities(sessionId)
@@ -666,6 +763,8 @@ class NotebookLocalRpcServer {
     }
 
     let releaseArtifactRequest: (() => void) | undefined
+    let releaseDelegatedNotebookRequest: (() => void) | undefined
+    let authenticatedSessionBinding: NotebookRpcSessionBinding | undefined
     try {
       const payload = await readJsonBody(request)
       const method = typeof payload.method === 'string' ? payload.method : ''
@@ -681,6 +780,7 @@ class NotebookLocalRpcServer {
       } else {
         const sessionBinding = this.sessionRpcCapabilities.get(bearerToken)
         if (sessionBinding) {
+          authenticatedSessionBinding = sessionBinding
           if (sessionBinding.allowedMethods && !sessionBinding.allowedMethods.has(method)) {
             throw new RpcHttpError(403, `Notebook RPC capability does not allow ${method}.`)
           }
@@ -705,6 +805,26 @@ class NotebookLocalRpcServer {
               403,
               'host.delegate requires an active trusted control invocation.'
             )
+          }
+          const delegatedNotebook = sessionBinding.delegatedNotebook
+          if (delegatedNotebook && isNotebookLocalRpcMethod(method)) {
+            if (delegatedNotebook.revoked || !(await delegatedNotebook.isAttemptWritable())) {
+              throw new RpcHttpError(
+                403,
+                `Notebook capability for Attempt ${delegatedNotebook.attemptId} is no longer writable.`
+              )
+            }
+            delegatedNotebook.inFlightRequests += 1
+            let released = false
+            releaseDelegatedNotebookRequest = () => {
+              if (released) return
+              released = true
+              delegatedNotebook.inFlightRequests -= 1
+              if (delegatedNotebook.inFlightRequests === 0) {
+                for (const resolve of delegatedNotebook.drainWaiters) resolve()
+                delegatedNotebook.drainWaiters.clear()
+              }
+            }
           }
           // The request body is agent-controlled. Owner fields always come from the unforgeable,
           // per-session capability issued while building this session's Notebook environment.
@@ -746,15 +866,28 @@ class NotebookLocalRpcServer {
         }
       }
       // Resolve pre-session aliases before the runtime service looks up persistent state.
-      const resolvedParams = this.resolveSessionAlias(params)
-      const authenticatedBinding = this.sessionRpcCapabilities.get(bearerToken)
+      let resolvedParams = this.resolveSessionAlias(params)
+      const authenticatedBinding = authenticatedSessionBinding
+      if (authenticatedBinding?.delegatedNotebook && isNotebookLocalRpcMethod(method)) {
+        resolvedParams = {
+          ...resolvedParams,
+          sessionId: authenticatedBinding.sessionId,
+          projectName: authenticatedBinding.projectId,
+          workspaceCwd: authenticatedBinding.delegatedNotebook.workspaceCwd,
+          provenanceContext: authenticatedBinding.delegatedNotebook.provenanceContext
+        }
+      }
       if (authenticatedBinding?.agentFrameId && isNotebookLocalRpcMethod(method)) {
         const resolvedSessionId = resolvedParams.sessionId
         const activeContext =
           typeof resolvedSessionId === 'string'
             ? this.artifactProvenanceContexts.get(resolvedSessionId)
             : undefined
-        if (activeContext && activeContext.agentFrameId !== authenticatedBinding.agentFrameId) {
+        if (
+          !authenticatedBinding.delegatedNotebook &&
+          activeContext &&
+          activeContext.agentFrameId !== authenticatedBinding.agentFrameId
+        ) {
           throw new RpcHttpError(403, 'Notebook RPC capability does not match active Agent Frame.')
         }
       }
@@ -778,6 +911,7 @@ class NotebookLocalRpcServer {
       })
     } finally {
       releaseArtifactRequest?.()
+      releaseDelegatedNotebookRequest?.()
     }
   }
 
@@ -1302,4 +1436,8 @@ class NotebookLocalRpcServer {
 }
 
 export { NotebookLocalRpcServer }
-export type { NotebookLocalRpcServerOptions }
+export type {
+  DelegatedNotebookConnection,
+  DelegatedNotebookConnectionRequest,
+  NotebookLocalRpcServerOptions
+}

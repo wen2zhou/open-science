@@ -80,6 +80,28 @@ describe('NotebookRuntimeService exportIpynb', () => {
       'print("hello")',
       'print("child")'
     ])
+
+    await service.exportIpynb({
+      sessionId: '12345678-abcd',
+      workspaceCwd: '/workspace',
+      kernel: 'python',
+      agentFrameFilter: 'child-frame-1'
+    })
+    const childExport = JSON.parse(saveIpynb.mock.calls[1]![1] as string) as {
+      cells: Array<{ source: string[] }>
+    }
+    expect(childExport.cells.map((cell) => cell.source.join(''))).toEqual(['print("child")'])
+
+    await service.exportIpynb({
+      sessionId: '12345678-abcd',
+      workspaceCwd: '/workspace',
+      kernel: 'python',
+      agentFrameFilter: null
+    })
+    const legacyExport = JSON.parse(saveIpynb.mock.calls[2]![1] as string) as {
+      cells: Array<{ source: string[] }>
+    }
+    expect(legacyExport.cells.map((cell) => cell.source.join(''))).toEqual(['print("hello")'])
   })
 
   it('loads the durable document and sends a serialized nbformat notebook to the save seam', async () => {

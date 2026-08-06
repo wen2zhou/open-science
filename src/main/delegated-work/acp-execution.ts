@@ -109,7 +109,8 @@ const assertPreparedScope = (
   if (
     scope.provenance.projectId !== input.session.projectId ||
     scope.provenance.sessionId !== input.session.sessionId ||
-    scope.provenance.agentFrameId !== input.frameId
+    scope.provenance.agentFrameId !== input.frameId ||
+    scope.provenance.runtimeSegmentId !== input.runtimeSegmentId
   ) {
     throw new Error('prepared execution provenance does not match the delegated Attempt')
   }

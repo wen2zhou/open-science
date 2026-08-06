@@ -40,6 +40,55 @@ afterEach(() => {
 })
 
 describe('SessionNotebookContent export', () => {
+  it('filters the visible projection by producer Frame without mutating the Run set', async () => {
+    const onExport = vi.fn().mockResolvedValue(undefined)
+    const runs = [
+      { ...run, runId: 'root-run', script: 'print("root")', agentFrameId: 'root-frame-session-1' },
+      { ...run, runId: 'child-run', script: 'print("child")', agentFrameId: 'frame-child' },
+      { ...run, runId: 'legacy-run', script: 'print("legacy")' }
+    ]
+    await act(async () => {
+      root.render(
+        <SessionNotebookContent
+          sessionId="session-1"
+          runs={runs}
+          status="ready"
+          onClose={vi.fn()}
+          onExport={onExport}
+          onExportAll={vi.fn()}
+        />
+      )
+    })
+
+    const filter = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Filter notebook runs by Agent Frame"]'
+    )
+    expect(filter?.value).toBe('all')
+    expect(container.textContent).toContain('print("root")')
+    expect(container.textContent).toContain('print("child")')
+
+    await act(async () => {
+      if (filter) {
+        filter.value = 'frame:frame-child'
+        filter.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+    })
+
+    expect(container.textContent).not.toContain('print("root")')
+    expect(container.textContent).toContain('print("child")')
+    expect(container.textContent).not.toContain('print("legacy")')
+    expect(runs).toHaveLength(3)
+
+    const exportButton = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Download python as .ipynb"]'
+    )
+    await act(async () => {
+      exportButton?.click()
+      await Promise.resolve()
+    })
+    expect(onExport).toHaveBeenCalledWith('python', 'frame-child')
+  })
+
   it('invokes the export callback with the active tab kernel', async () => {
     const onExport = vi.fn().mockResolvedValue(undefined)
     await act(async () => {
@@ -72,7 +121,10 @@ describe('SessionNotebookContent export', () => {
 
   it('passes the clicked tab kernel to the export callback after switching tabs', async () => {
     const onExport = vi.fn().mockResolvedValue(undefined)
-    const mixedRuns: NotebookRunRecord[] = [run, { ...run, runId: 'r1', kernelKind: 'r', environment: 'default-r' }]
+    const mixedRuns: NotebookRunRecord[] = [
+      run,
+      { ...run, runId: 'r1', kernelKind: 'r', environment: 'default-r' }
+    ]
     await act(async () => {
       root.render(
         <SessionNotebookContent
@@ -204,7 +256,10 @@ describe('SessionNotebookContent export', () => {
 
   it('invokes onExportAll for the "Download all" button on mixed sessions', async () => {
     const onExportAll = vi.fn().mockResolvedValue(undefined)
-    const mixedRuns: NotebookRunRecord[] = [run, { ...run, runId: 'r1', kernelKind: 'r', environment: 'default-r' }]
+    const mixedRuns: NotebookRunRecord[] = [
+      run,
+      { ...run, runId: 'r1', kernelKind: 'r', environment: 'default-r' }
+    ]
     await act(async () => {
       root.render(
         <SessionNotebookContent

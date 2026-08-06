@@ -34,6 +34,7 @@ type DelegateExecutionInput = Readonly<{
   session: Readonly<{ projectId: string; sessionId: string }>
   frameId: string
   attemptId: string
+  runtimeSegmentId: string
   task: string
   context?: string
   inputs: readonly string[]

@@ -2,6 +2,11 @@ import { renderToStaticMarkup } from 'react-dom/server'
 import { describe, expect, it, vi } from 'vitest'
 
 import { SessionNotebookContent } from './SessionNotebookDialog'
+import {
+  createNotebookFrameFilterOptions,
+  filterNotebookRunsForSessionBranch,
+  projectNotebookRunsForFrame
+} from './session-notebook-projection'
 import type { NotebookRunRecord } from '../../../../shared/notebook'
 
 const makeRun = (overrides: Partial<NotebookRunRecord> = {}): NotebookRunRecord => ({
@@ -130,6 +135,96 @@ describe('SessionNotebookContent', () => {
     expect(pythonOnly).not.toContain('aria-label="Download separate notebooks by kernel')
     // Mixed sessions surface the secondary button with the count baked into the label.
     expect(mixed).toContain('aria-label="Download separate notebooks by kernel (2)"')
+  })
+})
+
+describe('Session Notebook producer projection', () => {
+  const attributedRuns = [
+    makeRun({
+      runId: 'root-run',
+      startedAt: 1,
+      rootFrameId: 'root-frame-s1',
+      agentFrameId: 'root-frame-s1'
+    }),
+    makeRun({ runId: 'child-two-run', startedAt: 2, agentFrameId: 'frame-two' }),
+    makeRun({ runId: 'legacy-run', startedAt: 3 }),
+    makeRun({ runId: 'child-one-run', startedAt: 4, agentFrameId: 'frame-one' })
+  ]
+
+  it('derives All, actual producer Frames, and Unattributed without changing chronological order', () => {
+    expect(
+      createNotebookFrameFilterOptions(attributedRuns, {
+        'root-frame-s1': 'Main agent',
+        'frame-one': 'Evidence check',
+        'frame-two': 'Sensitivity check'
+      })
+    ).toEqual([
+      { value: 'all', label: 'All', count: 4 },
+      { value: 'frame:root-frame-s1', label: 'Main agent', count: 1 },
+      { value: 'frame:frame-two', label: 'Sensitivity check', count: 1 },
+      { value: 'frame:frame-one', label: 'Evidence check', count: 1 },
+      { value: 'unattributed', label: 'Unattributed', count: 1 }
+    ])
+    expect(projectNotebookRunsForFrame(attributedRuns, 'all').map((run) => run.runId)).toEqual([
+      'root-run',
+      'child-two-run',
+      'legacy-run',
+      'child-one-run'
+    ])
+    expect(
+      projectNotebookRunsForFrame(attributedRuns, 'frame:frame-two').map((run) => run.runId)
+    ).toEqual(['child-two-run'])
+    expect(
+      projectNotebookRunsForFrame(attributedRuns, 'unattributed').map((run) => run.runId)
+    ).toEqual(['legacy-run'])
+  })
+
+  it('omits Unattributed when every Run has an Agent Frame and preserves the existing empty state', () => {
+    expect(
+      createNotebookFrameFilterOptions(attributedRuns.filter((run) => run.agentFrameId))
+    ).not.toContainEqual(expect.objectContaining({ value: 'unattributed' }))
+
+    const html = renderContent({ sessionId: 's1', runs: [], status: 'ready' })
+    expect(html).toContain('No execution records for this session.')
+    expect(html).not.toContain('aria-label="Filter notebook runs by Agent Frame"')
+  })
+
+  it('renders a labelled native Frame filter that remains usable at narrow widths', () => {
+    const html = renderContent({ sessionId: 's1', runs: attributedRuns, status: 'ready' })
+
+    expect(html).toContain('aria-label="Filter notebook runs by Agent Frame"')
+    expect(html).toContain('>All · 4 runs</option>')
+    expect(html).toContain('>Unattributed · 1 run</option>')
+    expect(html).toContain('max-w-full')
+  })
+
+  it('keeps child evidence while applying active-Branch filtering only to root and legacy Runs', () => {
+    const session = {
+      messages: [{ id: 'active-root-message' }],
+      conversationGraph: { rootFrameId: 'root-frame-s1' }
+    }
+    const runs = [
+      makeRun({
+        runId: 'active-root',
+        agentFrameId: 'root-frame-s1',
+        promptMessageId: 'active-root-message'
+      }),
+      makeRun({
+        runId: 'inactive-root',
+        agentFrameId: 'root-frame-s1',
+        promptMessageId: 'old-root-message'
+      }),
+      makeRun({
+        runId: 'child',
+        agentFrameId: 'frame-child',
+        promptMessageId: 'child-message'
+      }),
+      makeRun({ runId: 'inactive-legacy', promptMessageId: 'old-root-message' })
+    ]
+
+    expect(
+      filterNotebookRunsForSessionBranch(runs, session as never).map((run) => run.runId)
+    ).toEqual(['active-root', 'child'])
   })
 })
 

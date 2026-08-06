@@ -26,6 +26,7 @@ const input = (attemptId: string): DelegateExecutionInput => ({
   session: { projectId: 'project-1', sessionId: 'session-1' },
   frameId: `frame-${attemptId}`,
   attemptId,
+  runtimeSegmentId: `segment-${attemptId}`,
   task: `task-${attemptId}`,
   inputs: [],
   continuation: false

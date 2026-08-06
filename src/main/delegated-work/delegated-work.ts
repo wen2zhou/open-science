@@ -167,6 +167,7 @@ const createDelegatedWork = (options: {
       session: child.session,
       frameId: child.frameId,
       attemptId: attempt.id,
+      runtimeSegmentId: `runtime-${attempt.id}`,
       task: child.request.task,
       context: child.request.context,
       inputs: child.request.inputs ?? [],

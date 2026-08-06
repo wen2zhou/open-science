@@ -6,6 +6,8 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import { NotebookRunRepository, getNotebookRunJsonPath, getRuntimeRoot } from './repository'
 import { NotebookSessionReadModel, type NotebookSessionReadSource } from './session-read-model'
 import type { NotebookSessionSnapshot } from './session-aggregate'
+import { createFrameNotebookLane } from './lane-identity'
+import type { NotebookRunRecord } from '../../shared/notebook'
 
 let root: string | undefined
 
@@ -13,6 +15,21 @@ const createRoot = async (): Promise<string> => {
   root = await mkdtemp(join(tmpdir(), 'notebook-read-model-'))
   return root
 }
+
+const makeRun = (overrides: Partial<NotebookRunRecord> = {}): NotebookRunRecord => ({
+  runId: 'run-1',
+  cellId: 'cell-1',
+  source: 'agent',
+  kernelKind: 'python',
+  script: 'print(1)',
+  status: 'completed',
+  startedAt: 1,
+  text: { stdout: '', stderr: '', traceback: '', plain: [] },
+  outputs: [],
+  artifacts: [],
+  workingFiles: [],
+  ...overrides
+})
 
 afterEach(async () => {
   if (root) await rm(root, { recursive: true, force: true })
@@ -218,5 +235,35 @@ describe('NotebookSessionReadModel', () => {
         workspaceCwd: join(storageRoot, 'ignored')
       })
     ).resolves.toBeNull()
+  })
+
+  it('exposes the one Session Notebook when only a child Frame has produced Runs', async () => {
+    const storageRoot = await createRoot()
+    const repository = new NotebookRunRepository(storageRoot)
+    const childLane = createFrameNotebookLane('default-project', 'session-1', 'frame-child')
+    await repository.loadOrCreate({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/child-workspace',
+      lane: childLane
+    })
+    await repository.appendRun({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      lane: childLane,
+      run: makeRun({ runId: 'child-run', agentFrameId: 'frame-child' })
+    })
+
+    const reference = await makeReadModel(storageRoot, undefined, repository).getSessionReference({
+      sessionId: 'session-1',
+      projectName: 'default-project',
+      workspaceCwd: '/root-workspace'
+    })
+
+    expect(reference).toMatchObject({
+      sessionId: 'session-1',
+      projectName: 'default-project',
+      workspaceCwd: '/root-workspace'
+    })
   })
 })

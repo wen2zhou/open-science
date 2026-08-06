@@ -10,7 +10,13 @@ import type {
   NotebookSessionState
 } from '../../shared/notebook'
 import type { NotebookRuntimeBinding, NotebookRuntimeBindings } from '../../shared/notebook-runtime'
-import { getNotebookRunJsonPath, getRuntimeRoot, NotebookRunRepository } from './repository'
+import {
+  getNotebookDataRoot,
+  getNotebookRunJsonPath,
+  getNotebookSessionRoot,
+  getRuntimeRoot,
+  NotebookRunRepository
+} from './repository'
 import type { NotebookSessionSnapshot } from './session-aggregate'
 import type { NotebookLaneIdentity } from './lane-identity'
 
@@ -160,15 +166,22 @@ class NotebookSessionReadModel<Session extends NotebookSessionReadSource> {
     if (live) return this.toSessionReference(live)
 
     const projectName = request.projectName ?? this.options.defaultProjectName
-    const document = await this.options.repository.findExisting(projectName, request.sessionId)
+    const document = await this.options.repository.findAnyExisting(projectName, request.sessionId)
     if (!document) return null
+
+    const rootDocument = await this.options.repository.findExisting(projectName, request.sessionId)
+    const notebookSessionRoot = getNotebookSessionRoot(
+      this.options.storageRoot,
+      projectName,
+      request.sessionId
+    )
 
     return {
       sessionId: request.sessionId,
       projectName,
-      workspaceCwd: document.workspaceCwd,
-      notebookSessionRoot: document.notebookSessionRoot,
-      dataRoot: document.dataRoot,
+      workspaceCwd: rootDocument?.workspaceCwd ?? request.workspaceCwd,
+      notebookSessionRoot,
+      dataRoot: getNotebookDataRoot(this.options.storageRoot, projectName, request.sessionId),
       runtimeRoot: document.kernel.runtimeRoot,
       runJsonPath: getNotebookRunJsonPath(this.options.storageRoot, projectName, request.sessionId)
     }

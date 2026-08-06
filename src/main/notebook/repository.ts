@@ -335,6 +335,36 @@ class NotebookRunRepository {
     }
   }
 
+  async findAnyExisting(
+    projectName: string,
+    sessionId: string
+  ): Promise<NotebookRunDocument | null> {
+    const root = await this.findExisting(projectName, sessionId)
+    if (root) return root
+
+    const framesRoot = join(
+      getNotebookSessionRoot(this.storageRoot, projectName, sessionId),
+      'frames'
+    )
+    let entries
+    try {
+      entries = await readdir(framesRoot, { withFileTypes: true })
+    } catch (error) {
+      if (isMissingFileError(error)) return null
+      throw error
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isDirectory()) continue
+      const lane = createFrameNotebookLane(projectName, sessionId, entry.name)
+      try {
+        return await this.loadExisting(projectName, sessionId, lane)
+      } catch (error) {
+        if (!isMissingFileError(error)) throw error
+      }
+    }
+    return null
+  }
+
   async readSessionRuns(projectName: string, sessionId: string): Promise<NotebookRunRecord[]> {
     const documents: NotebookRunDocument[] = []
     const legacy = await this.findExisting(projectName, sessionId)

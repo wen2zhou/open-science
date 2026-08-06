@@ -314,6 +314,38 @@ describe('NotebookPreview per-kernel tabs', () => {
     expect(switcher.querySelector('[data-testid="kernel-switcher-r"]')).toBeNull()
   })
 
+  it('projects All, producer Frame, and legacy Runs through an accessible filter', async () => {
+    await mountWithRuns([
+      makeRun({
+        runId: 'root',
+        script: 'print("root")',
+        rootFrameId: 'root-frame-session-1',
+        agentFrameId: 'root-frame-session-1'
+      }),
+      makeRun({ runId: 'child', script: 'print("child")', agentFrameId: 'frame-child' }),
+      makeRun({ runId: 'legacy', script: 'print("legacy")' })
+    ])
+
+    const filter = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Filter notebook runs by Agent Frame"]'
+    )
+    expect(filter?.value).toBe('all')
+    expect(filter?.textContent).toContain('Main agent · 1 run')
+    expect(filter?.textContent).toContain('frame-child · 1 run')
+    expect(filter?.textContent).toContain('Unattributed · 1 run')
+
+    await act(async () => {
+      if (filter) {
+        filter.value = 'frame:frame-child'
+        filter.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+    })
+
+    expect(container.textContent).toContain('print("child")')
+    expect(container.textContent).not.toContain('print("root")')
+    expect(container.textContent).not.toContain('print("legacy")')
+  })
+
   it('shows the R tab only once R has produced a run', async () => {
     await mountWithRuns([
       makeRun({ runId: 'p1', kernelKind: 'python' }),

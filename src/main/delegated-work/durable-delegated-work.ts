@@ -581,6 +581,7 @@ const createDurableDelegatedWork = (options: {
           session,
           frameId: child.frameId,
           attemptId: attempt.id,
+          runtimeSegmentId,
           task,
           ...(continuation ? {} : { context: child.context }),
           inputs: child.inputs,
