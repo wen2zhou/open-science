@@ -358,6 +358,8 @@ export type AgentFrameworkView = {
   displayName: string
   // Whether this framework materializes app skills; the renderer hides the skills UI when false.
   supportsSkills: boolean
+  // Release-gated app-owned subagent support. Absent legacy snapshots are treated as unavailable.
+  supportsDelegatedWork?: boolean
 }
 
 // Full renderer snapshot of settings state.

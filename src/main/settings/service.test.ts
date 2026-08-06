@@ -4469,6 +4469,21 @@ describe('checkEnvironment', () => {
 })
 
 describe('SettingsService: managed-runtime flags', () => {
+  it('advertises delegated work as unavailable for every uncertified framework', async () => {
+    const snapshot = await createService().getSettingsView()
+
+    expect(
+      snapshot.agentFrameworks.map(({ id, supportsDelegatedWork }) => ({
+        id,
+        supportsDelegatedWork
+      }))
+    ).toEqual([
+      { id: 'claude-code', supportsDelegatedWork: false },
+      { id: 'opencode', supportsDelegatedWork: false },
+      { id: 'codex', supportsDelegatedWork: false }
+    ])
+  })
+
   it('reports claudeManaged when the resolved path is the app-managed install, opencode as non-managed', async () => {
     await repository.setClaudeInfo({
       resolvedPath: join(managedClaudeDir(storageRoot), 'claude'),

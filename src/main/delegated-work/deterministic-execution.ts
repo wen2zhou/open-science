@@ -52,7 +52,12 @@ type DeterministicDelegateExecution = DelegateExecution &
     reservationCounts(): readonly number[]
   }>
 
-const createDeterministicDelegateExecution = (): DeterministicDelegateExecution => {
+const createDeterministicDelegateExecution = (
+  capacity = Number.MAX_SAFE_INTEGER
+): DeterministicDelegateExecution => {
+  if (!Number.isSafeInteger(capacity) || capacity < 1) {
+    throw new Error('deterministic delegated execution capacity must be a positive integer')
+  }
   const running: ExecutionControl[] = []
   const plans: PlannedExecution[] = []
   const released: string[] = []
@@ -83,6 +88,12 @@ const createDeterministicDelegateExecution = (): DeterministicDelegateExecution 
         const error = reservationFailure
         reservationFailure = undefined
         throw error
+      }
+      if (availableSlots.size + slotFrames.size + count > capacity) {
+        throw new DelegateExecutionError(
+          'capacity',
+          `deterministic delegated execution capacity is ${capacity}`
+        )
       }
       const slotIds = Array.from({ length: count }, () => `fake-slot-${nextSlot++}`)
       for (const slotId of slotIds) availableSlots.add(slotId)

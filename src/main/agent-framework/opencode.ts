@@ -377,6 +377,7 @@ export const opencodeFramework: AgentFramework = {
   // opencode discovers skills natively at <configDir>/skills/<name>/SKILL.md (same layout as Claude),
   // loaded on-demand via its skill tool; the app materializes the enabled set into the isolated config.
   supportsSkills: true,
+  supportsDelegatedWork: false,
   // opencode accepts stdio MCP servers over ACP (verified live vs 1.17.13: it launches a stdio server
   // and sends it the MCP initialize handshake). Its mcpCapabilities advertise only http/sse because
   // ACP has no stdio flag — stdio is the baseline transport. So opencode uses the SAME stdio artifact/

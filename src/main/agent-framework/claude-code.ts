@@ -35,6 +35,7 @@ export const claudeCodeFramework: AgentFramework = {
     failureTextPrefix: 'Compacting failed'
   },
   supportsSkills: true,
+  supportsDelegatedWork: false,
   // Claude launches stdio MCP servers directly — the app's artifact/notebook tooling relies on this.
   acceptsStdioMcp: true,
   // The adapter advertises an `effort` select (category thought_level) and applies changes to live

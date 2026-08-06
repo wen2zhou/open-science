@@ -13,7 +13,8 @@ describe('agent framework registry', () => {
       displayName: 'Codex',
       supportedApiTypes: ['responses'],
       supportsSkills: true,
-      acceptsStdioMcp: true
+      acceptsStdioMcp: true,
+      supportsDelegatedWork: false
     })
   })
 

@@ -282,6 +282,7 @@ class SettingsService {
         id: framework.id,
         displayName: framework.displayName,
         supportsSkills: framework.supportsSkills,
+        supportsDelegatedWork: framework.supportsDelegatedWork,
         supportedApiTypes: [...framework.supportedApiTypes]
       }))
     }

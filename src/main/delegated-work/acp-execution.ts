@@ -17,6 +17,7 @@ import {
   type DelegatePermissionResponse,
   type RunningDelegateExecution
 } from './execution-port'
+import { nativeDelegationAuditFailureMessage } from './certification'
 
 type DelegateExecutionProvenance = Readonly<{
   projectId: string
@@ -95,9 +96,6 @@ const deferred = <Value>(): Deferred<Value> => {
   })
   return { promise, resolve, reject }
 }
-
-const errorMessage = (error: unknown): string =>
-  error instanceof Error ? error.message : String(error)
 
 const assertPreparedScope = (
   input: DelegateExecutionInput,
@@ -312,8 +310,11 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         assertPreparedScope(input, scope)
         try {
           await options.assertFrameworkNativeDelegationDisabled(scope)
-        } catch (error) {
-          throw new DelegateExecutionError('unsupported_framework', errorMessage(error))
+        } catch {
+          throw new DelegateExecutionError(
+            'unsupported_framework',
+            nativeDelegationAuditFailureMessage(scope.frameworkId)
+          )
         }
         if (activeRuntimeHomes.has(scope.runtimeHome)) {
           throw new Error(`runtime home is already active: ${scope.runtimeHome}`)

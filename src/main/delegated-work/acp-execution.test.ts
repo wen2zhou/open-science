@@ -8,6 +8,10 @@ import {
   type AcpDelegateRuntime,
   type PreparedDelegateExecution
 } from './acp-execution'
+import {
+  delegatedWorkCertificationContract,
+  type DelegatedWorkCertificationDriver
+} from './certification-contract.test'
 import { delegateExecutionContract } from './execution-contract.test'
 import type { DelegateExecutionInput } from './execution-port'
 
@@ -58,21 +62,24 @@ const makeHarness = (
   execution: ReturnType<typeof createAcpDelegateExecution>
   controls: Map<string, RuntimeControl>
   prepared: PreparedDelegateExecution[]
+  inputs: DelegateExecutionInput[]
   cleanup: string[]
 }> => {
   const controls = new Map<string, RuntimeControl>()
   const prepared: PreparedDelegateExecution[] = []
+  const inputs: DelegateExecutionInput[] = []
   const cleanup: string[] = []
   const execution = createAcpDelegateExecution({
     capacity,
     prepare: async (input) => {
+      inputs.push(input)
       const scope: PreparedDelegateExecution = {
         executionId: input.attemptId,
         provenance: {
           projectId: input.session.projectId,
           sessionId: input.session.sessionId,
           agentFrameId: input.frameId,
-          runtimeSegmentId: `segment-${input.attemptId}`
+          runtimeSegmentId: input.runtimeSegmentId
         },
         workspace: { cwd: scopePaths.workspace?.(input) ?? `/workspace/${input.frameId}` },
         runtimeHome: scopePaths.runtimeHome?.(input) ?? `/runtime/${input.attemptId}`,
@@ -133,7 +140,7 @@ const makeHarness = (
       }
     }
   })
-  return { execution, controls, prepared, cleanup }
+  return { execution, controls, prepared, inputs, cleanup }
 }
 
 delegateExecutionContract(() => {
@@ -191,6 +198,76 @@ delegateExecutionContract(() => {
         ),
       permissionResponses: (attemptId) => harness.controls.get(attemptId)?.responses ?? []
     }
+  }
+})
+
+delegatedWorkCertificationContract((options) => {
+  const harness = makeHarness(options?.capacity ?? 4)
+  const controlFor = async (attemptId: string): Promise<RuntimeControl> => {
+    await vi.waitFor(() => expect(harness.controls.has(attemptId)).toBe(true))
+    return harness.controls.get(attemptId)!
+  }
+  const driver: DelegatedWorkCertificationDriver = {
+    waitForStart: async (attemptId) => {
+      await controlFor(attemptId)
+    },
+    startedInputs: () => harness.inputs,
+    accept: async (attemptId) => {
+      const control = await controlFor(attemptId)
+      control.callbacks.onProviderPromptAccepted(control.providerSessionId)
+    },
+    emit: async (attemptId, event) => {
+      const control = await controlFor(attemptId)
+      if (event.kind === 'message') {
+        control.callbacks.onEvent({
+          id: `event-${attemptId}`,
+          timestamp: 1,
+          kind: 'message',
+          level: 'info',
+          sessionId: control.providerSessionId,
+          role: 'assistant',
+          text: event.text
+        })
+      } else if (event.awaiting) {
+        control.callbacks.onPermissionRequest({
+          requestId: event.requestId,
+          sessionId: control.providerSessionId,
+          toolCallId: `tool-${attemptId}`,
+          title: event.title,
+          options: [...event.options]
+        })
+      }
+    },
+    complete: async (attemptId, response) => {
+      const control = await controlFor(attemptId)
+      control.callbacks.onEvent({
+        id: `terminal-${attemptId}`,
+        timestamp: 2,
+        kind: 'message',
+        level: 'info',
+        sessionId: control.providerSessionId,
+        role: 'assistant',
+        text: response
+      })
+      control.complete()
+    },
+    fail: async (attemptId, error) => (await controlFor(attemptId)).fail(error),
+    deliveredMessages: (attemptId) => {
+      const initialTask = harness.inputs.find((input) => input.attemptId === attemptId)?.task
+      return (harness.controls.get(attemptId)?.prompts ?? []).filter(
+        (prompt) => prompt !== initialTask
+      )
+    },
+    permissionResponses: (attemptId) => harness.controls.get(attemptId)?.responses ?? []
+  }
+  return {
+    execution: harness.execution,
+    driver,
+    nativeEntryPoints: [
+      { entryPoint: 'task', status: 'disabled' },
+      { entryPoint: 'agent', status: 'not-present' },
+      { entryPoint: 'multi-agent', status: 'disabled' }
+    ]
   }
 })
 
@@ -401,16 +478,24 @@ describe('ACP delegate execution production adapter', () => {
         capability: { revoke: async () => undefined }
       }),
       assertFrameworkNativeDelegationDisabled: async () => {
-        throw new Error('native delegation remains enabled')
+        throw new Error(
+          'native delegation remains enabled: sk-provider-secret capability-token-secret private prompt\n    at provider.ts:42'
+        )
       },
       createRuntime
     })
     const reservation = await execution.reserve(1)
     const running = execution.run(makeInput('unsafe'), reservation.slotIds[0])
 
-    await expect(running.completion).rejects.toMatchObject({
-      code: 'unsupported_framework'
-    })
+    const failure = await running.completion.catch((error: unknown) => error)
+    expect(failure).toMatchObject({ code: 'unsupported_framework' })
+    if (!(failure instanceof Error)) throw new Error('expected framework certification failure')
+    expect(failure.message).toBe(
+      'Delegated work is unavailable for unsafe because its native Task/Agent/multi-agent bypass audit failed. Disable every native delegation entry point and re-run framework certification.'
+    )
+    expect(failure.message).not.toContain('sk-provider-secret')
+    expect(failure.message).not.toContain('private prompt')
+    expect(failure.message).not.toContain('provider.ts')
     expect(createRuntime).not.toHaveBeenCalled()
   })
 
