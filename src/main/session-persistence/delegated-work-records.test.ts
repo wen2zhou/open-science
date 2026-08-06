@@ -377,4 +377,24 @@ describe('delegated-work Session records', () => {
     })
     expect(recovered.record.pendingMessages[0]).not.toHaveProperty('deliveredAt')
   })
+
+  it('runs delegated-work interruption recovery at the startup hydration boundary', async () => {
+    const { coordinator } = createHarness()
+    const rootFrameId = createRootSession().conversationGraph!.rootFrameId
+    await coordinator.createChildren(key, {
+      expectedRevision: 0,
+      parentFrameId: rootFrameId,
+      originMessageId: rootPrompt.id,
+      children: [child(1)]
+    })
+
+    const loaded = await coordinator.loadAll()
+
+    expect(loaded.sessions[0].runtimeContext?.delegatedWork?.records[0]).toMatchObject({
+      attempts: [{ status: 'cancelled', cancellationReason: 'runtime_interrupted' }]
+    })
+    expect(loaded.sessions[0].conversationGraph?.frames).toContainEqual(
+      expect.objectContaining({ id: 'child-frame-1', status: 'cancelled' })
+    )
+  })
 })

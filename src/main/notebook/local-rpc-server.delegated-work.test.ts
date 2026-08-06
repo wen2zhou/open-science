@@ -171,6 +171,68 @@ describe('authenticated delegatedWorkCall route', () => {
     connection.release()
   })
 
+  it('exposes authenticated child stop without trusting request owner fields', async () => {
+    const session = { projectId: 'trusted-project', sessionId: 'trusted-session' }
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session,
+      rootFrameId: 'trusted-root-frame',
+      originMessageId: 'trusted-origin-message'
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: work
+    })
+    const connection = await server.issueControlConnection(
+      session.sessionId,
+      session.projectId,
+      'trusted-root-frame'
+    )
+    const endInvocation = connection.beginControlInvocation({
+      turnId: 'turn-1',
+      controlInvocationGeneration: 1,
+      toolInvocationId: 'trusted-tool-call',
+      originatingUserMessageId: 'trusted-origin-message'
+    })
+    const receipt = await work.delegate(
+      {
+        session,
+        frameId: 'trusted-root-frame',
+        role: 'main',
+        originMessageId: 'trusted-origin-message',
+        toolInvocationId: 'direct-admission'
+      },
+      { task: 'Stop through host' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+
+    const response = await fetch(connection.endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        method: 'delegatedWorkCall',
+        params: {
+          operation: 'stop_children',
+          frame_ids: [receipt.children[0].frameId],
+          project_id: 'forged-project',
+          frame_id: 'forged-frame'
+        }
+      })
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({
+      result: [{ frameId: receipt.children[0].frameId, status: 'cancelled' }]
+    })
+    endInvocation()
+    connection.release()
+  })
+
   it('fails closed before reservation and durable mutation when the framework is unavailable', async () => {
     const session = { projectId: 'project-1', sessionId: 'session-1' }
     const execution = createDeterministicDelegateExecution()

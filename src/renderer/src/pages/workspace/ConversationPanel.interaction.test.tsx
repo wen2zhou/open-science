@@ -1105,6 +1105,41 @@ describe('ConversationPanel fix loop lock', () => {
     expect(onCancelRun).toHaveBeenCalledTimes(1)
   })
 
+  it('shows cascade progress, prevents duplicate Stop, and restores the control after failure', async () => {
+    let rejectStop!: (error: Error) => void
+    const onCancelRun = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectStop = reject
+        })
+    )
+    const runningSession: ChatSession = {
+      ...idleSession,
+      status: 'running',
+      activeRun: { promptMessageId: 'msg-1', startedAt: Date.now() }
+    }
+    renderPanel({ activeSession: runningSession, canSendMessage: false, onCancelRun })
+
+    const cancelButton = container.querySelector('[aria-label="Cancel run"]') as HTMLButtonElement
+    act(() => {
+      cancelButton.click()
+      cancelButton.click()
+    })
+
+    expect(onCancelRun).toHaveBeenCalledOnce()
+    expect(cancelButton.disabled).toBe(true)
+    expect(cancelButton.getAttribute('aria-label')).toBe('Stopping run and subagents')
+
+    await act(async () => {
+      rejectStop(new Error('cascade unavailable'))
+      await Promise.resolve()
+    })
+
+    const retry = container.querySelector('[aria-label="Cancel run"]') as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    expect(container.textContent).toContain('cascade unavailable')
+  })
+
   it('keeps the split-send width while running so adjacent hover controls do not shift', () => {
     const runningSession: ChatSession = {
       ...idleSession,

@@ -169,6 +169,13 @@ type ReadOnlyAgentFrameDetail = Readonly<{
   messages: readonly Readonly<{ role: 'user' | 'assistant'; content: string }>[]
 }>
 
+type StopOutcome = Readonly<{
+  frameId: string
+  status: 'cancelled' | 'already_terminal'
+}>
+
+type RecoveryOutcome = Readonly<{ interrupted: readonly DurableDelegateResult[] }>
+
 type DurableDelegatedWork = Readonly<{
   delegate(
     caller: AuthenticatedDelegateCaller,
@@ -188,6 +195,13 @@ type DurableDelegatedWork = Readonly<{
     session: SessionKey,
     frameId: string
   ): Promise<ReadOnlyAgentFrameDetail | undefined>
+  stopChildren(
+    caller: AuthenticatedDelegateCaller,
+    frameIds: readonly string[]
+  ): Promise<readonly StopOutcome[]>
+  stopSession(session: SessionKey): Promise<readonly StopOutcome[]>
+  recoverInterrupted(): Promise<RecoveryOutcome>
+  deleteSession(session: SessionKey): Promise<void>
 }>
 
 class DurableDelegatedWorkError extends Error {
@@ -195,6 +209,7 @@ class DurableDelegatedWorkError extends Error {
     readonly code:
       | 'admission_rejection'
       | 'authorization'
+      | 'conflict'
       | 'capacity'
       | 'unsupported_framework'
       | 'execution_failure'
@@ -337,16 +352,33 @@ const createDurableDelegatedWork = (options: {
       frameId: string,
       inputs: readonly string[]
     ): Promise<{ cwd: string }>
+    deleteSession?(session: SessionKey): Promise<void>
   }>
+  revokeAttemptWrites?: (scope: {
+    session: SessionKey
+    frameId: string
+    attemptId: string
+  }) => Promise<void> | void
+  settleAttemptCleanup?: (scope: {
+    session: SessionKey
+    frameId: string
+    attemptId: string
+  }) => Promise<void> | void
   now?: () => number
   createId?: (kind: 'frame' | 'attempt' | 'message' | 'runtime') => string
 }): DurableDelegatedWork => {
   const now = options.now ?? Date.now
   const createId = options.createId ?? ((kind: string) => `${kind}-${randomUUID()}`)
   const invocationOutcomes = new Map<string, Promise<DurableDelegateOutcome>>()
+  const stoppingSessions = new Set<string>()
   const running = new Map<
     string,
-    { completion: Promise<void>; reservation: DelegateCapacityReservation; slotId: string }
+    {
+      completion: Promise<void>
+      cancel(): Promise<void>
+      reservation: DelegateCapacityReservation
+      slotId: string
+    }
   >()
 
   const resolveAgent = async (profileId: string | undefined): Promise<DurableResolvedAgent> => {
@@ -463,11 +495,14 @@ const createDurableDelegatedWork = (options: {
   ): void => {
     const attempt = currentAttempt(child)
     const runtimeSegmentId = createId('runtime')
+    let handle: ReturnType<DelegateExecution['run']> | undefined
+    let cancelRequested = false
     const completion = (async () => {
-      let handle: ReturnType<DelegateExecution['run']> | undefined
       try {
         await options.workspace?.prepare(session, child.frameId, child.inputs)
         await options.records.startRuntime(child.frameId, attempt.id, runtimeSegmentId)
+        const latest = await snapshotChild(child.frameId)
+        if (cancelRequested || !latest || currentAttempt(latest).status !== 'running') return
         const executionInput: DelegateExecutionInput = {
           session,
           frameId: child.frameId,
@@ -499,7 +534,7 @@ const createDurableDelegatedWork = (options: {
             endedAt,
             terminalMessage
           })
-        } else {
+        } else if (!cancelRequested) {
           await options.records.terminalize({
             frameId: child.frameId,
             attemptId: attempt.id,
@@ -527,7 +562,84 @@ const createDurableDelegatedWork = (options: {
         running.delete(child.frameId)
       }
     })()
-    running.set(child.frameId, { completion, reservation, slotId })
+    running.set(child.frameId, {
+      completion,
+      async cancel() {
+        cancelRequested = true
+        await handle?.cancel()
+      },
+      reservation,
+      slotId
+    })
+  }
+
+  const findAuthorizedChild = async (
+    caller: AuthenticatedDelegateCaller,
+    frameId: string
+  ): Promise<DurableChild> => {
+    const snapshot = await options.records.snapshot()
+    const child = snapshot.records.find(
+      (candidate) =>
+        sameSession(snapshot.session, caller.session) &&
+        candidate.frameId === frameId &&
+        candidate.parentFrameId === caller.frameId
+    )
+    if (caller.role !== 'main' || !child) {
+      throw new DurableDelegatedWorkError('authorization', 'caller cannot access delegated child')
+    }
+    return child as DurableChild
+  }
+
+  const stopChild = async (
+    child: DurableChild,
+    reason: 'main_agent_stop' | 'session_stop'
+  ): Promise<StopOutcome> => {
+    const attempt = currentAttempt(child)
+    if (attempt.status !== 'running') {
+      return { frameId: child.frameId, status: 'already_terminal' }
+    }
+    const session = (await options.records.snapshot()).session
+    const scope = { session, frameId: child.frameId, attemptId: attempt.id }
+    await options.revokeAttemptWrites?.(scope)
+    await running
+      .get(child.frameId)
+      ?.cancel()
+      .catch(() => undefined)
+    await options.settleAttemptCleanup?.(scope)
+    try {
+      await options.records.terminalize({
+        frameId: child.frameId,
+        attemptId: attempt.id,
+        status: 'cancelled',
+        endedAt: now(),
+        cancellationReason: reason
+      })
+      return { frameId: child.frameId, status: 'cancelled' }
+    } catch (error) {
+      const latest = await snapshotChild(child.frameId)
+      if (latest && currentAttempt(latest).status !== 'running') {
+        return { frameId: child.frameId, status: 'already_terminal' }
+      }
+      throw error
+    }
+  }
+
+  const stopSession = async (session: SessionKey): Promise<readonly StopOutcome[]> => {
+    const sessionIdentity = `${session.projectId}\u0000${session.sessionId}`
+    if (stoppingSessions.has(sessionIdentity)) {
+      throw new DurableDelegatedWorkError('conflict', 'the Session is already stopping')
+    }
+    stoppingSessions.add(sessionIdentity)
+    try {
+      const snapshot = await options.records.snapshot()
+      if (!sameSession(snapshot.session, session)) return []
+      const runningSnapshot = snapshot.records.filter(
+        (child) => currentAttempt(child as DurableChild).status === 'running'
+      ) as readonly DurableChild[]
+      return await Promise.all(runningSnapshot.map((child) => stopChild(child, 'session_stop')))
+    } finally {
+      stoppingSessions.delete(sessionIdentity)
+    }
   }
 
   const delegateOnce = async (
@@ -535,6 +647,13 @@ const createDurableDelegatedWork = (options: {
     requestOrRequests: DurableDelegateRequest | readonly DurableDelegateRequest[],
     delegateOptions: Readonly<{ wait?: boolean }>
   ): Promise<DurableDelegateOutcome> => {
+    const sessionIdentity = `${caller.session.projectId}\u0000${caller.session.sessionId}`
+    if (stoppingSessions.has(sessionIdentity)) {
+      throw new DurableDelegatedWorkError(
+        'conflict',
+        'the Session is stopping and cannot accept delegated work'
+      )
+    }
     if (caller.role !== 'main') {
       throw new DurableDelegatedWorkError('authorization', 'only the Main Agent can delegate work')
     }
@@ -805,6 +924,51 @@ const createDurableDelegatedWork = (options: {
             .map(({ role, content }) => Object.freeze({ role, content }))
         )
       })
+    },
+    async stopChildren(caller, frameIds) {
+      return Promise.all(
+        frameIds.map(async (frameId) =>
+          stopChild(await findAuthorizedChild(caller, frameId), 'main_agent_stop')
+        )
+      )
+    },
+    stopSession,
+    async recoverInterrupted() {
+      const snapshot = await options.records.snapshot()
+      const interrupted: DurableDelegateResult[] = []
+      for (const child of snapshot.records as readonly DurableChild[]) {
+        const attempt = currentAttempt(child)
+        if (attempt.status !== 'running') continue
+        const scope = { session: snapshot.session, frameId: child.frameId, attemptId: attempt.id }
+        await options.revokeAttemptWrites?.(scope)
+        await options.settleAttemptCleanup?.(scope)
+        try {
+          await options.records.terminalize({
+            frameId: child.frameId,
+            attemptId: attempt.id,
+            status: 'cancelled',
+            endedAt: now(),
+            cancellationReason: 'runtime_interrupted'
+          })
+        } catch (error) {
+          const latest = await snapshotChild(child.frameId)
+          if (!latest || currentAttempt(latest).status === 'running') throw error
+          continue
+        }
+        const result = await projectResult(child.frameId)
+        if (result) interrupted.push(result)
+      }
+      return { interrupted }
+    },
+    async deleteSession(session) {
+      await stopSession(session)
+      if (!options.workspace?.deleteSession) {
+        throw new DurableDelegatedWorkError(
+          'durability_failure',
+          'Delegate workspace deletion is unavailable.'
+        )
+      }
+      await options.workspace.deleteSession(session)
     }
   })
 }
@@ -821,6 +985,8 @@ export type {
   DurableMessage,
   DurableSnapshot,
   ReadOnlyAgentFrameDetail,
+  RecoveryOutcome,
   SpecialistDelegationProfile,
-  SessionSubagentSummary
+  SessionSubagentSummary,
+  StopOutcome
 }

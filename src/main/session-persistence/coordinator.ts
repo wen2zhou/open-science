@@ -229,19 +229,63 @@ const assertCurrentRunningAttempt = (
   if (!record) throw new Error(`Delegate Frame not found: ${frameId}`)
   const attempt = currentAttempt(record)
   if (attempt.id !== attemptId || attempt.status !== 'running') {
-    throw new DelegatedWorkAttemptConflictError(frameId, attemptId)
+    throw new DelegatedWorkAttemptConflictError()
   }
   return { record, attempt }
+}
+
+const recoverInterruptedDelegatedWorkSession = (
+  session: PersistedChatSession,
+  endedAt = Math.max(session.updatedAt + 1, Date.now())
+): {
+  session: PersistedChatSession
+  interrupted: readonly { frameId: string; attemptId: string }[]
+} => {
+  const current = session.runtimeContext
+  if (!current?.delegatedWork) return { session, interrupted: [] }
+  const records = delegatedRecords(current)
+  const running = records.filter((record) => currentAttempt(record).status === 'running')
+  if (running.length === 0) return { session, interrupted: [] }
+  const materialized = materializeSessionConversationGraph(session)
+  const graph = structuredClone(materialized.conversationGraph)
+  if (!graph) throw new Error('Session Conversation Graph could not be materialized.')
+  const interrupted: Array<{ frameId: string; attemptId: string }> = []
+  for (const record of running) {
+    const attempt = currentAttempt(record)
+    const attempts = record.attempts as DelegatedWorkAttemptRecord[]
+    attempts[attempts.length - 1] = {
+      ...attempt,
+      status: 'cancelled',
+      endedAt,
+      cancellationReason: 'runtime_interrupted'
+    }
+    const frame = graph.frames.find((candidate) => candidate.id === record.agentFrameId)
+    if (!frame) throw new Error(`Delegate Frame not found: ${record.agentFrameId}`)
+    frame.status = 'cancelled'
+    frame.completedAt = endedAt
+    for (const segmentId of attempt.runtimeSegmentIds) {
+      const segment = graph.runtimeSegments.find((candidate) => candidate.id === segmentId)
+      if (segment && segment.endedAt === undefined) segment.endedAt = endedAt
+    }
+    interrupted.push({ frameId: record.agentFrameId, attemptId: attempt.id })
+  }
+  const runtimeContext = sanitizeSessionRuntimeContext({
+    ...current,
+    revision: current.revision + 1,
+    delegatedWork: { records }
+  })
+  if (!runtimeContext) throw new Error('Delegated Work recovery produced invalid state.')
+  return {
+    session: { ...materialized, conversationGraph: graph, runtimeContext, updatedAt: endedAt },
+    interrupted
+  }
 }
 
 class DelegatedWorkAttemptConflictError extends Error {
   readonly code = 'attempt-conflict' as const
 
-  constructor(
-    readonly frameId: string,
-    readonly attemptId: string
-  ) {
-    super(`Attempt ${attemptId} is not the current running Attempt for Frame ${frameId}.`)
+  constructor() {
+    super('Attempt write rejected because its capability is no longer current and running.')
     this.name = 'DelegatedWorkAttemptConflictError'
   }
 }
@@ -677,6 +721,19 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
         return result
       }
 
+      if (mayRunDestructiveStartupCleanup) {
+        operation.phase('recover-delegated-work')
+        for (let index = 0; index < sessions.length; index += 1) {
+          const recovery = recoverInterruptedDelegatedWorkSession(sessions[index])
+          if (recovery.interrupted.length === 0) continue
+          await this.repository.saveSession(recovery.session)
+          sessions = sessions.map((candidate, candidateIndex) =>
+            candidateIndex === index ? recovery.session : candidate
+          )
+          result = { ...result, sessions }
+        }
+      }
+
       let degradedReconciliationCount = 0
       operation.phase('reconcile-unread-sessions')
       try {
@@ -1040,7 +1097,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       if (!record) throw new Error(`Delegate Frame not found: ${input.frameId}`)
       const previous = currentAttempt(record)
       if (previous.id !== input.previousAttemptId || previous.status === 'running') {
-        throw new DelegatedWorkAttemptConflictError(input.frameId, input.previousAttemptId)
+        throw new DelegatedWorkAttemptConflictError()
       }
       if (
         records.some((candidate) => candidate.attempts.some(({ id }) => id === input.attemptId)) ||

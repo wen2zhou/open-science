@@ -168,7 +168,7 @@ type ConversationPanelProps = {
   onStageAttachmentFiles: (files: File[]) => void
   onRemoveAttachment: (attachment: UploadedAttachment) => void
   onCancelAttachmentTransfer: (transfer: ComposerUploadTransfer) => void
-  onCancelRun: () => void
+  onCancelRun: () => void | Promise<void>
   onResumeSession: () => Promise<void>
   onOpenNotebook: (notebook: NotebookSessionReference) => void
   onTogglePreviewPanel?: () => void
@@ -275,6 +275,9 @@ const ConversationPanel = ({
   const globalSearchShortcut = window.api?.platform === 'darwin' ? '⌘K' : 'Ctrl+K'
   // Local so the interrupted banner can show a spinner and block a double-resume until the request settles.
   const [isResuming, setIsResuming] = useState(false)
+  const stopSubmissionPendingRef = useRef(false)
+  const [isStopping, setIsStopping] = useState(false)
+  const [stopError, setStopError] = useState<string>()
   // Opens the reviewable, consent-gated error report dialog for a failed run.
   const [isReportOpen, setIsReportOpen] = useState(false)
   const [reportDialogEpoch, setReportDialogEpoch] = useState(0)
@@ -282,6 +285,35 @@ const ConversationPanel = ({
   const openReportDialog = (): void => {
     setReportDialogEpoch((epoch) => epoch + 1)
     setIsReportOpen(true)
+  }
+
+  const handleStop = (): void => {
+    if (stopSubmissionPendingRef.current) return
+    stopSubmissionPendingRef.current = true
+    setIsStopping(true)
+    setStopError(undefined)
+    let outcome: void | Promise<void>
+    try {
+      outcome = onCancelRun()
+    } catch (error) {
+      stopSubmissionPendingRef.current = false
+      setIsStopping(false)
+      setStopError(error instanceof Error ? error.message : String(error))
+      return
+    }
+    if (!outcome || typeof (outcome as Promise<void>).then !== 'function') {
+      stopSubmissionPendingRef.current = false
+      setIsStopping(false)
+      return
+    }
+    void outcome
+      .catch((error: unknown) => {
+        setStopError(error instanceof Error ? error.message : String(error))
+      })
+      .finally(() => {
+        stopSubmissionPendingRef.current = false
+        setIsStopping(false)
+      })
   }
 
   // Unconditional hook: check if the active session has any jobs (running or finished).
@@ -967,12 +999,26 @@ const ConversationPanel = ({
                           >
                             <button
                               type="button"
-                              onClick={onCancelRun}
+                              onClick={handleStop}
+                              disabled={isStopping}
                               className={composerCancelButtonClassName}
-                              aria-label="Cancel run"
+                              aria-label={isStopping ? 'Stopping run and subagents' : 'Cancel run'}
                             >
-                              <Square className="size-3.5" strokeWidth={2.2} aria-hidden="true" />
+                              {isStopping ? (
+                                <Loader2
+                                  className="size-3.5 animate-spin"
+                                  strokeWidth={2.2}
+                                  aria-hidden="true"
+                                />
+                              ) : (
+                                <Square className="size-3.5" strokeWidth={2.2} aria-hidden="true" />
+                              )}
                             </button>
+                            {stopError ? (
+                              <span className="sr-only" role="alert">
+                                {stopError}
+                              </span>
+                            ) : null}
                           </div>
                         ) : onPlanFirst || onBranchInNewSession ? (
                           <TooltipProvider delayDuration={200}>

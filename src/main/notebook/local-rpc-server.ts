@@ -145,6 +145,10 @@ type NotebookLocalRpcServerOptions = {
       request: DurableDelegateRequest | readonly DurableDelegateRequest[],
       options?: Readonly<{ wait?: boolean }>
     ): Promise<DurableDelegateOutcome>
+    stopChildren?(
+      caller: AuthenticatedDelegateCaller,
+      frameIds: readonly string[]
+    ): Promise<readonly Readonly<{ frameId: string; status: 'cancelled' | 'already_terminal' }>[]>
   }
 }
 
@@ -1163,7 +1167,27 @@ class NotebookLocalRpcServer {
       const toolInvocationId =
         typeof params.tool_invocation_id === 'string' ? params.tool_invocation_id : ''
       if (!projectId || !sessionId || !frameId || !originMessageId || !toolInvocationId) {
-        throw new RpcHttpError(403, 'host.delegate caller identity is incomplete.')
+        throw new RpcHttpError(403, 'delegated-work caller identity is incomplete.')
+      }
+      const caller: AuthenticatedDelegateCaller = {
+        session: { projectId, sessionId },
+        frameId,
+        role: 'main',
+        originMessageId,
+        toolInvocationId
+      }
+      if (params.operation === 'stop_children') {
+        if (!this.delegatedWorkService.stopChildren) {
+          throw new Error('host.stop_child is not configured.')
+        }
+        if (
+          !Array.isArray(params.frame_ids) ||
+          params.frame_ids.length === 0 ||
+          params.frame_ids.some((candidate) => typeof candidate !== 'string' || !candidate.trim())
+        ) {
+          throw new Error('host.stop_child requires one or more frame ids.')
+        }
+        return this.delegatedWorkService.stopChildren(caller, params.frame_ids as string[])
       }
       if (!isRecord(params.request) && !Array.isArray(params.request)) {
         throw new Error('host.delegate requires one request object or a non-empty request array.')
@@ -1178,17 +1202,7 @@ class NotebookLocalRpcServer {
       }
       const delegateOptions =
         typeof requestedOptions.wait === 'boolean' ? { wait: requestedOptions.wait } : {}
-      return this.delegatedWorkService.delegate(
-        {
-          session: { projectId, sessionId },
-          frameId,
-          role: 'main',
-          originMessageId,
-          toolInvocationId
-        },
-        request,
-        delegateOptions
-      )
+      return this.delegatedWorkService.delegate(caller, request, delegateOptions)
     }
 
     const handler = resolveNotebookLocalRpcHandler(this.service, method, params)

@@ -1063,6 +1063,26 @@ async function hostDelegate(request, options = {}) {
   return delegateRpc(request, options)
 }
 
+async function hostStopChild(frameIds) {
+  if (!RPC_ENDPOINT) throw new Error('host.stop_child is unavailable: control RPC endpoint not set')
+  const res = await capturedRpcFetch(RPC_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
+    body: JSON.stringify({
+      method: 'delegatedWorkCall',
+      params: { operation: 'stop_children', frame_ids: frameIds }
+    })
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok || body.error) {
+    throw new Error(`host.stop_child: ${body.error || 'HTTP ' + res.status}`)
+  }
+  return (body.result || []).map((child) => ({
+    frame_id: child.frameId,
+    status: child.status
+  }))
+}
+
 // host.agents namespace. Methods and filter/write fields are snake_case; returned records are
 // camelCase. list_skills/list_connectors accept an optional stable id or unique public name.
 // create/update/attach_*/detach_* are the ordinary-mutation surface (issue 03); they return a real
@@ -1250,7 +1270,13 @@ const hostCompute = {
 
 // Persistent sandbox: user-declared globals persist across requests (assign to `globalThis`/bare).
 const sandbox = {
-  host: { mcp: hostMcp, compute: hostCompute, agents: hostAgents, delegate: hostDelegate },
+  host: {
+    mcp: hostMcp,
+    compute: hostCompute,
+    agents: hostAgents,
+    delegate: hostDelegate,
+    stop_child: hostStopChild
+  },
   console,
   process,
   require,

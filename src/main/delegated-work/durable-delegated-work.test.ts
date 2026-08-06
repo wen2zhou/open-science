@@ -778,4 +778,193 @@ describe('durable delegated work', () => {
       { status: 'completed', response: 'sibling completed' }
     ])
   })
+
+  it('stops a direct child without changing its running sibling or accepting late completion', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let nextId = 1
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      resolveSpecialist: async () => specialist(),
+      createId: (kind) => `${kind}-${nextId++}`
+    })
+    const first = await work.delegate(
+      caller,
+      { task: 'Stop me', profile: 'specialist-stable-id' },
+      { wait: false }
+    )
+    const second = await work.delegate(
+      { ...caller, toolInvocationId: 'tool-call-2' },
+      { task: 'Keep running' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+
+    await expect(work.stopChildren(caller, [first.children[0].frameId])).resolves.toEqual([
+      { frameId: first.children[0].frameId, status: 'cancelled' }
+    ])
+    execution.controls()[0].complete('too late')
+
+    await expect(work.sessionSummary(caller.session)).resolves.toEqual({
+      runningCount: 1,
+      children: [
+        { frameId: first.children[0].frameId, title: 'Stop me', status: 'cancelled' },
+        { frameId: second.children[0].frameId, title: 'Keep running', status: 'running' }
+      ]
+    })
+    await expect(work.readAgentFrame(caller.session, first.children[0].frameId)).resolves.toEqual({
+      frameId: first.children[0].frameId,
+      title: 'Stop me',
+      status: 'cancelled',
+      resolvedAgent: {
+        kind: 'specialist',
+        profileId: 'specialist-stable-id',
+        revision: 7,
+        displayName: 'Evidence Analyst'
+      },
+      messages: [{ role: 'user', content: 'Stop me' }]
+    })
+  })
+
+  it('stops the running Session snapshot while preserving terminal history and rejecting new dispatch', async () => {
+    const execution = createDeterministicDelegateExecution()
+    execution.plan({ status: 'completed', response: 'Keep this evidence' })
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let releaseCleanup!: () => void
+    const cleanup = new Promise<void>((resolve) => {
+      releaseCleanup = resolve
+    })
+    let nextId = 1
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      settleAttemptCleanup: async () => cleanup,
+      createId: (kind) => `${kind}-${nextId++}`
+    })
+    const completed = await work.delegate(caller, { task: 'Already done' })
+    const first = await work.delegate(
+      { ...caller, toolInvocationId: 'running-1' },
+      { task: 'Running one' },
+      { wait: false }
+    )
+    const second = await work.delegate(
+      { ...caller, toolInvocationId: 'running-2' },
+      { task: 'Running two' },
+      { wait: false }
+    )
+
+    const stopping = work.stopSession(caller.session)
+    await expect(
+      work.delegate(
+        { ...caller, toolInvocationId: 'rejected-during-stop' },
+        { task: 'Too late' },
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'conflict' })
+    releaseCleanup()
+
+    await expect(stopping).resolves.toEqual([
+      { frameId: first.children[0].frameId, status: 'cancelled' },
+      { frameId: second.children[0].frameId, status: 'cancelled' }
+    ])
+    await expect(
+      work.readAgentFrame(caller.session, completed.children[0].frameId)
+    ).resolves.toMatchObject({
+      status: 'completed',
+      messages: [
+        { role: 'user', content: 'Already done' },
+        { role: 'assistant', content: 'Keep this evidence' }
+      ]
+    })
+  })
+
+  it('recovers persisted running Attempts as interrupted without restarting a child or deleting its workspace', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const deleteSession = vi.fn(async () => undefined)
+    const beforeRestart = createDurableDelegatedWork({
+      execution,
+      records,
+      resolveSpecialist: async () => specialist()
+    })
+    const receipt = await beforeRestart.delegate(
+      caller,
+      { task: 'Interrupted', profile: 'specialist-stable-id' },
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+
+    const afterRestart = createDurableDelegatedWork({
+      execution,
+      records,
+      workspace: { prepare: async () => ({ cwd: '/stable-frame' }), deleteSession }
+    })
+    await expect(afterRestart.recoverInterrupted()).resolves.toEqual({
+      interrupted: [
+        {
+          frameId: receipt.children[0].frameId,
+          attemptId: receipt.children[0].attemptId,
+          status: 'cancelled',
+          cancellationReason: 'runtime_interrupted',
+          artifactsCreated: []
+        }
+      ]
+    })
+
+    expect(execution.controls()).toHaveLength(1)
+    expect(deleteSession).not.toHaveBeenCalled()
+    expect((await records.snapshot()).records[0].attempts).toEqual([
+      expect.objectContaining({
+        status: 'cancelled',
+        cancellationReason: 'runtime_interrupted',
+        resolvedAgent: {
+          kind: 'specialist',
+          profileId: 'specialist-stable-id',
+          revision: 7,
+          displayName: 'Evidence Analyst'
+        }
+      })
+    ])
+  })
+
+  it('deletes child workspaces only after Session children have terminal history', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const observedStatuses: string[][] = []
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      workspace: {
+        prepare: async () => ({ cwd: '/stable-frame' }),
+        deleteSession: async () => {
+          observedStatuses.push(
+            (await records.snapshot()).records.map((child) => child.attempts.at(-1)!.status)
+          )
+        }
+      }
+    })
+    await work.delegate(caller, { task: 'Delete safely' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+
+    await work.deleteSession(caller.session)
+
+    expect(observedStatuses).toEqual([['cancelled']])
+  })
 })

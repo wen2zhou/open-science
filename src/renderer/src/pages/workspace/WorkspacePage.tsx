@@ -2030,22 +2030,22 @@ const WorkspacePage = ({
 
   // Cancels the run for the currently visible session when one is selected. During an active fix
   // loop, also sends an abort signal to the main process to stop the loop and unlock the composer.
-  const cancelActiveRun = (): void => {
+  const cancelActiveRun = async (): Promise<void> => {
     if (!activeSession) return
 
     const sessionId = activeSession.id
 
     // If a fix loop is running, abort it. The abort handler in the main process will stop the loop;
     // the renderer reacts to the FIX_LOOP_END event broadcast and clears fixLoopActive.
-    if (activeSession.fixLoopActive) {
-      void window.api.reviewer
-        .abortFixLoop({ projectId: activeSession.projectId, appSessionId: sessionId })
-        .catch((error) => {
-          console.warn('Failed to abort fix loop:', error)
-        })
-    }
+    const fixLoopCancellation = activeSession.fixLoopActive
+      ? window.api.reviewer
+          .abortFixLoop({ projectId: activeSession.projectId, appSessionId: sessionId })
+          .catch((error) => {
+            console.warn('Failed to abort fix loop:', error)
+          })
+      : Promise.resolve()
 
-    void cancelRun(sessionId)
+    await Promise.all([fixLoopCancellation, cancelRun(sessionId)])
   }
 
   // Re-attaches the visible interrupted session only after durable Session writes are available;
