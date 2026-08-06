@@ -77,7 +77,7 @@ const setup = (): PlanServiceHarness => {
   const interactions = new SessionPlanInteractionOwner()
   const dependencies: PlanServiceDependencies = {
     interactions,
-    writeArtifactForActiveTurn: vi.fn(async (_sessionId, input) => {
+    writeArtifactForExecution: vi.fn(async (_executionId, input) => {
       bytes = input.content
       return {
         artifactId: 'artifact-1',
@@ -142,6 +142,7 @@ const generateExecutionPlan = async (): Promise<ExecutionPlanFixture> => {
   const generated = await service.generate({
     projectId: 'project-1',
     sessionId: 'session-1',
+    executionId: 'execution-1',
     interactionId: 'interaction-1',
     content: executionContent
   })
@@ -176,12 +177,13 @@ describe('PlanService', () => {
     const result = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
 
-    expect(dependencies.writeArtifactForActiveTurn).toHaveBeenCalledWith(
-      'session-1',
+    expect(dependencies.writeArtifactForExecution).toHaveBeenCalledWith(
+      'execution-1',
       expect.objectContaining({
         filename: 'plan-a91f30c2.json',
         mimeType: 'application/json',
@@ -212,6 +214,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -265,6 +268,7 @@ describe('PlanService', () => {
       const generated = await service.generate({
         projectId: 'project-1',
         sessionId: 'session-1',
+        executionId: 'execution-1',
         interactionId: 'interaction-1',
         content
       })
@@ -288,6 +292,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -337,6 +342,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content: specialContent
     })
@@ -385,6 +391,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -426,6 +433,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -481,6 +489,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -512,6 +521,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -533,6 +543,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -568,6 +579,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -590,6 +602,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -626,6 +639,7 @@ describe('PlanService', () => {
       service.generate({
         projectId: 'project-1',
         sessionId: 'session-1',
+        executionId: 'execution-1',
         interactionId: 'interaction-1',
         content
       })
@@ -639,17 +653,19 @@ describe('PlanService', () => {
     await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
     const activePlan = context().plan
-    vi.mocked(dependencies.writeArtifactForActiveTurn).mockClear()
+    vi.mocked(dependencies.writeArtifactForExecution).mockClear()
     vi.mocked(dependencies.patchRuntimeContext).mockClear()
 
     await expect(
       service.generate({
         projectId: 'project-1',
         sessionId: 'session-1',
+        executionId: 'execution-1',
         interactionId: 'interaction-2',
         content: {
           ...content,
@@ -670,7 +686,7 @@ describe('PlanService', () => {
         }
       })
     ).rejects.toMatchObject({ code: 'invalid-plan' })
-    expect(dependencies.writeArtifactForActiveTurn).not.toHaveBeenCalled()
+    expect(dependencies.writeArtifactForExecution).not.toHaveBeenCalled()
     expect(dependencies.patchRuntimeContext).not.toHaveBeenCalled()
     expect(context().plan).toBe(activePlan)
   })
@@ -684,6 +700,7 @@ describe('PlanService', () => {
       conflict.service.generate({
         projectId: 'project-1',
         sessionId: 'session-1',
+        executionId: 'execution-1',
         interactionId: 'interaction-1',
         content
       })
@@ -697,6 +714,7 @@ describe('PlanService', () => {
       storage.service.generate({
         projectId: 'project-1',
         sessionId: 'session-1',
+        executionId: 'execution-1',
         interactionId: 'interaction-1',
         content
       })
@@ -708,6 +726,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -739,7 +758,7 @@ describe('PlanService', () => {
       reconstructed.getProjection('project-1', 'session-1', { interactionIsLive: true })
     ).resolves.toMatchObject({ lifecycle: 'in_progress' })
 
-    vi.mocked(dependencies.writeArtifactForActiveTurn).mockResolvedValueOnce({
+    vi.mocked(dependencies.writeArtifactForExecution).mockResolvedValueOnce({
       artifactId: 'artifact-2',
       versionId: 'version-2',
       checksum: generated.projection.artifactChecksum,
@@ -748,6 +767,7 @@ describe('PlanService', () => {
     const replacement = await reconstructed.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-2',
       content
     })
@@ -964,10 +984,11 @@ describe('PlanService', () => {
     const original = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
-    vi.mocked(dependencies.writeArtifactForActiveTurn).mockResolvedValueOnce({
+    vi.mocked(dependencies.writeArtifactForExecution).mockResolvedValueOnce({
       artifactId: 'artifact-2',
       versionId: 'version-2',
       checksum: 'b'.repeat(64),
@@ -982,6 +1003,7 @@ describe('PlanService', () => {
       service.generate({
         projectId: 'project-1',
         sessionId: 'session-1',
+        executionId: 'execution-1',
         interactionId: 'interaction-1',
         content: { ...content, task_summary: 'Replacement' }
       })
@@ -998,6 +1020,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -1034,6 +1057,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -1060,6 +1084,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -1099,6 +1124,7 @@ describe('PlanService', () => {
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -1147,6 +1173,7 @@ describe('PlanService', () => {
     await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -1165,6 +1192,7 @@ describe('PlanService', () => {
     await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -1197,6 +1225,7 @@ describe('PlanService', () => {
     await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
+      executionId: 'execution-1',
       interactionId: 'interaction-1',
       content
     })
@@ -1217,6 +1246,7 @@ describe('PlanService', () => {
           service.generate({
             projectId: 'project-1',
             sessionId: 'session-1',
+            executionId: 'execution-1',
             interactionId: `interaction-${terminal}`,
             content
           }),

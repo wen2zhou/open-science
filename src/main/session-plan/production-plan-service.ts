@@ -1,6 +1,6 @@
 import { readFile } from 'node:fs/promises'
 
-import type { ArtifactTurnHandle, ArtifactTurnOwner } from '../acp/artifact-turn-owner'
+import type { ArtifactTurnOwner } from '../acp/artifact-turn-owner'
 import type { ArtifactProvenanceRepository } from '../artifacts/provenance-repository'
 import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 import { SessionRuntimeContextRevisionConflictError } from '../session-persistence/coordinator'
@@ -9,8 +9,7 @@ import { SessionPlanInteractionOwner } from './session-plan-interaction-owner'
 
 type ProductionPlanServiceDependencies = Readonly<{
   interactions?: SessionPlanInteractionOwner
-  artifactTurns: Pick<ArtifactTurnOwner, 'write'>
-  artifactTurnForSession: (sessionId: string) => ArtifactTurnHandle
+  artifactTurns: Pick<ArtifactTurnOwner, 'handleForExecution' | 'write'>
   provenance: Pick<ArtifactProvenanceRepository, 'resolveVersionContent'>
   sessions: Pick<
     SessionPersistenceCoordinator,
@@ -21,14 +20,13 @@ type ProductionPlanServiceDependencies = Readonly<{
 const createProductionPlanService = ({
   interactions = new SessionPlanInteractionOwner(),
   artifactTurns,
-  artifactTurnForSession,
   provenance,
   sessions
 }: ProductionPlanServiceDependencies): PlanService =>
   new PlanService({
     interactions,
-    writeArtifactForActiveTurn: (sessionId, input) =>
-      artifactTurns.write(artifactTurnForSession(sessionId), input),
+    writeArtifactForExecution: (executionId, input) =>
+      artifactTurns.write(artifactTurns.handleForExecution(executionId), input),
     readArtifactVersion: async ({ projectId, sessionId, artifactId, artifactVersionId }) => {
       const resolved = await provenance.resolveVersionContent({
         projectId,

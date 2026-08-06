@@ -155,13 +155,6 @@ const composeAcpRuntimeBaseOwners = (options: AcpRuntimeOptions) => {
       ? createProductionPlanService({
           interactions: planInteractions,
           artifactTurns,
-          artifactTurnForSession: (sessionId) => {
-            const execution = sessionInteractions.current(sessionId)
-            if (!execution || execution.kind !== 'prompt') {
-              throw new Error('No active assistant turn to attach a generated file to.')
-            }
-            return artifactTurns.handleForExecution(execution.turnToken)
-          },
           provenance: {
             resolveVersionContent: (request) =>
               options.artifacts!.provenance!.resolveVersionContent!(request)

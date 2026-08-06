@@ -20156,9 +20156,8 @@ describe('Specialist Skill scoping', () => {
       promptMessageId: 'interaction-1'
     })
     const execution = owners.sessionInteractions.activatePrompt(reservation)
-    const turn = await owners.artifactTurns!.openExecution({
+    const turn = await owners.artifactTurns!.openRootExecution({
       executionId: execution.turnToken,
-      handoffRouting: 'session-current',
       appSessionId: 'session-1',
       artifactStorageSessionId: 'session-1',
       projectId: 'project-1',
@@ -20170,6 +20169,7 @@ describe('Specialist Skill scoping', () => {
         owners.planService!.generate({
           projectId: 'project-1',
           sessionId: 'session-1',
+          executionId: execution.turnToken,
           interactionId: 'interaction-1',
           content: {
             task_summary: 'Analyze one dataset',

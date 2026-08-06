@@ -25,17 +25,13 @@ type ArtifactTurnProvenanceContext = {
   promptMessageId?: string
 }
 
-type OpenArtifactTurnRequest = {
+type OpenExecutionArtifactTurnRequest = {
+  executionId: string
   appSessionId: string
   artifactStorageSessionId: string
   projectId: string
   agentName: string
   provenanceContext?: ArtifactTurnProvenanceContext
-}
-
-type OpenExecutionArtifactTurnRequest = OpenArtifactTurnRequest & {
-  executionId: string
-  handoffRouting?: 'execution' | 'session-current'
 }
 
 type ArtifactTurnWriteInput = {
@@ -121,8 +117,7 @@ type ArtifactTurnOwnerOptions = {
 
 type ArtifactTurn = {
   executionId: string
-  explicitExecution: boolean
-  handoffRouting: 'execution' | 'session-current'
+  updatesSessionNotebookContext: boolean
   appSessionId: string
   artifactStorageSessionId: string
   projectId: string
@@ -146,9 +141,9 @@ type ArtifactTurn = {
 }
 
 class ArtifactTurnOwner {
-  private readonly activeTurnsBySession = new Map<string, ArtifactTurn>()
   private readonly activeTurnsByExecution = new Map<string, ArtifactTurn>()
   private readonly activeHandlesByExecution = new Map<string, ArtifactTurnHandle>()
+  private readonly activeTurnsByHandoffFile = new Map<string, ArtifactTurn>()
   private readonly handoffQueues = new Map<string, Promise<void>>()
   private readonly turnsByHandle = new WeakMap<ArtifactTurnHandle, ArtifactTurn>()
   private readonly runtimeInstanceId: string
@@ -160,22 +155,26 @@ class ArtifactTurnOwner {
     this.now = options.now ?? Date.now
   }
 
-  async open(request: OpenArtifactTurnRequest): Promise<ArtifactTurnHandle> {
-    const turn = this.createTurn(request, undefined, 'session-current')
-    return this.activate(turn)
+  async openExecution(request: OpenExecutionArtifactTurnRequest): Promise<ArtifactTurnHandle> {
+    return this.openScopedExecution(request, false)
   }
 
-  async openExecution(request: OpenExecutionArtifactTurnRequest): Promise<ArtifactTurnHandle> {
+  // Root providers receive one stable MCP transport configuration when their ACP Session starts.
+  // This method preserves that compatibility handoff location without restoring Session lookup as
+  // write authority: every lifecycle operation still requires the returned execution handle.
+  async openRootExecution(request: OpenExecutionArtifactTurnRequest): Promise<ArtifactTurnHandle> {
+    return this.openScopedExecution(request, true)
+  }
+
+  private async openScopedExecution(
+    request: OpenExecutionArtifactTurnRequest,
+    rootTransport: boolean
+  ): Promise<ArtifactTurnHandle> {
     if (!request.executionId.trim()) throw new Error('Artifact execution id is required.')
     if (this.activeTurnsByExecution.has(request.executionId)) {
       throw new Error(`Artifact execution is already active: ${request.executionId}`)
     }
-    const turn = this.createTurn(
-      request,
-      request.executionId,
-      request.handoffRouting ?? 'execution'
-    )
-    return this.activate(turn)
+    return this.activate(this.createTurn(request, rootTransport))
   }
 
   private async activate(turn: ArtifactTurn): Promise<ArtifactTurnHandle> {
@@ -206,13 +205,15 @@ class ArtifactTurnOwner {
         await mkdir(dirname(turn.currentRunFile), { recursive: true })
         await this.writeHandoffFile(turn.currentRunFile, runContext)
         handoffWritten = true
-        this.options.notebook?.setArtifactProvenanceContext?.(turn.appSessionId, {
-          rootFrameId: turn.rootFrameId,
-          agentFrameId: turn.agentFrameId,
-          messageBranchId: turn.messageBranchId,
-          runtimeSegmentId: turn.runtimeSegmentId,
-          promptMessageId: turn.promptMessageId
-        })
+        if (turn.updatesSessionNotebookContext) {
+          this.options.notebook?.setArtifactProvenanceContext?.(turn.appSessionId, {
+            rootFrameId: turn.rootFrameId,
+            agentFrameId: turn.agentFrameId,
+            messageBranchId: turn.messageBranchId,
+            runtimeSegmentId: turn.runtimeSegmentId,
+            promptMessageId: turn.promptMessageId
+          })
+        }
       } catch (error) {
         if (turn.rpcCapabilityToken) {
           try {
@@ -227,19 +228,19 @@ class ArtifactTurnOwner {
           } catch {
             // The original activation failure remains the caller-visible error.
           }
-          try {
-            this.options.notebook?.setArtifactProvenanceContext?.(turn.appSessionId, undefined)
-          } catch {
-            // The original activation failure remains the caller-visible error.
+          if (turn.updatesSessionNotebookContext) {
+            try {
+              this.options.notebook?.setArtifactProvenanceContext?.(turn.appSessionId, undefined)
+            } catch {
+              // The original activation failure remains the caller-visible error.
+            }
           }
         }
         throw error
       }
 
       this.activeTurnsByExecution.set(turn.executionId, turn)
-      if (turn.handoffRouting === 'session-current') {
-        this.activeTurnsBySession.set(turn.appSessionId, turn)
-      }
+      this.activeTurnsByHandoffFile.set(turn.currentRunFile, turn)
       const handle: ArtifactTurnHandle = { [artifactTurnHandleKey]: Symbol(turn.runId) }
       this.turnsByHandle.set(handle, turn)
       this.activeHandlesByExecution.set(turn.executionId, handle)
@@ -249,10 +250,6 @@ class ArtifactTurnOwner {
 
   activeRunIds(): string[] {
     return Array.from(this.activeTurnsByExecution.values(), (turn) => turn.runId)
-  }
-
-  promptMessageIdFor(sessionId: string): string | undefined {
-    return this.activeTurnsBySession.get(sessionId)?.promptMessageId
   }
 
   handleForExecution(executionId: string): ArtifactTurnHandle {
@@ -268,30 +265,17 @@ class ArtifactTurnOwner {
   snapshot(handle: ArtifactTurnHandle): ArtifactTurnSnapshot {
     const turn = this.resolve(handle)
     return {
-      ...(turn.explicitExecution
-        ? {
-            executionId: turn.executionId,
-            agentFrameId: turn.agentFrameId,
-            messageBranchId: turn.messageBranchId,
-            runtimeSegmentId: turn.runtimeSegmentId,
-            promptMessageId: turn.promptMessageId
-          }
-        : {}),
+      executionId: turn.executionId,
+      agentFrameId: turn.agentFrameId,
+      messageBranchId: turn.messageBranchId,
+      runtimeSegmentId: turn.runtimeSegmentId,
+      promptMessageId: turn.promptMessageId,
       appSessionId: turn.appSessionId,
       runId: turn.runId,
       phase: turn.phase,
       outstandingWrites: turn.inFlightAppWrites.size,
       ...(turn.terminalResult ? { terminalResult: turn.terminalResult } : {})
     }
-  }
-
-  writeForActiveTurn(sessionId: string, input: ArtifactTurnWriteInput): Promise<ArtifactFile> {
-    const turn = sessionId ? this.activeTurnsBySession.get(sessionId) : undefined
-    if (!turn || turn.phase !== 'open') {
-      return Promise.reject(new Error('No active assistant turn to attach a generated file to.'))
-    }
-
-    return this.writeTurn(turn, input)
   }
 
   write(handle: ArtifactTurnHandle, input: ArtifactTurnWriteInput): Promise<ArtifactFile> {
@@ -366,9 +350,8 @@ class ArtifactTurnOwner {
   }
 
   private createTurn(
-    request: OpenArtifactTurnRequest,
-    executionId: string | undefined,
-    handoffRouting: 'execution' | 'session-current'
+    request: OpenExecutionArtifactTurnRequest,
+    rootTransport: boolean
   ): ArtifactTurn {
     this.sequence += 1
     const runId = `artifact-run-${this.now()}-${this.sequence}`
@@ -396,17 +379,15 @@ class ArtifactTurnOwner {
       request.artifactStorageSessionId
     )
     return {
-      executionId: executionId ?? `legacy-root:${request.appSessionId}:${runId}`,
-      explicitExecution: executionId !== undefined,
-      handoffRouting,
+      executionId: request.executionId,
+      updatesSessionNotebookContext: rootTransport,
       appSessionId: request.appSessionId,
       artifactStorageSessionId: request.artifactStorageSessionId,
       projectId: request.projectId,
       runId,
-      currentRunFile:
-        handoffRouting === 'session-current'
-          ? sessionCurrentRunFile
-          : join(dirname(sessionCurrentRunFile), 'executions', `${runId}.json`),
+      currentRunFile: rootTransport
+        ? sessionCurrentRunFile
+        : join(dirname(sessionCurrentRunFile), 'executions', `${runId}.json`),
       rootFrameId,
       agentFrameId: request.provenanceContext?.agentFrameId ?? rootFrameId,
       messageBranchId,
@@ -424,7 +405,7 @@ class ArtifactTurnOwner {
   private createRunContext(turn: ArtifactTurn): ArtifactRunContext {
     const base = {
       artifactRunId: turn.runId,
-      ...(turn.explicitExecution ? { executionId: turn.executionId } : {}),
+      executionId: turn.executionId,
       appSessionId: turn.appSessionId,
       rootFrameId: turn.rootFrameId,
       agentFrameId: turn.agentFrameId,
@@ -562,33 +543,24 @@ class ArtifactTurnOwner {
     }
 
     await this.withHandoffLock(turn.currentRunFile, async () => {
-      const activeTurn = this.activeTurnsBySession.get(turn.appSessionId)
-      const ownsActiveTurn = activeTurn === turn
       const ownsExecutionTurn = this.activeTurnsByExecution.get(turn.executionId) === turn
-      const ownsDistinctLegacyHandoff =
-        turn.handoffRouting === 'session-current' &&
-        activeTurn !== undefined &&
-        activeTurn.currentRunFile !== turn.currentRunFile
+      const ownsHandoff = this.activeTurnsByHandoffFile.get(turn.currentRunFile) === turn
       try {
-        if (
-          ownsActiveTurn ||
-          ownsDistinctLegacyHandoff ||
-          (turn.handoffRouting === 'execution' && ownsExecutionTurn)
-        ) {
+        if (ownsExecutionTurn && ownsHandoff) {
           await this.writeHandoffFile(turn.currentRunFile, {})
         }
       } catch (error) {
         cleanupErrors.push(error)
       }
       try {
-        if (ownsActiveTurn) {
+        if (ownsHandoff && turn.updatesSessionNotebookContext) {
           this.options.notebook?.setArtifactProvenanceContext?.(turn.appSessionId, undefined)
         }
       } catch (error) {
         cleanupErrors.push(error)
       } finally {
-        if (this.activeTurnsBySession.get(turn.appSessionId) === turn) {
-          this.activeTurnsBySession.delete(turn.appSessionId)
+        if (this.activeTurnsByHandoffFile.get(turn.currentRunFile) === turn) {
+          this.activeTurnsByHandoffFile.delete(turn.currentRunFile)
         }
         if (this.activeTurnsByExecution.get(turn.executionId) === turn) {
           this.activeTurnsByExecution.delete(turn.executionId)
@@ -637,6 +609,5 @@ export type {
   ArtifactTurnPublication,
   ArtifactTurnSnapshot,
   ArtifactTurnWriteInput,
-  OpenExecutionArtifactTurnRequest,
-  OpenArtifactTurnRequest
+  OpenExecutionArtifactTurnRequest
 }

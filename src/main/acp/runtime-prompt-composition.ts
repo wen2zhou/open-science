@@ -96,9 +96,8 @@ const composeAcpRuntimePromptOwners = (
     provenanceContext: AcpPromptRequest['provenanceContext']
   ): Promise<ArtifactTurnHandle | undefined> => {
     if (!base.artifactTurns) return undefined
-    return base.artifactTurns.openExecution({
+    return base.artifactTurns.openRootExecution({
       executionId,
-      handoffRouting: 'session-current',
       appSessionId: sessionId,
       artifactStorageSessionId:
         base.sessionCapabilities.artifactRoutingIdFor(sessionId) ?? sessionId,
