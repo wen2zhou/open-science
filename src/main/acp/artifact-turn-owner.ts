@@ -407,6 +407,7 @@ class ArtifactTurnOwner {
       artifactRunId: turn.runId,
       executionId: turn.executionId,
       appSessionId: turn.appSessionId,
+      artifactStorageSessionId: turn.artifactStorageSessionId,
       rootFrameId: turn.rootFrameId,
       agentFrameId: turn.agentFrameId,
       messageBranchId: turn.messageBranchId,

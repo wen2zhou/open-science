@@ -461,14 +461,18 @@ describe('ACP delegate execution production adapter', () => {
     await expect(running.completion).rejects.toThrow('continuation transport failed')
   })
 
-  it('starts the delegated Session with the parent permission profile', async () => {
+  it('starts the delegated Session in the parent project with its permission profile', async () => {
     const { execution, controls } = makeHarness(1, { permissionProfile: () => 'full' })
     const reservation = await execution.reserve(1)
     const running = execution.run(makeInput('full-access'), reservation.slotIds[0])
 
     await running.accepted
     expect(controls.get('full-access')?.createdSessions).toEqual([
-      { cwd: '/workspace/frame-full-access', permissionProfile: 'full' }
+      {
+        cwd: '/workspace/frame-full-access',
+        projectName: 'project-1',
+        permissionProfile: 'full'
+      }
     ])
 
     controls.get('full-access')?.complete()

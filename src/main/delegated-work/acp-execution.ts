@@ -57,6 +57,7 @@ type AcpDelegateExecutionCallbacks = Readonly<{
 type AcpDelegateRuntime = Readonly<{
   createSession(request: {
     cwd: string
+    projectName: string
     permissionProfile?: PermissionProfileId
     specialistId?: string
   }): Promise<{ sessionId: string }>
@@ -464,6 +465,7 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         runtime = options.createRuntime(scope, callbacks)
         const created = await runtime.createSession({
           cwd: scope.workspace.cwd,
+          projectName: input.session.projectId,
           ...(scope.permissionProfile ? { permissionProfile: scope.permissionProfile } : {}),
           ...(input.profile ? { specialistId: input.profile } : {})
         })
