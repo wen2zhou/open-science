@@ -118,6 +118,8 @@ const api: OpenScienceAPI = {
     revokePermissionGrant: (request) =>
       electronRendererContracts.invoke('acp.revokePermissionGrant', request),
     onState: (listener) => electronRendererContracts.subscribe('acp.onState', listener),
+    onAgentRuntimeUpdate: (listener) =>
+      electronRendererContracts.subscribe('acp.onAgentRuntimeUpdate', listener),
     onEvent: (listener) => electronRendererContracts.subscribe('acp.onEvent', listener),
     onPermissionRequest: (listener) =>
       electronRendererContracts.subscribe('acp.onPermissionRequest', listener)

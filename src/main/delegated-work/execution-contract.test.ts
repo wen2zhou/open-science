@@ -85,7 +85,9 @@ const delegateExecutionContract = (create: () => DelegateExecutionContractHarnes
           requestId: 'permission-1'
         }
       ])
-      expect(secondEvents).toEqual([{ kind: 'message', text: 'second only' }])
+      expect(secondEvents.filter((event) => event.kind !== 'runtime')).toEqual([
+        { kind: 'message', text: 'second only' }
+      ])
       expect(driver.permissionResponses('attempt-1')).toEqual([
         { requestId: 'permission-1', optionId: 'allow' }
       ])

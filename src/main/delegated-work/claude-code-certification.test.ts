@@ -154,7 +154,7 @@ delegatedWorkCertificationContract((options) => {
           role: 'assistant',
           text: event.text
         })
-      } else if (event.awaiting) {
+      } else if (event.kind === 'permission' && event.awaiting) {
         control.callbacks.onPermissionRequest({
           requestId: event.requestId,
           sessionId: control.providerSessionId,

@@ -146,15 +146,55 @@ const createSessionDelegatedWorkRecords = (
               id: message.id,
               role: 'agent',
               content: message.content,
-              status: 'complete',
-              eventIds: [],
+              status: message.status ?? 'complete',
+              eventIds: [...(message.eventIds ?? [])],
+              images: message.images?.map((image) => ({ ...image })),
+              turnUsage: message.turnUsage ? { ...message.turnUsage } : undefined,
+              turnUsageUnavailable: message.turnUsageUnavailable,
               createdAt: message.createdAt,
-              completedAt: message.createdAt,
-              updatedAt: message.createdAt
+              completedAt: message.completedAt ?? message.updatedAt ?? message.createdAt,
+              updatedAt: message.updatedAt ?? message.createdAt
             }
           }
         })
       )
+    },
+    async stageTerminalActivities(frameId, attemptId, activities, activityGroups) {
+      const attempt = (await load()).runtimeContext?.delegatedWork?.records
+        .find((record) => record.agentFrameId === frameId)
+        ?.attempts.find((candidate) => candidate.id === attemptId)
+      const runtimeSegmentId = attempt?.runtimeSegmentIds.at(-1) ?? ''
+      for (const activity of activities) {
+        if (!activity.promptMessageId) continue
+        await mutate((expectedRevision) =>
+          options.commands.applyAgentEvent(key, {
+            expectedRevision,
+            frameId,
+            attemptId,
+            event: {
+              kind: 'activity',
+              runtimeSegmentId,
+              promptMessageId: activity.promptMessageId!,
+              activity
+            }
+          })
+        )
+      }
+      for (const activityGroup of activityGroups) {
+        if (!activityGroup.promptMessageId) continue
+        await mutate((expectedRevision) =>
+          options.commands.applyAgentEvent(key, {
+            expectedRevision,
+            frameId,
+            attemptId,
+            event: {
+              kind: 'activity-group',
+              promptMessageId: activityGroup.promptMessageId!,
+              activityGroup
+            }
+          })
+        )
+      }
     },
     async terminalize(input) {
       if (input.status === 'completed') {
@@ -178,11 +218,19 @@ const createSessionDelegatedWorkRecords = (
                   id: input.terminalMessage.id,
                   role: 'agent',
                   content: input.terminalMessage.content,
-                  status: 'complete',
-                  eventIds: [],
+                  status: input.terminalMessage.status ?? 'complete',
+                  eventIds: [...(input.terminalMessage.eventIds ?? [])],
+                  images: input.terminalMessage.images?.map((image) => ({ ...image })),
+                  turnUsage: input.terminalMessage.turnUsage
+                    ? { ...input.terminalMessage.turnUsage }
+                    : undefined,
+                  turnUsageUnavailable: input.terminalMessage.turnUsageUnavailable,
                   createdAt: input.terminalMessage.createdAt,
-                  completedAt: input.terminalMessage.createdAt,
-                  updatedAt: input.terminalMessage.createdAt
+                  completedAt:
+                    input.terminalMessage.completedAt ??
+                    input.terminalMessage.updatedAt ??
+                    input.terminalMessage.createdAt,
+                  updatedAt: input.terminalMessage.updatedAt ?? input.terminalMessage.createdAt
                 }
               }
             })

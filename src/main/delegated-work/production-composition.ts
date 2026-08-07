@@ -1,6 +1,10 @@
 import { join } from 'node:path'
 
-import type { AcpPermissionRequest, AcpPermissionResponse } from '../../shared/acp'
+import type {
+  AcpAgentRuntimeUpdate,
+  AcpPermissionRequest,
+  AcpPermissionResponse
+} from '../../shared/acp'
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import type { AgentFrameworkId } from '../../shared/settings'
@@ -49,6 +53,7 @@ type ProductionDelegatedWorkOptions = Readonly<{
   artifactEvidence?: DelegatedArtifactEvidenceOptions
   reviewEvidence?: DelegatedReviewEvidenceOptions
   parentMessages?: Readonly<{ deliver(delivery: ParentMessageDelivery): Promise<void> }>
+  onAgentRuntimeUpdate?(update: AcpAgentRuntimeUpdate): void
 }>
 
 type RootDelegatedWorkEvent =
@@ -164,7 +169,8 @@ const createProductionDelegatedWorkComposition = (
       artifactEvidence,
       reviewEvidence,
       deliverToParent: options.parentMessages?.deliver,
-      onRootPermissionEvent: (event) => observePermission(key, event)
+      onRootPermissionEvent: (event) => observePermission(key, event),
+      onAgentRuntimeUpdate: options.onAgentRuntimeUpdate
     })
     await work.recoverInterrupted()
     return Object.freeze({ key, work })

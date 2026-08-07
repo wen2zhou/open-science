@@ -234,6 +234,7 @@ export const WEB_INVOKE_CHANNELS = {
 } as const
 
 export const WEB_EVENT_CHANNELS = {
+  'acp.onAgentRuntimeUpdate': 'acp:agent-runtime-update',
   'acp.onEvent': 'acp:event',
   'acp.onPermissionRequest': 'acp:permission-request',
   'acp.onState': 'acp:state',

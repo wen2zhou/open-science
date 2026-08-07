@@ -84,7 +84,9 @@ const makeHarness = (
           projectId: input.session.projectId,
           sessionId: input.session.sessionId,
           agentFrameId: input.frameId,
-          runtimeSegmentId: input.runtimeSegmentId
+          runtimeSegmentId: input.runtimeSegmentId,
+          promptMessageId: `prompt-${input.attemptId}`,
+          messageBranchId: `branch-${input.attemptId}`
         },
         workspace: { cwd: scopePaths.workspace?.(input) ?? `/workspace/${input.frameId}` },
         runtimeHome: scopePaths.runtimeHome?.(input) ?? `/runtime/${input.attemptId}`,
@@ -182,7 +184,7 @@ delegateExecutionContract(() => {
             role: 'assistant',
             text: event.text
           })
-        } else if (event.awaiting) {
+        } else if (event.kind === 'permission' && event.awaiting) {
           control.callbacks.onPermissionRequest({
             requestId: event.requestId,
             sessionId: control.providerSessionId,
@@ -242,7 +244,7 @@ delegatedWorkCertificationContract((options) => {
           role: 'assistant',
           text: event.text
         })
-      } else if (event.awaiting) {
+      } else if (event.kind === 'permission' && event.awaiting) {
         control.callbacks.onPermissionRequest({
           requestId: event.requestId,
           sessionId: control.providerSessionId,
@@ -286,7 +288,7 @@ delegatedWorkCertificationContract((options) => {
 })
 
 describe('ACP delegate execution production adapter', () => {
-  it('acknowledges a Main-to-child message only after the continuation reaches the provider', async () => {
+  it('acknowledges a queued continuation and publishes one Attempt stop with aggregate usage', async () => {
     const firstPrompt = deferred<PromptResponse>()
     const secondPrompt = deferred<PromptResponse>()
     const secondStarted = deferred<void>()
@@ -299,7 +301,8 @@ describe('ACP delegate execution production adapter', () => {
           projectId: input.session.projectId,
           sessionId: input.session.sessionId,
           agentFrameId: input.frameId,
-          runtimeSegmentId: input.runtimeSegmentId
+          runtimeSegmentId: input.runtimeSegmentId,
+          promptMessageId: 'prompt-message-boundary'
         },
         workspace: { cwd: '/workspace/message-boundary' },
         runtimeHome: '/runtime/message-boundary',
@@ -331,6 +334,8 @@ describe('ACP delegate execution production adapter', () => {
     })
     const reservation = await execution.reserve(1)
     const running = execution.run(makeInput('message-boundary'), reservation.slotIds[0])
+    const events: unknown[] = []
+    running.subscribe((event) => events.push(event))
     await running.accepted
 
     let delivered = false
@@ -340,6 +345,17 @@ describe('ACP delegate execution production adapter', () => {
     await Promise.resolve()
     expect(delivered).toBe(false)
 
+    callbacks.onEvent({
+      id: 'first-provider-stop',
+      timestamp: 10,
+      kind: 'stop',
+      level: 'info',
+      sessionId: 'provider-message-boundary',
+      turnUsage: { inputTokens: 10, cacheTokens: 2, outputTokens: 3, turnCount: 1 }
+    })
+    expect(events).not.toEqual(
+      expect.arrayContaining([expect.objectContaining({ kind: 'runtime' })])
+    )
     firstPrompt.resolve({ stopReason: 'end_turn' })
     await secondStarted.promise
     expect(delivered).toBe(false)
@@ -348,8 +364,50 @@ describe('ACP delegate execution production adapter', () => {
     await delivery
     expect(delivered).toBe(true)
 
+    callbacks.onEvent({
+      id: 'second-provider-stop',
+      timestamp: 20,
+      kind: 'stop',
+      level: 'info',
+      sessionId: 'provider-message-boundary',
+      turnUsage: { inputTokens: 20, cacheTokens: 4, outputTokens: 5, turnCount: 1 }
+    })
+    callbacks.onEvent({
+      id: 'first-provider-stop',
+      timestamp: 30,
+      kind: 'stop',
+      level: 'warning',
+      sessionId: 'provider-message-boundary',
+      turnUsage: { inputTokens: 100, cacheTokens: 20, outputTokens: 30, turnCount: 10 }
+    })
+    expect(events).toEqual([])
     secondPrompt.resolve({ stopReason: 'end_turn' })
-    await running.completion
+    await expect(running.completion).resolves.toMatchObject({
+      status: 'completed',
+      turnUsage: { inputTokens: 30, cacheTokens: 6, outputTokens: 8, turnCount: 2 }
+    })
+    expect(events).toEqual([
+      {
+        kind: 'runtime',
+        update: {
+          scope: {
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            agentFrameId: 'frame-message-boundary',
+            attemptId: 'message-boundary',
+            runtimeSegmentId: 'segment-message-boundary',
+            promptMessageId: 'prompt-message-boundary'
+          },
+          event: {
+            id: 'second-provider-stop',
+            timestamp: 20,
+            kind: 'stop',
+            level: 'info',
+            turnUsage: { inputTokens: 30, cacheTokens: 6, outputTokens: 8, turnCount: 2 }
+          }
+        }
+      }
+    ])
   })
 
   it('rejects an unaccepted Main-to-child delivery when the continuation transport fails', async () => {
@@ -557,6 +615,230 @@ describe('ACP delegate execution production adapter', () => {
     expect(controls.get('two')?.prompts).toEqual(['task-two'])
     controls.get('two')?.complete()
     await second.completion
+  })
+
+  it('forwards rich runtime events with app-owned Attempt provenance', async () => {
+    const { execution, controls } = makeHarness(1)
+    const reservation = await execution.reserve(1)
+    const running = execution.run(makeInput('rich-events'), reservation.slotIds[0])
+    const events: unknown[] = []
+    running.subscribe((event) => events.push(event))
+    await running.accepted
+
+    controls.get('rich-events')?.callbacks.onEvent({
+      id: 'tool-event',
+      timestamp: 10,
+      kind: 'tool',
+      level: 'info',
+      sessionId: 'provider-rich-events',
+      promptMessageId: 'provider-owned-prompt',
+      toolCallId: 'tool-1',
+      title: 'Inspect evidence',
+      status: 'in_progress',
+      rawInput: { path: 'paper.pdf' }
+    })
+    controls.get('rich-events')?.callbacks.onEvent({
+      id: 'stop-event',
+      timestamp: 20,
+      kind: 'stop',
+      level: 'info',
+      sessionId: 'provider-rich-events',
+      promptMessageId: 'provider-owned-prompt',
+      turnUsage: {
+        inputTokens: 100,
+        cacheTokens: 20,
+        outputTokens: 30,
+        turnCount: 1
+      }
+    })
+    controls.get('rich-events')?.complete()
+    await expect(running.completion).resolves.toMatchObject({
+      status: 'completed',
+      turnUsage: {
+        inputTokens: 100,
+        cacheTokens: 20,
+        outputTokens: 30,
+        turnCount: 1
+      }
+    })
+
+    expect(events).toEqual([
+      {
+        kind: 'runtime',
+        update: {
+          scope: {
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            agentFrameId: 'frame-rich-events',
+            attemptId: 'rich-events',
+            runtimeSegmentId: 'segment-rich-events',
+            promptMessageId: 'prompt-rich-events'
+          },
+          event: {
+            id: 'tool-event',
+            timestamp: 10,
+            kind: 'tool',
+            level: 'info',
+            toolCallId: 'tool-1',
+            title: 'Inspect evidence',
+            status: 'in_progress',
+            rawInput: { path: 'paper.pdf' }
+          }
+        }
+      },
+      {
+        kind: 'runtime',
+        update: {
+          scope: {
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            agentFrameId: 'frame-rich-events',
+            attemptId: 'rich-events',
+            runtimeSegmentId: 'segment-rich-events',
+            promptMessageId: 'prompt-rich-events'
+          },
+          event: {
+            id: 'stop-event',
+            timestamp: 20,
+            kind: 'stop',
+            level: 'info',
+            turnUsage: {
+              inputTokens: 100,
+              cacheTokens: 20,
+              outputTokens: 30,
+              turnCount: 1
+            }
+          }
+        }
+      }
+    ])
+  })
+
+  it('ignores a replayed stop without corrupting its usage or final event', async () => {
+    const { execution, controls } = makeHarness(1)
+    const reservation = await execution.reserve(1)
+    const running = execution.run(makeInput('replayed-stop'), reservation.slotIds[0])
+    const events: unknown[] = []
+    running.subscribe((event) => events.push(event))
+    await running.accepted
+
+    controls.get('replayed-stop')?.callbacks.onEvent({
+      id: 'provider-stop',
+      timestamp: 20,
+      kind: 'stop',
+      level: 'info',
+      sessionId: 'provider-replayed-stop',
+      turnUsage: {
+        inputTokens: 100,
+        cacheTokens: 20,
+        outputTokens: 30,
+        turnCount: 1
+      }
+    })
+    controls.get('replayed-stop')?.callbacks.onEvent({
+      id: 'provider-stop',
+      timestamp: 21,
+      kind: 'stop',
+      level: 'warning',
+      sessionId: 'provider-replayed-stop'
+    })
+    controls.get('replayed-stop')?.complete()
+
+    await expect(running.completion).resolves.toEqual({
+      status: 'completed',
+      response: '',
+      turnUsage: {
+        inputTokens: 100,
+        cacheTokens: 20,
+        outputTokens: 30,
+        turnCount: 1
+      }
+    })
+    expect(events).toEqual([
+      {
+        kind: 'runtime',
+        update: {
+          scope: {
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            agentFrameId: 'frame-replayed-stop',
+            attemptId: 'replayed-stop',
+            runtimeSegmentId: 'segment-replayed-stop',
+            promptMessageId: 'prompt-replayed-stop'
+          },
+          event: {
+            id: 'provider-stop',
+            timestamp: 20,
+            kind: 'stop',
+            level: 'info',
+            turnUsage: {
+              inputTokens: 100,
+              cacheTokens: 20,
+              outputTokens: 30,
+              turnCount: 1
+            }
+          }
+        }
+      }
+    ])
+  })
+
+  it('does not let a replay add usage that the original stop omitted', async () => {
+    const { execution, controls } = makeHarness(1)
+    const reservation = await execution.reserve(1)
+    const running = execution.run(makeInput('replayed-unavailable-stop'), reservation.slotIds[0])
+    const events: unknown[] = []
+    running.subscribe((event) => events.push(event))
+    await running.accepted
+
+    controls.get('replayed-unavailable-stop')?.callbacks.onEvent({
+      id: 'provider-stop',
+      timestamp: 20,
+      kind: 'stop',
+      level: 'info',
+      sessionId: 'provider-replayed-unavailable-stop'
+    })
+    controls.get('replayed-unavailable-stop')?.callbacks.onEvent({
+      id: 'provider-stop',
+      timestamp: 21,
+      kind: 'stop',
+      level: 'info',
+      sessionId: 'provider-replayed-unavailable-stop',
+      turnUsage: {
+        inputTokens: 100,
+        cacheTokens: 20,
+        outputTokens: 30,
+        turnCount: 1
+      }
+    })
+    controls.get('replayed-unavailable-stop')?.complete()
+
+    await expect(running.completion).resolves.toEqual({
+      status: 'completed',
+      response: '',
+      turnUsageUnavailable: true
+    })
+    expect(events).toEqual([
+      {
+        kind: 'runtime',
+        update: {
+          scope: {
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            agentFrameId: 'frame-replayed-unavailable-stop',
+            attemptId: 'replayed-unavailable-stop',
+            runtimeSegmentId: 'segment-replayed-unavailable-stop',
+            promptMessageId: 'prompt-replayed-unavailable-stop'
+          },
+          event: {
+            id: 'provider-stop',
+            timestamp: 20,
+            kind: 'stop',
+            level: 'info'
+          }
+        }
+      }
+    ])
   })
 
   it('keeps a permission request retryable when the ACP response transport fails', async () => {

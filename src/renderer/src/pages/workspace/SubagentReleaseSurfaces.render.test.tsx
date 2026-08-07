@@ -1,9 +1,10 @@
 // @vitest-environment jsdom
 
-import { cleanup, fireEvent, render, screen, within } from '@testing-library/react'
+import { act, cleanup, fireEvent, render, screen, within } from '@testing-library/react'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatSession } from '@/stores/session-store'
+import type { AcpAgentRuntimeUpdate } from '../../../../shared/acp'
 import {
   createInitialPreviewWorkbenchState,
   usePreviewWorkbenchStore
@@ -17,6 +18,8 @@ import {
   SubagentSummaryCard
 } from './SubagentReleaseSurfaces'
 import { MobilePreviewSheet } from './MobilePreviewSheet'
+
+let onAgentRuntimeUpdate: ((update: AcpAgentRuntimeUpdate) => void) | undefined
 
 const createSession = (): ChatSession => {
   const now = 1_700_000_000_000
@@ -206,6 +209,20 @@ describe('release-gate Subagent surfaces', () => {
   afterEach(cleanup)
 
   beforeEach(() => {
+    onAgentRuntimeUpdate = undefined
+    const currentApi = window.api
+    window.api = {
+      ...currentApi,
+      acp: {
+        ...currentApi?.acp,
+        onAgentRuntimeUpdate: (listener) => {
+          onAgentRuntimeUpdate = listener
+          return () => {
+            if (onAgentRuntimeUpdate === listener) onAgentRuntimeUpdate = undefined
+          }
+        }
+      }
+    } as Window['api']
     usePreviewWorkbenchStore.setState(createInitialPreviewWorkbenchState())
     useSessionStore.setState({ ...createInitialSessionState(), sessions: [createSession()] })
   })
@@ -314,6 +331,128 @@ describe('release-gate Subagent surfaces', () => {
     expect(usePreviewWorkbenchStore.getState().items[0]).toMatchObject({
       selectedAgentFrameId: 'child-a'
     })
+  })
+
+  it('streams the selected running Frame without mutating root state and completes token usage on stop', async () => {
+    const session = createSession()
+    const childBranch = session.conversationGraph?.branches.find(
+      (branch) => branch.id === 'child-a-branch'
+    )
+    if (childBranch) childBranch.headMessageId = 'child-a-prompt'
+    if (session.conversationGraph) {
+      session.conversationGraph.messages = session.conversationGraph.messages.filter(
+        (message) => message.id !== 'child-a-answer'
+      )
+    }
+    session.agentStatus = 'root retry status'
+    useSessionStore.setState({ ...createInitialSessionState(), sessions: [session] })
+    const rootBefore = structuredClone(useSessionStore.getState().sessions[0])
+
+    render(
+      <SubagentPreview
+        item={{
+          id: 'tool:session-1:subagents',
+          type: 'tool',
+          toolKind: 'subagents',
+          title: 'Subagents',
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          selectedAgentFrameId: 'child-a'
+        }}
+      />
+    )
+
+    expect(screen.getByText('Thinking')).toBeTruthy()
+    await act(async () => {
+      onAgentRuntimeUpdate?.({
+        scope: {
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          agentFrameId: 'child-a',
+          attemptId: 'attempt-a',
+          runtimeSegmentId: 'runtime-a',
+          promptMessageId: 'child-a-prompt'
+        },
+        event: {
+          id: 'child-warning-1',
+          timestamp: 1_700_000_000_005,
+          kind: 'system',
+          level: 'warning',
+          text: 'child retry status'
+        }
+      })
+    })
+    expect(screen.getByText('child retry status')).toBeTruthy()
+    expect(screen.queryByText('root retry status')).toBeNull()
+
+    await act(async () => {
+      onAgentRuntimeUpdate?.({
+        scope: {
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          agentFrameId: 'child-a',
+          attemptId: 'attempt-a',
+          runtimeSegmentId: 'runtime-a',
+          promptMessageId: 'stale-child-prompt'
+        },
+        event: {
+          id: 'stale-child-message',
+          timestamp: 1_700_000_000_009,
+          kind: 'message',
+          level: 'info',
+          role: 'assistant',
+          messageId: 'stale-child-stream',
+          text: 'Stale child output'
+        }
+      })
+      onAgentRuntimeUpdate?.({
+        scope: {
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          agentFrameId: 'child-a',
+          attemptId: 'attempt-a',
+          runtimeSegmentId: 'runtime-a',
+          promptMessageId: 'child-a-prompt'
+        },
+        event: {
+          id: 'child-message-1',
+          timestamp: 1_700_000_000_010,
+          kind: 'message',
+          level: 'info',
+          role: 'assistant',
+          messageId: 'child-stream',
+          text: 'Live child evidence'
+        }
+      })
+    })
+
+    expect(screen.getByText('Live child evidence')).toBeTruthy()
+    expect(screen.queryByText('Stale child output')).toBeNull()
+    expect(useSessionStore.getState().sessions[0]).toEqual(rootBefore)
+
+    await act(async () => {
+      onAgentRuntimeUpdate?.({
+        scope: {
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          agentFrameId: 'child-a',
+          attemptId: 'attempt-a',
+          runtimeSegmentId: 'runtime-a',
+          promptMessageId: 'child-a-prompt'
+        },
+        event: {
+          id: 'child-stop-1',
+          timestamp: 1_700_000_000_020,
+          kind: 'stop',
+          level: 'info',
+          turnUsage: { inputTokens: 31, cacheTokens: 15, outputTokens: 14 }
+        }
+      })
+    })
+
+    expect(screen.getByRole('button', { name: 'Token usage for this response' })).toBeTruthy()
+    expect(screen.queryByText('Thinking')).toBeNull()
+    expect(useSessionStore.getState().sessions[0]).toEqual(rootBefore)
   })
 
   it('offers Retry when the selected durable Frame cannot be read', () => {

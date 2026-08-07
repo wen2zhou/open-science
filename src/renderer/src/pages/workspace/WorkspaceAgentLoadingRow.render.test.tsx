@@ -47,7 +47,7 @@ afterEach(() => {
 describe('WorkspaceAgentLoadingRow', () => {
   it('starts elapsed time when the indicator mounts', () => {
     seedRunningSession(5000)
-    act(() => root.render(<AgentLoadingIndicator sessionId="s1" phase="thinking" />))
+    act(() => root.render(<AgentLoadingIndicator phase="thinking" />))
 
     expect(container.textContent).toContain('0:00')
     expect(container.textContent).toContain('Thinking')
@@ -73,7 +73,7 @@ describe('WorkspaceAgentLoadingRow', () => {
 
   it('adds a "taking longer than usual" hint after the indicator stays visible', () => {
     seedRunningSession(45_000)
-    act(() => root.render(<AgentLoadingIndicator sessionId="s1" phase="thinking" />))
+    act(() => root.render(<AgentLoadingIndicator phase="thinking" />))
 
     expect(container.textContent).toContain('0:00')
     expect(container.textContent).not.toContain('taking longer than usual')
@@ -88,7 +88,7 @@ describe('WorkspaceAgentLoadingRow', () => {
 
   it('updates the elapsed time live while the turn runs', () => {
     seedRunningSession(5000)
-    act(() => root.render(<AgentLoadingIndicator sessionId="s1" phase="thinking" />))
+    act(() => root.render(<AgentLoadingIndicator phase="thinking" />))
 
     expect(container.textContent).toContain('0:00')
 
@@ -104,7 +104,7 @@ describe('WorkspaceAgentLoadingRow', () => {
   it('crosses into the "taking longer than usual" hint as time passes the threshold', () => {
     // The active turn age does not count toward this mount's slow-hint threshold.
     seedRunningSession(18_000)
-    act(() => root.render(<AgentLoadingIndicator sessionId="s1" phase="thinking" />))
+    act(() => root.render(<AgentLoadingIndicator phase="thinking" />))
 
     expect(container.textContent).toContain('0:00')
     expect(container.textContent).not.toContain('taking longer than usual')
@@ -120,7 +120,7 @@ describe('WorkspaceAgentLoadingRow', () => {
 
   it('resets elapsed time after the indicator unmounts and mounts again', () => {
     seedRunningSession(45_000)
-    act(() => root.render(<AgentLoadingIndicator sessionId="s1" phase="thinking" />))
+    act(() => root.render(<AgentLoadingIndicator phase="thinking" />))
     act(() => {
       vi.advanceTimersByTime(8000)
     })
@@ -129,7 +129,7 @@ describe('WorkspaceAgentLoadingRow', () => {
     act(() => root.render(null))
     act(() => {
       vi.advanceTimersByTime(5000)
-      root.render(<AgentLoadingIndicator sessionId="s1" phase="thinking" />)
+      root.render(<AgentLoadingIndicator phase="thinking" />)
     })
 
     expect(container.textContent).toContain('0:00')
@@ -138,7 +138,9 @@ describe('WorkspaceAgentLoadingRow', () => {
 
   it('surfaces the latest agent status line when present', () => {
     seedRunningSession(3000, 'retrying request…')
-    act(() => root.render(<AgentLoadingIndicator sessionId="s1" phase="thinking" />))
+    act(() =>
+      root.render(<AgentLoadingIndicator phase="thinking" agentStatus="retrying request…" />)
+    )
 
     expect(container.textContent).toContain('retrying request…')
     const statusLine = container.querySelector<HTMLElement>('[title="retrying request…"]')
@@ -146,9 +148,21 @@ describe('WorkspaceAgentLoadingRow', () => {
     expect(statusLine?.classList.contains('text-text-300/80')).toBe(false)
   })
 
+  it('uses the explicit transcript status instead of the matching global Session status', () => {
+    seedRunningSession(3000, 'root retry status')
+    act(() => root.render(<AgentLoadingIndicator phase="thinking" agentStatus="child warning" />))
+
+    expect(container.textContent).toContain('child warning')
+    expect(container.textContent).not.toContain('root retry status')
+  })
+
   it('shows tool interaction without elapsed time or a slow hint', () => {
     seedRunningSession(45_000, 'retrying request…')
-    act(() => root.render(<AgentLoadingIndicator sessionId="s1" phase="interacting-with-tools" />))
+    act(() =>
+      root.render(
+        <AgentLoadingIndicator phase="interacting-with-tools" agentStatus="retrying request…" />
+      )
+    )
 
     expect(container.textContent).toContain('Interacting with tools')
     expect(container.textContent).not.toContain('Thinking')
@@ -160,18 +174,18 @@ describe('WorkspaceAgentLoadingRow', () => {
 
   it('restarts thinking time when tool interaction returns to thinking', () => {
     seedRunningSession(45_000)
-    act(() => root.render(<AgentLoadingIndicator sessionId="s1" phase="thinking" />))
+    act(() => root.render(<AgentLoadingIndicator phase="thinking" />))
     act(() => {
       vi.advanceTimersByTime(8000)
     })
     expect(container.textContent).toContain('0:08')
 
-    act(() => root.render(<AgentLoadingIndicator sessionId="s1" phase="interacting-with-tools" />))
+    act(() => root.render(<AgentLoadingIndicator phase="interacting-with-tools" />))
     expect(container.textContent).not.toContain('0:08')
 
     act(() => {
       vi.advanceTimersByTime(5000)
-      root.render(<AgentLoadingIndicator sessionId="s1" phase="thinking" />)
+      root.render(<AgentLoadingIndicator phase="thinking" />)
     })
 
     expect(container.textContent).toContain('0:00')

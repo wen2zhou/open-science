@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import type { AcpAgentRuntimeUpdate } from '../../shared/acp'
 import { createLinearConversationGraph } from '../../shared/conversation-graph'
 import {
   normalizeSessionFile,
@@ -309,6 +310,322 @@ describe('Session delegated-work adapter', () => {
       delegatedTask: 'Trace the source',
       delegatedContext: 'Prefer primary evidence.',
       delegatedInputVersionIds: ['upload-version:one']
+    })
+  })
+
+  it('persists rich terminal transcript evidence without writing each runtime chunk', async () => {
+    const { coordinator, readSession, repository } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const records = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => 'child-branch'
+      },
+      key
+    )
+    const ids = {
+      frame: ['child-frame'],
+      attempt: ['child-attempt'],
+      message: ['child-prompt', 'agent-message'],
+      runtime: ['child-runtime']
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      now: () => 14,
+      createId: (kind) => ids[kind].shift()!
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'rich-transcript'
+    }
+
+    const pending = work.delegate(caller, { task: 'Inspect the paper' })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    const control = execution.controls()[0]
+    control.accept()
+    const scope = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      agentFrameId: 'child-frame',
+      attemptId: 'child-attempt',
+      runtimeSegmentId: 'child-runtime',
+      promptMessageId: 'child-prompt'
+    } as const
+    control.emit({
+      kind: 'runtime',
+      update: {
+        scope,
+        event: {
+          id: 'message:1',
+          timestamp: 10,
+          kind: 'message',
+          level: 'info',
+          messageId: 'response-1',
+          role: 'assistant',
+          text: 'Evidence '
+        }
+      }
+    })
+    control.emit({
+      kind: 'runtime',
+      update: {
+        scope,
+        event: {
+          id: 'message:2',
+          timestamp: 11,
+          kind: 'message',
+          level: 'info',
+          messageId: 'response-1',
+          role: 'assistant',
+          text: 'confirmed.'
+        }
+      }
+    })
+    control.emit({
+      kind: 'runtime',
+      update: {
+        scope,
+        event: {
+          id: 'tool:start',
+          timestamp: 12,
+          kind: 'tool',
+          level: 'info',
+          toolCallId: 'tool-1',
+          title: 'Read paper',
+          status: 'in_progress'
+        }
+      }
+    })
+    control.emit({
+      kind: 'runtime',
+      update: {
+        scope,
+        event: {
+          id: 'tool:done',
+          timestamp: 13,
+          kind: 'tool',
+          level: 'info',
+          toolCallId: 'tool-1',
+          status: 'completed',
+          terminalOutput: 'done',
+          terminalExitCode: 0
+        }
+      }
+    })
+    control.complete('Evidence confirmed.', {
+      inputTokens: 100,
+      cacheTokens: 20,
+      outputTokens: 30,
+      turnCount: 1
+    })
+    await pending
+
+    const durable = await readSession()
+    expect(
+      durable.conversationGraph?.messages.find(
+        (message) => message.id === 'agent-message' && message.role === 'agent'
+      )
+    ).toMatchObject({
+      content: 'Evidence confirmed.',
+      eventIds: ['message:1', 'message:2'],
+      turnUsage: {
+        inputTokens: 100,
+        cacheTokens: 20,
+        outputTokens: 30,
+        turnCount: 1
+      },
+      completedAt: 14,
+      updatedAt: 14
+    })
+    expect(durable.conversationGraph?.activities).toEqual([
+      expect.objectContaining({
+        id: 'agent-runtime:child-runtime:tool-1',
+        agentFrameId: 'child-frame',
+        runtimeSegmentId: 'child-runtime',
+        promptMessageId: 'child-prompt',
+        status: 'completed',
+        eventIds: ['tool:start', 'tool:done'],
+        terminalOutput: 'done',
+        terminalExitCode: 0
+      })
+    ])
+    expect(repository.saveSession).toHaveBeenCalled()
+  })
+
+  it('keeps partial Messages and tool evidence after a provider rejection and reload', async () => {
+    const { coordinator, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const records = createSessionDelegatedWorkRecords(
+      { commands: coordinator, readSession, frameworkId: 'codex', createId: () => 'error-branch' },
+      key
+    )
+    const ids = {
+      frame: ['error-frame'],
+      attempt: ['error-attempt'],
+      message: ['error-prompt', 'partial-agent-message'],
+      runtime: ['error-runtime']
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      now: () => 20,
+      createId: (kind) => ids[kind].shift()!
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'provider-reject'
+    }
+    const pending = work.delegate(caller, { task: 'Read until failure' })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    const control = execution.controls()[0]
+    control.accept()
+    const scope = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      agentFrameId: 'error-frame',
+      attemptId: 'error-attempt',
+      runtimeSegmentId: 'error-runtime',
+      promptMessageId: 'error-prompt'
+    } as const
+    const emit = (event: AcpAgentRuntimeUpdate['event']): void =>
+      control.emit({ kind: 'runtime', update: { scope, event } })
+    emit({
+      id: 'partial',
+      timestamp: 10,
+      kind: 'message',
+      level: 'info',
+      messageId: 'partial-stream',
+      role: 'assistant',
+      text: 'Recovered partial evidence'
+    })
+    emit({
+      id: 'done-tool',
+      timestamp: 11,
+      kind: 'tool',
+      level: 'info',
+      toolCallId: 'tool-done',
+      title: 'Completed read',
+      status: 'completed',
+      terminalOutput: 'done'
+    })
+    emit({
+      id: 'open-tool',
+      timestamp: 12,
+      kind: 'tool',
+      level: 'info',
+      toolCallId: 'tool-open',
+      title: 'Interrupted read',
+      status: 'in_progress'
+    })
+    control.fail(new Error('provider rejected'))
+    await pending
+
+    const reloaded = normalizeSessionFile(await readSession())!
+    expect(reloaded.conversationGraph?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'partial-agent-message',
+          content: 'Recovered partial evidence',
+          status: 'error',
+          failedAt: 20,
+          updatedAt: 20
+        })
+      ])
+    )
+    expect(reloaded.conversationGraph?.activities).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'agent-runtime:error-runtime:tool-done',
+          status: 'completed'
+        }),
+        expect.objectContaining({ id: 'agent-runtime:error-runtime:tool-open', status: 'failed' })
+      ])
+    )
+  })
+
+  it('stages partial runtime evidence before an explicit cancellation becomes durable', async () => {
+    const { coordinator, readSession } = createHarness()
+    const execution = createDeterministicDelegateExecution()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const records = createSessionDelegatedWorkRecords(
+      { commands: coordinator, readSession, frameworkId: 'codex', createId: () => 'cancel-branch' },
+      key
+    )
+    const ids = {
+      frame: ['cancel-frame'],
+      attempt: ['cancel-attempt'],
+      message: ['cancel-prompt', 'cancel-partial-message'],
+      runtime: ['cancel-runtime']
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      now: () => 30,
+      createId: (kind) => ids[kind].shift()!
+    })
+    const caller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'cancel-runtime'
+    }
+    const dispatched = await work.delegate(caller, { task: 'Read until stopped' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    const control = execution.controls()[0]
+    control.accept()
+    control.emit({
+      kind: 'runtime',
+      update: {
+        scope: {
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          agentFrameId: 'cancel-frame',
+          attemptId: 'cancel-attempt',
+          runtimeSegmentId: 'cancel-runtime',
+          promptMessageId: 'cancel-prompt'
+        },
+        event: {
+          id: 'cancel-partial',
+          timestamp: 25,
+          kind: 'message',
+          level: 'info',
+          messageId: 'cancel-stream',
+          role: 'assistant',
+          text: 'Evidence before stop'
+        }
+      }
+    })
+
+    await expect(work.stopChildren(caller, [dispatched.children[0].frameId])).resolves.toEqual([
+      { frameId: 'cancel-frame', status: 'cancelled' }
+    ])
+
+    const reloaded = normalizeSessionFile(await readSession())!
+    expect(reloaded.conversationGraph?.messages).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          id: 'cancel-partial-message',
+          content: 'Evidence before stop',
+          status: 'error',
+          failedAt: 30
+        })
+      ])
+    )
+    expect(reloaded.runtimeContext?.delegatedWork?.records[0].attempts[0]).toMatchObject({
+      status: 'cancelled',
+      cancellationReason: 'main_agent_stop'
     })
   })
 

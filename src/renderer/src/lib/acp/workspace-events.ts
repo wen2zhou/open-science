@@ -14,25 +14,14 @@ import { createPreviewFileItemFromArtifact } from '../../pages/workspace/preview
 import { getPreviewFormatForFile } from '../../pages/workspace/preview-support'
 import { usePreviewWorkbenchStore } from '../../stores/preview-workbench-store'
 import { isMediaOverflowError } from '../../../../shared/media-overflow'
-import {
-  getActivityGroupTitleFromToolEvent,
-  isActivityGroupToolEvent
-} from '../../../../shared/activity-groups'
-import {
-  toPersistedSession,
-  useSessionStore,
-  type ChatSession,
-  type ToolActivity
-} from '../../stores/session-store'
+import { toPersistedSession, useSessionStore } from '../../stores/session-store'
 import { useSettingsStore } from '../../stores/settings-store'
 import { saveSessionInOrder } from '../session-persistence/session-persistence'
 import {
-  createRuntimeStreamId,
-  getAcpRuntimeEventImage,
-  getAcpRuntimeEventText,
-  isAssistantRuntimeChatMessageEvent,
-  isRuntimeChatMessageEvent
-} from './chat-events'
+  applyRuntimePresentationEvent,
+  createRuntimePresentationContext,
+  isNonActionableCodexDiagnostic
+} from './runtime-event-presentation'
 
 // Remembers which sessions were marked as waiting during the previous permission sync.
 const pendingPermissionSessionIds = new Set<string>()
@@ -45,7 +34,7 @@ const firstOutputWaitingSessionIds = new Set<string>()
 // the main process broadcasts reviewer:suppress-next-auto-review before sending the correction prompt;
 // the renderer calls suppressNextAutoReview(sessionId) so the correction turn's stop event is ignored.
 const suppressAutoReviewOnceFor = new Set<string>()
-const activityGroupToolCallIdsBySession = new Map<string, Set<string>>()
+const rootRuntimePresentationContext = createRuntimePresentationContext()
 
 type DeferredArtifactEvent = {
   event: AcpRuntimeEvent
@@ -77,57 +66,6 @@ const resetDeferredArtifactEventsForTests = (): void => {
   for (const timer of scheduledAutoReviewsBySession.values()) clearTimeout(timer)
   scheduledAutoReviewsBySession.clear()
   autoReviewsSuppressedForQuit = false
-}
-
-const isActivityGroupControlEvent = (event: AcpRuntimeEvent): boolean => {
-  if (!event.sessionId || !event.toolCallId) return false
-
-  if (isActivityGroupToolEvent(event)) {
-    const toolCallIds = activityGroupToolCallIdsBySession.get(event.sessionId) ?? new Set<string>()
-    toolCallIds.add(event.toolCallId)
-    activityGroupToolCallIdsBySession.set(event.sessionId, toolCallIds)
-    return true
-  }
-
-  return activityGroupToolCallIdsBySession.get(event.sessionId)?.has(event.toolCallId) === true
-}
-
-const isTerminalToolActivity = (activity: ToolActivity | undefined): boolean =>
-  activity?.status === 'completed' || activity?.status === 'failed'
-
-const getCurrentPromptMessageId = (session: ChatSession): string | undefined =>
-  session.activeRun?.promptMessageId ??
-  session.messages.findLast((message) => message.role === 'user')?.id
-
-const ownsForegroundPrompt = (session: ChatSession): boolean =>
-  Boolean(
-    session.agentPromptInFlight ||
-    (session.activeRun && (session.status === 'running' || session.status === 'waiting-permission'))
-  )
-
-// Only a newly accepted terminal transition for the current foreground prompt opens a new silent gap.
-const didCurrentToolBecomeTerminal = (
-  before: ChatSession | undefined,
-  after: ChatSession | undefined,
-  toolCallId: string,
-  eventId: string
-): boolean => {
-  if (!after || !ownsForegroundPrompt(after)) return false
-
-  const beforeActivity = before?.activities?.find((activity) => activity.id === toolCallId)
-  const afterActivity = after.activities?.find((activity) => activity.id === toolCallId)
-  if (
-    !afterActivity ||
-    beforeActivity?.eventIds.includes(eventId) ||
-    isTerminalToolActivity(beforeActivity) ||
-    !isTerminalToolActivity(afterActivity) ||
-    !afterActivity.eventIds.includes(eventId)
-  ) {
-    return false
-  }
-
-  const promptMessageId = getCurrentPromptMessageId(after)
-  return Boolean(promptMessageId && afterActivity.promptMessageId === promptMessageId)
 }
 
 // Marks the next triggerAutoReview call for a session as suppressed. Cleared on use (one-shot).
@@ -162,19 +100,6 @@ const isArtifactOwnershipPersistenceRace = (error: unknown): boolean =>
 // back to working HTTPS. codex-acp can repeat or concatenate them, but neither asks the user to act
 // and both otherwise replace the useful waiting status with a large warning block. Suppress only a
 // payload made entirely from these exact diagnostics; any additional stderr text remains visible.
-const isNonActionableCodexDiagnostic = (text: string): boolean => {
-  const withoutSkillBudgetNotice = text.replace(
-    /Warning:\s*Skill descriptions were shortened to fit the 2% skills context budget\.\s*Codex can still see every skill, but some descriptions are shorter\.\s*Disable unused skills or plugins to leave more room for the rest\.\s*/gi,
-    ''
-  )
-  const withoutTransportFallback = withoutSkillBudgetNotice.replace(
-    /Warning:\s*Falling back from WebSockets to HTTPS transport\.\s*request timed out\s*/gi,
-    ''
-  )
-
-  return withoutTransportFallback.trim().length === 0
-}
-
 type WorkspaceRuntimeEventDependencies = {
   finalizeRunArtifacts?: (request: FinalizeRunArtifactsRequest) => Promise<ArtifactFile[]>
   saveSession?: (session: PersistedChatSession) => Promise<PersistedChatSession | void>
@@ -439,94 +364,9 @@ const applyWorkspaceRuntimeEvent = async (
 ): Promise<boolean> => {
   const store = useSessionStore.getState()
 
-  // A routed user Message is persisted by main before broadcast. Project that same Message locally
-  // without treating it as a fresh prompt or starting another run.
-  if (
-    isRuntimeChatMessageEvent(event) &&
-    event.role === 'user' &&
-    event.sessionId &&
-    event.messageId
-  ) {
-    store.appendRoutedUserMessage({
-      sessionId: event.sessionId,
-      messageId: event.messageId,
-      eventId: event.id,
-      content: getAcpRuntimeEventText(event) ?? '',
-      createdAt: event.timestamp,
-      ...(event.promptMessageId ? { responseToMessageId: event.promptMessageId } : {})
-    })
-    return true
-  }
-
-  // Assistant chat deltas extend the transcript as streamed markdown messages.
-  if (isAssistantRuntimeChatMessageEvent(event)) {
-    const image = getAcpRuntimeEventImage(event)
-    const content = getAcpRuntimeEventText(event)
-    const session = store.sessions.find((candidate) => candidate.id === event.sessionId)
-
-    if (
-      session?.agentFrameworkId === 'codex' &&
-      !image &&
-      typeof content === 'string' &&
-      content.trim().length > 0 &&
-      isNonActionableCodexDiagnostic(content)
-    ) {
-      return true
-    }
-
-    store.completeActivityGroup(event.sessionId, event.promptMessageId)
-    store.appendAgentMessageChunk({
-      sessionId: event.sessionId,
-      streamId: createRuntimeStreamId(event),
-      eventId: event.id,
-      promptMessageId: event.promptMessageId,
-      content,
-      image
-    })
-    return true
-  }
-
-  // Tool calls become visible activity rows, including web-search query/result payloads.
-  if (event.kind === 'tool' && event.sessionId && event.toolCallId) {
-    if (isActivityGroupControlEvent(event)) {
-      const title = getActivityGroupTitleFromToolEvent(event)
-      if (title) {
-        store.beginActivityGroup(event.sessionId, event.toolCallId, title, event.promptMessageId)
-      }
-      return true
-    }
-
-    const sessionBeforeToolEvent = store.sessions.find((session) => session.id === event.sessionId)
-    store.upsertToolActivity({
-      sessionId: event.sessionId,
-      toolCallId: event.toolCallId,
-      eventId: event.id,
-      timestamp: event.timestamp,
-      promptMessageId: event.promptMessageId,
-      title: event.title,
-      status: event.status,
-      providerToolName: event.providerToolName,
-      toolKind: event.toolKind,
-      toolContent: event.toolContent,
-      toolLocations: event.toolLocations,
-      rawInput: event.rawInput,
-      rawOutput: event.rawOutput,
-      terminalOutput: event.terminalOutput,
-      terminalExitCode: event.terminalExitCode
-    })
-    const sessionAfterToolEvent = useSessionStore
-      .getState()
-      .sessions.find((session) => session.id === event.sessionId)
-    if (
-      didCurrentToolBecomeTerminal(
-        sessionBeforeToolEvent,
-        sessionAfterToolEvent,
-        event.toolCallId,
-        event.id
-      )
-    ) {
-      useSessionStore.getState().setAwaitingFirstAgentOutput(event.sessionId, true)
-    }
+  // Message and tool presentation is shared with the selected delegated-Frame overlay. Root-only
+  // lifecycle work (Artifact finalization, Reviews, Plan, stop/error authority) stays below.
+  if (applyRuntimePresentationEvent(event, useSessionStore, rootRuntimePresentationContext)) {
     return true
   }
 
@@ -536,7 +376,7 @@ const applyWorkspaceRuntimeEvent = async (
   }
 
   if (event.kind === 'stop' && event.sessionId) {
-    activityGroupToolCallIdsBySession.delete(event.sessionId)
+    rootRuntimePresentationContext.activityGroupToolCallIdsBySession.delete(event.sessionId)
     const deferredArtifacts = deferredArtifactEventsBySession.get(event.sessionId)
     const activeSession = store.sessions.find((session) => session.id === event.sessionId)
     const terminalPromptMessageId =
@@ -670,7 +510,7 @@ const applyWorkspaceRuntimeEvent = async (
   }
 
   if (event.kind === 'error' && event.sessionId) {
-    activityGroupToolCallIdsBySession.delete(event.sessionId)
+    rootRuntimePresentationContext.activityGroupToolCallIdsBySession.delete(event.sessionId)
     pendingArtifactTurnUsageBySession.delete(event.sessionId)
     // A recoverable request-size overflow shows the neutral "compacting" note ONLY while a recovery is
     // actually in flight — the workspace runtime flips the session to `compacting` first (its recovery

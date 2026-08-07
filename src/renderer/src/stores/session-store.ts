@@ -1,4 +1,5 @@
-import { create } from 'zustand'
+import { create, type StateCreator } from 'zustand'
+import { createStore, type StoreApi } from 'zustand/vanilla'
 import type {
   ToolCallContent,
   ToolCallLocation,
@@ -263,7 +264,7 @@ export type SessionHydrationSelection = {
   sessionId: string | undefined
 }
 
-type SessionStore = SessionStoreData & {
+export type SessionStore = SessionStoreData & {
   selectSession: (sessionId: string) => void
   clearSelection: () => void
   appendUserMessage: (input: AppendUserMessageInput) => AppendMessageResult | undefined
@@ -1042,7 +1043,7 @@ const getToolActivitySessionStatus = (session: ChatSession): SessionStatus => {
 }
 
 // Stores all transient workspace conversation state for the renderer process.
-export const useSessionStore = create<SessionStore>((set, get) => ({
+const createSessionStoreInitializer = (): StateCreator<SessionStore> => (set, get) => ({
   ...createInitialSessionState(),
 
   // Selects only existing sessions so deleted ids cannot remain active.
@@ -2973,7 +2974,14 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
       }
     })
   }
-}))
+})
+
+export type SessionStoreApi = StoreApi<SessionStore>
+
+export const createSessionStore = (): SessionStoreApi =>
+  createStore<SessionStore>(createSessionStoreInitializer())
+
+export const useSessionStore = create<SessionStore>(createSessionStoreInitializer())
 
 export const isExternallyHydratedSession = (session: ChatSession): boolean =>
   externallyHydratedSessions.has(session)

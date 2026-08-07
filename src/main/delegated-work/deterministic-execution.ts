@@ -10,6 +10,7 @@ import {
   type RunningDelegateExecution
 } from './execution-port'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
+import type { AcpTurnTokenUsage } from '../../shared/acp'
 
 type Deferred<Value> = Readonly<{
   promise: Promise<Value>
@@ -32,7 +33,7 @@ type ExecutionControl = Readonly<{
   accept(): void
   rejectAcceptance(error?: Error): void
   emit(event: DelegateExecutionEvent): void
-  complete(response: string): void
+  complete(response: string, turnUsage?: AcpTurnTokenUsage): void
   fail(error?: Error): void
   cancel(): void
   rejectNextPermissionProfile(error?: Error): void
@@ -42,7 +43,12 @@ type ExecutionControl = Readonly<{
 }>
 
 type PlannedExecution =
-  | Readonly<{ status: 'completed'; response: string; events?: readonly DelegateExecutionEvent[] }>
+  | Readonly<{
+      status: 'completed'
+      response: string
+      events?: readonly DelegateExecutionEvent[]
+      turnUsage?: AcpTurnTokenUsage
+    }>
   | Readonly<{ status: 'failed'; error?: Error }>
 
 type DeterministicDelegateExecution = DelegateExecution &
@@ -136,10 +142,10 @@ const createDeterministicDelegateExecution = (
         emit: (event) => {
           for (const listener of listeners) listener(event)
         },
-        complete: (response) => {
+        complete: (response, turnUsage) => {
           if (terminal) return
           terminal = true
-          completion.resolve({ status: 'completed', response })
+          completion.resolve({ status: 'completed', response, ...(turnUsage ? { turnUsage } : {}) })
         },
         fail: (error = new Error('execution failed')) => {
           if (terminal) return
@@ -165,7 +171,7 @@ const createDeterministicDelegateExecution = (
           control.accept()
           if (planned.status === 'completed') {
             for (const event of planned.events ?? []) control.emit(event)
-            control.complete(planned.response)
+            control.complete(planned.response, planned.turnUsage)
           } else {
             control.fail(planned.error)
           }

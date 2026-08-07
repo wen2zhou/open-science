@@ -1,4 +1,9 @@
-import type { AcpPermissionRequest, AcpRuntimeEvent, AcpStateSnapshot } from '../shared/acp'
+import type {
+  AcpAgentRuntimeUpdate,
+  AcpPermissionRequest,
+  AcpRuntimeEvent,
+  AcpStateSnapshot
+} from '../shared/acp'
 import type { CompletionGateLifecycleEvent } from './agents/completion-gate'
 import type { ComputeApprovalRequest, JobSummary } from '../shared/compute'
 import type { DownloadProgress } from '../shared/download-progress'
@@ -31,6 +36,7 @@ import type { UpdateStatus } from '../shared/update'
 export type ApplicationEventMap = {
   'acp:state': AcpStateSnapshot
   'acp:event': AcpRuntimeEvent
+  'acp:agent-runtime-update': AcpAgentRuntimeUpdate
   'acp:permission-request': AcpPermissionRequest
   'notebook:available': NotebookAvailableEvent
   'notebook:changed': NotebookChangedEvent

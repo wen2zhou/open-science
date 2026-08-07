@@ -256,6 +256,7 @@ describe('WorkspaceMessageScroller loading render', () => {
   it('renders an accessible agent loading row before streamed text arrives', async () => {
     const html = await renderScroller(
       createSession({
+        agentStatus: 'retrying root request…',
         activeRun: {
           promptMessageId: 'prompt-1',
           startedAt: 1710000000100
@@ -273,6 +274,7 @@ describe('WorkspaceMessageScroller loading render', () => {
     expect(html).toContain('aria-live="polite"')
     expect(html).toContain('data-testid="open-science-thinking-indicator"')
     expect(html).toContain('>Thinking</span>')
+    expect(html).toContain('retrying root request…')
     expect(html).toContain('data-message-id="session-1-agent-loading"')
     const loadingSurfaceClassName = html.match(
       /<div class="([^"]*max-w-\[56rem\][^"]*)"><div class="flex min-h-5/

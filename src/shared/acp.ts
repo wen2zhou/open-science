@@ -363,6 +363,29 @@ export type AcpRuntimeEvent = {
   raw?: unknown
 }
 
+// Durable app-owned identity for one live Agent Runtime Segment. Provider Session and prompt ids are
+// deliberately excluded from the nested event below so consumers have exactly one routing owner.
+export type AcpAgentRuntimeScope = Readonly<{
+  projectId: string
+  sessionId: string
+  agentFrameId: string
+  attemptId: string
+  runtimeSegmentId: string
+  promptMessageId: string
+}>
+
+export type AcpAgentRuntimeEvent = Readonly<
+  Omit<AcpRuntimeEvent, 'sessionId' | 'promptMessageId'> & {
+    sessionId?: never
+    promptMessageId?: never
+  }
+>
+
+export type AcpAgentRuntimeUpdate = Readonly<{
+  scope: AcpAgentRuntimeScope
+  event: AcpAgentRuntimeEvent
+}>
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 

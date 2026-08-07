@@ -1061,6 +1061,7 @@ const createApplicationModules = async (
   })
   const delegatedWork = createProductionDelegatedWorkComposition({
     dataRoot: resolveDataRoot(),
+    onAgentRuntimeUpdate: (update) => broadcastToRenderers('acp:agent-runtime-update', update),
     sessions: {
       commands: sessionPersistenceCoordinator,
       readSession: ({ projectId, sessionId }) =>

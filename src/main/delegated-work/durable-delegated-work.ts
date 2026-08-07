@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto'
 
 import type { ArtifactFile } from '../../shared/artifacts'
-import type { AcpPermissionScope } from '../../shared/acp'
+import type { AcpAgentRuntimeUpdate, AcpPermissionScope } from '../../shared/acp'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import type { ReviewWithChecks } from '../../shared/reviewer'
 import type { SpecialistProfileView } from '../../shared/specialist'
@@ -19,11 +19,14 @@ import { currentAttempt, sameSession } from './delegated-work-record-invariants'
 import { DelegatedWorkAdmissionPolicy } from './delegated-work-admission'
 import { DurableDelegatedWorkError } from './durable-delegated-work-error'
 import { createInMemoryDelegatedWorkRecords } from './in-memory-delegated-work-records'
+import {
+  createAttemptRuntimeTranscriptStager,
+  terminalizeUnsuccessfulAttempt
+} from './attempt-runtime-transcript'
 import type {
   DelegatedWorkDurableRecords,
   DurableAttempt,
   DurableChild,
-  DurableMessage,
   DurablePendingMessage
 } from './delegated-work-record-types'
 
@@ -264,6 +267,7 @@ const createDurableDelegatedWork = (options: {
   artifactEvidence?: DelegatedArtifactEvidence
   reviewEvidence?: DelegatedReviewEvidence
   onRootPermissionEvent?(event: RootDelegatePermissionEvent): void
+  onAgentRuntimeUpdate?(update: AcpAgentRuntimeUpdate): void
   now?: () => number
   createId?: (kind: 'frame' | 'attempt' | 'message' | 'runtime') => string
   collectPollIntervalMs?: number
@@ -298,7 +302,8 @@ const createDurableDelegatedWork = (options: {
       completion: Promise<void>
       deliver(message: string): Promise<void>
       setPermissionProfile(profile: PermissionProfileId): Promise<void>
-      cancel(): Promise<void>
+      cancel(reason: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'): Promise<void>
+      executionStarted(): boolean
       reservation: DelegateCapacityReservation
       slotId: string
       artifact?: DelegatedArtifactHandle
@@ -328,15 +333,28 @@ const createDurableDelegatedWork = (options: {
     })
     void deliveryHandle.catch(() => undefined)
     let artifact: DelegatedArtifactHandle | undefined
+    const runtimeUpdates: AcpAgentRuntimeUpdate[] = []
     let cancelRequested = false
+    let cancellationReason: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted' =
+      'main_agent_stop'
+    let context: Awaited<ReturnType<DelegatedWorkDurableRecords['startRuntime']>> | undefined
+    const stageRuntimeTranscript = createAttemptRuntimeTranscriptStager({
+      records: options.records,
+      frameId: child.frameId,
+      attemptId: attempt.id,
+      updates: runtimeUpdates,
+      promptMessageId: () => context?.promptMessageId,
+      createMessageId: () => createId('message')
+    })
     const completion = (async () => {
       try {
         const workspace = await options.workspace?.prepare(session, child.frameId, child.inputs)
-        const context = await options.records.startRuntime(
+        const startedContext = await options.records.startRuntime(
           child.frameId,
           attempt.id,
           runtimeSegmentId
         )
+        context = startedContext
         const latest = await snapshotChild(child.frameId)
         if (cancelRequested || !latest || currentAttempt(latest).status !== 'running') {
           rejectHandle(new Error('delegate execution is no longer running'))
@@ -346,11 +364,11 @@ const createDurableDelegatedWork = (options: {
           session,
           executionId: attempt.id,
           attemptId: attempt.id,
-          rootFrameId: context.rootFrameId,
+          rootFrameId: startedContext.rootFrameId,
           agentFrameId: child.frameId,
-          messageBranchId: context.messageBranchId,
+          messageBranchId: startedContext.messageBranchId,
           runtimeSegmentId,
-          promptMessageId: context.promptMessageId,
+          promptMessageId: startedContext.promptMessageId,
           agentName:
             attempt.resolvedAgent.kind === 'specialist'
               ? attempt.resolvedAgent.displayName
@@ -382,22 +400,41 @@ const createDurableDelegatedWork = (options: {
         }
         handle = options.execution.run(executionInput, slotId)
         resolveHandle(handle)
-        const unsubscribe = handle.subscribe((event) =>
+        const unsubscribe = handle.subscribe((event) => {
           permissionOwner.observe(child.frameId, attempt.id, child.title, handle!, event)
-        )
+          if (event.kind !== 'runtime') return
+          const { scope: eventScope } = event.update
+          if (
+            eventScope.projectId !== session.projectId ||
+            eventScope.sessionId !== session.sessionId ||
+            eventScope.agentFrameId !== child.frameId ||
+            eventScope.attemptId !== attempt.id ||
+            eventScope.runtimeSegmentId !== runtimeSegmentId ||
+            eventScope.promptMessageId !== startedContext.promptMessageId
+          ) {
+            return
+          }
+          runtimeUpdates.push(event.update)
+          options.onAgentRuntimeUpdate?.(event.update)
+        })
         void handle.completion.finally(unsubscribe).catch(() => undefined)
         await Promise.race([handle.accepted, handle.completion.then(() => undefined)])
         const outcome = await handle.completion
-        if (outcome.status === 'completed') {
-          const endedAt = now()
-          const terminalMessage: DurableMessage = {
-            id: createId('message'),
-            frameId: child.frameId,
-            role: 'assistant',
-            content: outcome.response,
-            createdAt: endedAt
-          }
-          await options.records.stageTerminalMessage(child.frameId, attempt.id, terminalMessage)
+        const endedAt = now()
+        if (outcome.status === 'completed' && !cancelRequested) {
+          const transcript = await stageRuntimeTranscript({
+            terminalStatus: 'completed',
+            endedAt,
+            fallbackResponse: outcome.response,
+            ...(outcome.turnUsage
+              ? { turnUsage: outcome.turnUsage }
+              : outcome.turnUsageUnavailable
+                ? { turnUsageUnavailable: true }
+                : {})
+          })
+          const terminalMessage = transcript?.terminalMessage
+          if (!terminalMessage)
+            throw new Error('Completed delegated runtime has no terminal Message.')
           await artifact?.finalize(terminalMessage.id)
           await options.records.terminalize({
             frameId: child.frameId,
@@ -406,28 +443,27 @@ const createDurableDelegatedWork = (options: {
             endedAt,
             terminalMessage
           })
-        } else if (!cancelRequested) {
+        } else {
+          await stageRuntimeTranscript({ terminalStatus: 'cancelled', endedAt })
           await options.records.terminalize({
             frameId: child.frameId,
             attemptId: attempt.id,
             status: 'cancelled',
-            endedAt: now(),
-            cancellationReason: 'main_agent_stop'
+            endedAt,
+            cancellationReason
           })
         }
       } catch (error) {
         rejectHandle(error)
         const latest = await snapshotChild(child.frameId)
         if (latest && currentAttempt(latest).status === 'running') {
-          await options.records.terminalize({
+          const endedAt = now()
+          await terminalizeUnsuccessfulAttempt(options.records, stageRuntimeTranscript, {
             frameId: child.frameId,
             attemptId: attempt.id,
-            status: 'error',
-            endedAt: now(),
-            error: {
-              code: 'execution_failure',
-              message: error instanceof Error ? error.message : String(error)
-            }
+            endedAt,
+            error,
+            ...(cancelRequested ? { cancellationReason } : {})
           })
         }
       } finally {
@@ -446,11 +482,13 @@ const createDurableDelegatedWork = (options: {
       async setPermissionProfile(profile) {
         await (await deliveryHandle).setPermissionProfile(profile)
       },
-      async cancel() {
+      async cancel(reason) {
         cancelRequested = true
+        cancellationReason = reason
         rejectHandle(new Error('delegate execution was cancelled before message delivery'))
         await handle?.cancel()
       },
+      executionStarted: () => handle !== undefined,
       reservation,
       slotId
     })
@@ -471,13 +509,19 @@ const createDurableDelegatedWork = (options: {
     const evidenceScope = projectionOwner.attemptScope(snapshot, child, attempt)
     try {
       if (evidenceScope) await options.artifactEvidence?.revoke?.(evidenceScope)
-      await running.get(child.frameId)?.artifact?.dispose()
+      const active = running.get(child.frameId)
+      await active?.artifact?.dispose()
       await options.revokeAttemptWrites?.(scope)
-      await running
-        .get(child.frameId)
-        ?.cancel()
-        .catch(() => undefined)
+      const executionStarted = active?.executionStarted() === true
+      await active?.cancel(reason).catch(() => undefined)
       await options.settleAttemptCleanup?.(scope)
+      if (executionStarted) await active?.completion
+      const latest = await snapshotChild(child.frameId)
+      if (latest && currentAttempt(latest).status !== 'running') {
+        return currentAttempt(latest).status === 'cancelled'
+          ? { frameId: child.frameId, status: 'cancelled' }
+          : { frameId: child.frameId, status: 'already_terminal' }
+      }
       await options.records.terminalize({
         frameId: child.frameId,
         attemptId: attempt.id,

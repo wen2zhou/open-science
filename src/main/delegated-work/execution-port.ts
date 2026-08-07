@@ -1,4 +1,4 @@
-import type { AcpPermissionScope } from '../../shared/acp'
+import type { AcpAgentRuntimeUpdate, AcpPermissionScope, AcpTurnTokenUsage } from '../../shared/acp'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 
 type DelegateExecutionErrorCode = 'capacity' | 'unsupported_framework'
@@ -15,6 +15,7 @@ class DelegateExecutionError extends Error {
 
 type DelegateExecutionEvent =
   | Readonly<{ kind: 'message'; text: string }>
+  | Readonly<{ kind: 'runtime'; update: AcpAgentRuntimeUpdate }>
   | Readonly<{
       kind: 'permission'
       awaiting: true
@@ -36,7 +37,13 @@ type DelegatePermissionResponse = Readonly<{
 }>
 
 type DelegateExecutionOutcome =
-  Readonly<{ status: 'completed'; response: string }> | Readonly<{ status: 'cancelled' }>
+  | Readonly<{
+      status: 'completed'
+      response: string
+      turnUsage?: AcpTurnTokenUsage
+      turnUsageUnavailable?: true
+    }>
+  | Readonly<{ status: 'cancelled' }>
 
 type DelegateExecutionInput = Readonly<{
   session: Readonly<{ projectId: string; sessionId: string }>

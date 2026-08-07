@@ -3,9 +3,11 @@ import { randomUUID } from 'node:crypto'
 
 import {
   getAcpRuntimeEventText,
+  type AcpAgentRuntimeUpdate,
   type AcpPermissionRequest,
   type AcpPermissionResponse,
-  type AcpRuntimeEvent
+  type AcpRuntimeEvent,
+  type AcpTurnTokenUsage
 } from '../../shared/acp'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import {
@@ -136,6 +138,57 @@ const assertPreparedScope = (
   }
 }
 
+const addTurnUsage = (
+  current: AcpTurnTokenUsage | undefined,
+  incoming: AcpTurnTokenUsage
+): AcpTurnTokenUsage | undefined => {
+  if (!current) return { ...incoming }
+  const inputTokens = (current?.inputTokens ?? 0) + incoming.inputTokens
+  const cacheTokens = (current?.cacheTokens ?? 0) + incoming.cacheTokens
+  const outputTokens = (current?.outputTokens ?? 0) + incoming.outputTokens
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    !Number.isSafeInteger(cacheTokens) ||
+    !Number.isSafeInteger(outputTokens)
+  ) {
+    return undefined
+  }
+
+  const hasCacheBreakdown =
+    current?.cachedReadTokens !== undefined &&
+    current.cachedWriteTokens !== undefined &&
+    incoming.cachedReadTokens !== undefined &&
+    incoming.cachedWriteTokens !== undefined
+  const cachedReadTokens = hasCacheBreakdown
+    ? current.cachedReadTokens! + incoming.cachedReadTokens!
+    : undefined
+  const cachedWriteTokens = hasCacheBreakdown
+    ? current.cachedWriteTokens! + incoming.cachedWriteTokens!
+    : undefined
+  const turnCount =
+    current?.turnCount !== undefined && incoming.turnCount !== undefined
+      ? current.turnCount + incoming.turnCount
+      : undefined
+
+  if (
+    (cachedReadTokens !== undefined && !Number.isSafeInteger(cachedReadTokens)) ||
+    (cachedWriteTokens !== undefined && !Number.isSafeInteger(cachedWriteTokens)) ||
+    (turnCount !== undefined && !Number.isSafeInteger(turnCount))
+  ) {
+    return undefined
+  }
+
+  return {
+    inputTokens,
+    cacheTokens,
+    ...(cachedReadTokens !== undefined && cachedWriteTokens !== undefined
+      ? { cachedReadTokens, cachedWriteTokens }
+      : {}),
+    outputTokens,
+    ...(turnCount !== undefined ? { turnCount } : {})
+  }
+}
+
 const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): DelegateExecution => {
   if (!Number.isSafeInteger(options.capacity) || options.capacity < 1) {
     throw new Error('delegate execution capacity must be a positive integer')
@@ -213,6 +266,12 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     let terminalSettled = false
     let cancelRequested = false
     let currentResponse: string[] = []
+    let turnUsage: AcpTurnTokenUsage | undefined
+    let sawStopEvent = false
+    let turnUsageAvailable = true
+    let lastStopEvent: AcpAgentRuntimeUpdate['event'] | undefined
+    // Provider event ids are unique within this Attempt-owned runtime lifetime.
+    const seenStopEventIds = new Set<string>()
     let activeMessage: Readonly<{ text: string; acceptance: Deferred<void> }> | undefined
 
     const settleAccepted = (error?: unknown): void => {
@@ -233,11 +292,53 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
       },
       onEvent(event) {
         if (!writable || event.sessionId !== providerSessionId) return
+        if (event.kind === 'stop') {
+          if (seenStopEventIds.has(event.id)) return
+          seenStopEventIds.add(event.id)
+          sawStopEvent = true
+          if (!event.turnUsage || !turnUsageAvailable) {
+            turnUsageAvailable = false
+            turnUsage = undefined
+          } else {
+            const aggregate = addTurnUsage(turnUsage, event.turnUsage)
+            if (aggregate) turnUsage = aggregate
+            else {
+              turnUsageAvailable = false
+              turnUsage = undefined
+            }
+          }
+        }
         const text = getAcpRuntimeEventText(event)
         if (event.kind === 'message' && event.role === 'assistant' && text) {
           currentResponse.push(text)
           publish({ kind: 'message', text })
         }
+
+        const promptMessageId = scope?.provenance.promptMessageId
+        if (!scope || !promptMessageId) return
+        const {
+          sessionId: providerOwnedSessionId,
+          promptMessageId: providerPromptMessageId,
+          ...ownedEvent
+        } = event
+        void providerOwnedSessionId
+        void providerPromptMessageId
+        const update: AcpAgentRuntimeUpdate = {
+          scope: {
+            projectId: scope.provenance.projectId,
+            sessionId: scope.provenance.sessionId,
+            agentFrameId: scope.provenance.agentFrameId,
+            attemptId: input.attemptId,
+            runtimeSegmentId: scope.provenance.runtimeSegmentId,
+            promptMessageId
+          },
+          event: ownedEvent
+        }
+        if (event.kind === 'stop') {
+          lastStopEvent = ownedEvent
+          return
+        }
+        publish({ kind: 'runtime', update })
       },
       onPermissionRequest(request) {
         if (!writable || request.sessionId !== providerSessionId) return
@@ -390,10 +491,41 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
           activeMessage = queued
         }
 
+        if (!cancelRequested && lastStopEvent) {
+          const { turnUsage: providerTurnUsage, ...stopWithoutUsage } = lastStopEvent
+          void providerTurnUsage
+          publish({
+            kind: 'runtime',
+            update: {
+              scope: {
+                projectId: scope.provenance.projectId,
+                sessionId: scope.provenance.sessionId,
+                agentFrameId: scope.provenance.agentFrameId,
+                attemptId: input.attemptId,
+                runtimeSegmentId: scope.provenance.runtimeSegmentId,
+                promptMessageId: scope.provenance.promptMessageId!
+              },
+              event:
+                turnUsageAvailable && turnUsage
+                  ? { ...stopWithoutUsage, turnUsage }
+                  : stopWithoutUsage
+            }
+          })
+        }
         await cleanup()
         terminalSettled = true
         if (cancelRequested) terminal.resolve({ status: 'cancelled' })
-        else terminal.resolve({ status: 'completed', response })
+        else {
+          terminal.resolve({
+            status: 'completed',
+            response,
+            ...(turnUsageAvailable && turnUsage
+              ? { turnUsage }
+              : sawStopEvent
+                ? { turnUsageUnavailable: true }
+                : {})
+          })
+        }
       } catch (error) {
         settleAccepted(error)
         activeMessage?.acceptance.reject(error)

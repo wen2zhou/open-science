@@ -39,6 +39,68 @@ const specialist = (overrides: Partial<SpecialistFixture> = {}): SpecialistFixtu
 })
 
 describe('durable delegated work', () => {
+  it('publishes live runtime updates only for their trusted running Attempt', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const updates: unknown[] = []
+    const ids = {
+      frame: ['child-frame'],
+      attempt: ['child-attempt'],
+      message: ['child-prompt'],
+      runtime: ['child-runtime']
+    }
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      createId: (kind) => ids[kind].shift()!,
+      onAgentRuntimeUpdate: (update) => updates.push(update)
+    })
+
+    await work.delegate(caller, { task: 'Stream evidence' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    const control = execution.controls()[0]
+    control.emit({
+      kind: 'runtime',
+      update: {
+        scope: {
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          agentFrameId: 'child-frame',
+          attemptId: 'child-attempt',
+          runtimeSegmentId: 'child-runtime',
+          promptMessageId: 'child-prompt'
+        },
+        event: {
+          id: 'tool-1:start',
+          timestamp: 10,
+          kind: 'tool',
+          level: 'info',
+          toolCallId: 'tool-1',
+          title: 'Read source',
+          status: 'in_progress'
+        }
+      }
+    })
+
+    expect(updates).toEqual([
+      expect.objectContaining({
+        scope: expect.objectContaining({
+          agentFrameId: 'child-frame',
+          attemptId: 'child-attempt',
+          runtimeSegmentId: 'child-runtime',
+          promptMessageId: 'child-prompt'
+        }),
+        event: expect.objectContaining({ kind: 'tool', toolCallId: 'tool-1' })
+      })
+    ])
+
+    control.complete('done')
+  })
+
   it('correlates root permission cards to the trusted current Frame and Attempt', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({

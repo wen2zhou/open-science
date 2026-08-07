@@ -1,5 +1,6 @@
 import type {
   AcpCancelPromptRequest,
+  AcpAgentRuntimeUpdate,
   AcpCompactSessionRequest,
   AcpConnectRequest,
   AcpCreateSessionRequest,
@@ -347,6 +348,7 @@ export interface OpenScienceAPI {
     setPermissionProfile(request: AcpSetPermissionProfileRequest): Promise<AcpStateSnapshot>
     revokePermissionGrant(request: AcpRevokePermissionGrantRequest): Promise<AcpStateSnapshot>
     onState(listener: AcpListener<AcpStateSnapshot>): RemoveListener
+    onAgentRuntimeUpdate(listener: AcpListener<AcpAgentRuntimeUpdate>): RemoveListener
     onEvent(listener: AcpListener<AcpRuntimeEvent>): RemoveListener
     onPermissionRequest(listener: AcpListener<AcpPermissionRequest>): RemoveListener
   }

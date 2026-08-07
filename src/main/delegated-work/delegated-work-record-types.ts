@@ -1,3 +1,9 @@
+import type { AcpTurnTokenUsage } from '../../shared/acp'
+import type {
+  PersistedActivityGroup,
+  PersistedMessageImage,
+  PersistedToolActivity
+} from '../../shared/session-persistence'
 import type { AuthenticatedDelegateCaller, DurableDelegateRequest } from './durable-delegated-work'
 
 type DurableResolvedAgent =
@@ -51,7 +57,14 @@ type DurableMessage = {
   frameId: string
   role: 'user' | 'assistant'
   content: string
+  status?: 'complete' | 'error'
+  eventIds?: string[]
+  images?: PersistedMessageImage[]
+  turnUsage?: AcpTurnTokenUsage
+  turnUsageUnavailable?: true
   createdAt: number
+  updatedAt?: number
+  completedAt?: number
 }
 
 type DurableSnapshot = Readonly<{
@@ -120,6 +133,12 @@ type DelegatedWorkDurableRecords = Readonly<{
     runtimeSegmentId: string
   ): Promise<Readonly<{ rootFrameId: string; messageBranchId: string; promptMessageId: string }>>
   stageTerminalMessage(frameId: string, attemptId: string, message: DurableMessage): Promise<void>
+  stageTerminalActivities?(
+    frameId: string,
+    attemptId: string,
+    activities: readonly PersistedToolActivity[],
+    activityGroups: readonly PersistedActivityGroup[]
+  ): Promise<void>
   terminalize(input: TerminalInput): Promise<void>
   appendPendingMessage(
     frameId: string,

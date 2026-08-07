@@ -1,10 +1,15 @@
 import { AlertCircle, Bot, ChevronRight, Loader2, X } from 'lucide-react'
-import { useMemo, useState } from 'react'
+import { useEffect, useMemo, useRef, useState } from 'react'
+import { useStore } from 'zustand'
 
-import type { AcpPermissionRequest } from '../../../../shared/acp'
+import type {
+  AcpAgentRuntimeUpdate,
+  AcpPermissionRequest,
+  AcpRuntimeEvent
+} from '../../../../shared/acp'
 import type { AgentFrameworkId, AgentFrameworkView } from '../../../../shared/settings'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
-import type { ChatSession } from '@/stores/session-store'
+import { createSessionStore, type ChatSession } from '@/stores/session-store'
 import {
   createSessionSubagentsPreviewItem,
   type PreviewToolItem,
@@ -12,6 +17,10 @@ import {
 } from '@/stores/preview-workbench-store'
 import { useSessionStore } from '@/stores/session-store'
 import { cn } from '@/lib/utils'
+import {
+  applyRuntimePresentationEvent,
+  createRuntimePresentationContext
+} from '@/lib/acp/runtime-event-presentation'
 
 import { WorkspaceMessageEditStateProvider } from './workspace-message-edit-state'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
@@ -187,30 +196,139 @@ const SubagentAvailabilityNotice = ({
 const childConversationSession = (
   session: ChatSession,
   detail: NonNullable<ReturnType<typeof selectSubagentFrame>>
-): ChatSession => ({
-  ...session,
-  status: detail.status === 'running' ? 'running' : detail.status === 'error' ? 'error' : 'idle',
-  error: detail.attempt?.error?.message,
-  activeRun: undefined,
-  messages: [...detail.messages],
-  // Child activities already live in the authoritative graph. The transcript selects message-owned
-  // artifacts and Reviews through the same Session owners as the root surface.
-  activities: session.conversationGraph?.activities
-    .filter((activity) => activity.agentFrameId === detail.frameId)
-    .map(({ agentFrameId, messageBranchId, runtimeSegmentId, ...activity }) => {
-      void agentFrameId
-      void messageBranchId
-      void runtimeSegmentId
-      return activity
-    }) as ChatSession['activities'],
-  activityGroups: session.conversationGraph?.activityGroups
-    .filter((group) => group.agentFrameId === detail.frameId)
-    .map(({ agentFrameId, messageBranchId, ...group }) => {
-      void agentFrameId
-      void messageBranchId
-      return group
+): ChatSession => {
+  const messages = [...detail.messages]
+  const promptMessage = messages.findLast((message) => message.role === 'user')
+  const running = detail.status === 'running' && detail.attempt?.status === 'running'
+
+  return {
+    ...session,
+    status: detail.status === 'running' ? 'running' : detail.status === 'error' ? 'error' : 'idle',
+    error: detail.attempt?.error?.message,
+    activeRun:
+      running && promptMessage
+        ? { promptMessageId: promptMessage.id, startedAt: detail.attempt.startedAt }
+        : undefined,
+    agentPromptInFlight: running ? true : undefined,
+    messages,
+    conversationGraph: session.conversationGraph
+      ? { ...session.conversationGraph, activeFrameId: detail.frameId }
+      : undefined,
+    // Child activities already live in the authoritative graph. The transcript selects message-owned
+    // artifacts and Reviews through the same Session owners as the root surface.
+    activities: session.conversationGraph?.activities
+      .filter((activity) => activity.agentFrameId === detail.frameId)
+      .map(({ agentFrameId, messageBranchId, runtimeSegmentId, ...activity }) => {
+        void agentFrameId
+        void messageBranchId
+        void runtimeSegmentId
+        return activity
+      }) as ChatSession['activities'],
+    activityGroups: session.conversationGraph?.activityGroups
+      .filter((group) => group.agentFrameId === detail.frameId)
+      .map(({ agentFrameId, messageBranchId, ...group }) => {
+        void agentFrameId
+        void messageBranchId
+        return group
+      })
+  }
+}
+
+type SubagentFrameDetail = NonNullable<ReturnType<typeof selectSubagentFrame>>
+
+const isSelectedRuntimeUpdate = (
+  update: AcpAgentRuntimeUpdate,
+  session: ChatSession,
+  detail: SubagentFrameDetail,
+  runtimeSegmentId: string | undefined,
+  promptMessageId: string | undefined
+): boolean =>
+  update.scope.projectId === session.projectId &&
+  update.scope.sessionId === session.id &&
+  update.scope.agentFrameId === detail.frameId &&
+  update.scope.attemptId === detail.attempt?.id &&
+  update.scope.runtimeSegmentId === runtimeSegmentId &&
+  update.scope.promptMessageId === promptMessageId
+
+const SubagentLiveTranscript = ({
+  session,
+  detail
+}: {
+  session: ChatSession
+  detail: SubagentFrameDetail
+}): React.JSX.Element => {
+  const [store] = useState(() => {
+    const isolated = createSessionStore()
+    isolated.setState({
+      sessions: [childConversationSession(session, detail)],
+      selectedSessionId: session.id
     })
-})
+    return isolated
+  })
+  const [presentationContext] = useState(createRuntimePresentationContext)
+  const processedEventIds = useRef(new Set<string>())
+  const runtimeSegmentId = detail.attempt?.runtimeSegmentIds.at(-1)
+  const promptMessageId = detail.messages.findLast((message) => message.role === 'user')?.id
+  const liveSession = useStore(store, (state) => state.sessions[0])
+
+  useEffect(() => {
+    if (!runtimeSegmentId) return
+
+    return window.api.acp.onAgentRuntimeUpdate((update) => {
+      if (
+        !isSelectedRuntimeUpdate(update, session, detail, runtimeSegmentId, promptMessageId) ||
+        processedEventIds.current.has(update.event.id)
+      ) {
+        return
+      }
+      processedEventIds.current.add(update.event.id)
+      const event = {
+        ...update.event,
+        sessionId: session.id,
+        promptMessageId: update.scope.promptMessageId
+      } as AcpRuntimeEvent
+
+      if (applyRuntimePresentationEvent(event, store, presentationContext)) return
+      if (event.kind === 'stop') {
+        presentationContext.activityGroupToolCallIdsBySession.delete(session.id)
+        store.getState().finishRun(session.id, event.turnUsage, update.scope.promptMessageId)
+      } else if (event.kind === 'error') {
+        presentationContext.activityGroupToolCallIdsBySession.delete(session.id)
+        store
+          .getState()
+          .failRun(session.id, event.text?.trim() || event.title?.trim() || 'Agent run failed')
+      } else if (event.kind === 'system' && event.level === 'warning' && event.text) {
+        store.getState().setAgentStatus(session.id, event.text)
+      }
+    })
+  }, [detail, presentationContext, promptMessageId, runtimeSegmentId, session, store])
+
+  return (
+    <WorkspaceMessageScroller activeSession={liveSession} onSendEditedMessage={() => undefined} />
+  )
+}
+
+const SubagentTranscript = ({
+  session,
+  detail
+}: {
+  session: ChatSession
+  detail: SubagentFrameDetail
+}): React.JSX.Element => {
+  const runtimeSegmentId = detail.attempt?.runtimeSegmentIds.at(-1)
+  return detail.status === 'running' && detail.attempt?.status === 'running' && runtimeSegmentId ? (
+    <SubagentLiveTranscript
+      key={`${session.id}:${detail.frameId}:${detail.attempt.id}:${runtimeSegmentId}`}
+      session={session}
+      detail={detail}
+    />
+  ) : (
+    <WorkspaceMessageScroller
+      activeSession={childConversationSession(session, detail)}
+      onSendEditedMessage={() => undefined}
+    />
+  )
+}
 
 const SubagentPreview = ({
   item,
@@ -325,10 +443,7 @@ const SubagentPreview = ({
             ) : null}
           </div>
           <WorkspaceMessageEditStateProvider canEditMessage={false}>
-            <WorkspaceMessageScroller
-              activeSession={childConversationSession(session, detail)}
-              onSendEditedMessage={() => undefined}
-            />
+            <SubagentTranscript session={session} detail={detail} />
           </WorkspaceMessageEditStateProvider>
         </div>
       )}

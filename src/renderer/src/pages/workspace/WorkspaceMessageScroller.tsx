@@ -895,6 +895,7 @@ const WorkspaceMessageScrollerImpl = ({
                   <WorkspaceAgentLoadingRow
                     sessionId={activeSession.id}
                     phase={agentLoadingPhase}
+                    agentStatus={activeSession.agentStatus}
                   />
                 ) : null}
               </div>
