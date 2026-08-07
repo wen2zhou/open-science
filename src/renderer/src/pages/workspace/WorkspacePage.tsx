@@ -70,7 +70,7 @@ import { JobDetailModal } from '@/components/JobDetailModal'
 import { getVisiblePermissionRequests } from './session-permissions'
 import { WorkspaceSidebar } from './WorkspaceSidebar'
 import { useJobAnalysisEffect } from '@/lib/compute/useJobAnalysisEffect'
-import { selectActiveBranchPlan } from './session-plan/active-branch-plan'
+import { projectDurablePlanTurn } from './session-plan/durable-plan-turn'
 
 type WorkspacePageProps = {
   isSessionPersistenceHydrated: boolean
@@ -919,6 +919,7 @@ const WorkspacePage = ({
   const activeSessionHasRuntimeInteraction = activeSession
     ? promptInFlightSessionIds.includes(activeSession.id) || activeSessionHasSendPreparation
     : false
+  const activeDurablePlanTurn = projectDurablePlanTurn(activeSession)
   const canArchiveSession = (session: ChatSession): boolean => {
     const hasUnfinishedTransfer = (transfers: readonly ComposerUploadTransfer[]): boolean =>
       transfers.some(
@@ -939,6 +940,7 @@ const WorkspacePage = ({
       session.status !== 'running' &&
       session.status !== 'waiting-permission' &&
       session.status !== 'waiting-plan-approval' &&
+      projectDurablePlanTurn(session) === undefined &&
       !hasUnfinishedTransfer(
         session.id === activeSessionId
           ? attachmentTransfers
@@ -1017,7 +1019,8 @@ const WorkspacePage = ({
   const canEditDraft =
     isSessionPersistenceReady &&
     !activeSessionHasSendPreparation &&
-    activeSession?.status !== 'waiting-plan-approval'
+    activeSession?.status !== 'waiting-plan-approval' &&
+    activeDurablePlanTurn === undefined
   const isUploadingAttachments = attachmentTransfers.some(
     (transfer) =>
       transfer.status === 'queued' ||
@@ -1033,6 +1036,7 @@ const WorkspacePage = ({
     (!docIsEmpty(draftDoc) || attachments.length > 0) &&
     activeSession?.status !== 'running' &&
     activeSession?.status !== 'waiting-permission' &&
+    activeDurablePlanTurn === undefined &&
     !activeSessionHasRuntimeInteraction &&
     !activeSession?.fixLoopActive &&
     // A graph-integrity failure keeps only the in-memory terminal projection. Require restart before
@@ -1594,52 +1598,6 @@ const WorkspacePage = ({
       })
     },
     [activeSessionId, resendEditedMessage]
-  )
-
-  // Restart recovery intentionally does not revive the expired generate_plan interaction. Each card
-  // action starts a fresh user turn bound to the exact pending Plan. Main commits explicit decisions
-  // only after activating that turn; feedback receives protected Plan context without authority.
-  const respondToRestoredPlan = useCallback(
-    async (
-      response: { decision: 'approved' | 'rejected' } | { feedback: string }
-    ): Promise<void> => {
-      const session = activeSessionId
-        ? useSessionStore.getState().sessions.find((candidate) => candidate.id === activeSessionId)
-        : undefined
-      const plan = selectActiveBranchPlan(session)
-      if (!session || session.activeRun || plan?.approval !== 'pending') {
-        throw new Error('The pending Plan is no longer available for a response.')
-      }
-      const pendingAction =
-        'feedback' in response
-          ? ('review' as const)
-          : response.decision === 'approved'
-            ? ('approve' as const)
-            : ('reject' as const)
-      const text =
-        'feedback' in response
-          ? response.feedback
-          : response.decision === 'approved'
-            ? 'Approve the current Plan and continue.'
-            : 'Dismiss the current Plan.'
-
-      const result = await sendMessage({
-        sessionId: session.id,
-        text,
-        planContinuation: {
-          artifactVersionId: plan.artifactVersionId,
-          revision: plan.revision,
-          pendingAction
-        },
-        attachments: [],
-        cwd: session.cwd,
-        projectId: session.projectId,
-        projectName: session.projectId,
-        permissionProfile: session.permissionProfile ?? DEFAULT_PERMISSION_PROFILE
-      })
-      if (!result) throw new Error('Unable to respond to the Plan.')
-    },
-    [activeSessionId, sendMessage]
   )
 
   // Sends the current draft only after hydration so restored selection cannot overwrite intent.
@@ -2497,7 +2455,6 @@ const WorkspacePage = ({
             onNavigateHistory={navigateComposerHistory}
             onSendMessage={sendCurrentMessage}
             onPlanFirst={planCurrentMessage}
-            onRespondToRestoredPlan={respondToRestoredPlan}
             onBranchInNewSession={activeSession ? branchCurrentMessage : undefined}
             onStageAttachmentFiles={stageAttachmentFiles}
             onRemoveAttachment={removeComposerAttachment}

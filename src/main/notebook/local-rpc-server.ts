@@ -135,6 +135,15 @@ type NotebookLocalRpcServerOptions = {
   }
 }
 
+type PlanRpcCallInput = Readonly<{
+  projectId: string
+  sessionId: string
+  operation: 'generate' | 'approve' | 'reject' | 'updateStepStatus'
+  input?: unknown
+}>
+
+type PlanRpcCall = (input: PlanRpcCallInput) => Promise<unknown>
+
 type NotebookRpcPayload = {
   method?: unknown
   params?: unknown
@@ -152,6 +161,7 @@ type NotebookRpcSessionBinding = {
   projectId?: string
   allowedMethods?: ReadonlySet<string>
   activeControlInvocation?: TrustedControlInvocationIdentity
+  planCall?: PlanRpcCall
 }
 
 class RpcHttpError extends Error {
@@ -476,7 +486,11 @@ class NotebookLocalRpcServer {
     }
   }
 
-  async issuePlanConnection(sessionId: string, projectId: string): Promise<NotebookRpcConnection> {
+  async issuePlanConnection(
+    sessionId: string,
+    projectId: string,
+    planCall?: PlanRpcCall
+  ): Promise<NotebookRpcConnection> {
     const connection = await this.ensureStarted()
     this.revokePlanSessionCapabilities(sessionId)
 
@@ -485,7 +499,8 @@ class NotebookLocalRpcServer {
     this.sessionRpcCapabilities.set(token, {
       sessionId,
       projectId,
-      allowedMethods: PLAN_RPC_METHODS
+      allowedMethods: PLAN_RPC_METHODS,
+      ...(planCall ? { planCall } : {})
     })
     return {
       endpoint: connection.endpoint,
@@ -661,12 +676,13 @@ class NotebookLocalRpcServer {
       const bearerToken = authorization?.startsWith('Bearer ')
         ? authorization.slice('Bearer '.length)
         : ''
+      let sessionBinding: NotebookRpcSessionBinding | undefined
       if (isArtifactRpcMethod(method)) {
         const acquired = this.acquireArtifactRpcRequest(method, bearerToken, params)
         params = acquired.params
         releaseArtifactRequest = acquired.release
       } else {
-        const sessionBinding = this.sessionRpcCapabilities.get(bearerToken)
+        sessionBinding = this.sessionRpcCapabilities.get(bearerToken)
         if (sessionBinding) {
           if (sessionBinding.allowedMethods && !sessionBinding.allowedMethods.has(method)) {
             throw new RpcHttpError(403, `Notebook RPC capability does not allow ${method}.`)
@@ -711,7 +727,11 @@ class NotebookLocalRpcServer {
         }
       }
       // Resolve pre-session aliases before the runtime service looks up persistent state.
-      const result = await this.dispatch(method, this.resolveSessionAlias(params))
+      const trustedParams = this.resolveSessionAlias(params)
+      const result =
+        method === 'planCall' && sessionBinding?.planCall
+          ? await this.dispatchPlanCall(trustedParams, sessionBinding.planCall)
+          : await this.dispatch(method, trustedParams)
 
       writeJson(response, 200, { result })
     } catch (error) {
@@ -787,20 +807,7 @@ class NotebookLocalRpcServer {
     }
 
     if (method === 'planCall') {
-      if (!this.planService) throw new Error('Session Plan service is not configured.')
-      if (
-        typeof params.projectId !== 'string' ||
-        typeof params.sessionId !== 'string' ||
-        !['generate', 'approve', 'reject', 'updateStepStatus'].includes(String(params.operation))
-      ) {
-        throw new Error('Session Plan RPC params are invalid.')
-      }
-      return this.planService.call({
-        projectId: params.projectId,
-        sessionId: params.sessionId,
-        operation: params.operation as 'generate' | 'approve' | 'reject' | 'updateStepStatus',
-        input: params.input
-      })
+      return this.dispatchPlanCall(params, this.planService?.call)
     }
 
     if (method === 'resolveNotebookInput') {
@@ -1141,6 +1148,26 @@ class NotebookLocalRpcServer {
     }
 
     return handler(params)
+  }
+
+  private dispatchPlanCall(
+    params: Record<string, unknown>,
+    call: PlanRpcCall | undefined
+  ): Promise<unknown> {
+    if (!call) throw new Error('Session Plan service is not configured.')
+    if (
+      typeof params.projectId !== 'string' ||
+      typeof params.sessionId !== 'string' ||
+      !['generate', 'approve', 'reject', 'updateStepStatus'].includes(String(params.operation))
+    ) {
+      throw new Error('Session Plan RPC params are invalid.')
+    }
+    return call({
+      projectId: params.projectId,
+      sessionId: params.sessionId,
+      operation: params.operation as PlanRpcCallInput['operation'],
+      input: params.input
+    })
   }
 
   // Rewrites the temporary notebook session id to the final ACP session id when needed.

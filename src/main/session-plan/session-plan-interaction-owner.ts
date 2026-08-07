@@ -1,5 +1,6 @@
 type SessionPlanInteractionIdentity = Readonly<{
   artifactVersionId: string
+  expectedRevision?: number
   interactionId: string
 }>
 
@@ -12,6 +13,10 @@ type SessionPlanApprovalParking = Readonly<{
 type SessionPlanExecutionBinding = Readonly<{
   artifactVersionId: string
   interactionSequence: number
+  expectedRevision?: number
+  turnAnchor?: string
+  continuationId?: string
+  attemptId?: string
 }>
 
 type SessionPlanInteractionRow = {
@@ -111,10 +116,21 @@ class SessionPlanInteractionOwner {
   bindExecution({
     sessionId,
     artifactVersionId,
-    interactionSequence
+    interactionSequence,
+    expectedRevision,
+    turnAnchor,
+    continuationId,
+    attemptId
   }: SessionPlanExecutionBinding & Readonly<{ sessionId: string }>): void {
     const row = this.rows.get(sessionId) ?? {}
-    row.execution = { artifactVersionId, interactionSequence }
+    row.execution = {
+      artifactVersionId,
+      interactionSequence,
+      ...(expectedRevision !== undefined ? { expectedRevision } : {}),
+      ...(turnAnchor ? { turnAnchor } : {}),
+      ...(continuationId ? { continuationId } : {}),
+      ...(attemptId ? { attemptId } : {})
+    }
     this.rows.set(sessionId, row)
   }
 

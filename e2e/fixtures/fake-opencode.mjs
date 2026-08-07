@@ -10,8 +10,18 @@ const PERMISSION_PROMPT = 'Request fixture permission.'
 const PROVIDER_BRIDGE_PROMPT = 'Verify the provider bridge.'
 const NOTEBOOK_LIFECYCLE_PROMPT = 'Verify the notebook lifecycle.'
 const ARTIFACT_PROVENANCE_PROMPT = 'Create a provenance artifact.'
+const DURABLE_PLAN_PROMPT = 'Create the deterministic durable Plan.'
+const DURABLE_RETRY_PROMPT = 'Create the deterministic durable Plan with one interruption.'
+const DURABLE_PLAN_TASK = 'Verify durable Plan approval and continuation'
+const DURABLE_REVISED_PLAN_TASK = 'Verify the revised durable Plan'
+const DURABLE_PLAN_STEP = 'Record the approved fixture result'
+const DURABLE_PLAN_GENERATION_ENDED = 'Durable Plan generation attempt ended.'
+const DURABLE_PLAN_STEP_COMPLETED = 'Durable Plan step completed after approval.'
+const DURABLE_PLAN_CONTINUATION =
+  'Continue the approved Session Plan. Execute it through the Plan tools and report the result.'
 
 const sessionRoutes = new Map()
+const interruptOnceSessions = new Set()
 
 const stringEnvironment = (overrides = []) => {
   const environment = Object.fromEntries(
@@ -155,6 +165,70 @@ const createProvenanceArtifact = async (sessionId) => {
   return `Artifact provenance verified for session ${sessionId}, artifact ${stored.artifact.artifact_id}, version ${stored.artifact.version_id}.`
 }
 
+const callPlanTool = (sessionId, name, args) =>
+  withMcpClient(sessionId, 'open-science-plan', (client) =>
+    client
+      .callTool({ name, arguments: args }, undefined, { timeout: 5_000 })
+      .then((result) => toolResult(name, result))
+  )
+
+const generateDurablePlan = async (sessionId, taskSummary = DURABLE_PLAN_TASK) => {
+  const result = await callPlanTool(sessionId, 'generate_plan', {
+    task_summary: taskSummary,
+    phases: [
+      {
+        name: 'Approved execution',
+        delegations: [
+          {
+            name: 'Deterministic fixture',
+            steps: [
+              {
+                title: DURABLE_PLAN_STEP,
+                description: 'Record a deterministic result after durable approval is committed.'
+              }
+            ]
+          }
+        ]
+      }
+    ],
+    desired_outputs: ['A deterministic durable Plan completion record.'],
+    feasibility: {
+      confidence: 'high',
+      rationale: 'The fake Agent and its single step are deterministic.'
+    }
+  })
+  if (result.kind !== 'plan_suspended') {
+    throw new Error(
+      `generate_plan did not suspend the Conversation Turn: ${JSON.stringify(result)}`
+    )
+  }
+  return DURABLE_PLAN_GENERATION_ENDED
+}
+
+const completeDurablePlan = async (sessionId) => {
+  if (interruptOnceSessions.delete(sessionId)) {
+    throw new Error('Deterministic continuation interruption.')
+  }
+  await withMcpClient(sessionId, 'open-science-plan', async (client) => {
+    const updateStepStatus = (args) =>
+      client
+        .callTool({ name: 'update_step_status', arguments: args }, undefined, { timeout: 20_000 })
+        .then((result) => toolResult('update_step_status', result))
+
+    await updateStepStatus({
+      title: DURABLE_PLAN_STEP,
+      status: 'in_progress',
+      notes: 'Started only after durable approval.'
+    })
+    await updateStepStatus({
+      title: DURABLE_PLAN_STEP,
+      status: 'completed',
+      notes: 'Completed by the deterministic continuation Attempt.'
+    })
+  })
+  return DURABLE_PLAN_STEP_COMPLETED
+}
+
 if (process.argv.includes('--version')) {
   process.stdout.write(`${VERSION}\n`)
 } else {
@@ -200,6 +274,23 @@ if (process.argv.includes('--version')) {
           reply = await verifyNotebookLifecycle(context.params.sessionId)
         } else if (prompt.includes(ARTIFACT_PROVENANCE_PROMPT)) {
           reply = await createProvenanceArtifact(context.params.sessionId)
+        } else if (prompt.includes('Revise the pending Session Plan using this feedback:')) {
+          if (prompt.includes('fail replacement')) {
+            throw new Error('Deterministic replacement failure.')
+          }
+          reply = await generateDurablePlan(context.params.sessionId, DURABLE_REVISED_PLAN_TASK)
+        } else if (
+          prompt.includes('Approve the current Plan and continue.') ||
+          prompt.includes(DURABLE_PLAN_CONTINUATION) ||
+          prompt.includes('approved Plan continuation') ||
+          prompt.includes('approved plan continuation')
+        ) {
+          reply = await completeDurablePlan(context.params.sessionId)
+        } else if (prompt.includes(DURABLE_RETRY_PROMPT)) {
+          interruptOnceSessions.add(context.params.sessionId)
+          reply = await generateDurablePlan(context.params.sessionId)
+        } else if (prompt.includes(DURABLE_PLAN_PROMPT)) {
+          reply = await generateDurablePlan(context.params.sessionId)
         } else if (prompt.includes(PERMISSION_PROMPT)) {
           const permission = await context.client.request(
             acp.methods.client.session.requestPermission,

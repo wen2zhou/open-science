@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, expectTypeOf, it } from 'vitest'
 
 import {
   createPlanDocumentV1,
@@ -11,6 +11,21 @@ import {
   PlanCommandError,
   projectPlanStepStates
 } from './contract'
+import type { PlanResponseCommand } from './contract'
+
+describe('Plan response command', () => {
+  it('requires durable Turn and command identity for decisions', () => {
+    type PlanDecisionCommand = Extract<
+      PlanResponseCommand,
+      Readonly<{ decision: 'approved' | 'rejected' }>
+    >
+
+    expectTypeOf<PlanDecisionCommand>().toMatchTypeOf<{
+      turnAnchor: string
+      commandId: string
+    }>()
+  })
+})
 
 describe('protected Plan context', () => {
   it('retains immutable identity, approval, lifecycle, and the latest step notes', () => {

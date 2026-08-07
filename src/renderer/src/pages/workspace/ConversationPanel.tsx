@@ -70,6 +70,7 @@ import { PlanProgressChip, WorkspacePlanCard } from './session-plan/SessionPlanS
 import { selectActiveBranchPlan } from './session-plan/active-branch-plan'
 import { isPlanProgressVisible } from './session-plan/plan-progress'
 import { respondToSessionPlan } from './session-plan/respond-to-session-plan'
+import { projectDurablePlanTurn } from './session-plan/durable-plan-turn'
 import {
   createSessionPlanPreviewItem,
   usePreviewWorkbenchStore
@@ -157,11 +158,6 @@ type ConversationPanelProps = {
   onSendMessage: (forcedSkillIds: string[]) => void
   // Sends this draft as a one-turn request to plan before execution.
   onPlanFirst?: (forcedSkillIds: string[]) => void
-  // A restored pending Plan has no live tool-call waiter. Every card action starts a fresh,
-  // identity-bound Plan interaction instead of trying to resume the expired one.
-  onRespondToRestoredPlan: (
-    response: { decision: 'approved' | 'rejected' } | { feedback: string }
-  ) => Promise<void>
   // Starts a new session from this session's visible branch, then sends the current draft there.
   // Optional while callers migrate to the split send affordance.
   onBranchInNewSession?: (forcedSkillIds: string[]) => void
@@ -238,7 +234,6 @@ const ConversationPanel = ({
   onNavigateHistory,
   onSendMessage,
   onPlanFirst,
-  onRespondToRestoredPlan,
   onBranchInNewSession,
   onStageAttachmentFiles,
   onRemoveAttachment,
@@ -288,16 +283,12 @@ const ConversationPanel = ({
   const allJobsForSession = useSessionJobStore((s) => s.allJobsForSession)
   const hasAnyJobs = activeSession !== undefined && allJobsForSession(activeSession.id).length > 0
   const activeBranchPlan = selectActiveBranchPlan(activeSession)
-  const activePendingPlan = activeBranchPlan?.approval === 'pending' ? activeBranchPlan : undefined
-  const activePendingPlanKey = activePendingPlan
-    ? `${activePendingPlan.artifactVersionId}:${activePendingPlan.revision}`
-    : undefined
-  const [resolvedPlanKey, setResolvedPlanKey] = useState<string>()
-  const pendingPlan =
-    activePendingPlanKey &&
-    resolvedPlanKey !== activePendingPlanKey &&
-    activeSession?.status === 'waiting-plan-approval'
-      ? activePendingPlan
+  const durablePlanTurn = projectDurablePlanTurn(activeSession)
+  const composerPlanTurn =
+    durablePlanTurn?.state === 'awaiting_plan_approval' ||
+    durablePlanTurn?.state === 'continuation_pending' ||
+    durablePlanTurn?.state === 'continuation_interrupted'
+      ? durablePlanTurn
       : undefined
   const resolvedRunError = normalizeRunFailureError(activeSession?.error)
   // Only unknown/opaque ACP-layer failures offer the "Report error → GitHub issue" affordance. The
@@ -354,26 +345,22 @@ const ConversationPanel = ({
     onBranchInNewSession(docToSkillIds(draftDoc))
   }
 
-  const respondToPendingPlan = async (
-    response: { decision: 'approved' | 'rejected' } | { feedback: string }
+  const respondToDurablePlan = async (
+    response: { decision: 'approved' | 'rejected' } | { feedback: string } | { retry: true }
   ): Promise<void> => {
-    if (!activeSession || !pendingPlan) return
-    if (!activeSession.activeRun) {
-      await onRespondToRestoredPlan(response)
-      return
-    }
+    if (!activeSession || !composerPlanTurn) return
     await respondToSessionPlan(
       {
         projectId: activeSession.projectId,
         sessionId: activeSession.id,
-        projection: pendingPlan
+        projection: composerPlanTurn.plan
       },
       response
     )
   }
 
   const openPendingPlan = (): void => {
-    if (!activeSession || !pendingPlan) return
+    if (!activeSession || !composerPlanTurn) return
     usePreviewWorkbenchStore
       .getState()
       .upsertAndActivateItem(
@@ -638,14 +625,16 @@ const ConversationPanel = ({
                     </div>
                   ) : null}
 
-                  {pendingPlan ? (
+                  {composerPlanTurn ? (
                     <WorkspacePlanCard
                       className="relative z-10"
-                      projection={pendingPlan}
+                      projection={composerPlanTurn.plan}
+                      turnState={composerPlanTurn.state}
+                      actionable={composerPlanTurn.actionable}
                       onOpen={openPendingPlan}
-                      onRespond={(decision) => respondToPendingPlan({ decision })}
-                      onSubmitResponse={(text) => respondToPendingPlan({ feedback: text })}
-                      onResolved={() => setResolvedPlanKey(activePendingPlanKey)}
+                      onRespond={(decision) => respondToDurablePlan({ decision })}
+                      onSubmitResponse={(text) => respondToDurablePlan({ feedback: text })}
+                      onRetry={() => respondToDurablePlan({ retry: true })}
                     />
                   ) : null}
 
@@ -654,7 +643,7 @@ const ConversationPanel = ({
                   <form
                     className={cn(
                       'relative z-10 flex flex-col gap-2 rounded-2xl border border-border-200 bg-bg-000 px-3 py-2',
-                      pendingPlan && 'hidden'
+                      composerPlanTurn && 'hidden'
                     )}
                     onSubmit={(event) => event.preventDefault()}
                     {...dropZoneProps}

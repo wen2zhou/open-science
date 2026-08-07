@@ -104,7 +104,7 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
     {
       title: 'Generate or decide Session Plan',
       description:
-        'Create an immutable execution Plan or explicitly decide the active Plan. Generation blocks until the user responds. Text responses always return as kind:feedback and remain ordinary user Messages; interpret the full meaning, then call this tool again with only decision:"approved" or decision:"rejected" when the intent is unambiguous, or revise and regenerate when changes are requested. Calling decision:"approved" also binds an already-approved interrupted Plan to the current user interaction. Never execute from message text alone. The legacy approve:true is equivalent to decision:"approved". Do not combine a decision with Plan content.',
+        'Create an immutable execution Plan or explicitly decide the active Plan. Generation returns kind:"plan_suspended" immediately after the Plan and paused Conversation Turn are durable; do not wait for approval or execute steps in this Attempt. Open Science starts a separate authorized Attempt after the user approves. Never execute from message text alone. The legacy approve:true is equivalent to decision:"approved". Do not combine a decision with Plan content.',
       inputSchema: generatePlanToolSchema
     },
     async ({ decision, approve, task_summary, phases, desired_outputs, feasibility }) => {

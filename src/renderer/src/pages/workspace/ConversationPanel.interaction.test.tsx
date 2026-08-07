@@ -189,7 +189,6 @@ const renderPanel = (props: Partial<Parameters<typeof ConversationPanel>[0]> = {
         canChangePermissionProfile
         onDraftDocChange={vi.fn()}
         onSendMessage={vi.fn()}
-        onRespondToRestoredPlan={vi.fn().mockResolvedValue(undefined)}
         onStageAttachmentFiles={onStageAttachmentFiles}
         onRemoveAttachment={vi.fn()}
         onCancelAttachmentTransfer={vi.fn()}
@@ -308,7 +307,7 @@ describe('ConversationPanel composer intake', () => {
     )
   })
 
-  it('keeps a pending Plan read-only after the Agent interaction ends without a decision', () => {
+  it('keeps a pending Plan visible but fail-closed when its durable Turn is unavailable', () => {
     const session: ChatSession = {
       id: 'session-settled-without-decision',
       projectId: 'project-a',
@@ -327,10 +326,11 @@ describe('ConversationPanel composer intake', () => {
 
     renderPanel({ activeSession: session, canEditDraft: true })
 
-    expect(container.textContent).not.toContain('Plan ready for review')
-    expect(container.querySelector('[role="textbox"]')?.closest('form')?.classList).not.toContain(
+    expect(container.textContent).toContain('Plan ready for review')
+    expect(container.querySelector('[role="textbox"]')?.closest('form')?.classList).toContain(
       'hidden'
     )
+    expect(container.textContent).not.toContain('Approve')
     expect(container.querySelector('[data-testid="menu-view-plan"]')).not.toBeNull()
   })
 
@@ -665,7 +665,7 @@ describe('ConversationPanel + menu', () => {
     ).toBe(true)
   })
 
-  it('replaces the composer with a pending Plan card and restores it immediately after approval', async () => {
+  it('replaces the composer with a pending Plan card and keeps it occupied while resuming', async () => {
     renderPanel()
     expect(container.querySelector('[data-testid="menu-view-plan"]')).toBeNull()
 
@@ -709,10 +709,10 @@ describe('ConversationPanel + menu', () => {
       await Promise.resolve()
     })
 
-    expect(container.textContent).not.toContain('Plan ready for review')
+    expect(container.textContent).toContain('Resuming')
     expect(
       container.querySelector('[role="textbox"]')?.closest('form')?.classList.contains('hidden')
-    ).toBe(false)
+    ).toBe(true)
 
     renderPanel({
       activeSession: {
@@ -800,8 +800,7 @@ describe('ConversationPanel + menu', () => {
     )
   })
 
-  it('reopens an actionable Plan card after restart without reviving the expired interaction', async () => {
-    const onRespondToRestoredPlan = vi.fn().mockResolvedValue(undefined)
+  it('keeps the durable Plan card actionable after its generating attempt ends', async () => {
     const session: ChatSession = {
       id: 'session-orphaned-plan',
       projectId: 'project-a',
@@ -818,7 +817,7 @@ describe('ConversationPanel + menu', () => {
       }
     }
 
-    renderPanel({ activeSession: session, canEditDraft: false, onRespondToRestoredPlan })
+    renderPanel({ activeSession: session, canEditDraft: false })
 
     expect(container.textContent).toContain('Plan ready for review')
     expect(container.querySelector('[role="textbox"]')?.closest('form')?.classList).toContain(
@@ -836,10 +835,59 @@ describe('ConversationPanel + menu', () => {
       await Promise.resolve()
     })
 
-    expect(onRespondToRestoredPlan).toHaveBeenCalledWith({
-      feedback: 'Split the analysis by cohort.'
+    expect(respondToSessionPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'session-orphaned-plan' }),
+      { feedback: 'Split the analysis by cohort.' }
+    )
+  })
+
+  it('routes interrupted Plan Retry through the durable command API', async () => {
+    const session: ChatSession = {
+      id: 'session-plan-retry',
+      projectId: 'project-a',
+      title: 'Interrupted Plan continuation',
+      cwd: '/workspace',
+      status: 'waiting-plan-approval',
+      messages: planOriginMessages(),
+      createdAt: 1,
+      updatedAt: 2,
+      activePlanProjection: {
+        ...completedPlanProjection,
+        approval: 'approved',
+        lifecycle: 'interrupted'
+      },
+      runtimeContext: {
+        version: 2,
+        revision: 5,
+        planTurn: {
+          turnAnchor: 'plan-origin',
+          lifecycle: 'continuation_interrupted',
+          planArtifactVersionId: completedPlanProjection.artifactVersionId,
+          continuation: {
+            continuationId: 'continuation-1',
+            purpose: 'execute_approved_plan',
+            state: 'interrupted',
+            requestedAt: 1,
+            lastTransitionAt: 2,
+            failure: 'execution_failed'
+          }
+        }
+      }
+    }
+
+    renderPanel({ activeSession: session, canEditDraft: false })
+
+    await act(async () => {
+      ;[...container.querySelectorAll<HTMLButtonElement>('button')]
+        .find((button) => button.textContent === 'Retry')
+        ?.click()
+      await Promise.resolve()
     })
-    expect(respondToSessionPlanMock).not.toHaveBeenCalled()
+
+    expect(respondToSessionPlanMock).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: 'session-plan-retry' }),
+      { retry: true }
+    )
   })
 
   it('shows only the authoritative Plan on its Message Branch while retaining an open Preview', () => {
@@ -949,8 +997,7 @@ describe('ConversationPanel + menu', () => {
           lifecycle: 'awaiting_approval'
         }
       }
-      const onRespondToRestoredPlan = vi.fn().mockResolvedValue(undefined)
-      renderPanel({ activeSession: session, canEditDraft: false, onRespondToRestoredPlan })
+      renderPanel({ activeSession: session, canEditDraft: false })
 
       await act(async () => {
         ;[...container.querySelectorAll<HTMLButtonElement>('button')]
@@ -959,8 +1006,10 @@ describe('ConversationPanel + menu', () => {
         await Promise.resolve()
       })
 
-      expect(onRespondToRestoredPlan).toHaveBeenCalledWith({ decision })
-      expect(respondToSessionPlanMock).not.toHaveBeenCalled()
+      expect(respondToSessionPlanMock).toHaveBeenCalledWith(
+        expect.objectContaining({ sessionId: `session-restored-${decision}` }),
+        { decision }
+      )
     }
   )
 

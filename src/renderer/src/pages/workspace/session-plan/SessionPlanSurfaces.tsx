@@ -11,6 +11,7 @@ import {
   type ActivePlanProjection,
   type PlanDocumentV1
 } from '../../../../../shared/session-plan/contract'
+import type { DurablePlanTurnState } from './durable-plan-turn'
 
 type PlanSurfaceProps = Readonly<{ projection: ActivePlanProjection; stale?: boolean }>
 
@@ -66,21 +67,33 @@ const WorkspacePlanCard = ({
   onOpen,
   onRespond,
   onSubmitResponse,
-  onResolved
+  onResolved,
+  onRetry,
+  turnState,
+  actionable = true
 }: PlanSurfaceProps &
   Readonly<{
     onOpen: () => void
     onRespond: (decision: 'approved' | 'rejected') => Promise<void>
     onSubmitResponse?: (text: string) => Promise<void>
     onResolved?: () => void
+    onRetry?: () => Promise<void>
+    turnState?: DurablePlanTurnState
+    actionable?: boolean
     className?: string
   }>): React.JSX.Element => {
-  const decisionPending = projection.approval === 'pending' && !stale
   const [responseText, setResponseText] = useState('')
   const [decisionBusy, setDecisionBusy] = useState(false)
   const [decisionError, setDecisionError] = useState<string>()
   const projectionKey = `${projection.artifactVersionId}:${projection.revision}`
   const [resolvedProjectionKey, setResolvedProjectionKey] = useState<string>()
+  const optimisticallyResuming = resolvedProjectionKey === projectionKey
+  const decisionPending =
+    projection.approval === 'pending' &&
+    !stale &&
+    actionable &&
+    !optimisticallyResuming &&
+    (turnState === undefined || turnState === 'awaiting_plan_approval')
   const respond = async (decision: 'approved' | 'rejected'): Promise<void> => {
     if (decisionBusy) return
     setDecisionBusy(true)
@@ -95,7 +108,18 @@ const WorkspacePlanCard = ({
       setDecisionBusy(false)
     }
   }
-  if (resolvedProjectionKey === projectionKey) return <></>
+  const retry = async (): Promise<void> => {
+    if (decisionBusy || !onRetry) return
+    setDecisionBusy(true)
+    setDecisionError(undefined)
+    try {
+      await onRetry()
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : 'Unable to retry the Plan.')
+    } finally {
+      setDecisionBusy(false)
+    }
+  }
   return (
     <article
       className={`overflow-hidden rounded-lg border border-border bg-card shadow-card ${className}`}
@@ -108,7 +132,13 @@ const WorkspacePlanCard = ({
       <div className="p-4">
         <div className="flex flex-wrap items-start justify-between gap-4">
           <div className="min-w-56 flex-1">
-            <div className="text-xs text-muted-foreground">{lifecycleLabel(projection)}</div>
+            <div className="text-xs text-muted-foreground">
+              {optimisticallyResuming || turnState === 'continuation_pending'
+                ? 'Resuming'
+                : turnState === 'continuation_interrupted'
+                  ? 'Needs attention'
+                  : lifecycleLabel(projection)}
+            </div>
             <div className="mt-1 text-[17px] font-medium text-foreground">
               {projection.document.task_summary}
             </div>
@@ -140,6 +170,14 @@ const WorkspacePlanCard = ({
                   Approve
                 </Button>
               </>
+            ) : turnState === 'continuation_interrupted' ? (
+              <Button
+                type="button"
+                disabled={decisionBusy || !onRetry}
+                onClick={() => void retry()}
+              >
+                Retry
+              </Button>
             ) : null}
           </div>
         </div>
@@ -191,12 +229,12 @@ const WorkspacePlanCard = ({
                 Send
               </Button>
             </div>
-            {decisionError ? (
-              <p role="alert" className="mt-1 text-xs text-destructive">
-                {decisionError}
-              </p>
-            ) : null}
           </form>
+        ) : null}
+        {decisionError ? (
+          <p role="alert" className="mt-1 text-xs text-destructive">
+            {decisionError}
+          </p>
         ) : null}
       </div>
     </article>
@@ -239,7 +277,9 @@ type PlanPreviewSurfaceProps = PlanSurfaceProps &
     isFullScreen?: boolean
     onDownload?: () => Promise<void>
     onRespond?: (decision: 'approved' | 'rejected') => Promise<void>
+    onSubmitResponse?: (text: string) => Promise<void>
     onToggleFullScreen?: () => void
+    turnState?: DurablePlanTurnState
   }>
 
 const validatedPreviewDocument = (value: unknown): PlanDocumentV1 | null => {
@@ -260,9 +300,16 @@ const PlanPreviewSurface = ({
   isFullScreen = false,
   onDownload,
   onRespond,
-  onToggleFullScreen
+  onSubmitResponse,
+  onToggleFullScreen,
+  turnState
 }: PlanPreviewSurfaceProps): React.JSX.Element => {
   const planDocument = validatedPreviewDocument(projection.document)
+  const [decisionBusy, setDecisionBusy] = useState(false)
+  const [decisionError, setDecisionError] = useState<string>()
+  const [responseText, setResponseText] = useState('')
+  const [responseBusy, setResponseBusy] = useState(false)
+  const [responseError, setResponseError] = useState<string>()
 
   const download =
     onDownload ??
@@ -279,6 +326,19 @@ const PlanPreviewSurface = ({
         ) as ArrayBuffer
       })
     })
+
+  const respond = async (decision: 'approved' | 'rejected'): Promise<void> => {
+    if (!onRespond || decisionBusy) return
+    setDecisionBusy(true)
+    setDecisionError(undefined)
+    try {
+      await onRespond(decision)
+    } catch (error) {
+      setDecisionError(error instanceof Error ? error.message : 'Unable to update the Plan.')
+    } finally {
+      setDecisionBusy(false)
+    }
+  }
 
   return (
     <div className="flex h-full min-h-0 flex-col bg-bg-10 text-foreground">
@@ -298,10 +358,19 @@ const PlanPreviewSurface = ({
           </Button>
           {planDocument && !stale && projection.approval === 'pending' && onRespond ? (
             <>
-              <Button type="button" variant="outline" onClick={() => void onRespond('rejected')}>
+              <Button
+                type="button"
+                variant="outline"
+                disabled={decisionBusy}
+                onClick={() => void respond('rejected')}
+              >
                 Dismiss
               </Button>
-              <Button type="button" onClick={() => void onRespond('approved')}>
+              <Button
+                type="button"
+                disabled={decisionBusy}
+                onClick={() => void respond('approved')}
+              >
                 Approve
               </Button>
             </>
@@ -332,16 +401,77 @@ const PlanPreviewSurface = ({
           ) : null}
         </div>
       </header>
+      {decisionError ? (
+        <div
+          role="alert"
+          className="border-b border-border bg-muted px-4 py-2 text-xs text-destructive"
+        >
+          {decisionError}
+        </div>
+      ) : null}
       {stale ? (
         <div className="border-b border-border bg-muted px-4 py-2 text-xs text-muted-foreground">
           ⚠ This plan has been replaced by another plan and is no longer current.
         </div>
       ) : null}
+      {!stale && turnState === 'continuation_pending' ? (
+        <div className="border-b border-border bg-muted px-4 py-2 text-xs text-muted-foreground">
+          Resuming
+        </div>
+      ) : null}
+      {!stale && turnState === 'continuation_interrupted' ? (
+        <div className="border-b border-border bg-muted px-4 py-2 text-xs text-muted-foreground">
+          Needs attention
+        </div>
+      ) : null}
       {!stale && projection.approval === 'pending' && !onRespond ? (
         <div className="border-b border-border bg-muted px-4 py-2 text-xs text-muted-foreground">
-          This Plan is still pending, but its original Agent interaction has ended. Send a normal
-          message to let the Agent decide how to continue.
+          This Plan is pending, but decision controls are unavailable.
         </div>
+      ) : null}
+      {planDocument && !stale && projection.approval === 'pending' && onSubmitResponse ? (
+        <form
+          className="flex shrink-0 items-center gap-2 border-b border-border px-3 py-2"
+          onSubmit={(event) => {
+            event.preventDefault()
+            const text = responseText.trim()
+            if (!text || responseBusy) return
+            setResponseBusy(true)
+            setResponseError(undefined)
+            void onSubmitResponse(text)
+              .then(() => setResponseText(''))
+              .catch((error: unknown) =>
+                setResponseError(
+                  error instanceof Error ? error.message : 'Unable to send Plan feedback.'
+                )
+              )
+              .finally(() => setResponseBusy(false))
+          }}
+        >
+          <label
+            className="sr-only"
+            htmlFor={`plan-preview-response-${projection.artifactVersionId}`}
+          >
+            Respond to Plan
+          </label>
+          <Textarea
+            id={`plan-preview-response-${projection.artifactVersionId}`}
+            rows={1}
+            className="min-h-8 flex-1 resize-none"
+            placeholder="Describe changes to this Plan"
+            value={responseText}
+            disabled={responseBusy}
+            onChange={(event) => setResponseText(event.target.value)}
+          />
+          <Button type="submit" disabled={responseBusy || responseText.trim().length === 0}>
+            Send feedback
+          </Button>
+          {responseError ? (
+            <p role="alert" className="text-xs text-destructive">
+              {responseError}
+            </p>
+          ) : null}
+        </form>
       ) : null}
       {planDocument ? (
         <ScrollArea className="min-h-0 flex-1">

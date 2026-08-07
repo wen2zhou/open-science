@@ -31,6 +31,7 @@ import { GitHubStarBadge } from '@/components/GitHubStarBadge'
 import { UpdateCapsule } from '@/components/UpdateCapsule'
 import type { ChatSession, SessionStatus } from '@/stores/session-store'
 import type { ConversationExportFormat } from '../../../../shared/conversation-export'
+import { projectDurablePlanTurn } from './session-plan/durable-plan-turn'
 
 type WorkspaceSidebarProps = {
   projectName: string
@@ -228,6 +229,16 @@ const WorkspaceSidebar = ({
                 </div>
                 {section.items.map((session) => {
                   const isActive = session.id === activeSessionId
+                  const durablePlanTurn = projectDurablePlanTurn(session)
+                  const projectedStatusLabel =
+                    durablePlanTurn?.sidebarLabel ?? sessionStatusLabel[session.status]
+                  const projectedStatusClassName = durablePlanTurn
+                    ? durablePlanTurn.state === 'continuation_active'
+                      ? sessionStatusDotClassName.running
+                      : durablePlanTurn.state === 'continuation_interrupted'
+                        ? sessionStatusDotClassName.error
+                        : sessionStatusDotClassName['waiting-plan-approval']
+                    : sessionStatusDotClassName[session.status]
                   const isExportDisabled =
                     session.messages.length === 0 ||
                     session.status === 'running' ||
@@ -253,13 +264,11 @@ const WorkspaceSidebar = ({
                             <span
                               className={cn(
                                 'size-[7px] shrink-0 rounded-full',
-                                sessionStatusDotClassName[session.status]
+                                projectedStatusClassName
                               )}
                             />
                           </span>
-                          <span className="sr-only">
-                            Session status: {sessionStatusLabel[session.status]}
-                          </span>
+                          <span className="sr-only">Session status: {projectedStatusLabel}</span>
                           <span className="min-w-0 flex-1 truncate">{session.title}</span>
                         </button>
 

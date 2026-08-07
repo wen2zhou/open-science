@@ -80,6 +80,7 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
     | 'readSessionRuntimeContext'
     | 'patchSessionRuntimeContext'
     | 'appendUserMessageToInteraction'
+    | 'commitPlanFeedback'
     | 'containsMessageOnActiveBranch'
   >
 }
@@ -139,6 +140,9 @@ const createAcpRuntime = ({
   return new AcpRuntimeCoordinator(
     (runtimeCallbacks, permissionGrantStore) => {
       const selection = settingsService.captureActiveAgentBackendSelection()
+      // Each Plan token is issued by one concrete runtime generation. Keep its RPC handler on that
+      // capability so a reconstructed Session cannot be routed through a stale/active coordinator
+      // fallback while ownership publication is still catching up.
       const runtimeOptions: AcpRuntimeOptions = {
         appVersion: app.getVersion(),
         // Packaged macOS apps often start with cwd at "/" or the app bundle; use home instead.
@@ -198,7 +202,9 @@ const createAcpRuntime = ({
               plan: {
                 mcpEntryPath,
                 getRpcConnection: ({ sessionId, projectId }) =>
-                  notebookRpcServer.issuePlanConnection(sessionId, projectId),
+                  notebookRpcServer.issuePlanConnection(sessionId, projectId, (input) =>
+                    ownedRuntime.callSessionPlan(input)
+                  ),
                 registerSessionAlias: (aliasSessionId, sessionId) =>
                   notebookRpcServer.registerSessionAlias(aliasSessionId, sessionId),
                 sessions: sessionPersistenceCoordinator
@@ -253,11 +259,12 @@ const createAcpRuntime = ({
           : undefined
       }
       const baseOwners = composeAcpRuntimeBaseOwners(runtimeOptions)
-      return new AcpRuntime(
+      const ownedRuntime = new AcpRuntime(
         runtimeOptions,
         baseOwners,
         composeAcpRuntimeSessionOwners(runtimeOptions, baseOwners)
       )
+      return ownedRuntime
     },
     callbacks,
     defaultCwd,

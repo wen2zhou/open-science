@@ -88,6 +88,7 @@ const closeElectronApplicationForCleanup = async (
 
 type ElectronApp = {
   readonly page: Page
+  advanceMainClockBy: (milliseconds: number) => Promise<void>
   completeOnboarding: () => Promise<Page>
   configureFakeAgent: () => Promise<Page>
   createTestDirectory: (name: string) => Promise<string>
@@ -252,6 +253,16 @@ class ElectronAppHarness implements ElectronApp {
   get page(): Page {
     if (!this.currentPage) throw new Error('Electron application is not running.')
     return this.currentPage
+  }
+
+  async advanceMainClockBy(milliseconds: number): Promise<void> {
+    if (!Number.isSafeInteger(milliseconds) || milliseconds <= 0) {
+      throw new Error(`Invalid E2E clock advance: ${milliseconds}`)
+    }
+    await this.runningApplication.evaluate((_electron, offset) => {
+      const advancedNow = Date.now() + offset
+      Date.now = () => advancedNow
+    }, milliseconds)
   }
 
   async completeOnboarding(): Promise<Page> {

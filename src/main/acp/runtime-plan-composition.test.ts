@@ -32,7 +32,15 @@ describe('ACP Runtime Session Plan composition', () => {
       first.call({ projectId: 'project', sessionId: 'session', operation: 'approve' })
     ).rejects.toThrow('Session Plan capability is not configured.')
     await expect(
-      first.respond({ projectId: 'project', sessionId: 'session', feedback: 'continue' })
+      first.respond({
+        projectId: 'project',
+        sessionId: 'session',
+        turnAnchor: 'message',
+        artifactVersionId: 'version',
+        expectedRevision: 1,
+        commandId: 'feedback',
+        feedback: 'continue'
+      })
     ).rejects.toThrow('Session Plan capability is not configured.')
   })
 

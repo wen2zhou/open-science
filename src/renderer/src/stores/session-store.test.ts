@@ -514,7 +514,7 @@ describe('session store', () => {
     })
   })
 
-  it('keeps a pending Plan idle after its Agent interaction ended without a decision', () => {
+  it('keeps a pending Plan waiting after its Agent attempt ended without a decision', () => {
     useSessionStore.getState().hydrateSessions([
       {
         id: 'session-1',
@@ -533,7 +533,7 @@ describe('session store', () => {
       .setActivePlanProjection('session-1', createPlanProjection('version-1'))
 
     expect(useSessionStore.getState().sessions[0]).toMatchObject({
-      status: 'idle',
+      status: 'waiting-plan-approval',
       activePlanProjection: { approval: 'pending' }
     })
   })

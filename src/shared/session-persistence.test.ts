@@ -9,7 +9,8 @@ import {
   sanitizeMessageImages,
   sanitizeToolActivity,
   type PersistedChatSession,
-  type SessionPlanRuntimeContext
+  type SessionPlanRuntimeContext,
+  type SessionPlanTurnRuntimeContext
 } from './session-persistence'
 import { createLinearConversationGraph } from './conversation-graph'
 import type { ActivePlanProjection } from './session-plan/contract'
@@ -36,6 +37,15 @@ const createRuntimePlan = (): SessionPlanRuntimeContext => ({
   originatingPromptMessageId: 'prompt-plan-1',
   approval: 'pending',
   stepStatuses: {}
+})
+
+const createPlanTurn = (
+  overrides: Partial<SessionPlanTurnRuntimeContext> = {}
+): SessionPlanTurnRuntimeContext => ({
+  turnAnchor: 'prompt-plan-1',
+  lifecycle: 'awaiting_plan_approval',
+  planArtifactVersionId: 'plan-version-1',
+  ...overrides
 })
 
 const createHistoricalPlan = (): ActivePlanProjection => ({
@@ -689,29 +699,80 @@ describe('normalizeSessionFile with activities', () => {
     expect(normalizeSessionFile(persisted)?.archivedAt).toBe(1_723_000_000_000)
   })
 
-  it('round-trips a main-owned runtime context and preserves plan approval waiting across restart', () => {
+  it('round-trips an active Plan, Conversation Turn, and continuation in the v2 envelope', () => {
+    const plan = { ...createRuntimePlan(), approval: 'approved' as const }
+    const planTurn = createPlanTurn({
+      lifecycle: 'continuation_pending',
+      continuation: {
+        continuationId: 'continuation-1',
+        purpose: 'execute_approved_plan',
+        state: 'pending',
+        requestedAt: 20,
+        lastTransitionAt: 20
+      }
+    })
     const persisted = createSessionFile({
       ...(createSessionWithActivity(undefined) as PersistedChatSession),
       activities: undefined,
-      status: 'waiting-plan-approval',
       runtimeContext: {
-        version: 1,
+        version: 2,
         revision: 3,
-        plan: createRuntimePlan()
+        plan,
+        planTurn
       }
     })
 
     const restored = normalizeSessionFile(persisted)
 
-    expect(restored).toMatchObject({
-      status: 'waiting-plan-approval',
-      runtimeContext: {
-        version: 1,
-        revision: 3,
-        plan: createRuntimePlan()
-      }
+    expect(persisted.session.runtimeContext?.version).toBe(2)
+    expect(restored?.runtimeContext).toEqual({
+      version: 2,
+      revision: 3,
+      plan,
+      planTurn
     })
-    expect(restored?.error).toBeUndefined()
+  })
+
+  it('round-trips an interrupted execute continuation and its failed Attempt history', () => {
+    const plan = { ...createRuntimePlan(), approval: 'approved' as const }
+    const failed = {
+      continuationId: 'continuation-1',
+      purpose: 'execute_approved_plan' as const,
+      state: 'interrupted' as const,
+      attemptId: 'attempt-1',
+      requestedAt: 20,
+      lastTransitionAt: 21,
+      failure: 'dispatch_failed' as const
+    }
+    const planTurn = createPlanTurn({
+      lifecycle: 'continuation_interrupted',
+      continuation: failed,
+      continuationHistory: [{ ...failed, continuationId: 'continuation-0' }]
+    })
+    const restored = normalizeSessionFile(
+      createSessionFile({
+        ...(createSessionWithActivity(undefined) as PersistedChatSession),
+        activities: undefined,
+        status: 'error',
+        runtimeContext: { version: 2, revision: 4, plan, planTurn }
+      })
+    )
+
+    expect(restored?.runtimeContext).toEqual({ version: 2, revision: 4, plan, planTurn })
+  })
+
+  it('accepts a legacy v1 runtime envelope and normalizes it to v2 on read', () => {
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      runtimeContext: { version: 1, revision: 2, plan: createRuntimePlan() }
+    })
+
+    expect(restored?.runtimeContext).toEqual({
+      version: 2,
+      revision: 2,
+      plan: createRuntimePlan()
+    })
   })
 
   it('round-trips special Plan step titles without changing object prototypes', () => {
@@ -722,7 +783,7 @@ describe('normalizeSessionFile with activities', () => {
       ...(createSessionWithActivity(undefined) as PersistedChatSession),
       activities: undefined,
       runtimeContext: {
-        version: 1,
+        version: 2,
         revision: 3,
         plan: { ...createRuntimePlan(), stepStatuses: specialStatuses }
       }
@@ -737,20 +798,25 @@ describe('normalizeSessionFile with activities', () => {
     expect(statuses?.__proto__).toMatchObject({ status: 'blocked' })
   })
 
-  it('does not restore the expired interaction identity for a pending Plan', () => {
+  it('restores an awaiting Plan Turn without reviving an expired active Run', () => {
     const restored = normalizeSessionFile({
       ...(createSessionWithActivity(undefined) as PersistedChatSession),
       activities: undefined,
       status: 'waiting-plan-approval',
       activeRun: { promptMessageId: 'expired-prompt', startedAt: 10 },
       runtimeContext: {
-        version: 1,
+        version: 2,
         revision: 3,
-        plan: createRuntimePlan()
+        plan: createRuntimePlan(),
+        planTurn: createPlanTurn()
       }
     })
 
     expect(restored?.status).toBe('waiting-plan-approval')
+    expect(restored?.runtimeContext).toMatchObject({
+      version: 2,
+      planTurn: createPlanTurn()
+    })
     expect(restored?.activeRun).toBeUndefined()
     expect(restored?.error).toBeUndefined()
   })
@@ -762,12 +828,12 @@ describe('normalizeSessionFile with activities', () => {
       activities: undefined,
       status: 'running',
       activeRun: { promptMessageId: 'prompt-1', startedAt: 10 },
-      runtimeContext: { version: 1, revision: 4, plan }
+      runtimeContext: { version: 2, revision: 4, plan }
     })
 
     expect(restored).toMatchObject({
       status: 'idle',
-      runtimeContext: { version: 1, revision: 4, plan }
+      runtimeContext: { version: 2, revision: 4, plan }
     })
     expect(restored?.activeRun).toBeUndefined()
     expect(restored?.error).toBeUndefined()
@@ -803,6 +869,49 @@ describe('normalizeSessionFile with activities', () => {
     expect(damaged?.runtimeContext).toBeUndefined()
     expect(malformedPlan).toMatchObject({ status: 'idle', messages: [] })
     expect(malformedPlan?.runtimeContext).toBeUndefined()
+  })
+
+  it('fails closed for invalid or Plan-mismatched Conversation Turn lifecycle state', () => {
+    const invalidLifecycle = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      status: 'waiting-plan-approval',
+      runtimeContext: {
+        version: 2,
+        revision: 4,
+        plan: createRuntimePlan(),
+        planTurn: { ...createPlanTurn(), lifecycle: 'completed' }
+      }
+    })
+    const mismatchedPlan = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      status: 'waiting-plan-approval',
+      runtimeContext: {
+        version: 2,
+        revision: 5,
+        plan: createRuntimePlan(),
+        planTurn: createPlanTurn({ planArtifactVersionId: 'different-plan-version' })
+      }
+    })
+    const mismatchedLifecycle = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      status: 'waiting-plan-approval',
+      runtimeContext: {
+        version: 2,
+        revision: 6,
+        plan: { ...createRuntimePlan(), approval: 'approved' },
+        planTurn: createPlanTurn()
+      }
+    })
+
+    expect(invalidLifecycle).toMatchObject({ status: 'idle', messages: [] })
+    expect(invalidLifecycle?.runtimeContext).toBeUndefined()
+    expect(mismatchedPlan).toMatchObject({ status: 'idle', messages: [] })
+    expect(mismatchedPlan?.runtimeContext).toBeUndefined()
+    expect(mismatchedLifecycle).toMatchObject({ status: 'idle', messages: [] })
+    expect(mismatchedLifecycle?.runtimeContext).toBeUndefined()
   })
 
   it('restores a persisted session with its activities intact', () => {

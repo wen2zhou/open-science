@@ -61,7 +61,7 @@ export type SessionRuntimeContextValue =
   | SessionRuntimeContextValue[]
   | { [key: string]: SessionRuntimeContextValue }
 
-export type SessionRuntimeContextOwner = 'plan'
+export type SessionRuntimeContextOwner = 'plan' | 'planTurn'
 
 export type SessionPlanApproval = 'pending' | 'approved' | 'rejected'
 export type SessionPlanStepStatus = 'in_progress' | 'completed' | 'blocked' | 'skipped'
@@ -84,18 +84,48 @@ export type SessionPlanRuntimeContext = Readonly<{
   >
 }>
 
+export type SessionPlanTurnLifecycle =
+  | 'running'
+  | 'awaiting_plan_approval'
+  | 'continuation_pending'
+  | 'continuation_active'
+  | 'continuation_interrupted'
+
+export type SessionPlanContinuationRuntimeContext = Readonly<{
+  continuationId: string
+  purpose: 'execute_approved_plan' | 'revise_pending_plan'
+  state: 'pending' | 'dispatching' | 'active' | 'interrupted'
+  attemptId?: string
+  commandId?: string
+  feedbackMessageId?: string
+  requestedAt: number
+  lastTransitionAt: number
+  failure?: 'dispatch_failed' | 'execution_failed'
+}>
+
+export type SessionPlanTurnRuntimeContext = Readonly<{
+  turnAnchor: string
+  lifecycle: SessionPlanTurnLifecycle
+  planArtifactVersionId?: string
+  continuation?: SessionPlanContinuationRuntimeContext
+  continuationHistory?: readonly SessionPlanContinuationRuntimeContext[]
+}>
+
 // Main-owned mutable authority embedded in the Session record. Owner modules use top-level keys
 // (for example `plan`); renderer consumers receive this only as a read projection. Versioning lets a
 // future incompatible envelope fail closed instead of reviving authority under unknown semantics.
 export type SessionRuntimeContext = Readonly<{
-  version: 1
+  // Version 1 remains accepted at the read boundary; every successful sanitizer/patch emits v2.
+  version: 1 | 2
   revision: number
   plan?: SessionPlanRuntimeContext
+  planTurn?: SessionPlanTurnRuntimeContext
 }>
 
-export type SessionRuntimeContextPatch = Readonly<
-  Partial<Record<SessionRuntimeContextOwner, SessionPlanRuntimeContext | undefined>>
->
+export type SessionRuntimeContextPatch = Readonly<{
+  plan?: SessionPlanRuntimeContext
+  planTurn?: SessionPlanTurnRuntimeContext
+}>
 
 // Stores artifact references only; file bytes stay on disk under the managed artifact root.
 export type PersistedArtifact = {
@@ -469,26 +499,206 @@ const sanitizeSessionPlanRuntimeContext = (
   }
 }
 
+const SESSION_PLAN_TURN_LIFECYCLES = new Set<SessionPlanTurnLifecycle>([
+  'running',
+  'awaiting_plan_approval',
+  'continuation_pending',
+  'continuation_active',
+  'continuation_interrupted'
+])
+
+const sanitizeSessionPlanTurnRuntimeContext = (
+  value: unknown
+): SessionPlanTurnRuntimeContext | undefined => {
+  if (!isRecord(value)) return undefined
+  if (
+    Object.keys(value).some(
+      (field) =>
+        ![
+          'turnAnchor',
+          'lifecycle',
+          'planArtifactVersionId',
+          'continuation',
+          'continuationHistory'
+        ].includes(field)
+    )
+  ) {
+    return undefined
+  }
+  const turnAnchor = asString(value.turnAnchor)
+  const lifecycle = asString(value.lifecycle) as SessionPlanTurnLifecycle | undefined
+  const planArtifactVersionId =
+    value.planArtifactVersionId === undefined ? undefined : asString(value.planArtifactVersionId)
+  if (
+    !turnAnchor ||
+    !lifecycle ||
+    !SESSION_PLAN_TURN_LIFECYCLES.has(lifecycle) ||
+    (value.planArtifactVersionId !== undefined && !planArtifactVersionId)
+  ) {
+    return undefined
+  }
+  let continuation: SessionPlanContinuationRuntimeContext | undefined
+  if (value.continuation !== undefined) {
+    if (!isRecord(value.continuation)) return undefined
+    if (
+      Object.keys(value.continuation).some(
+        (field) =>
+          ![
+            'continuationId',
+            'purpose',
+            'state',
+            'attemptId',
+            'commandId',
+            'feedbackMessageId',
+            'requestedAt',
+            'lastTransitionAt',
+            'failure'
+          ].includes(field)
+      )
+    ) {
+      return undefined
+    }
+    const continuationId = asString(value.continuation.continuationId)
+    const purpose = asString(value.continuation.purpose)
+    const state = asString(value.continuation.state)
+    const attemptId =
+      value.continuation.attemptId === undefined
+        ? undefined
+        : asString(value.continuation.attemptId)
+    const commandId =
+      value.continuation.commandId === undefined
+        ? undefined
+        : asString(value.continuation.commandId)
+    const feedbackMessageId =
+      value.continuation.feedbackMessageId === undefined
+        ? undefined
+        : asString(value.continuation.feedbackMessageId)
+    const requestedAt = asNumber(value.continuation.requestedAt)
+    const lastTransitionAt = asNumber(value.continuation.lastTransitionAt)
+    const failure =
+      value.continuation.failure === undefined ? undefined : asString(value.continuation.failure)
+    if (
+      !continuationId ||
+      !['execute_approved_plan', 'revise_pending_plan'].includes(purpose ?? '') ||
+      !state ||
+      !['pending', 'dispatching', 'active', 'interrupted'].includes(state) ||
+      (value.continuation.attemptId !== undefined && !attemptId) ||
+      (value.continuation.commandId !== undefined && !commandId) ||
+      (value.continuation.feedbackMessageId !== undefined && !feedbackMessageId) ||
+      (purpose === 'revise_pending_plan') !== Boolean(commandId && feedbackMessageId) ||
+      requestedAt === undefined ||
+      requestedAt < 0 ||
+      lastTransitionAt === undefined ||
+      lastTransitionAt < 0 ||
+      (failure !== undefined && !['dispatch_failed', 'execution_failed'].includes(failure))
+    ) {
+      return undefined
+    }
+    continuation = {
+      continuationId,
+      purpose: purpose as SessionPlanContinuationRuntimeContext['purpose'],
+      state: state as SessionPlanContinuationRuntimeContext['state'],
+      ...(attemptId ? { attemptId } : {}),
+      ...(commandId ? { commandId } : {}),
+      ...(feedbackMessageId ? { feedbackMessageId } : {}),
+      requestedAt,
+      lastTransitionAt,
+      ...(failure ? { failure: failure as SessionPlanContinuationRuntimeContext['failure'] } : {})
+    }
+  }
+  let continuationHistory: SessionPlanContinuationRuntimeContext[] | undefined
+  if (value.continuationHistory !== undefined) {
+    if (!Array.isArray(value.continuationHistory)) return undefined
+    continuationHistory = []
+    for (const historical of value.continuationHistory) {
+      const sanitized = sanitizeSessionPlanTurnRuntimeContext({
+        turnAnchor,
+        lifecycle: 'continuation_interrupted',
+        ...(planArtifactVersionId ? { planArtifactVersionId } : {}),
+        continuation: historical
+      })?.continuation
+      if (!sanitized || sanitized.state !== 'interrupted') return undefined
+      continuationHistory.push(sanitized)
+    }
+  }
+  return {
+    turnAnchor,
+    lifecycle,
+    ...(planArtifactVersionId ? { planArtifactVersionId } : {}),
+    ...(continuation ? { continuation } : {}),
+    ...(continuationHistory ? { continuationHistory } : {})
+  }
+}
+
 export const sanitizeSessionRuntimeContext = (
   value: unknown
 ): SessionRuntimeContext | undefined => {
-  if (!isRecord(value) || value.version !== 1) return undefined
+  if (!isRecord(value) || (value.version !== 1 && value.version !== 2)) return undefined
   const revision = asNumber(value.revision)
   if (revision === undefined || !Number.isSafeInteger(revision) || revision < 0) return undefined
 
-  const result: { version: 1; revision: number; plan?: SessionPlanRuntimeContext } = {
-    version: 1,
+  const result: {
+    version: 2
+    revision: number
+    plan?: SessionPlanRuntimeContext
+    planTurn?: SessionPlanTurnRuntimeContext
+  } = {
+    version: 2,
     revision
   }
   const budget = { remaining: 2_000 }
   for (const [owner, ownerValue] of Object.entries(value)) {
     if (owner === 'version' || owner === 'revision') continue
-    if (owner !== 'plan') return undefined
+    if (owner !== 'plan' && owner !== 'planTurn') return undefined
     const sanitizedJson = sanitizeRuntimeContextValue(ownerValue, budget)
     if (sanitizedJson === undefined) return undefined
-    const plan = sanitizeSessionPlanRuntimeContext(sanitizedJson)
-    if (!plan) return undefined
-    result.plan = plan
+    if (owner === 'plan') {
+      const plan = sanitizeSessionPlanRuntimeContext(sanitizedJson)
+      if (!plan) return undefined
+      result.plan = plan
+    } else {
+      const planTurn = sanitizeSessionPlanTurnRuntimeContext(sanitizedJson)
+      if (!planTurn) return undefined
+      result.planTurn = planTurn
+    }
+  }
+  // Legacy v1 remains readable but does not gain actionable Turn authority at this structural
+  // boundary. Artifact verification and unambiguous anchor recovery belong to the Plan workflow.
+  if (
+    result.planTurn?.planArtifactVersionId &&
+    (!result.plan ||
+      result.planTurn.planArtifactVersionId !== result.plan.artifactVersionId ||
+      result.planTurn.turnAnchor !== result.plan.originatingPromptMessageId)
+  ) {
+    return undefined
+  }
+  if (result.planTurn) {
+    const turn = result.planTurn
+    const continuation = turn.continuation
+    if (!result.plan || !turn.planArtifactVersionId) return undefined
+    if (
+      (turn.lifecycle === 'awaiting_plan_approval' &&
+        (result.plan.approval !== 'pending' || continuation !== undefined)) ||
+      (turn.lifecycle === 'continuation_pending' &&
+        ((continuation?.purpose === 'execute_approved_plan' &&
+          result.plan.approval !== 'approved') ||
+          (continuation?.purpose === 'revise_pending_plan' && result.plan.approval !== 'pending') ||
+          !continuation ||
+          !['pending', 'dispatching'].includes(continuation.state))) ||
+      (turn.lifecycle === 'continuation_active' &&
+        ((continuation?.purpose === 'execute_approved_plan' &&
+          result.plan.approval !== 'approved') ||
+          (continuation?.purpose === 'revise_pending_plan' && result.plan.approval !== 'pending') ||
+          !continuation ||
+          continuation.state !== 'active')) ||
+      (turn.lifecycle === 'continuation_interrupted' &&
+        (result.plan.approval !== 'approved' ||
+          continuation?.purpose !== 'execute_approved_plan' ||
+          continuation.state !== 'interrupted')) ||
+      turn.lifecycle === 'running'
+    ) {
+      return undefined
+    }
   }
   return result
 }

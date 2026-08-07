@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { AcpPermissionRequest, AcpRuntimeEvent, AcpStateSnapshot } from '../../shared/acp'
+import { PlanCommandError } from '../../shared/session-plan/contract'
 import { AcpRuntimeCoordinator } from './runtime-coordinator'
 import type { AcpRuntime, AcpRuntimeCallbacks } from './runtime'
 import type { ConversationPermissionGrantStore } from './permission-broker'
@@ -60,6 +61,11 @@ const createFakeRuntime = (options: {
   requestProviderReconnect: ReturnType<typeof vi.fn>
   sendPrompt: ReturnType<typeof vi.fn>
   sendAppContinuation: ReturnType<typeof vi.fn>
+  respondSessionPlan: ReturnType<typeof vi.fn>
+  getSessionPlanProjection: ReturnType<typeof vi.fn>
+  getSessionPlanContinuationRecovery: ReturnType<typeof vi.fn>
+  claimSessionPlanContinuation: ReturnType<typeof vi.fn>
+  recordSessionPlanContinuationFailed: ReturnType<typeof vi.fn>
   applyReasoningEffortChange: ReturnType<typeof vi.fn>
   applyModelChange: ReturnType<typeof vi.fn>
   respondToPermission: ReturnType<typeof vi.fn>
@@ -168,6 +174,11 @@ const createFakeRuntime = (options: {
   }
   const sendPrompt = vi.fn(runPrompt)
   const sendAppContinuation = vi.fn(runPrompt)
+  const respondSessionPlan = vi.fn()
+  const getSessionPlanProjection = vi.fn(async () => null)
+  const getSessionPlanContinuationRecovery = vi.fn(async () => null)
+  const claimSessionPlanContinuation = vi.fn()
+  const recordSessionPlanContinuationFailed = vi.fn()
   const runtime = {
     getSnapshot: () => snapshot,
     getActivePromptSessions: () => [],
@@ -192,6 +203,11 @@ const createFakeRuntime = (options: {
     ),
     sendPrompt,
     sendAppContinuation,
+    respondSessionPlan,
+    getSessionPlanProjection,
+    getSessionPlanContinuationRecovery,
+    claimSessionPlanContinuation,
+    recordSessionPlanContinuationFailed,
     withActivity: vi.fn(
       async (_activityOptions: unknown, work: (scopedRuntime: AcpRuntime) => Promise<unknown>) =>
         work(runtime)
@@ -230,6 +246,11 @@ const createFakeRuntime = (options: {
     requestProviderReconnect,
     sendPrompt,
     sendAppContinuation,
+    respondSessionPlan,
+    getSessionPlanProjection,
+    getSessionPlanContinuationRecovery,
+    claimSessionPlanContinuation,
+    recordSessionPlanContinuationFailed,
     applyReasoningEffortChange,
     applyModelChange,
     respondToPermission,
@@ -363,6 +384,412 @@ describe('AcpRuntimeCoordinator', () => {
 
     expect(created[0].sendAppContinuation).toHaveBeenCalledWith(request, 'prompt-attempt-1')
     expect(created[0].sendPrompt).not.toHaveBeenCalled()
+  })
+
+  it('claims and automatically dispatches an approved durable Plan continuation', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1'],
+        callbacks
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+    const session = await coordinator.createSession()
+    created[0].respondSessionPlan.mockResolvedValue({
+      kind: 'continuation_requested',
+      changed: true,
+      projection: { artifactVersionId: 'version-1', revision: 2, approval: 'approved' },
+      turn: {
+        turnAnchor: 'message-1',
+        lifecycle: 'continuation_pending',
+        planArtifactVersionId: 'version-1',
+        continuation: {
+          continuationId: 'continuation-1',
+          purpose: 'execute_approved_plan',
+          state: 'pending',
+          requestedAt: 10,
+          lastTransitionAt: 10
+        }
+      }
+    })
+    created[0].claimSessionPlanContinuation.mockResolvedValue({ revision: 3 })
+
+    await coordinator.respondSessionPlan({
+      projectId: 'project-1',
+      sessionId: session.sessionId,
+      turnAnchor: 'message-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 1,
+      commandId: 'approve-1',
+      decision: 'approved'
+    })
+
+    expect(created[0].claimSessionPlanContinuation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        turnAnchor: 'message-1',
+        continuationId: 'continuation-1',
+        artifactVersionId: 'version-1'
+      })
+    )
+    await vi.waitFor(() => expect(created[0].sendAppContinuation).toHaveBeenCalledOnce())
+    expect(created[0].sendAppContinuation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        suppressUserMessage: true,
+        provenanceContext: { promptMessageId: 'message-1' },
+        planContinuation: expect.objectContaining({
+          expectedRevision: 3,
+          turnAnchor: 'message-1',
+          continuationId: 'continuation-1'
+        })
+      }),
+      'prompt-attempt-1'
+    )
+  })
+
+  it('routes a complete long-wait Dismiss command through the hydrated active runtime', async () => {
+    vi.useFakeTimers()
+    try {
+      vi.setSystemTime(5_000)
+      const created: ReturnType<typeof createFakeRuntime>[] = []
+      const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+        const fake = createFakeRuntime({ frameworkId: 'claude-code', sessionIds: [], callbacks })
+        created.push(fake)
+        return fake.runtime
+      })
+      const command = {
+        projectId: 'project-1',
+        sessionId: 'persisted-session-1',
+        turnAnchor: 'message-1',
+        artifactVersionId: 'version-1',
+        expectedRevision: 7,
+        commandId: 'dismiss-after-long-wait',
+        decision: 'rejected' as const
+      }
+      created[0].respondSessionPlan.mockResolvedValue({
+        changed: true,
+        projection: { artifactVersionId: 'version-1', revision: 8, approval: 'rejected' }
+      })
+
+      vi.advanceTimersByTime(301_000)
+      await coordinator.respondSessionPlan(command)
+
+      expect(created[0].respondSessionPlan).toHaveBeenCalledWith(command)
+    } finally {
+      vi.useRealTimers()
+    }
+  })
+
+  it('reconstructs a restarted Session before dispatching its claimed Plan continuation', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'claude-code',
+          sessionIds: [],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '/restart-workspace'
+    )
+    created[0].respondSessionPlan.mockResolvedValue({
+      kind: 'continuation_requested',
+      changed: true,
+      projection: { artifactVersionId: 'version-1', revision: 2, approval: 'approved' },
+      turn: {
+        turnAnchor: 'message-1',
+        lifecycle: 'continuation_pending',
+        planArtifactVersionId: 'version-1',
+        continuation: {
+          continuationId: 'continuation-1',
+          purpose: 'execute_approved_plan',
+          state: 'pending',
+          requestedAt: 10,
+          lastTransitionAt: 10
+        }
+      }
+    })
+    created[0].claimSessionPlanContinuation.mockResolvedValue({ revision: 3 })
+
+    await coordinator.respondSessionPlan({
+      projectId: 'project-1',
+      sessionId: 'persisted-session-1',
+      turnAnchor: 'message-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 1,
+      commandId: 'approve-1',
+      decision: 'approved'
+    })
+
+    await vi.waitFor(() => expect(created[0].sendAppContinuation).toHaveBeenCalledOnce())
+    expect(created[0].resumeSession).toHaveBeenCalledWith({
+      sessionId: 'persisted-session-1',
+      cwd: '/restart-workspace',
+      projectName: 'project-1'
+    })
+    expect(created[0].resumeSession.mock.invocationCallOrder[0]).toBeLessThan(
+      created[0].sendAppContinuation.mock.invocationCallOrder[0]
+    )
+  })
+
+  it('records a failed automatic dispatch without rolling back the durable decision', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1'],
+        callbacks,
+        prompt: async () => {
+          throw new Error('provider unavailable')
+        }
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+    const session = await coordinator.createSession()
+    created[0].respondSessionPlan.mockResolvedValue({
+      kind: 'continuation_requested',
+      changed: true,
+      projection: { artifactVersionId: 'version-1', revision: 2, approval: 'approved' },
+      turn: {
+        turnAnchor: 'message-1',
+        lifecycle: 'continuation_pending',
+        planArtifactVersionId: 'version-1',
+        continuation: {
+          continuationId: 'continuation-1',
+          purpose: 'execute_approved_plan',
+          state: 'pending',
+          requestedAt: 10,
+          lastTransitionAt: 10
+        }
+      }
+    })
+    created[0].claimSessionPlanContinuation.mockResolvedValue({ revision: 3 })
+
+    await coordinator.respondSessionPlan({
+      projectId: 'project-1',
+      sessionId: session.sessionId,
+      turnAnchor: 'message-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 1,
+      commandId: 'approve-1',
+      decision: 'approved'
+    })
+
+    await vi.waitFor(() =>
+      expect(created[0].recordSessionPlanContinuationFailed).toHaveBeenCalledWith(
+        expect.objectContaining({
+          continuationId: 'continuation-1',
+          failure: 'dispatch_failed'
+        })
+      )
+    )
+  })
+
+  it('returns the same decision when a duplicate delivery loses the single-intent claim race', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1'],
+        callbacks
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+    const session = await coordinator.createSession()
+    const result = {
+      kind: 'continuation_requested',
+      changed: false,
+      projection: { artifactVersionId: 'version-1', revision: 2, approval: 'approved' },
+      turn: {
+        turnAnchor: 'message-1',
+        lifecycle: 'continuation_pending',
+        planArtifactVersionId: 'version-1',
+        continuation: {
+          continuationId: 'continuation-1',
+          purpose: 'execute_approved_plan',
+          state: 'pending',
+          requestedAt: 10,
+          lastTransitionAt: 10
+        }
+      }
+    }
+    created[0].respondSessionPlan.mockResolvedValue(result)
+    created[0].claimSessionPlanContinuation
+      .mockResolvedValueOnce({ revision: 3 })
+      .mockRejectedValueOnce(
+        new PlanCommandError('continuation-required', 'Already claimed concurrently.')
+      )
+    const command = {
+      projectId: 'project-1',
+      sessionId: session.sessionId,
+      turnAnchor: 'message-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 2,
+      commandId: 'approve-1',
+      decision: 'approved' as const
+    }
+
+    await expect(coordinator.respondSessionPlan(command)).resolves.toBe(result)
+    await expect(coordinator.respondSessionPlan(command)).resolves.toBe(result)
+    await vi.waitFor(() => expect(created[0].sendAppContinuation).toHaveBeenCalledOnce())
+  })
+
+  it('reclaims and dispatches a durable pending Plan continuation during Session recovery', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'claude-code',
+          sessionIds: [],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '/restart-workspace'
+    )
+    const projection = { artifactVersionId: 'version-1', revision: 2, approval: 'approved' }
+    created[0].getSessionPlanProjection.mockResolvedValue(projection)
+    created[0].getSessionPlanContinuationRecovery.mockResolvedValue({
+      projection,
+      turn: {
+        turnAnchor: 'message-1',
+        lifecycle: 'continuation_pending',
+        planArtifactVersionId: 'version-1',
+        continuation: {
+          continuationId: 'continuation-1',
+          purpose: 'execute_approved_plan',
+          state: 'pending',
+          requestedAt: 10,
+          lastTransitionAt: 10
+        }
+      }
+    })
+    created[0].claimSessionPlanContinuation.mockResolvedValue({ revision: 3 })
+
+    await expect(
+      coordinator.getSessionPlanProjection('project-1', 'persisted-session-1')
+    ).resolves.toBe(projection)
+
+    expect(created[0].claimSessionPlanContinuation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: 'persisted-session-1',
+        continuationId: 'continuation-1',
+        expectedRevision: 2
+      })
+    )
+    await vi.waitFor(() => expect(created[0].sendAppContinuation).toHaveBeenCalledOnce())
+  })
+
+  it.each([
+    ['dispatching', 'continuation_pending', 'dispatch_failed'],
+    ['active', 'continuation_active', 'execution_failed']
+  ] as const)(
+    'marks an unowned recovered %s Plan continuation interrupted instead of leaving it Resuming',
+    async (state, lifecycle, failure) => {
+      const created: ReturnType<typeof createFakeRuntime>[] = []
+      const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'claude-code',
+          sessionIds: [],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      })
+      const projection = { artifactVersionId: 'version-1', revision: 3, approval: 'approved' }
+      created[0].getSessionPlanProjection.mockResolvedValue(projection)
+      created[0].getSessionPlanContinuationRecovery.mockResolvedValue({
+        projection,
+        turn: {
+          turnAnchor: 'message-1',
+          lifecycle,
+          planArtifactVersionId: 'version-1',
+          continuation: {
+            continuationId: 'continuation-1',
+            purpose: 'execute_approved_plan',
+            state,
+            attemptId: 'plan-attempt-before-restart',
+            requestedAt: 10,
+            lastTransitionAt: 11
+          }
+        }
+      })
+      created[0].recordSessionPlanContinuationFailed.mockResolvedValue({
+        revision: 4,
+        turn: { lifecycle: 'continuation_interrupted' }
+      })
+
+      await coordinator.getSessionPlanProjection('project-1', 'persisted-session-1')
+
+      expect(created[0].recordSessionPlanContinuationFailed).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sessionId: 'persisted-session-1',
+        turnAnchor: 'message-1',
+        artifactVersionId: 'version-1',
+        continuationId: 'continuation-1',
+        attemptId: 'plan-attempt-before-restart',
+        failure
+      })
+      expect(created[0].sendAppContinuation).not.toHaveBeenCalled()
+    }
+  )
+
+  it('keeps a recovered dispatching continuation while this coordinator still owns its claim', async () => {
+    const resume = createDeferred()
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'claude-code',
+          sessionIds: [],
+          callbacks,
+          beforeResume: () => resume.promise
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '/restart-workspace'
+    )
+    const projection = { artifactVersionId: 'version-1', revision: 2, approval: 'approved' }
+    let attemptId: string | undefined
+    created[0].getSessionPlanProjection.mockResolvedValue(projection)
+    created[0].getSessionPlanContinuationRecovery.mockImplementation(async () => ({
+      projection,
+      turn: {
+        turnAnchor: 'message-1',
+        lifecycle: 'continuation_pending',
+        planArtifactVersionId: 'version-1',
+        continuation: {
+          continuationId: 'continuation-1',
+          purpose: 'execute_approved_plan',
+          state: attemptId ? 'dispatching' : 'pending',
+          ...(attemptId ? { attemptId } : {}),
+          requestedAt: 10,
+          lastTransitionAt: 10
+        }
+      }
+    }))
+    created[0].claimSessionPlanContinuation.mockImplementation(async (input) => {
+      attemptId = input.attemptId
+      return { revision: 3 }
+    })
+
+    await coordinator.getSessionPlanProjection('project-1', 'persisted-session-1')
+    await coordinator.getSessionPlanProjection('project-1', 'persisted-session-1')
+
+    expect(created[0].recordSessionPlanContinuationFailed).not.toHaveBeenCalled()
+    resume.resolve()
+    await vi.waitFor(() => expect(created[0].sendAppContinuation).toHaveBeenCalledOnce())
   })
 
   it('acknowledges prompt ownership release only after the owning runtime publishes drain', async () => {

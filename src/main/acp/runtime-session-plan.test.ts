@@ -41,12 +41,21 @@ const projection = (
 })
 
 type PlanServiceMock = Record<
-  'generate' | 'respond' | 'getProjection' | 'updateStepStatus',
+  | 'generate'
+  | 'respond'
+  | 'getProjection'
+  | 'getContinuationRecovery'
+  | 'recoverLegacyPendingPlan'
+  | 'updateStepStatus'
+  | 'claimContinuation'
+  | 'recordContinuationActive'
+  | 'recordContinuationFailed',
   ReturnType<typeof vi.fn>
 >
 
 type RuntimeHarness = Readonly<{
   runtime: AcpRuntime
+  workflow: ReturnType<typeof composeAcpRuntimePlanWorkflow>
   service: PlanServiceMock
   interactions: SessionPlanInteractionOwner
   setCurrentInteraction: (interaction: { sequence: number; promptMessageId: string }) => void
@@ -68,9 +77,23 @@ const createRuntimeHarness = (options: {
     respond: vi.fn(async (input: { feedback?: string; decision?: 'approved' | 'rejected' }) =>
       input.feedback
         ? {
-            kind: 'feedback' as const,
-            routeToInteractionId: 'interaction-1',
-            artifactVersionId: generated.artifactVersionId,
+            kind: 'revision_requested' as const,
+            projection: generated,
+            changed: true,
+            turn: {
+              turnAnchor: 'interaction-1',
+              lifecycle: 'continuation_pending' as const,
+              planArtifactVersionId: generated.artifactVersionId,
+              continuation: {
+                continuationId: 'continuation-revise-1',
+                purpose: 'revise_pending_plan' as const,
+                state: 'pending' as const,
+                commandId: 'feedback-1',
+                feedbackMessageId: 'message-1',
+                requestedAt: 10,
+                lastTransitionAt: 10
+              }
+            },
             text: input.feedback,
             message: {
               id: 'message-1',
@@ -103,13 +126,19 @@ const createRuntimeHarness = (options: {
           : current
       }
     ),
-    updateStepStatus
+    getContinuationRecovery: vi.fn(async () => null),
+    recoverLegacyPendingPlan: vi.fn(async () => ({ status: 'not-needed' as const })),
+    updateStepStatus,
+    claimContinuation: vi.fn(),
+    recordContinuationActive: vi.fn(),
+    recordContinuationFailed: vi.fn(async () => ({ revision: 9, turn: {} }))
   }
   let currentInteraction = {
     kind: 'prompt' as const,
     sessionId: 'session-1',
     sequence: 7,
-    promptMessageId: 'interaction-1'
+    promptMessageId: 'interaction-1',
+    turnToken: 'turn-token-1'
   }
   const sessionInteractions = {
     snapshot: () => [{ kind: 'prompt', sessionId: 'session-1' }],
@@ -138,7 +167,8 @@ const createRuntimeHarness = (options: {
       artifactTurns: { promptMessageIdFor: () => 'interaction-1' }
     } as unknown as Parameters<typeof composeAcpRuntimePlanWorkflow>[1],
     {
-      publication: { pushEvent: (event: unknown) => options.onEvent?.(event) }
+      publication: { pushEvent: (event: unknown) => options.onEvent?.(event) },
+      sessionEnvironment: { projectName: () => 'project-1' }
     } as unknown as Parameters<typeof composeAcpRuntimePlanWorkflow>[2]
   )
   const target = Object.create(AcpRuntime.prototype) as Record<string, unknown>
@@ -168,6 +198,7 @@ const createRuntimeHarness = (options: {
   })
   return {
     runtime: target as unknown as AcpRuntime,
+    workflow: sessionPlanWorkflow,
     service,
     interactions,
     setCurrentInteraction: ({ sequence, promptMessageId }) => {
@@ -178,40 +209,129 @@ const createRuntimeHarness = (options: {
 }
 
 describe('AcpRuntime Session Plan seam', () => {
-  it('blocks generate_plan until approval and then resumes the same interaction', async () => {
+  it('binds a durable continuation to the revision created by activation', async () => {
+    const active = projection('version-1', 3)
+    const { workflow, service, interactions } = createRuntimeHarness({ activeProjection: active })
+    service.recordContinuationActive.mockResolvedValue({ revision: 4, turn: {} })
+    const request = {
+      sessionId: 'session-1',
+      text: 'Revise the pending Plan.',
+      planContinuation: {
+        projectId: 'project-1',
+        artifactVersionId: 'version-1',
+        expectedRevision: 3,
+        turnAnchor: 'interaction-1',
+        continuationId: 'continuation-1',
+        attemptId: 'attempt-1',
+        purpose: 'revise_pending_plan' as const
+      }
+    }
+    const interaction = {
+      kind: 'prompt' as const,
+      sessionId: 'session-1',
+      sequence: 7,
+      signal: new AbortController().signal,
+      promptMessageId: 'interaction-1',
+      turnToken: 'turn-token-1'
+    }
+
+    const preflight = await workflow.prompt.preflight(request)
+    await workflow.prompt.admit(request, interaction, preflight)
+
+    expect(interactions.executionBindingFor('session-1')).toMatchObject({
+      artifactVersionId: 'version-1',
+      expectedRevision: 4,
+      continuationId: 'continuation-1',
+      attemptId: 'attempt-1'
+    })
+  })
+
+  it('records an active revise Attempt as failed when its prompt ends without a replacement Plan', async () => {
+    const active = projection('version-1', 4)
+    const { workflow, service } = createRuntimeHarness({ activeProjection: active })
+    service.getContinuationRecovery.mockResolvedValue({
+      projection: active,
+      turn: {
+        turnAnchor: 'interaction-1',
+        lifecycle: 'continuation_active',
+        planArtifactVersionId: 'version-1',
+        continuation: {
+          continuationId: 'continuation-1',
+          purpose: 'revise_pending_plan',
+          state: 'active',
+          commandId: 'feedback-1',
+          attemptId: 'attempt-1',
+          requestedAt: 1,
+          lastTransitionAt: 2
+        }
+      }
+    })
+
+    await workflow.prompt.afterRelease('session-1')
+
+    expect(service.recordContinuationFailed).toHaveBeenCalledWith({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 4,
+      continuationId: 'continuation-1',
+      attemptId: 'attempt-1',
+      failure: 'execution_failed'
+    })
+  })
+
+  it('records a continuation outcome through the public runtime seam at the latest revision', async () => {
+    const { runtime, service } = createRuntimeHarness({
+      activeProjection: { ...projection('version-1', 8), approval: 'approved' }
+    })
+
+    await runtime.recordSessionPlanContinuationFailed({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: 'version-1',
+      continuationId: 'continuation-1',
+      attemptId: 'attempt-1',
+      failure: 'execution_failed'
+    })
+
+    expect(service.recordContinuationFailed).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedRevision: 8, continuationId: 'continuation-1' })
+    )
+  })
+
+  it('returns plan_suspended immediately so the generating Attempt can end', async () => {
     const { runtime, service } = createRuntimeHarness({
       onEvent: () => {
         throw new Error('renderer unavailable')
       }
     })
-    const pending = runtime.callSessionPlan({
+    service.generate.mockResolvedValueOnce({
+      kind: 'plan_suspended',
+      projection: projection('version-1'),
+      turn: {
+        turnAnchor: 'interaction-1',
+        lifecycle: 'awaiting_plan_approval',
+        planArtifactVersionId: 'version-1'
+      },
+      pauseInteraction: true as const
+    })
+    const result = runtime.callSessionPlan({
       projectId: 'project-1',
       sessionId: 'session-1',
       operation: 'generate',
       input: {}
     })
-    let settled = false
-    void pending.finally(() => {
-      settled = true
+    await expect(result).resolves.toMatchObject({
+      kind: 'plan_suspended',
+      turn: { lifecycle: 'awaiting_plan_approval' }
     })
-    await Promise.resolve()
-    expect(settled).toBe(false)
-    await expect(
-      runtime.respondSessionPlan({
-        projectId: 'project-1',
-        sessionId: 'session-1',
-        artifactVersionId: 'version-1',
-        expectedRevision: 1,
-        decision: 'approved'
-      })
-    ).resolves.toMatchObject({ changed: true })
-    await expect(pending).resolves.toMatchObject({ changed: true })
-    expect(service.respond).toHaveBeenCalledWith(
-      expect.objectContaining({ decision: 'approved', interactionIsLive: true })
-    )
+    expect(service.respond).not.toHaveBeenCalled()
+    expect(runtime.getSessionPlanProjection).toBeDefined()
   })
 
-  it('rejects duplicate generation before writing a replacement Plan', async () => {
+  it('leaves duplicate generation rejection to the durable Plan service', async () => {
     const { runtime, service, interactions } = createRuntimeHarness({})
     let markGenerateStarted!: () => void
     let finishGenerate!: () => void
@@ -243,23 +363,11 @@ describe('AcpRuntime Session Plan seam', () => {
       .catch((error) => error)
     await Promise.resolve()
 
-    expect(service.generate).toHaveBeenCalledOnce()
-    await expect(duplicate).resolves.toMatchObject({
-      message: 'A Session Plan is already awaiting approval.'
-    })
     finishGenerate()
-    await vi.waitFor(() => {
-      expect(interactions.approvalInteractionIdFor('session-1')).toBe('interaction-1')
-    })
-
-    await runtime.respondSessionPlan({
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      artifactVersionId: 'version-1',
-      expectedRevision: 1,
-      decision: 'approved'
-    })
-    await expect(pending).resolves.toMatchObject({ changed: true })
+    await expect(pending).resolves.toMatchObject({ projection: { approval: 'pending' } })
+    await expect(duplicate).resolves.toMatchObject({ projection: { approval: 'pending' } })
+    expect(service.generate).toHaveBeenCalledTimes(2)
+    expect(interactions.approvalInteractionIdFor('session-1')).toBeUndefined()
   })
 
   it('releases generation admission when durable Plan creation fails', async () => {
@@ -282,17 +390,8 @@ describe('AcpRuntime Session Plan seam', () => {
       operation: 'generate',
       input: {}
     })
-    await vi.waitFor(() => {
-      expect(interactions.approvalInteractionIdFor('session-1')).toBe('interaction-1')
-    })
-    await runtime.respondSessionPlan({
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      artifactVersionId: 'version-1',
-      expectedRevision: 1,
-      decision: 'approved'
-    })
-    await expect(retry).resolves.toMatchObject({ changed: true })
+    await expect(retry).resolves.toMatchObject({ projection: { approval: 'pending' } })
+    expect(interactions.approvalInteractionIdFor('session-1')).toBeUndefined()
   })
 
   it('does not park a Plan after its generating interaction is cancelled', async () => {
@@ -323,9 +422,7 @@ describe('AcpRuntime Session Plan seam', () => {
     await runtime.cancelPrompt({ sessionId: 'session-1' })
     finishGenerate()
 
-    await expect(cancelled).resolves.toMatchObject({
-      message: 'The Session Plan approval reservation is no longer available.'
-    })
+    await expect(cancelled).resolves.toMatchObject({ projection: { approval: 'pending' } })
     expect(interactions.approvalInteractionIdFor('session-1')).toBeUndefined()
 
     const retry = runtime.callSessionPlan({
@@ -334,17 +431,8 @@ describe('AcpRuntime Session Plan seam', () => {
       operation: 'generate',
       input: {}
     })
-    await vi.waitFor(() => {
-      expect(interactions.approvalInteractionIdFor('session-1')).toBe('interaction-1')
-    })
-    await runtime.respondSessionPlan({
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      artifactVersionId: 'version-1',
-      expectedRevision: 1,
-      decision: 'approved'
-    })
-    await expect(retry).resolves.toMatchObject({ changed: true })
+    await expect(retry).resolves.toMatchObject({ projection: { approval: 'pending' } })
+    expect(interactions.approvalInteractionIdFor('session-1')).toBeUndefined()
   })
 
   it('does not cancel a successor approval when the older cancel acknowledgement arrives late', async () => {
@@ -475,8 +563,10 @@ describe('AcpRuntime Session Plan seam', () => {
       runtime.respondSessionPlan({
         projectId: 'project-1',
         sessionId: 'session-1',
+        turnAnchor: 'sibling-message',
         artifactVersionId: 'version-2',
         expectedRevision: 4,
+        commandId: 'approve-sibling',
         decision: 'approved'
       })
     ).rejects.toMatchObject({ code: 'interaction-mismatch' })
@@ -501,6 +591,10 @@ describe('AcpRuntime Session Plan seam', () => {
       runtime.respondSessionPlan({
         projectId: 'project-1',
         sessionId: 'session-1',
+        turnAnchor: 'interaction-1',
+        artifactVersionId: 'version-2',
+        expectedRevision: 4,
+        commandId: 'feedback-sibling',
         feedback: 'Use the sibling Plan.'
       })
     ).rejects.toMatchObject({ code: 'interaction-mismatch' })
@@ -602,7 +696,7 @@ describe('AcpRuntime Session Plan seam', () => {
     })
   })
 
-  it('routes feedback as a visible user Message and resumes the blocked interaction', async () => {
+  it('routes durable feedback as a visible user Message without a parked interaction', async () => {
     const onEvent = vi.fn()
     const { runtime } = createRuntimeHarness({ onEvent })
     const pending = runtime.callSessionPlan({
@@ -616,12 +710,15 @@ describe('AcpRuntime Session Plan seam', () => {
       runtime.respondSessionPlan({
         projectId: 'project-1',
         sessionId: 'session-1',
+        turnAnchor: 'interaction-1',
+        artifactVersionId: 'version-1',
+        expectedRevision: 1,
+        commandId: 'feedback-1',
         feedback: 'Split the analysis by cohort.'
       })
-    ).resolves.toMatchObject({ kind: 'feedback' })
+    ).resolves.toMatchObject({ kind: 'revision_requested' })
     await expect(pending).resolves.toMatchObject({
-      kind: 'feedback',
-      text: 'Split the analysis by cohort.'
+      projection: { approval: 'pending' }
     })
     expect(onEvent).toHaveBeenCalledWith(
       expect.objectContaining({
@@ -644,6 +741,10 @@ describe('AcpRuntime Session Plan seam', () => {
     await runtime.respondSessionPlan({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 1,
+      commandId: 'feedback-approve',
       feedback: '批准执行'
     })
     await pending
@@ -655,8 +756,28 @@ describe('AcpRuntime Session Plan seam', () => {
         operation: 'approve'
       })
     ).resolves.toMatchObject({ projection: { approval: 'approved' } })
-    expect(service.respond).toHaveBeenLastCalledWith(
-      expect.objectContaining({ decision: 'approved', interactionIsLive: true })
+    await runtime.callSessionPlan({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      operation: 'approve'
+    })
+    const decisions = service.respond.mock.calls
+      .map(([command]) => command)
+      .filter((command) => command.decision === 'approved')
+    expect(decisions).toEqual([
+      expect.objectContaining({
+        turnAnchor: 'interaction-1',
+        commandId: 'plan-decision-turn-token-1-approve',
+        decision: 'approved',
+        interactionIsLive: true
+      }),
+      expect.objectContaining({
+        commandId: 'plan-decision-turn-token-1-approve',
+        decision: 'approved'
+      })
+    ])
+    expect(new Set(decisions.map((command) => command.commandId))).toEqual(
+      new Set(['plan-decision-turn-token-1-approve'])
     )
   })
 
@@ -672,6 +793,10 @@ describe('AcpRuntime Session Plan seam', () => {
     await runtime.respondSessionPlan({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 1,
+      commandId: 'feedback-reject',
       feedback: '取消计划'
     })
     await pending
@@ -708,13 +833,90 @@ describe('AcpRuntime Session Plan seam', () => {
     await runtime.respondSessionPlan({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: 'version-1',
       expectedRevision: 1,
+      commandId: 'approve-passive',
       decision: 'approved'
     })
 
     expect(service.respond).toHaveBeenCalledWith(
       expect.objectContaining({ interactionIsLive: false })
+    )
+  })
+
+  it.each(['approved', 'rejected'] as const)(
+    'accepts an identity-complete %s decision after 300 seconds when hydration migrated only the legacy revision',
+    async (decision) => {
+      vi.useFakeTimers()
+      try {
+        vi.setSystemTime(1_000)
+        const migrated = projection('version-1', 2)
+        const { runtime, service } = createRuntimeHarness({ activeProjection: migrated })
+        service.recoverLegacyPendingPlan.mockResolvedValue({
+          status: 'recovered',
+          projection: migrated,
+          turn: {
+            turnAnchor: 'interaction-1',
+            lifecycle: 'awaiting_plan_approval',
+            planArtifactVersionId: 'version-1'
+          }
+        })
+
+        vi.advanceTimersByTime(301_000)
+        await runtime.respondSessionPlan({
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          turnAnchor: 'interaction-1',
+          artifactVersionId: 'version-1',
+          expectedRevision: 1,
+          commandId: `long-wait-${decision}`,
+          decision
+        })
+
+        expect(service.respond).toHaveBeenCalledWith(
+          expect.objectContaining({
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            turnAnchor: 'interaction-1',
+            artifactVersionId: 'version-1',
+            expectedRevision: 2,
+            commandId: `long-wait-${decision}`,
+            decision,
+            interactionIsLive: false
+          })
+        )
+      } finally {
+        vi.useRealTimers()
+      }
+    }
+  )
+
+  it('does not refresh an actually stale revision merely because legacy recovery also occurred', async () => {
+    const migrated = projection('version-1', 3)
+    const { runtime, service } = createRuntimeHarness({ activeProjection: migrated })
+    service.recoverLegacyPendingPlan.mockResolvedValue({
+      status: 'recovered',
+      projection: migrated,
+      turn: {
+        turnAnchor: 'interaction-1',
+        lifecycle: 'awaiting_plan_approval',
+        planArtifactVersionId: 'version-1'
+      }
+    })
+
+    await runtime.respondSessionPlan({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 1,
+      commandId: 'actually-stale',
+      decision: 'rejected'
+    })
+
+    expect(service.respond).toHaveBeenCalledWith(
+      expect.objectContaining({ expectedRevision: 1, commandId: 'actually-stale' })
     )
   })
 

@@ -4,11 +4,44 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
+import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { StreamableHTTPClientTransport } from '@modelcontextprotocol/sdk/client/streamableHttp.js'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import { AgentMcpHttpHost } from './mcp-http-host'
 import { ArtifactRepository } from '../artifacts/repository'
+import { createPlanMcpServer } from '../session-plan/plan-mcp-server'
+
+const VALID_PLAN_CONTENT = {
+  task_summary: 'Analyze one dataset',
+  phases: [
+    {
+      name: 'Analysis',
+      delegations: [
+        {
+          name: 'Primary agent',
+          steps: [{ title: 'Analyze the data', description: 'Produce the result.' }]
+        }
+      ]
+    }
+  ],
+  desired_outputs: [],
+  feasibility: { confidence: 'high' as const, rationale: 'Inputs are available.' }
+}
+
+const SUSPENDED_PLAN_RESULT = {
+  kind: 'plan_suspended',
+  projection: { artifactVersionId: 'version-1', approval: 'pending' },
+  turn: {
+    turnAnchor: 'message-1',
+    lifecycle: 'awaiting_plan_approval',
+    planArtifactVersionId: 'version-1'
+  },
+  pauseInteraction: true
+} as const
+
+const planResultPayload = (result: unknown): unknown =>
+  JSON.parse((result as { content: Array<{ text: string }> }).content[0].text) as unknown
 
 describe('AgentMcpHttpHost', () => {
   let host: AgentMcpHttpHost | undefined
@@ -31,6 +64,79 @@ describe('AgentMcpHttpHost', () => {
       root = undefined
     }
   })
+
+  it.each(['stdio', 'http'] as const)(
+    'returns the same immediate suspended Plan contract over %s',
+    async (transportKind) => {
+      let client: Client
+      let serverToClose: ReturnType<typeof createPlanMcpServer> | undefined
+
+      if (transportKind === 'stdio') {
+        serverToClose = createPlanMcpServer({
+          generate: async () => SUSPENDED_PLAN_RESULT,
+          approve: async () => undefined,
+          reject: async () => undefined,
+          updateStepStatus: async () => undefined
+        })
+        client = new Client({ name: 'plan-stdio-contract', version: '1.0.0' })
+        const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+        await Promise.all([serverToClose.connect(serverTransport), client.connect(clientTransport)])
+      } else {
+        const routingId = 'plan-parity-session'
+        rpcServer = createServer((request, response) => {
+          void (async () => {
+            const chunks: Buffer[] = []
+            for await (const chunk of request) {
+              chunks.push(typeof chunk === 'string' ? Buffer.from(chunk) : chunk)
+            }
+            const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as {
+              method?: string
+              params?: { operation?: string }
+            }
+            expect(body).toMatchObject({
+              method: 'planCall',
+              params: { operation: 'generate', input: VALID_PLAN_CONTENT }
+            })
+            response.writeHead(200, { 'content-type': 'application/json' })
+            response.end(JSON.stringify({ result: SUSPENDED_PLAN_RESULT }))
+          })()
+        })
+        await new Promise<void>((resolve, reject) => {
+          rpcServer?.once('error', reject)
+          rpcServer?.listen(0, '127.0.0.1', resolve)
+        })
+        const rpcAddress = rpcServer.address()
+        if (typeof rpcAddress !== 'object' || rpcAddress === null) {
+          throw new Error('Test Plan RPC server did not return a TCP address.')
+        }
+        host = new AgentMcpHttpHost()
+        const { token } = await host.ensureStarted()
+        host.registerPlan(routingId, {
+          endpoint: `http://127.0.0.1:${rpcAddress.port}/plan`,
+          token: 'plan-rpc-token',
+          projectId: 'project-1',
+          sessionId: routingId
+        })
+        client = new Client({ name: 'plan-http-contract', version: '1.0.0' })
+        await client.connect(
+          new StreamableHTTPClientTransport(new URL(host.urlFor('plan', routingId)), {
+            requestInit: { headers: { authorization: `Bearer ${token}` } }
+          })
+        )
+      }
+
+      try {
+        const result = await client.callTool({
+          name: 'generate_plan',
+          arguments: VALID_PLAN_CONTENT
+        })
+        expect(planResultPayload(result)).toEqual(SUSPENDED_PLAN_RESULT)
+      } finally {
+        await client.close()
+        await serverToClose?.close()
+      }
+    }
+  )
 
   it('serves the artifact MCP tools over http and writes a file for the active run', async () => {
     root = await mkdtemp(join(tmpdir(), 'mcp-http-host-'))

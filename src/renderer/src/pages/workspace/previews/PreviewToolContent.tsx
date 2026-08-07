@@ -9,6 +9,7 @@ import { ProjectFilesView } from '../ProjectFilesView'
 import { SessionReviewerPanel } from '../SessionReviewerPanel'
 import { respondToSessionPlan } from '../session-plan/respond-to-session-plan'
 import { PlanPreviewSurface } from '../session-plan/SessionPlanSurfaces'
+import { projectDurablePlanTurn } from '../session-plan/durable-plan-turn'
 
 const isNotebookPreviewItem = (item: PreviewToolItem): item is NotebookPreviewItem =>
   item.toolKind === 'notebook' && Boolean(item.notebook)
@@ -52,6 +53,7 @@ export const PreviewToolContent = ({
   const isPlanExpanded = usePreviewWorkbenchStore((state) => state.expandedToolItemId === item.id)
   const setToolItemExpanded = usePreviewWorkbenchStore((state) => state.setToolItemExpanded)
   const activePlanProjection = planSession?.activePlanProjection
+  const durablePlanTurn = projectDurablePlanTurn(planSession)
   const planProjection = item.planArtifactVersionId
     ? (planSession?.planHistoryProjections?.find(
         (projection) => projection.artifactVersionId === item.planArtifactVersionId
@@ -68,8 +70,17 @@ export const PreviewToolContent = ({
       { decision }
     )
   }
+  const submitPlanFeedback = async (feedback: string): Promise<void> => {
+    if (!planProjection || !item.projectId) return
+    await respondToSessionPlan(
+      { projectId: item.projectId, sessionId: item.sessionId, projection: planProjection },
+      { feedback }
+    )
+  }
   const canRespondToPlan =
-    planSession?.status === 'waiting-plan-approval' && planSession.activeRun !== undefined
+    durablePlanTurn?.actionable === true &&
+    planProjection?.approval === 'pending' &&
+    planProjection.artifactVersionId === activePlanProjection?.artifactVersionId
 
   // Remount the Files tool per project so its transient dialog cannot outlive the project it opened.
   if (item.toolKind === 'files') {
@@ -87,8 +98,10 @@ export const PreviewToolContent = ({
       <PlanPreviewSurface
         projection={planProjection}
         stale={stale}
+        turnState={durablePlanTurn?.state}
         isFullScreen={isPlanExpanded}
         onRespond={canRespondToPlan ? respondPlan : undefined}
+        onSubmitResponse={canRespondToPlan ? submitPlanFeedback : undefined}
         onToggleFullScreen={() => setToolItemExpanded(isPlanExpanded ? null : item.id)}
       />
     )

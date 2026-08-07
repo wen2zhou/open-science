@@ -520,6 +520,10 @@ export type AcpPromptRequest = {
     projectId: string
     artifactVersionId: string
     expectedRevision: number
+    turnAnchor?: string
+    continuationId?: string
+    attemptId?: string
+    purpose?: 'execute_approved_plan' | 'revise_pending_plan'
     // A restored pending Plan starts a fresh interaction. Main either commits the explicit card
     // decision after activation or exposes pending context for feedback without granting authority.
     // Missing means an already-approved Plan continuation.

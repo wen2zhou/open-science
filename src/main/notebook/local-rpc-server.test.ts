@@ -74,6 +74,65 @@ afterEach(async () => {
 })
 
 describe('notebook local RPC server', () => {
+  it('routes a reconstructed continuation Plan call to the runtime that issued its capability', async () => {
+    const root = await createStorageRoot()
+    const staleRuntimeCall = createDeferred<unknown>()
+    const reconstructedRuntimeCall = vi.fn(async (input: unknown) => ({
+      owner: 'reconstructed-runtime',
+      input
+    }))
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const server = new NotebookLocalRpcServer(service, {
+      planService: { call: () => staleRuntimeCall.promise }
+    })
+    const connection = await server.issuePlanConnection(
+      'session-1',
+      'project-1',
+      reconstructedRuntimeCall
+    )
+
+    try {
+      const response = await fetchLocalRpc(
+        connection,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${connection.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'planCall',
+            params: {
+              operation: 'updateStepStatus',
+              input: { title: 'Analyze the data', status: 'in_progress' }
+            }
+          })
+        },
+        'Reconstructed runtime Plan RPC'
+      )
+
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toMatchObject({
+        result: { owner: 'reconstructed-runtime' }
+      })
+      expect(reconstructedRuntimeCall).toHaveBeenCalledWith({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        operation: 'updateStepStatus',
+        input: { title: 'Analyze the data', status: 'in_progress' }
+      })
+    } finally {
+      staleRuntimeCall.resolve(undefined)
+      connection.release?.()
+      await server.close()
+    }
+  })
+
   it('binds Plan calls to the issued Session capability and rejects the master token', async () => {
     const root = await createStorageRoot()
     const call = vi.fn(async (input: unknown) => input)

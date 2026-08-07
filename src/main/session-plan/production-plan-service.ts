@@ -5,26 +5,23 @@ import type { ArtifactProvenanceRepository } from '../artifacts/provenance-repos
 import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 import { SessionRuntimeContextRevisionConflictError } from '../session-persistence/coordinator'
 import { PlanService } from './plan-service'
-import { SessionPlanInteractionOwner } from './session-plan-interaction-owner'
 
 type ProductionPlanServiceDependencies = Readonly<{
-  interactions?: SessionPlanInteractionOwner
   artifactTurns: Pick<ArtifactTurnOwner, 'writeForActiveTurn'>
   provenance: Pick<ArtifactProvenanceRepository, 'resolveVersionContent'>
   sessions: Pick<
     SessionPersistenceCoordinator,
-    'readSessionRuntimeContext' | 'patchSessionRuntimeContext' | 'appendUserMessageToInteraction'
-  >
+    'readSessionRuntimeContext' | 'patchSessionRuntimeContext' | 'commitPlanFeedback'
+  > &
+    Partial<Pick<SessionPersistenceCoordinator, 'resolveLegacyPlanTurnAnchor'>>
 }>
 
 const createProductionPlanService = ({
-  interactions = new SessionPlanInteractionOwner(),
   artifactTurns,
   provenance,
   sessions
 }: ProductionPlanServiceDependencies): PlanService =>
   new PlanService({
-    interactions,
     writeArtifactForActiveTurn: (sessionId, input) =>
       artifactTurns.writeForActiveTurn(sessionId, input),
     readArtifactVersion: async ({ projectId, sessionId, artifactId, artifactVersionId }) => {
@@ -39,21 +36,24 @@ const createProductionPlanService = ({
     },
     readRuntimeContext: (projectId, sessionId) =>
       sessions.readSessionRuntimeContext(projectId, sessionId),
-    patchRuntimeContext: ({ projectId, sessionId, expectedRevision, plan, sessionStatus }) =>
+    patchRuntimeContext: (request) =>
       sessions.patchSessionRuntimeContext({
-        projectId,
-        sessionId,
-        expectedRevision,
-        patch: { plan },
-        sessionStatus
+        projectId: request.projectId,
+        sessionId: request.sessionId,
+        expectedRevision: request.expectedRevision,
+        patch: {
+          plan: request.plan,
+          ...(Object.hasOwn(request, 'planTurn') ? { planTurn: request.planTurn ?? undefined } : {})
+        },
+        sessionStatus: request.sessionStatus
       }),
-    persistUserMessage: (input) =>
-      sessions.appendUserMessageToInteraction({
-        projectId: input.projectId,
-        sessionId: input.sessionId,
-        interactionId: input.interactionId,
-        content: input.content
-      }),
+    commitFeedback: (input) => sessions.commitPlanFeedback(input),
+    ...(sessions.resolveLegacyPlanTurnAnchor
+      ? {
+          resolveLegacyPlanTurnAnchor: (projectId, sessionId, originatingPromptMessageId) =>
+            sessions.resolveLegacyPlanTurnAnchor!(projectId, sessionId, originatingPromptMessageId)
+        }
+      : {}),
     isRevisionConflict: (error) => error instanceof SessionRuntimeContextRevisionConflictError
   })
 

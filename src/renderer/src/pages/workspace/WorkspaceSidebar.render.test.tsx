@@ -114,6 +114,39 @@ describe('WorkspaceSidebar accessible render', () => {
     expect(html).toContain('Session status: Waiting for permission')
   })
 
+  it('derives Resuming from the durable Plan Turn instead of the coarse Session status', async () => {
+    const html = await renderSidebar([
+      createSession({
+        id: 'resuming-session',
+        status: 'idle',
+        activePlanProjection: {
+          artifactVersionId: 'version-1',
+          originatingPromptMessageId: 'prompt-1',
+          approval: 'approved'
+        } as never,
+        runtimeContext: {
+          version: 2,
+          revision: 4,
+          planTurn: {
+            turnAnchor: 'prompt-1',
+            lifecycle: 'continuation_pending',
+            planArtifactVersionId: 'version-1',
+            continuation: {
+              continuationId: 'continuation-1',
+              purpose: 'execute_approved_plan',
+              state: 'pending',
+              requestedAt: 2,
+              lastTransitionAt: 2
+            }
+          }
+        }
+      })
+    ])
+
+    expect(html).toContain('Session status: Resuming')
+    expect(html).not.toContain('Session status: Idle')
+  })
+
   it('gives each session action trigger a session-specific accessible name', async () => {
     const html = await renderSidebar([
       createSession({ id: 'session-a', title: 'Notebook review' }),

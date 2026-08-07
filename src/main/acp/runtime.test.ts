@@ -1698,10 +1698,19 @@ describe('ACP runtime session management', () => {
       promptTurnWorkflow: { options: { plan: unknown } }
     }
     const planInteractions = new SessionPlanInteractionOwner()
+    const planServiceWithDefaults = {
+      getContinuationRecovery: vi.fn(async () => null),
+      recordContinuationFailed: vi.fn(),
+      recordContinuationActive: vi.fn(async (input: { expectedRevision: number }) => ({
+        revision: input.expectedRevision + 1,
+        turn: {}
+      })),
+      ...(planService as Record<string, unknown>)
+    }
     const sessionPlanWorkflow = composeAcpRuntimePlanWorkflow(
       { plan: { sessions } } as unknown as Parameters<typeof composeAcpRuntimePlanWorkflow>[0],
       {
-        planService,
+        planService: planServiceWithDefaults,
         planInteractions,
         sessionInteractions: internals.sessionInteractions,
         artifactTurns: internals.artifactTurns
@@ -1742,6 +1751,7 @@ describe('ACP runtime session management', () => {
         projectId: 'project-1',
         artifactVersionId: 'version-1',
         expectedRevision: 4,
+        turnAnchor: 'plan-origin',
         pendingAction: 'approve'
       },
       provenanceContext: {
@@ -1847,6 +1857,7 @@ describe('ACP runtime session management', () => {
         projectId: 'project-1',
         artifactVersionId: 'version-1',
         expectedRevision: 4,
+        turnAnchor: 'plan-origin',
         pendingAction: 'reject'
       },
       provenanceContext: {
@@ -13044,9 +13055,9 @@ describe('ACP runtime session management', () => {
         stepStates: { 'Analyze data': { status: 'not_started' } },
         counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
       } satisfies ActivePlanProjection
-      const authorizeContinuation = vi.fn(async () => active)
+      const recordContinuationActive = vi.fn(async () => ({ revision: 12, turn: {} }))
       installPromptPlanTestWorkflow(runtime, {
-        authorizeContinuation,
+        recordContinuationActive,
         getProjection: vi.fn(async () => active)
       })
 
@@ -13057,7 +13068,10 @@ describe('ACP runtime session management', () => {
         planContinuation: {
           projectId: 'project-1',
           artifactVersionId: 'version-7',
-          expectedRevision: 11
+          expectedRevision: 11,
+          turnAnchor: 'plan-origin',
+          continuationId: 'continuation-7',
+          attemptId: 'attempt-7'
         },
         provenanceContext: {
           promptMessageId: 'continuation-message',
@@ -13065,12 +13079,17 @@ describe('ACP runtime session management', () => {
         }
       })
 
-      expect(authorizeContinuation).toHaveBeenCalledWith({
-        projectId: 'project-1',
-        sessionId: 's1',
-        artifactVersionId: 'version-7',
-        expectedRevision: 11
-      })
+      expect(recordContinuationActive).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: 'project-1',
+          sessionId: 's1',
+          artifactVersionId: 'version-7',
+          expectedRevision: 11,
+          turnAnchor: 'plan-origin',
+          continuationId: 'continuation-7',
+          attemptId: 'attempt-7'
+        })
+      )
       expect(fakeAgent.prompts[0]?.text).toContain('<open_science_protected_plan_context>')
       expect(fakeAgent.prompts[0]?.text).toContain('artifact_version_id=version-7')
       expect(fakeAgent.prompts[0]?.text).toContain('Analyze data: not_started')
@@ -13090,7 +13109,7 @@ describe('ACP runtime session management', () => {
     const active = restoredPlanProjection('approved', 4)
     installPromptPlanTestWorkflow(
       runtime,
-      { authorizeContinuation: vi.fn(async () => active) },
+      { getProjection: vi.fn(async () => active) },
       durablePlanSessions(['branch-b-root', 'branch-b-message'])
     )
 
@@ -13102,7 +13121,10 @@ describe('ACP runtime session management', () => {
         planContinuation: {
           projectId: 'project-1',
           artifactVersionId: 'version-1',
-          expectedRevision: 4
+          expectedRevision: 4,
+          turnAnchor: 'plan-origin',
+          continuationId: 'continuation-branch-a',
+          attemptId: 'attempt-branch-a'
         },
         provenanceContext: {
           promptMessageId: 'branch-b-message',
@@ -13134,7 +13156,6 @@ describe('ACP runtime session management', () => {
         spawnAgent: () => asAgentProcess(process),
         framework
       })
-      const getProjection = vi.fn(async () => null)
       const authorized = {
         artifactId: 'artifact-1',
         artifactVersionId: 'version-1',
@@ -13165,8 +13186,9 @@ describe('ACP runtime session management', () => {
         stepStates: { Analyze: { status: 'not_started' } },
         counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
       } satisfies ActivePlanProjection
+      const getProjection = vi.fn(async () => authorized)
       installPromptPlanTestWorkflow(runtime, {
-        authorizeContinuation: vi.fn(async () => authorized),
+        recordContinuationActive: vi.fn(async () => ({ revision: 3, turn: {} })),
         getProjection
       })
 
@@ -13178,7 +13200,10 @@ describe('ACP runtime session management', () => {
           planContinuation: {
             projectId: 'project-1',
             artifactVersionId: 'version-1',
-            expectedRevision: 2
+            expectedRevision: 2,
+            turnAnchor: 'plan-origin',
+            continuationId: 'continuation-completion',
+            attemptId: 'attempt-completion'
           },
           provenanceContext: {
             promptMessageId: 'completion-message',
@@ -20144,6 +20169,9 @@ describe('Specialist Skill scoping', () => {
             return context
           },
           appendUserMessageToInteraction: async () => {
+            throw new Error('not used in this test')
+          },
+          commitPlanFeedback: async () => {
             throw new Error('not used in this test')
           },
           containsMessageOnActiveBranch: async () => true

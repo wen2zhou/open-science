@@ -153,7 +153,6 @@ const composeAcpRuntimeBaseOwners = (options: AcpRuntimeOptions) => {
   const planService =
     options.plan && artifactTurns && options.artifacts?.provenance?.resolveVersionContent
       ? createProductionPlanService({
-          interactions: planInteractions,
           artifactTurns,
           provenance: {
             resolveVersionContent: (request) =>

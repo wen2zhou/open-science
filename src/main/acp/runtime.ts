@@ -256,6 +256,7 @@ type AcpRuntimePlanOptions = {
     | 'readSessionRuntimeContext'
     | 'patchSessionRuntimeContext'
     | 'appendUserMessageToInteraction'
+    | 'commitPlanFeedback'
     | 'containsMessageOnActiveBranch'
   >
 }
@@ -448,8 +449,27 @@ class AcpRuntime {
     return this.sessionPlanWorkflow.projection(projectId, sessionId)
   }
 
+  getSessionPlanContinuationRecovery(
+    projectId: string,
+    sessionId: string
+  ): ReturnType<AcpRuntimePlanWorkflow['continuationRecovery']> {
+    return this.sessionPlanWorkflow.continuationRecovery(projectId, sessionId)
+  }
+
   respondSessionPlan(input: PlanResponseCommand): Promise<PlanResponseResult> {
     return this.sessionPlanWorkflow.respond(input)
+  }
+
+  claimSessionPlanContinuation(
+    input: Parameters<AcpRuntimePlanWorkflow['claimContinuation']>[0]
+  ): ReturnType<AcpRuntimePlanWorkflow['claimContinuation']> {
+    return this.sessionPlanWorkflow.claimContinuation(input)
+  }
+
+  recordSessionPlanContinuationFailed(
+    input: Parameters<AcpRuntimePlanWorkflow['recordContinuationFailed']>[0]
+  ): ReturnType<AcpRuntimePlanWorkflow['recordContinuationFailed']> {
+    return this.sessionPlanWorkflow.recordContinuationFailed(input)
   }
 
   // Lists sessions with an in-flight prompt, for the pre-migration active-session warning.

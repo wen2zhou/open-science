@@ -47,6 +47,13 @@ type SessionMetadataSnapshot = Readonly<{
   isComplete: boolean
 }>
 
+export type LegacyPlanTurnAnchorResolution =
+  | Readonly<{ status: 'resolved'; turnAnchor: string }>
+  | Readonly<{
+      status: 'unresolved'
+      reason: 'missing' | 'ambiguous' | 'inactive-branch' | 'non-user-message'
+    }>
+
 type SessionMutationRepository = {
   loadAllWithDiagnostics(options?: { mode?: 'repair' | 'read-only' }): Promise<{
     result: LoadAllSessionsResult
@@ -174,6 +181,18 @@ type AppendUserMessageToInteractionCommand = Readonly<{
   content: string
 }>
 
+type CommitPlanFeedbackCommand = Readonly<{
+  projectId: string
+  sessionId: string
+  turnAnchor: string
+  content: string
+  messageId: string
+  commandId: string
+  expectedRevision: number
+  plan: NonNullable<SessionRuntimeContext['plan']>
+  planTurn: NonNullable<SessionRuntimeContext['planTurn']>
+}>
+
 class SessionRuntimeContextRevisionConflictError extends Error {
   readonly code = 'revision-conflict' as const
 
@@ -188,7 +207,7 @@ class SessionRuntimeContextRevisionConflictError extends Error {
   }
 }
 
-const emptySessionRuntimeContext = (): SessionRuntimeContext => ({ version: 1, revision: 0 })
+const emptySessionRuntimeContext = (): SessionRuntimeContext => ({ version: 2, revision: 0 })
 
 const cloneRuntimeContext = (context: SessionRuntimeContext): SessionRuntimeContext =>
   structuredClone(context)
@@ -397,6 +416,67 @@ const attachRecoveredMessageArtifacts = (
     conversationGraph,
     filesRevision: (materialized.filesRevision ?? 0) + 1,
     updatedAt: now
+  }
+}
+
+const conversationTopologyKey = (
+  graph: NonNullable<PersistedChatSession['conversationGraph']>
+): string =>
+  JSON.stringify({
+    activeFrameId: graph.activeFrameId,
+    frames: graph.frames
+      .map(({ id, parentFrameId, activeBranchId }) => ({ id, parentFrameId, activeBranchId }))
+      .sort((left, right) => left.id.localeCompare(right.id)),
+    branches: graph.branches
+      .map(({ id, agentFrameId, parentBranchId, forkMessageId, supersededMessageId }) => ({
+        id,
+        agentFrameId,
+        parentBranchId,
+        forkMessageId,
+        supersededMessageId
+      }))
+      .sort((left, right) => left.id.localeCompare(right.id))
+  })
+
+// Main can append a routed user Message while renderer still holds the previous full-session
+// snapshot. Rebase that additive Message onto the unchanged conversation topology so the next
+// autosave cannot erase it before renderer receives the broadcast.
+const preserveAuthoritativeActiveMessages = (
+  renderer: PersistedChatSession,
+  authority: PersistedChatSession
+): PersistedChatSession => {
+  const authoritative = materializeSessionConversationGraph(authority)
+  const authorityGraph = authoritative.conversationGraph
+  const rendererGraph = renderer.conversationGraph
+  if (
+    !authorityGraph ||
+    !rendererGraph ||
+    conversationTopologyKey(authorityGraph) !== conversationTopologyKey(rendererGraph)
+  ) {
+    return renderer
+  }
+  const rendererMessageIds = new Set([
+    ...renderer.messages.map(({ id }) => id),
+    ...rendererGraph.messages.map(({ id }) => id)
+  ])
+  const missing = authoritative.messages.filter(({ id }) => !rendererMessageIds.has(id))
+  if (missing.length === 0) return renderer
+
+  const runtimeSegments = new Map(
+    [...authorityGraph.runtimeSegments, ...rendererGraph.runtimeSegments].map((segment) => [
+      segment.id,
+      segment
+    ])
+  )
+  return {
+    ...renderer,
+    messages: [...renderer.messages, ...missing].sort(
+      (left, right) => left.createdAt - right.createdAt || left.id.localeCompare(right.id)
+    ),
+    conversationGraph: {
+      ...structuredClone(authorityGraph),
+      runtimeSegments: [...runtimeSegments.values()]
+    }
   }
 }
 
@@ -749,6 +829,57 @@ class SessionPersistenceCoordinator {
     })
   }
 
+  resolveLegacyPlanTurnAnchor(
+    projectId: string,
+    sessionId: string,
+    originatingPromptMessageId?: string
+  ): Promise<LegacyPlanTurnAnchorResolution> {
+    return this.enqueue(async () => {
+      const session = await this.loadRuntimeContextSession(projectId, sessionId, 'read')
+      const graph = materializeSessionConversationGraph(session).conversationGraph!
+      const activePath = resolveActiveConversationMessages(graph)
+      const activeById = new Map(activePath.map((message) => [message.id, message]))
+      if (originatingPromptMessageId) {
+        const active = activeById.get(originatingPromptMessageId)
+        if (active) {
+          return active.role === 'user'
+            ? { status: 'resolved', turnAnchor: active.id }
+            : { status: 'unresolved', reason: 'non-user-message' }
+        }
+        const anywhere = graph.messages.find((message) => message.id === originatingPromptMessageId)
+        return {
+          status: 'unresolved',
+          reason: anywhere?.role === 'agent' ? 'non-user-message' : 'inactive-branch'
+        }
+      }
+
+      const isGeneratePlanActivity = (activity: {
+        title: string
+        providerToolName?: string
+      }): boolean =>
+        [activity.providerToolName, activity.title].some((name) => {
+          const normalized = name?.toLowerCase().replaceAll('-', '_').replaceAll('.', '_')
+          return normalized === 'generate_plan' || normalized?.endsWith('_generate_plan') === true
+        })
+      const candidates = new Set(
+        graph.activities
+          .filter(
+            (activity) =>
+              activeById.has(activity.promptMessageId) && isGeneratePlanActivity(activity)
+          )
+          .map((activity) => activity.promptMessageId)
+          .filter((id) => activeById.get(id)?.role === 'user')
+      )
+      if (candidates.size === 1) {
+        return { status: 'resolved', turnAnchor: [...candidates][0] }
+      }
+      return {
+        status: 'unresolved',
+        reason: candidates.size === 0 ? 'missing' : 'ambiguous'
+      }
+    })
+  }
+
   patchSessionRuntimeContext(
     command: PatchSessionRuntimeContextCommand
   ): Promise<SessionRuntimeContext> {
@@ -763,7 +894,7 @@ class SessionPersistenceCoordinator {
       if (!Number.isSafeInteger(expectedRevision) || expectedRevision < 0) {
         throw new Error('Session runtime context expected revision must be a non-negative integer.')
       }
-      if (Object.keys(patch).some((owner) => owner !== 'plan')) {
+      if (Object.keys(patch).some((owner) => owner !== 'plan' && owner !== 'planTurn')) {
         throw new Error('Session runtime context patch contains an unknown authority owner.')
       }
 
@@ -779,6 +910,7 @@ class SessionPersistenceCoordinator {
         else candidate[owner] = value
       }
       candidate.revision = current.revision + 1
+      candidate.version = 2
       const runtimeContext = sanitizeSessionRuntimeContext(candidate)
       if (!runtimeContext) throw new Error('Session runtime context patch is not JSON-safe.')
 
@@ -825,6 +957,71 @@ class SessionPersistenceCoordinator {
       await this.repository.saveSession(durable)
       this.upsertSessionMetadata(durable)
       return message
+    })
+  }
+
+  commitPlanFeedback(
+    command: CommitPlanFeedbackCommand
+  ): Promise<{ context: SessionRuntimeContext; message: PersistedChatMessage; changed: boolean }> {
+    return this.enqueue(async () => {
+      const { projectId, sessionId } = command
+      const content = command.content.trim()
+      if (!content) throw new Error('User Message content must be non-empty.')
+      if (this.deletedProjects.has(projectId)) {
+        throw new Error('Cannot mutate a session whose project has been deleted.')
+      }
+      if (this.deletedSessions.has(sessionKey(projectId, sessionId))) {
+        throw new Error('Cannot mutate a session that has been deleted.')
+      }
+      const session = await this.loadRuntimeContextSession(projectId, sessionId, 'patch')
+      const current = session.runtimeContext ?? emptySessionRuntimeContext()
+      const existing = current.planTurn?.continuation
+      if (
+        existing?.purpose === 'revise_pending_plan' &&
+        existing.commandId === command.commandId &&
+        existing.feedbackMessageId
+      ) {
+        const message = materializeSessionConversationGraph(session).messages.find(
+          (candidate) => candidate.id === existing.feedbackMessageId
+        )
+        if (!message) throw new Error('Committed Plan feedback Message is unavailable.')
+        return { context: cloneRuntimeContext(current), message, changed: false }
+      }
+      if (current.revision !== command.expectedRevision) {
+        throw new SessionRuntimeContextRevisionConflictError(
+          command.expectedRevision,
+          current.revision
+        )
+      }
+      const candidate = sanitizeSessionRuntimeContext({
+        ...current,
+        version: 2,
+        revision: current.revision + 1,
+        plan: command.plan,
+        planTurn: command.planTurn
+      })
+      if (!candidate) throw new Error('Session runtime context patch is not JSON-safe.')
+      const timestamp = Math.max(session.updatedAt + 1, Date.now())
+      const message: PersistedChatMessage = {
+        id: command.messageId,
+        role: 'user',
+        content,
+        status: 'complete',
+        eventIds: [],
+        responseToMessageId: command.turnAnchor,
+        createdAt: timestamp,
+        updatedAt: timestamp
+      }
+      const durable = materializeSessionConversationGraph({
+        ...session,
+        status: 'running',
+        runtimeContext: candidate,
+        messages: [...session.messages, message],
+        updatedAt: timestamp
+      })
+      await this.repository.saveSession(durable)
+      this.upsertSessionMetadata(durable)
+      return { context: cloneRuntimeContext(candidate), message, changed: true }
     })
   }
 
@@ -944,21 +1141,28 @@ class SessionPersistenceCoordinator {
       delete rendererOwnedSession.runtimeContext
       delete rendererOwnedSession.archivedAt
       const authority = authoritative.status === 'found' ? authoritative.session : undefined
+      const protectedRendererSession = authority
+        ? preserveAuthoritativeActiveMessages(rendererOwnedSession, authority)
+        : rendererOwnedSession
       const mainOwnedStatus =
         authority?.status === 'waiting-plan-approval' ||
-        rendererOwnedSession.status === 'waiting-plan-approval'
+        protectedRendererSession.status === 'waiting-plan-approval'
           ? (authority?.status ?? 'idle')
           : undefined
       const mergedSession: PersistedChatSession = {
-        ...rendererOwnedSession,
+        ...protectedRendererSession,
         ...(authority?.runtimeContext ? { runtimeContext: authority.runtimeContext } : {}),
         ...(authority?.archivedAt ? { archivedAt: authority.archivedAt } : {}),
         // Awaiting Plan approval is main-owned blocking state and must survive the same stale save.
         ...(mainOwnedStatus ? { status: mainOwnedStatus } : {}),
         updatedAt:
           authority?.runtimeContext || mainOwnedStatus
-            ? Math.max(rendererOwnedSession.updatedAt, (authority?.updatedAt ?? -1) + 1, Date.now())
-            : rendererOwnedSession.updatedAt
+            ? Math.max(
+                protectedRendererSession.updatedAt,
+                (authority?.updatedAt ?? -1) + 1,
+                Date.now()
+              )
+            : protectedRendererSession.updatedAt
       }
 
       const materializedSession = materializeSessionConversationGraph(mergedSession)

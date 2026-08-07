@@ -318,8 +318,10 @@ describe('ACP application commands', () => {
     const request = {
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'message-1',
       artifactVersionId: 'version-1',
       expectedRevision: 2,
+      commandId: 'approve-1',
       decision: 'approved' as const
     }
 
@@ -330,6 +332,10 @@ describe('ACP application commands', () => {
     const feedback = {
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'message-1',
+      artifactVersionId: 'version-1',
+      expectedRevision: 2,
+      commandId: 'feedback-1',
       feedback: 'Split the analysis by cohort.'
     }
     await router.dispatcher.invoke(acpCommands.respondPlan, invocation([feedback]))

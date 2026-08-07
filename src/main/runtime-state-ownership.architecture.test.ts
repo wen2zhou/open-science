@@ -341,7 +341,7 @@ describe('runtime state ownership architecture', () => {
     expect(source).not.toContain('planApprovalWaiters')
     expect(source).not.toContain('planExecutionBindings')
     expect(source.match(/new SessionPlanInteractionOwner\(\)/g)).toHaveLength(1)
-    expect(composition).toContain('interactions: planInteractions')
+    expect(composition).toContain('planInteractions,')
     expect(runtime).not.toMatch(/private readonly (?:planInteractions|planService)/)
     expect(runtime).not.toContain('this.planInteractions = base.planInteractions')
     expect(runtime).not.toContain('this.planService = base.planService')

@@ -70,8 +70,28 @@ describe('resolveCanonicalMcpToolIdentity', () => {
       expect(guidance).toContain('Do not generate a Plan for simple')
       expect(guidance).not.toContain('get_active_plan')
       expect(guidance).not.toContain('Plan mode')
+      expect(guidance).not.toMatch(/300\s*seconds?/i)
+      expect(guidance).not.toMatch(/approval (?:deadline|timeout)/i)
+      expect(guidance).not.toMatch(/framework-specific (?:approval|resume)/i)
     }
   )
+
+  it('projects one shared Plan MCP inventory instead of provider-specific approval routes', () => {
+    expect(appMcpToolIdentities()).toContain('open-science-plan/generate_plan')
+    expect(appMcpToolIdentities()).toContain('open-science-plan/update_step_status')
+    expect(
+      (['claude-code', 'codex', 'opencode'] as const).map((frameworkId) =>
+        renderAppMcpToolReferences(
+          frameworkId,
+          'Call generate_plan, then later call update_step_status.'
+        )
+      )
+    ).toEqual([
+      'Call mcp__open-science-plan__generate_plan, then later call mcp__open-science-plan__update_step_status.',
+      'Call generate_plan, then later call update_step_status.',
+      'Call open_science_plan_generate_plan, then later call open_science_plan_update_step_status.'
+    ])
+  })
 
   it.each([
     'mcp__open-science-notebook__notebook_execute',

@@ -2116,14 +2116,12 @@ export const useSessionStore = create<SessionStore>((set, get) => ({
                 ...session,
                 ...(replaced ? { planHistoryProjections: replaced } : {}),
                 activePlanProjection: projection,
-                // Restart recovery preserves waiting-plan-approval after clearing activeRun. A Plan
-                // whose Agent ended without a decision has already settled to idle and stays read-only.
+                // Awaiting approval belongs to the durable Conversation Turn, not to activeRun. A
+                // provider attempt may end while the Plan remains actionable indefinitely.
                 status: session.compacting
                   ? session.status
                   : projection.lifecycle === 'awaiting_approval'
-                    ? session.activeRun || session.status === 'waiting-plan-approval'
-                      ? 'waiting-plan-approval'
-                      : 'idle'
+                    ? 'waiting-plan-approval'
                     : projection.lifecycle === 'rejected'
                       ? session.activeRun
                         ? 'running'

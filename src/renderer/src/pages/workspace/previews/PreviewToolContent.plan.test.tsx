@@ -18,6 +18,7 @@ const pendingProjection: ActivePlanProjection = {
   artifactId: 'artifact-1',
   artifactVersionId: 'version-1',
   artifactChecksum: 'a'.repeat(64),
+  originatingPromptMessageId: 'prompt-1',
   revision: 3,
   approval: 'pending',
   lifecycle: 'awaiting_approval',
@@ -57,7 +58,7 @@ const saveBlobFile = vi.fn()
 
 beforeEach(() => {
   respondPlan.mockReset().mockResolvedValue({ projection: approvedProjection, changed: true })
-  getPlanProjection.mockReset().mockResolvedValue(approvedProjection)
+  getPlanProjection.mockReset().mockResolvedValue(pendingProjection)
   saveBlobFile.mockReset().mockResolvedValue({ saved: true })
   Object.defineProperty(window, 'api', {
     configurable: true,
@@ -159,13 +160,16 @@ describe('Plan Preview workbench integration', () => {
 
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     await waitFor(() =>
-      expect(respondPlan).toHaveBeenCalledWith({
-        projectId: 'project-1',
-        sessionId: 'session-1',
-        artifactVersionId: 'version-1',
-        expectedRevision: 3,
-        decision: 'approved'
-      })
+      expect(respondPlan).toHaveBeenCalledWith(
+        expect.objectContaining({
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          turnAnchor: 'prompt-1',
+          artifactVersionId: 'version-1',
+          expectedRevision: 3,
+          decision: 'approved'
+        })
+      )
     )
     await waitFor(() =>
       expect(useSessionStore.getState().sessions[0].activePlanProjection).toBe(approvedProjection)
@@ -174,13 +178,13 @@ describe('Plan Preview workbench integration', () => {
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
   })
 
-  it('makes an orphaned pending Plan read-only instead of offering ineffective controls', () => {
+  it('keeps a pending Plan actionable after its generating attempt ends', () => {
     useSessionStore.setState({
       sessions: [
         {
           id: 'session-1',
           projectId: 'project-1',
-          status: 'idle',
+          status: 'waiting-plan-approval',
           activePlanProjection: pendingProjection
         } as never
       ]
@@ -199,8 +203,9 @@ describe('Plan Preview workbench integration', () => {
       />
     )
 
-    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
-    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
-    expect(screen.getByText(/original Agent interaction has ended/u)).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Approve' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Dismiss' })).toBeTruthy()
+    expect(screen.getByLabelText('Respond to Plan')).toBeTruthy()
+    expect(screen.queryByText(/original Agent interaction/u)).toBeNull()
   })
 })

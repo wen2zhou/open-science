@@ -111,7 +111,7 @@ describe('Session Plan renderer surfaces', () => {
   it.each([
     ['Approve', 'approved'],
     ['Dismiss', 'rejected']
-  ] as const)('removes the card after a successful %s response', async (buttonName, decision) => {
+  ] as const)('shows Resuming after a successful %s response', async (buttonName, decision) => {
     const onRespond = vi.fn().mockResolvedValue(undefined)
     const view = render(
       <WorkspacePlanCard projection={projection} onOpen={vi.fn()} onRespond={onRespond} />
@@ -120,7 +120,8 @@ describe('Session Plan renderer surfaces', () => {
     fireEvent.click(screen.getByRole('button', { name: buttonName }))
 
     await waitFor(() => expect(onRespond).toHaveBeenCalledWith(decision))
-    expect(view.container.querySelector('article')).toBeNull()
+    expect(view.container.querySelector('article')).not.toBeNull()
+    expect(screen.getByText('Resuming')).toBeTruthy()
   })
 
   it('submits inline revision feedback as a user Message', async () => {
@@ -141,7 +142,8 @@ describe('Session Plan renderer surfaces', () => {
     await waitFor(() =>
       expect(onSubmitResponse).toHaveBeenCalledWith('Split the analysis by cohort.')
     )
-    expect(view.container.querySelector('article')).toBeNull()
+    expect(view.container.querySelector('article')).not.toBeNull()
+    expect(screen.getByText('Resuming')).toBeTruthy()
     expect(onRespond).not.toHaveBeenCalled()
     expect(screen.queryByRole('button', { name: /request changes/i })).toBeNull()
   })
@@ -166,7 +168,8 @@ describe('Session Plan renderer surfaces', () => {
 
       await waitFor(() => expect(onSubmitResponse).toHaveBeenCalledWith(text))
       expect(onRespond).not.toHaveBeenCalled()
-      expect(view.container.querySelector('article')).toBeNull()
+      expect(view.container.querySelector('article')).not.toBeNull()
+      expect(screen.getByText('Resuming')).toBeTruthy()
     }
   )
 
@@ -192,7 +195,7 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.queryByLabelText('Respond to Plan')).toBeNull()
   })
 
-  it('offers Download, Dismiss, and Approve in active Preview and makes replaced Preview read-only', () => {
+  it('offers Download, Dismiss, and Approve in active Preview and makes replaced Preview read-only', async () => {
     const onDownload = vi.fn()
     const onRespond = vi.fn()
     const { rerender } = render(
@@ -200,6 +203,11 @@ describe('Session Plan renderer surfaces', () => {
     )
     fireEvent.click(screen.getByRole('button', { name: 'Download Plan' }))
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(
+        false
+      )
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     expect(onDownload).toHaveBeenCalledOnce()
     expect(onRespond).toHaveBeenNthCalledWith(1, 'rejected')
@@ -221,15 +229,109 @@ describe('Session Plan renderer surfaces', () => {
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
   })
 
-  it('explains why a pending Preview without a live response handler is read-only', () => {
+  it('keeps Preview decisions visibly busy and reports a rejected response', async () => {
+    let rejectDecision: ((error: Error) => void) | undefined
+    const onRespond = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectDecision = reject
+        })
+    )
+    render(<PlanPreviewSurface projection={projection} onRespond={onRespond} />)
+
+    const approve = screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement
+    const dismiss = screen.getByRole('button', { name: 'Dismiss' }) as HTMLButtonElement
+    fireEvent.click(approve)
+    fireEvent.click(dismiss)
+
+    expect(onRespond).toHaveBeenCalledOnce()
+    expect(approve.disabled).toBe(true)
+    expect(dismiss.disabled).toBe(true)
+
+    rejectDecision?.(new Error('The Plan revision is stale.'))
+    await waitFor(() =>
+      expect(screen.getByRole('alert').textContent).toContain('revision is stale')
+    )
+    expect(approve.disabled).toBe(false)
+    expect(dismiss.disabled).toBe(false)
+  })
+
+  it('fails closed when a pending Preview is not given durable decision actions', () => {
     render(<PlanPreviewSurface projection={projection} />)
 
     expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
     expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
-    expect(screen.getByText(/original Agent interaction has ended/u)).toBeTruthy()
+    expect(screen.getByText(/decision controls are unavailable/u)).toBeTruthy()
+    expect(screen.queryByText(/original Agent interaction/u)).toBeNull()
   })
 
-  it('renders the three-level Plan preview', () => {
+  it('shows continuation dispatch as Resuming without a spinner or decision controls', () => {
+    render(
+      <WorkspacePlanCard
+        projection={{ ...projection, approval: 'approved', lifecycle: 'approved' }}
+        turnState="continuation_pending"
+        onOpen={vi.fn()}
+        onRespond={vi.fn()}
+      />
+    )
+
+    expect(screen.getByText('Resuming')).toBeTruthy()
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+    expect(screen.queryByRole('button', { name: 'Dismiss' })).toBeNull()
+    expect(document.querySelector('.animate-spin')).toBeNull()
+  })
+
+  it('shows interrupted continuation recovery and suppresses duplicate Retry clicks', async () => {
+    let finishRetry: (() => void) | undefined
+    const onRetry = vi.fn(
+      () =>
+        new Promise<void>((resolve) => {
+          finishRetry = resolve
+        })
+    )
+    render(
+      <WorkspacePlanCard
+        projection={{ ...projection, approval: 'approved', lifecycle: 'interrupted' }}
+        turnState="continuation_interrupted"
+        onOpen={vi.fn()}
+        onRespond={vi.fn()}
+        onRetry={onRetry}
+      />
+    )
+
+    expect(screen.getByText('Needs attention')).toBeTruthy()
+    const retry = screen.getByRole('button', { name: 'Retry' })
+    fireEvent.click(retry)
+    fireEvent.click(retry)
+    expect(onRetry).toHaveBeenCalledOnce()
+    expect((retry as HTMLButtonElement).disabled).toBe(true)
+    expect(screen.queryByRole('button', { name: 'Approve' })).toBeNull()
+
+    finishRetry?.()
+    await waitFor(() => expect((retry as HTMLButtonElement).disabled).toBe(false))
+  })
+
+  it('offers the same feedback action in an actionable Preview', async () => {
+    const onSubmitResponse = vi.fn().mockResolvedValue(undefined)
+    render(
+      <PlanPreviewSurface
+        projection={projection}
+        onRespond={vi.fn().mockResolvedValue(undefined)}
+        onSubmitResponse={onSubmitResponse}
+      />
+    )
+
+    fireEvent.change(screen.getByLabelText('Respond to Plan'), {
+      target: { value: 'Split the analysis by cohort.' }
+    })
+    fireEvent.click(screen.getByRole('button', { name: 'Send feedback' }))
+
+    await waitFor(() =>
+      expect(onSubmitResponse).toHaveBeenCalledWith('Split the analysis by cohort.')
+    )
+  })
+
+  it('renders the three-level Plan preview', async () => {
     const onDownload = vi.fn().mockResolvedValue(undefined)
     const onToggleFullScreen = vi.fn()
     const onRespond = vi.fn().mockResolvedValue(undefined)
@@ -269,6 +371,11 @@ describe('Session Plan renderer surfaces', () => {
     expect(document.querySelector('header')?.className).toContain('h-9')
     fireEvent.click(screen.getByRole('button', { name: 'Download Plan' }))
     fireEvent.click(screen.getByRole('button', { name: 'Dismiss' }))
+    await waitFor(() =>
+      expect((screen.getByRole('button', { name: 'Approve' }) as HTMLButtonElement).disabled).toBe(
+        false
+      )
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Approve' }))
     fireEvent.click(screen.getByRole('button', { name: 'Enter full screen' }))
     expect(onDownload).toHaveBeenCalledOnce()

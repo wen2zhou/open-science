@@ -14,7 +14,8 @@ import {
   type PersistedArtifact,
   type PersistedChatMessage,
   type PersistedChatSession,
-  type SessionPlanRuntimeContext
+  type SessionPlanRuntimeContext,
+  type SessionPlanTurnRuntimeContext
 } from '../../shared/session-persistence'
 import type { ArtifactProjectReconciliationSnapshot } from '../artifacts/provenance-repository'
 import { FinalizedArtifactBindingConflictError } from '../artifacts/provenance-message-snapshot'
@@ -55,6 +56,15 @@ const createRuntimePlan = (
   artifactChecksum: 'a'.repeat(64),
   approval: 'pending',
   stepStatuses: {},
+  ...overrides
+})
+
+const createPlanTurn = (
+  overrides: Partial<SessionPlanTurnRuntimeContext> = {}
+): SessionPlanTurnRuntimeContext => ({
+  turnAnchor: 'prompt-plan-1',
+  lifecycle: 'awaiting_plan_approval',
+  planArtifactVersionId: 'plan-version-1',
   ...overrides
 })
 
@@ -227,6 +237,82 @@ describe('SessionPersistenceCoordinator', () => {
     ).resolves.toBe(true)
   })
 
+  it('resolves a legacy Plan anchor only when it is a user Message on the active Branch', async () => {
+    const user = {
+      id: 'legacy-prompt',
+      role: 'user' as const,
+      content: 'Make a plan',
+      status: 'complete' as const,
+      eventIds: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const agent = {
+      ...user,
+      id: 'legacy-agent',
+      role: 'agent' as const,
+      content: 'Plan ready',
+      responseToMessageId: user.id,
+      createdAt: 2,
+      updatedAt: 2
+    }
+    const durable = createSession({ messages: [user, agent] })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      }))
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await expect(
+      coordinator.resolveLegacyPlanTurnAnchor('project-1', 'session-1', user.id)
+    ).resolves.toEqual({ status: 'resolved', turnAnchor: user.id })
+    await expect(
+      coordinator.resolveLegacyPlanTurnAnchor('project-1', 'session-1', agent.id)
+    ).resolves.toEqual({ status: 'unresolved', reason: 'non-user-message' })
+  })
+
+  it('infers a missing legacy anchor from one active-branch generate_plan activity', async () => {
+    const user = {
+      id: 'legacy-prompt',
+      role: 'user' as const,
+      content: 'Make a plan',
+      status: 'complete' as const,
+      eventIds: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const durable = createSession({
+      messages: [user],
+      activities: [
+        {
+          id: 'plan-activity',
+          kind: 'tool',
+          title: 'generate_plan',
+          providerToolName: 'mcp__open-science-plan__generate_plan',
+          promptMessageId: user.id,
+          status: 'completed',
+          sortIndex: 0,
+          eventIds: [],
+          createdAt: 2,
+          updatedAt: 2
+        }
+      ]
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      }))
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await expect(
+      coordinator.resolveLegacyPlanTurnAnchor('project-1', 'session-1')
+    ).resolves.toEqual({ status: 'resolved', turnAnchor: user.id })
+  })
+
   it.each(['missing', 'unreadable'] as const)(
     'fails closed when the durable Session is %s',
     async (status) => {
@@ -244,7 +330,7 @@ describe('SessionPersistenceCoordinator', () => {
   it('persists blocked Plan feedback as a standard user Message without changing Plan authority', async () => {
     let durable = createSession({
       status: 'waiting-plan-approval',
-      runtimeContext: { version: 1, revision: 2, plan: createRuntimePlan() }
+      runtimeContext: { version: 2, revision: 2, plan: createRuntimePlan() }
     })
     const repository = createSessionRepository({
       loadSessionWithDiagnostics: vi.fn(async () => ({
@@ -273,7 +359,7 @@ describe('SessionPersistenceCoordinator', () => {
       })
     )
     expect(durable.runtimeContext).toEqual({
-      version: 1,
+      version: 2,
       revision: 2,
       plan: createRuntimePlan()
     })
@@ -295,7 +381,7 @@ describe('SessionPersistenceCoordinator', () => {
     const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
 
     await expect(coordinator.readSessionRuntimeContext('project-1', 'session-1')).resolves.toEqual({
-      version: 1,
+      version: 2,
       revision: 0
     })
     await expect(
@@ -306,12 +392,12 @@ describe('SessionPersistenceCoordinator', () => {
         patch: { plan: createRuntimePlan() }
       })
     ).resolves.toEqual({
-      version: 1,
+      version: 2,
       revision: 1,
       plan: createRuntimePlan()
     })
     await expect(coordinator.readSessionRuntimeContext('project-1', 'session-1')).resolves.toEqual({
-      version: 1,
+      version: 2,
       revision: 1,
       plan: createRuntimePlan()
     })
@@ -320,7 +406,7 @@ describe('SessionPersistenceCoordinator', () => {
 
   it('rejects stale and duplicate runtime context patches without overwriting durable authority', async () => {
     let durable = createSession({
-      runtimeContext: { version: 1, revision: 4, plan: createRuntimePlan() }
+      runtimeContext: { version: 2, revision: 4, plan: createRuntimePlan() }
     })
     const repository = createSessionRepository({
       loadSessionWithDiagnostics: vi.fn(async () => ({
@@ -356,13 +442,56 @@ describe('SessionPersistenceCoordinator', () => {
     expect(SessionRuntimeContextRevisionConflictError).toBeTypeOf('function')
   })
 
+  it('atomically clears the active Plan and Conversation Turn in one runtime revision', async () => {
+    let durable = createSession({
+      status: 'waiting-plan-approval',
+      runtimeContext: {
+        version: 2,
+        revision: 6,
+        plan: createRuntimePlan(),
+        planTurn: createPlanTurn()
+      }
+    })
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await expect(
+      coordinator.patchSessionRuntimeContext({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        expectedRevision: 6,
+        patch: { plan: undefined, planTurn: undefined },
+        sessionStatus: 'idle'
+      })
+    ).resolves.toEqual({ version: 2, revision: 7 })
+    expect(durable).toMatchObject({
+      status: 'idle',
+      runtimeContext: { version: 2, revision: 7 }
+    })
+    expect(durable.runtimeContext?.plan).toBeUndefined()
+    expect(durable.runtimeContext?.planTurn).toBeUndefined()
+  })
+
   it('preserves authoritative runtime context and approval waiting status on a stale renderer save', async () => {
     const previousUpdatedAt = Date.now() + 10_000
     let durable = createSession({
       title: 'Before rename',
       status: 'waiting-plan-approval',
       updatedAt: previousUpdatedAt,
-      runtimeContext: { version: 1, revision: 2, plan: createRuntimePlan() }
+      runtimeContext: {
+        version: 2,
+        revision: 2,
+        plan: createRuntimePlan(),
+        planTurn: createPlanTurn()
+      }
     })
     const repository = createSessionRepository({
       loadSessionWithDiagnostics: vi.fn(async () => ({
@@ -378,23 +507,109 @@ describe('SessionPersistenceCoordinator', () => {
       title: 'Renamed by renderer',
       status: 'idle',
       runtimeContext: {
-        version: 1,
+        version: 2,
         revision: 0,
-        plan: createRuntimePlan({ approval: 'approved' })
+        plan: createRuntimePlan({ approval: 'approved' }),
+        planTurn: createPlanTurn({
+          lifecycle: 'continuation_pending',
+          continuation: {
+            continuationId: 'stale-continuation',
+            purpose: 'execute_approved_plan',
+            state: 'pending',
+            requestedAt: 1,
+            lastTransitionAt: 1
+          }
+        })
       }
     })
 
     await expect(coordinator.saveSession(staleRendererSnapshot)).resolves.toMatchObject({
       title: 'Renamed by renderer',
       status: 'waiting-plan-approval',
-      runtimeContext: { version: 1, revision: 2, plan: createRuntimePlan() }
+      runtimeContext: {
+        version: 2,
+        revision: 2,
+        plan: createRuntimePlan(),
+        planTurn: createPlanTurn()
+      }
     })
     expect(durable.runtimeContext).toEqual({
-      version: 1,
+      version: 2,
       revision: 2,
-      plan: createRuntimePlan()
+      plan: createRuntimePlan(),
+      planTurn: createPlanTurn()
     })
     expect(durable.updatedAt).toBeGreaterThan(previousUpdatedAt)
+  })
+
+  it('preserves a main-persisted Plan feedback Message on a stale renderer save', async () => {
+    const prompt: PersistedChatMessage = {
+      id: 'prompt-plan-1',
+      role: 'user',
+      content: 'Create a Plan.',
+      status: 'complete',
+      eventIds: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const feedback: PersistedChatMessage = {
+      id: 'feedback-1',
+      role: 'user',
+      content: 'Split by cohort.',
+      status: 'complete',
+      eventIds: [],
+      responseToMessageId: prompt.id,
+      createdAt: 3,
+      updatedAt: 3
+    }
+    const continuationReply: PersistedChatMessage = {
+      id: 'reply-2',
+      role: 'agent',
+      content: 'The replacement Plan is ready.',
+      status: 'complete',
+      eventIds: [],
+      responseToMessageId: prompt.id,
+      createdAt: 4,
+      updatedAt: 4
+    }
+    let durable = materializeSessionConversationGraph(
+      createSession({
+        status: 'waiting-plan-approval',
+        messages: [prompt, feedback],
+        runtimeContext: {
+          version: 2,
+          revision: 5,
+          plan: createRuntimePlan(),
+          planTurn: createPlanTurn()
+        },
+        updatedAt: 3
+      })
+    )
+    const staleRendererSnapshot = materializeSessionConversationGraph(
+      createSession({
+        status: 'running',
+        messages: [prompt, continuationReply],
+        updatedAt: 4
+      })
+    )
+    const repository = createSessionRepository({
+      loadSessionWithDiagnostics: vi.fn(async () => ({
+        status: 'found' as const,
+        session: durable
+      })),
+      saveSession: vi.fn(async (session) => {
+        durable = structuredClone(session)
+      })
+    })
+    const coordinator = new SessionPersistenceCoordinator(repository, createFileIndex())
+
+    await coordinator.saveSession(staleRendererSnapshot)
+
+    expect(durable.messages.map(({ id }) => id)).toEqual([
+      prompt.id,
+      feedback.id,
+      continuationReply.id
+    ])
   })
 
   it('preserves main-owned archive state on a stale whole-session save', async () => {
@@ -448,7 +663,7 @@ describe('SessionPersistenceCoordinator', () => {
       createSession({
         status: 'waiting-plan-approval',
         runtimeContext: {
-          version: 1,
+          version: 2,
           revision: 9,
           plan: createRuntimePlan({ approval: 'approved' })
         }
@@ -544,7 +759,7 @@ describe('SessionPersistenceCoordinator', () => {
   it('removes embedded runtime context with Project Session authority', async () => {
     let durable: PersistedChatSession | undefined = createSession({
       runtimeContext: {
-        version: 1,
+        version: 2,
         revision: 7,
         plan: createRuntimePlan({ approval: 'approved' })
       }

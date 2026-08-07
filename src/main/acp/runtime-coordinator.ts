@@ -19,6 +19,7 @@ import type {
 import type { AcpHandoffFailure } from '../../shared/acp'
 import type { ResolvedReasoningEffort } from '../../shared/reasoning-effort'
 import type { AgentFrameworkId } from '../../shared/settings'
+import { PlanCommandError } from '../../shared/session-plan/contract'
 import { AcpRuntime, type AcpRuntimeCallbacks } from './runtime'
 import type { AcpRuntimeActivity, AcpRuntimeActivityOptions } from './runtime-activity'
 import { ConversationPermissionGrantStore } from './permission-broker'
@@ -70,6 +71,12 @@ type ActivePromptRequest = {
   acceptance?: PromptAcceptance
 }
 
+type OwnedPlanContinuation = {
+  runtime: AcpRuntime
+  continuationId: string
+  attemptId: string
+}
+
 type PromptAcceptance = {
   promise: Promise<void>
   resolve: () => void
@@ -106,6 +113,7 @@ class AcpRuntimeCoordinator {
   private readonly sessionCancellationGenerations = new Map<string, number>()
   private readonly pendingPromptStarts = new Map<string, PendingPromptStart[]>()
   private readonly activePromptRequests = new Map<string, ActivePromptRequest>()
+  private readonly ownedPlanContinuations = new Map<string, OwnedPlanContinuation>()
   private readonly activePromptCounts = new Map<string, number>()
   private readonly interactionReleaseWaiters = new Map<string, Set<() => void>>()
   private promptAdmissionGuard?: (sessionId: string) => Promise<void>
@@ -233,16 +241,206 @@ class AcpRuntimeCoordinator {
     sessionId: string
   ): ReturnType<AcpRuntime['getSessionPlanProjection']> {
     const runtime = this.sessionRuntimes.get(sessionId) ?? this.activeRuntime
-    return runtime?.getSessionPlanProjection(projectId, sessionId) ?? Promise.resolve(null)
+    if (!runtime) return Promise.resolve(null)
+    return this.reconcileRecoveredPlanContinuation(runtime, projectId, sessionId).then(() =>
+      runtime.getSessionPlanProjection(projectId, sessionId)
+    )
   }
 
-  respondSessionPlan(
+  private async reconcileRecoveredPlanContinuation(
+    runtime: AcpRuntime,
+    projectId: string,
+    sessionId: string
+  ): Promise<void> {
+    const recovery = await runtime.getSessionPlanContinuationRecovery(projectId, sessionId)
+    const continuation = recovery?.turn.continuation
+    if (!recovery || !continuation) return
+
+    if (continuation.state === 'pending') {
+      const attemptId = `plan-attempt-${randomUUID()}`
+      let claimed: Awaited<ReturnType<AcpRuntime['claimSessionPlanContinuation']>>
+      try {
+        claimed = await runtime.claimSessionPlanContinuation({
+          projectId,
+          sessionId,
+          turnAnchor: recovery.turn.turnAnchor,
+          artifactVersionId: recovery.projection.artifactVersionId,
+          expectedRevision: recovery.projection.revision,
+          continuationId: continuation.continuationId,
+          attemptId
+        })
+      } catch (error) {
+        if (
+          error instanceof PlanCommandError &&
+          (error.code === 'revision-conflict' || error.code === 'continuation-required')
+        ) {
+          return
+        }
+        throw error
+      }
+      void this.dispatchRecoveredPlanContinuation({
+        runtime,
+        projectId,
+        sessionId,
+        turnAnchor: recovery.turn.turnAnchor,
+        artifactVersionId: recovery.projection.artifactVersionId,
+        expectedRevision: claimed.revision,
+        continuationId: continuation.continuationId,
+        attemptId,
+        purpose: continuation.purpose
+      })
+      return
+    }
+
+    const attemptId = continuation.attemptId
+    const active = this.activePromptRequests.get(sessionId)
+    const activeContinuation = active?.request.planContinuation
+    const claimed = this.ownedPlanContinuations.get(sessionId)
+    const ownerMatches =
+      Boolean(attemptId) &&
+      ((claimed?.runtime === runtime &&
+        claimed.continuationId === continuation.continuationId &&
+        claimed.attemptId === attemptId) ||
+        (active?.runtime === runtime &&
+          activeContinuation?.turnAnchor === recovery.turn.turnAnchor &&
+          activeContinuation.artifactVersionId === recovery.projection.artifactVersionId &&
+          activeContinuation.continuationId === continuation.continuationId &&
+          activeContinuation.attemptId === attemptId))
+    if (ownerMatches || !attemptId) return
+
+    await runtime.recordSessionPlanContinuationFailed({
+      projectId,
+      sessionId,
+      turnAnchor: recovery.turn.turnAnchor,
+      artifactVersionId: recovery.projection.artifactVersionId,
+      continuationId: continuation.continuationId,
+      attemptId,
+      failure: continuation.state === 'active' ? 'execution_failed' : 'dispatch_failed'
+    })
+  }
+
+  private async dispatchRecoveredPlanContinuation(input: {
+    runtime: AcpRuntime
+    projectId: string
+    sessionId: string
+    turnAnchor: string
+    artifactVersionId: string
+    expectedRevision: number
+    continuationId: string
+    attemptId: string
+    purpose: 'execute_approved_plan' | 'revise_pending_plan'
+    text?: string
+  }): Promise<void> {
+    const owned = {
+      runtime: input.runtime,
+      continuationId: input.continuationId,
+      attemptId: input.attemptId
+    }
+    this.ownedPlanContinuations.set(input.sessionId, owned)
+    try {
+      if (!input.runtime.getSnapshot().sessionIds.includes(input.sessionId)) {
+        await this.resumeSession({
+          sessionId: input.sessionId,
+          cwd: this.defaultCwd,
+          projectName: input.projectId
+        })
+      }
+      await this.sendAppContinuation({
+        sessionId: input.sessionId,
+        text:
+          input.text ??
+          (input.purpose === 'revise_pending_plan'
+            ? 'Resume revision of the pending Session Plan using its durable feedback Message.'
+            : 'Continue the approved Session Plan. Execute it through the Plan tools and report the result.'),
+        suppressUserMessage: true,
+        provenanceContext: { promptMessageId: input.turnAnchor },
+        planContinuation: {
+          projectId: input.projectId,
+          artifactVersionId: input.artifactVersionId,
+          expectedRevision: input.expectedRevision,
+          turnAnchor: input.turnAnchor,
+          continuationId: input.continuationId,
+          attemptId: input.attemptId,
+          purpose: input.purpose
+        }
+      })
+    } catch {
+      try {
+        await input.runtime.recordSessionPlanContinuationFailed({
+          projectId: input.projectId,
+          sessionId: input.sessionId,
+          turnAnchor: input.turnAnchor,
+          artifactVersionId: input.artifactVersionId,
+          continuationId: input.continuationId,
+          attemptId: input.attemptId,
+          failure: 'dispatch_failed'
+        })
+      } catch {
+        // A concurrent recovery or terminal outcome now owns the durable Turn.
+      }
+    } finally {
+      if (this.ownedPlanContinuations.get(input.sessionId) === owned) {
+        this.ownedPlanContinuations.delete(input.sessionId)
+      }
+    }
+  }
+
+  async respondSessionPlan(
     input: Parameters<AcpRuntime['respondSessionPlan']>[0]
-  ): ReturnType<AcpRuntime['respondSessionPlan']> {
+  ): Promise<Awaited<ReturnType<AcpRuntime['respondSessionPlan']>>> {
     const runtime = this.sessionRuntimes.get(input.sessionId) ?? this.activeRuntime
     if (!runtime)
       return Promise.reject(new Error('No active runtime owns the Session Plan response.'))
-    return runtime.respondSessionPlan(input)
+    const result = await runtime.respondSessionPlan(input)
+    if (
+      (result.kind !== 'continuation_requested' && result.kind !== 'revision_requested') ||
+      !result.turn?.continuation ||
+      result.turn.continuation.state !== 'pending'
+    ) {
+      return result
+    }
+
+    const turn = result.turn
+    const continuation = turn.continuation!
+    const attemptId = `plan-attempt-${randomUUID()}`
+    let claimed: Awaited<ReturnType<AcpRuntime['claimSessionPlanContinuation']>>
+    try {
+      claimed = await runtime.claimSessionPlanContinuation({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        turnAnchor: turn.turnAnchor,
+        artifactVersionId: result.projection.artifactVersionId,
+        expectedRevision: result.projection.revision,
+        continuationId: continuation.continuationId,
+        attemptId
+      })
+    } catch (error) {
+      if (
+        error instanceof PlanCommandError &&
+        (error.code === 'revision-conflict' || error.code === 'continuation-required')
+      ) {
+        // A concurrent delivery already claimed this single durable intent.
+        return result
+      }
+      throw error
+    }
+    void this.dispatchRecoveredPlanContinuation({
+      runtime,
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      turnAnchor: turn.turnAnchor,
+      artifactVersionId: result.projection.artifactVersionId,
+      expectedRevision: claimed.revision,
+      continuationId: continuation.continuationId,
+      attemptId,
+      purpose: continuation.purpose,
+      ...(continuation.purpose === 'revise_pending_plan'
+        ? {
+            text: `Revise the pending Session Plan using this feedback: ${result.kind === 'revision_requested' ? result.text : ''}`
+          }
+        : {})
+    })
+    return result
   }
 
   getActivePromptSessions(): { projectName: string; sessionId: string }[] {

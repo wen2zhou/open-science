@@ -1,7 +1,10 @@
 import { createHash } from 'node:crypto'
 import { describe, expect, it, vi } from 'vitest'
 
-import type { SessionRuntimeContext } from '../../shared/session-persistence'
+import type {
+  SessionPlanTurnRuntimeContext,
+  SessionRuntimeContext
+} from '../../shared/session-persistence'
 import type { ActivePlanProjection } from '../../shared/session-plan/contract'
 import { PlanService, type PlanServiceDependencies } from './plan-service'
 import { SessionPlanInteractionOwner } from './session-plan-interaction-owner'
@@ -71,17 +74,22 @@ type PlanServiceHarness = Readonly<{
 }>
 
 const setup = (): PlanServiceHarness => {
-  let context: SessionRuntimeContext = { version: 1, revision: 0 }
+  let context: SessionRuntimeContext = { version: 2, revision: 0 }
   let persistedStatus = 'running'
   let bytes = ''
+  let artifactSequence = 0
   const interactions = new SessionPlanInteractionOwner()
+  const feedbackMessages = new Map<
+    string,
+    Awaited<ReturnType<PlanServiceDependencies['commitFeedback']>>['message']
+  >()
   const dependencies: PlanServiceDependencies = {
-    interactions,
     writeArtifactForActiveTurn: vi.fn(async (_sessionId, input) => {
       bytes = input.content
+      artifactSequence += 1
       return {
-        artifactId: 'artifact-1',
-        versionId: 'version-1',
+        artifactId: `artifact-${artifactSequence}`,
+        versionId: `version-${artifactSequence}`,
         checksum: createHash('sha256').update(bytes).digest('hex'),
         name: input.filename
       }
@@ -91,27 +99,51 @@ const setup = (): PlanServiceHarness => {
       checksum: createHash('sha256').update(bytes).digest('hex')
     })),
     readRuntimeContext: vi.fn(async () => context),
-    patchRuntimeContext: vi.fn(async ({ expectedRevision, plan, sessionStatus }) => {
+    patchRuntimeContext: vi.fn(async (request) => {
+      const { expectedRevision, plan, planTurn, sessionStatus } = request
       if (expectedRevision !== context.revision) throw new Error('revision conflict')
       context = {
-        version: 1,
+        ...context,
+        version: 2,
         revision: context.revision + 1,
-        ...(plan ? { plan } : {})
+        ...(plan ? { plan } : {}),
+        ...(planTurn ? { planTurn } : {})
+      }
+      if (Object.hasOwn(request, 'planTurn') && !planTurn) {
+        const mutable = context as { planTurn?: SessionPlanTurnRuntimeContext }
+        delete mutable.planTurn
+      }
+      if (!plan) {
+        const mutable = context as { plan?: SessionRuntimeContext['plan'] }
+        delete mutable.plan
       }
       persistedStatus = sessionStatus
       return context
     }),
     isRevisionConflict: (error) => error instanceof Error && error.message === 'revision conflict',
-    persistUserMessage: vi.fn(async (message) => ({
-      id: 'message-1',
-      role: 'user' as const,
-      content: message.content,
-      status: 'complete' as const,
-      eventIds: [],
-      responseToMessageId: message.interactionId,
-      createdAt: 42,
-      updatedAt: 42
-    })),
+    commitFeedback: vi.fn(async (command) => {
+      const existing = feedbackMessages.get(command.commandId)
+      if (existing) return { context, message: existing, changed: false }
+      const message = {
+        id: command.messageId,
+        role: 'user' as const,
+        content: command.content,
+        status: 'complete' as const,
+        eventIds: [],
+        responseToMessageId: command.turnAnchor,
+        createdAt: 42,
+        updatedAt: 42
+      }
+      feedbackMessages.set(command.commandId, message)
+      context = {
+        ...context,
+        version: 2,
+        revision: context.revision + 1,
+        plan: command.plan,
+        planTurn: command.planTurn
+      }
+      return { context, message, changed: true }
+    }),
     now: () => 42,
     createId: () => 'a91f30c2'
   }
@@ -133,9 +165,40 @@ type ExecutionPlanFixture = Readonly<{
     projectId: string
     sessionId: string
     artifactVersionId: string
+    turnAnchor: string
+    commandId: string
   }>
   generated: Awaited<ReturnType<PlanService['generate']>>
 }>
+
+type ExecutionAuthority = Readonly<{
+  turnAnchor: string
+  continuationId: string
+  attemptId: string
+}>
+
+const activateApprovedContinuation = async (
+  service: PlanService,
+  identity: Pick<ExecutionPlanFixture['identity'], 'projectId' | 'sessionId' | 'artifactVersionId'>,
+  approved: { projection: ActivePlanProjection; turn?: SessionPlanTurnRuntimeContext },
+  attemptId = 'attempt-execute-1'
+): Promise<{ revision: number; authority: ExecutionAuthority }> => {
+  const continuation = approved.turn?.continuation
+  if (!continuation) throw new Error('missing approved continuation')
+  const turnAnchor = approved.turn!.turnAnchor
+  const authority = { turnAnchor, continuationId: continuation.continuationId, attemptId }
+  const claimed = await service.claimContinuation({
+    ...identity,
+    ...authority,
+    expectedRevision: approved.projection.revision
+  })
+  const active = await service.recordContinuationActive({
+    ...identity,
+    ...authority,
+    expectedRevision: claimed.revision
+  })
+  return { revision: active.revision, authority }
+}
 
 const generateExecutionPlan = async (): Promise<ExecutionPlanFixture> => {
   const { service } = setup()
@@ -151,14 +214,19 @@ const generateExecutionPlan = async (): Promise<ExecutionPlanFixture> => {
     identity: {
       projectId: 'project-1',
       sessionId: 'session-1',
-      artifactVersionId: generated.projection.artifactVersionId
+      artifactVersionId: generated.projection.artifactVersionId,
+      turnAnchor: 'interaction-1',
+      commandId: 'approve-execution-plan'
     }
   }
 }
 
 const approveExecutionPlan = async (): Promise<
   ExecutionPlanFixture &
-    Readonly<{ approved: { projection: ActivePlanProjection; changed: boolean } }>
+    Readonly<{
+      identity: ExecutionPlanFixture['identity'] & ExecutionAuthority
+      approved: { projection: ActivePlanProjection; changed: boolean }
+    }>
 > => {
   const fixture = await generateExecutionPlan()
   const approved = await fixture.service.respond({
@@ -166,10 +234,335 @@ const approveExecutionPlan = async (): Promise<
     expectedRevision: fixture.generated.projection.revision,
     decision: 'approved'
   })
-  return { ...fixture, approved }
+  const active = await activateApprovedContinuation(fixture.service, fixture.identity, approved)
+  return {
+    ...fixture,
+    identity: { ...fixture.identity, ...active.authority },
+    approved: { ...approved, projection: { ...approved.projection, revision: active.revision } }
+  }
 }
 
 describe('PlanService', () => {
+  it('suspends the originating Conversation Turn when GeneratePlan returns', async () => {
+    const { service, context, status } = setup()
+
+    const result = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'message-1',
+      attemptId: 'attempt-generate-1',
+      content
+    })
+
+    expect(result).toMatchObject({
+      kind: 'plan_suspended',
+      projection: { approval: 'pending', originatingPromptMessageId: 'message-1' },
+      turn: {
+        turnAnchor: 'message-1',
+        lifecycle: 'awaiting_plan_approval',
+        planArtifactVersionId: 'version-1'
+      }
+    })
+    expect(context().planTurn).toEqual<SessionPlanTurnRuntimeContext>({
+      turnAnchor: 'message-1',
+      lifecycle: 'awaiting_plan_approval',
+      planArtifactVersionId: 'version-1'
+    })
+    expect(status()).toBe('waiting-plan-approval')
+  })
+
+  it('atomically records approval and requests execution for the same Conversation Turn', async () => {
+    const { service, context, status } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'message-1',
+      attemptId: 'attempt-generate-1',
+      content
+    })
+
+    const result = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'message-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      commandId: 'approve-1',
+      decision: 'approved'
+    })
+
+    expect(result).toMatchObject({
+      kind: 'continuation_requested',
+      projection: { approval: 'approved' },
+      turn: {
+        turnAnchor: 'message-1',
+        lifecycle: 'continuation_pending',
+        continuation: { purpose: 'execute_approved_plan', state: 'pending' }
+      }
+    })
+    expect(context()).toMatchObject({
+      plan: { approval: 'approved' },
+      planTurn: {
+        lifecycle: 'continuation_pending',
+        continuation: { purpose: 'execute_approved_plan', state: 'pending' }
+      }
+    })
+    expect(status()).toBe('running')
+  })
+
+  it.each(['turnAnchor', 'commandId'] as const)(
+    'rejects an approval command without %s identity at the service boundary',
+    async (missingField) => {
+      const { service, context } = setup()
+      const generated = await service.generate({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        interactionId: 'message-1',
+        content
+      })
+      const command = {
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        turnAnchor: 'message-1',
+        artifactVersionId: generated.projection.artifactVersionId,
+        expectedRevision: generated.projection.revision,
+        commandId: 'approve-1',
+        decision: 'approved' as const
+      }
+      delete command[missingField]
+
+      await expect(service.respond(command)).rejects.toMatchObject({
+        code: 'interaction-mismatch'
+      })
+      expect(context()).toMatchObject({
+        revision: generated.projection.revision,
+        plan: { approval: 'pending' },
+        planTurn: { lifecycle: 'awaiting_plan_approval' }
+      })
+    }
+  )
+
+  it('claims a fresh Attempt and permits steps only while that continuation owns authority', async () => {
+    const { service, context, status } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'message-1',
+      attemptId: 'attempt-generate-1',
+      content
+    })
+    const approved = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'message-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      commandId: 'approve-1',
+      decision: 'approved'
+    })
+    if (!approved.turn?.continuation) throw new Error('missing continuation')
+
+    await expect(
+      service.updateStepStatus({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: generated.projection.artifactVersionId,
+        expectedRevision: approved.projection.revision,
+        title: 'Analyze the data',
+        status: 'in_progress',
+        turnAnchor: 'message-1',
+        continuationId: approved.turn.continuation.continuationId,
+        attemptId: 'attempt-execute-1'
+      })
+    ).rejects.toMatchObject({ code: 'continuation-required' })
+
+    const claimed = await service.claimContinuation({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'message-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: approved.projection.revision,
+      continuationId: approved.turn.continuation.continuationId,
+      attemptId: 'attempt-execute-1'
+    })
+    expect(claimed.turn.continuation).toMatchObject({
+      state: 'dispatching',
+      attemptId: 'attempt-execute-1'
+    })
+    const active = await service.recordContinuationActive({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'message-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: claimed.revision,
+      continuationId: approved.turn.continuation.continuationId,
+      attemptId: 'attempt-execute-1'
+    })
+    expect(active.turn.lifecycle).toBe('continuation_active')
+
+    const running = await service.updateStepStatus({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: active.revision,
+      title: 'Analyze the data',
+      status: 'in_progress',
+      turnAnchor: 'message-1',
+      continuationId: approved.turn.continuation.continuationId,
+      attemptId: 'attempt-execute-1'
+    })
+    const completed = await service.updateStepStatus({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: running.projection.revision,
+      title: 'Analyze the data',
+      status: 'completed',
+      turnAnchor: 'message-1',
+      continuationId: approved.turn.continuation.continuationId,
+      attemptId: 'attempt-execute-1'
+    })
+
+    expect(completed.projection.lifecycle).toBe('completed')
+    expect(context().planTurn).toBeUndefined()
+    expect(status()).toBe('idle')
+  })
+
+  it('keeps approval durable across dispatch failure and retries with one new auditable continuation', async () => {
+    const { service, context, status } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'message-1',
+      content
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'message-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const approved = await service.respond({
+      ...identity,
+      expectedRevision: generated.projection.revision,
+      commandId: 'approve-command-1',
+      decision: 'approved'
+    })
+    const first = approved.turn!.continuation!
+    const claimed = await service.claimContinuation({
+      ...identity,
+      expectedRevision: approved.projection.revision,
+      continuationId: first.continuationId,
+      attemptId: 'attempt-1'
+    })
+    const interrupted = await service.recordContinuationFailed({
+      ...identity,
+      expectedRevision: claimed.revision,
+      continuationId: first.continuationId,
+      attemptId: 'attempt-1',
+      failure: 'dispatch_failed'
+    })
+
+    expect(context()).toMatchObject({
+      plan: { approval: 'approved' },
+      planTurn: {
+        lifecycle: 'continuation_interrupted',
+        continuation: { state: 'interrupted', attemptId: 'attempt-1' }
+      }
+    })
+    expect(status()).toBe('error')
+
+    const retried = await service.respond({
+      ...identity,
+      expectedRevision: interrupted.revision,
+      commandId: 'retry-command-1',
+      retry: true
+    })
+    expect(retried).toMatchObject({
+      changed: true,
+      turn: {
+        lifecycle: 'continuation_pending',
+        continuationHistory: [{ continuationId: first.continuationId, state: 'interrupted' }],
+        continuation: { state: 'pending', commandId: 'retry-command-1' }
+      }
+    })
+    expect(retried.turn.continuation!.continuationId).not.toBe(first.continuationId)
+    await expect(
+      service.respond({
+        ...identity,
+        expectedRevision: interrupted.revision,
+        commandId: 'retry-command-1',
+        retry: true
+      })
+    ).resolves.toMatchObject({ changed: false, turn: { continuation: { state: 'pending' } } })
+
+    await expect(
+      service.recordContinuationFailed({
+        ...identity,
+        expectedRevision: retried.projection.revision,
+        continuationId: first.continuationId,
+        attemptId: 'attempt-1',
+        failure: 'execution_failed'
+      })
+    ).rejects.toMatchObject({ code: 'continuation-required' })
+    const retryContinuation = retried.turn.continuation!
+    await service.claimContinuation({
+      ...identity,
+      expectedRevision: retried.projection.revision,
+      continuationId: retryContinuation.continuationId,
+      attemptId: 'attempt-2'
+    })
+    await expect(
+      service.claimContinuation({
+        ...identity,
+        expectedRevision: retried.projection.revision,
+        continuationId: retryContinuation.continuationId,
+        attemptId: 'attempt-overlap'
+      })
+    ).rejects.toMatchObject({ code: 'revision-conflict' })
+  })
+
+  it('projects durable pending and dispatching continuations for restart reconciliation', async () => {
+    const { service } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'message-1',
+      content
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'message-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const approved = await service.respond({
+      ...identity,
+      expectedRevision: generated.projection.revision,
+      commandId: 'approve-before-restart',
+      decision: 'approved'
+    })
+
+    await expect(service.getContinuationRecovery('project-1', 'session-1')).resolves.toMatchObject({
+      projection: { approval: 'approved', revision: approved.projection.revision },
+      turn: { lifecycle: 'continuation_pending', continuation: { state: 'pending' } }
+    })
+
+    const continuationId = approved.turn!.continuation!.continuationId
+    await service.claimContinuation({
+      ...identity,
+      expectedRevision: approved.projection.revision,
+      continuationId,
+      attemptId: 'attempt-before-restart'
+    })
+    await expect(service.getContinuationRecovery('project-1', 'session-1')).resolves.toMatchObject({
+      turn: {
+        lifecycle: 'continuation_pending',
+        continuation: { state: 'dispatching', attemptId: 'attempt-before-restart' }
+      }
+    })
+  })
+
   it('durably verifies a generated Plan before atomically activating it for the Session', async () => {
     const { service, dependencies, context, status } = setup()
 
@@ -219,27 +612,32 @@ describe('PlanService', () => {
       projectId: 'project-1',
       sessionId: 'session-1',
       artifactVersionId: generated.projection.artifactVersionId,
-      expectedRevision: generated.projection.revision
+      expectedRevision: generated.projection.revision,
+      turnAnchor: 'interaction-1',
+      commandId: 'approve-irreversible'
     }
 
     const approved = await service.respond({ ...identity, decision: 'approved' })
     expect(approved.changed).toBe(true)
+    const active = await activateApprovedContinuation(service, identity, approved)
     const duplicate = await service.respond({
       ...identity,
-      expectedRevision: approved.projection.revision,
+      expectedRevision: active.revision,
       decision: 'approved'
     })
     expect(duplicate.changed).toBe(false)
 
     const running = await service.updateStepStatus({
       ...identity,
-      expectedRevision: approved.projection.revision,
+      ...active.authority,
+      expectedRevision: active.revision,
       title: 'Analyze the data',
       status: 'in_progress'
     })
     expect(running.projection.lifecycle).toBe('in_progress')
     const completed = await service.updateStepStatus({
       ...identity,
+      ...active.authority,
       expectedRevision: running.projection.revision,
       title: 'Analyze the data',
       status: 'completed'
@@ -272,8 +670,10 @@ describe('PlanService', () => {
       await service.respond({
         projectId: 'project-1',
         sessionId: 'session-1',
+        turnAnchor: 'interaction-1',
         artifactVersionId: generated.projection.artifactVersionId,
         expectedRevision: generated.projection.revision,
+        commandId: `decision-${decision}`,
         decision
       })
 
@@ -291,19 +691,25 @@ describe('PlanService', () => {
       interactionId: 'interaction-1',
       content
     })
-    const skipped = await service.updateStepStatus({
+    const approved = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: generated.projection.artifactVersionId,
-      expectedRevision: (
-        await service.respond({
-          projectId: 'project-1',
-          sessionId: 'session-1',
-          artifactVersionId: generated.projection.artifactVersionId,
-          expectedRevision: generated.projection.revision,
-          decision: 'approved'
-        })
-      ).projection.revision,
+      expectedRevision: generated.projection.revision,
+      commandId: 'approve-skipped-step',
+      decision: 'approved'
+    })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const active = await activateApprovedContinuation(service, identity, approved)
+    const skipped = await service.updateStepStatus({
+      ...identity,
+      ...active.authority,
+      expectedRevision: active.revision,
       title: 'Analyze the data',
       status: 'skipped',
       notes: 'The input already contains the result.'
@@ -348,16 +754,25 @@ describe('PlanService', () => {
     const approved = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: generated.projection.artifactVersionId,
       expectedRevision: generated.projection.revision,
+      commandId: 'approve-prototype-titles',
       decision: 'approved'
     })
-    let revision = approved.projection.revision
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const active = await activateApprovedContinuation(service, identity, approved)
+    let revision = active.revision
     for (const title of ['toString', 'constructor', '__proto__']) {
       const running = await service.updateStepStatus({
         projectId: 'project-1',
         sessionId: 'session-1',
         artifactVersionId: generated.projection.artifactVersionId,
+        ...active.authority,
         expectedRevision: revision,
         title,
         status: 'in_progress'
@@ -366,6 +781,7 @@ describe('PlanService', () => {
         projectId: 'project-1',
         sessionId: 'session-1',
         artifactVersionId: generated.projection.artifactVersionId,
+        ...active.authority,
         expectedRevision: running.projection.revision,
         title,
         status: 'completed'
@@ -391,15 +807,26 @@ describe('PlanService', () => {
     const approved = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: generated.projection.artifactVersionId,
       expectedRevision: generated.projection.revision,
+      commandId: 'approve-dependency-order',
       decision: 'approved'
     })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      turnAnchor: 'interaction-1',
+      commandId: 'approve-terminal-step'
+    }
+    const active = await activateApprovedContinuation(service, identity, approved)
     const running = await service.updateStepStatus({
       projectId: 'project-1',
       sessionId: 'session-1',
       artifactVersionId: generated.projection.artifactVersionId,
-      expectedRevision: approved.projection.revision,
+      ...active.authority,
+      expectedRevision: active.revision,
       title: 'Analyze the data',
       status: 'in_progress'
     })
@@ -409,7 +836,8 @@ describe('PlanService', () => {
       artifactVersionId: generated.projection.artifactVersionId,
       expectedRevision: running.projection.revision,
       title: 'Analyze the data',
-      status: 'completed' as const
+      status: 'completed' as const,
+      ...active.authority
     }
     const completed = await service.updateStepStatus(terminalCommand)
     const revisionAfterCompletion = context().revision
@@ -437,17 +865,22 @@ describe('PlanService', () => {
     const approved = await service.respond({
       ...identity,
       expectedRevision: generated.projection.revision,
+      turnAnchor: 'interaction-1',
+      commandId: 'approve-retry-terminal',
       decision: 'approved'
     })
+    const active = await activateApprovedContinuation(service, identity, approved)
     const running = await service.updateStepStatus({
       ...identity,
-      expectedRevision: approved.projection.revision,
+      ...active.authority,
+      expectedRevision: active.revision,
       title: 'Analyze the data',
       status: 'in_progress',
       notes: 'First attempt.'
     })
     const retried = await service.updateStepStatus({
       ...identity,
+      ...active.authority,
       expectedRevision: running.projection.revision,
       title: 'Analyze the data',
       status: 'in_progress',
@@ -459,6 +892,7 @@ describe('PlanService', () => {
     })
     const completed = await service.updateStepStatus({
       ...identity,
+      ...active.authority,
       expectedRevision: retried.projection.revision,
       title: 'Analyze the data',
       status: 'completed'
@@ -468,6 +902,7 @@ describe('PlanService', () => {
       await expect(
         service.updateStepStatus({
           ...identity,
+          ...active.authority,
           expectedRevision: completed.projection.revision,
           title: 'Analyze the data',
           status
@@ -488,7 +923,9 @@ describe('PlanService', () => {
       projectId: 'project-1',
       sessionId: 'session-1',
       artifactVersionId: generated.projection.artifactVersionId,
-      expectedRevision: generated.projection.revision
+      expectedRevision: generated.projection.revision,
+      turnAnchor: 'interaction-1',
+      commandId: 'reject-irreversible'
     }
 
     const rejected = await service.respond({ ...identity, decision: 'rejected' })
@@ -507,7 +944,7 @@ describe('PlanService', () => {
     ).rejects.toMatchObject({ code: 'approval-already-decided' })
   })
 
-  it('returns a live rejected interaction to running until the agent turn actually ends', async () => {
+  it('ends a rejected durable Turn even when the obsolete generating interaction is still live', async () => {
     const { service, status } = setup()
     const generated = await service.generate({
       projectId: 'project-1',
@@ -519,70 +956,197 @@ describe('PlanService', () => {
     await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: generated.projection.artifactVersionId,
       expectedRevision: generated.projection.revision,
+      commandId: 'reject-obsolete-interaction',
       decision: 'rejected',
       interactionIsLive: true
     })
 
-    expect(status()).toBe('running')
+    expect(status()).toBe('idle')
   })
 
-  it('persists revision feedback as a standard user Message for the live blocked interaction', async () => {
-    const { service, dependencies, interactions } = setup()
+  it('atomically persists idempotent feedback and a revise intent without granting approval', async () => {
+    const { service, dependencies, context } = setup()
     const generated = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
       interactionId: 'interaction-1',
       content
     })
-    expect(interactions.interactionIdFor('session-1', generated.projection.artifactVersionId)).toBe(
-      'interaction-1'
-    )
-
     const response = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      commandId: 'feedback-1',
       feedback: 'Split the analysis by cohort.'
     })
 
     expect(response).toMatchObject({
-      kind: 'feedback',
-      routeToInteractionId: 'interaction-1',
+      kind: 'revision_requested',
+      changed: true,
+      projection: { approval: 'pending' },
+      turn: {
+        turnAnchor: 'interaction-1',
+        lifecycle: 'continuation_pending',
+        continuation: { purpose: 'revise_pending_plan', state: 'pending' }
+      },
       text: 'Split the analysis by cohort.',
-      message: { role: 'user', content: 'Split the analysis by cohort.' }
+      message: {
+        role: 'user',
+        content: 'Split the analysis by cohort.',
+        responseToMessageId: 'interaction-1'
+      }
     })
-    expect(dependencies.persistUserMessage).toHaveBeenCalledWith({
+    expect(context()).toMatchObject({
+      plan: { approval: 'pending' },
+      planTurn: { continuation: { purpose: 'revise_pending_plan' } }
+    })
+    const repeated = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
-      content: 'Split the analysis by cohort.',
-      interactionId: 'interaction-1'
+      turnAnchor: 'interaction-1',
+      artifactVersionId: generated.projection.artifactVersionId,
+      expectedRevision: generated.projection.revision,
+      commandId: 'feedback-1',
+      feedback: 'Split the analysis by cohort.'
     })
-    expect(
-      interactions.interactionIdFor('session-1', generated.projection.artifactVersionId)
-    ).toBeUndefined()
+    expect(repeated).toMatchObject({ changed: false, message: { id: response.message.id } })
+    expect(dependencies.commitFeedback).toHaveBeenCalledTimes(2)
   })
 
-  it('retains the live interaction when revision feedback persistence fails', async () => {
-    const { service, dependencies, interactions } = setup()
-    const generated = await service.generate({
+  it('lets only the claimed active revise Attempt publish an immutable replacement', async () => {
+    const { service, context } = setup()
+    const original = await service.generate({
       projectId: 'project-1',
       sessionId: 'session-1',
       interactionId: 'interaction-1',
       content
     })
-    vi.mocked(dependencies.persistUserMessage).mockRejectedValueOnce(new Error('disk unavailable'))
-
+    const feedback = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: original.projection.revision,
+      commandId: 'feedback-1',
+      feedback: 'Split the analysis by cohort.'
+    })
+    const continuation = feedback.turn.continuation!
+    await expect(
+      service.generate({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        interactionId: 'interaction-1',
+        content: { ...content, task_summary: 'Unauthorized replacement' }
+      })
+    ).rejects.toMatchObject({ code: 'continuation-required' })
+    const claimed = await service.claimContinuation({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: feedback.projection.revision,
+      continuationId: continuation.continuationId,
+      attemptId: 'attempt-revise-1'
+    })
+    const active = await service.recordContinuationActive({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: claimed.revision,
+      continuationId: continuation.continuationId,
+      attemptId: 'attempt-revise-1'
+    })
+    const replacement = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: active.revision,
+      continuationId: continuation.continuationId,
+      attemptId: 'attempt-revise-1',
+      content: { ...content, task_summary: 'Replacement' }
+    })
+    expect(replacement).toMatchObject({
+      projection: { artifactVersionId: 'version-2', approval: 'pending' },
+      turn: {
+        turnAnchor: 'interaction-1',
+        lifecycle: 'awaiting_plan_approval',
+        planArtifactVersionId: 'version-2'
+      }
+    })
+    expect(context().plan).toMatchObject({ artifactVersionId: 'version-2', stepStatuses: {} })
     await expect(
       service.respond({
         projectId: 'project-1',
         sessionId: 'session-1',
-        feedback: 'Split the analysis by cohort.'
+        turnAnchor: 'interaction-1',
+        artifactVersionId: original.projection.artifactVersionId,
+        expectedRevision: replacement.projection.revision,
+        commandId: 'stale-feedback',
+        feedback: 'Old card'
       })
-    ).rejects.toThrow('disk unavailable')
-    expect(interactions.interactionIdFor('session-1', generated.projection.artifactVersionId)).toBe(
-      'interaction-1'
-    )
+    ).rejects.toMatchObject({ code: 'stale-plan' })
+  })
+
+  it('restores the original pending Plan when an active revise Attempt fails', async () => {
+    const { service, context, status } = setup()
+    const original = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'interaction-1',
+      content
+    })
+    const feedback = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: original.projection.revision,
+      commandId: 'feedback-1',
+      feedback: 'Revise it.'
+    })
+    const continuation = feedback.turn.continuation!
+    const claimed = await service.claimContinuation({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: feedback.projection.revision,
+      continuationId: continuation.continuationId,
+      attemptId: 'attempt-revise-1'
+    })
+    const active = await service.recordContinuationActive({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: claimed.revision,
+      continuationId: continuation.continuationId,
+      attemptId: 'attempt-revise-1'
+    })
+    await service.recordContinuationFailed({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: active.revision,
+      continuationId: continuation.continuationId,
+      attemptId: 'attempt-revise-1',
+      failure: 'execution_failed'
+    })
+    expect(context()).toMatchObject({
+      plan: { artifactVersionId: 'version-1', approval: 'pending' },
+      planTurn: { lifecycle: 'awaiting_plan_approval', planArtifactVersionId: 'version-1' }
+    })
+    expect(context().planTurn?.continuation).toBeUndefined()
+    expect(status()).toBe('waiting-plan-approval')
   })
 
   it('projects retained in-progress work as interrupted after the interaction ends', async () => {
@@ -596,15 +1160,22 @@ describe('PlanService', () => {
     const approved = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: generated.projection.artifactVersionId,
       expectedRevision: generated.projection.revision,
+      commandId: 'approve-unavailable-artifact',
       decision: 'approved'
     })
-    const running = await service.updateStepStatus({
+    const identity = {
       projectId: 'project-1',
       sessionId: 'session-1',
-      artifactVersionId: generated.projection.artifactVersionId,
-      expectedRevision: approved.projection.revision,
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const active = await activateApprovedContinuation(service, identity, approved)
+    const running = await service.updateStepStatus({
+      ...identity,
+      ...active.authority,
+      expectedRevision: active.revision,
       title: 'Analyze the data',
       status: 'in_progress'
     })
@@ -714,20 +1285,26 @@ describe('PlanService', () => {
     const approved = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: generated.projection.artifactVersionId,
       expectedRevision: generated.projection.revision,
+      commandId: 'approve-revision-conflict',
       decision: 'approved'
     })
+    const identity = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const active = await activateApprovedContinuation(service, identity, approved)
     const reconstructed = new PlanService({
-      ...dependencies,
-      interactions: new SessionPlanInteractionOwner()
+      ...dependencies
     })
     await expect(
       reconstructed.updateStepStatus({
-        projectId: 'project-1',
-        sessionId: 'session-1',
-        artifactVersionId: generated.projection.artifactVersionId,
-        expectedRevision: approved.projection.revision,
+        ...identity,
+        ...active.authority,
+        expectedRevision: active.revision,
         title: 'Analyze the data',
         status: 'in_progress'
       })
@@ -739,31 +1316,13 @@ describe('PlanService', () => {
       reconstructed.getProjection('project-1', 'session-1', { interactionIsLive: true })
     ).resolves.toMatchObject({ lifecycle: 'in_progress' })
 
-    vi.mocked(dependencies.writeArtifactForActiveTurn).mockResolvedValueOnce({
-      artifactId: 'artifact-2',
-      versionId: 'version-2',
-      checksum: generated.projection.artifactChecksum,
-      name: 'plan-replacement.json'
-    })
-    const replacement = await reconstructed.generate({
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      interactionId: 'interaction-2',
-      content
-    })
-    expect(replacement.projection).toMatchObject({
-      artifactId: 'artifact-2',
-      artifactVersionId: 'version-2',
-      approval: 'pending',
-      stepStatuses: {},
-      lifecycle: 'awaiting_approval'
-    })
     await expect(
       reconstructed.updateStepStatus({
         projectId: 'project-1',
         sessionId: 'session-1',
-        artifactVersionId: generated.projection.artifactVersionId,
-        expectedRevision: replacement.projection.revision,
+        artifactVersionId: 'stale-version',
+        expectedRevision: active.revision,
+        ...active.authority,
         title: 'Analyze the data',
         status: 'completed'
       })
@@ -939,12 +1498,16 @@ describe('PlanService', () => {
     const approved = await service.respond({
       ...identity,
       expectedRevision: generated.projection.revision,
+      turnAnchor: 'interaction-1',
+      commandId: 'approve-dependencies',
       decision: 'approved'
     })
+    const active = await activateApprovedContinuation(service, identity, approved)
     await expect(
       service.updateStepStatus({
         ...identity,
-        expectedRevision: approved.projection.revision,
+        ...active.authority,
+        expectedRevision: active.revision,
         title: 'Unknown work',
         status: 'in_progress'
       })
@@ -952,6 +1515,7 @@ describe('PlanService', () => {
     await expect(
       service.updateStepStatus({
         ...identity,
+        ...active.authority,
         expectedRevision: generated.projection.revision,
         title: 'Validate cohorts',
         status: 'in_progress'
@@ -966,6 +1530,34 @@ describe('PlanService', () => {
       sessionId: 'session-1',
       interactionId: 'interaction-1',
       content
+    })
+    const feedback = await service.respond({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: original.projection.revision,
+      commandId: 'feedback-replacement',
+      feedback: 'Replace the plan.'
+    })
+    const continuation = feedback.turn.continuation!
+    const claimed = await service.claimContinuation({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: feedback.projection.revision,
+      continuationId: continuation.continuationId,
+      attemptId: 'attempt-revise-1'
+    })
+    const active = await service.recordContinuationActive({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
+      artifactVersionId: original.projection.artifactVersionId,
+      expectedRevision: claimed.revision,
+      continuationId: continuation.continuationId,
+      attemptId: 'attempt-revise-1'
     })
     vi.mocked(dependencies.writeArtifactForActiveTurn).mockResolvedValueOnce({
       artifactId: 'artifact-2',
@@ -983,6 +1575,11 @@ describe('PlanService', () => {
         projectId: 'project-1',
         sessionId: 'session-1',
         interactionId: 'interaction-1',
+        turnAnchor: 'interaction-1',
+        artifactVersionId: original.projection.artifactVersionId,
+        expectedRevision: active.revision,
+        continuationId: continuation.continuationId,
+        attemptId: 'attempt-revise-1',
         content: { ...content, task_summary: 'Replacement' }
       })
     ).rejects.toMatchObject({ code: 'artifact-unavailable' })
@@ -1004,23 +1601,29 @@ describe('PlanService', () => {
     const approved = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: generated.projection.artifactVersionId,
       expectedRevision: generated.projection.revision,
+      commandId: 'approve-live-interaction',
       decision: 'approved',
       interactionIsLive: true
     })
-    await service.updateStepStatus({
+    const identity = {
       projectId: 'project-1',
       sessionId: 'session-1',
-      artifactVersionId: generated.projection.artifactVersionId,
-      expectedRevision: approved.projection.revision,
+      artifactVersionId: generated.projection.artifactVersionId
+    }
+    const active = await activateApprovedContinuation(service, identity, approved)
+    await service.updateStepStatus({
+      ...identity,
+      ...active.authority,
+      expectedRevision: active.revision,
       title: 'Analyze the data',
       status: 'in_progress'
     })
 
     const restarted = new PlanService({
-      ...dependencies,
-      interactions: new SessionPlanInteractionOwner()
+      ...dependencies
     })
     await expect(restarted.getProjection('project-1', 'session-1')).resolves.toMatchObject({
       lifecycle: 'interrupted',
@@ -1041,13 +1644,15 @@ describe('PlanService', () => {
     const approved = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: generated.projection.artifactVersionId,
       expectedRevision: generated.projection.revision,
+      commandId: 'approve-ended-interaction',
       decision: 'approved',
       interactionIsLive: false
     })
 
-    expect(status()).toBe('idle')
+    expect(status()).toBe('running')
     expect(approved.projection).toMatchObject({
       approval: 'approved',
       lifecycle: 'approved',
@@ -1066,8 +1671,10 @@ describe('PlanService', () => {
     const approved = await service.respond({
       projectId: 'project-1',
       sessionId: 'session-1',
+      turnAnchor: 'interaction-1',
       artifactVersionId: generated.projection.artifactVersionId,
       expectedRevision: generated.projection.revision,
+      commandId: 'approve-ended-interaction-live-projection',
       decision: 'approved',
       interactionIsLive: false
     })
@@ -1118,17 +1725,22 @@ describe('PlanService', () => {
     const approved = await service.respond({
       ...identity,
       expectedRevision: generated.projection.revision,
+      turnAnchor: 'interaction-1',
+      commandId: 'approve-authority',
       decision: 'approved',
       interactionIsLive: false
     })
+    const active = await activateApprovedContinuation(service, identity, approved)
     const started = await service.updateStepStatus({
       ...identity,
-      expectedRevision: approved.projection.revision,
+      ...active.authority,
+      expectedRevision: active.revision,
       title: 'Analyze the data',
       status: 'in_progress'
     })
     const completed = await service.updateStepStatus({
       ...identity,
+      ...active.authority,
       expectedRevision: started.projection.revision,
       title: 'Analyze the data',
       status: 'completed'
@@ -1209,49 +1821,140 @@ describe('PlanService', () => {
     expect(status()).toBe('idle')
   })
 
+  it('atomically migrates a checksum-valid legacy pending Plan with a verified user anchor', async () => {
+    const { service, dependencies, context, setContext, status } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'prompt-legacy',
+      content
+    })
+    setContext({ version: 1, revision: generated.projection.revision, plan: context().plan })
+    Object.assign(dependencies, {
+      resolveLegacyPlanTurnAnchor: vi.fn(async () => ({
+        status: 'resolved',
+        turnAnchor: 'prompt-legacy'
+      }))
+    })
+
+    await expect(service.recoverLegacyPendingPlan('project-1', 'session-1')).resolves.toMatchObject(
+      {
+        status: 'recovered',
+        turn: { turnAnchor: 'prompt-legacy', lifecycle: 'awaiting_plan_approval' }
+      }
+    )
+    expect(context()).toMatchObject({
+      version: 2,
+      plan: { originatingPromptMessageId: 'prompt-legacy' },
+      planTurn: { turnAnchor: 'prompt-legacy', lifecycle: 'awaiting_plan_approval' }
+    })
+    expect(status()).toBe('waiting-plan-approval')
+  })
+
+  it('keeps a legacy pending Plan non-actionable when its anchor is ambiguous', async () => {
+    const { service, dependencies, context, setContext } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'prompt-legacy',
+      content
+    })
+    setContext({
+      version: 1,
+      revision: generated.projection.revision,
+      plan: { ...context().plan!, originatingPromptMessageId: undefined }
+    })
+    Object.assign(dependencies, {
+      resolveLegacyPlanTurnAnchor: vi.fn(async () => ({
+        status: 'unresolved',
+        reason: 'ambiguous'
+      }))
+    })
+
+    await expect(service.recoverLegacyPendingPlan('project-1', 'session-1')).resolves.toMatchObject(
+      {
+        status: 'read-only',
+        error: { code: 'interaction-mismatch', message: expect.stringContaining('ambiguous') }
+      }
+    )
+    expect(context().planTurn).toBeUndefined()
+    await expect(
+      service.respond({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        turnAnchor: 'prompt-legacy',
+        artifactVersionId: generated.projection.artifactVersionId,
+        expectedRevision: context().revision,
+        commandId: 'approve-ambiguous-legacy',
+        decision: 'approved'
+      })
+    ).rejects.toMatchObject({ code: 'interaction-mismatch' })
+  })
+
+  it('clears legacy approved incomplete authority instead of authorizing execution', async () => {
+    const { service, context, setContext } = setup()
+    const generated = await service.generate({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      interactionId: 'prompt-legacy',
+      content
+    })
+    setContext({
+      version: 1,
+      revision: generated.projection.revision,
+      plan: { ...context().plan!, approval: 'approved' }
+    })
+
+    await expect(service.recoverLegacyPendingPlan('project-1', 'session-1')).resolves.toMatchObject(
+      { status: 'read-only', error: { code: 'interaction-mismatch' } }
+    )
+    expect(context().plan).toBeUndefined()
+  })
+
   it('drives deterministic fake-Agent blocked and completed acceptance flows', async () => {
     const run = async (terminal: 'blocked' | 'completed'): Promise<ActivePlanProjection> => {
       const { service } = setup()
-      const fakeAgent = {
-        generate: () =>
-          service.generate({
-            projectId: 'project-1',
-            sessionId: 'session-1',
-            interactionId: `interaction-${terminal}`,
-            content
-          }),
-        approve: (projection: ActivePlanProjection) =>
-          service.respond({
-            projectId: 'project-1',
-            sessionId: 'session-1',
-            artifactVersionId: projection.artifactVersionId,
-            expectedRevision: projection.revision,
-            decision: 'approved',
-            interactionIsLive: true
-          }),
-        update: (
-          projection: ActivePlanProjection,
-          status: 'in_progress' | 'blocked' | 'completed'
-        ) =>
-          service.updateStepStatus({
-            projectId: 'project-1',
-            sessionId: 'session-1',
-            artifactVersionId: projection.artifactVersionId,
-            expectedRevision: projection.revision,
-            title: 'Analyze the data',
-            status,
-            ...(status === 'blocked' ? { notes: 'Deterministic fixture input is missing.' } : {})
-          })
-      }
-
-      const generated = await fakeAgent.generate()
+      const generated = await service.generate({
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        interactionId: `interaction-${terminal}`,
+        content
+      })
       expect(generated.projection).toMatchObject({
         lifecycle: 'awaiting_approval',
         approval: 'pending'
       })
-      const approved = await fakeAgent.approve(generated.projection)
-      const executing = await fakeAgent.update(approved.projection, 'in_progress')
-      return (await fakeAgent.update(executing.projection, terminal)).projection
+      const identity = {
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        artifactVersionId: generated.projection.artifactVersionId,
+        turnAnchor: `interaction-${terminal}`,
+        commandId: `approve-${terminal}`
+      }
+      const approved = await service.respond({
+        ...identity,
+        expectedRevision: generated.projection.revision,
+        decision: 'approved',
+        interactionIsLive: true
+      })
+      const active = await activateApprovedContinuation(service, identity, approved)
+      const executing = await service.updateStepStatus({
+        ...identity,
+        ...active.authority,
+        expectedRevision: active.revision,
+        title: 'Analyze the data',
+        status: 'in_progress'
+      })
+      return (
+        await service.updateStepStatus({
+          ...identity,
+          ...active.authority,
+          expectedRevision: executing.projection.revision,
+          title: 'Analyze the data',
+          status: terminal,
+          ...(terminal === 'blocked' ? { notes: 'Deterministic fixture input is missing.' } : {})
+        })
+      ).projection
     }
 
     await expect(run('blocked')).resolves.toMatchObject({

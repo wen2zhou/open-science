@@ -163,15 +163,30 @@ type PlanResponseIdentity = Readonly<{
 }>
 
 export type PlanResponseCommand =
-  | (PlanResponseIdentity & Readonly<{ decision: 'approved' | 'rejected'; feedback?: never }>)
-  | Readonly<{
-      projectId: string
-      sessionId: string
-      feedback: string
-      decision?: never
-      artifactVersionId?: never
-      expectedRevision?: never
-    }>
+  | (PlanResponseIdentity &
+      Readonly<{
+        turnAnchor: string
+        commandId: string
+        decision: 'approved' | 'rejected'
+        feedback?: never
+        retry?: never
+      }>)
+  | (PlanResponseIdentity &
+      Readonly<{
+        turnAnchor: string
+        commandId: string
+        feedback: string
+        decision?: never
+        retry?: never
+      }>)
+  | (PlanResponseIdentity &
+      Readonly<{
+        turnAnchor: string
+        commandId: string
+        retry: true
+        decision?: never
+        feedback?: never
+      }>)
 
 export class PlanCommandError extends Error {
   constructor(

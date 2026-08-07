@@ -130,8 +130,18 @@ describe('Session Plan MCP server', () => {
   })
 
   it('exposes server-bound generation, decisions, and exact-title status commands', async () => {
+    const suspended = {
+      kind: 'plan_suspended',
+      projection: { artifactVersionId: 'version-1', approval: 'pending' },
+      turn: {
+        turnAnchor: 'message-1',
+        lifecycle: 'awaiting_plan_approval',
+        planArtifactVersionId: 'version-1'
+      },
+      pauseInteraction: true
+    } as const
     const generate = vi.fn().mockResolvedValue({
-      projection: { artifactVersionId: 'version-1', lifecycle: 'approved' }
+      ...suspended
     })
     const approve = vi.fn().mockResolvedValue({
       projection: { artifactVersionId: 'version-1', lifecycle: 'approved' }
@@ -152,9 +162,10 @@ describe('Session Plan MCP server', () => {
     ])
     const generateTool = listedTools.tools.find((tool) => tool.name === 'generate_plan')
     expect(generateTool).toBeDefined()
-    expect(generateTool?.description).toContain('kind:feedback')
+    expect(generateTool?.description).toContain('kind:"plan_suspended" immediately')
+    expect(generateTool?.description).toContain('do not wait for approval')
     expect(generateTool?.description).toContain('decision:"approved"')
-    await client.callTool({
+    const generated = await client.callTool({
       name: 'generate_plan',
       arguments: {
         task_summary: 'Analyze one dataset',
@@ -173,6 +184,9 @@ describe('Session Plan MCP server', () => {
         feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
       }
     })
+    expect(JSON.parse((generated as { content: Array<{ text: string }> }).content[0].text)).toEqual(
+      suspended
+    )
     await client.callTool({ name: 'generate_plan', arguments: { decision: 'approved' } })
     await client.callTool({
       name: 'update_step_status',
