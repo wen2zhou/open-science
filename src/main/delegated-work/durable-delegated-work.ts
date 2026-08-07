@@ -8,9 +8,21 @@ import {
   type DelegateCapacityReservation,
   type DelegateExecution,
   type DelegateExecutionInput,
-  type DelegatePermissionResponse,
-  type RunningDelegateExecution
+  type DelegatePermissionResponse
 } from './execution-port'
+import { RootDelegatePermissionOwner } from './delegated-work-permissions'
+import { DelegatedWorkProjectionOwner } from './delegated-work-projection'
+import { DelegatedWorkReadModel } from './delegated-work-read-model'
+import { DelegatedWorkAdmissionPolicy } from './delegated-work-admission'
+import { DurableDelegatedWorkError } from './durable-delegated-work-error'
+import { createInMemoryDelegatedWorkRecords } from './in-memory-delegated-work-records'
+import type {
+  DelegatedWorkDurableRecords,
+  DurableAttempt,
+  DurableChild,
+  DurableMessage,
+  DurablePendingMessage
+} from './delegated-work-record-types'
 
 type SessionKey = Readonly<{ projectId: string; sessionId: string }>
 
@@ -38,52 +50,6 @@ type SpecialistDelegationProfile = Readonly<
   >
 >
 
-type DurableResolvedAgent =
-  | Readonly<{ kind: 'main' }>
-  | Readonly<{
-      kind: 'specialist'
-      profileId: string
-      revision: number
-      displayName: string
-    }>
-
-type DurableAttempt = {
-  id: string
-  status: 'running' | 'completed' | 'cancelled' | 'error'
-  resolvedAgent: DurableResolvedAgent
-  runtimeSegmentIds: string[]
-  startedAt: number
-  endedAt?: number
-  terminalMessageId?: string
-  cancellationReason?: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
-  error?: Readonly<{ code: string; message: string }>
-}
-
-type DurableChild = {
-  frameId: string
-  parentFrameId: string
-  originMessageId: string
-  title: string
-  task: string
-  context?: string
-  inputs: readonly string[]
-  messageBranchId: string
-  attempts: DurableAttempt[]
-  pendingMessages: DurablePendingMessage[]
-}
-
-type DurablePendingMessage = Readonly<{
-  id: string
-  sourceFrameId: string
-  sourceAttemptId?: string
-  targetFrameId: string
-  targetAttemptId?: string
-  text: string
-  kind: 'info' | 'question'
-  createdAt: number
-  deliveredAt?: number
-}>
-
 type ParentMessageDelivery = Readonly<{
   messageId: string
   session: SessionKey
@@ -92,95 +58,6 @@ type ParentMessageDelivery = Readonly<{
   targetFrameId: string
   text: string
   kind: 'info' | 'question'
-}>
-
-type DurableMessage = {
-  id: string
-  frameId: string
-  role: 'user' | 'assistant'
-  content: string
-  createdAt: number
-}
-
-type DurableSnapshot = Readonly<{
-  session: SessionKey
-  rootFrameId: string
-  originMessageIds: readonly string[]
-  records: readonly DurableChild[]
-  messages: readonly DurableMessage[]
-}>
-
-type AdmitChildInput = Readonly<{
-  caller: AuthenticatedDelegateCaller
-  frameId: string
-  attemptId: string
-  userMessageId: string
-  title: string
-  request: DurableDelegateRequest
-  resolvedAgent: DurableResolvedAgent
-  startedAt: number
-}>
-
-type AdmitChildrenInput = Readonly<{
-  caller: AuthenticatedDelegateCaller
-  children: readonly Omit<AdmitChildInput, 'caller'>[]
-}>
-
-type TerminalInput =
-  | Readonly<{
-      frameId: string
-      attemptId: string
-      status: 'completed'
-      endedAt: number
-      terminalMessage: DurableMessage
-    }>
-  | Readonly<{
-      frameId: string
-      attemptId: string
-      status: 'cancelled'
-      endedAt: number
-      cancellationReason: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
-    }>
-  | Readonly<{
-      frameId: string
-      attemptId: string
-      status: 'error'
-      endedAt: number
-      error: Readonly<{ code: string; message: string }>
-    }>
-
-type ContinueChildInput = Readonly<{
-  frameId: string
-  previousAttemptId: string
-  attemptId: string
-  userMessageId: string
-  message: string
-  resolvedAgent: DurableResolvedAgent
-  startedAt: number
-}>
-
-type DelegatedWorkDurableRecords = Readonly<{
-  admitChildren(input: AdmitChildrenInput): Promise<void>
-  continueChild(input: ContinueChildInput): Promise<void>
-  startRuntime(
-    frameId: string,
-    attemptId: string,
-    runtimeSegmentId: string
-  ): Promise<Readonly<{ rootFrameId: string; messageBranchId: string; promptMessageId: string }>>
-  stageTerminalMessage(frameId: string, attemptId: string, message: DurableMessage): Promise<void>
-  terminalize(input: TerminalInput): Promise<void>
-  appendPendingMessage(
-    frameId: string,
-    attemptId: string,
-    message: DurablePendingMessage
-  ): Promise<void>
-  markMessageDelivered(
-    frameId: string,
-    attemptId: string,
-    messageId: string,
-    deliveredAt: number
-  ): Promise<void>
-  snapshot(): Promise<DurableSnapshot>
 }>
 
 type SessionSubagentSummary = Readonly<{
@@ -347,233 +224,11 @@ type DurableDelegatedWork = Readonly<{
   deleteSession(session: SessionKey): Promise<void>
 }>
 
-class DurableDelegatedWorkError extends Error {
-  constructor(
-    readonly code:
-      | 'admission_rejection'
-      | 'authorization'
-      | 'conflict'
-      | 'capacity'
-      | 'unsupported_framework'
-      | 'execution_failure'
-      | 'durability_failure',
-    message: string,
-    readonly userFacingUnavailableReason?: string
-  ) {
-    super(message)
-    this.name = 'DurableDelegatedWorkError'
-  }
-}
-
 const sameSession = (left: SessionKey, right: SessionKey): boolean =>
   left.projectId === right.projectId && left.sessionId === right.sessionId
 
 const currentAttempt = (child: DurableChild): DurableAttempt =>
   child.attempts[child.attempts.length - 1]
-
-const createInMemoryDelegatedWorkRecords = (input: {
-  session: SessionKey
-  rootFrameId: string
-  originMessageId: string
-}): DelegatedWorkDurableRecords => {
-  const state: {
-    session: SessionKey
-    rootFrameId: string
-    originMessageIds: string[]
-    records: DurableChild[]
-    messages: DurableMessage[]
-  } = {
-    session: { ...input.session },
-    rootFrameId: input.rootFrameId,
-    originMessageIds: [input.originMessageId],
-    records: [],
-    messages: []
-  }
-  const findRunning = (frameId: string, attemptId: string): DurableAttempt => {
-    const child = state.records.find((candidate) => candidate.frameId === frameId)
-    const attempt = child && currentAttempt(child)
-    if (!attempt || attempt.id !== attemptId || attempt.status !== 'running') {
-      throw new Error('Delegated Attempt is not current and running.')
-    }
-    return attempt
-  }
-  return {
-    async admitChildren(admission) {
-      if (
-        !sameSession(state.session, admission.caller.session) ||
-        admission.caller.frameId !== state.rootFrameId ||
-        !state.originMessageIds.includes(admission.caller.originMessageId)
-      ) {
-        throw new DurableDelegatedWorkError(
-          'authorization',
-          'delegation caller or origin Message is outside the active root conversation'
-        )
-      }
-      if (admission.children.length === 0) {
-        throw new DurableDelegatedWorkError(
-          'admission_rejection',
-          'delegation requires one or more children'
-        )
-      }
-      const frameIds = admission.children.map((child) => child.frameId)
-      const attemptIds = admission.children.map((child) => child.attemptId)
-      const messageIds = admission.children.map((child) => child.userMessageId)
-      if (
-        new Set(frameIds).size !== frameIds.length ||
-        new Set(attemptIds).size !== attemptIds.length ||
-        new Set(messageIds).size !== messageIds.length ||
-        state.records.some((child) => frameIds.includes(child.frameId)) ||
-        state.records.some((child) =>
-          child.attempts.some((attempt) => attemptIds.includes(attempt.id))
-        ) ||
-        state.messages.some((message) => messageIds.includes(message.id))
-      ) {
-        throw new Error('Duplicate delegated-work identity.')
-      }
-      state.records.push(
-        ...admission.children.map((child) => ({
-          frameId: child.frameId,
-          parentFrameId: admission.caller.frameId,
-          originMessageId: admission.caller.originMessageId,
-          title: child.title,
-          task: child.request.task,
-          context: child.request.context,
-          inputs: [...(child.request.inputs ?? [])],
-          messageBranchId: `branch-${child.frameId}`,
-          attempts: [
-            {
-              id: child.attemptId,
-              status: 'running' as const,
-              resolvedAgent: structuredClone(child.resolvedAgent),
-              runtimeSegmentIds: [],
-              startedAt: child.startedAt
-            }
-          ],
-          pendingMessages: []
-        }))
-      )
-      state.messages.push(
-        ...admission.children.map((child) => ({
-          id: child.userMessageId,
-          frameId: child.frameId,
-          role: 'user' as const,
-          content: child.request.context
-            ? `${child.request.task}\n\nContext:\n${child.request.context}`
-            : child.request.task,
-          createdAt: child.startedAt
-        }))
-      )
-    },
-    async continueChild(input) {
-      const child = state.records.find((candidate) => candidate.frameId === input.frameId)
-      const previous = child && currentAttempt(child)
-      if (
-        !child ||
-        !previous ||
-        previous.id !== input.previousAttemptId ||
-        previous.status === 'running'
-      ) {
-        throw new DurableDelegatedWorkError(
-          'conflict',
-          `child ${input.frameId} is not at the expected terminal Attempt`
-        )
-      }
-      if (
-        state.records.some((record) =>
-          record.attempts.some((attempt) => attempt.id === input.attemptId)
-        ) ||
-        state.messages.some((message) => message.id === input.userMessageId)
-      ) {
-        throw new Error('Duplicate continuation identity.')
-      }
-      child.attempts.push({
-        id: input.attemptId,
-        status: 'running',
-        resolvedAgent: structuredClone(input.resolvedAgent),
-        runtimeSegmentIds: [],
-        startedAt: input.startedAt
-      })
-      state.messages.push({
-        id: input.userMessageId,
-        frameId: input.frameId,
-        role: 'user',
-        content: input.message,
-        createdAt: input.startedAt
-      })
-    },
-    async startRuntime(frameId, attemptId, runtimeSegmentId) {
-      findRunning(frameId, attemptId).runtimeSegmentIds.push(runtimeSegmentId)
-      const child = state.records.find((candidate) => candidate.frameId === frameId)!
-      const promptMessage = [...state.messages]
-        .reverse()
-        .find((message) => message.frameId === frameId && message.role === 'user')
-      if (!promptMessage) throw new Error('Delegated Attempt has no prompt Message.')
-      return {
-        rootFrameId: state.rootFrameId,
-        messageBranchId: child.messageBranchId,
-        promptMessageId: promptMessage.id
-      }
-    },
-    async stageTerminalMessage(frameId, attemptId, message) {
-      findRunning(frameId, attemptId)
-      if (message.frameId !== frameId || message.role !== 'assistant') {
-        throw new Error('Terminal Message does not belong to the delegated Attempt.')
-      }
-      const existing = state.messages.find((candidate) => candidate.id === message.id)
-      if (existing && JSON.stringify(existing) !== JSON.stringify(message)) {
-        throw new Error('Terminal Message identity is already in use.')
-      }
-      if (!existing) state.messages.push({ ...message })
-    },
-    async terminalize(terminal) {
-      const attempt = findRunning(terminal.frameId, terminal.attemptId)
-      attempt.status = terminal.status
-      attempt.endedAt = terminal.endedAt
-      if (terminal.status === 'completed') {
-        if (!state.messages.some((message) => message.id === terminal.terminalMessage.id)) {
-          state.messages.push({ ...terminal.terminalMessage })
-        }
-        attempt.terminalMessageId = terminal.terminalMessage.id
-      } else if (terminal.status === 'cancelled') {
-        attempt.cancellationReason = terminal.cancellationReason
-      } else {
-        attempt.error = { ...terminal.error }
-      }
-    },
-    async appendPendingMessage(frameId, attemptId, message) {
-      const child = state.records.find((candidate) => candidate.frameId === frameId)
-      const attempt = child && currentAttempt(child)
-      if (!child || !attempt || attempt.id !== attemptId || attempt.status !== 'running') {
-        throw new DurableDelegatedWorkError(
-          'conflict',
-          'Pending Message Attempt is not current and running.'
-        )
-      }
-      if (
-        state.records.some((record) => record.pendingMessages.some(({ id }) => id === message.id))
-      ) {
-        throw new Error(`Pending Message already exists: ${message.id}`)
-      }
-      child.pendingMessages.push(structuredClone(message))
-    },
-    async markMessageDelivered(frameId, attemptId, messageId, deliveredAt) {
-      const child = state.records.find((candidate) => candidate.frameId === frameId)
-      const attempt = child && currentAttempt(child)
-      if (!child || !attempt || attempt.id !== attemptId || attempt.status !== 'running') {
-        throw new DurableDelegatedWorkError(
-          'conflict',
-          'Pending Message Attempt is not current and running.'
-        )
-      }
-      const index = child.pendingMessages.findIndex(({ id }) => id === messageId)
-      const message = child.pendingMessages[index]
-      if (!message) throw new Error(`Pending Message not found: ${messageId}`)
-      if (message.deliveredAt !== undefined) return
-      child.pendingMessages[index] = { ...message, deliveredAt }
-    },
-    snapshot: async () => structuredClone(state)
-  }
-}
 
 const createDurableDelegatedWork = (options: {
   execution: DelegateExecution
@@ -614,10 +269,24 @@ const createDurableDelegatedWork = (options: {
   const invocationOutcomes = new Map<string, Promise<DurableDelegateOutcome>>()
   const messageOutcomes = new Map<string, Promise<DurableSendMessageOutcome>>()
   const stoppingSessions = new Set<string>()
-  const permissions = new Map<
-    string,
-    RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>
-  >()
+  const permissionOwner = new RootDelegatePermissionOwner(
+    options.records,
+    options.onRootPermissionEvent
+  )
+  const projectionOwner = new DelegatedWorkProjectionOwner(
+    options.records,
+    options.artifactEvidence,
+    options.reviewEvidence
+  )
+  const readModel = new DelegatedWorkReadModel(
+    options.records,
+    projectionOwner,
+    options.collectPollIntervalMs ?? 10
+  )
+  const admissionPolicy = new DelegatedWorkAdmissionPolicy(
+    options.resolveSpecialist,
+    options.validateInput
+  )
   const running = new Map<
     string,
     {
@@ -631,225 +300,9 @@ const createDurableDelegatedWork = (options: {
     }
   >()
 
-  const permissionKey = (frameId: string, attemptId: string, requestId: string): string =>
-    `${frameId}\u0000${attemptId}\u0000${requestId}`
-  const permissionRequest = (
-    permission: RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>
-  ): RootDelegatePermissionRequest => {
-    const { execution: _execution, ...request } = permission
-    void _execution
-    return Object.freeze({ ...request, options: Object.freeze([...request.options]) })
-  }
-  const publishPermission = (
-    kind: RootDelegatePermissionEvent['kind'],
-    permission: RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>
-  ): void => options.onRootPermissionEvent?.({ kind, request: permissionRequest(permission) })
-  const setPermission = (
-    key: string,
-    permission: RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>
-  ): void => {
-    const isNew = !permissions.has(key)
-    permissions.set(key, permission)
-    if (isNew) publishPermission('requested', permission)
-  }
-  const deletePermission = (
-    key: string
-  ):
-    | (RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>)
-    | undefined => {
-    const permission = permissions.get(key)
-    if (!permission) return undefined
-    permissions.delete(key)
-    publishPermission('settled', permission)
-    return permission
-  }
-  const takeAttemptPermissions = (
-    frameId: string,
-    attemptId: string
-  ): Array<
-    [string, RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>]
-  > => {
-    const prefix = `${frameId}\u0000${attemptId}\u0000`
-    const taken = [...permissions.entries()].filter(([key]) => key.startsWith(prefix))
-    for (const [key] of taken) deletePermission(key)
-    return taken
-  }
-  const clearAttemptPermissions = (frameId: string, attemptId: string): void => {
-    takeAttemptPermissions(frameId, attemptId)
-  }
-  const restoreAttemptPermissions = (
-    taken: Array<
-      [string, RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>]
-    >
-  ): void => {
-    for (const [key, permission] of taken) {
-      if (!permissions.has(key)) setPermission(key, permission)
-    }
-  }
-  const riskScope = (options: readonly Readonly<{ kind: string }>[]): string => {
-    const kinds = new Set(options.map(({ kind }) => kind.toLowerCase()))
-    if (kinds.has('allow_always')) return 'This session or this call'
-    return 'This call only'
-  }
-
-  const resolveAgent = async (profileId: string | undefined): Promise<DurableResolvedAgent> => {
-    if (profileId === undefined) return { kind: 'main' }
-    if (typeof profileId !== 'string' || !profileId.trim()) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        'an explicit Specialist profile identity cannot be empty'
-      )
-    }
-    let profile: SpecialistDelegationProfile | undefined
-    try {
-      profile = await options.resolveSpecialist?.(profileId)
-    } catch (error) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        error instanceof Error ? error.message : String(error),
-        'The requested Specialist is unavailable. Choose an enabled Specialist in Settings and try again.'
-      )
-    }
-    if (
-      !profile ||
-      profile.id !== profileId ||
-      !profile.enabled ||
-      profile.setupPending === true ||
-      !Number.isSafeInteger(profile.revision) ||
-      profile.revision < 0
-    ) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        `Specialist ${profileId} is unavailable for delegated execution`,
-        'The requested Specialist is unavailable. Choose an enabled Specialist in Settings and try again.'
-      )
-    }
-    const displayName = profile.displayName?.trim() || profile.name.trim()
-    if (!displayName) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        `Specialist ${profileId} has no display label`,
-        'The requested Specialist is unavailable. Choose an enabled Specialist in Settings and try again.'
-      )
-    }
-    return {
-      kind: 'specialist',
-      profileId: profile.id,
-      revision: profile.revision,
-      displayName
-    }
-  }
-
   const snapshotChild = async (frameId: string): Promise<DurableChild | undefined> =>
     (await options.records.snapshot()).records.find((child) => child.frameId === frameId) as
       DurableChild | undefined
-
-  const authenticatedSnapshot = async (
-    caller: AuthenticatedDelegateCaller
-  ): Promise<DurableSnapshot> => {
-    const snapshot = await options.records.snapshot()
-    if (
-      caller.role !== 'main' ||
-      !sameSession(snapshot.session, caller.session) ||
-      caller.frameId !== snapshot.rootFrameId ||
-      !snapshot.originMessageIds.includes(caller.originMessageId) ||
-      !caller.toolInvocationId.trim()
-    ) {
-      throw new DurableDelegatedWorkError(
-        'authorization',
-        'delegated children are outside the authenticated parent conversation'
-      )
-    }
-    return snapshot
-  }
-
-  const selectAuthorizedChildren = (
-    snapshot: DurableSnapshot,
-    caller: AuthenticatedDelegateCaller,
-    frameIds?: readonly string[]
-  ): readonly DurableChild[] => {
-    const directChildren = snapshot.records.filter(
-      (child) => child.parentFrameId === caller.frameId
-    ) as readonly DurableChild[]
-    if (!frameIds) return directChildren
-    const selected = frameIds.map((frameId) =>
-      directChildren.find((child) => child.frameId === frameId)
-    )
-    if (selected.some((child) => !child)) {
-      throw new DurableDelegatedWorkError(
-        'authorization',
-        'one or more requested children are outside the authenticated parent conversation'
-      )
-    }
-    return selected as readonly DurableChild[]
-  }
-
-  const artifactScope = (
-    snapshot: DurableSnapshot,
-    child: DurableChild,
-    attempt: DurableAttempt
-  ): DelegatedArtifactProjectionScope | undefined => {
-    const runtimeSegmentId = attempt.runtimeSegmentIds.at(-1)
-    const promptMessages = snapshot.messages.filter(
-      (message) => message.frameId === child.frameId && message.role === 'user'
-    )
-    const attemptIndex = child.attempts.findIndex((candidate) => candidate.id === attempt.id)
-    const promptMessageId = promptMessages[attemptIndex]?.id
-    if (!runtimeSegmentId || !promptMessageId) return undefined
-    return {
-      session: snapshot.session,
-      executionId: attempt.id,
-      attemptId: attempt.id,
-      rootFrameId: snapshot.rootFrameId,
-      agentFrameId: child.frameId,
-      messageBranchId: child.messageBranchId,
-      runtimeSegmentId,
-      promptMessageId,
-      agentName:
-        attempt.resolvedAgent.kind === 'specialist'
-          ? attempt.resolvedAgent.displayName
-          : 'Main Agent',
-      runtimeSegmentIds: [...attempt.runtimeSegmentIds],
-      ...(attempt.terminalMessageId ? { terminalMessageId: attempt.terminalMessageId } : {})
-    }
-  }
-
-  const projectArtifacts = async (
-    snapshot: DurableSnapshot,
-    child: DurableChild,
-    attempt: DurableAttempt
-  ): Promise<readonly ArtifactFile[]> => {
-    const scope = artifactScope(snapshot, child, attempt)
-    return scope && options.artifactEvidence ? options.artifactEvidence.project(scope) : []
-  }
-
-  const projectSnapshotResult = async (
-    snapshot: DurableSnapshot,
-    child: DurableChild
-  ): Promise<DurableDelegateResult | undefined> => {
-    const attempt = currentAttempt(child)
-    if (attempt.status === 'running') return undefined
-    const terminalMessage = attempt.terminalMessageId
-      ? snapshot.messages.find((message) => message.id === attempt.terminalMessageId)
-      : undefined
-    return {
-      frameId: child.frameId,
-      attemptId: attempt.id,
-      status: attempt.status,
-      ...(attempt.terminalMessageId ? { terminalMessageId: attempt.terminalMessageId } : {}),
-      ...(terminalMessage ? { response: terminalMessage.content } : {}),
-      artifactsCreated: await projectArtifacts(snapshot, child, attempt),
-      ...(attempt.cancellationReason ? { cancellationReason: attempt.cancellationReason } : {}),
-      ...(attempt.error ? { error: attempt.error } : {})
-    }
-  }
-
-  const projectResult = async (frameId: string): Promise<DurableDelegateResult | undefined> => {
-    const snapshot = await options.records.snapshot()
-    const child = snapshot.records.find((candidate) => candidate.frameId === frameId)
-    if (!child) return undefined
-    return projectSnapshotResult(snapshot, child as DurableChild)
-  }
 
   const launch = (
     child: DurableChild,
@@ -924,24 +377,9 @@ const createDurableDelegatedWork = (options: {
         }
         handle = options.execution.run(executionInput, slotId)
         resolveHandle(handle)
-        const unsubscribe = handle.subscribe((event) => {
-          if (event.kind !== 'permission') return
-          const keyPrefix = permissionKey(child.frameId, attempt.id, event.requestId)
-          if (!event.awaiting) {
-            deletePermission(keyPrefix)
-            return
-          }
-          setPermission(keyPrefix, {
-            requestId: event.requestId,
-            frameId: child.frameId,
-            attemptId: attempt.id,
-            childTitle: child.title,
-            action: event.title,
-            riskScope: riskScope(event.options),
-            options: event.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
-            execution: handle!
-          })
-        })
+        const unsubscribe = handle.subscribe((event) =>
+          permissionOwner.observe(child.frameId, attempt.id, child.title, handle!, event)
+        )
         void handle.completion.finally(unsubscribe).catch(() => undefined)
         await Promise.race([handle.accepted, handle.completion.then(() => undefined)])
         const outcome = await handle.completion
@@ -988,7 +426,7 @@ const createDurableDelegatedWork = (options: {
           })
         }
       } finally {
-        clearAttemptPermissions(child.frameId, attempt.id)
+        permissionOwner.clearAttempt(child.frameId, attempt.id)
         await artifact?.dispose().catch(() => undefined)
         await reservation.release(slotId).catch(() => undefined)
         if (running.get(child.frameId)?.attemptId === attempt.id) running.delete(child.frameId)
@@ -1010,23 +448,6 @@ const createDurableDelegatedWork = (options: {
     })
   }
 
-  const findAuthorizedChild = async (
-    caller: AuthenticatedDelegateCaller,
-    frameId: string
-  ): Promise<DurableChild> => {
-    const snapshot = await options.records.snapshot()
-    const child = snapshot.records.find(
-      (candidate) =>
-        sameSession(snapshot.session, caller.session) &&
-        candidate.frameId === frameId &&
-        candidate.parentFrameId === caller.frameId
-    )
-    if (caller.role !== 'main' || !child) {
-      throw new DurableDelegatedWorkError('authorization', 'caller cannot access delegated child')
-    }
-    return child as DurableChild
-  }
-
   const stopChild = async (
     child: DurableChild,
     reason: 'main_agent_stop' | 'session_stop'
@@ -1038,8 +459,8 @@ const createDurableDelegatedWork = (options: {
     const snapshot = await options.records.snapshot()
     const session = snapshot.session
     const scope = { session, frameId: child.frameId, attemptId: attempt.id }
-    const pendingPermissions = takeAttemptPermissions(child.frameId, attempt.id)
-    const evidenceScope = artifactScope(snapshot, child, attempt)
+    const pendingPermissions = permissionOwner.takeAttempt(child.frameId, attempt.id)
+    const evidenceScope = projectionOwner.attemptScope(snapshot, child, attempt)
     try {
       if (evidenceScope) await options.artifactEvidence?.revoke?.(evidenceScope)
       await running.get(child.frameId)?.artifact?.dispose()
@@ -1062,7 +483,7 @@ const createDurableDelegatedWork = (options: {
       if (latest && currentAttempt(latest).status !== 'running') {
         return { frameId: child.frameId, status: 'already_terminal' }
       }
-      restoreAttemptPermissions(pendingPermissions)
+      permissionOwner.restoreAttempt(pendingPermissions)
       throw error
     }
   }
@@ -1122,82 +543,7 @@ const createDurableDelegatedWork = (options: {
         'Delegated work is unavailable for this Agent framework configuration. Open Settings and choose a certified configuration.'
       )
     }
-    const rawRequests: readonly unknown[] = Array.isArray(requestOrRequests)
-      ? requestOrRequests
-      : [requestOrRequests]
-    if (
-      rawRequests.length === 0 ||
-      rawRequests.some(
-        (request) =>
-          typeof request !== 'object' ||
-          request === null ||
-          Array.isArray(request) ||
-          !('task' in request) ||
-          typeof request.task !== 'string' ||
-          request.task.trim().length === 0
-      )
-    ) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        'delegation requires a non-empty task'
-      )
-    }
-    const requests = rawRequests as readonly DurableDelegateRequest[]
-    if (
-      requests.some(
-        (request) =>
-          request.name !== undefined && (typeof request.name !== 'string' || !request.name.trim())
-      )
-    ) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        'an explicit delegate name cannot be empty'
-      )
-    }
-    if (
-      requests.some(
-        (request) =>
-          request.context !== undefined &&
-          (typeof request.context !== 'string' || !request.context.trim())
-      )
-    ) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        'an explicit delegate context cannot be empty'
-      )
-    }
-    const resolvedAgents = await Promise.all(
-      requests.map((request) => resolveAgent(request.profile))
-    )
-    if (
-      requests.some(
-        (request) =>
-          request.inputs !== undefined &&
-          (!Array.isArray(request.inputs) ||
-            request.inputs.some((input) => typeof input !== 'string' || !input.trim()))
-      )
-    ) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        'delegation inputs must be immutable Version identities'
-      )
-    }
-    const inputs = requests.flatMap((request) => request.inputs ?? [])
-    if (inputs.length > 0) {
-      if (!options.validateInput) {
-        throw new DurableDelegatedWorkError(
-          'admission_rejection',
-          'delegation inputs require an immutable Upload or Artifact Version validator'
-        )
-      }
-      const validInputs = await Promise.all(inputs.map(options.validateInput))
-      if (validInputs.some((valid) => !valid)) {
-        throw new DurableDelegatedWorkError(
-          'admission_rejection',
-          'delegation inputs must be immutable Upload or Artifact Version identities'
-        )
-      }
-    }
+    const { requests, resolvedAgents } = await admissionPolicy.admit(requestOrRequests)
     let reservation: DelegateCapacityReservation
     try {
       reservation = await options.execution.reserve(requests.length)
@@ -1271,7 +617,9 @@ const createDurableDelegatedWork = (options: {
     }))
     if (delegateOptions.wait === false) return { kind: 'receipts', children: receipts }
     await Promise.all(completions)
-    const results = await Promise.all(admissions.map(({ frameId }) => projectResult(frameId)))
+    const results = await Promise.all(
+      admissions.map(({ frameId }) => projectionOwner.projectResult(frameId))
+    )
     if (results.some((result) => !result)) {
       throw new DurableDelegatedWorkError(
         'durability_failure',
@@ -1304,38 +652,13 @@ const createDurableDelegatedWork = (options: {
       caller: AuthenticatedDelegateCaller,
       frameIds?: readonly string[]
     ): Promise<readonly DurableChildSummary[]> {
-      const snapshot = await authenticatedSnapshot(caller)
-      return selectAuthorizedChildren(snapshot, caller, frameIds).map((child) => {
-        const attempt = currentAttempt(child)
-        return {
-          frameId: child.frameId,
-          attemptId: attempt.id,
-          title: child.title,
-          status: attempt.status
-        }
-      })
+      return readModel.children(caller, frameIds)
     },
     async collect(
       caller: AuthenticatedDelegateCaller,
       frameIds: readonly string[]
     ): Promise<readonly DurableDelegateResult[]> {
-      if (!Array.isArray(frameIds) || frameIds.length === 0) {
-        throw new DurableDelegatedWorkError(
-          'admission_rejection',
-          'collect requires at least one child'
-        )
-      }
-      for (;;) {
-        const snapshot = await authenticatedSnapshot(caller)
-        const children = selectAuthorizedChildren(snapshot, caller, frameIds)
-        const results = await Promise.all(
-          children.map((child) => projectSnapshotResult(snapshot, child))
-        )
-        if (results.every((result) => result !== undefined)) {
-          return results as readonly DurableDelegateResult[]
-        }
-        await new Promise((resolve) => setTimeout(resolve, options.collectPollIntervalMs ?? 10))
-      }
+      return readModel.collect(caller, frameIds)
     },
     sendMessage(
       caller: AuthenticatedDelegateCaller,
@@ -1527,7 +850,7 @@ const createDurableDelegatedWork = (options: {
         const resolvedAgent =
           previous.resolvedAgent.kind === 'main'
             ? ({ kind: 'main' } as const)
-            : await resolveAgent(previous.resolvedAgent.profileId)
+            : await admissionPolicy.resolveAgent(previous.resolvedAgent.profileId)
         let reservation: DelegateCapacityReservation
         try {
           reservation = await options.execution.reserve(1)
@@ -1582,10 +905,7 @@ const createDurableDelegatedWork = (options: {
       if (!sameSession(snapshot.session, session)) return { runningCount: 0, children: [] }
       const children = snapshot.records.map((child) => {
         const attempt = currentAttempt(child as DurableChild)
-        const awaitingPermission = [...permissions.values()].some(
-          (permission) =>
-            permission.frameId === child.frameId && permission.attemptId === attempt.id
-        )
+        const awaitingPermission = permissionOwner.hasAwaiting(child.frameId, attempt.id)
         return {
           frameId: child.frameId,
           title: child.title,
@@ -1601,115 +921,18 @@ const createDurableDelegatedWork = (options: {
       }
     },
     async readAgentFrame(session: SessionKey, frameId: string) {
-      const snapshot = await options.records.snapshot()
-      if (!sameSession(snapshot.session, session)) return undefined
-      const child = snapshot.records.find((candidate) => candidate.frameId === frameId)
-      if (!child) return undefined
-      const attempt = currentAttempt(child as DurableChild)
-      const messages = await Promise.all(
-        snapshot.messages
-          .filter((message) => message.frameId === frameId)
-          .map(async ({ id, role, content }) => {
-            const owningAttempt = (child as DurableChild).attempts.find(
-              (candidate) => candidate.terminalMessageId === id
-            )
-            const artifacts = owningAttempt
-              ? await projectArtifacts(snapshot, child as DurableChild, owningAttempt)
-              : []
-            const reviews =
-              owningAttempt?.status === 'completed' && owningAttempt.terminalMessageId
-                ? await options.reviewEvidence?.project({
-                    session: snapshot.session,
-                    attemptId: owningAttempt.id,
-                    agentFrameId: child.frameId,
-                    messageBranchId: (child as DurableChild).messageBranchId,
-                    terminalMessageId: owningAttempt.terminalMessageId,
-                    artifactVersionIds: artifacts.flatMap((artifact) =>
-                      artifact.versionId ? [artifact.versionId] : []
-                    )
-                  })
-                : undefined
-            return Object.freeze({
-              role,
-              content,
-              ...(artifacts.length > 0 ? { artifacts } : {}),
-              ...(reviews && reviews.length > 0 ? { reviews } : {})
-            })
-          })
-      )
-      return Object.freeze({
-        frameId,
-        title: child.title,
-        status: attempt.status,
-        resolvedAgent: Object.freeze(structuredClone(attempt.resolvedAgent)),
-        messages: Object.freeze(messages)
-      })
+      return projectionOwner.readAgentFrame(session, frameId)
     },
     async rootPermissionRequests(session) {
-      const snapshot = await options.records.snapshot()
-      if (!sameSession(snapshot.session, session)) return []
-      const currentAttempts = new Map(
-        snapshot.records.map((child) => [child.frameId, currentAttempt(child as DurableChild)])
-      )
-      return [...permissions.values()]
-        .filter((permission) => {
-          const attempt = currentAttempts.get(permission.frameId)
-          return attempt?.id === permission.attemptId && attempt.status === 'running'
-        })
-        .map(({ requestId, frameId, attemptId, childTitle, action, riskScope, options }) =>
-          Object.freeze({
-            requestId,
-            frameId,
-            attemptId,
-            childTitle,
-            action,
-            riskScope,
-            options: Object.freeze([...options])
-          })
-        )
+      return permissionOwner.requests(session)
     },
     async respondToPermission(session, response) {
-      const snapshot = await options.records.snapshot()
-      const child = sameSession(snapshot.session, session)
-        ? snapshot.records.find((candidate) => candidate.frameId === response.frameId)
-        : undefined
-      const attempt = child && currentAttempt(child as DurableChild)
-      const key = permissionKey(response.frameId, response.attemptId, response.requestId)
-      const permission = permissions.get(key)
-      if (
-        !permission ||
-        !attempt ||
-        attempt.id !== response.attemptId ||
-        attempt.status !== 'running'
-      ) {
-        throw new DurableDelegatedWorkError(
-          'conflict',
-          'permission request is no longer active for the current delegated Attempt'
-        )
-      }
-      deletePermission(key)
-      try {
-        await permission.execution.respondToPermission({
-          requestId: response.requestId,
-          ...(response.optionId ? { optionId: response.optionId } : {}),
-          ...(response.cancelled ? { cancelled: true } : {})
-        })
-      } catch (error) {
-        const latest = await snapshotChild(response.frameId)
-        if (
-          latest &&
-          currentAttempt(latest).id === response.attemptId &&
-          currentAttempt(latest).status === 'running'
-        ) {
-          setPermission(key, permission)
-        }
-        throw error
-      }
+      await permissionOwner.respond(session, response)
     },
     async stopChildren(caller, frameIds) {
       return Promise.all(
         frameIds.map(async (frameId) =>
-          stopChild(await findAuthorizedChild(caller, frameId), 'main_agent_stop')
+          stopChild(await readModel.findAuthorizedChild(caller, frameId), 'main_agent_stop')
         )
       )
     },
@@ -1721,7 +944,7 @@ const createDurableDelegatedWork = (options: {
         const attempt = currentAttempt(child)
         if (attempt.status !== 'running') continue
         const scope = { session: snapshot.session, frameId: child.frameId, attemptId: attempt.id }
-        const evidenceScope = artifactScope(snapshot, child, attempt)
+        const evidenceScope = projectionOwner.attemptScope(snapshot, child, attempt)
         if (evidenceScope) await options.artifactEvidence?.revoke?.(evidenceScope)
         await options.revokeAttemptWrites?.(scope)
         await options.settleAttemptCleanup?.(scope)
@@ -1738,7 +961,7 @@ const createDurableDelegatedWork = (options: {
           if (!latest || currentAttempt(latest).status === 'running') throw error
           continue
         }
-        const result = await projectResult(child.frameId)
+        const result = await projectionOwner.projectResult(child.frameId)
         if (result) interrupted.push(result)
       }
       return { interrupted }
@@ -1765,16 +988,12 @@ export type {
   DelegatedArtifactScope,
   DelegatedReviewEvidence,
   DelegatedReviewProjectionScope,
-  DelegatedWorkDurableRecords,
   DurableChildSummary,
   DurableDelegateOutcome,
   DurableDelegateRequest,
   DurableDelegateResult,
   DurableSendMessageOutcome,
   DurableDelegatedWork,
-  DurableMessage,
-  DurablePendingMessage,
-  DurableSnapshot,
   ParentMessageDelivery,
   ReadOnlyAgentFrameDetail,
   RecoveryOutcome,
@@ -1785,3 +1004,9 @@ export type {
   SessionSubagentSummary,
   StopOutcome
 }
+export type {
+  DelegatedWorkDurableRecords,
+  DurableMessage,
+  DurablePendingMessage,
+  DurableSnapshot
+} from './delegated-work-record-types'
