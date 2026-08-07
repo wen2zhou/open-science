@@ -106,6 +106,7 @@ delegatedWorkCertificationContract((options) => {
           return prompt.promise
         },
         cancelPrompt: async () => prompt.resolve({ stopReason: 'cancelled' }),
+        setPermissionProfile: async () => undefined,
         respondToPermission: async (response) => {
           responses.push(response)
         },

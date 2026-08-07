@@ -6,6 +6,10 @@ import {
   materializeSessionConversationGraph,
   type PersistedChatSession
 } from '../../shared/session-persistence'
+import {
+  DEFAULT_PERMISSION_PROFILE,
+  type PermissionProfileId
+} from '../../shared/permission-profiles'
 import type { AgentModelConfig, ResolvedAgentBackend, SessionSetup } from '../agent-framework'
 import { createAcpRuntime, type AcpRuntimeCompositionOptions } from '../acp/runtime-composition'
 import type { NotebookLocalRpcServer } from '../notebook/local-rpc-server'
@@ -38,6 +42,7 @@ type ProductionFrameworkRuntimeOptions = Readonly<{
   >
   notebookRpcServer(): NotebookLocalRpcServer
   readSession(key: SessionKey): Promise<PersistedChatSession | undefined>
+  resolvePermissionProfile?(sessionId: string): PermissionProfileId | undefined
 }>
 
 const releaseBackendLeases = async (backend: ResolvedAgentBackend): Promise<void> => {
@@ -179,6 +184,10 @@ const createProductionDelegatedFrameworkRuntime = (
             workspace: { cwd: input.workspaceCwd },
             runtimeHome,
             frameworkId,
+            permissionProfile:
+              options.resolvePermissionProfile?.(input.session.sessionId) ??
+              durable.permissionProfile ??
+              DEFAULT_PERMISSION_PROFILE,
             capability,
             ...(input.artifactCurrentRunFile
               ? { artifactCurrentRunFile: input.artifactCurrentRunFile }
@@ -235,6 +244,10 @@ const createProductionDelegatedFrameworkRuntime = (
             fixedBackend: owned.backend,
             runtimeCallbacks: callbacks,
             delegatedNotebookConnection: owned.connection,
+            permissionGrantContext: {
+              projectId: scope.provenance.projectId,
+              sessionId: scope.provenance.sessionId
+            },
             ...(scope.artifactCurrentRunFile
               ? { delegatedArtifactCurrentRunFile: scope.artifactCurrentRunFile }
               : {}),

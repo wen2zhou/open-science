@@ -7,6 +7,7 @@ import {
   type AcpPermissionResponse,
   type AcpRuntimeEvent
 } from '../../shared/acp'
+import type { PermissionProfileId } from '../../shared/permission-profiles'
 import {
   DelegateExecutionError,
   type DelegateCapacityReservation,
@@ -39,6 +40,7 @@ type PreparedDelegateExecution = Readonly<{
   workspace: Readonly<{ cwd: string }>
   runtimeHome: string
   frameworkId: string
+  permissionProfile?: PermissionProfileId
   capability: DelegateExecutionCapability
   artifactCurrentRunFile?: string
   disposeResources?(): Promise<void> | void
@@ -51,7 +53,11 @@ type AcpDelegateExecutionCallbacks = Readonly<{
 }>
 
 type AcpDelegateRuntime = Readonly<{
-  createSession(request: { cwd: string; specialistId?: string }): Promise<{ sessionId: string }>
+  createSession(request: {
+    cwd: string
+    permissionProfile?: PermissionProfileId
+    specialistId?: string
+  }): Promise<{ sessionId: string }>
   sendAppContinuation(request: {
     sessionId: string
     text: string
@@ -64,6 +70,10 @@ type AcpDelegateRuntime = Readonly<{
     }
   }): Promise<PromptResponse>
   cancelPrompt(request: { sessionId: string }): Promise<unknown>
+  setPermissionProfile(request: {
+    sessionId: string
+    profile: PermissionProfileId
+  }): Promise<unknown>
   respondToPermission(response: AcpPermissionResponse): Promise<unknown>
   deleteSession(request: { sessionId: string }): Promise<unknown>
   shutdownForQuit(): Promise<{ reaped: boolean }>
@@ -237,7 +247,12 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
           awaiting: true,
           requestId: request.requestId,
           title: request.title,
-          options: request.options.map(({ optionId, name, kind }) => ({ optionId, name, kind }))
+          options: request.options.map(({ optionId, name, kind, scope }) => ({
+            optionId,
+            name,
+            kind,
+            ...(scope ? { scope } : {})
+          }))
         })
       }
     }
@@ -348,6 +363,7 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         runtime = options.createRuntime(scope, callbacks)
         const created = await runtime.createSession({
           cwd: scope.workspace.cwd,
+          ...(scope.permissionProfile ? { permissionProfile: scope.permissionProfile } : {}),
           ...(input.profile ? { specialistId: input.profile } : {})
         })
         providerSessionId = created.sessionId
@@ -409,6 +425,12 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         void pending.acceptance.promise.catch(() => undefined)
         pendingMessages.push(pending)
         return pending.acceptance.promise
+      },
+      async setPermissionProfile(profile) {
+        if (!writable || !runtime || !providerSessionId || terminalSettled || cancelRequested) {
+          throw new Error('delegate execution is no longer running')
+        }
+        await runtime.setPermissionProfile({ sessionId: providerSessionId, profile })
       },
       async respondToPermission(response: DelegatePermissionResponse) {
         if (!writable || !runtime || !pendingPermissions.delete(response.requestId)) {

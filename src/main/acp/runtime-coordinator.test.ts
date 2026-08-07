@@ -62,6 +62,7 @@ const createFakeRuntime = (options: {
   sendAppContinuation: ReturnType<typeof vi.fn>
   applyReasoningEffortChange: ReturnType<typeof vi.fn>
   applyModelChange: ReturnType<typeof vi.fn>
+  setPermissionProfile: ReturnType<typeof vi.fn>
   respondToPermission: ReturnType<typeof vi.fn>
   emitEvent: (event: AcpRuntimeEvent) => void
   emitPermission: (request: AcpPermissionRequest) => void
@@ -122,6 +123,7 @@ const createFakeRuntime = (options: {
   const requestProviderReconnect = vi.fn(async () => undefined)
   const applyReasoningEffortChange = vi.fn(async () => true)
   const applyModelChange = vi.fn(async () => true)
+  const setPermissionProfile = vi.fn(async () => snapshot)
   const respondToPermission = vi.fn(() => snapshot)
   const shutdown = vi.fn()
   const shutdownForQuit = vi.fn(async () => ({ reaped: true }))
@@ -209,6 +211,7 @@ const createFakeRuntime = (options: {
     requestProviderReconnect,
     applyReasoningEffortChange,
     applyModelChange,
+    setPermissionProfile,
     respondToPermission,
     shutdown,
     shutdownForQuit,
@@ -232,6 +235,7 @@ const createFakeRuntime = (options: {
     sendAppContinuation,
     applyReasoningEffortChange,
     applyModelChange,
+    setPermissionProfile,
     respondToPermission,
     emitEvent: (event) => {
       snapshot = { ...snapshot, events: [...snapshot.events, event] }
@@ -277,6 +281,7 @@ describe('AcpRuntimeCoordinator', () => {
         return () => undefined
       }),
       respondToPermission: vi.fn(async () => true),
+      setPermissionProfile: vi.fn(async () => undefined),
       stopSession: vi.fn(async () => undefined),
       stopAll: vi.fn(async () => undefined),
       deleteSession: vi.fn(async () => undefined)
@@ -321,6 +326,13 @@ describe('AcpRuntimeCoordinator', () => {
       optionId: 'allow'
     })
     expect(created[0].respondToPermission).not.toHaveBeenCalled()
+
+    await coordinator.setPermissionProfile({ sessionId: 'session-1', profile: 'ask' })
+    expect(created[0].setPermissionProfile).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      profile: 'ask'
+    })
+    expect(delegated.setPermissionProfile).toHaveBeenCalledWith('session-1', 'ask')
 
     await coordinator.cancelPrompt({ sessionId: 'session-1' })
     expect(delegated.stopSession).toHaveBeenCalledWith('session-1')

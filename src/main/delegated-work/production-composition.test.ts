@@ -315,15 +315,27 @@ describe('production delegated-work composition', () => {
       awaiting: true,
       requestId: 'provider-permission-1',
       title: 'Read evidence',
-      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once', scope: 'once' },
+        { optionId: 'allow', name: 'This session', kind: 'allow_always', scope: 'session' },
+        { optionId: 'allow-project', name: 'This project', kind: 'allow_always', scope: 'project' },
+        { optionId: 'allow-global', name: 'Global', kind: 'allow_always', scope: 'global' }
+      ]
     })
     const projected = harness.composition.root.pendingPermissions()[0]
     expect(projected).toMatchObject({
       sessionId: harness.session.id,
       delegated: {
         frameId: receipt.children[0].frameId,
-        attemptId: receipt.children[0].attemptId
-      }
+        attemptId: receipt.children[0].attemptId,
+        riskScope: 'Global, project, session, or this call'
+      },
+      options: [
+        { optionId: 'allow-once', name: 'Allow once', kind: 'allow_once', scope: 'once' },
+        { optionId: 'allow', name: 'This session', kind: 'allow_always', scope: 'session' },
+        { optionId: 'allow-project', name: 'This project', kind: 'allow_always', scope: 'project' },
+        { optionId: 'allow-global', name: 'Global', kind: 'allow_always', scope: 'global' }
+      ]
     })
     await expect(
       harness.composition.root.respondToPermission({
@@ -355,6 +367,65 @@ describe('production delegated-work composition', () => {
         optionId: 'allow'
       })
     ).rejects.toThrow('no longer active')
+  })
+
+  it('updates the Permission Profile of every live Attempt in the Session', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-permission-profile-'))
+    const harness = await createCompositionHarness(root, 'codex')
+    await harness.composition.host.delegate(
+      harness.caller,
+      [{ task: 'First child' }, { task: 'Second child' }],
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(2)
+    for (const control of harness.execution.controls()) control.accept()
+
+    await harness.composition.root.setPermissionProfile(harness.session.id, 'ask')
+
+    expect(harness.execution.controls().map((control) => control.permissionProfiles())).toEqual([
+      ['ask'],
+      ['ask']
+    ])
+    for (const control of harness.execution.controls()) control.complete('done')
+  })
+
+  it('stops a live Attempt that cannot apply the Session Permission Profile', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-permission-profile-failure-'))
+    const harness = await createCompositionHarness(root, 'codex')
+    await harness.composition.host.delegate(
+      harness.caller,
+      [{ task: 'Healthy child' }, { task: 'Stale full-access child' }],
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(2)
+    for (const control of harness.execution.controls()) control.accept()
+    harness.execution.controls()[1].rejectNextPermissionProfile()
+
+    await expect(
+      harness.composition.root.setPermissionProfile(harness.session.id, 'ask')
+    ).rejects.toThrow('permission profile update failed')
+
+    const healthy = harness.execution.controls()[0]
+    const stale = harness.execution.controls()[1]
+    expect(healthy.permissionProfiles()).toEqual(['ask'])
+    expect(stale.permissionProfiles()).toEqual([])
+    await expect
+      .poll(() => {
+        const records = harness.durable().runtimeContext?.delegatedWork?.records ?? []
+        return {
+          healthy: records
+            .find((record) => record.agentFrameId === healthy.input.frameId)
+            ?.attempts.at(-1),
+          stale: records
+            .find((record) => record.agentFrameId === stale.input.frameId)
+            ?.attempts.at(-1)
+        }
+      })
+      .toMatchObject({
+        healthy: { status: 'running' },
+        stale: { status: 'cancelled', cancellationReason: 'runtime_interrupted' }
+      })
+    healthy.complete('done')
   })
 
   it('publishes detached child terminal mutations after the running receipt', async () => {

@@ -138,6 +138,7 @@ describe('production delegated framework factory composition', () => {
                 return { stopReason: 'end_turn' }
               },
               cancelPrompt: async () => undefined,
+              setPermissionProfile: async () => undefined,
               respondToPermission: async () => undefined,
               deleteSession: async () => undefined,
               shutdownForQuit: async () => ({ reaped: true })

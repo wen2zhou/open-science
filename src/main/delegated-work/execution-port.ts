@@ -1,3 +1,6 @@
+import type { AcpPermissionScope } from '../../shared/acp'
+import type { PermissionProfileId } from '../../shared/permission-profiles'
+
 type DelegateExecutionErrorCode = 'capacity' | 'unsupported_framework'
 
 class DelegateExecutionError extends Error {
@@ -17,7 +20,12 @@ type DelegateExecutionEvent =
       awaiting: true
       requestId: string
       title: string
-      options: readonly Readonly<{ optionId: string; name: string; kind: string }>[]
+      options: readonly Readonly<{
+        optionId: string
+        name: string
+        kind: string
+        scope?: AcpPermissionScope
+      }>[]
     }>
   | Readonly<{ kind: 'permission'; awaiting: false; requestId: string }>
 
@@ -49,6 +57,7 @@ type RunningDelegateExecution = Readonly<{
   completion: Promise<DelegateExecutionOutcome>
   subscribe(listener: (event: DelegateExecutionEvent) => void): () => void
   sendMessage(message: string): Promise<void>
+  setPermissionProfile(profile: PermissionProfileId): Promise<void>
   respondToPermission(response: DelegatePermissionResponse): Promise<void>
   cancel(): Promise<void>
 }>

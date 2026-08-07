@@ -34,6 +34,8 @@ const deferred = <Value>(): Deferred<Value> => {
 type RuntimeControl = Readonly<{
   callbacks: AcpDelegateExecutionCallbacks
   providerSessionId: string
+  createdSessions: Parameters<AcpDelegateRuntime['createSession']>[0][]
+  permissionProfiles: string[]
   prompts: string[]
   responses: AcpPermissionResponse[]
   complete(response?: PromptResponse): void
@@ -57,6 +59,9 @@ const makeHarness = (
     workspace?(input: DelegateExecutionInput): string
     createSessionError?(executionId: string): Error | undefined
     permissionResponseError?(executionId: string): Error | undefined
+    permissionProfile?(
+      input: DelegateExecutionInput
+    ): PreparedDelegateExecution['permissionProfile']
   }> = {}
 ): Readonly<{
   execution: ReturnType<typeof createAcpDelegateExecution>
@@ -84,6 +89,7 @@ const makeHarness = (
         workspace: { cwd: scopePaths.workspace?.(input) ?? `/workspace/${input.frameId}` },
         runtimeHome: scopePaths.runtimeHome?.(input) ?? `/runtime/${input.attemptId}`,
         frameworkId: 'certified-test',
+        permissionProfile: scopePaths.permissionProfile?.(input),
         capability: {
           revoke: async () => {
             cleanup.push(`revoke:${input.attemptId}`)
@@ -99,12 +105,16 @@ const makeHarness = (
     assertFrameworkNativeDelegationDisabled: async () => undefined,
     createRuntime: (scope, callbacks): AcpDelegateRuntime => {
       const prompt = deferred<PromptResponse>()
+      const createdSessions: Parameters<AcpDelegateRuntime['createSession']>[0][] = []
+      const permissionProfiles: string[] = []
       const prompts: string[] = []
       const responses: AcpPermissionResponse[] = []
       const providerSessionId = `provider-${scope.executionId}`
       const control: RuntimeControl = {
         callbacks,
         providerSessionId,
+        createdSessions,
+        permissionProfiles,
         prompts,
         responses,
         complete: (response = { stopReason: 'end_turn' }) => prompt.resolve(response),
@@ -112,7 +122,8 @@ const makeHarness = (
       }
       controls.set(scope.executionId, control)
       return {
-        createSession: async () => {
+        createSession: async (request) => {
+          createdSessions.push(request)
           const error = scopePaths.createSessionError?.(scope.executionId)
           if (error) throw error
           return { sessionId: providerSessionId }
@@ -129,6 +140,9 @@ const makeHarness = (
           const error = scopePaths.permissionResponseError?.(scope.executionId)
           if (error) throw error
           responses.push(response)
+        },
+        setPermissionProfile: async ({ profile }: { profile: string }) => {
+          permissionProfiles.push(profile)
         },
         deleteSession: async () => {
           cleanup.push(`delete:${scope.executionId}`)
@@ -309,6 +323,7 @@ describe('ACP delegate execution production adapter', () => {
           },
           cancelPrompt: async () => undefined,
           respondToPermission: async () => undefined,
+          setPermissionProfile: async () => undefined,
           deleteSession: async () => undefined,
           shutdownForQuit: async () => ({ reaped: true })
         }
@@ -371,6 +386,7 @@ describe('ACP delegate execution production adapter', () => {
           },
           cancelPrompt: async () => undefined,
           respondToPermission: async () => undefined,
+          setPermissionProfile: async () => undefined,
           deleteSession: async () => undefined,
           shutdownForQuit: async () => ({ reaped: true })
         }
@@ -385,6 +401,33 @@ describe('ACP delegate execution production adapter', () => {
 
     await expect(delivery).rejects.toThrow('continuation transport failed')
     await expect(running.completion).rejects.toThrow('continuation transport failed')
+  })
+
+  it('starts the delegated Session with the parent permission profile', async () => {
+    const { execution, controls } = makeHarness(1, { permissionProfile: () => 'full' })
+    const reservation = await execution.reserve(1)
+    const running = execution.run(makeInput('full-access'), reservation.slotIds[0])
+
+    await running.accepted
+    expect(controls.get('full-access')?.createdSessions).toEqual([
+      { cwd: '/workspace/frame-full-access', permissionProfile: 'full' }
+    ])
+
+    controls.get('full-access')?.complete()
+    await running.completion
+  })
+
+  it('changes the permission profile for an active delegated Session', async () => {
+    const { execution, controls } = makeHarness(1)
+    const reservation = await execution.reserve(1)
+    const running = execution.run(makeInput('profile-change'), reservation.slotIds[0])
+    await running.accepted
+
+    await running.setPermissionProfile('ask')
+
+    expect(controls.get('profile-change')?.permissionProfiles).toEqual(['ask'])
+    controls.get('profile-change')?.complete()
+    await running.completion
   })
 
   it('settles cancellation requested while preparation is still in flight', async () => {
@@ -484,7 +527,7 @@ describe('ACP delegate execution production adapter', () => {
       sessionId: 'provider-two',
       toolCallId: 'tool-two',
       title: 'second only',
-      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_always', scope: 'session' }]
     })
     await second.respondToPermission({ requestId: 'permission-two', optionId: 'allow' })
     await first.cancel()
@@ -507,6 +550,7 @@ describe('ACP delegate execution production adapter', () => {
     expect(firstEvents.join('\n')).toContain('first only')
     expect(firstEvents.join('\n')).not.toContain('second only')
     expect(secondEvents.join('\n')).toContain('permission-two')
+    expect(secondEvents.join('\n')).toContain('"scope":"session"')
     expect(controls.get('two')?.responses).toEqual([
       { requestId: 'permission-two', optionId: 'allow' }
     ])

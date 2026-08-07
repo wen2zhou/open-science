@@ -1047,7 +1047,9 @@ const createApplicationModules = async (
       sessionPersistenceCoordinator
     },
     notebookRpcServer: requireNotebookRpcServer,
-    readSession: ({ projectId, sessionId }) => sessionRepository.loadSession(projectId, sessionId)
+    readSession: ({ projectId, sessionId }) => sessionRepository.loadSession(projectId, sessionId),
+    resolvePermissionProfile: (sessionId) =>
+      runtimeRef.current?.getSnapshot().permissionProfiles[sessionId]?.selectedProfile
   })
   const delegatedArtifactTurns = new ArtifactTurnOwner({
     dataRoot: resolveDataRoot(),

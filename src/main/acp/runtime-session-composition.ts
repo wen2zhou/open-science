@@ -134,6 +134,7 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
     },
     conversationGrants: options.permissionGrantStore,
     permissionGrantRegistry: options.permissionGrantRegistry,
+    permissionGrantContext: options.permissionGrantContext,
     setTimer: base.setTimer,
     clearTimer: base.clearTimer,
     onOpenCodeWaitTimeout: ({ sessionId, toolCallId, waitMs }) => {

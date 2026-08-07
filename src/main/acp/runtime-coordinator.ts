@@ -746,6 +746,7 @@ class AcpRuntimeCoordinator {
 
   async setPermissionProfile(request: AcpSetPermissionProfileRequest): Promise<AcpStateSnapshot> {
     await this.runtimeForSession(request.sessionId).setPermissionProfile(request)
+    await this.delegatedWork?.setPermissionProfile(request.sessionId, request.profile)
     return this.getSnapshot()
   }
 

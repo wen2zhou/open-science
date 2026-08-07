@@ -4,6 +4,7 @@ import type { AcpPermissionRequest, AcpPermissionResponse } from '../../shared/a
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import type { AgentFrameworkId } from '../../shared/settings'
+import type { PermissionProfileId } from '../../shared/permission-profiles'
 import {
   createDelegatedArtifactEvidence,
   type DelegatedArtifactEvidenceOptions
@@ -61,6 +62,7 @@ type RootDelegatedWorkControl = Readonly<{
   unavailableReasons?(): Readonly<Record<string, string>>
   subscribe(listener: (event: RootDelegatedWorkEvent) => void): () => void
   respondToPermission(response: AcpPermissionResponse): Promise<boolean>
+  setPermissionProfile(sessionId: string, profile: PermissionProfileId): Promise<void>
   stopSession(sessionId: string): Promise<void>
   stopAll(): Promise<void>
   deleteSession(sessionId: string): Promise<void>
@@ -256,6 +258,10 @@ const createProductionDelegatedWorkComposition = (
         ...(response.cancelled ? { cancelled: true } : {})
       })
       return true
+    },
+    async setPermissionProfile(sessionId, profile) {
+      const scoped = await worksForSession(sessionId)
+      await Promise.all(scoped.map(({ key, work }) => work.setPermissionProfile(key, profile)))
     },
     async stopSession(sessionId) {
       const scoped = await worksForSession(sessionId)

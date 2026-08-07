@@ -1,6 +1,8 @@
 import { randomUUID } from 'node:crypto'
 
 import type { ArtifactFile } from '../../shared/artifacts'
+import type { AcpPermissionScope } from '../../shared/acp'
+import type { PermissionProfileId } from '../../shared/permission-profiles'
 import type { ReviewWithChecks } from '../../shared/reviewer'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import {
@@ -79,7 +81,12 @@ type RootDelegatePermissionRequest = Readonly<{
   childTitle: string
   action: string
   riskScope: string
-  options: readonly Readonly<{ optionId: string; name: string; kind: string }>[]
+  options: readonly Readonly<{
+    optionId: string
+    name: string
+    kind: string
+    scope?: AcpPermissionScope
+  }>[]
 }>
 
 type RootDelegatePermissionResponse = DelegatePermissionResponse &
@@ -217,6 +224,7 @@ type DurableDelegatedWork = Readonly<{
   ): Promise<ReadOnlyAgentFrameDetail | undefined>
   rootPermissionRequests(session: SessionKey): Promise<readonly RootDelegatePermissionRequest[]>
   respondToPermission(session: SessionKey, response: RootDelegatePermissionResponse): Promise<void>
+  setPermissionProfile(session: SessionKey, profile: PermissionProfileId): Promise<void>
   stopChildren(
     caller: AuthenticatedDelegateCaller,
     frameIds: readonly string[]
@@ -289,6 +297,7 @@ const createDurableDelegatedWork = (options: {
       attemptId: string
       completion: Promise<void>
       deliver(message: string): Promise<void>
+      setPermissionProfile(profile: PermissionProfileId): Promise<void>
       cancel(): Promise<void>
       reservation: DelegateCapacityReservation
       slotId: string
@@ -434,6 +443,9 @@ const createDurableDelegatedWork = (options: {
       async deliver(message) {
         await (await deliveryHandle).sendMessage(message)
       },
+      async setPermissionProfile(profile) {
+        await (await deliveryHandle).setPermissionProfile(profile)
+      },
       async cancel() {
         cancelRequested = true
         rejectHandle(new Error('delegate execution was cancelled before message delivery'))
@@ -446,7 +458,7 @@ const createDurableDelegatedWork = (options: {
 
   const stopChild = async (
     child: DurableChild,
-    reason: 'main_agent_stop' | 'session_stop'
+    reason: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
   ): Promise<StopOutcome> => {
     const attempt = currentAttempt(child)
     if (attempt.status !== 'running') {
@@ -926,6 +938,30 @@ const createDurableDelegatedWork = (options: {
     },
     async respondToPermission(session, response) {
       await permissionOwner.respond(session, response)
+    },
+    async setPermissionProfile(session, profile) {
+      const snapshot = await options.records.snapshot()
+      if (!sameSession(snapshot.session, session)) return
+      const failures = await Promise.all(
+        [...running.entries()].map(async ([frameId, attempt]) => {
+          try {
+            await attempt.setPermissionProfile(profile)
+            return undefined
+          } catch (error) {
+            const child = await snapshotChild(frameId)
+            if (
+              child &&
+              currentAttempt(child).id === attempt.attemptId &&
+              currentAttempt(child).status === 'running'
+            ) {
+              await stopChild(child, 'runtime_interrupted')
+            }
+            return error
+          }
+        })
+      )
+      const failure = failures.find((error) => error !== undefined)
+      if (failure !== undefined) throw failure
     },
     async stopChildren(caller, frameIds) {
       return Promise.all(

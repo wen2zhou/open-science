@@ -940,7 +940,7 @@ class AcpPermissionBroker {
       return this.permissionGrantRegistry
         .resolve(capability, {
           projectId: policyContext?.projectId,
-          sessionId: params.sessionId
+          sessionId: policyContext?.permissionGrantSessionId ?? params.sessionId
         })
         .then((match) => {
           if (
@@ -1081,7 +1081,8 @@ class AcpPermissionBroker {
             : {
                 kind: 'session',
                 projectId: pending.projectId,
-                sessionId: pending.request.sessionId
+                sessionId:
+                  pending.policyContext?.permissionGrantSessionId ?? pending.request.sessionId
               }
       try {
         await this.permissionGrantRegistry.remember({ capability: pending.capability, scope })

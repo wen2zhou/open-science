@@ -40,7 +40,12 @@ class RootDelegatePermissionOwner {
       childTitle,
       action: event.title,
       riskScope: this.riskScope(event.options),
-      options: event.options.map(({ optionId, name, kind }) => ({ optionId, name, kind })),
+      options: event.options.map(({ optionId, name, kind, scope }) => ({
+        optionId,
+        name,
+        kind,
+        ...(scope ? { scope } : {})
+      })),
       execution
     })
   }
@@ -156,7 +161,16 @@ class RootDelegatePermissionOwner {
     return permission
   }
 
-  private riskScope(options: readonly Readonly<{ kind: string }>[]): string {
+  private riskScope(
+    options: readonly Readonly<{
+      kind: string
+      scope?: 'once' | 'session' | 'project' | 'global'
+    }>[]
+  ): string {
+    const scopes = new Set(options.map(({ scope }) => scope).filter(Boolean))
+    if (scopes.has('global')) return 'Global, project, session, or this call'
+    if (scopes.has('project')) return 'This project, this session, or this call'
+    if (scopes.has('session')) return 'This session or this call'
     const kinds = new Set(options.map(({ kind }) => kind.toLowerCase()))
     return kinds.has('allow_always') ? 'This session or this call' : 'This call only'
   }

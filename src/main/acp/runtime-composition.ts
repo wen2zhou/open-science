@@ -64,6 +64,7 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
   ) => Promise<() => void>
   settingsService: AcpSettingsCapabilities
   permissionGrantRegistry?: PermissionGrantRegistry
+  permissionGrantContext?: Readonly<{ projectId: string; sessionId: string }>
   initializationBarrier?: Promise<unknown>
   taskNotifications?: TaskNotificationService
   onSessionTurnStarted?: (sessionId: string, turnToken: string) => void
@@ -106,6 +107,7 @@ const createAcpRuntime = ({
   authorizeSkillImportReferencedUploads,
   settingsService,
   permissionGrantRegistry,
+  permissionGrantContext,
   initializationBarrier,
   taskNotifications,
   onSessionTurnStarted,
@@ -251,6 +253,7 @@ const createAcpRuntime = ({
         callbacks: runtimeCallbacks,
         permissionGrantStore,
         permissionGrantRegistry,
+        permissionGrantContext,
         resolveSpecialistIdentity: profileService
           ? async (specialistId: string, frameworkId: string) => {
               let profile

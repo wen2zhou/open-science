@@ -128,6 +128,7 @@ const makeHarness = (capacity: number): OpenCodeHarness => {
         cancelPrompt: async () => {
           prompt.resolve({ stopReason: 'cancelled' })
         },
+        setPermissionProfile: async () => undefined,
         respondToPermission: async (response) => {
           responses.push(response)
         },

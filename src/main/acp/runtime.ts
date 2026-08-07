@@ -127,6 +127,7 @@ type AcpRuntimeOptions = {
   callbacks?: AcpRuntimeCallbacks
   permissionGrantStore?: ConversationPermissionGrantStore
   permissionGrantRegistry?: PermissionGrantRegistry
+  permissionGrantContext?: Readonly<{ projectId: string; sessionId: string }>
   spawnAgent?: () => ChildProcessWithoutNullStreams
   // Resolves the active agent backend (framework + spawn inputs) at connect time so a framework or
   // provider switch takes effect on reconnect. Ignored when an explicit spawnAgent is provided (tests

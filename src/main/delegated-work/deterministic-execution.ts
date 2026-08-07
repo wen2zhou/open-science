@@ -9,6 +9,7 @@ import {
   type DelegatePermissionResponse,
   type RunningDelegateExecution
 } from './execution-port'
+import type { PermissionProfileId } from '../../shared/permission-profiles'
 
 type Deferred<Value> = Readonly<{
   promise: Promise<Value>
@@ -34,7 +35,9 @@ type ExecutionControl = Readonly<{
   complete(response: string): void
   fail(error?: Error): void
   cancel(): void
+  rejectNextPermissionProfile(error?: Error): void
   deliveredMessages(): readonly string[]
+  permissionProfiles(): readonly PermissionProfileId[]
   permissionResponses(): readonly DelegatePermissionResponse[]
 }>
 
@@ -122,7 +125,9 @@ const createDeterministicDelegateExecution = (
       const completion = deferred<DelegateExecutionOutcome>()
       const listeners = new Set<(event: DelegateExecutionEvent) => void>()
       const messages: string[] = []
+      const permissionProfiles: PermissionProfileId[] = []
       const responses: DelegatePermissionResponse[] = []
+      let permissionProfileFailure: Error | undefined
       let terminal = false
       const control: ExecutionControl = {
         input,
@@ -146,7 +151,11 @@ const createDeterministicDelegateExecution = (
           terminal = true
           completion.resolve({ status: 'cancelled' })
         },
+        rejectNextPermissionProfile: (error = new Error('permission profile update failed')) => {
+          permissionProfileFailure = error
+        },
         deliveredMessages: () => messages,
+        permissionProfiles: () => permissionProfiles,
         permissionResponses: () => responses
       }
       running.push(control)
@@ -171,6 +180,14 @@ const createDeterministicDelegateExecution = (
         },
         async sendMessage(message) {
           messages.push(message)
+        },
+        async setPermissionProfile(profile) {
+          if (permissionProfileFailure) {
+            const error = permissionProfileFailure
+            permissionProfileFailure = undefined
+            throw error
+          }
+          permissionProfiles.push(profile)
         },
         async respondToPermission(response) {
           responses.push(response)
