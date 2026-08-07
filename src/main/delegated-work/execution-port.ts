@@ -38,6 +38,7 @@ type DelegateExecutionInput = Readonly<{
   task: string
   context?: string
   inputs: readonly string[]
+  workspaceCwd?: string
   profile?: string
   continuation: boolean
   artifactCurrentRunFile?: string

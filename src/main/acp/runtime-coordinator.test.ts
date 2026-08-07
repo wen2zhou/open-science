@@ -255,6 +255,87 @@ const createFakeRuntime = (options: {
 }
 
 describe('AcpRuntimeCoordinator', () => {
+  it('projects delegated permissions and cascades root permission and Stop controls', async () => {
+    const rootPermission: AcpPermissionRequest = {
+      requestId: 'delegated:permission-1',
+      sessionId: 'session-1',
+      toolCallId: 'child-frame',
+      title: 'Read evidence',
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+      delegated: {
+        frameId: 'child-frame',
+        attemptId: 'child-attempt',
+        childTitle: 'Evidence child',
+        riskScope: 'This call only'
+      }
+    }
+    let listener: ((event: unknown) => void) | undefined
+    const delegated = {
+      pendingPermissions: vi.fn(() => [rootPermission]),
+      subscribe: vi.fn((next: (event: unknown) => void) => {
+        listener = next
+        return () => undefined
+      }),
+      respondToPermission: vi.fn(async () => true),
+      stopSession: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      deleteSession: vi.fn(async () => undefined)
+    }
+    const permissionEvents: unknown[] = []
+    const stateChanges: AcpStateSnapshot[] = []
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'codex',
+          sessionIds: ['session-1'],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {
+        onPermissionRequest: (request) => permissionEvents.push(request),
+        onStateChanged: (snapshot) => stateChanges.push(snapshot)
+      },
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      delegated
+    )
+
+    expect(coordinator.getSnapshot().pendingPermissions).toEqual([rootPermission])
+    listener?.({ kind: 'permission-requested', request: rootPermission })
+    expect(permissionEvents).toEqual([rootPermission])
+    expect(stateChanges.at(-1)?.pendingPermissions).toEqual([rootPermission])
+
+    await coordinator.respondToPermission({
+      requestId: rootPermission.requestId,
+      optionId: 'allow'
+    })
+    expect(delegated.respondToPermission).toHaveBeenCalledWith({
+      requestId: rootPermission.requestId,
+      optionId: 'allow'
+    })
+    expect(created[0].respondToPermission).not.toHaveBeenCalled()
+
+    await coordinator.cancelPrompt({ sessionId: 'session-1' })
+    expect(delegated.stopSession).toHaveBeenCalledWith('session-1')
+    expect(created[0].cancelPrompt).toHaveBeenCalledWith({ sessionId: 'session-1' })
+
+    created[0].cancelPrompt.mockRejectedValueOnce(new Error('root cancel failed'))
+    await expect(coordinator.cancelPrompt({ sessionId: 'session-1' })).rejects.toThrow(
+      'root cancel failed'
+    )
+    expect(delegated.stopSession).toHaveBeenCalledTimes(2)
+
+    await expect(coordinator.prepareForQuit()).resolves.toBe('completed')
+    expect(delegated.stopAll).toHaveBeenCalledOnce()
+  })
+
   it('retains a sanitized app-visible Specialist handoff failure until session deletion', async () => {
     const forwardedEvents: AcpRuntimeEvent[] = []
     const created: ReturnType<typeof createFakeRuntime>[] = []
@@ -423,6 +504,7 @@ describe('AcpRuntimeCoordinator', () => {
 
   it('reports continuation startup only after the provider accepts it', async () => {
     const acceptProviderPrompt = createDeferred()
+    const onProviderPromptAccepted = vi.fn()
     const coordinator = new AcpRuntimeCoordinator(
       (callbacks) =>
         createFakeRuntime({
@@ -430,7 +512,8 @@ describe('AcpRuntimeCoordinator', () => {
           sessionIds: ['session-1'],
           callbacks,
           beforeProviderPromptAccepted: async () => acceptProviderPrompt.promise
-        }).runtime
+        }).runtime,
+      { onProviderPromptAccepted }
     )
     const session = await coordinator.createSession()
     let started = false
@@ -444,6 +527,10 @@ describe('AcpRuntimeCoordinator', () => {
     acceptProviderPrompt.resolve()
     await starting
     expect(started).toBe(true)
+    expect(onProviderPromptAccepted).toHaveBeenCalledWith(
+      session.sessionId,
+      expect.stringMatching(/^prompt-attempt-/)
+    )
   })
 
   it('routes native compaction to the session owner and publishes only owned capabilities', async () => {

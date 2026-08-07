@@ -46,7 +46,12 @@ describe('durable delegated work', () => {
       rootFrameId: caller.frameId,
       originMessageId: caller.originMessageId
     })
-    const work = createDurableDelegatedWork({ execution, records })
+    const permissionEvents: unknown[] = []
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      onRootPermissionEvent: (event) => permissionEvents.push(event)
+    })
     const dispatched = await work.delegate(
       caller,
       [
@@ -71,6 +76,11 @@ describe('durable delegated work', () => {
       title: 'Run beta check',
       options: [{ optionId: 'deny-beta', name: 'Deny', kind: 'reject_once' }]
     })
+
+    expect(permissionEvents).toMatchObject([
+      { kind: 'requested', request: { requestId: 'permission-alpha' } },
+      { kind: 'requested', request: { requestId: 'permission-beta' } }
+    ])
 
     await expect(work.rootPermissionRequests(caller.session)).resolves.toEqual([
       {
@@ -109,6 +119,10 @@ describe('durable delegated work', () => {
     expect(execution.controls()[1].permissionResponses()).toEqual([
       { requestId: 'permission-beta', optionId: 'deny-beta' }
     ])
+    expect(permissionEvents.at(-1)).toMatchObject({
+      kind: 'settled',
+      request: { requestId: 'permission-beta' }
+    })
     await expect(work.rootPermissionRequests(caller.session)).resolves.toMatchObject([
       { requestId: 'permission-alpha' }
     ])
@@ -1276,6 +1290,53 @@ describe('durable delegated work', () => {
     ).rejects.toMatchObject({ code: 'capacity', message: 'batch capacity unavailable' })
     expect(execution.reservationCounts()).toEqual([2])
     expect(await records.snapshot()).toMatchObject({ records: [], messages: [] })
+  })
+
+  it('fails closed when immutable inputs have no validator and passes the prepared Frame cwd to execution', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const unvalidated = createDurableDelegatedWork({ execution, records })
+
+    await expect(
+      unvalidated.delegate(
+        caller,
+        { task: 'inspect', inputs: ['upload-version:one'] },
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    expect(execution.controls()).toEqual([])
+    expect((await records.snapshot()).records).toEqual([])
+
+    const prepared = createDurableDelegatedWork({
+      execution,
+      records,
+      validateInput: () => true,
+      workspace: {
+        prepare: async () => ({ cwd: '/stable/frame-workspace' })
+      },
+      createId: (kind) =>
+        ({
+          frame: 'cwd-frame',
+          attempt: 'cwd-attempt',
+          message: 'cwd-message',
+          runtime: 'cwd-runtime'
+        })[kind]
+    })
+    const result = prepared.delegate(
+      { ...caller, toolInvocationId: 'validated-cwd' },
+      { task: 'inspect', inputs: ['upload-version:one'] }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    expect(execution.controls()[0].input).toMatchObject({
+      workspaceCwd: '/stable/frame-workspace'
+    })
+    execution.control('cwd-attempt').accept()
+    execution.control('cwd-attempt').complete('done')
+    await result
   })
 
   it('leaves no partial durable batch when atomic admission rejects after reservation', async () => {

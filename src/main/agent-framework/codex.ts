@@ -26,6 +26,7 @@ import type {
   SessionSetup,
   SessionSetupContext
 } from './types'
+import { isProductionDelegatedWorkFramework } from '../delegated-work/production-readiness'
 import { isCodexSubscriptionProvider } from '../../shared/settings'
 import { CODEX_VERSION } from '../settings/managed-codex'
 import { clearSystemProxyEnvironment } from '../settings/system-proxy'
@@ -383,7 +384,7 @@ export const createCodexFramework = ({
   // owns automatic compaction, so no host trigger threshold is declared here.
   contextCompaction: { kind: 'native-command', command: '/compact' },
   supportsSkills: true,
-  supportsDelegatedWork: true,
+  supportsDelegatedWork: isProductionDelegatedWorkFramework('codex'),
   acceptsStdioMcp: true,
   // codex-acp advertises a thought_level effort option and honors set_config_option on live sessions
   // (verified live: a session accepted effort 'high' over ACP). If a future adapter stops

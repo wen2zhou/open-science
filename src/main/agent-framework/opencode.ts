@@ -23,6 +23,7 @@ import type {
   SessionSetup,
   SessionSetupContext
 } from './types'
+import { isProductionDelegatedWorkFramework } from '../delegated-work/production-readiness'
 import { renderAppMcpToolReferences } from './app-mcp-names'
 
 // opencode speaks ACP over `opencode acp` (stdio JSON-RPC). Only the shapes that differ from Claude
@@ -394,7 +395,7 @@ export const opencodeFramework: AgentFramework = {
   // opencode discovers skills natively at <configDir>/skills/<name>/SKILL.md (same layout as Claude),
   // loaded on-demand via its skill tool; the app materializes the enabled set into the isolated config.
   supportsSkills: true,
-  supportsDelegatedWork: true,
+  supportsDelegatedWork: isProductionDelegatedWorkFramework('opencode'),
   // opencode accepts stdio MCP servers over ACP (verified live vs 1.17.13: it launches a stdio server
   // and sends it the MCP initialize handshake). Its mcpCapabilities advertise only http/sse because
   // ACP has no stdio flag — stdio is the baseline transport. So opencode uses the SAME stdio artifact/

@@ -16,6 +16,7 @@ import type {
   SessionSetup,
   SessionSetupContext
 } from './types'
+import { isProductionDelegatedWorkFramework } from '../delegated-work/production-readiness'
 import { renderAppMcpToolReferences } from './app-mcp-names'
 
 // Select Claude Code's complete built-in tool set explicitly instead of relying on
@@ -55,7 +56,7 @@ export const claudeCodeFramework: AgentFramework = {
     failureTextPrefix: 'Compacting failed'
   },
   supportsSkills: true,
-  supportsDelegatedWork: true,
+  supportsDelegatedWork: isProductionDelegatedWorkFramework('claude-code'),
   // Claude launches stdio MCP servers directly — the app's artifact/notebook tooling relies on this.
   acceptsStdioMcp: true,
   // The adapter advertises an `effort` select (category thought_level) and applies changes to live

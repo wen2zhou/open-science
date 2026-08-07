@@ -113,6 +113,7 @@ import { createRuntimeSelectionWorkflows } from './notebook/runtime-selection-wo
 import { runtimeRoot } from './notebook/runtime-paths'
 import type { NotebookEnvironmentManager } from './notebook/runtime-service'
 import { parseArtifactVersionLocator } from '../shared/artifact-provenance'
+import { parseUploadVersionReference } from '../shared/uploads'
 import { DEFAULT_ARTIFACT_PROJECT_NAME } from '../shared/artifacts'
 import type { NotebookLanguage } from '../shared/notebook'
 import { OFFICE_PREVIEW_STATE_CHANNEL } from '../shared/office-preview'
@@ -155,6 +156,8 @@ import { getAppClaudeConfigDir } from './settings/provider-env'
 import { createDefaultSettingsService } from './settings/service'
 import type { NotebookRuntimeSettings } from './settings/capabilities'
 import type { WindowSettingsCapabilities } from './settings/service-capabilities'
+import { createProductionDelegatedWorkComposition } from './delegated-work/production-composition'
+import { createProductionDelegatedFrameworkRuntime } from './delegated-work/production-framework-runtime'
 import { createSettingsWorkflows } from './settings/workflows'
 import { ProfileService } from './specialist/service'
 import { SpecialistRepository } from './specialist/repository'
@@ -1011,6 +1014,62 @@ const createApplicationModules = async (
       await sessionPersistenceCoordinator.saveSessionSpecialistBinding(session, specialistId)
     }
   })
+  const notebookRpcServerRef: { current?: NotebookLocalRpcServer } = {}
+  const requireNotebookRpcServer = (): NotebookLocalRpcServer => {
+    if (!notebookRpcServerRef.current) throw new Error('Notebook RPC server is not composed yet.')
+    return notebookRpcServerRef.current
+  }
+  const delegatedFrameworks = createProductionDelegatedFrameworkRuntime({
+    capacity: 4,
+    dataRoot: resolveDataRoot(),
+    runtime: {
+      mcpEntryPath: mainEntryPath,
+      repository: artifactRepository,
+      runRegistry: artifactRunRegistry,
+      provenanceRepository: artifactProvenanceRepository,
+      uploadRepository,
+      peekNotebookHandoffContext: (sessionId) => notebookService.peekHandoffContext(sessionId),
+      authorizeSkillImportReferencedUploads: (projectId, sessionId, paths) =>
+        conversationSkillImporter.authorizeReferencedUploads(projectId, sessionId, paths),
+      settingsService,
+      permissionGrantRegistry,
+      profileService,
+      sessionPersistenceCoordinator
+    },
+    notebookRpcServer: requireNotebookRpcServer,
+    readSession: ({ projectId, sessionId }) => sessionRepository.loadSession(projectId, sessionId)
+  })
+  const delegatedWork = createProductionDelegatedWorkComposition({
+    dataRoot: resolveDataRoot(),
+    sessions: {
+      commands: sessionPersistenceCoordinator,
+      readSession: ({ projectId, sessionId }) => sessionRepository.loadSession(projectId, sessionId)
+    },
+    async resolveInput(identity, session) {
+      const artifact = parseArtifactVersionLocator(identity)
+      if (artifact) {
+        if (
+          artifact.projectId !== session.projectId ||
+          artifact.appSessionId !== session.sessionId
+        ) {
+          throw new Error('Artifact Version belongs to a different Session.')
+        }
+        const resolved = await artifactProvenanceRepository.resolveVersionContent(artifact)
+        return { path: resolved.path, filename: resolved.filename }
+      }
+      if (!parseUploadVersionReference(identity)) {
+        throw new Error('Delegated input is not an immutable Version identity.')
+      }
+      const resolved = await uploadRepository.resolveSessionUpload(
+        session.sessionId,
+        { path: identity },
+        session.projectId
+      )
+      return { path: resolved.path, filename: resolved.name }
+    },
+    frameworks: delegatedFrameworks,
+    resolveSpecialist: (profileId) => profileService.resolveRunnableById(profileId)
+  })
   const notebookRpcServer = await modules.add(
     new NotebookLocalRpcServer(notebookLocalRpc, {
       onSessionReleased: (sessionId) => completionGateCoordinator.releaseSession(sessionId),
@@ -1039,10 +1098,12 @@ const createApplicationModules = async (
           )
       },
       inputRegistry: notebookInputRegistry,
-      agentsService
+      agentsService,
+      delegatedWorkService: delegatedWork.host
     }),
     createNotebookLocalRpcModule
   )
+  notebookRpcServerRef.current = notebookRpcServer
   // Register ownership before ACP construction. Reverse disposal therefore drains ACP + Notebook
   // through the coordinator first, then releases the local bridge without creating a second runtime
   // shutdown owner; rollback also closes a server started during partial composition.
@@ -1143,7 +1204,8 @@ const createApplicationModules = async (
         notebookService.shutdownSession(sessionId).then(() => undefined),
       initializationBarrier: initialConnectorSkillsReady,
       profileService,
-      sessionPersistenceCoordinator
+      sessionPersistenceCoordinator,
+      delegatedWork: delegatedWork.root
     },
     (options) => {
       const runtime = createAcpRuntime(options)

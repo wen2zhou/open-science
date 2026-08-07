@@ -499,6 +499,23 @@ describe('ACP delegate execution production adapter', () => {
     expect(createRuntime).not.toHaveBeenCalled()
   })
 
+  it('rejects an adapter that replaces the staged Frame cwd', async () => {
+    const { execution, controls, cleanup } = makeHarness(1, {
+      workspace: () => '/workspace/adapter-selected'
+    })
+    const reservation = await execution.reserve(1)
+    const running = execution.run(
+      { ...makeInput('workspace-scope'), workspaceCwd: '/workspace/main-staged' },
+      reservation.slotIds[0]
+    )
+
+    await expect(running.completion).rejects.toThrow(
+      'workspace does not match the staged Frame cwd'
+    )
+    expect(controls.size).toBe(0)
+    expect(cleanup).toEqual(['revoke:workspace-scope', 'resources:workspace-scope'])
+  })
+
   it('contains provider startup failure to its child and keeps the sibling runtime alive', async () => {
     const { execution, controls } = makeHarness(2, {
       createSessionError: (executionId) =>

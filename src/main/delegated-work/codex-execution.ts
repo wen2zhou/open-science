@@ -81,19 +81,24 @@ const assertCodexScopeIsolated = (
   scope: PreparedCodexDelegateExecution,
   identity: CodexRuntimeIdentity
 ): void => {
+  assertCodexLaunchIsolated(scope.spawn, scope.runtimeHome, identity)
+}
+
+const assertCodexLaunchIsolated = (
+  spawn: AgentSpawnInput,
+  runtimeHome: string,
+  identity: CodexRuntimeIdentity
+): void => {
   const audit = getCodexNativeDelegationAudit(identity)
   if (audit.some(({ status }) => status !== 'disabled' && status !== 'not-present')) {
     throw new Error('Codex native delegation entry points are not certified for this runtime.')
   }
-  if (
-    scope.spawn.env.CODEX_HOME !== scope.runtimeHome ||
-    scope.spawn.env.HOME !== scope.runtimeHome
-  ) {
+  if (spawn.env.CODEX_HOME !== runtimeHome || spawn.env.HOME !== runtimeHome) {
     throw new Error('Codex delegated execution requires an isolated runtime home.')
   }
   let config: { features?: { multi_agent?: unknown; multi_agent_v2?: unknown } }
   try {
-    config = JSON.parse(scope.spawn.env.CODEX_CONFIG ?? '') as typeof config
+    config = JSON.parse(spawn.env.CODEX_CONFIG ?? '') as typeof config
   } catch {
     throw new Error('Codex delegated execution requires an auditable CODEX_CONFIG.')
   }
@@ -164,7 +169,12 @@ const createCodexDelegateExecution = (
   })
 }
 
-export { assertCodexScopeIsolated, createCodexDelegateExecution, getCodexNativeDelegationAudit }
+export {
+  assertCodexLaunchIsolated,
+  assertCodexScopeIsolated,
+  createCodexDelegateExecution,
+  getCodexNativeDelegationAudit
+}
 export type {
   CodexDelegateExecution,
   CodexDelegateExecutionOptions,

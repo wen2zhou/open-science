@@ -120,6 +120,9 @@ const assertPreparedScope = (
   ) {
     throw new Error('prepared execution scope is incomplete')
   }
+  if (input.workspaceCwd && scope.workspace.cwd !== input.workspaceCwd) {
+    throw new Error('prepared execution workspace does not match the staged Frame cwd')
+  }
 }
 
 const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): DelegateExecution => {

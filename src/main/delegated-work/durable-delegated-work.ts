@@ -206,6 +206,10 @@ type RootDelegatePermissionRequest = Readonly<{
 type RootDelegatePermissionResponse = DelegatePermissionResponse &
   Readonly<{ frameId: string; attemptId: string }>
 
+type RootDelegatePermissionEvent =
+  | Readonly<{ kind: 'requested'; request: RootDelegatePermissionRequest }>
+  | Readonly<{ kind: 'settled'; request: RootDelegatePermissionRequest }>
+
 type DurableChildSummary = Readonly<{
   frameId: string
   attemptId: string
@@ -599,6 +603,7 @@ const createDurableDelegatedWork = (options: {
   deliverToParent?: (delivery: ParentMessageDelivery) => Promise<void>
   artifactEvidence?: DelegatedArtifactEvidence
   reviewEvidence?: DelegatedReviewEvidence
+  onRootPermissionEvent?(event: RootDelegatePermissionEvent): void
   now?: () => number
   createId?: (kind: 'frame' | 'attempt' | 'message' | 'runtime') => string
   collectPollIntervalMs?: number
@@ -627,6 +632,36 @@ const createDurableDelegatedWork = (options: {
 
   const permissionKey = (frameId: string, attemptId: string, requestId: string): string =>
     `${frameId}\u0000${attemptId}\u0000${requestId}`
+  const permissionRequest = (
+    permission: RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>
+  ): RootDelegatePermissionRequest => {
+    const { execution: _execution, ...request } = permission
+    void _execution
+    return Object.freeze({ ...request, options: Object.freeze([...request.options]) })
+  }
+  const publishPermission = (
+    kind: RootDelegatePermissionEvent['kind'],
+    permission: RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>
+  ): void => options.onRootPermissionEvent?.({ kind, request: permissionRequest(permission) })
+  const setPermission = (
+    key: string,
+    permission: RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>
+  ): void => {
+    const isNew = !permissions.has(key)
+    permissions.set(key, permission)
+    if (isNew) publishPermission('requested', permission)
+  }
+  const deletePermission = (
+    key: string
+  ):
+    | (RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>)
+    | undefined => {
+    const permission = permissions.get(key)
+    if (!permission) return undefined
+    permissions.delete(key)
+    publishPermission('settled', permission)
+    return permission
+  }
   const takeAttemptPermissions = (
     frameId: string,
     attemptId: string
@@ -635,7 +670,7 @@ const createDurableDelegatedWork = (options: {
   > => {
     const prefix = `${frameId}\u0000${attemptId}\u0000`
     const taken = [...permissions.entries()].filter(([key]) => key.startsWith(prefix))
-    for (const [key] of taken) permissions.delete(key)
+    for (const [key] of taken) deletePermission(key)
     return taken
   }
   const clearAttemptPermissions = (frameId: string, attemptId: string): void => {
@@ -647,7 +682,7 @@ const createDurableDelegatedWork = (options: {
     >
   ): void => {
     for (const [key, permission] of taken) {
-      if (!permissions.has(key)) permissions.set(key, permission)
+      if (!permissions.has(key)) setPermission(key, permission)
     }
   }
   const riskScope = (options: readonly Readonly<{ kind: string }>[]): string => {
@@ -834,7 +869,7 @@ const createDurableDelegatedWork = (options: {
     let cancelRequested = false
     const completion = (async () => {
       try {
-        await options.workspace?.prepare(session, child.frameId, child.inputs)
+        const workspace = await options.workspace?.prepare(session, child.frameId, child.inputs)
         const context = await options.records.startRuntime(
           child.frameId,
           attempt.id,
@@ -874,6 +909,7 @@ const createDurableDelegatedWork = (options: {
           task,
           ...(continuation ? {} : { context: child.context }),
           inputs: child.inputs,
+          ...(workspace ? { workspaceCwd: workspace.cwd } : {}),
           ...(attempt.resolvedAgent.kind === 'specialist'
             ? { profile: attempt.resolvedAgent.profileId }
             : {}),
@@ -888,10 +924,10 @@ const createDurableDelegatedWork = (options: {
           if (event.kind !== 'permission') return
           const keyPrefix = permissionKey(child.frameId, attempt.id, event.requestId)
           if (!event.awaiting) {
-            permissions.delete(keyPrefix)
+            deletePermission(keyPrefix)
             return
           }
-          permissions.set(keyPrefix, {
+          setPermission(keyPrefix, {
             requestId: event.requestId,
             frameId: child.frameId,
             attemptId: attempt.id,
@@ -1142,7 +1178,13 @@ const createDurableDelegatedWork = (options: {
       )
     }
     const inputs = requests.flatMap((request) => request.inputs ?? [])
-    if (inputs.length > 0 && options.validateInput) {
+    if (inputs.length > 0) {
+      if (!options.validateInput) {
+        throw new DurableDelegatedWorkError(
+          'admission_rejection',
+          'delegation inputs require an immutable Upload or Artifact Version validator'
+        )
+      }
       const validInputs = await Promise.all(inputs.map(options.validateInput))
       if (validInputs.some((valid) => !valid)) {
         throw new DurableDelegatedWorkError(
@@ -1640,7 +1682,7 @@ const createDurableDelegatedWork = (options: {
           'permission request is no longer active for the current delegated Attempt'
         )
       }
-      permissions.delete(key)
+      deletePermission(key)
       try {
         await permission.execution.respondToPermission({
           requestId: response.requestId,
@@ -1654,7 +1696,7 @@ const createDurableDelegatedWork = (options: {
           currentAttempt(latest).id === response.attemptId &&
           currentAttempt(latest).status === 'running'
         ) {
-          permissions.set(key, permission)
+          setPermission(key, permission)
         }
         throw error
       }
@@ -1732,6 +1774,7 @@ export type {
   ReadOnlyAgentFrameDetail,
   RecoveryOutcome,
   RootDelegatePermissionRequest,
+  RootDelegatePermissionEvent,
   RootDelegatePermissionResponse,
   SpecialistDelegationProfile,
   SessionSubagentSummary,
