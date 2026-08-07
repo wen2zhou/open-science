@@ -13,6 +13,7 @@ import {
 import { RootDelegatePermissionOwner } from './delegated-work-permissions'
 import { DelegatedWorkProjectionOwner } from './delegated-work-projection'
 import { DelegatedWorkReadModel } from './delegated-work-read-model'
+import { currentAttempt, sameSession } from './delegated-work-record-invariants'
 import { DelegatedWorkAdmissionPolicy } from './delegated-work-admission'
 import { DurableDelegatedWorkError } from './durable-delegated-work-error'
 import { createInMemoryDelegatedWorkRecords } from './in-memory-delegated-work-records'
@@ -56,6 +57,7 @@ type ParentMessageDelivery = Readonly<{
   sourceFrameId: string
   sourceAttemptId: string
   targetFrameId: string
+  originMessageId: string
   text: string
   kind: 'info' | 'question'
 }>
@@ -223,12 +225,6 @@ type DurableDelegatedWork = Readonly<{
   recoverInterrupted(): Promise<RecoveryOutcome>
   deleteSession(session: SessionKey): Promise<void>
 }>
-
-const sameSession = (left: SessionKey, right: SessionKey): boolean =>
-  left.projectId === right.projectId && left.sessionId === right.sessionId
-
-const currentAttempt = (child: DurableChild): DurableAttempt =>
-  child.attempts[child.attempts.length - 1]
 
 const createDurableDelegatedWork = (options: {
   execution: DelegateExecution
@@ -732,6 +728,7 @@ const createDurableDelegatedWork = (options: {
               sourceFrameId: source.frameId,
               sourceAttemptId: sourceAttempt.id,
               targetFrameId: source.parentFrameId,
+              originMessageId: caller.originMessageId,
               text: pendingMessage.text,
               kind: pendingMessage.kind
             })
@@ -813,21 +810,22 @@ const createDurableDelegatedWork = (options: {
                 'the target Attempt is no longer available for delivery'
               )
             }
-            try {
-              await active.deliver(pendingMessage.text)
-              await options.records.markMessageDelivered(
-                child.frameId,
-                previous.id,
-                pendingMessage.id,
-                now()
+            // The Host result means durably queued. Provider delivery can only begin after the
+            // child's current ACP turn yields, so keep that boundary in the background and stamp the
+            // record only when RunningDelegateExecution confirms provider acceptance.
+            const deliveryFrameId = child.frameId
+            const deliveryAttemptId = previous.id
+            void active
+              .deliver(pendingMessage.text)
+              .then(() =>
+                options.records.markMessageDelivered(
+                  deliveryFrameId,
+                  deliveryAttemptId,
+                  pendingMessage.id,
+                  now()
+                )
               )
-            } catch (error) {
-              if (error instanceof DurableDelegatedWorkError) throw error
-              throw new DurableDelegatedWorkError(
-                'execution_failure',
-                `message delivery failed: ${error instanceof Error ? error.message : String(error)}`
-              )
-            }
+              .catch(() => undefined)
             return {
               kind: 'queued' as const,
               messageId: pendingMessage.id,

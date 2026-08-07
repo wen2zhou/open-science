@@ -186,6 +186,9 @@ type AcpRuntimeArtifactOptions = {
   getRpcConnection?: () => Promise<NotebookRpcConnection>
   issueRpcCapability?: (binding: ArtifactRpcCapabilityBinding) => string
   revokeRpcCapability?: (token: string) => Promise<void> | void
+  // When present, the caller already owns the execution Artifact turn. Runtime only provisions the
+  // MCP transport against this exact handoff and never opens a competing root turn.
+  currentRunFile?: string
   provenance?: Pick<
     import('../artifacts/provenance-repository').ArtifactProvenanceRepository,
     'listRunVersions' | 'writeAppGeneratedVersion'

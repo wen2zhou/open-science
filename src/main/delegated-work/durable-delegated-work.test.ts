@@ -406,10 +406,8 @@ describe('durable delegated work', () => {
         dispatched.children[0].frameId,
         'Additional context'
       )
-    ).rejects.toMatchObject({
-      code: 'execution_failure',
-      message: expect.stringContaining('provider unavailable')
-    })
+    ).resolves.toMatchObject({ kind: 'queued' })
+    await Promise.resolve()
     expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
       'deliveredAt'
     )
@@ -469,6 +467,47 @@ describe('durable delegated work', () => {
     })
   })
 
+  it('marks a queued Main-to-child message only after the execution delivery boundary resolves', async () => {
+    const baseExecution = createDeterministicDelegateExecution()
+    let acceptDelivery!: () => void
+    const deliveryBoundary = new Promise<void>((resolve) => {
+      acceptDelivery = resolve
+    })
+    const execution = {
+      ...baseExecution,
+      run(input: Parameters<typeof baseExecution.run>[0], slotId: string) {
+        const handle = baseExecution.run(input, slotId)
+        return { ...handle, sendMessage: async () => deliveryBoundary }
+      }
+    }
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    await expect.poll(() => baseExecution.controls()).toHaveLength(1)
+    baseExecution.controls()[0].accept()
+
+    await expect(
+      work.sendMessage(
+        { ...caller, toolInvocationId: 'delivery-boundary' },
+        dispatched.children[0].frameId,
+        'Accepted later'
+      )
+    ).resolves.toMatchObject({ kind: 'queued' })
+    expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
+      'deliveredAt'
+    )
+
+    acceptDelivery()
+
+    await expect
+      .poll(async () => (await records.snapshot()).records[0].pendingMessages[0].deliveredAt)
+      .toEqual(expect.any(Number))
+  })
+
   it('rejects late delivery after cancellation without fabricating deliveredAt', async () => {
     const baseExecution = createDeterministicDelegateExecution()
     let releaseDelivery!: () => void
@@ -503,10 +542,8 @@ describe('durable delegated work', () => {
     await work.stopChildren(caller, [dispatched.children[0].frameId])
     releaseDelivery()
 
-    await expect(delivery).rejects.toMatchObject({
-      code: 'conflict',
-      message: expect.stringContaining('not current and running')
-    })
+    await expect(delivery).resolves.toMatchObject({ kind: 'queued' })
+    await Promise.resolve()
     expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
       'deliveredAt'
     )

@@ -165,7 +165,16 @@ type NotebookRuntimeServiceCallbacks = {
 // service caches it for the RuntimeSession lifetime because the child captures it only when spawned;
 // release revokes that capability when the runtime session is shut down.
 type McpRpcConnection = NotebookSessionMcpRpcConnection
-type McpRpcConnectionBinding = { sessionId: string; projectId: string; agentFrameId: string }
+type McpRpcConnectionBinding = {
+  sessionId: string
+  projectId: string
+  agentFrameId: string
+  attemptId?: string
+}
+
+type InternalNotebookSessionRequest = NotebookSessionRequest & {
+  delegatedWorkAttemptId?: string
+}
 
 type NotebookRuntimeServiceOptions = {
   // Config root: source of the app-owned claude config dir (protected from the kernel). Never relocated.
@@ -371,12 +380,14 @@ class NotebookRuntimeService {
   private laneForRequest(request: NotebookSessionRequest): NotebookLaneIdentity {
     const projectName = request.projectName ?? this.options.projectName
     const context = request.provenanceContext
+    const delegatedWorkAttemptId = (request as InternalNotebookSessionRequest)
+      .delegatedWorkAttemptId
     if (context && context.agentFrameId === context.rootFrameId) {
       return createRootNotebookLane(projectName, request.sessionId, context.agentFrameId)
     }
     const frameId = context?.agentFrameId
     return frameId
-      ? createFrameNotebookLane(projectName, request.sessionId, frameId)
+      ? createFrameNotebookLane(projectName, request.sessionId, frameId, delegatedWorkAttemptId)
       : createRootNotebookLane(projectName, request.sessionId, `root-frame-${request.sessionId}`)
   }
 

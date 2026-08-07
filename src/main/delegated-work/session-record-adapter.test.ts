@@ -177,8 +177,11 @@ describe('Session delegated-work adapter', () => {
       'info'
     )
 
-    expect((await readSession()).runtimeContext?.delegatedWork?.records[0].pendingMessages).toEqual(
-      [
+    await expect
+      .poll(
+        async () => (await readSession()).runtimeContext?.delegatedWork?.records[0].pendingMessages
+      )
+      .toEqual([
         {
           id: 'pending-1',
           sourceFrameId: rootFrameId,
@@ -189,8 +192,7 @@ describe('Session delegated-work adapter', () => {
           createdAt: 50,
           deliveredAt: 50
         }
-      ]
-    )
+      ])
     expect(execution.control('attempt-1').deliveredMessages()).toEqual(['Additional evidence'])
   })
   it('starts an admitted array against revisioned Session records without sibling conflicts', async () => {

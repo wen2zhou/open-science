@@ -132,7 +132,10 @@ const composeAcpRuntimeBaseOwners = (options: AcpRuntimeOptions) => {
     ? (options.artifacts.runRegistry ?? new ArtifactRunRegistry())
     : undefined
   const artifactTurns =
-    options.artifacts && artifactRepository && artifactRunRegistry
+    options.artifacts &&
+    !options.artifacts.currentRunFile &&
+    artifactRepository &&
+    artifactRunRegistry
       ? new ArtifactTurnOwner({
           dataRoot: options.artifacts.dataRoot,
           repository: artifactRepository,

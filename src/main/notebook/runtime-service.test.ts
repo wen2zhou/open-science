@@ -1408,6 +1408,80 @@ describe('notebook runtime service', () => {
     expect(release).toHaveBeenCalledOnce()
   })
 
+  it('binds a delegated control connection to the current Attempt and rotates it on restart', async () => {
+    const root = await createStorageRoot()
+    const releaseFirst = vi.fn()
+    const releaseSecond = vi.fn()
+    const resolveConnection = vi.fn(
+      async (binding: {
+        sessionId: string
+        projectId: string
+        agentFrameId: string
+        attemptId?: string
+      }) => ({
+        endpoint: 'http://127.0.0.1:1/x',
+        token: `${binding.attemptId}-token`,
+        release: binding.attemptId === 'attempt-1' ? releaseFirst : releaseSecond
+      })
+    )
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: request.mcpRpcToken ?? '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    service.setMcpRpcConnectionResolver(resolveConnection)
+    const request = (attemptId: string): Parameters<typeof service.executeControl>[0] =>
+      ({
+        projectName: 'project-1',
+        sessionId: 'session-1',
+        workspaceCwd: root,
+        code: 'return 1',
+        delegatedWorkAttemptId: attemptId,
+        provenanceContext: {
+          rootFrameId: 'root-frame-session-1',
+          agentFrameId: 'child-frame',
+          messageBranchId: 'child-branch',
+          runtimeSegmentId: `runtime-${attemptId}`,
+          promptMessageId: `prompt-${attemptId}`
+        }
+      }) as Parameters<typeof service.executeControl>[0]
+
+    await expect(service.executeControl(request('attempt-1'))).resolves.toMatchObject({
+      stdout: 'attempt-1-token'
+    })
+    await service.shutdown(request('attempt-1'))
+    await expect(service.executeControl(request('attempt-2'))).resolves.toMatchObject({
+      stdout: 'attempt-2-token'
+    })
+
+    expect(resolveConnection).toHaveBeenNthCalledWith(1, {
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      agentFrameId: 'child-frame',
+      attemptId: 'attempt-1'
+    })
+    expect(resolveConnection).toHaveBeenNthCalledWith(2, {
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      agentFrameId: 'child-frame',
+      attemptId: 'attempt-2'
+    })
+    expect(releaseFirst).toHaveBeenCalledOnce()
+    expect(releaseSecond).not.toHaveBeenCalled()
+  })
+
   it('keeps control connections and cleanup isolated between runtime sessions', async () => {
     const root = await createStorageRoot()
     const releases = new Map([

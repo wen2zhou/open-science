@@ -40,6 +40,7 @@ type PreparedDelegateExecution = Readonly<{
   runtimeHome: string
   frameworkId: string
   capability: DelegateExecutionCapability
+  artifactCurrentRunFile?: string
   disposeResources?(): Promise<void> | void
 }>
 
@@ -189,7 +190,7 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     void acceptance.promise.catch(() => undefined)
     void terminal.promise.catch(() => undefined)
     const listeners = new Set<(event: DelegateExecutionEvent) => void>()
-    const pendingMessages: string[] = []
+    const pendingMessages: Array<Readonly<{ text: string; acceptance: Deferred<void> }>> = []
     const pendingPermissions = new Set<string>()
     let providerSessionId: string | undefined
     let runtime: AcpDelegateRuntime | undefined
@@ -202,6 +203,7 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     let terminalSettled = false
     let cancelRequested = false
     let currentResponse: string[] = []
+    let activeMessage: Readonly<{ text: string; acceptance: Deferred<void> }> | undefined
 
     const settleAccepted = (error?: unknown): void => {
       if (acceptedSettled) return
@@ -215,7 +217,9 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     }
     const callbacks: AcpDelegateExecutionCallbacks = {
       onProviderPromptAccepted(sessionId) {
-        if (writable && sessionId === providerSessionId) settleAccepted()
+        if (!writable || sessionId !== providerSessionId) return
+        if (activeMessage) activeMessage.acceptance.resolve()
+        else settleAccepted()
       },
       onEvent(event) {
         if (!writable || event.sessionId !== providerSessionId) return
@@ -241,6 +245,10 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     const revokeWrites = async (): Promise<void> => {
       writable = false
       pendingPermissions.clear()
+      const deliveryError = new Error('delegate execution ended before message delivery')
+      activeMessage?.acceptance.reject(deliveryError)
+      activeMessage = undefined
+      for (const pending of pendingMessages.splice(0)) pending.acceptance.reject(deliveryError)
       if (scope && !capabilityRevoked) {
         capabilityRevoked = true
         await scope.capability.revoke()
@@ -356,11 +364,14 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         while (!cancelRequested) {
           currentResponse = []
           const outcome = await runtime.sendAppContinuation(promptRequest(nextPrompt))
+          activeMessage?.acceptance.resolve()
+          activeMessage = undefined
           response = currentResponse.join('')
           if (cancelRequested || outcome.stopReason === 'cancelled') break
           const queued = pendingMessages.shift()
           if (queued === undefined) break
-          nextPrompt = queued
+          nextPrompt = queued.text
+          activeMessage = queued
         }
 
         await cleanup()
@@ -369,6 +380,9 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         else terminal.resolve({ status: 'completed', response })
       } catch (error) {
         settleAccepted(error)
+        activeMessage?.acceptance.reject(error)
+        activeMessage = undefined
+        for (const pending of pendingMessages.splice(0)) pending.acceptance.reject(error)
         let terminalError = error
         try {
           await cleanup()
@@ -391,7 +405,10 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         if (!writable || terminalSettled || cancelRequested) {
           throw new Error('delegate execution is no longer running')
         }
-        pendingMessages.push(message)
+        const pending = { text: message, acceptance: deferred<void>() }
+        void pending.acceptance.promise.catch(() => undefined)
+        pendingMessages.push(pending)
+        return pending.acceptance.promise
       },
       async respondToPermission(response: DelegatePermissionResponse) {
         if (!writable || !runtime || !pendingPermissions.delete(response.requestId)) {

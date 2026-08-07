@@ -1,4 +1,5 @@
 import { DurableDelegatedWorkError } from './durable-delegated-work-error'
+import { currentAttempt, sameSession } from './delegated-work-record-invariants'
 import { DelegatedWorkProjectionOwner } from './delegated-work-projection'
 import type {
   AuthenticatedDelegateCaller,
@@ -9,14 +10,6 @@ import type {
 } from './durable-delegated-work'
 
 type DurableChild = DurableSnapshot['records'][number]
-
-const sameSession = (
-  left: DurableSnapshot['session'],
-  right: DurableSnapshot['session']
-): boolean => left.projectId === right.projectId && left.sessionId === right.sessionId
-
-const currentAttempt = (child: DurableChild): DurableChild['attempts'][number] =>
-  child.attempts[child.attempts.length - 1]
 
 class DelegatedWorkReadModel {
   constructor(

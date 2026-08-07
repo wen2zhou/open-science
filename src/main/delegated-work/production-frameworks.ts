@@ -14,34 +14,35 @@ import type {
   AcpDelegateRuntime,
   PreparedDelegateExecution
 } from './acp-execution'
+import { createClaudeCodeDelegateExecution } from './claude-code-execution'
 import {
-  assertClaudeCodeDelegatedWorkAvailable,
-  createClaudeCodeDelegateExecution
-} from './claude-code-execution'
-import {
-  assertCodexLaunchIsolated,
   createCodexDelegateExecution,
   type CodexRuntimeIdentity,
   type PreparedCodexDelegateExecution
 } from './codex-execution'
 import type { DelegateExecution, DelegateExecutionInput } from './execution-port'
 import {
-  assertOpenCodeNativeDelegationDisabled,
   createOpenCodeDelegateExecution,
   type PreparedOpenCodeDelegateExecution
 } from './opencode-execution'
 
-type PreparedProductionFrameworkScope =
-  PreparedDelegateExecution | PreparedOpenCodeDelegateExecution | PreparedCodexDelegateExecution
+type PreparedClaudeCodeDelegateExecution = PreparedDelegateExecution &
+  Readonly<{ sessionSetup: SessionSetup }>
+
+type PreparedProductionFrameworkScope = PreparedDelegateExecution &
+  Partial<
+    Readonly<{
+      sessionSetup: SessionSetup
+      modelConfig: AgentModelConfig
+      spawn: AgentSpawnInput
+    }>
+  >
 
 type ProductionFrameworkCertification = Readonly<{
   frameworkId: AgentFrameworkId
-  sessionSetup?: SessionSetup
-  modelConfig?: AgentModelConfig
   codexRuntime?: CodexRuntimeIdentity
-  codexSpawn?: AgentSpawnInput
   codexFramework?: Pick<AgentFramework, 'spawn'>
-  assertProviderAvailable?(): Promise<void> | void
+  assertProviderAvailable(): Promise<void> | void
   prepare(
     input: DelegateExecutionInput
   ): Promise<PreparedProductionFrameworkScope> | PreparedProductionFrameworkScope
@@ -65,15 +66,6 @@ type ProductionDelegatedFrameworks = Readonly<{
   }>
 }>
 
-const requireOpenCodeConfig = (
-  certification: ProductionFrameworkCertification
-): AgentModelConfig => {
-  if (!certification.modelConfig) {
-    throw new Error('OpenCode delegated execution requires its authoritative model config.')
-  }
-  return certification.modelConfig
-}
-
 const requireCodexRuntime = (
   certification: ProductionFrameworkCertification
 ): CodexRuntimeIdentity =>
@@ -81,13 +73,6 @@ const requireCodexRuntime = (
     nativeVersion: CODEX_VERSION,
     adapterVersion: CODEX_ACP_VERSION
   }
-
-const requireCodexSpawn = (certification: ProductionFrameworkCertification): AgentSpawnInput => {
-  if (!certification.codexSpawn) {
-    throw new Error('Codex delegated execution requires its authoritative launch configuration.')
-  }
-  return certification.codexSpawn
-}
 
 const createProductionDelegatedFrameworks = (
   options: ProductionDelegatedFrameworksOptions
@@ -101,29 +86,25 @@ const createProductionDelegatedFrameworks = (
     }
 
     if (frameworkId === 'claude-code') {
-      assertClaudeCodeDelegatedWorkAvailable(certification.sessionSetup)
       const execution = createClaudeCodeDelegateExecution({
         capacity: options.capacity,
-        prepare: (input) => certification.prepare(input) as Promise<PreparedDelegateExecution>,
-        sessionSetup: () => certification.sessionSetup ?? {},
+        prepare: (input) =>
+          certification.prepare(input) as Promise<PreparedClaudeCodeDelegateExecution>,
+        sessionSetup: (scope) => (scope as PreparedClaudeCodeDelegateExecution).sessionSetup,
         createRuntime: (scope, callbacks) => certification.createRuntime(scope, callbacks)
       })
       return Object.freeze({
         frameworkId,
         execution,
         async assertAvailable() {
-          assertClaudeCodeDelegatedWorkAvailable(certification.sessionSetup)
-          await certification.assertProviderAvailable?.()
+          await certification.assertProviderAvailable()
         }
       })
     }
 
     if (frameworkId === 'opencode') {
-      const modelConfig = requireOpenCodeConfig(certification)
-      assertOpenCodeNativeDelegationDisabled(modelConfig)
       const execution = createOpenCodeDelegateExecution({
         capacity: options.capacity,
-        certificationConfig: () => modelConfig,
         prepare: (input) =>
           certification.prepare(input) as Promise<PreparedOpenCodeDelegateExecution>,
         createRuntime: (scope, callbacks) => certification.createRuntime(scope, callbacks)
@@ -132,26 +113,26 @@ const createProductionDelegatedFrameworks = (
         frameworkId,
         execution,
         async assertAvailable() {
-          assertOpenCodeNativeDelegationDisabled(modelConfig)
-          await certification.assertProviderAvailable?.()
+          await certification.assertProviderAvailable()
         }
       })
     }
 
     if (frameworkId === 'codex') {
       const codexRuntime = requireCodexRuntime(certification)
-      const codexSpawn = requireCodexSpawn(certification)
-      assertCodexLaunchIsolated(codexSpawn, codexSpawn.env.CODEX_HOME ?? '', codexRuntime)
       const codex = createCodexDelegateExecution({
         capacity: options.capacity,
         runtime: codexRuntime,
         framework: certification.codexFramework,
         prepare: (input) => certification.prepare(input) as Promise<PreparedCodexDelegateExecution>,
         createRuntime: (scope, callbacks, agentProcess) =>
-          certification.createRuntime(scope, callbacks, agentProcess),
+          certification.createRuntime(
+            scope as PreparedProductionFrameworkScope,
+            callbacks,
+            agentProcess
+          ),
         assertProviderAvailable: certification.assertProviderAvailable
       })
-      await codex.assertAvailable()
       return Object.freeze({
         frameworkId,
         execution: codex.execution,
@@ -166,6 +147,7 @@ const createProductionDelegatedFrameworks = (
 
 export { createProductionDelegatedFrameworks }
 export type {
+  PreparedClaudeCodeDelegateExecution,
   PreparedProductionFrameworkScope,
   ProductionDelegatedFrameworks,
   ProductionDelegatedFrameworksOptions,

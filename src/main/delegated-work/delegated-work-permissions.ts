@@ -1,4 +1,5 @@
 import { DurableDelegatedWorkError } from './durable-delegated-work-error'
+import { currentAttempt, sameSession } from './delegated-work-record-invariants'
 import type {
   DelegatedWorkDurableRecords,
   DurableSnapshot,
@@ -10,16 +11,6 @@ import type { DelegateExecutionEvent, RunningDelegateExecution } from './executi
 
 type Permission = RootDelegatePermissionRequest & Readonly<{ execution: RunningDelegateExecution }>
 type TakenPermissions = Array<[string, Permission]>
-
-const sameSession = (
-  left: DurableSnapshot['session'],
-  right: DurableSnapshot['session']
-): boolean => left.projectId === right.projectId && left.sessionId === right.sessionId
-
-const currentAttempt = (
-  child: DurableSnapshot['records'][number]
-): DurableSnapshot['records'][number]['attempts'][number] =>
-  child.attempts[child.attempts.length - 1]
 
 class RootDelegatePermissionOwner {
   private readonly permissions = new Map<string, Permission>()

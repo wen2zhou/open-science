@@ -272,6 +272,121 @@ delegatedWorkCertificationContract((options) => {
 })
 
 describe('ACP delegate execution production adapter', () => {
+  it('acknowledges a Main-to-child message only after the continuation reaches the provider', async () => {
+    const firstPrompt = deferred<PromptResponse>()
+    const secondPrompt = deferred<PromptResponse>()
+    const secondStarted = deferred<void>()
+    let callbacks!: AcpDelegateExecutionCallbacks
+    const execution = createAcpDelegateExecution({
+      capacity: 1,
+      prepare: async (input) => ({
+        executionId: input.attemptId,
+        provenance: {
+          projectId: input.session.projectId,
+          sessionId: input.session.sessionId,
+          agentFrameId: input.frameId,
+          runtimeSegmentId: input.runtimeSegmentId
+        },
+        workspace: { cwd: '/workspace/message-boundary' },
+        runtimeHome: '/runtime/message-boundary',
+        frameworkId: 'certified-test',
+        capability: { revoke: async () => undefined }
+      }),
+      assertFrameworkNativeDelegationDisabled: async () => undefined,
+      createRuntime: (_scope, runtimeCallbacks) => {
+        callbacks = runtimeCallbacks
+        let promptCount = 0
+        return {
+          createSession: async () => ({ sessionId: 'provider-message-boundary' }),
+          sendAppContinuation: async () => {
+            promptCount += 1
+            if (promptCount === 1) {
+              callbacks.onProviderPromptAccepted('provider-message-boundary')
+              return firstPrompt.promise
+            }
+            secondStarted.resolve()
+            return secondPrompt.promise
+          },
+          cancelPrompt: async () => undefined,
+          respondToPermission: async () => undefined,
+          deleteSession: async () => undefined,
+          shutdownForQuit: async () => ({ reaped: true })
+        }
+      }
+    })
+    const reservation = await execution.reserve(1)
+    const running = execution.run(makeInput('message-boundary'), reservation.slotIds[0])
+    await running.accepted
+
+    let delivered = false
+    const delivery = running.sendMessage('new parent context').then(() => {
+      delivered = true
+    })
+    await Promise.resolve()
+    expect(delivered).toBe(false)
+
+    firstPrompt.resolve({ stopReason: 'end_turn' })
+    await secondStarted.promise
+    expect(delivered).toBe(false)
+
+    callbacks.onProviderPromptAccepted('provider-message-boundary')
+    await delivery
+    expect(delivered).toBe(true)
+
+    secondPrompt.resolve({ stopReason: 'end_turn' })
+    await running.completion
+  })
+
+  it('rejects an unaccepted Main-to-child delivery when the continuation transport fails', async () => {
+    const firstPrompt = deferred<PromptResponse>()
+    let callbacks!: AcpDelegateExecutionCallbacks
+    const execution = createAcpDelegateExecution({
+      capacity: 1,
+      prepare: async (input) => ({
+        executionId: input.attemptId,
+        provenance: {
+          projectId: input.session.projectId,
+          sessionId: input.session.sessionId,
+          agentFrameId: input.frameId,
+          runtimeSegmentId: input.runtimeSegmentId
+        },
+        workspace: { cwd: '/workspace/message-failure' },
+        runtimeHome: '/runtime/message-failure',
+        frameworkId: 'certified-test',
+        capability: { revoke: async () => undefined }
+      }),
+      assertFrameworkNativeDelegationDisabled: async () => undefined,
+      createRuntime: (_scope, runtimeCallbacks) => {
+        callbacks = runtimeCallbacks
+        let promptCount = 0
+        return {
+          createSession: async () => ({ sessionId: 'provider-message-failure' }),
+          sendAppContinuation: async () => {
+            promptCount += 1
+            if (promptCount === 1) {
+              callbacks.onProviderPromptAccepted('provider-message-failure')
+              return firstPrompt.promise
+            }
+            throw new Error('continuation transport failed')
+          },
+          cancelPrompt: async () => undefined,
+          respondToPermission: async () => undefined,
+          deleteSession: async () => undefined,
+          shutdownForQuit: async () => ({ reaped: true })
+        }
+      }
+    })
+    const reservation = await execution.reserve(1)
+    const running = execution.run(makeInput('message-failure'), reservation.slotIds[0])
+    await running.accepted
+    const delivery = running.sendMessage('will not arrive')
+
+    firstPrompt.resolve({ stopReason: 'end_turn' })
+
+    await expect(delivery).rejects.toThrow('continuation transport failed')
+    await expect(running.completion).rejects.toThrow('continuation transport failed')
+  })
+
   it('settles cancellation requested while preparation is still in flight', async () => {
     const prepare = deferred<PreparedDelegateExecution>()
     const createRuntime = vi.fn()

@@ -4,12 +4,21 @@ import type { AcpPermissionRequest, AcpPermissionResponse } from '../../shared/a
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import type { AgentFrameworkId } from '../../shared/settings'
+import {
+  createDelegatedArtifactEvidence,
+  type DelegatedArtifactEvidenceOptions
+} from './delegated-artifact-evidence'
+import {
+  createDelegatedReviewEvidence,
+  type DelegatedReviewEvidenceOptions
+} from './delegated-review-evidence'
 import type { DelegatedWorkRecordCommands, SessionKey } from './session-records'
 import type { DelegateExecution } from './execution-port'
 import {
   createDurableDelegatedWork,
   DurableDelegatedWorkError,
   type DurableDelegatedWork,
+  type ParentMessageDelivery,
   type RootDelegatePermissionEvent,
   type RootDelegatePermissionRequest
 } from './durable-delegated-work'
@@ -27,6 +36,7 @@ type ProductionDelegatedWorkOptions = Readonly<{
   sessions: Readonly<{
     commands: DelegatedWorkRecordCommands
     readSession(key: SessionKey): Promise<PersistedChatSession | undefined>
+    findSessions?(sessionId: string): Promise<readonly PersistedChatSession[]>
   }>
   resolveInput(identity: string, session: SessionKey): Promise<ResolvedImmutableInput>
   frameworks: Readonly<{
@@ -35,6 +45,9 @@ type ProductionDelegatedWorkOptions = Readonly<{
   resolveSpecialist?(
     profileId: string
   ): Promise<SpecialistProfileView | undefined> | SpecialistProfileView | undefined
+  artifactEvidence?: DelegatedArtifactEvidenceOptions
+  reviewEvidence?: DelegatedReviewEvidenceOptions
+  parentMessages?: Readonly<{ deliver(delivery: ParentMessageDelivery): Promise<void> }>
 }>
 
 type RootDelegatedWorkEvent =
@@ -56,7 +69,7 @@ type RootDelegatedWorkControl = Readonly<{
 type ProductionDelegatedWorkComposition = Readonly<{
   host: Pick<
     DurableDelegatedWork,
-    'delegate' | 'children' | 'collect' | 'stopChildren' | 'sendMessage'
+    'delegate' | 'children' | 'collect' | 'stopChildren' | 'sendMessage' | 'readAgentFrame'
   >
   root: RootDelegatedWorkControl
 }>
@@ -82,6 +95,12 @@ const createProductionDelegatedWorkComposition = (
   >()
   const listeners = new Set<(event: RootDelegatedWorkEvent) => void>()
   const unavailableReasons = new Map<string, string>()
+  const artifactEvidence = options.artifactEvidence
+    ? createDelegatedArtifactEvidence(options.artifactEvidence)
+    : undefined
+  const reviewEvidence = options.reviewEvidence
+    ? createDelegatedReviewEvidence(options.reviewEvidence)
+    : undefined
 
   const publish = (event: RootDelegatedWorkEvent): void => {
     for (const listener of listeners) listener(event)
@@ -140,6 +159,9 @@ const createProductionDelegatedWorkComposition = (
       resolveSpecialist: options.resolveSpecialist,
       validateInput: (identity) => workspace.validateInput(identity, key),
       workspace,
+      artifactEvidence,
+      reviewEvidence,
+      deliverToParent: options.parentMessages?.deliver,
       onRootPermissionEvent: (event) => observePermission(key, event)
     })
     await work.recoverInterrupted()
@@ -201,6 +223,9 @@ const createProductionDelegatedWorkComposition = (
     },
     async sendMessage(caller, targetFrameId, message, kind) {
       return (await workFor(caller.session)).work.sendMessage(caller, targetFrameId, message, kind)
+    },
+    async readAgentFrame(session, frameId) {
+      return (await workFor(session)).work.readAgentFrame(session, frameId)
     }
   })
 
@@ -242,12 +267,35 @@ const createProductionDelegatedWorkComposition = (
     },
     async deleteSession(sessionId) {
       const scoped = await worksForSession(sessionId)
-      await Promise.all(scoped.map(({ key, work }) => work.deleteSession(key)))
+      const durableSessions = (await options.sessions.findSessions?.(sessionId)) ?? []
+      const keys = new Map<string, SessionKey>()
+      for (const { key } of scoped) keys.set(keyOf(key), key)
+      for (const session of durableSessions) {
+        if (session.id === sessionId) {
+          const key = { projectId: session.projectId, sessionId: session.id }
+          keys.set(keyOf(key), key)
+        }
+      }
+      const workDeletion = await Promise.allSettled(
+        scoped.map(({ key, work }) => work.deleteSession(key))
+      )
+      // Workspace deletion is an independent durable cleanup boundary. Repeat it for every Session
+      // identity so a restart (with an empty work cache) and a failed work teardown both remove the
+      // stable Frame subtree.
+      const workspaceDeletion = await Promise.allSettled(
+        [...keys.values()].map((key) => workspace.deleteSession(key))
+      )
       for (const { key } of scoped) works.delete(keyOf(key))
       for (const [requestId, pending] of permissions) {
         if (pending.key.sessionId === sessionId) permissions.delete(requestId)
       }
       unavailableReasons.delete(sessionId)
+      const failures = [...workDeletion, ...workspaceDeletion].flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : []
+      )
+      if (failures.length > 0) {
+        throw new AggregateError(failures, `Delegated Session cleanup failed: ${sessionId}`)
+      }
     }
   })
 

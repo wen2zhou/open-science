@@ -90,6 +90,7 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
   fixedBackend?: ResolvedAgentBackend
   runtimeCallbacks?: AcpRuntimeCallbacks
   delegatedNotebookConnection?: NotebookRpcConnection
+  delegatedArtifactCurrentRunFile?: string
   spawnAgent?: () => ChildProcessWithoutNullStreams
 }
 
@@ -121,6 +122,7 @@ const createAcpRuntime = ({
   fixedBackend,
   runtimeCallbacks,
   delegatedNotebookConnection,
+  delegatedArtifactCurrentRunFile,
   spawnAgent
 }: AcpRuntimeCompositionOptions): AcpRuntimeCoordinator => {
   const configRoot = resolveConfigRoot()
@@ -170,9 +172,8 @@ const createAcpRuntime = ({
             settingsService.codexSkillDescriptorsForIds(ids, codexHome),
           catalogForCodexHome: (codexHome) => settingsService.codexSkillCatalog(codexHome)
         },
-        ...(delegatedNotebookConnection
-          ? {}
-          : {
+        ...(!delegatedNotebookConnection || delegatedArtifactCurrentRunFile
+          ? {
               artifacts: {
                 configRoot,
                 dataRoot,
@@ -184,10 +185,15 @@ const createAcpRuntime = ({
                 getRpcConnection: () => notebookRpcServer.ensureStarted(),
                 issueRpcCapability: (binding) =>
                   notebookRpcServer.issueArtifactRunCapability(binding),
-                revokeRpcCapability: (token) => notebookRpcServer.revokeArtifactRunCapability(token)
-              },
-              uploads: { repository: uploadRepository }
-            }),
+                revokeRpcCapability: (token) =>
+                  notebookRpcServer.revokeArtifactRunCapability(token),
+                ...(delegatedArtifactCurrentRunFile
+                  ? { currentRunFile: delegatedArtifactCurrentRunFile }
+                  : {})
+              }
+            }
+          : {}),
+        ...(delegatedNotebookConnection ? {} : { uploads: { repository: uploadRepository } }),
         notebook: {
           projectName: DEFAULT_ARTIFACT_PROJECT_NAME,
           mcpEntryPath,

@@ -15,8 +15,8 @@ type OpenCodeDelegateExecutionOptions = Omit<
   'prepare' | 'assertFrameworkNativeDelegationDisabled'
 > &
   Readonly<{
-    /** Resolves the same production backend configuration used at admission. */
-    certificationConfig(): AgentModelConfig
+    /** Optional direct-adapter admission audit. Production audits through its fresh backend owner. */
+    certificationConfig?(): AgentModelConfig
     prepare(
       input: Parameters<AcpDelegateExecutionOptions['prepare']>[0]
     ): Promise<PreparedOpenCodeDelegateExecution> | PreparedOpenCodeDelegateExecution
@@ -110,13 +110,15 @@ const createOpenCodeDelegateExecution = (
 
   return Object.freeze({
     async reserve(count) {
-      try {
-        assertOpenCodeNativeDelegationDisabled(certificationConfig())
-      } catch {
-        throw new DelegateExecutionError(
-          'unsupported_framework',
-          nativeDelegationAuditFailureMessage('opencode')
-        )
+      if (certificationConfig) {
+        try {
+          assertOpenCodeNativeDelegationDisabled(certificationConfig())
+        } catch {
+          throw new DelegateExecutionError(
+            'unsupported_framework',
+            nativeDelegationAuditFailureMessage('opencode')
+          )
+        }
       }
       return execution.reserve(count)
     },

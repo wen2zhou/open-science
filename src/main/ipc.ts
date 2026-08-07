@@ -34,12 +34,14 @@ import { createAcpCreateSessionWorkflow } from './acp/create-session-workflow'
 import { createAcpHandlerWorkflows } from './acp/handler-workflows'
 import { createAcpTaskAgentPort } from './acp/task-agent-port'
 import { ArtifactCodeReconstructionRunner } from './acp/artifact-code-reconstruction-runner'
+import { ArtifactTurnOwner } from './acp/artifact-turn-owner'
 import { ArchiveCoordinator } from './archive/coordinator'
 import { ArtifactCodeReconstructionService } from './artifacts/code-reconstruction'
 import {
   createArtifactHandlers,
   createDefaultArtifactRepository,
-  registerArtifactIpcHandlers
+  registerArtifactIpcHandlers,
+  type ArtifactHandlers
 } from './artifacts/ipc'
 import { ArtifactProvenanceRepository } from './artifacts/provenance-repository'
 import { ProvenanceMessageSnapshotRepository } from './artifacts/provenance-message-snapshot'
@@ -124,7 +126,11 @@ import {
   createProjectHandlers,
   registerProjectIpcHandlers
 } from './projects/ipc'
-import { createReviewerCommandOwner, registerReviewerIpcHandlers } from './reviewer/ipc'
+import {
+  createReviewerCommandOwner,
+  registerReviewerIpcHandlers,
+  type ReviewerCommandOwner
+} from './reviewer/ipc'
 import {
   createDefaultReviewRepository,
   createDefaultSessionRepository,
@@ -450,6 +456,10 @@ const createApplicationModules = async (
   // reference here so a first-turn Session grant can recognize its live owner before the renderer's
   // asynchronous session persistence finishes.
   const runtimeRef: { current: ReturnType<typeof createAcpRuntime> | undefined } = {
+    current: undefined
+  }
+  const artifactHandlersRef: { current: ArtifactHandlers | undefined } = { current: undefined }
+  const reviewerCommandOwnerRef: { current: ReviewerCommandOwner | undefined } = {
     current: undefined
   }
   const notebookActivityRef: {
@@ -1039,11 +1049,22 @@ const createApplicationModules = async (
     notebookRpcServer: requireNotebookRpcServer,
     readSession: ({ projectId, sessionId }) => sessionRepository.loadSession(projectId, sessionId)
   })
+  const delegatedArtifactTurns = new ArtifactTurnOwner({
+    dataRoot: resolveDataRoot(),
+    repository: artifactRepository,
+    runRegistry: artifactRunRegistry,
+    issueRpcCapability: (binding) => requireNotebookRpcServer().issueArtifactRunCapability(binding),
+    revokeRpcCapability: (token) => requireNotebookRpcServer().revokeArtifactRunCapability(token),
+    provenance: artifactProvenanceRepository
+  })
   const delegatedWork = createProductionDelegatedWorkComposition({
     dataRoot: resolveDataRoot(),
     sessions: {
       commands: sessionPersistenceCoordinator,
-      readSession: ({ projectId, sessionId }) => sessionRepository.loadSession(projectId, sessionId)
+      readSession: ({ projectId, sessionId }) =>
+        sessionRepository.loadSession(projectId, sessionId),
+      findSessions: async (sessionId) =>
+        (await sessionRepository.loadAll()).sessions.filter((session) => session.id === sessionId)
     },
     async resolveInput(identity, session) {
       const artifact = parseArtifactVersionLocator(identity)
@@ -1068,7 +1089,82 @@ const createApplicationModules = async (
       return { path: resolved.path, filename: resolved.name }
     },
     frameworks: delegatedFrameworks,
-    resolveSpecialist: (profileId) => profileService.resolveRunnableById(profileId)
+    resolveSpecialist: (profileId) => profileService.resolveRunnableById(profileId),
+    artifactEvidence: {
+      turns: delegatedArtifactTurns,
+      artifactStorageSessionId: ({ sessionId }) => sessionId,
+      finalizePublication: async (publication, terminalMessageId) => {
+        const handlers = artifactHandlersRef.current
+        if (!handlers) throw new Error('Artifact finalization owner is not available.')
+        await handlers.finalizeRunArtifacts({
+          claimId: publication.artifactClaimId,
+          messageId: terminalMessageId
+        })
+      },
+      project: (scope) =>
+        scope.terminalMessageId
+          ? artifactRepository.listMessageFiles({
+              projectName: scope.session.projectId,
+              sessionId: scope.session.sessionId,
+              messageId: scope.terminalMessageId
+            })
+          : Promise.resolve([])
+    },
+    reviewEvidence: {
+      loadSession: ({ projectId, sessionId }) =>
+        sessionRepository.loadSession(projectId, sessionId),
+      reviews: {
+        run: (request) => {
+          const owner = reviewerCommandOwnerRef.current
+          if (!owner) return Promise.reject(new Error('Reviewer owner is not available.'))
+          return owner.run(request)
+        },
+        getForSession: (request) => {
+          const owner = reviewerCommandOwnerRef.current
+          if (!owner) return Promise.reject(new Error('Reviewer owner is not available.'))
+          return owner.getForSession(request)
+        }
+      }
+    },
+    parentMessages: {
+      async deliver(delivery) {
+        const runtime = runtimeRef.current
+        if (!runtime) throw new Error('ACP runtime is not available.')
+        const session = await sessionRepository.loadSession(
+          delivery.session.projectId,
+          delivery.session.sessionId
+        )
+        const graph = session?.conversationGraph
+        const rootFrame = graph?.frames.find((frame) => frame.id === delivery.targetFrameId)
+        const rootBranch = graph?.branches.find((branch) => branch.id === rootFrame?.activeBranchId)
+        if (
+          !session ||
+          session.id !== delivery.session.sessionId ||
+          session.projectId !== delivery.session.projectId ||
+          graph?.rootFrameId !== delivery.targetFrameId ||
+          !rootBranch ||
+          !graph.messages.some((message) => message.id === delivery.originMessageId)
+        ) {
+          throw new Error('Parent message durable root provenance is unavailable.')
+        }
+        await runtime.startContinuation({
+          sessionId: delivery.session.sessionId,
+          text:
+            `[Delegated ${delivery.kind} from Frame ${delivery.sourceFrameId}, ` +
+            `Attempt ${delivery.sourceAttemptId}]\n\n${delivery.text}`,
+          suppressUserMessage: true,
+          provenanceContext: {
+            promptMessageId: delivery.originMessageId,
+            rootFrameId: graph.rootFrameId,
+            agentFrameId: graph.rootFrameId,
+            messageBranchId: rootBranch.id,
+            messageBranchAncestry: [rootBranch.id],
+            messageAncestry: [delivery.originMessageId],
+            runtimeSegmentId: `delegated-message-${delivery.messageId}`
+          }
+        })
+      }
+    }
   })
   const notebookRpcServer = await modules.add(
     new NotebookLocalRpcServer(notebookLocalRpc, {
@@ -1110,8 +1206,13 @@ const createApplicationModules = async (
   // The RPC server needs the runtime service to dispatch to, and the runtime service needs the RPC
   // server's (lazily-started) connection for host.mcp() env injection — wire the second half here to
   // avoid a construction cycle.
-  notebookService.setMcpRpcConnectionResolver(({ sessionId, projectId, agentFrameId }) =>
-    notebookRpcServer.issueControlConnection(sessionId, projectId, agentFrameId)
+  notebookService.setMcpRpcConnectionResolver(({ sessionId, projectId, agentFrameId, attemptId }) =>
+    notebookRpcServer.issueControlConnection(
+      sessionId,
+      projectId,
+      agentFrameId,
+      attemptId ? { role: 'delegate', attemptId } : { role: 'main' }
+    )
   )
   // The renderer's approval card responds here; the broker resolves the held connector call.
   declareElectronAdapter('connector-approvals', () => {
@@ -1732,6 +1833,7 @@ const createApplicationModules = async (
     withSessionMutation: (projectId, sessionId, mutation) =>
       sessionPersistenceCoordinator.runSessionMutation(projectId, sessionId, mutation)
   })
+  artifactHandlersRef.current = artifactHandlers
   declareElectronAdapter('artifacts', () =>
     registerArtifactIpcHandlers(
       artifactRepository,
@@ -1820,6 +1922,7 @@ const createApplicationModules = async (
     ) => sessionPersistenceCoordinator.runSessionMutation(projectId, sessionId, mutation)
   }
   const reviewerCommandOwner = createReviewerCommandOwner(reviewerOptions)
+  reviewerCommandOwnerRef.current = reviewerCommandOwner
   declareElectronAdapter('reviewer', () => {
     registerReviewerIpcHandlers(reviewerOptions, reviewerCommandOwner)
   })

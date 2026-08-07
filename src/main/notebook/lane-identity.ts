@@ -11,6 +11,7 @@ export type NotebookLaneScope = Readonly<{
   sessionId: string
   agentFrameId: string
   kind: 'root' | 'frame'
+  attemptId?: string
 }>
 
 const scopes = new WeakMap<object, NotebookLaneScope>()
@@ -41,7 +42,8 @@ export const createRootNotebookLane = (
 export const createFrameNotebookLane = (
   projectId: string,
   sessionId: string,
-  agentFrameId: string
+  agentFrameId: string,
+  attemptId?: string
 ): NotebookLaneIdentity => {
   const safeSessionId = safeSegment('sessionId', sessionId)
   const safeAgentFrameId = safeSegment('agentFrameId', agentFrameId)
@@ -49,7 +51,8 @@ export const createFrameNotebookLane = (
     projectId: safeSegment('projectId', projectId),
     sessionId: safeSessionId,
     agentFrameId: safeAgentFrameId,
-    kind: safeAgentFrameId === `root-frame-${safeSessionId}` ? 'root' : 'frame'
+    kind: safeAgentFrameId === `root-frame-${safeSessionId}` ? 'root' : 'frame',
+    ...(attemptId ? { attemptId: safeSegment('attemptId', attemptId) } : {})
   })
 }
 
@@ -60,6 +63,6 @@ export const notebookLaneScope = (lane: NotebookLaneIdentity): NotebookLaneScope
 }
 
 export const notebookLaneKey = (lane: NotebookLaneIdentity): string => {
-  const { projectId, sessionId, agentFrameId } = notebookLaneScope(lane)
-  return JSON.stringify([projectId, sessionId, agentFrameId])
+  const { projectId, sessionId, agentFrameId, attemptId } = notebookLaneScope(lane)
+  return JSON.stringify([projectId, sessionId, agentFrameId, attemptId ?? null])
 }

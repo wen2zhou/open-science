@@ -583,7 +583,10 @@ class NotebookLocalRpcServer {
         projectName: scope.projectId,
         sessionId: scope.sessionId,
         workspaceCwd: scope.workspaceCwd,
-        provenanceContext: delegatedNotebook.provenanceContext
+        provenanceContext: delegatedNotebook.provenanceContext,
+        delegatedWorkAttemptId: scope.attemptId
+      } as Parameters<NotebookLocalRpcCapability['shutdown']>[0] & {
+        delegatedWorkAttemptId: string
       })
       revokePromise = Promise.all([drained, shutdown]).then(() => undefined)
       return revokePromise
@@ -943,7 +946,8 @@ class NotebookLocalRpcServer {
           sessionId: authenticatedBinding.sessionId,
           projectName: authenticatedBinding.projectId,
           workspaceCwd: authenticatedBinding.delegatedNotebook.workspaceCwd,
-          provenanceContext: authenticatedBinding.delegatedNotebook.provenanceContext
+          provenanceContext: authenticatedBinding.delegatedNotebook.provenanceContext,
+          delegatedWorkAttemptId: authenticatedBinding.delegatedNotebook.attemptId
         }
       }
       if (authenticatedBinding?.agentFrameId && isNotebookLocalRpcMethod(method)) {

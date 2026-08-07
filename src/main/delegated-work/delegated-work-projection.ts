@@ -8,17 +8,10 @@ import type {
   DurableSnapshot,
   ReadOnlyAgentFrameDetail
 } from './durable-delegated-work'
+import { currentAttempt, sameSession } from './delegated-work-record-invariants'
 
 type DurableChild = DurableSnapshot['records'][number]
 type DurableAttempt = DurableChild['attempts'][number]
-
-const sameSession = (
-  left: DurableSnapshot['session'],
-  right: DurableSnapshot['session']
-): boolean => left.projectId === right.projectId && left.sessionId === right.sessionId
-
-const currentAttempt = (child: DurableChild): DurableAttempt =>
-  child.attempts[child.attempts.length - 1]
 
 class DelegatedWorkProjectionOwner {
   constructor(

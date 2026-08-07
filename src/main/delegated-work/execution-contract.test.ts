@@ -69,7 +69,7 @@ const delegateExecutionContract = (create: () => DelegateExecutionContractHarnes
       })
       await driver.emit('attempt-2', { kind: 'message', text: 'second only' })
       await first.respondToPermission({ requestId: 'permission-1', optionId: 'allow' })
-      await first.sendMessage('first only')
+      const delivery = first.sendMessage('first only')
 
       expect(firstEvents).toEqual([
         {
@@ -93,6 +93,7 @@ const delegateExecutionContract = (create: () => DelegateExecutionContractHarnes
       await driver.accept('attempt-1')
       await driver.accept('attempt-2')
       await driver.complete('attempt-1', 'one')
+      await delivery
       await driver.complete('attempt-2', 'two')
       await Promise.all([first.completion, second.completion])
       expect(driver.deliveredMessages('attempt-1')).toEqual(['first only'])

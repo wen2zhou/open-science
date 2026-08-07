@@ -10,9 +10,13 @@ import type { AgentModelConfig, ResolvedAgentBackend, SessionSetup } from '../ag
 import { createAcpRuntime, type AcpRuntimeCompositionOptions } from '../acp/runtime-composition'
 import type { NotebookLocalRpcServer } from '../notebook/local-rpc-server'
 import type { NotebookRpcConnection } from '../notebook/mcp-server'
+import { CODEX_ACP_VERSION, CODEX_VERSION } from '../settings/managed-codex'
 import type { SessionKey } from './session-records'
 import type { AcpDelegateExecutionCallbacks, PreparedDelegateExecution } from './acp-execution'
+import { assertClaudeCodeDelegatedWorkAvailable } from './claude-code-execution'
+import { assertCodexLaunchIsolated } from './codex-execution'
 import type { DelegateExecutionInput } from './execution-port'
+import { assertOpenCodeNativeDelegationDisabled } from './opencode-execution'
 import {
   createProductionDelegatedFrameworks,
   type PreparedProductionFrameworkScope,
@@ -28,6 +32,7 @@ type ProductionFrameworkRuntimeOptions = Readonly<{
     | 'fixedBackend'
     | 'runtimeCallbacks'
     | 'delegatedNotebookConnection'
+    | 'delegatedArtifactCurrentRunFile'
     | 'spawnAgent'
     | 'delegatedWork'
   >
@@ -62,6 +67,36 @@ const sessionSetup = (backend: ResolvedAgentBackend): SessionSetup =>
     ...(backend.sessionOptions ? { sessionOptions: backend.sessionOptions } : {})
   })
 
+const assertResolvedBackendAvailable = (
+  frameworkId: PersistedChatSession['agentFrameworkId'],
+  backend: ResolvedAgentBackend,
+  runtimeHome: string
+): void => {
+  if (backend.framework.id !== frameworkId) {
+    throw new Error('Resolved delegated backend does not match the Session framework.')
+  }
+  if (frameworkId === 'claude-code') {
+    assertClaudeCodeDelegatedWorkAvailable(sessionSetup(backend))
+    return
+  }
+  if (frameworkId === 'opencode') {
+    assertOpenCodeNativeDelegationDisabled(openCodeModelConfig(backend))
+    return
+  }
+  if (frameworkId === 'codex') {
+    const spawn = {
+      executablePath: backend.executablePath,
+      args: [...(backend.args ?? [])],
+      env: { ...backend.env, HOME: runtimeHome, CODEX_HOME: runtimeHome },
+      proxyEnvironmentMode: backend.proxyEnvironmentMode
+    }
+    assertCodexLaunchIsolated(spawn, runtimeHome, {
+      nativeVersion: CODEX_VERSION,
+      adapterVersion: CODEX_ACP_VERSION
+    })
+  }
+}
+
 const createProductionDelegatedFrameworkRuntime = (
   options: ProductionFrameworkRuntimeOptions
 ): ProductionDelegatedFrameworks =>
@@ -70,27 +105,19 @@ const createProductionDelegatedFrameworkRuntime = (
     async certify(session) {
       const frameworkId = session.agentFrameworkId
       if (!frameworkId) throw new Error('Delegated Work Session has no framework identity.')
-      const auditBackend = await options.runtime.settingsService.resolveAgentBackend({
-        frameworkId
-      })
-      if (auditBackend.framework.id !== frameworkId) {
-        await releaseBackendLeases(auditBackend)
-        throw new Error('Resolved delegated backend does not match the Session framework.')
-      }
       const auditRuntimeHome = join(options.dataRoot, 'delegated-work', '.certification')
-      let auditModelConfig: AgentModelConfig | undefined
-      let auditSessionSetup: ReturnType<typeof sessionSetup> | undefined
-      try {
-        auditModelConfig =
-          frameworkId === 'opencode' ? openCodeModelConfig(auditBackend) : undefined
-        auditSessionSetup = frameworkId === 'claude-code' ? sessionSetup(auditBackend) : undefined
-      } finally {
-        await releaseBackendLeases(auditBackend)
+      const preparedAttempts = new Map<
+        string,
+        Readonly<{ backend: ResolvedAgentBackend; connection: NotebookRpcConnection }>
+      >()
+      const assertProviderAvailable = async (): Promise<void> => {
+        const backend = await options.runtime.settingsService.resolveAgentBackend({ frameworkId })
+        try {
+          assertResolvedBackendAvailable(frameworkId, backend, auditRuntimeHome)
+        } finally {
+          await releaseBackendLeases(backend)
+        }
       }
-
-      const backends = new Map<string, ResolvedAgentBackend>()
-      const connections = new Map<string, NotebookRpcConnection>()
-      const claimedBackends = new Set<string>()
       const prepare = async (
         input: DelegateExecutionInput
       ): Promise<PreparedProductionFrameworkScope> => {
@@ -138,8 +165,7 @@ const createProductionDelegatedFrameworkRuntime = (
               return attempt?.id === input.attemptId && attempt.status === 'running'
             }
           })
-          backends.set(input.attemptId, backend)
-          connections.set(input.attemptId, capability)
+          preparedAttempts.set(input.attemptId, { backend, connection: capability })
           const base: PreparedDelegateExecution = {
             executionId: input.attemptId,
             provenance: {
@@ -154,14 +180,18 @@ const createProductionDelegatedFrameworkRuntime = (
             runtimeHome,
             frameworkId,
             capability,
+            ...(input.artifactCurrentRunFile
+              ? { artifactCurrentRunFile: input.artifactCurrentRunFile }
+              : {}),
             async disposeResources() {
-              connections.delete(input.attemptId)
-              const unclaimed = !claimedBackends.delete(input.attemptId)
-              const owned = backends.get(input.attemptId)
-              backends.delete(input.attemptId)
-              if (unclaimed && owned) await releaseBackendLeases(owned)
+              const owned = preparedAttempts.get(input.attemptId)
+              preparedAttempts.delete(input.attemptId)
+              if (owned) await releaseBackendLeases(owned.backend)
               await rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
             }
+          }
+          if (frameworkId === 'claude-code') {
+            return { ...base, sessionSetup: sessionSetup(backend) }
           }
           if (frameworkId === 'opencode') {
             return { ...base, modelConfig: openCodeModelConfig(backend) }
@@ -181,10 +211,10 @@ const createProductionDelegatedFrameworkRuntime = (
               }
             }
           }
-          return base
+          const unsupported: never = frameworkId
+          throw new Error(`Unsupported delegated-work framework: ${String(unsupported)}`)
         } catch (error) {
-          backends.delete(input.attemptId)
-          connections.delete(input.attemptId)
+          preparedAttempts.delete(input.attemptId)
           await releaseBackendLeases(backend)
           await rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
           throw error
@@ -195,39 +225,30 @@ const createProductionDelegatedFrameworkRuntime = (
         callbacks: AcpDelegateExecutionCallbacks,
         agentProcess?: ChildProcessWithoutNullStreams
       ): ReturnType<typeof createAcpRuntime> => {
-        const backend = backends.get(scope.executionId)
-        const connection = connections.get(scope.executionId)
-        if (!backend || !connection) throw new Error('Delegated runtime scope is unavailable.')
-        const runtime = createAcpRuntime({
-          ...options.runtime,
-          notebookRpcServer: options.notebookRpcServer(),
-          fixedBackend: backend,
-          runtimeCallbacks: callbacks,
-          delegatedNotebookConnection: connection,
-          ...(agentProcess ? { spawnAgent: () => agentProcess } : {})
-        })
-        claimedBackends.add(scope.executionId)
-        return runtime
+        const owned = preparedAttempts.get(scope.executionId)
+        if (!owned) throw new Error('Delegated runtime scope is unavailable.')
+        preparedAttempts.delete(scope.executionId)
+        try {
+          return createAcpRuntime({
+            ...options.runtime,
+            notebookRpcServer: options.notebookRpcServer(),
+            fixedBackend: owned.backend,
+            runtimeCallbacks: callbacks,
+            delegatedNotebookConnection: owned.connection,
+            ...(scope.artifactCurrentRunFile
+              ? { delegatedArtifactCurrentRunFile: scope.artifactCurrentRunFile }
+              : {}),
+            ...(agentProcess ? { spawnAgent: () => agentProcess } : {})
+          })
+        } catch (error) {
+          void releaseBackendLeases(owned.backend)
+          throw error
+        }
       }
 
       return {
         frameworkId,
-        ...(auditSessionSetup ? { sessionSetup: auditSessionSetup } : {}),
-        ...(auditModelConfig ? { modelConfig: auditModelConfig } : {}),
-        ...(frameworkId === 'codex'
-          ? {
-              codexSpawn: {
-                executablePath: auditBackend.executablePath,
-                args: [...(auditBackend.args ?? [])],
-                env: {
-                  ...auditBackend.env,
-                  HOME: auditRuntimeHome,
-                  CODEX_HOME: auditRuntimeHome
-                },
-                proxyEnvironmentMode: auditBackend.proxyEnvironmentMode
-              }
-            }
-          : {}),
+        assertProviderAvailable,
         prepare,
         createRuntime
       }

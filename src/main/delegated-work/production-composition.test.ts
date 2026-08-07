@@ -1,4 +1,4 @@
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
@@ -6,15 +6,24 @@ import { afterEach, describe, expect, it } from 'vitest'
 import { createLinearConversationGraph } from '../../shared/conversation-graph'
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import { NotebookLocalRpcServer } from '../notebook/local-rpc-server'
+import { ArtifactTurnOwner } from '../acp/artifact-turn-owner'
+import { ArtifactRepository } from '../artifacts/repository'
+import { ArtifactRunRegistry } from '../artifacts/run-registry'
 import {
   SessionPersistenceCoordinator,
   type SessionFileIndex,
   type SessionMutationRepository
 } from '../session-persistence/coordinator'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
-import { createProductionDelegatedWorkComposition } from './production-composition'
+import {
+  createProductionDelegatedWorkComposition,
+  type ProductionDelegatedWorkOptions
+} from './production-composition'
 import type { AgentFrameworkId } from '../../shared/settings'
 import type { AuthenticatedDelegateCaller } from './durable-delegated-work'
+import type { ArtifactFile } from '../../shared/artifacts'
+import type { ReviewWithChecks } from '../../shared/reviewer'
+import type { DelegatedWorkRecordCommands } from './session-records'
 
 let root: string | undefined
 let server: NotebookLocalRpcServer | undefined
@@ -35,13 +44,18 @@ type CompositionHarness = Readonly<{
   session: PersistedChatSession
   durable(): PersistedChatSession
   caller: AuthenticatedDelegateCaller
+  commands: DelegatedWorkRecordCommands
 }>
 
 const createCompositionHarness = async (
   dataRoot: string,
   frameworkId: AgentFrameworkId,
   execution = createDeterministicDelegateExecution(),
-  admissionError?: Error
+  admissionError?: Error,
+  owners: Pick<
+    ProductionDelegatedWorkOptions,
+    'artifactEvidence' | 'reviewEvidence' | 'parentMessages'
+  > = {}
 ): Promise<CompositionHarness> => {
   const rootMessage = {
     id: `root-message-${frameworkId}`,
@@ -120,7 +134,8 @@ const createCompositionHarness = async (
           }
         }
       }
-    }
+    },
+    ...owners
   })
   return {
     composition,
@@ -134,7 +149,8 @@ const createCompositionHarness = async (
       role: 'main' as const,
       originMessageId: rootMessage.id,
       toolInvocationId: `call-${frameworkId}`
-    }
+    },
+    commands: coordinator
   }
 }
 
@@ -420,5 +436,264 @@ describe('production delegated-work composition', () => {
       harness.composition.host.delegate(unauthorized, { task: 'Must not start' })
     ).rejects.toMatchObject({ code: 'authorization' })
     expect(harness.composition.root.unavailableReasons?.()).toEqual({})
+  })
+
+  it('composes execution-scoped Artifact evidence into production result and Frame detail', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-artifacts-'))
+    const versionsByRun = new Map<string, ArtifactFile[]>()
+    const finalized: Array<{
+      attemptId: string
+      terminalMessageId: string
+      artifacts: readonly ArtifactFile[]
+    }> = []
+    const turns = new ArtifactTurnOwner({
+      dataRoot: root,
+      repository: new ArtifactRepository(root),
+      runRegistry: new ArtifactRunRegistry(),
+      now: () => 10,
+      provenance: {
+        listRunVersions: async ({ artifactRunId }) => versionsByRun.get(artifactRunId) ?? [],
+        writeAppGeneratedVersion: async (request) => {
+          const file: ArtifactFile = {
+            id: `version-${request.artifactRunId}`,
+            artifactId: `artifact-${request.agentFrameId}`,
+            versionId: `version-${request.artifactRunId}`,
+            versionNumber: 1,
+            checksum: request.content,
+            createdAt: '2026-08-07T00:00:00.000Z',
+            projectName: request.projectId,
+            sessionId: request.appSessionId,
+            runId: request.artifactRunId,
+            name: request.filename,
+            path: `/managed/${request.filename}`,
+            fileUrl: `file:///managed/${request.filename}`,
+            size: request.content.length,
+            mtimeMs: 1
+          }
+          versionsByRun.set(request.artifactRunId, [file])
+          return file
+        }
+      }
+    })
+    const execution = createDeterministicDelegateExecution()
+    const harness = await createCompositionHarness(root, 'codex', execution, undefined, {
+      artifactEvidence: {
+        turns,
+        artifactStorageSessionId: ({ sessionId }) => `artifact-${sessionId}`,
+        finalizePublication: async (publication, terminalMessageId, scope) => {
+          finalized.push({
+            attemptId: scope.attemptId,
+            terminalMessageId,
+            artifacts: publication.artifacts
+          })
+        },
+        project: async (scope) =>
+          finalized
+            .filter(
+              (entry) =>
+                entry.attemptId === scope.attemptId &&
+                entry.terminalMessageId === scope.terminalMessageId
+            )
+            .flatMap((entry) => entry.artifacts)
+      }
+    })
+
+    const pending = harness.composition.host.delegate(harness.caller, { task: 'Create evidence' })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    const control = execution.controls()[0]
+    expect(control.input.artifactCurrentRunFile).toMatch(
+      /\.pending\/executions\/artifact-run-10-1\.json$/
+    )
+    const turn = turns.handleForExecution(control.input.attemptId)
+    await turns.write(turn, { filename: 'evidence.md', content: 'exact child evidence' })
+    control.accept()
+    control.complete('Evidence ready')
+
+    const result = await pending
+    if (result.kind !== 'results') throw new Error('expected terminal delegated result')
+    expect(result).toMatchObject({
+      kind: 'results',
+      children: [
+        {
+          status: 'completed',
+          artifactsCreated: [
+            {
+              versionId: expect.stringMatching(/^version-artifact-run-/),
+              name: 'evidence.md',
+              checksum: 'exact child evidence'
+            }
+          ]
+        }
+      ]
+    })
+    const child = result.children[0]
+    await expect(
+      harness.composition.host.readAgentFrame(harness.caller.session, child.frameId)
+    ).resolves.toMatchObject({
+      messages: [
+        { role: 'user', content: 'Create evidence' },
+        {
+          role: 'assistant',
+          content: 'Evidence ready',
+          artifacts: [{ versionId: result.children[0].artifactsCreated[0].versionId }]
+        }
+      ]
+    })
+  })
+
+  it('projects production Reviewer rows only for the exact completed child scope', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-reviews-'))
+    const reviewState: {
+      harness?: CompositionHarness
+      persistedReview?: ReviewWithChecks
+    } = {}
+    const harness = await createCompositionHarness(root, 'claude-code', undefined, undefined, {
+      reviewEvidence: {
+        loadSession: async () => reviewState.harness?.durable(),
+        reviews: {
+          run: async () => ({ started: true }),
+          getForSession: async () =>
+            reviewState.persistedReview ? [reviewState.persistedReview] : []
+        }
+      }
+    })
+    reviewState.harness = harness
+    const pending = harness.composition.host.delegate(harness.caller, { task: 'Review this' })
+    await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+    const control = harness.execution.controls()[0]
+    control.accept()
+    control.complete('Reviewed answer')
+    const result = await pending
+    if (result.kind !== 'results') throw new Error('expected terminal delegated result')
+    const child = result.children[0]
+    const durableChild = harness.durable().runtimeContext!.delegatedWork!.records[0]
+    const branchId = harness
+      .durable()
+      .conversationGraph!.frames.find((frame) => frame.id === child.frameId)!.activeBranchId
+    reviewState.persistedReview = {
+      id: 'review-exact-child',
+      projectId: harness.session.projectId,
+      sessionId: harness.session.id,
+      turnMessageId: child.terminalMessageId!,
+      scope: {
+        turnMessageId: child.terminalMessageId!,
+        agentFrameId: child.frameId,
+        messageBranchId: branchId,
+        blocks: [],
+        artifactVersionIds: []
+      },
+      lifecycle: 'complete',
+      outcome: 'pass',
+      model: 'reviewer-model',
+      reviewerLog: [],
+      createdAt: 10,
+      updatedAt: 11,
+      checks: []
+    }
+
+    await expect(
+      harness.composition.host.readAgentFrame(harness.caller.session, child.frameId)
+    ).resolves.toMatchObject({
+      status: durableChild.attempts[0].status,
+      messages: [{ role: 'user' }, { role: 'assistant', reviews: [reviewState.persistedReview] }]
+    })
+  })
+
+  it('delivers a child message through the production parent owner before marking it delivered', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-parent-message-'))
+    const deliveries: unknown[] = []
+    const harness = await createCompositionHarness(root, 'opencode', undefined, undefined, {
+      parentMessages: {
+        deliver: async (delivery) => {
+          deliveries.push(delivery)
+        }
+      }
+    })
+    const receipt = await harness.composition.host.delegate(
+      harness.caller,
+      { task: 'Ask the parent' },
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+    harness.execution.controls()[0].accept()
+    const child = receipt.children[0]
+
+    await harness.composition.host.sendMessage(
+      {
+        ...harness.caller,
+        frameId: child.frameId,
+        attemptId: child.attemptId,
+        role: 'delegate',
+        toolInvocationId: 'child-parent-message'
+      },
+      'parent',
+      'Need the cohort definition',
+      'question'
+    )
+
+    expect(deliveries).toEqual([
+      expect.objectContaining({
+        session: harness.caller.session,
+        sourceFrameId: child.frameId,
+        sourceAttemptId: child.attemptId,
+        targetFrameId: harness.caller.frameId,
+        text: 'Need the cohort definition',
+        kind: 'question'
+      })
+    ])
+    expect(
+      harness.durable().runtimeContext?.delegatedWork?.records[0].pendingMessages[0]
+    ).toHaveProperty('deliveredAt')
+  })
+
+  it('deletes stable child workspaces after restart without relying on the in-memory work cache', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-restart-delete-'))
+    const harness = await createCompositionHarness(root, 'codex')
+    const receipt = await harness.composition.host.delegate(
+      harness.caller,
+      { task: 'Create a stable Frame workspace' },
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+    const control = harness.execution.controls()[0]
+    control.accept()
+    control.complete('Done')
+    await expect
+      .poll(() => harness.durable().runtimeContext?.delegatedWork?.records[0]?.attempts[0]?.status)
+      .toBe('completed')
+    const stableSessionWorkspace = join(
+      root,
+      'delegated-work',
+      harness.session.projectId,
+      harness.session.id
+    )
+    await expect(access(stableSessionWorkspace)).resolves.toBeUndefined()
+
+    const restarted = createProductionDelegatedWorkComposition({
+      dataRoot: root,
+      sessions: {
+        commands: harness.commands,
+        readSession: async () => harness.durable(),
+        findSessions: async (sessionId) =>
+          sessionId === harness.session.id ? [harness.durable()] : []
+      },
+      resolveInput: async () => {
+        throw new Error('no inputs')
+      },
+      frameworks: {
+        async forSession(current) {
+          return {
+            frameworkId: current.agentFrameworkId!,
+            execution: createDeterministicDelegateExecution(),
+            assertAvailable: async () => undefined
+          }
+        }
+      }
+    } as ProductionDelegatedWorkOptions)
+
+    expect(receipt.children[0]).toBeDefined()
+    await restarted.root.deleteSession(harness.session.id)
+
+    await expect(access(stableSessionWorkspace)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 })

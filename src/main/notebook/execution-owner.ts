@@ -66,7 +66,12 @@ class NotebookControlCompletionCapturedError extends Error {
   }
 }
 
-type McpRpcConnectionBinding = { sessionId: string; projectId: string; agentFrameId: string }
+type McpRpcConnectionBinding = {
+  sessionId: string
+  projectId: string
+  agentFrameId: string
+  attemptId?: string
+}
 type McpRpcConnectionResolver = (
   binding: McpRpcConnectionBinding
 ) => Promise<NotebookSessionMcpRpcConnection>

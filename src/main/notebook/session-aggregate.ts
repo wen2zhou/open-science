@@ -429,16 +429,19 @@ export class NotebookSessionAggregate<
           sessionId: string
           projectId: string
           agentFrameId: string
+          attemptId?: string
         }) => Promise<NotebookSessionMcpRpcConnection>)
       | undefined
   ): Promise<NotebookSessionMcpRpcConnection | undefined> {
     if (this.mcpRpcConnection) return this.mcpRpcConnection
     if (!resolver) return undefined
     try {
+      const lane = notebookLaneScope(this.lane)
       this.mcpRpcConnection = await resolver({
         sessionId: this.sessionId,
         projectId: this.projectName,
-        agentFrameId: notebookLaneScope(this.lane).agentFrameId
+        agentFrameId: lane.agentFrameId,
+        ...(lane.attemptId ? { attemptId: lane.attemptId } : {})
       })
       return this.mcpRpcConnection
     } catch {

@@ -1,4 +1,5 @@
 import { DurableDelegatedWorkError } from './durable-delegated-work-error'
+import { currentAttempt, sameSession } from './delegated-work-record-invariants'
 import type {
   DelegatedWorkDurableRecords,
   DurableMessage,
@@ -9,12 +10,6 @@ import type {
 type SessionKey = DurableSnapshot['session']
 type DurableChild = DurableSnapshot['records'][number]
 type DurableAttempt = DurableChild['attempts'][number]
-
-const sameSession = (left: SessionKey, right: SessionKey): boolean =>
-  left.projectId === right.projectId && left.sessionId === right.sessionId
-
-const currentAttempt = (child: DurableChild): DurableAttempt =>
-  child.attempts[child.attempts.length - 1]
 
 const createInMemoryDelegatedWorkRecords = (input: {
   session: SessionKey

@@ -74,30 +74,12 @@ describe('production delegated framework factory composition', () => {
         const frameworkId = durableSession.agentFrameworkId!
         return {
           frameworkId,
-          ...(frameworkId === 'claude-code'
-            ? {
-                sessionSetup: claudeCodeFramework.buildSessionSetup({
-                  systemPromptAppends: []
-                })
-              }
-            : {}),
-          ...(frameworkId === 'opencode' ? { modelConfig: safeOpenCodeConfig } : {}),
+          assertProviderAvailable: async () => undefined,
           ...(frameworkId === 'codex'
             ? {
                 codexRuntime: {
                   nativeVersion: CODEX_VERSION,
                   adapterVersion: CODEX_ACP_VERSION
-                },
-                codexSpawn: {
-                  executablePath: '/codex-acp.js',
-                  args: [],
-                  env: {
-                    HOME: '/audit/codex',
-                    CODEX_HOME: '/audit/codex',
-                    CODEX_CONFIG: JSON.stringify({
-                      features: { multi_agent: false, multi_agent_v2: false }
-                    })
-                  }
                 },
                 codexFramework: {
                   spawn: () => ({ kill: vi.fn() }) as unknown as ChildProcessWithoutNullStreams
@@ -120,24 +102,31 @@ describe('production delegated framework factory composition', () => {
               frameworkId,
               capability: { revoke: async () => undefined }
             }
-            return frameworkId === 'opencode'
-              ? { ...base, modelConfig: safeOpenCodeConfig }
-              : frameworkId === 'codex'
-                ? {
-                    ...base,
-                    spawn: {
-                      executablePath: '/codex-acp.js',
-                      args: [],
-                      env: {
-                        HOME: runtimeHome,
-                        CODEX_HOME: runtimeHome,
-                        CODEX_CONFIG: JSON.stringify({
-                          features: { multi_agent: false, multi_agent_v2: false }
-                        })
+            return frameworkId === 'claude-code'
+              ? {
+                  ...base,
+                  sessionSetup: claudeCodeFramework.buildSessionSetup({
+                    systemPromptAppends: []
+                  })
+                }
+              : frameworkId === 'opencode'
+                ? { ...base, modelConfig: safeOpenCodeConfig }
+                : frameworkId === 'codex'
+                  ? {
+                      ...base,
+                      spawn: {
+                        executablePath: '/codex-acp.js',
+                        args: [],
+                        env: {
+                          HOME: runtimeHome,
+                          CODEX_HOME: runtimeHome,
+                          CODEX_CONFIG: JSON.stringify({
+                            features: { multi_agent: false, multi_agent_v2: false }
+                          })
+                        }
                       }
                     }
-                  }
-                : base
+                  : base
           },
           createRuntime: (_scope, callbacks) => {
             runtimes.push(frameworkId)
@@ -170,27 +159,30 @@ describe('production delegated framework factory composition', () => {
     expect(runtimes).toEqual(['claude-code', 'opencode', 'codex'])
   })
 
-  it('rejects an unsafe framework audit before workspace preparation or runtime creation', async () => {
+  it('rejects an unsafe fresh framework audit before workspace preparation or runtime creation', async () => {
     const prepare = vi.fn()
     const createRuntime = vi.fn()
     const frameworks = createProductionDelegatedFrameworks({
       capacity: 1,
       certify: async () => ({
         frameworkId: 'opencode',
-        modelConfig: { env: {}, configFiles: [] },
+        assertProviderAvailable: async () => {
+          throw new Error('OpenCode native delegation is not disabled')
+        },
         prepare,
         createRuntime
       })
     })
 
-    await expect(frameworks.forSession(session('opencode'))).rejects.toThrow(
+    const selected = await frameworks.forSession(session('opencode'))
+    await expect(selected.assertAvailable()).rejects.toThrow(
       'OpenCode native delegation is not disabled'
     )
     expect(prepare).not.toHaveBeenCalled()
     expect(createRuntime).not.toHaveBeenCalled()
   })
 
-  it('rejects unsafe Codex launch configuration during pre-admission certification', async () => {
+  it('rejects unsafe Codex launch configuration during fresh pre-admission certification', async () => {
     const prepare = vi.fn()
     const createRuntime = vi.fn()
     const frameworks = createProductionDelegatedFrameworks({
@@ -201,23 +193,16 @@ describe('production delegated framework factory composition', () => {
           nativeVersion: CODEX_VERSION,
           adapterVersion: CODEX_ACP_VERSION
         },
-        codexSpawn: {
-          executablePath: '/codex-acp.js',
-          args: [],
-          env: {
-            HOME: '/audit/codex',
-            CODEX_HOME: '/audit/codex',
-            CODEX_CONFIG: JSON.stringify({
-              features: { multi_agent: true, multi_agent_v2: false }
-            })
-          }
+        assertProviderAvailable: async () => {
+          throw new Error('Codex native multi-agent features must be disabled')
         },
         prepare,
         createRuntime
       })
     })
 
-    await expect(frameworks.forSession(session('codex'))).rejects.toThrow(
+    const selected = await frameworks.forSession(session('codex'))
+    await expect(selected.assertAvailable()).rejects.toThrow(
       'native multi-agent features must be disabled'
     )
     expect(prepare).not.toHaveBeenCalled()
