@@ -1,6 +1,6 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -173,6 +173,42 @@ describe('ArtifactTurnOwner', () => {
     await owner.dispose(parallel)
     expect(owner.activeRunIds()).toEqual([])
     expect(() => owner.handleForExecution('parallel-execution')).toThrow(/No active Artifact turn/)
+  })
+
+  it('leaves no pending Artifact marker after empty Child Attempts in two Sessions are disposed', async () => {
+    const dataRoot = await createRoot()
+    const repository = new ArtifactRepository(dataRoot)
+    const owner = new ArtifactTurnOwner({
+      dataRoot,
+      repository,
+      runRegistry: new ArtifactRunRegistry(),
+      now: () => 100
+    })
+
+    const children = await Promise.all(
+      [1, 2].map((index) =>
+        owner.openExecution({
+          executionId: `child-attempt-${index}`,
+          appSessionId: `session-${index}`,
+          artifactStorageSessionId: `artifact-session-${index}`,
+          projectId: 'project-1',
+          agentName: 'Main Agent'
+        })
+      )
+    )
+    const handoffFiles = children.map((child) => owner.handoffFile(child))
+    expect(handoffFiles).toEqual([
+      expect.stringMatching(/artifact-session-1\/\.execution-handoffs\/artifact-run-100-1\.json$/),
+      expect.stringMatching(/artifact-session-2\/\.execution-handoffs\/artifact-run-100-2\.json$/)
+    ])
+
+    await Promise.all(children.map((child) => owner.dispose(child)))
+
+    for (const handoffFile of handoffFiles) {
+      await expect(readFile(handoffFile, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
+      await expect(readdir(dirname(handoffFile))).rejects.toMatchObject({ code: 'ENOENT' })
+    }
+    await expect(repository.listPendingRunPublications('project-1')).resolves.toEqual([])
   })
 
   it('isolates a root execution handoff and cleanup from a parallel child execution', async () => {

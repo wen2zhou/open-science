@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { mkdir, writeFile } from 'node:fs/promises'
+import { mkdir, rm, rmdir, writeFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
 import type { ArtifactFile } from '../../shared/artifacts'
@@ -387,7 +387,7 @@ class ArtifactTurnOwner {
       runId,
       currentRunFile: rootTransport
         ? sessionCurrentRunFile
-        : join(dirname(sessionCurrentRunFile), 'executions', `${runId}.json`),
+        : join(dirname(dirname(sessionCurrentRunFile)), '.execution-handoffs', `${runId}.json`),
       rootFrameId,
       agentFrameId: request.provenanceContext?.agentFrameId ?? rootFrameId,
       messageBranchId,
@@ -547,7 +547,23 @@ class ArtifactTurnOwner {
       const ownsHandoff = this.activeTurnsByHandoffFile.get(turn.currentRunFile) === turn
       try {
         if (ownsExecutionTurn && ownsHandoff) {
-          await this.writeHandoffFile(turn.currentRunFile, {})
+          if (turn.updatesSessionNotebookContext) {
+            await this.writeHandoffFile(turn.currentRunFile, {})
+          } else {
+            await rm(turn.currentRunFile, { force: true })
+            await rmdir(dirname(turn.currentRunFile)).catch((error: unknown) => {
+              if (
+                typeof error === 'object' &&
+                error !== null &&
+                'code' in error &&
+                ((error as { code?: unknown }).code === 'ENOENT' ||
+                  (error as { code?: unknown }).code === 'ENOTEMPTY')
+              ) {
+                return
+              }
+              throw error
+            })
+          }
         }
       } catch (error) {
         cleanupErrors.push(error)

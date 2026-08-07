@@ -7,6 +7,7 @@ import {
   realpath,
   rename,
   rm,
+  rmdir,
   stat,
   writeFile
 } from 'node:fs/promises'
@@ -42,6 +43,8 @@ const METADATA_DIR = '.metadata'
 const RUNS_DIR = '.runs'
 // Handoff file (directly under a session's .pending) naming the in-flight turn's run id for MCP writes.
 const CURRENT_RUN_FILE = 'current-run.json'
+const LEGACY_EXECUTION_HANDOFF_DIR = 'executions'
+const LEGACY_EXECUTION_HANDOFF_FILE_PATTERN = /^artifact-run-\d+-\d+\.json$/
 const SAFE_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 
 type ArtifactMetadata = {
@@ -457,7 +460,7 @@ class ArtifactRepository {
         if (!SAFE_SEGMENT_PATTERN.test(storageSessionId)) continue
         const pendingRoot = join(projectDirectory, storageSessionId, PENDING_DIR)
         for (const runId of await this.readSubdirectoryNames(pendingRoot)) {
-          if (!SAFE_SEGMENT_PATTERN.test(runId)) continue
+          if (!this.isPendingArtifactRunDirectory(runId)) continue
           const runDirectory = join(pendingRoot, runId)
           for (const entry of await this.readFileEntries(runDirectory)) {
             const routing = this.toPendingRouting(
@@ -941,7 +944,7 @@ class ArtifactRepository {
       // live set, so its leftover files correctly surface as orphans.
       const pendingDir = join(sessionDir, PENDING_DIR)
       for (const runId of await this.readSubdirectoryNames(pendingDir)) {
-        if (!SAFE_SEGMENT_PATTERN.test(runId)) continue
+        if (!this.isPendingArtifactRunDirectory(runId)) continue
         if (activeRunIds.has(runId)) continue
         const runDir = join(pendingDir, runId)
 
@@ -983,6 +986,10 @@ class ArtifactRepository {
         if (!SAFE_SEGMENT_PATTERN.test(sourceSessionId)) continue
         const pendingDirectory = join(projectDirectory, sourceSessionId, PENDING_DIR)
         for (const runId of await this.readSubdirectoryNames(pendingDirectory)) {
+          if (runId === LEGACY_EXECUTION_HANDOFF_DIR) {
+            await this.cleanupLegacyExecutionHandoffs(join(pendingDirectory, runId))
+            continue
+          }
           if (!SAFE_SEGMENT_PATTERN.test(runId)) continue
           const runDirectory = join(pendingDirectory, runId)
           const files = await this.readFileEntries(runDirectory)
@@ -1380,6 +1387,44 @@ class ArtifactRepository {
   // Builds the durable directory displayed under one completed assistant message.
   private getMessageDir(projectName: string, sessionId: string, messageId: string): string {
     return join(getProjectArtifactDir(this.storageRoot, projectName), sessionId, messageId)
+  }
+
+  private isPendingArtifactRunDirectory(name: string): boolean {
+    return name !== LEGACY_EXECUTION_HANDOFF_DIR && SAFE_SEGMENT_PATTERN.test(name)
+  }
+
+  private async cleanupLegacyExecutionHandoffs(directory: string): Promise<void> {
+    for (const entry of await this.readFileEntries(directory)) {
+      if (!LEGACY_EXECUTION_HANDOFF_FILE_PATTERN.test(entry.name)) continue
+      const path = join(directory, entry.name)
+      let value: unknown
+      try {
+        value = JSON.parse(await readFile(path, 'utf8'))
+      } catch {
+        continue
+      }
+      if (
+        typeof value !== 'object' ||
+        value === null ||
+        Array.isArray(value) ||
+        Object.keys(value).length !== 0
+      ) {
+        continue
+      }
+      await rm(path, { force: true })
+    }
+    await rmdir(directory).catch((error: unknown) => {
+      if (
+        typeof error === 'object' &&
+        error !== null &&
+        'code' in error &&
+        ((error as { code?: unknown }).code === 'ENOENT' ||
+          (error as { code?: unknown }).code === 'ENOTEMPTY')
+      ) {
+        return
+      }
+      throw error
+    })
   }
 
   // Reads only direct subdirectory names, returning an empty list when the directory does not exist.
