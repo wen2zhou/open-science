@@ -2,7 +2,7 @@
 
 Issue 26 closes the release-gate integration for the durable Session/Frame/Attempt model. This
 evidence applies to the final tree containing this document, rebased on `feat/subagent-delegation`
-at `fea8976f`. The renderer remains a projection of the durable graph; it does not own orchestration
+at `2e710bef`. The renderer remains a projection of the durable graph; it does not own orchestration
 state.
 
 ## Executable behavior evidence
@@ -17,7 +17,7 @@ ELECTRON: npx playwright test e2e/subagent-release-gate.spec.ts --workers=1
 
 | Behavior | Command or suite | Final result |
 | --- | --- | --- |
-| Session scope, validated origin binding, child isolation, stable detached identities, continuation, messaging, and parallel admission | `FULL` | PASS: 848 files passed, 14 skipped; 12,368 tests passed, 190 skipped. |
+| Session scope, validated origin binding, child isolation, stable detached identities, continuation, messaging, and parallel admission | `FULL` | PASS: 849 files passed, 14 skipped; 12,369 tests passed, 190 skipped. |
 | Detached child terminal mutations notify the renderer without changing committed-write success | `FOCUSED` | PASS, including late terminal publication and a throwing-listener regression. |
 | Exact provisional capability adoption rejects stale or mis-scoped owners | `FOCUSED` | PASS, including the negative stale-owner case. |
 | Delegated permission blocks only its Attempt and exposes risk scope | `FULL` and `ELECTRON` | PASS. The Electron journey observes a real ACP child permission and resolves it through the product UI. |
@@ -43,13 +43,16 @@ unsupported Specialist zero-admission messaging, and the independent persisted 2
 
 ## Final repository checks
 
-All commands were run from the release worktree after the final material edit:
+All commands were run from the repository root after the final material code edit at `2e710bef`.
+That edit only deepened internal delegated-work seams while preserving behavior, but it still
+triggered the full fallback gate set:
 
 | Command | Result |
 | --- | --- |
-| `npm test` | PASS: 848 files passed, 14 skipped; 12,368 tests passed, 190 skipped. |
+| `npm test` | PASS: 849 files passed, 14 skipped; 12,369 tests passed, 190 skipped. |
+| `FOCUSED` command above | PASS: 6 files and 118 tests. |
 | `npm run typecheck` | PASS: node and web TypeScript projects. |
-| `npm run lint` | PASS. |
+| `npm run lint` | PASS: 0 errors and 15 existing warnings. |
 | `npm run check:web-api-map` | PASS. |
 | `npm run check:cli-package` | PASS: package dry-run verification. |
 | `npm run build:e2e` | PASS. |
@@ -76,6 +79,10 @@ Stop-cascade depth, capability-adoption scope, refresh dependency stability, err
 and committed-notifier isolation gaps. Each was remediated and the reviewer verified the first five
 remediations with 44 passing targeted tests; the last two have dedicated regressions in the final
 targeted and full runs.
+
+The subsequent `2e710bef` deep-module refactor preserved those reviewed public contracts. Because
+it changed their internal seams, the repository-root full, focused, type, lint, packaging, build,
+Electron, and diff gates above were rerun rather than inheriting the earlier result.
 
 No feature-specific Axe run is present. Semantic names, Tooltip behavior, keyboard operation,
 focus-visible styling, and screen-reader status text have executable coverage, but automated Axe
