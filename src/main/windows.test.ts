@@ -1,4 +1,4 @@
-import { beforeEach, describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import {
   CLOSE_ACTIVE_PANE_CHANNEL,
@@ -71,6 +71,8 @@ class FakeBrowserWindow {
   hidden = false
   destroyed = false
   hideCalls = 0
+  showMock = vi.fn()
+  showInactiveMock = vi.fn()
   webContents = {
     setWindowOpenHandler: (handler: (details: WindowOpenDetails) => unknown): void => {
       windowOpenHandler = handler
@@ -109,6 +111,12 @@ class FakeBrowserWindow {
   }
 
   show(): void {
+    this.showMock()
+    this.hidden = false
+  }
+
+  showInactive(): void {
+    this.showInactiveMock()
     this.hidden = false
   }
 
@@ -963,5 +971,40 @@ describe('createMainWindow close handling', () => {
     close({ preventDefault: vi.fn(), defaultPrevented: false })
     expect(resolveCloseAction).toHaveBeenCalledTimes(1)
     resolveFn('cancel')
+  })
+})
+
+describe('main window ready-to-show', () => {
+  afterEach(() => {
+    delete process.env.OPEN_SCIENCE_E2E_NO_FOCUS
+  })
+
+  const triggerReadyToShow = (window: FakeBrowserWindow): void => {
+    const readyToShow = window.handlers.get('ready-to-show')?.[0] as (() => void) | undefined
+    expect(readyToShow).toBeDefined()
+    readyToShow!()
+  }
+
+  it('activates and focuses the window by default', () => {
+    createMainWindow()
+    const window = currentWindow!
+
+    triggerReadyToShow(window)
+
+    expect(window.showMock).toHaveBeenCalledTimes(1)
+    expect(window.showInactiveMock).not.toHaveBeenCalled()
+    expect(window.hidden).toBe(false)
+  })
+
+  it('surfaces the window without stealing focus under the e2e no-focus flag', () => {
+    process.env.OPEN_SCIENCE_E2E_NO_FOCUS = '1'
+    createMainWindow()
+    const window = currentWindow!
+
+    triggerReadyToShow(window)
+
+    expect(window.showInactiveMock).toHaveBeenCalledTimes(1)
+    expect(window.showMock).not.toHaveBeenCalled()
+    expect(window.hidden).toBe(false)
   })
 })

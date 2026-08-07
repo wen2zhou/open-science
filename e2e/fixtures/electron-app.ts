@@ -113,6 +113,10 @@ const launchEnvironment = (
   }
 
   environment.OPEN_SCIENCE_STORAGE_ROOT = storageRoot
+  // E2E relaunches the app per test (and again after fake-agent setup). Having main surface each
+  // window with showInactive() instead of show() keeps those windows off the foreground so a local
+  // run does not steal focus or pop over the host's work. See src/main/windows.ts ready-to-show.
+  environment.OPEN_SCIENCE_E2E_NO_FOCUS = '1'
   if (environment.OPEN_SCIENCE_E2E_EXECUTABLE) {
     environment.OPEN_SCIENCE_E2E_STORAGE_ROOT = storageRoot
   }

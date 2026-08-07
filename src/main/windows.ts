@@ -73,7 +73,16 @@ const createAppWindow = (options: BrowserWindowConstructorOptions): BrowserWindo
   })
 
   window.on('ready-to-show', () => {
-    window.show()
+    // E2E relaunches the app on every test (per-test fixture plus a restart after fake-agent setup).
+    // show() also activates and focuses the window, so each launch pops it to the front and steals
+    // keyboard focus from the host during local runs. showInactive() surfaces the window for
+    // Playwright without activating it, keeping tests observable without interrupting the developer.
+    // The window stays visible (isVisible() remains true), so window-system specs are unaffected.
+    if (process.env.OPEN_SCIENCE_E2E_NO_FOCUS === '1') {
+      window.showInactive()
+    } else {
+      window.show()
+    }
   })
 
   window.webContents.setWindowOpenHandler((details) => {
