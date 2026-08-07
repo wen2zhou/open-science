@@ -1891,6 +1891,7 @@ const useWorkspaceAgentRuntime = (): {
   permissionProfiles: Record<string, SessionPermissionProfileState>
   permissionGrants: Record<string, AcpPermissionGrant[]>
   contextUsageBySession: Record<string, AcpContextUsage>
+  delegatedWorkUnavailableBySession: Record<string, string>
   promptInFlightSessionIds: string[]
   sendPreparationInFlightSessionIds: string[]
   nativeContextCompactionSessionIds: string[]
@@ -2022,6 +2023,30 @@ const useWorkspaceAgentRuntime = (): {
   useEffect(() => {
     syncWorkspaceContextUsage(runtime.state.sessionIds, runtime.state.contextUsageBySession)
   }, [runtime.state.sessionIds, runtime.state.contextUsageBySession])
+
+  // Delegated-work events mutate the main-process Session projection directly. Refresh those
+  // persistence-owned records on the matching runtime signal so running, permission, and terminal
+  // child state appears without reopening the conversation.
+  const delegatedWorkSessionKey = runtime.state.sessionIds.join('\u0000')
+  useEffect(() => {
+    if (runtime.state.delegatedWorkRevision === undefined) return
+    let cancelled = false
+    void window.api.sessions
+      .loadAll()
+      .then(({ sessions }) => {
+        if (cancelled) return
+        const liveSessionIds = new Set(delegatedWorkSessionKey.split('\u0000').filter(Boolean))
+        for (const session of sessions) {
+          if (liveSessionIds.has(session.id) && session.runtimeContext?.delegatedWork) {
+            useSessionStore.getState().upsertPersistedSession(session)
+          }
+        }
+      })
+      .catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [delegatedWorkSessionKey, runtime.state.delegatedWorkRevision])
 
   // An abnormal live drop (agent crash / gateway drop) surfaces as a transition into 'closed'/'error'
   // while a session is still running. Flag those sessions so the Resume banner appears.
@@ -2191,6 +2216,7 @@ const useWorkspaceAgentRuntime = (): {
     permissionProfiles: runtime.state.permissionProfiles,
     permissionGrants: runtime.state.permissionGrants,
     contextUsageBySession: runtime.state.contextUsageBySession,
+    delegatedWorkUnavailableBySession: runtime.state.delegatedWorkUnavailableBySession ?? {},
     promptInFlightSessionIds: runtime.state.promptInFlightSessionIds,
     sendPreparationInFlightSessionIds,
     nativeContextCompactionSessionIds: runtime.state.nativeContextCompactionSessionIds ?? [],

@@ -18,6 +18,7 @@ type SessionRecordAdapterOptions = Readonly<{
   readSession(key: SessionKey): Promise<PersistedChatSession | undefined>
   frameworkId: Parameters<DelegatedWorkRecordCommands['startAttemptRuntime']>[1]['frameworkId']
   createId?: (kind: 'branch') => string
+  onRecordsChanged?: () => void
 }>
 
 const createSessionDelegatedWorkRecords = (
@@ -38,7 +39,14 @@ const createSessionDelegatedWorkRecords = (
     const pending = mutationTail.then(async () => {
       for (let retries = 0; ; retries += 1) {
         try {
-          return await operation(await revision())
+          const result = await operation(await revision())
+          try {
+            options.onRecordsChanged?.()
+          } catch {
+            // The mutation is already durable. Projection notification failures must not make the
+            // caller observe a false write failure or retry the committed operation.
+          }
+          return result
         } catch (error) {
           if (!(error instanceof SessionRuntimeContextRevisionConflictError) || retries >= 2) {
             throw error

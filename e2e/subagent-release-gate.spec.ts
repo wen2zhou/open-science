@@ -1,11 +1,19 @@
 import { expect } from '@playwright/test'
 import type { Page } from 'playwright'
 
-import { createProject } from './certification/helpers'
+import { createProject, sendPrompt } from './certification/helpers'
 import { test } from './fixtures/electron-app'
 
 const ROOT_PROMPT = 'Coordinate the release-gate delegates.'
 const CHILD_COUNT = 24
+const TERMINAL_PROMPT = 'Run the production delegation terminal journey.'
+const PERMISSION_PROMPT = 'Run the production delegated permission journey.'
+const STOP_PROMPT = 'Run the production delegation Stop journey.'
+const UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
+const TERMINAL_CHILD = 'Complete the certified delegated terminal fixture.'
+const PERMISSION_CHILD = 'Request the delegated fixture permission.'
+const STOP_CHILD = 'Wait until the Main Agent stops delegated fixture A.'
+const STOP_CHILD_TWO = 'Wait until the Main Agent stops delegated fixture B.'
 
 const seedDelegatedWork = async (page: Page, projectId: string): Promise<void> => {
   await page.evaluate(
@@ -170,7 +178,91 @@ const seedDelegatedWork = async (page: Page, projectId: string): Promise<void> =
   )
 }
 
-test('ships one durable, scalable, keyboard-operable Subagent release surface', async ({ app }) => {
+test('projects real production-composed delegation, permission, and Stop lifecycle', async ({
+  app
+}) => {
+  test.setTimeout(180_000)
+  let page = await app.completeOnboarding()
+  page = await app.configureFakeAgent()
+  await createProject(page, 'Production delegation release gate')
+
+  await sendPrompt(
+    page,
+    TERMINAL_PROMPT,
+    'Production delegation reached a terminal result.',
+    120_000
+  )
+  const summary = page.getByRole('region', { name: 'Subagent summary' })
+  await expect(summary).toHaveCount(1)
+  await expect(summary.getByRole('button', { name: `${TERMINAL_CHILD}, completed` })).toBeVisible()
+
+  const composer = page.getByRole('textbox', { name: 'Ask anything' })
+  await composer.fill(PERMISSION_PROMPT)
+  await page.getByRole('button', { name: 'Send message' }).click()
+  const permissionCard = page.getByTestId('permission-card')
+  await expect(permissionCard).toContainText('Read delegated evidence', {
+    timeout: 120_000
+  })
+  await expect(
+    summary.getByRole('button', {
+      name: `${PERMISSION_CHILD}, running, waiting for permission`
+    })
+  ).toBeVisible()
+  await page.getByRole('button', { name: /^Allow/ }).click()
+  await expect(page.getByText('Production delegated permission journey completed.')).toBeVisible({
+    timeout: 120_000
+  })
+  await expect(
+    summary.getByRole('button', { name: `${PERMISSION_CHILD}, completed` })
+  ).toBeVisible()
+
+  await composer.fill(STOP_PROMPT)
+  await page.getByRole('button', { name: 'Send message' }).click()
+  await expect(page.getByText('Production delegation is running.')).toBeVisible({
+    timeout: 120_000
+  })
+  await expect(summary.getByRole('button', { name: `${STOP_CHILD}, running` })).toBeVisible()
+  await expect(summary.getByRole('button', { name: `${STOP_CHILD_TWO}, running` })).toBeVisible()
+  await page.getByRole('button', { name: 'Cancel run' }).click()
+  await expect(summary.getByRole('button', { name: `${STOP_CHILD}, cancelled` })).toBeVisible({
+    timeout: 120_000
+  })
+  await expect(summary.getByRole('button', { name: `${STOP_CHILD_TWO}, cancelled` })).toBeVisible({
+    timeout: 120_000
+  })
+})
+
+test('rejects an unsupported Specialist configuration before child admission', async ({ app }) => {
+  test.setTimeout(120_000)
+  let page = await app.completeOnboarding()
+  page = await app.configureFakeAgent()
+  await createProject(page, 'Unsupported delegation release gate')
+  await sendPrompt(
+    page,
+    UNAVAILABLE_PROMPT,
+    'Subagents are unavailable for this session configuration.',
+    120_000
+  )
+  const unavailableNotice = page
+    .getByRole('status')
+    .filter({ hasText: 'Subagents unavailable for this configuration' })
+  await expect(unavailableNotice).toBeVisible()
+  await expect(unavailableNotice.getByRole('button', { name: 'Open Settings' })).toBeVisible()
+  const admittedChildren = await page.evaluate(async () => {
+    const loaded = await window.api.sessions.loadAll()
+    const session = loaded.sessions[0]
+    return {
+      records: session?.runtimeContext?.delegatedWork?.records.length ?? 0,
+      frames:
+        session?.conversationGraph?.frames.filter((frame) => frame.kind === 'delegate').length ?? 0
+    }
+  })
+  expect(admittedChildren).toEqual({ records: 0, frames: 0 })
+})
+
+test('ships one durable, scalable, keyboard-operable persisted Subagent surface', async ({
+  app
+}) => {
   let page = await app.completeOnboarding()
   page = await app.configureFakeAgent()
   const projectId = await createProject(page, 'Subagent release gate')

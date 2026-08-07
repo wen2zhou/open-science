@@ -10,8 +10,18 @@ const PERMISSION_PROMPT = 'Request fixture permission.'
 const PROVIDER_BRIDGE_PROMPT = 'Verify the provider bridge.'
 const NOTEBOOK_LIFECYCLE_PROMPT = 'Verify the notebook lifecycle.'
 const ARTIFACT_PROVENANCE_PROMPT = 'Create a provenance artifact.'
+const DELEGATION_TERMINAL_PROMPT = 'Run the production delegation terminal journey.'
+const DELEGATION_PERMISSION_PROMPT = 'Run the production delegated permission journey.'
+const DELEGATION_STOP_PROMPT = 'Run the production delegation Stop journey.'
+const DELEGATION_UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
+const DELEGATED_TERMINAL_TASK = 'Complete the certified delegated terminal fixture.'
+const DELEGATED_PERMISSION_TASK = 'Request the delegated fixture permission.'
+const DELEGATED_WAIT_MARKER = 'Wait until the Main Agent stops'
+const DELEGATED_WAIT_TASK = `${DELEGATED_WAIT_MARKER} delegated fixture A.`
+const DELEGATED_WAIT_TASK_TWO = `${DELEGATED_WAIT_MARKER} delegated fixture B.`
 
 const sessionRoutes = new Map()
+const sessionCancellationResolvers = new Map()
 
 const stringEnvironment = (overrides = []) => {
   const environment = Object.fromEntries(
@@ -57,6 +67,31 @@ const withMcpClient = async (sessionId, serverName, operation) => {
     await client.close()
   }
 }
+
+const executeControlCode = async (sessionId, code) =>
+  withMcpClient(sessionId, 'open-science-notebook', async (client) =>
+    toolResult(
+      'repl_execute',
+      await client.callTool({
+        name: 'repl_execute',
+        arguments: { code, timeoutMs: 120_000 }
+      })
+    )
+  )
+
+const runProductionDelegationRequest = async (sessionId, request, wait) =>
+  executeControlCode(
+    sessionId,
+    `return await host.delegate(${JSON.stringify(request)}, { wait: ${String(wait)} })`
+  )
+
+const runProductionDelegation = async (sessionId, task, wait) =>
+  runProductionDelegationRequest(sessionId, { task }, wait)
+
+const waitForSessionCancellation = (sessionId) =>
+  new Promise((resolve) => {
+    sessionCancellationResolvers.set(sessionId, resolve)
+  })
 
 const verifyProviderBridge = () => {
   const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? '{}')
@@ -176,6 +211,29 @@ if (process.argv.includes('--version')) {
         .map((content) => (content.type === 'text' ? content.text : ''))
         .join('')
 
+      if (prompt.includes(DELEGATED_WAIT_MARKER)) {
+        await waitForSessionCancellation(context.params.sessionId)
+        return { stopReason: 'cancelled' }
+      }
+
+      if (prompt.includes(DELEGATION_STOP_PROMPT)) {
+        await runProductionDelegationRequest(
+          context.params.sessionId,
+          [{ task: DELEGATED_WAIT_TASK }, { task: DELEGATED_WAIT_TASK_TWO }],
+          false
+        )
+        await context.client.notify(acp.methods.client.session.update, {
+          sessionId: context.params.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            messageId: `e2e-message-${nextMessageId++}`,
+            content: { type: 'text', text: 'Production delegation is running.' }
+          }
+        })
+        await waitForSessionCancellation(context.params.sessionId)
+        return { stopReason: 'cancelled' }
+      }
+
       let reply = 'Deterministic reply: Summarize the deterministic fixture.'
       try {
         if (prompt.includes(PROVIDER_BRIDGE_PROMPT)) {
@@ -184,6 +242,48 @@ if (process.argv.includes('--version')) {
           reply = await verifyNotebookLifecycle(context.params.sessionId)
         } else if (prompt.includes(ARTIFACT_PROVENANCE_PROMPT)) {
           reply = await createProvenanceArtifact(context.params.sessionId)
+        } else if (prompt.includes(DELEGATION_TERMINAL_PROMPT)) {
+          const delegated = await runProductionDelegation(
+            context.params.sessionId,
+            DELEGATED_TERMINAL_TASK,
+            true
+          )
+          if (delegated.status !== 'completed') {
+            throw new Error(`Production delegation failed: ${JSON.stringify(delegated)}`)
+          }
+          reply = 'Production delegation reached a terminal result.'
+        } else if (prompt.includes(DELEGATION_PERMISSION_PROMPT)) {
+          await runProductionDelegation(context.params.sessionId, DELEGATED_PERMISSION_TASK, true)
+          reply = 'Production delegated permission journey completed.'
+        } else if (prompt.includes(DELEGATION_UNAVAILABLE_PROMPT)) {
+          const delegated = await executeControlCode(
+            context.params.sessionId,
+            `return await host.delegate({ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)}, profile: "missing-e2e-specialist" }, { wait: true })`
+          )
+          if (delegated.status !== 'failed') {
+            throw new Error(`Unsupported delegation was admitted: ${JSON.stringify(delegated)}`)
+          }
+          reply = 'Subagents are unavailable for this session configuration.'
+        } else if (prompt.includes(DELEGATED_PERMISSION_TASK)) {
+          const permission = await context.client.request(
+            acp.methods.client.session.requestPermission,
+            {
+              sessionId: context.params.sessionId,
+              toolCall: {
+                toolCallId: 'e2e-delegated-permission-tool',
+                title: 'Read delegated evidence'
+              },
+              options: [
+                { kind: 'allow_once', name: 'Allow once', optionId: 'allow-once' },
+                { kind: 'reject_once', name: 'Deny', optionId: 'deny-once' }
+              ]
+            }
+          )
+          reply =
+            permission.outcome.outcome === 'selected' &&
+            permission.outcome.optionId === 'allow-once'
+              ? 'Delegated permission allowed.'
+              : 'Delegated permission denied.'
         } else if (prompt.includes(PERMISSION_PROMPT)) {
           const permission = await context.client.request(
             acp.methods.client.session.requestPermission,
@@ -220,7 +320,11 @@ if (process.argv.includes('--version')) {
 
       return { stopReason: 'end_turn' }
     })
-    .onNotification(acp.methods.agent.session.cancel, () => undefined)
+    .onNotification(acp.methods.agent.session.cancel, (context) => {
+      const resolve = sessionCancellationResolvers.get(context.params.sessionId)
+      sessionCancellationResolvers.delete(context.params.sessionId)
+      resolve?.()
+    })
     .onRequest(acp.methods.agent.session.close, () => ({}))
 
   const connection = app.connect(

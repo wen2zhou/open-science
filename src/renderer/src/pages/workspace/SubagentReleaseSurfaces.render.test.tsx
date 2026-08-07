@@ -215,7 +215,9 @@ describe('release-gate Subagent surfaces', () => {
     const { rerender } = render(<SubagentSummaryCard session={session} permissions={[]} />)
 
     expect(screen.getAllByRole('region', { name: 'Subagent summary' })).toHaveLength(1)
-    expect(screen.getByRole('button', { name: /Evidence landscape, running/i })).toBeTruthy()
+    expect(
+      screen.getByRole('button', { name: /Evidence landscape, running/i }).className
+    ).toContain('focus-visible:ring-[3px]')
     expect(screen.getByRole('button', { name: /Challenge assumptions, error/i })).toBeTruthy()
 
     fireEvent.click(screen.getByRole('button', { name: /Evidence landscape, running/i }))
@@ -238,6 +240,7 @@ describe('release-gate Subagent surfaces', () => {
     const aggregate = screen.getByRole('button', { name: '1 subagent running' })
     expect(aggregate.getAttribute('aria-live')).toBe('polite')
     expect(aggregate.textContent).not.toContain('Evidence landscape')
+    expect(aggregate.className).toContain('focus-visible:ring-[3px]')
   })
 
   it('provides a read-only Frame selector, raw status, error detail, and Close focus return', () => {
@@ -261,13 +264,34 @@ describe('release-gate Subagent surfaces', () => {
       />
     )
 
-    expect(screen.getByLabelText('Subagent Frame')).toBeTruthy()
+    expect(screen.getByLabelText('Subagent Frame').className).toContain('focus-visible:ring-[3px]')
     expect(screen.getByText('error')).toBeTruthy()
     expect(screen.getByText('Provider turn failed')).toBeTruthy()
     expect(screen.queryByRole('button', { name: /stop/i })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: 'Close Subagents preview' }))
+    const closeButton = screen.getByRole('button', { name: 'Close Subagents preview' })
+    expect(closeButton.className).toContain('focus-visible:ring-[3px]')
+    fireEvent.click(closeButton)
     expect(document.activeElement).toBe(trigger)
+  })
+
+  it('provides a visible tooltip for the icon-only Preview close control', async () => {
+    render(
+      <SubagentPreview
+        item={{
+          id: 'tool:session-1:subagents',
+          type: 'tool',
+          toolKind: 'subagents',
+          title: 'Subagents',
+          sessionId: 'session-1',
+          selectedAgentFrameId: 'child-a'
+        }}
+      />
+    )
+
+    const closeButton = screen.getByRole('button', { name: 'Close Subagents preview' })
+    fireEvent.focus(closeButton)
+    expect((await screen.findByRole('tooltip')).textContent).toContain('Close Subagents preview')
   })
 
   it('selects another Frame by keyboard-compatible native select without opening a second preview', () => {
@@ -307,7 +331,9 @@ describe('release-gate Subagent surfaces', () => {
     )
 
     expect(screen.getByRole('alert').textContent).toContain('could not be read')
-    expect(screen.getByRole('button', { name: 'Retry Subagent preview' })).toBeTruthy()
+    expect(screen.getByRole('button', { name: 'Retry Subagent preview' }).className).toContain(
+      'focus-visible:ring-[3px]'
+    )
   })
 
   it('shows an actionable unavailable notice and no false support claim', () => {
@@ -328,6 +354,36 @@ describe('release-gate Subagent surfaces', () => {
     )
 
     expect(screen.getByRole('status').textContent).toContain('Subagents unavailable for OpenCode')
+    const settingsButton = screen.getByRole('button', { name: 'Open Settings' })
+    expect(settingsButton.className).toContain('focus-visible:ring-[3px]')
+    fireEvent.click(settingsButton)
+    expect(onOpenSettings).toHaveBeenCalledOnce()
+  })
+
+  it('shows a production admission rejection as an actionable product notice', () => {
+    const onOpenSettings = vi.fn()
+    render(
+      <SubagentAvailabilityNotice
+        frameworkId="opencode"
+        frameworks={[
+          {
+            id: 'opencode',
+            displayName: 'OpenCode',
+            supportsSkills: true,
+            supportsDelegatedWork: true
+          }
+        ]}
+        unavailableReason="The requested Specialist configuration is unavailable."
+        onOpenSettings={onOpenSettings}
+      />
+    )
+
+    expect(screen.getByRole('status').textContent).toContain(
+      'Subagents unavailable for this configuration'
+    )
+    expect(screen.getByRole('status').textContent).toContain(
+      'The requested Specialist configuration is unavailable.'
+    )
     fireEvent.click(screen.getByRole('button', { name: 'Open Settings' }))
     expect(onOpenSettings).toHaveBeenCalledOnce()
   })

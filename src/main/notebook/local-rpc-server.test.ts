@@ -587,6 +587,157 @@ describe('notebook local RPC server', () => {
     }
   })
 
+  it('adopts a pre-start alias for the persistent root control capability', async () => {
+    const root = await createStorageRoot()
+    const agentsRead = vi.fn(async () => ({ ok: true }))
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const server = new NotebookLocalRpcServer(service, {
+      transport: 'tcp',
+      token: 'secret-token',
+      agentsService: { read: agentsRead }
+    })
+    const control = await server.issueControlConnection(
+      'notebook-session-1',
+      'default-project',
+      'root-frame-notebook-session-1'
+    )
+
+    server.registerSessionAlias('notebook-session-1', 'real-session-1')
+    server.setArtifactProvenanceContext('real-session-1', {
+      rootFrameId: 'root-frame-real-session-1',
+      agentFrameId: 'root-frame-real-session-1',
+      messageBranchId: 'message-branch-real-session-1',
+      runtimeSegmentId: 'runtime-segment-real-session-1',
+      promptMessageId: 'prompt-1'
+    })
+
+    try {
+      const response = await fetch(control.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${control.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ method: 'agentsCall', params: { op: 'list' } })
+      })
+
+      expect(response.status).toBe(200)
+      expect(agentsRead).toHaveBeenCalledWith(
+        { op: 'list', params: {} },
+        expect.objectContaining({
+          sessionId: 'real-session-1'
+        })
+      )
+    } finally {
+      control.release()
+      await server.close()
+    }
+  })
+
+  it('canonicalizes a persistent root control capability issued after alias adoption', async () => {
+    const root = await createStorageRoot()
+    const agentsRead = vi.fn(async () => ({ ok: true }))
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const server = new NotebookLocalRpcServer(service, {
+      transport: 'tcp',
+      token: 'secret-token',
+      agentsService: { read: agentsRead }
+    })
+
+    server.registerSessionAlias('notebook-session-1', 'real-session-1')
+    const control = await server.issueControlConnection(
+      'notebook-session-1',
+      'default-project',
+      'root-frame-notebook-session-1'
+    )
+    server.setArtifactProvenanceContext('real-session-1', {
+      rootFrameId: 'root-frame-real-session-1',
+      agentFrameId: 'root-frame-real-session-1',
+      messageBranchId: 'message-branch-real-session-1',
+      runtimeSegmentId: 'runtime-segment-real-session-1',
+      promptMessageId: 'prompt-1'
+    })
+
+    try {
+      const response = await fetch(control.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${control.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ method: 'agentsCall', params: { op: 'list' } })
+      })
+
+      expect(response.status).toBe(200)
+      expect(agentsRead).toHaveBeenCalledWith(
+        { op: 'list', params: {} },
+        expect.objectContaining({ sessionId: 'real-session-1' })
+      )
+    } finally {
+      control.release()
+      await server.close()
+    }
+  })
+
+  it('does not adopt a stale or misscoped root capability through a Session alias', async () => {
+    const root = await createStorageRoot()
+    const agentsRead = vi.fn(async () => ({ ok: true }))
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root)
+    })
+    const server = new NotebookLocalRpcServer(service, {
+      transport: 'tcp',
+      token: 'secret-token',
+      agentsService: { read: agentsRead }
+    })
+    const stale = await server.issueSessionConnection(
+      'notebook-session-1',
+      'default-project',
+      'root-frame-stale-session'
+    )
+    server.registerSessionAlias('notebook-session-1', 'real-session-1')
+    server.setArtifactProvenanceContext('real-session-1', {
+      rootFrameId: 'durable-root-frame',
+      agentFrameId: 'durable-root-frame',
+      messageBranchId: 'message-branch-real-session-1',
+      runtimeSegmentId: 'runtime-segment-real-session-1',
+      promptMessageId: 'prompt-1'
+    })
+
+    try {
+      const response = await fetch(stale.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${stale.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'state',
+          params: { sessionId: 'notebook-session-1', workspaceCwd: root }
+        })
+      })
+
+      expect(response.status).toBe(403)
+      expect(agentsRead).not.toHaveBeenCalled()
+    } finally {
+      stale.release?.()
+      await server.close()
+    }
+  })
+
   it('allows agentsCall through a session-bound control capability and derives its trusted context', async () => {
     const root = await createStorageRoot()
     const agentsRead = vi.fn(async () => ({ status: 'approved' }))

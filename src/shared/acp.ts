@@ -459,6 +459,10 @@ export type AcpStateSnapshot = {
   // Latest context-window usage for each logical app session's current agent-context generation.
   // Missing means unknown or invalidated; framework switches and reconnects clear the old generation.
   contextUsageBySession: Record<string, AcpContextUsage>
+  // Monotonic process-local signal that durable delegated-work records changed. The renderer uses
+  // it only to refresh the authoritative Session projection; the records remain persistence-owned.
+  delegatedWorkRevision?: number
+  delegatedWorkUnavailableBySession?: Record<string, string>
   // Sessions whose attached framework exposes a native compaction control turn. Missing is accepted
   // from an older main process during a rolling dev reload.
   nativeContextCompactionSessionIds?: string[]

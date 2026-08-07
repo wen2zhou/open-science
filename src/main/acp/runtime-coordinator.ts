@@ -103,6 +103,7 @@ class AcpRuntimeCoordinator {
   private runtimeSequence = 0
   private initializationGeneration = 0
   private globalCancellationGeneration = 0
+  private delegatedWorkRevision = 0
   private promptAttemptSequence = 0
   private readonly sessionCancellationGenerations = new Map<string, number>()
   private readonly pendingPromptStarts = new Map<string, PendingPromptStart[]>()
@@ -134,6 +135,7 @@ class AcpRuntimeCoordinator {
     this.activeRuntime = this.addRuntime()
     this.lastRuntime = this.activeRuntime
     this.delegatedWork?.subscribe((event) => {
+      this.delegatedWorkRevision += 1
       if (event.kind === 'permission-requested') {
         this.callbacks.onPermissionRequest?.(event.request)
       }
@@ -226,6 +228,8 @@ class AcpRuntimeCoordinator {
       ),
       permissionGrants: this.permissionGrantSnapshot?.() ?? this.permissionGrantStore.snapshot(),
       contextUsageBySession,
+      delegatedWorkRevision: this.delegatedWorkRevision,
+      delegatedWorkUnavailableBySession: this.delegatedWork?.unavailableReasons?.() ?? {},
       nativeContextCompactionSessionIds,
       promptInFlight: promptInFlightSessionIds.length > 0,
       agentPromptInFlightSessionIds,

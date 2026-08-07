@@ -143,6 +143,7 @@ type ConversationPanelProps = {
   isUploadingAttachments: boolean
   notebookReference: NotebookSessionReference | undefined
   pendingPermissions: AcpPermissionRequest[]
+  subagentUnavailableReason?: string
   permissionProfile: PermissionProfileId
   permissionProfileState: SessionPermissionProfileState | undefined
   permissionGrants: AcpPermissionGrant[]
@@ -227,6 +228,7 @@ const ConversationPanel = ({
   isUploadingAttachments,
   notebookReference,
   pendingPermissions,
+  subagentUnavailableReason,
   permissionProfile,
   permissionProfileState,
   permissionGrants,
@@ -564,6 +566,7 @@ const ConversationPanel = ({
                   <SubagentAvailabilityNotice
                     frameworkId={activeSession?.agentFrameworkId ?? selectedFrameworkId}
                     frameworks={agentFrameworks}
+                    unavailableReason={subagentUnavailableReason}
                     onOpenSettings={openSettings}
                   />
                 ) : null}

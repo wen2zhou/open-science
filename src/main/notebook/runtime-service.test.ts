@@ -1391,12 +1391,16 @@ describe('notebook runtime service', () => {
     expect(beginControlInvocation).toHaveBeenNthCalledWith(1, {
       turnId: 'notebook-run-42-1',
       controlInvocationGeneration: 1,
-      toolInvocationId: 'notebook-run-42-1'
+      toolInvocationId: 'notebook-run-42-1',
+      attachmentIds: [],
+      artifactIds: []
     })
     expect(beginControlInvocation).toHaveBeenNthCalledWith(2, {
       turnId: 'notebook-run-42-2',
       controlInvocationGeneration: 2,
-      toolInvocationId: 'notebook-run-42-2'
+      toolInvocationId: 'notebook-run-42-2',
+      attachmentIds: [],
+      artifactIds: []
     })
     expect(releaseInvocation).toHaveBeenCalledTimes(2)
 

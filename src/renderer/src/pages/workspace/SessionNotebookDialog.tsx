@@ -265,7 +265,7 @@ const SessionNotebookContent = ({
                   setFrameFilter(event.currentTarget.value as NotebookFrameFilterValue)
                   setExportSuccess(undefined)
                 }}
-                className="min-h-8 min-w-0 max-w-full flex-1 rounded-md border border-border bg-card px-2 text-xs text-foreground outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+                className="min-h-8 min-w-0 max-w-full flex-1 rounded-md border border-border bg-card px-2 text-xs text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               >
                 {frameOptions.map((option) => (
                   <option key={option.value} value={option.value}>
@@ -291,7 +291,7 @@ const SessionNotebookContent = ({
                     setExportSuccess(undefined)
                   }}
                   className={cn(
-                    'flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors',
+                    'flex items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50',
                     effectiveActiveKind === kind
                       ? 'bg-card text-foreground'
                       : 'text-muted-foreground hover:bg-card/70 hover:text-foreground'

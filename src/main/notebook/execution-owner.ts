@@ -377,7 +377,21 @@ class NotebookExecutionOwner {
               const releaseControlInvocation = mcpRpc?.beginControlInvocation?.({
                 turnId: runId,
                 controlInvocationGeneration,
-                toolInvocationId: runId
+                toolInvocationId: runId,
+                ...(request.provenanceContext
+                  ? {
+                      originatingTurnId: request.provenanceContext.promptMessageId,
+                      originatingUserMessageId: request.provenanceContext.promptMessageId
+                    }
+                  : {}),
+                attachmentIds:
+                  request.registeredInputFiles
+                    ?.filter((input) => input.sourceKind === 'upload-version')
+                    .map((input) => input.sourceFileId) ?? [],
+                artifactIds:
+                  request.registeredInputFiles
+                    ?.filter((input) => input.sourceKind === 'artifact-version')
+                    .map((input) => input.sourceFileId) ?? []
               })
               return session
                 .execute({

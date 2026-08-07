@@ -395,6 +395,28 @@ class NotebookLocalRpcServer {
   // Remembers the final ACP session id for notebook aliases created before session start.
   registerSessionAlias(aliasSessionId: string, sessionId: string): void {
     this.sessionAliases.set(aliasSessionId, sessionId)
+    const activeRootContext = this.artifactProvenanceContexts.get(sessionId)
+    const canonicalRootFrameId =
+      activeRootContext && activeRootContext.agentFrameId === activeRootContext.rootFrameId
+        ? activeRootContext.agentFrameId
+        : `root-frame-${sessionId}`
+
+    // Root capabilities are created before the provider returns the canonical app Session id, and
+    // the provider retains the original Agent-facing MCP route. Adopt only their exact provisional
+    // root Frame alongside the Session alias; delegated child capabilities have independent durable
+    // Frame ownership and are never rewritten here.
+    for (const binding of this.sessionRpcCapabilities.values()) {
+      if (
+        binding.delegatedNotebook ||
+        (binding.allowedMethods && binding.allowedMethods !== CONTROL_RPC_METHODS) ||
+        binding.sessionId !== aliasSessionId ||
+        binding.agentFrameId !== `root-frame-${aliasSessionId}`
+      ) {
+        continue
+      }
+      binding.sessionId = sessionId
+      binding.agentFrameId = canonicalRootFrameId
+    }
   }
 
   private resolveSessionCapabilityOwners(sessionId: string): Set<string> {
@@ -479,8 +501,17 @@ class NotebookLocalRpcServer {
     this.revokeAgentSessionCapabilities(sessionId)
 
     const token = randomUUID()
+    const resolvedSessionId = this.sessionAliases.get(sessionId) ?? sessionId
+    const resolvedAgentFrameId =
+      resolvedSessionId !== sessionId && agentFrameId === `root-frame-${sessionId}`
+        ? `root-frame-${resolvedSessionId}`
+        : agentFrameId
     this.sessionRpcTokens.set(sessionId, token)
-    this.sessionRpcCapabilities.set(token, { sessionId, projectId, agentFrameId })
+    this.sessionRpcCapabilities.set(token, {
+      sessionId: resolvedSessionId,
+      projectId,
+      agentFrameId: resolvedAgentFrameId
+    })
     return {
       endpoint: connection.endpoint,
       socketPath: connection.socketPath,
@@ -633,10 +664,15 @@ class NotebookLocalRpcServer {
     }
     const connection = await this.ensureStarted()
     const token = randomUUID()
+    const resolvedSessionId = this.sessionAliases.get(sessionId) ?? sessionId
+    const resolvedAgentFrameId =
+      resolvedSessionId !== sessionId && agentFrameId === `root-frame-${sessionId}`
+        ? `root-frame-${resolvedSessionId}`
+        : agentFrameId
     const binding: NotebookRpcSessionBinding = {
-      sessionId,
+      sessionId: resolvedSessionId,
       projectId,
-      agentFrameId,
+      agentFrameId: resolvedAgentFrameId,
       delegatedWorkRole: delegatedWorkIdentity.role,
       ...(delegatedWorkIdentity.attemptId
         ? { delegatedWorkAttemptId: delegatedWorkIdentity.attemptId }
@@ -674,8 +710,23 @@ class NotebookLocalRpcServer {
     sessionId: string,
     context: NotebookRunProvenanceContext | undefined
   ): void {
-    if (context) this.artifactProvenanceContexts.set(sessionId, context)
-    else {
+    if (context) {
+      this.artifactProvenanceContexts.set(sessionId, context)
+      if (context.agentFrameId === context.rootFrameId) {
+        for (const binding of this.sessionRpcCapabilities.values()) {
+          if (
+            (!binding.allowedMethods || binding.allowedMethods === CONTROL_RPC_METHODS) &&
+            !binding.delegatedNotebook &&
+            binding.delegatedWorkRole !== 'delegate' &&
+            (this.sessionAliases.get(binding.sessionId) ?? binding.sessionId) === sessionId &&
+            binding.agentFrameId === `root-frame-${binding.sessionId}`
+          ) {
+            binding.sessionId = sessionId
+            binding.agentFrameId = context.agentFrameId
+          }
+        }
+      }
+    } else {
       this.artifactProvenanceContexts.delete(sessionId)
       this.activeTurnProjectIds.delete(sessionId)
     }
@@ -901,6 +952,24 @@ class NotebookLocalRpcServer {
           typeof resolvedSessionId === 'string'
             ? this.artifactProvenanceContexts.get(resolvedSessionId)
             : undefined
+        const hasProvenRootOwner =
+          typeof resolvedSessionId === 'string' &&
+          (this.sessionAliases.get(authenticatedBinding.sessionId) ??
+            authenticatedBinding.sessionId) === resolvedSessionId &&
+          authenticatedBinding.agentFrameId === `root-frame-${authenticatedBinding.sessionId}`
+        if (
+          !authenticatedBinding.delegatedNotebook &&
+          (!authenticatedBinding.allowedMethods ||
+            authenticatedBinding.allowedMethods === CONTROL_RPC_METHODS) &&
+          authenticatedBinding.delegatedWorkRole !== 'delegate' &&
+          hasProvenRootOwner &&
+          typeof resolvedSessionId === 'string' &&
+          activeContext &&
+          activeContext.agentFrameId === activeContext.rootFrameId
+        ) {
+          authenticatedBinding.sessionId = resolvedSessionId
+          authenticatedBinding.agentFrameId = activeContext.agentFrameId
+        }
         if (
           !authenticatedBinding.delegatedNotebook &&
           activeContext &&

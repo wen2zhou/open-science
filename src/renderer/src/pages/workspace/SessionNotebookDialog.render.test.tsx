@@ -196,6 +196,7 @@ describe('Session Notebook producer projection', () => {
     expect(html).toContain('>All · 4 runs</option>')
     expect(html).toContain('>Unattributed · 1 run</option>')
     expect(html).toContain('max-w-full')
+    expect(html).toContain('focus-visible:ring-[3px]')
   })
 
   it('keeps child evidence while applying active-Branch filtering only to root and legacy Runs', () => {
@@ -248,6 +249,7 @@ describe('SessionNotebookContent per-kernel tabs', () => {
     expect(html).toContain('data-testid="session-notebook-tab-python"')
     expect(html).toContain('data-testid="session-notebook-tab-repl"')
     expect(html).toContain('data-testid="session-notebook-tab-bash"')
+    expect(html.match(/focus-visible:ring-\[3px\]/g)).toHaveLength(4)
     expect(html).toContain('Agent SDK')
     expect(html).toContain('Bash')
 

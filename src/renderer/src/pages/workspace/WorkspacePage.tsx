@@ -501,6 +501,7 @@ const WorkspacePage = ({
     permissionProfiles,
     permissionGrants,
     contextUsageBySession,
+    delegatedWorkUnavailableBySession = {},
     promptInFlightSessionIds = [],
     sendPreparationInFlightSessionIds = [],
     nativeContextCompactionSessionIds,
@@ -2481,6 +2482,9 @@ const WorkspacePage = ({
             isUploadingAttachments={isUploadingAttachments}
             notebookReference={activeNotebookReference}
             pendingPermissions={visiblePermissionRequests}
+            subagentUnavailableReason={
+              activeSession ? delegatedWorkUnavailableBySession[activeSession.id] : undefined
+            }
             permissionProfile={activePermissionProfile}
             permissionProfileState={activePermissionProfileState}
             permissionGrants={activePermissionGrants}

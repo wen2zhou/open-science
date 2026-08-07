@@ -357,7 +357,8 @@ class DurableDelegatedWorkError extends Error {
       | 'unsupported_framework'
       | 'execution_failure'
       | 'durability_failure',
-    message: string
+    message: string,
+    readonly userFacingUnavailableReason?: string
   ) {
     super(message)
     this.name = 'DurableDelegatedWorkError'
@@ -705,7 +706,8 @@ const createDurableDelegatedWork = (options: {
     } catch (error) {
       throw new DurableDelegatedWorkError(
         'admission_rejection',
-        error instanceof Error ? error.message : String(error)
+        error instanceof Error ? error.message : String(error),
+        'The requested Specialist is unavailable. Choose an enabled Specialist in Settings and try again.'
       )
     }
     if (
@@ -718,14 +720,16 @@ const createDurableDelegatedWork = (options: {
     ) {
       throw new DurableDelegatedWorkError(
         'admission_rejection',
-        `Specialist ${profileId} is unavailable for delegated execution`
+        `Specialist ${profileId} is unavailable for delegated execution`,
+        'The requested Specialist is unavailable. Choose an enabled Specialist in Settings and try again.'
       )
     }
     const displayName = profile.displayName?.trim() || profile.name.trim()
     if (!displayName) {
       throw new DurableDelegatedWorkError(
         'admission_rejection',
-        `Specialist ${profileId} has no display label`
+        `Specialist ${profileId} has no display label`,
+        'The requested Specialist is unavailable. Choose an enabled Specialist in Settings and try again.'
       )
     }
     return {
@@ -1114,7 +1118,8 @@ const createDurableDelegatedWork = (options: {
       if (error instanceof DurableDelegatedWorkError) throw error
       throw new DurableDelegatedWorkError(
         'unsupported_framework',
-        error instanceof Error ? error.message : String(error)
+        error instanceof Error ? error.message : String(error),
+        'Delegated work is unavailable for this Agent framework configuration. Open Settings and choose a certified configuration.'
       )
     }
     const rawRequests: readonly unknown[] = Array.isArray(requestOrRequests)

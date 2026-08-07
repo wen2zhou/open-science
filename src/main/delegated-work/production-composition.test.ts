@@ -112,11 +112,12 @@ const createCompositionHarness = async (
     frameworks: {
       async forSession(current) {
         selected.push(current.agentFrameworkId!)
-        if (admissionError) throw admissionError
         return {
           frameworkId: current.agentFrameworkId!,
           execution,
-          assertAvailable: async () => undefined
+          assertAvailable: async () => {
+            if (admissionError) throw admissionError
+          }
         }
       }
     }
@@ -340,6 +341,33 @@ describe('production delegated-work composition', () => {
     ).rejects.toThrow('no longer active')
   })
 
+  it('publishes detached child terminal mutations after the running receipt', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-detached-events-'))
+    const harness = await createCompositionHarness(root, 'opencode')
+    const revisions: number[] = []
+    harness.composition.root.subscribe((event) => {
+      if (event.kind === 'records-changed') revisions.push(revisions.length + 1)
+    })
+
+    const pendingReceipt = harness.composition.host.delegate(
+      harness.caller,
+      { task: 'Finish after detached receipt' },
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+    const control = harness.execution.controls()[0]
+    control.accept()
+    const receipt = await pendingReceipt
+    expect(receipt.children[0].status).toBe('running')
+    const revisionsAtReceipt = revisions.length
+
+    control.complete('detached terminal result')
+    await expect
+      .poll(() => harness.durable().runtimeContext?.delegatedWork?.records[0]?.attempts[0]?.status)
+      .toBe('completed')
+    expect(revisions.length).toBeGreaterThan(revisionsAtReceipt)
+  })
+
   it('selects each advertised production framework from the durable Session identity', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-frameworks-'))
     for (const frameworkId of ['claude-code', 'opencode', 'codex'] as const) {
@@ -377,5 +405,20 @@ describe('production delegated-work composition', () => {
     expect(harness.selected).toEqual(['opencode'])
     expect(execution.controls()).toEqual([])
     expect(harness.durable().runtimeContext?.delegatedWork).toBeUndefined()
+    expect(harness.composition.root.unavailableReasons?.()).toEqual({
+      [harness.session.id]:
+        'Delegated work is unavailable for this Agent framework configuration. Open Settings and choose a certified configuration.'
+    })
+  })
+
+  it('does not project non-configuration delegation failures as Settings guidance', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-non-config-'))
+    const harness = await createCompositionHarness(root, 'opencode')
+    const unauthorized = { ...harness.caller, frameId: 'frame-outside-root' }
+
+    await expect(
+      harness.composition.host.delegate(unauthorized, { task: 'Must not start' })
+    ).rejects.toMatchObject({ code: 'authorization' })
+    expect(harness.composition.root.unavailableReasons?.()).toEqual({})
   })
 })

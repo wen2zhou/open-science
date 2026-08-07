@@ -97,6 +97,48 @@ const createHarness = (): Readonly<{
 }
 
 describe('Session delegated-work adapter', () => {
+  it('does not reject an already-committed mutation when its projection notifier throws', async () => {
+    const { coordinator, readSession } = createHarness()
+    const records = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => 'notifier-branch',
+        onRecordsChanged: () => {
+          throw new Error('renderer notification failed')
+        }
+      },
+      key
+    )
+
+    await expect(
+      records.admitChildren({
+        caller: {
+          session: key,
+          frameId: createSession().conversationGraph!.rootFrameId,
+          role: 'main',
+          originMessageId: rootPrompt.id,
+          toolInvocationId: 'notifier-test'
+        },
+        children: [
+          {
+            frameId: 'notifier-frame',
+            attemptId: 'notifier-attempt',
+            userMessageId: 'notifier-message',
+            title: 'Persist despite notifier failure',
+            request: { task: 'Persist despite notifier failure', inputs: [] },
+            resolvedAgent: { kind: 'main' },
+            startedAt: 10
+          }
+        ]
+      })
+    ).resolves.toBeUndefined()
+    await expect(records.snapshot()).resolves.toMatchObject({
+      records: [{ frameId: 'notifier-frame' }]
+    })
+  })
+
   it('persists successful running-child delivery against the addressed Attempt', async () => {
     const { coordinator, readSession } = createHarness()
     const execution = createDeterministicDelegateExecution()

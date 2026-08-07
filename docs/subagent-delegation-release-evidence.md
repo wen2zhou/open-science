@@ -1,51 +1,82 @@
 # Subagent delegation release evidence
 
-Issue 26 is the release-gate integration for the durable Session/Frame/Attempt model. This matrix
-maps the vertical slices (PR-01 through PR-14) and release gates to executable evidence. The UI is a
-projection of the existing durable graph; it does not introduce a renderer-owned orchestration model.
+Issue 26 closes the release-gate integration for the durable Session/Frame/Attempt model. This
+evidence applies to the final tree containing this document, rebased on `feat/subagent-delegation`
+at `fea8976f`. The renderer remains a projection of the durable graph; it does not own orchestration
+state.
 
-## Vertical-slice traceability
+## Executable behavior evidence
 
-| Slice | Observable contract                                                              | Primary executable evidence                                                                                                                                         |
-| ----- | -------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| PR-01 | Session scope, validated origin binding, and child isolation                     | `src/main/delegated-work/delegated-work.contract.test.ts`, `src/main/delegated-work/durable-delegated-work.test.ts`                                                 |
-| PR-02 | Durable Frame/Attempt ownership and restart-safe records                         | `src/main/session-persistence/delegated-work-records.test.ts`, `src/main/delegated-work/session-record-adapter.test.ts`                                             |
-| PR-03 | Framework execution handles route events to the exact Attempt                    | `src/main/delegated-work/execution-contract.test.ts`, `src/main/delegated-work/acp-execution.test.ts`                                                               |
-| PR-04 | Single blocking delegation and terminal result collection                        | `src/main/delegated-work/durable-delegated-work.test.ts`, `src/main/notebook/local-rpc-server.delegated-work.test.ts`                                               |
-| PR-05 | Stop, cancellation, failure, and restart recovery preserve raw status            | `src/main/delegated-work/durable-delegated-work.test.ts`, `src/renderer/src/pages/workspace/subagent-release-projection.test.ts`                                    |
-| PR-06 | Detached children and later collection use stable identities                     | `src/main/delegated-work/delegated-work.contract.test.ts`, `src/main/notebook/local-rpc-server.delegated-work.test.ts`                                              |
-| PR-07 | Specialist resolution is immutable per Attempt and remains attributable          | `src/main/delegated-work/session-record-adapter.test.ts`, `src/renderer/src/pages/workspace/subagent-release-projection.test.ts`                                    |
-| PR-08 | Continuation creates a new Attempt on the same Frame                             | `src/main/delegated-work/durable-delegated-work.test.ts`, `src/main/session-persistence/delegated-work-records.test.ts`                                             |
-| PR-09 | Atomic parallel creation preserves dispatch order and sibling isolation          | `src/main/delegated-work/durable-delegated-work.test.ts`, `src/renderer/src/pages/workspace/subagent-release-projection.test.ts`                                    |
-| PR-10 | Main-to-child and child-to-Main messages remain Frame-bound                      | `src/main/delegated-work/delegated-work.contract.test.ts`, `src/main/notebook/local-rpc-server.delegated-work.test.ts`                                              |
-| PR-11 | A delegated permission request blocks only its Attempt and identifies risk scope | `src/main/acp/permission-context.test.ts`, `src/main/acp/permission-broker.test.ts`, `src/renderer/src/pages/workspace/SubagentReleaseSurfaces.render.test.tsx`     |
-| PR-12 | Artifact versions retain delegated Frame/Attempt provenance                      | `src/main/delegated-work/delegated-artifact-evidence.test.ts`                                                                                                       |
-| PR-13 | Review findings retain delegated evidence provenance                             | `src/main/delegated-work/delegated-review-evidence.test.ts`                                                                                                         |
-| PR-14 | Notebook lanes and advertised frameworks are fail-closed and certified           | `src/main/notebook/delegated-lane-capability.test.ts`, `src/main/delegated-work/certification.test.ts`, `src/main/delegated-work/claude-code-certification.test.ts` |
+The behavior table uses these exact reproducible commands:
+
+```text
+FULL: npm test
+FOCUSED: npx vitest run src/main/delegated-work/production-composition.test.ts src/main/delegated-work/session-record-adapter.test.ts src/main/notebook/local-rpc-server.test.ts src/main/acp/runtime-coordinator.test.ts src/renderer/src/pages/workspace/SubagentReleaseSurfaces.render.test.tsx src/renderer/src/pages/workspace/SessionNotebookDialog.render.test.tsx
+ELECTRON: npx playwright test e2e/subagent-release-gate.spec.ts --workers=1
+```
+
+| Behavior | Command or suite | Final result |
+| --- | --- | --- |
+| Session scope, validated origin binding, child isolation, stable detached identities, continuation, messaging, and parallel admission | `FULL` | PASS: 848 files passed, 14 skipped; 12,368 tests passed, 190 skipped. |
+| Detached child terminal mutations notify the renderer without changing committed-write success | `FOCUSED` | PASS, including late terminal publication and a throwing-listener regression. |
+| Exact provisional capability adoption rejects stale or mis-scoped owners | `FOCUSED` | PASS, including the negative stale-owner case. |
+| Delegated permission blocks only its Attempt and exposes risk scope | `FULL` and `ELECTRON` | PASS. The Electron journey observes a real ACP child permission and resolves it through the product UI. |
+| Root Stop cascades to all active children | `ELECTRON` | PASS. One root Cancel action terminalizes two running production-composed children as cancelled. |
+| Unsupported Specialist configuration fails before durable admission | `FOCUSED` and `ELECTRON` | PASS. Product-owned safe guidance and Open Settings are visible; durable record and delegated Frame counts remain zero. Authorization failures do not create configuration guidance. |
+| One scalable persisted surface remains usable after restart | `ELECTRON` | PASS. A separate persisted 24-child fixture verifies ordering, keyboard/focus operation, narrow viewport layout, and reopen persistence. |
+| Focus and icon-only controls follow the design system | `FOCUSED` | PASS. New interactive controls use the 3 px focus-visible ring; icon-only Close uses the shared Tooltip and an accessible name. |
+| Artifact and Review evidence retain Frame/Attempt provenance | `FULL` | PASS. |
+| Frameworks fail closed behind certification | `FULL` | PASS. |
+
+The focused regression invocation covered six files and 118 tests, all passing. The final Electron
+invocation covered three tests, all passing: production-composed delegation/permission/Stop,
+unsupported Specialist zero-admission messaging, and the independent persisted 24-child UX lane.
 
 ## Release gates
 
-| Gate                                  | Pass evidence                                                                                                                                                                                                                                                                                                                       |
-| ------------------------------------- | ----------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| Gate A — dispatch and isolation       | Durable-work, execution-contract, persistence-record, and Notebook delegated-work suites cover single, detached, parallel, Specialist, continuation, and bidirectional messaging.                                                                                                                                                   |
-| Gate B — controls and recovery        | Durable-work and permission suites cover Stop, cancellation/error terminals, scoped permission blocking, retryable reads, and restart-safe identities.                                                                                                                                                                              |
-| Gate C — attributed evidence          | Delegated Artifact and Review suites prove Frame/Attempt provenance; the Subagent Preview renders the existing Artifact/Review transcript owners read-only.                                                                                                                                                                         |
-| Gate D — release UX and compatibility | `SubagentReleaseSurfaces.render.test.tsx`, `subagent-release-projection.test.ts`, Preview persistence suites, and `e2e/subagent-release-gate.spec.ts` cover one summary, one Preview, raw statuses, 24-child ordering, keyboard/focus, screen-reader text, mobile layout, fail-closed framework messaging, and restart persistence. |
+| Gate | Result and evidence |
+| --- | --- |
+| Gate A — dispatch and isolation | PASS through the full contract/durable/persistence suites and the real Electron production journey. |
+| Gate B — controls and recovery | PASS through Stop, cancellation/error terminal, scoped permission, recovery, late durable refresh, and committed-notifier isolation tests. |
+| Gate C — attributed evidence | PASS through Artifact/Review provenance suites and the read-only Preview projection tests. |
+| Gate D — release UX and compatibility | PASS on the real Electron production journey for delegation, permission, safe unsupported-config messaging, and a two-child Stop cascade. The 24-child persistence/keyboard/mobile lane is intentionally separate and does not stand in for production orchestration. |
 
-## Required repository checks
+## Final repository checks
 
-The release gate is complete only when all of these commands pass from the repository root:
+All commands were run from the release worktree after the final material edit:
 
-```text
-npm test
-npm run typecheck
-npm run lint
-npm run check:web-api-map
-npm run check:cli-package
-npm run build:e2e
-npx playwright test e2e/subagent-release-gate.spec.ts --workers=1
-git diff --check
-```
+| Command | Result |
+| --- | --- |
+| `npm test` | PASS: 848 files passed, 14 skipped; 12,368 tests passed, 190 skipped. |
+| `npm run typecheck` | PASS: node and web TypeScript projects. |
+| `npm run lint` | PASS. |
+| `npm run check:web-api-map` | PASS. |
+| `npm run check:cli-package` | PASS: package dry-run verification. |
+| `npm run build:e2e` | PASS. |
+| `npx playwright test e2e/subagent-release-gate.spec.ts --workers=1` | PASS: 3 tests. |
+| `git diff --check` | PASS. |
 
-Environment-only skips or failures must be recorded separately and must not be described as product
-passes. The issue handoff records the exact results for the release candidate commit.
+## Consumer and platform scope
+
+- Electron desktop on macOS is included. Its journey uses the actual Host/RPC composition and the
+  production composer against a controlled OpenCode process; the controlled process is the
+  certified adapter boundary, not a renderer-owned delegation stub.
+- The web consumer is excluded from the Electron-only Host composition journey. Its public surface
+  remains covered by `check:web-api-map` plus shared renderer/type tests.
+- The CLI is not a delegated-work feature consumer. `check:cli-package` covers its packaging
+  boundary; no CLI delegation claim is made.
+- Windows and Linux Electron journeys were not run. Platform-neutral unit/integration suites and
+  both TypeScript projects cover shared paths, but OS-specific Electron behavior remains residual
+  risk.
+
+## Independent review and residual risk
+
+An independent Standards/Spec review found detached terminal refresh, unsupported-config evidence,
+Stop-cascade depth, capability-adoption scope, refresh dependency stability, error classification,
+and committed-notifier isolation gaps. Each was remediated and the reviewer verified the first five
+remediations with 44 passing targeted tests; the last two have dedicated regressions in the final
+targeted and full runs.
+
+No feature-specific Axe run is present. Semantic names, Tooltip behavior, keyboard operation,
+focus-visible styling, and screen-reader status text have executable coverage, but automated Axe
+coverage remains an explicitly uncovered accessibility risk rather than a claimed pass.

@@ -3,6 +3,7 @@ import { useMemo, useState } from 'react'
 
 import type { AcpPermissionRequest } from '../../../../shared/acp'
 import type { AgentFrameworkId, AgentFrameworkView } from '../../../../shared/settings'
+import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import type { ChatSession } from '@/stores/session-store'
 import {
   createSessionSubagentsPreviewItem,
@@ -97,7 +98,7 @@ const SubagentSummaryCard = ({
             key={child.frameId}
             type="button"
             aria-label={`${child.title}, ${child.status}${child.awaitingPermission ? ', waiting for permission' : ''}`}
-            className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border-100 px-4 py-2 text-left last:border-b-0 hover:bg-bg-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-inset focus-visible:ring-ring/50"
+            className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border-100 px-4 py-2 text-left last:border-b-0 hover:bg-bg-100 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-ring/50"
             onClick={(event) => openSubagentPreview(session, child, event.currentTarget)}
           >
             <span className="min-w-0">
@@ -132,7 +133,7 @@ const SubagentComposerAggregate = ({
       type="button"
       aria-label={label}
       aria-live="polite"
-      className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-[11px] text-text-300 hover:bg-bg-200 hover:text-text-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+      className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-[11px] text-text-300 hover:bg-bg-200 hover:text-text-100 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
       onClick={(event) => openSubagentPreview(session, firstRunning, event.currentTarget, true)}
     >
       <Loader2 className="size-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
@@ -144,14 +145,23 @@ const SubagentComposerAggregate = ({
 const SubagentAvailabilityNotice = ({
   frameworkId,
   frameworks,
+  unavailableReason,
   onOpenSettings
 }: {
   frameworkId: AgentFrameworkId
   frameworks: readonly AgentFrameworkView[]
+  unavailableReason?: string
   onOpenSettings: () => void
 }): React.JSX.Element | null => {
   const availability = resolveDelegatedWorkAvailability(frameworkId, frameworks)
-  if (availability.available) return null
+  if (availability.available && !unavailableReason) return null
+  const framework = frameworks.find(({ id }) => id === frameworkId)
+  const title = unavailableReason
+    ? 'Subagents unavailable for this configuration'
+    : availability.available
+      ? `Subagents unavailable for ${framework?.displayName ?? frameworkId}`
+      : availability.title
+  const description = unavailableReason ?? (availability.available ? '' : availability.description)
 
   return (
     <div
@@ -160,12 +170,12 @@ const SubagentAvailabilityNotice = ({
     >
       <AlertCircle className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
       <span className="min-w-0 flex-1">
-        <strong className="block text-text-100">{availability.title}</strong>
-        {availability.description}
+        <strong className="block text-text-100">{title}</strong>
+        {description}
       </span>
       <button
         type="button"
-        className="shrink-0 rounded-md border border-border-200 bg-bg-000 px-2 py-1 text-text-100 hover:bg-bg-300"
+        className="shrink-0 rounded-md border border-border-200 bg-bg-000 px-2 py-1 text-text-100 hover:bg-bg-300 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
         onClick={onOpenSettings}
       >
         Open Settings
@@ -262,7 +272,7 @@ const SubagentPreview = ({
           id={`subagent-frame-${item.sessionId}`}
           aria-label="Subagent Frame"
           value={effectiveFrameId}
-          className="min-w-0 flex-1 rounded-md border border-border-200 bg-bg-000 px-2 py-1.5 text-[12px] text-text-100 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+          className="min-w-0 flex-1 rounded-md border border-border-200 bg-bg-000 px-2 py-1.5 text-[12px] text-text-100 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
           onChange={(event) => selectFrame(event.target.value)}
         >
           {summary.children.map((child) => (
@@ -272,14 +282,21 @@ const SubagentPreview = ({
           ))}
         </select>
         {detail ? <SubagentStatus status={detail.status} /> : null}
-        <button
-          type="button"
-          aria-label="Close Subagents preview"
-          className="grid size-8 shrink-0 place-items-center rounded-md text-text-300 hover:bg-bg-200 hover:text-text-000 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
-          onClick={close}
-        >
-          <X className="size-4" aria-hidden="true" />
-        </button>
+        <TooltipProvider>
+          <Tooltip>
+            <TooltipTrigger asChild>
+              <button
+                type="button"
+                aria-label="Close Subagents preview"
+                className="grid size-8 shrink-0 place-items-center rounded-md text-text-300 hover:bg-bg-200 hover:text-text-000 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                onClick={close}
+              >
+                <X className="size-4" aria-hidden="true" />
+              </button>
+            </TooltipTrigger>
+            <TooltipContent>Close Subagents preview</TooltipContent>
+          </Tooltip>
+        </TooltipProvider>
       </header>
 
       {!detail || !session ? (
@@ -290,7 +307,7 @@ const SubagentPreview = ({
             type="button"
             aria-label="Retry Subagent preview"
             disabled={isRetrying}
-            className="mt-3 rounded-md border border-border-200 px-3 py-1.5 text-text-100 hover:bg-bg-200"
+            className="mt-3 rounded-md border border-border-200 px-3 py-1.5 text-text-100 hover:bg-bg-200 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
             onClick={() => void retryRead()}
           >
             {isRetrying ? 'Retrying…' : 'Retry'}

@@ -8,6 +8,7 @@ import type { DelegatedWorkRecordCommands, SessionKey } from './session-records'
 import type { DelegateExecution } from './execution-port'
 import {
   createDurableDelegatedWork,
+  DurableDelegatedWorkError,
   type DurableDelegatedWork,
   type RootDelegatePermissionEvent,
   type RootDelegatePermissionRequest
@@ -39,9 +40,12 @@ type ProductionDelegatedWorkOptions = Readonly<{
 type RootDelegatedWorkEvent =
   | Readonly<{ kind: 'permission-requested'; request: AcpPermissionRequest }>
   | Readonly<{ kind: 'permission-settled'; requestId: string }>
+  | Readonly<{ kind: 'records-changed'; sessionId: string }>
+  | Readonly<{ kind: 'admission-rejected'; sessionId: string; reason: string }>
 
 type RootDelegatedWorkControl = Readonly<{
   pendingPermissions(): readonly AcpPermissionRequest[]
+  unavailableReasons?(): Readonly<Record<string, string>>
   subscribe(listener: (event: RootDelegatedWorkEvent) => void): () => void
   respondToPermission(response: AcpPermissionResponse): Promise<boolean>
   stopSession(sessionId: string): Promise<void>
@@ -77,6 +81,7 @@ const createProductionDelegatedWorkComposition = (
     Readonly<{ key: SessionKey; request: RootDelegatePermissionRequest }>
   >()
   const listeners = new Set<(event: RootDelegatedWorkEvent) => void>()
+  const unavailableReasons = new Map<string, string>()
 
   const publish = (event: RootDelegatedWorkEvent): void => {
     for (const listener of listeners) listener(event)
@@ -119,12 +124,12 @@ const createProductionDelegatedWorkComposition = (
     if (framework.frameworkId !== session.agentFrameworkId) {
       throw new Error('Delegated Work framework composition does not match the durable Session.')
     }
-    await framework.assertAvailable()
     const records = createSessionDelegatedWorkRecords(
       {
         commands: options.sessions.commands,
         readSession: options.sessions.readSession,
-        frameworkId: framework.frameworkId
+        frameworkId: framework.frameworkId,
+        onRecordsChanged: () => publish({ kind: 'records-changed', sessionId: key.sessionId })
       },
       key
     )
@@ -161,7 +166,29 @@ const createProductionDelegatedWorkComposition = (
 
   const host: ProductionDelegatedWorkComposition['host'] = Object.freeze({
     async delegate(caller, request, delegateOptions) {
-      return (await workFor(caller.session)).work.delegate(caller, request, delegateOptions)
+      try {
+        const result = await (
+          await workFor(caller.session)
+        ).work.delegate(caller, request, delegateOptions)
+        unavailableReasons.delete(caller.session.sessionId)
+        return result
+      } catch (error) {
+        const session = await options.sessions.readSession(caller.session)
+        if (
+          error instanceof DurableDelegatedWorkError &&
+          error.userFacingUnavailableReason &&
+          (session?.runtimeContext?.delegatedWork?.records.length ?? 0) === 0
+        ) {
+          const reason = error.userFacingUnavailableReason
+          unavailableReasons.set(caller.session.sessionId, reason)
+          publish({
+            kind: 'admission-rejected',
+            sessionId: caller.session.sessionId,
+            reason
+          })
+        }
+        throw error
+      }
     },
     async children(caller, frameIds) {
       return (await workFor(caller.session)).work.children(caller, frameIds)
@@ -182,6 +209,7 @@ const createProductionDelegatedWorkComposition = (
       Object.freeze(
         [...permissions.values()].map(({ key, request }) => projectPermission(key, request))
       ),
+    unavailableReasons: () => Object.freeze(Object.fromEntries(unavailableReasons)),
     subscribe(listener) {
       listeners.add(listener)
       return () => listeners.delete(listener)
@@ -219,6 +247,7 @@ const createProductionDelegatedWorkComposition = (
       for (const [requestId, pending] of permissions) {
         if (pending.key.sessionId === sessionId) permissions.delete(requestId)
       }
+      unavailableReasons.delete(sessionId)
     }
   })
 
