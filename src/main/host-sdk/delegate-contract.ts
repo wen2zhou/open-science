@@ -16,7 +16,8 @@ const DELEGATE_REQUEST_OBJECT_SCHEMA = {
     profile: {
       type: 'string',
       minLength: 1,
-      description: 'Enabled Specialist profile identity. Omit to use the Main Agent configuration.'
+      description:
+        'Stable Specialist id or unique exact public name from await host.agents.list(). Omit to use Main Agent regardless of the Session binding.'
     },
     context: {
       type: 'string',
@@ -72,11 +73,13 @@ const DELEGATE_AGENT_CONTRACT = {
             type: 'array',
             items: {
               type: 'object',
-              required: ['frame_id', 'attempt_id', 'status'],
+              required: ['frame_id', 'attempt_id', 'name', 'agent_name', 'status'],
               optional: [],
               properties: {
                 frame_id: { type: 'string' },
                 attempt_id: { type: 'string' },
+                name: { type: 'string', description: 'Child delegation name.' },
+                agent_name: { type: 'string', description: 'Resolved Attempt agent display name.' },
                 status: { type: 'string', enum: ['running'] }
               }
             }
@@ -94,11 +97,20 @@ const DELEGATE_AGENT_CONTRACT = {
             type: 'array',
             items: {
               type: 'object',
-              required: ['frame_id', 'attempt_id', 'status', 'artifacts_created'],
+              required: [
+                'frame_id',
+                'attempt_id',
+                'name',
+                'agent_name',
+                'status',
+                'artifacts_created'
+              ],
               optional: ['terminal_message_id', 'response', 'cancellation_reason', 'error'],
               properties: {
                 frame_id: { type: 'string' },
                 attempt_id: { type: 'string' },
+                name: { type: 'string', description: 'Child delegation name.' },
+                agent_name: { type: 'string', description: 'Resolved Attempt agent display name.' },
                 status: { type: 'string', enum: ['completed', 'cancelled', 'error'] },
                 terminal_message_id: { type: 'string' },
                 response: { type: 'string' },

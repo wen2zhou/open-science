@@ -43,6 +43,7 @@ delete process.env.OPEN_SCIENCE_NOTEBOOK_PROJECT_NAME
 // running. It is never exposed to sandbox code; host.agents forwards it as server context so an
 // approved switch can capture only this invocation's outer completion.
 let ACTIVE_CONTROL_INVOCATION_ID
+let DELEGATE_CALL_SEQUENCE = 0
 
 // Private references to the RPC clients, captured before user code runs. host.mcp MUST use these, not
 // the global `fetch`: a vm sandbox is not a security boundary, so sandbox code can reach the outer
@@ -1034,10 +1035,14 @@ async function agentsRpc(op, params = {}, sessionId = COMPUTE_SESSION_ID) {
 
 async function delegateRpc(request, options = {}) {
   if (!RPC_ENDPOINT) throw new Error('host.delegate is unavailable: control RPC endpoint not set')
+  const delegationCallId = String(++DELEGATE_CALL_SEQUENCE)
   const res = await capturedRpcFetch(RPC_ENDPOINT, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
-    body: JSON.stringify({ method: 'delegatedWorkCall', params: { request, options } })
+    body: JSON.stringify({
+      method: 'delegatedWorkCall',
+      params: { request, options, delegation_call_id: delegationCallId }
+    })
   })
   const body = await res.json().catch(() => ({}))
   if (!res.ok || body.error) {
@@ -1049,6 +1054,8 @@ async function delegateRpc(request, options = {}) {
     children: (outcome.children || []).map((child) => ({
       frame_id: child.frameId,
       attempt_id: child.attemptId,
+      ...(child.name !== undefined ? { name: child.name } : {}),
+      ...(child.agentName !== undefined ? { agent_name: child.agentName } : {}),
       status: child.status,
       ...(child.terminalMessageId ? { terminal_message_id: child.terminalMessageId } : {}),
       ...(child.response !== undefined ? { response: child.response } : {}),
@@ -1118,6 +1125,8 @@ async function delegatedObservationRpc(op, frameIds = undefined) {
     frame_id: child.frameId,
     attempt_id: child.attemptId,
     ...(child.title !== undefined ? { title: child.title } : {}),
+    ...(child.name !== undefined ? { name: child.name } : {}),
+    ...(child.agentName !== undefined ? { agent_name: child.agentName } : {}),
     status: child.status,
     ...(child.terminalMessageId ? { terminal_message_id: child.terminalMessageId } : {}),
     ...(child.response !== undefined ? { response: child.response } : {}),
@@ -1465,6 +1474,7 @@ rl.on('line', (line) => {
   }
   chain = chain.then(async () => {
     ACTIVE_CONTROL_INVOCATION_ID = request.control_invocation_id
+    DELEGATE_CALL_SEQUENCE = 0
     try {
       const resp = await run(request.code || '')
       resp.req_id = request.req_id

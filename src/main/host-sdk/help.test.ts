@@ -47,7 +47,7 @@ describe('Host SDK help', () => {
               kind: { type: 'string', enum: ['receipts'] },
               children: {
                 items: {
-                  required: ['frame_id', 'attempt_id', 'status'],
+                  required: ['frame_id', 'attempt_id', 'name', 'agent_name', 'status'],
                   optional: [],
                   properties: { status: { type: 'string', enum: ['running'] } }
                 }
@@ -59,7 +59,14 @@ describe('Host SDK help', () => {
               kind: { type: 'string', enum: ['results'] },
               children: {
                 items: {
-                  required: ['frame_id', 'attempt_id', 'status', 'artifacts_created'],
+                  required: [
+                    'frame_id',
+                    'attempt_id',
+                    'name',
+                    'agent_name',
+                    'status',
+                    'artifacts_created'
+                  ],
                   optional: ['terminal_message_id', 'response', 'cancellation_reason', 'error'],
                   properties: {
                     status: { type: 'string', enum: ['completed', 'cancelled', 'error'] },

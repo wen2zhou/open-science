@@ -194,7 +194,14 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
       await driver.waitForStart('attempt-1')
 
       await expect(work.children(caller)).resolves.toEqual([
-        { frameId: 'frame-1', attemptId: 'attempt-1', title: 'Single trace', status: 'running' }
+        {
+          frameId: 'frame-1',
+          attemptId: 'attempt-1',
+          title: 'Single trace',
+          name: 'Single trace',
+          agentName: 'Main Agent',
+          status: 'running'
+        }
       ])
       await driver.accept('attempt-1')
       await driver.complete('attempt-1', 'trace complete')

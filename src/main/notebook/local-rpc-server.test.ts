@@ -833,6 +833,7 @@ describe('notebook local RPC server', () => {
         { op: 'switch', params: { name: 'Approved Specialist' } },
         {
           sessionId: 'trusted-session',
+          callerRole: 'main',
           turnId: 'trusted-turn-1',
           controlInvocationGeneration: 7,
           toolInvocationId: 'trusted-tool-1',

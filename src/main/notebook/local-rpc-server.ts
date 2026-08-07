@@ -518,7 +518,8 @@ class NotebookLocalRpcServer {
     this.sessionRpcCapabilities.set(token, {
       sessionId: resolvedSessionId,
       projectId,
-      agentFrameId: resolvedAgentFrameId
+      agentFrameId: resolvedAgentFrameId,
+      delegatedWorkRole: 'main'
     })
     return {
       endpoint: connection.endpoint,
@@ -913,6 +914,8 @@ class NotebookLocalRpcServer {
             ...(method === 'agentsCall'
               ? {
                   session_id: sessionBinding.sessionId,
+                  caller_role:
+                    sessionBinding.delegatedWorkRole === 'delegate' ? 'delegate' : 'main',
                   turn_id: sessionBinding.activeControlInvocation?.turnId,
                   control_invocation_generation:
                     sessionBinding.activeControlInvocation?.controlInvocationGeneration,
@@ -1339,6 +1342,12 @@ class NotebookLocalRpcServer {
           ? params.control_invocation_generation
           : undefined
       const op = typeof params.op === 'string' ? params.op : ''
+      const callerRole =
+        params.caller_role === 'main'
+          ? 'main'
+          : params.caller_role === 'delegate'
+            ? 'delegate'
+            : undefined
       // Strip every reserved routing/identity/switch key before forwarding. The AgentsService and
       // its injected approval/switch seams only ever see the op + their own snake_case params; the
       // trusted session identity stays in the server context (NOT taken from the forwarded params).
@@ -1360,6 +1369,7 @@ class NotebookLocalRpcServer {
         turnId && controlInvocationGeneration !== undefined && toolInvocationId
           ? {
               sessionId: resolvedSessionId,
+              callerRole,
               turnId,
               controlInvocationGeneration,
               toolInvocationId,
@@ -1378,7 +1388,7 @@ class NotebookLocalRpcServer {
                   ?.filter((input) => input.sourceKind === 'artifact-version')
                   .map((input) => input.sourceFileId) ?? []
             }
-          : { sessionId: resolvedSessionId }
+          : { sessionId: resolvedSessionId, callerRole }
       )
     }
 
@@ -1398,6 +1408,11 @@ class NotebookLocalRpcServer {
         typeof params.origin_message_id === 'string' ? params.origin_message_id : ''
       const toolInvocationId =
         typeof params.tool_invocation_id === 'string' ? params.tool_invocation_id : ''
+      const delegationCallId =
+        typeof params.delegation_call_id === 'string' &&
+        /^[1-9]\d{0,15}$/.test(params.delegation_call_id)
+          ? params.delegation_call_id
+          : undefined
       const role = params.caller_role === 'delegate' ? 'delegate' : 'main'
       const attemptId = typeof params.attempt_id === 'string' ? params.attempt_id : undefined
       if (!projectId || !sessionId || !frameId || !originMessageId || !toolInvocationId) {
@@ -1409,7 +1424,9 @@ class NotebookLocalRpcServer {
         role,
         ...(attemptId ? { attemptId } : {}),
         originMessageId,
-        toolInvocationId
+        toolInvocationId: delegationCallId
+          ? `${toolInvocationId}\u0000delegate\u0000${delegationCallId}`
+          : toolInvocationId
       }
       if (params.operation === 'stop_children') {
         if (!this.delegatedWorkService.stopChildren) {

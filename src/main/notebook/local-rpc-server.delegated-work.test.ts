@@ -63,8 +63,20 @@ describe('authenticated delegatedWorkCall route', () => {
     const delegate = vi.fn(async () => ({
       kind: 'receipts' as const,
       children: [
-        { frameId: 'frame-first', attemptId: 'attempt-first', status: 'running' as const },
-        { frameId: 'frame-second', attemptId: 'attempt-second', status: 'running' as const }
+        {
+          frameId: 'frame-first',
+          attemptId: 'attempt-first',
+          name: 'First',
+          agentName: 'Main Agent',
+          status: 'running' as const
+        },
+        {
+          frameId: 'frame-second',
+          attemptId: 'attempt-second',
+          name: 'Second',
+          agentName: 'Main Agent',
+          status: 'running' as const
+        }
       ]
     }))
     server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
@@ -99,8 +111,20 @@ describe('authenticated delegatedWorkCall route', () => {
       result: {
         kind: 'receipts',
         children: [
-          { frameId: 'frame-first', attemptId: 'attempt-first', status: 'running' },
-          { frameId: 'frame-second', attemptId: 'attempt-second', status: 'running' }
+          {
+            frameId: 'frame-first',
+            attemptId: 'attempt-first',
+            name: 'First',
+            agentName: 'Main Agent',
+            status: 'running'
+          },
+          {
+            frameId: 'frame-second',
+            attemptId: 'attempt-second',
+            name: 'Second',
+            agentName: 'Main Agent',
+            status: 'running'
+          }
         ]
       }
     })
@@ -390,6 +414,8 @@ describe('authenticated delegatedWorkCall route', () => {
         frameId,
         attemptId: receipt.children[0].attemptId,
         title: 'Source check',
+        name: 'Source check',
+        agentName: 'Main Agent',
         status: 'running'
       }
     ])

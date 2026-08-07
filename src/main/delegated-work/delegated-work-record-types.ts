@@ -1,4 +1,5 @@
 import type { AcpTurnTokenUsage } from '../../shared/acp'
+import type { ArtifactFile } from '../../shared/artifacts'
 import type {
   PersistedActivityGroup,
   PersistedMessageImage,
@@ -26,6 +27,41 @@ type DurableAttempt = {
   cancellationReason?: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
   error?: Readonly<{ code: string; message: string }>
 }
+
+type DurableChildSummary = Readonly<{
+  frameId: string
+  attemptId: string
+  title: string
+  name: string
+  agentName: string
+  status: 'running' | 'completed' | 'cancelled' | 'error'
+}>
+
+type DurableDelegateResult = Readonly<{
+  frameId: string
+  attemptId: string
+  name: string
+  agentName: string
+  status: 'completed' | 'cancelled' | 'error'
+  terminalMessageId?: string
+  response?: string
+  artifactsCreated: readonly ArtifactFile[]
+  cancellationReason?: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
+  error?: Readonly<{ code: string; message: string }>
+}>
+
+type DurableDelegateOutcome =
+  | Readonly<{
+      kind: 'receipts'
+      children: readonly Readonly<{
+        frameId: string
+        attemptId: string
+        name: string
+        agentName: string
+        status: 'running'
+      }>[]
+    }>
+  | Readonly<{ kind: 'results'; children: readonly DurableDelegateResult[] }>
 
 type DurableChild = {
   frameId: string
@@ -158,6 +194,9 @@ export type {
   DelegatedWorkDurableRecords,
   DurableAttempt,
   DurableChild,
+  DurableChildSummary,
+  DurableDelegateOutcome,
+  DurableDelegateResult,
   DurableMessage,
   DurablePendingMessage,
   DurableResolvedAgent,

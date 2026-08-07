@@ -9,8 +9,11 @@ type DurableResolvedAgent = DurableSnapshot['records'][number]['attempts'][numbe
 
 class DelegatedWorkAdmissionPolicy {
   constructor(
-    private readonly resolveSpecialist?: (
+    private readonly resolveSpecialistById?: (
       profileId: string
+    ) => Promise<SpecialistDelegationProfile | undefined> | SpecialistDelegationProfile | undefined,
+    private readonly resolveSpecialistReference?: (
+      profileReference: string
     ) => Promise<SpecialistDelegationProfile | undefined> | SpecialistDelegationProfile | undefined,
     private readonly validateInput?: (identity: string) => Promise<boolean> | boolean
   ) {}
@@ -68,7 +71,7 @@ class DelegatedWorkAdmissionPolicy {
       )
     }
     const resolvedAgents = await Promise.all(
-      requests.map((request) => this.resolveAgent(request.profile))
+      requests.map((request) => this.resolveRequestedAgent(request.profile))
     )
     if (
       requests.some(
@@ -103,6 +106,31 @@ class DelegatedWorkAdmissionPolicy {
   }
 
   async resolveAgent(profileId: string | undefined): Promise<DurableResolvedAgent> {
+    return this.resolve(profileId, this.resolveSpecialistById, true)
+  }
+
+  private async resolveRequestedAgent(
+    profileReference: string | undefined
+  ): Promise<DurableResolvedAgent> {
+    return this.resolve(
+      profileReference,
+      this.resolveSpecialistReference ?? this.resolveSpecialistById,
+      this.resolveSpecialistReference === undefined
+    )
+  }
+
+  private async resolve(
+    profileId: string | undefined,
+    resolver:
+      | ((
+          profileId: string
+        ) =>
+          | Promise<SpecialistDelegationProfile | undefined>
+          | SpecialistDelegationProfile
+          | undefined)
+      | undefined,
+    requireMatchingId: boolean
+  ): Promise<DurableResolvedAgent> {
     if (profileId === undefined) return { kind: 'main' }
     if (typeof profileId !== 'string' || !profileId.trim()) {
       throw new DurableDelegatedWorkError(
@@ -112,7 +140,7 @@ class DelegatedWorkAdmissionPolicy {
     }
     let profile: SpecialistDelegationProfile | undefined
     try {
-      profile = await this.resolveSpecialist?.(profileId)
+      profile = await resolver?.(profileId)
     } catch (error) {
       throw new DurableDelegatedWorkError(
         'admission_rejection',
@@ -122,7 +150,7 @@ class DelegatedWorkAdmissionPolicy {
     }
     if (
       !profile ||
-      profile.id !== profileId ||
+      (requireMatchingId && profile.id !== profileId) ||
       !profile.enabled ||
       profile.setupPending === true ||
       !Number.isSafeInteger(profile.revision) ||

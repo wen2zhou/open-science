@@ -1,7 +1,11 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import type { ArtifactFile } from '../../shared/artifacts'
 import type { ReviewWithChecks } from '../../shared/reviewer'
+import { createProfileService } from '../specialist/service'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
 import {
   createDurableDelegatedWork,
@@ -1094,6 +1098,66 @@ describe('durable delegated work', () => {
     ).resolves.toMatchObject({ resolvedAgent: { kind: 'main' } })
   })
 
+  it('accepts either a stable Specialist id or its unique exact public name while an omitted profile stays Main', async () => {
+    const storage = await mkdtemp(join(tmpdir(), 'delegated-profile-reference-'))
+    try {
+      const profiles = createProfileService(storage)
+      const selected = await profiles.create({
+        name: 'EVIDENCE_ANALYST',
+        displayName: 'Evidence Analyst'
+      })
+      await profiles.create({ name: selected.id, displayName: 'ID-shaped public name' })
+      const execution = createDeterministicDelegateExecution()
+      const records = createInMemoryDelegatedWorkRecords({
+        session: caller.session,
+        rootFrameId: caller.frameId,
+        originMessageId: caller.originMessageId
+      })
+      const work = createDurableDelegatedWork({
+        execution,
+        records,
+        resolveSpecialist: (profileId) => profiles.resolveRunnableById(profileId),
+        resolveSpecialistReference: (reference) => profiles.resolveRunnableByReference(reference)
+      })
+
+      await work.delegate(
+        caller,
+        [
+          { task: 'Select by stable id', profile: selected.id },
+          { task: 'Select by public name', profile: selected.name },
+          { task: 'Use Main Agent' }
+        ],
+        { wait: false }
+      )
+
+      await expect.poll(() => execution.controls()).toHaveLength(3)
+      expect(execution.controls().map(({ input }) => input.profile)).toEqual([
+        selected.id,
+        selected.id,
+        undefined
+      ])
+      expect(
+        (await records.snapshot()).records.map((child) => child.attempts[0].resolvedAgent)
+      ).toEqual([
+        {
+          kind: 'specialist',
+          profileId: selected.id,
+          revision: 1,
+          displayName: 'Evidence Analyst'
+        },
+        {
+          kind: 'specialist',
+          profileId: selected.id,
+          revision: 1,
+          displayName: 'Evidence Analyst'
+        },
+        { kind: 'main' }
+      ])
+    } finally {
+      await rm(storage, { recursive: true, force: true })
+    }
+  })
+
   it('resolves an explicit stable Specialist identity and preserves its dispatch snapshot', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({
@@ -1278,9 +1342,27 @@ describe('durable delegated work', () => {
     expect(outcome).toEqual({
       kind: 'receipts',
       children: [
-        { frameId: 'frame-1', attemptId: 'attempt-1', status: 'running' },
-        { frameId: 'frame-2', attemptId: 'attempt-2', status: 'running' },
-        { frameId: 'frame-3', attemptId: 'attempt-3', status: 'running' }
+        {
+          frameId: 'frame-1',
+          attemptId: 'attempt-1',
+          name: 'Explicit title',
+          agentName: 'Main Agent',
+          status: 'running'
+        },
+        {
+          frameId: 'frame-2',
+          attemptId: 'attempt-2',
+          name: 'Second investigation',
+          agentName: 'Main Agent',
+          status: 'running'
+        },
+        {
+          frameId: 'frame-3',
+          attemptId: 'attempt-3',
+          name: 'Second investigation (2)',
+          agentName: 'Main Agent',
+          status: 'running'
+        }
       ]
     })
     expect(prepared).toEqual(['frame-1', 'frame-2', 'frame-3'])
@@ -1485,18 +1567,24 @@ describe('durable delegated work', () => {
           frameId: expect.any(String),
           attemptId: expect.any(String),
           title: 'complete last',
+          name: 'complete last',
+          agentName: 'Main Agent',
           status: 'running'
         },
         {
           frameId: expect.any(String),
           attemptId: expect.any(String),
           title: 'fail first',
+          name: 'fail first',
+          agentName: 'Main Agent',
           status: 'error'
         },
         {
           frameId: expect.any(String),
           attemptId: expect.any(String),
           title: 'cancel second',
+          name: 'cancel second',
+          agentName: 'Main Agent',
           status: 'cancelled'
         }
       ])
@@ -2000,6 +2088,8 @@ describe('durable delegated work', () => {
         {
           frameId: receipt.children[0].frameId,
           attemptId: receipt.children[0].attemptId,
+          name: 'Interrupted',
+          agentName: 'Evidence Analyst',
           status: 'cancelled',
           cancellationReason: 'runtime_interrupted',
           artifactsCreated: []
@@ -2075,12 +2165,16 @@ describe('durable delegated work', () => {
         frameId: first.children[0].frameId,
         attemptId: first.children[0].attemptId,
         title: 'First',
+        name: 'First',
+        agentName: 'Main Agent',
         status: 'running'
       },
       {
         frameId: second.children[0].frameId,
         attemptId: second.children[0].attemptId,
         title: 'Second',
+        name: 'Second',
+        agentName: 'Main Agent',
         status: 'running'
       }
     ])
@@ -2114,12 +2208,16 @@ describe('durable delegated work', () => {
         frameId: secondId,
         attemptId: second.children[0].attemptId,
         title: 'Second',
+        name: 'Second',
+        agentName: 'Main Agent',
         status: 'running'
       },
       {
         frameId: firstId,
         attemptId: first.children[0].attemptId,
         title: 'First',
+        name: 'First',
+        agentName: 'Main Agent',
         status: 'running'
       }
     ])
@@ -2190,6 +2288,8 @@ describe('durable delegated work', () => {
       {
         frameId: secondId,
         attemptId: second.children[0].attemptId,
+        name: 'Second',
+        agentName: 'Main Agent',
         status: 'completed',
         terminalMessageId: expect.any(String),
         response: 'Second durable answer',
@@ -2198,6 +2298,8 @@ describe('durable delegated work', () => {
       {
         frameId: firstId,
         attemptId: first.children[0].attemptId,
+        name: 'First',
+        agentName: 'Main Agent',
         status: 'completed',
         terminalMessageId: expect.any(String),
         response: 'First durable answer',
@@ -2209,12 +2311,16 @@ describe('durable delegated work', () => {
         frameId: firstId,
         attemptId: first.children[0].attemptId,
         title: 'First',
+        name: 'First',
+        agentName: 'Main Agent',
         status: 'completed'
       },
       {
         frameId: secondId,
         attemptId: second.children[0].attemptId,
         title: 'Second',
+        name: 'Second',
+        agentName: 'Main Agent',
         status: 'completed'
       }
     ])
@@ -2245,6 +2351,8 @@ describe('durable delegated work', () => {
       {
         frameId: cancelled.children[0].frameId,
         attemptId: cancelled.children[0].attemptId,
+        name: 'Cancellation',
+        agentName: 'Main Agent',
         status: 'cancelled',
         artifactsCreated: [],
         cancellationReason: 'main_agent_stop'
@@ -2252,6 +2360,8 @@ describe('durable delegated work', () => {
       {
         frameId: failed.children[0].frameId,
         attemptId: failed.children[0].attemptId,
+        name: 'Failure',
+        agentName: 'Main Agent',
         status: 'error',
         artifactsCreated: [],
         error: { code: 'execution_failure', message: 'safe provider failure' }

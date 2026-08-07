@@ -74,6 +74,9 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   returns: DELEGATE_AGENT_CONTRACT.returns,
   constraints: [
     'Only the Main/root Agent can call host.delegate; nested delegation is unsupported.',
+    'Call await host.agents.list() to discover Specialist profile ids and public names.',
+    'Set profile to a stable id or unique exact public name returned by host.agents.list().',
+    'Omitting profile always selects Main Agent; the Session Specialist binding is not inherited.',
     'A request array is admitted atomically and must be non-empty.',
     'Dispatch can be rejected before execution when capacity, framework, Specialist, or input admission is unavailable.',
     'Each child receives only its task, explicit context, and declared immutable inputs.',
@@ -83,6 +86,10 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
     {
       title: 'Wait for one Subagent',
       code: "const outcome = await host.delegate({ task: 'Verify the statistical assumptions' })"
+    },
+    {
+      title: 'Select a Specialist discovered from the public catalog',
+      code: "const [specialist] = await host.agents.list()\nconst outcome = await host.delegate({ task: 'Verify the statistical assumptions', profile: specialist.id })"
     },
     {
       title: 'Dispatch in parallel, continue, then collect',

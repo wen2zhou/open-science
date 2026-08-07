@@ -193,7 +193,7 @@ describe('notebook RPC agentsCall route', () => {
       // sees the caller-supplied session id as a user param.
       expect(read).toHaveBeenCalledWith(
         { op: 'list_skills', params: { name_or_id: 'demo' } },
-        { sessionId: 'trusted-session' }
+        { sessionId: 'trusted-session', callerRole: 'main' }
       )
     } finally {
       connection.release()
@@ -274,7 +274,7 @@ describe('notebook RPC agentsCall route', () => {
       // Only the trusted session_id (as context) and the legitimate method filter reach the service.
       expect(read).toHaveBeenCalledWith(
         { op: 'list_skills', params: { name_or_id: 'demo' } },
-        { sessionId: 'trusted-session' }
+        { sessionId: 'trusted-session', callerRole: 'main' }
       )
     } finally {
       connection.release()

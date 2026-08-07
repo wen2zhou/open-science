@@ -50,6 +50,9 @@ type ProductionDelegatedWorkOptions = Readonly<{
   resolveSpecialist?(
     profileId: string
   ): Promise<SpecialistProfileView | undefined> | SpecialistProfileView | undefined
+  resolveSpecialistReference?(
+    profileReference: string
+  ): Promise<SpecialistProfileView | undefined> | SpecialistProfileView | undefined
   artifactEvidence?: DelegatedArtifactEvidenceOptions
   reviewEvidence?: DelegatedReviewEvidenceOptions
   parentMessages?: Readonly<{ deliver(delivery: ParentMessageDelivery): Promise<void> }>
@@ -164,6 +167,7 @@ const createProductionDelegatedWorkComposition = (
       records,
       assertAvailable: framework.assertAvailable,
       resolveSpecialist: options.resolveSpecialist,
+      resolveSpecialistReference: options.resolveSpecialistReference,
       validateInput: (identity) => workspace.validateInput(identity, key),
       workspace,
       artifactEvidence,

@@ -45,6 +45,7 @@ const catalog: AgentsCatalogSource = {
 
 const completionContext = {
   sessionId: 'trusted-session',
+  callerRole: 'main' as const,
   turnId: 'tool-1',
   controlInvocationGeneration: 1,
   toolInvocationId: 'tool-1'
@@ -384,6 +385,7 @@ describe('completion gate tracer bullet', () => {
     const harness = createHarness({ status: 'approved' })
     const trusted = {
       sessionId: 'trusted-session',
+      callerRole: 'main' as const,
       turnId: 'trusted-turn',
       controlInvocationGeneration: 1,
       toolInvocationId: 'trusted-tool'
@@ -689,7 +691,7 @@ describe('completion gate tracer bullet', () => {
         switch: (name: string | null) =>
           harness.agents.dispatch(
             { op: 'switch', params: { name } },
-            { sessionId: 'trusted-session' }
+            { sessionId: 'trusted-session', callerRole: 'main' }
           )
       }
     }

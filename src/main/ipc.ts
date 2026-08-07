@@ -1093,6 +1093,8 @@ const createApplicationModules = async (
     },
     frameworks: delegatedFrameworks,
     resolveSpecialist: (profileId) => profileService.resolveRunnableById(profileId),
+    resolveSpecialistReference: (profileReference) =>
+      profileService.resolveRunnableByReference(profileReference),
     artifactEvidence: {
       turns: delegatedArtifactTurns,
       artifactStorageSessionId: ({ sessionId }) => sessionId,

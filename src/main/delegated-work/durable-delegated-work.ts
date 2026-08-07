@@ -27,6 +27,9 @@ import type {
   DelegatedWorkDurableRecords,
   DurableAttempt,
   DurableChild,
+  DurableChildSummary,
+  DurableDelegateOutcome,
+  DurableDelegateResult,
   DurablePendingMessage
 } from './delegated-work-record-types'
 
@@ -98,31 +101,6 @@ type RootDelegatePermissionResponse = DelegatePermissionResponse &
 type RootDelegatePermissionEvent =
   | Readonly<{ kind: 'requested'; request: RootDelegatePermissionRequest }>
   | Readonly<{ kind: 'settled'; request: RootDelegatePermissionRequest }>
-
-type DurableChildSummary = Readonly<{
-  frameId: string
-  attemptId: string
-  title: string
-  status: 'running' | 'completed' | 'cancelled' | 'error'
-}>
-
-type DurableDelegateResult = Readonly<{
-  frameId: string
-  attemptId: string
-  status: 'completed' | 'cancelled' | 'error'
-  terminalMessageId?: string
-  response?: string
-  artifactsCreated: readonly ArtifactFile[]
-  cancellationReason?: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
-  error?: Readonly<{ code: string; message: string }>
-}>
-
-type DurableDelegateOutcome =
-  | Readonly<{
-      kind: 'receipts'
-      children: readonly Readonly<{ frameId: string; attemptId: string; status: 'running' }>[]
-    }>
-  | Readonly<{ kind: 'results'; children: readonly DurableDelegateResult[] }>
 
 type DurableSendMessageOutcome =
   | Readonly<{
@@ -244,6 +222,9 @@ const createDurableDelegatedWork = (options: {
   resolveSpecialist?: (
     profileId: string
   ) => Promise<SpecialistDelegationProfile | undefined> | SpecialistDelegationProfile | undefined
+  resolveSpecialistReference?: (
+    profileReference: string
+  ) => Promise<SpecialistDelegationProfile | undefined> | SpecialistDelegationProfile | undefined
   validateInput?: (identity: string) => Promise<boolean> | boolean
   workspace?: Readonly<{
     prepare(
@@ -293,6 +274,7 @@ const createDurableDelegatedWork = (options: {
   )
   const admissionPolicy = new DelegatedWorkAdmissionPolicy(
     options.resolveSpecialist,
+    options.resolveSpecialistReference,
     options.validateInput
   )
   const running = new Map<
@@ -662,9 +644,11 @@ const createDurableDelegatedWork = (options: {
       launch(child, caller.session, reservation, reservation.slotIds[index])
       return running.get(child.frameId)!.completion
     })
-    const receipts = admissions.map(({ frameId, attemptId }) => ({
+    const receipts = admissions.map(({ frameId, attemptId, title, resolvedAgent }) => ({
       frameId,
       attemptId,
+      name: title,
+      agentName: resolvedAgent.kind === 'specialist' ? resolvedAgent.displayName : 'Main Agent',
       status: 'running' as const
     }))
     if (delegateOptions.wait === false) return { kind: 'receipts', children: receipts }

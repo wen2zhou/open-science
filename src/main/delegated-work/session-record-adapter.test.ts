@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 import type { AcpAgentRuntimeUpdate } from '../../shared/acp'
 import { createLinearConversationGraph } from '../../shared/conversation-graph'
+import type { BuiltinSpecialistRegistryEntry } from '../../shared/specialist-package'
+import { emptyFullAccessConfig, emptySelectedConfig } from '../../shared/specialist'
 import {
   normalizeSessionFile,
   type PersistedChatMessage,
@@ -12,6 +17,8 @@ import {
   type SessionFileIndex,
   type SessionMutationRepository
 } from '../session-persistence/coordinator'
+import { SpecialistRepository } from '../specialist/repository'
+import { ProfileService } from '../specialist/service'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
 import {
   createDurableDelegatedWork,
@@ -704,6 +711,122 @@ describe('Session delegated-work adapter', () => {
       .toBe('Source Auditor')
   })
 
+  it('rejects every unavailable profile reference atomically with a bounded safe Specialist-name list before durable admission', async () => {
+    const profileStorage = await mkdtemp(join(tmpdir(), 'delegated-profile-admission-'))
+    try {
+      const builtin = (id: string): BuiltinSpecialistRegistryEntry => ({
+        kind: 'builtin',
+        readonly: true,
+        id,
+        version: '1.0.0',
+        name: 'AMBIGUOUS',
+        displayName: `Ambiguous ${id}`,
+        description: `SECRET_DESCRIPTION_${id}`,
+        systemPrompt: `SECRET_PROMPT_${id}`,
+        enabled: true,
+        capabilityMode: 'selected',
+        fullAccess: emptyFullAccessConfig(),
+        selectedCapabilities: emptySelectedConfig()
+      })
+      const profileRepository = new SpecialistRepository(profileStorage)
+      const profiles = new ProfileService(profileRepository, {
+        load: async () => ({
+          entries: [builtin('secret-builtin-id-a'), builtin('secret-builtin-id-b')],
+          diagnostics: []
+        })
+      })
+      for (let index = 0; index < 10; index += 1) {
+        await profiles.create({
+          name: `AVAILABLE_${String(index).padStart(2, '0')}`,
+          description: `SECRET_DESCRIPTION_${index}`,
+          systemPrompt: `SECRET_PROMPT_${index}`
+        })
+      }
+      const disabled = await profiles.create({ name: 'DISABLED_PROFILE' })
+      await profiles.setEnabled(disabled.id, false)
+      await profileRepository.insert({
+        id: 'secret-pending-id',
+        name: 'PENDING_PROFILE',
+        displayName: 'Pending Profile',
+        description: 'SECRET_PENDING_DESCRIPTION',
+        systemPrompt: 'SECRET_PENDING_PROMPT',
+        enabled: false,
+        setupPending: true,
+        capabilityMode: 'selected',
+        fullAccess: emptyFullAccessConfig(),
+        selectedCapabilities: emptySelectedConfig(),
+        revision: 1,
+        packageVersion: '0.1.0',
+        origin: 'imported',
+        ownedSkillIds: []
+      })
+
+      const { coordinator, readSession } = createHarness()
+      const execution = createDeterministicDelegateExecution()
+      const rootFrameId = createSession().conversationGraph!.rootFrameId
+      const records = createSessionDelegatedWorkRecords(
+        { commands: coordinator, readSession, frameworkId: 'codex' },
+        key
+      )
+      const work = createDurableDelegatedWork({
+        execution,
+        records,
+        resolveSpecialist: (profileId) => profiles.resolveRunnableById(profileId),
+        resolveSpecialistReference: (reference) => profiles.resolveRunnableByReference(reference)
+      })
+      const baseline = await readSession()
+      const caller: AuthenticatedDelegateCaller = {
+        session: key,
+        frameId: rootFrameId,
+        role: 'main',
+        originMessageId: rootPrompt.id,
+        toolInvocationId: 'unavailable-profile'
+      }
+      const available =
+        'Available Specialists: AMBIGUOUS, AVAILABLE_00, AVAILABLE_01, AVAILABLE_02, AVAILABLE_03, AVAILABLE_04, AVAILABLE_05, AVAILABLE_06 (list truncated).'
+      const cases = [
+        { reference: 'UNKNOWN_PROFILE', reason: 'unknown' },
+        { reference: 'AMBIGUOUS', reason: 'ambiguous' },
+        { reference: disabled.id, reason: 'unavailable' },
+        { reference: 'PENDING_PROFILE', reason: 'unavailable' }
+      ] as const
+
+      for (const [index, { reference, reason }] of cases.entries()) {
+        const error = await work
+          .delegate(
+            { ...caller, toolInvocationId: `unavailable-profile-${index}` },
+            { task: 'Must not persist', profile: reference },
+            { wait: false }
+          )
+          .then(
+            () => undefined,
+            (failure: unknown) => failure
+          )
+        expect(error).toMatchObject({
+          code: 'admission_rejection',
+          message: `Requested Specialist is ${reason}. ${available}`
+        })
+        expect(String(error)).not.toMatch(
+          /secret-builtin-id|secret-pending-id|SECRET_DESCRIPTION|SECRET_PROMPT/
+        )
+        expect(execution.reservationCounts()).toEqual([])
+        expect(await readSession()).toEqual(baseline)
+      }
+
+      await expect(
+        work.delegate(
+          { ...caller, toolInvocationId: 'mixed-unavailable-profile' },
+          [{ task: 'Valid Main child' }, { task: 'Invalid child', profile: 'UNKNOWN_PROFILE' }],
+          { wait: false }
+        )
+      ).rejects.toMatchObject({ code: 'admission_rejection' })
+      expect(execution.reservationCounts()).toEqual([])
+      expect(await readSession()).toEqual(baseline)
+    } finally {
+      await rm(profileStorage, { recursive: true, force: true })
+    }
+  })
+
   it('preserves detached child identity, title, status, and collect result across Session reopen', async () => {
     const { coordinator, readSession } = createHarness()
     const execution = createDeterministicDelegateExecution()
@@ -761,6 +884,8 @@ describe('Session delegated-work adapter', () => {
         frameId: receipt.children[0].frameId,
         attemptId: receipt.children[0].attemptId,
         title: 'Stable trace',
+        name: 'Stable trace',
+        agentName: 'Main Agent',
         status: 'completed'
       }
     ])
@@ -768,6 +893,8 @@ describe('Session delegated-work adapter', () => {
       {
         frameId: receipt.children[0].frameId,
         attemptId: receipt.children[0].attemptId,
+        name: 'Stable trace',
+        agentName: 'Main Agent',
         status: 'completed',
         terminalMessageId: expect.any(String),
         response: 'Persisted answer',

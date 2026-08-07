@@ -62,6 +62,11 @@ class DelegatedWorkProjectionOwner {
     return {
       frameId: child.frameId,
       attemptId: attempt.id,
+      name: child.title,
+      agentName:
+        attempt.resolvedAgent.kind === 'specialist'
+          ? attempt.resolvedAgent.displayName
+          : 'Main Agent',
       status: attempt.status,
       ...(attempt.terminalMessageId ? { terminalMessageId: attempt.terminalMessageId } : {}),
       ...(terminalMessage ? { response: terminalMessage.content } : {}),
