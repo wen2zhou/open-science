@@ -1,4 +1,4 @@
-import { AlertCircle, Bot, ChevronRight, Loader2, X } from 'lucide-react'
+import { AlertCircle, Bot, ChevronDown, ChevronRight, Loader2, X } from 'lucide-react'
 import { useEffect, useMemo, useRef, useState } from 'react'
 import { useStore } from 'zustand'
 
@@ -48,31 +48,28 @@ const SubagentStatus = ({
   status: SubagentRawStatus
   awaitingPermission?: boolean
 }): React.JSX.Element => (
-  <span className="inline-flex shrink-0 items-center gap-1.5 text-[11px] text-text-300">
+  <span className="inline-flex shrink-0 items-center gap-1.5 text-[10px] font-semibold text-text-300">
     <span className={cn('size-1.5 rounded-full', statusDotClassName[status])} aria-hidden="true" />
     <span className="capitalize" data-subagent-status={status}>
       {status}
     </span>
-    {awaitingPermission ? <span className="text-primary">Waiting for permission</span> : null}
+    {awaitingPermission ? (
+      <span className="text-[9px] font-normal text-primary">Waiting for permission</span>
+    ) : null}
   </span>
 )
 
 const openSubagentPreview = (
   session: ChatSession,
   child: SessionSubagentChild,
-  trigger?: HTMLElement,
-  preserveSelection = false
+  trigger?: HTMLElement
 ): void => {
   if (trigger) returnFocusBySession.set(session.id, trigger)
-  const store = usePreviewWorkbenchStore.getState()
-  const existing = store.items.find((item) => item.id === `tool:${session.id}:subagents`)
-  const selectedAgentFrameId =
-    preserveSelection && existing?.type === 'tool' && existing.selectedAgentFrameId
-      ? existing.selectedAgentFrameId
-      : child.frameId
-  store.upsertAndActivateItem(
-    createSessionSubagentsPreviewItem(session.id, session.projectId, selectedAgentFrameId)
-  )
+  usePreviewWorkbenchStore
+    .getState()
+    .upsertAndActivateItem(
+      createSessionSubagentsPreviewItem(session.id, session.projectId, child.frameId)
+    )
 }
 
 type SubagentSurfaceProps = {
@@ -80,74 +77,93 @@ type SubagentSurfaceProps = {
   permissions: readonly AcpPermissionRequest[]
 }
 
-const SubagentSummaryCard = ({
-  session,
-  permissions
-}: SubagentSurfaceProps): React.JSX.Element | null => {
+const SubagentsBar = ({ session, permissions }: SubagentSurfaceProps): React.JSX.Element | null => {
+  const [expanded, setExpanded] = useState(false)
   const summary = useMemo(
     () => projectSessionSubagents(session, permissions),
     [permissions, session]
   )
   if (!session || summary.children.length === 0) return null
 
+  const single = summary.children.length === 1 ? summary.children[0] : undefined
+  const label = single?.title ?? `${summary.children.length} subagents`
+  const accessibleLabel = single
+    ? `${single.title}${single.status === 'running' ? ', running' : ''}`
+    : `${summary.children.length} subagents${summary.runningCount ? `, ${summary.runningCount} running` : ''}`
+
+  const selectChild = (child: SessionSubagentChild, trigger: HTMLElement): void => {
+    setExpanded(false)
+    openSubagentPreview(session, child, trigger)
+  }
+
   return (
-    <section
-      role="region"
-      aria-label="Subagent summary"
-      className="mx-auto my-3 w-full max-w-[56rem] overflow-hidden rounded-xl border border-border-200 bg-bg-000 shadow-card"
-    >
-      <div className="flex items-center gap-2 px-4 py-3 text-[12px] font-semibold text-text-000">
-        <Bot className="size-4" aria-hidden="true" />
-        <span>Subagents</span>
-        <span className="font-normal text-text-300">{summary.children.length} · read-only</span>
-      </div>
-      <div className="border-t border-border-200">
-        {summary.children.map((child) => (
-          <button
-            key={child.frameId}
-            type="button"
-            aria-label={`${child.title}, ${child.status}${child.awaitingPermission ? ', waiting for permission' : ''}`}
-            className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border-100 px-4 py-2 text-left last:border-b-0 hover:bg-bg-100 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-ring/50"
-            onClick={(event) => openSubagentPreview(session, child, event.currentTarget)}
-          >
-            <span className="min-w-0">
-              <span className="block truncate text-[12px] font-medium text-text-000">
-                {child.title}
+    <div className="relative min-w-0" data-testid="subagents-bar">
+      <button
+        type="button"
+        aria-label={accessibleLabel}
+        aria-expanded={single ? undefined : expanded}
+        aria-controls={single ? undefined : `subagents-bar-list-${session.id}`}
+        aria-live="polite"
+        title={single?.title}
+        className="flex h-7 min-w-0 max-w-full items-center gap-1.5 rounded-md px-2 text-[11px] text-text-300 hover:bg-bg-300 hover:text-text-100 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+        onClick={(event) => {
+          if (single) {
+            openSubagentPreview(session, single, event.currentTarget)
+            return
+          }
+          setExpanded((value) => !value)
+        }}
+      >
+        <Bot className="size-3.5 shrink-0" aria-hidden="true" />
+        <span className="min-w-0 truncate font-medium text-text-100">{label}</span>
+        {single?.status === 'running' ? (
+          <Loader2
+            className="size-3 shrink-0 animate-spin text-primary motion-reduce:animate-none"
+            aria-label="Running"
+          />
+        ) : !single && summary.runningCount > 0 ? (
+          <span className="shrink-0">· {summary.runningCount} running</span>
+        ) : null}
+        {single ? null : (
+          <ChevronDown
+            className={cn('size-3 shrink-0 transition-transform', expanded && 'rotate-180')}
+            aria-hidden="true"
+          />
+        )}
+      </button>
+
+      {expanded ? (
+        <div
+          id={`subagents-bar-list-${session.id}`}
+          aria-label="Subagents"
+          className="absolute bottom-full left-0 z-40 mb-1 max-h-72 w-[min(32rem,calc(100vw-4rem))] overflow-y-auto rounded-xl border border-border-300/20 bg-bg-000 shadow-card"
+        >
+          {summary.children.map((child) => (
+            <button
+              key={child.frameId}
+              type="button"
+              aria-label={`${child.title}, ${child.status}${child.awaitingPermission ? ', waiting for permission' : ''}`}
+              className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border-300/15 px-3.5 py-2.5 text-left last:border-b-0 hover:bg-bg-100/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-ring/50"
+              onClick={(event) => selectChild(child, event.currentTarget)}
+            >
+              <span className="min-w-0">
+                <span
+                  className="block truncate text-[12px] font-semibold leading-4 text-text-000"
+                  title={child.title}
+                >
+                  {child.title}
+                </span>
+                <span className="mt-0.5 block truncate text-[10px] leading-4 text-text-300">
+                  {child.agentLabel}
+                </span>
               </span>
-              <span className="block truncate text-[10px] text-text-300">{child.agentLabel}</span>
-            </span>
-            <SubagentStatus status={child.status} awaitingPermission={child.awaitingPermission} />
-            <ChevronRight className="size-3.5 text-text-300" aria-hidden="true" />
-          </button>
-        ))}
-      </div>
-    </section>
-  )
-}
-
-const SubagentComposerAggregate = ({
-  session,
-  permissions
-}: SubagentSurfaceProps): React.JSX.Element | null => {
-  const summary = useMemo(
-    () => projectSessionSubagents(session, permissions),
-    [permissions, session]
-  )
-  const firstRunning = summary.children.find(({ status }) => status === 'running')
-  if (!session || !firstRunning || summary.runningCount === 0) return null
-  const label = `${summary.runningCount} ${summary.runningCount === 1 ? 'subagent' : 'subagents'} running`
-
-  return (
-    <button
-      type="button"
-      aria-label={label}
-      aria-live="polite"
-      className="inline-flex min-h-7 items-center gap-1.5 rounded-md px-2 text-[11px] text-text-300 hover:bg-bg-200 hover:text-text-100 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-      onClick={(event) => openSubagentPreview(session, firstRunning, event.currentTarget, true)}
-    >
-      <Loader2 className="size-3 animate-spin motion-reduce:animate-none" aria-hidden="true" />
-      {label}
-    </button>
+              <SubagentStatus status={child.status} awaitingPermission={child.awaitingPermission} />
+              <ChevronRight className="size-3.5 text-text-300" aria-hidden="true" />
+            </button>
+          ))}
+        </div>
+      ) : null}
+    </div>
   )
 }
 
@@ -341,11 +357,7 @@ const SubagentPreview = ({
     state.sessions.find((candidate) => candidate.id === item.sessionId)
   )
   const summary = useMemo(() => projectSessionSubagents(session, []), [session])
-  const initialFrameId = item.selectedAgentFrameId ?? summary.children[0]?.frameId
-  const [selectedFrameId, setSelectedFrameId] = useState(
-    item.selectedAgentFrameId ?? initialFrameId ?? ''
-  )
-  const effectiveFrameId = selectedFrameId || initialFrameId || ''
+  const effectiveFrameId = item.selectedAgentFrameId ?? summary.children[0]?.frameId ?? ''
   const [isRetrying, setIsRetrying] = useState(false)
   const detail = useMemo(
     () => selectSubagentFrame(session, effectiveFrameId),
@@ -353,7 +365,6 @@ const SubagentPreview = ({
   )
 
   const selectFrame = (frameId: string): void => {
-    setSelectedFrameId(frameId)
     usePreviewWorkbenchStore
       .getState()
       .upsertItem(createSessionSubagentsPreviewItem(item.sessionId, item.projectId, frameId))
@@ -451,9 +462,4 @@ const SubagentPreview = ({
   )
 }
 
-export {
-  SubagentComposerAggregate,
-  SubagentAvailabilityNotice,
-  SubagentPreview,
-  SubagentSummaryCard
-}
+export { SubagentAvailabilityNotice, SubagentPreview, SubagentsBar }

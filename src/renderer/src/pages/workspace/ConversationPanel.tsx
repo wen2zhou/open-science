@@ -76,11 +76,7 @@ import {
 } from '@/stores/preview-workbench-store'
 import { WorkspaceMessageEditStateProvider } from './workspace-message-edit-state'
 import { workspaceHandoffLifecycleClient } from './handoff-lifecycle-source'
-import {
-  SubagentAvailabilityNotice,
-  SubagentComposerAggregate,
-  SubagentSummaryCard
-} from './SubagentReleaseSurfaces'
+import { SubagentAvailabilityNotice, SubagentsBar } from './SubagentReleaseSurfaces'
 import { projectSessionSubagents } from './subagent-release-projection'
 
 const composerInteractiveTransitionClassName = 'transition-colors duration-200 ease-out'
@@ -332,8 +328,9 @@ const ConversationPanel = ({
   const allJobsForSession = useSessionJobStore((s) => s.allJobsForSession)
   const hasAnyJobs = activeSession !== undefined && allJobsForSession(activeSession.id).length > 0
   const activeBranchPlan = selectActiveBranchPlan(activeSession)
-  const hasRunningSubagents =
-    projectSessionSubagents(activeSession, pendingPermissions).runningCount > 0
+  const subagentSummary = projectSessionSubagents(activeSession, pendingPermissions)
+  const hasSubagents = subagentSummary.children.length > 0
+  const hasRunningSubagents = subagentSummary.runningCount > 0
   const activePendingPlan = activeBranchPlan?.approval === 'pending' ? activeBranchPlan : undefined
   const activePendingPlanKey = activePendingPlan
     ? `${activePendingPlan.artifactVersionId}:${activePendingPlan.revision}`
@@ -501,9 +498,6 @@ const ConversationPanel = ({
           <WorkspaceMessageScroller
             activeSession={activeSession}
             onSendEditedMessage={onSendEditedMessage}
-            trailingContent={
-              <SubagentSummaryCard session={activeSession} permissions={pendingPermissions} />
-            }
             handoffLifecycleSource={workspaceHandoffLifecycleClient}
             onRetryHandoff={(request) => workspaceHandoffLifecycleClient.retry(request)}
           />
@@ -594,6 +588,7 @@ const ConversationPanel = ({
                     Notebook that becomes available after jobs still receives its entrance animation. */}
                 {notebookReference ||
                 hasAnyJobs ||
+                hasSubagents ||
                 (activeBranchPlan ? isPlanProgressVisible(activeBranchPlan) : false) ? (
                   <div
                     key={notebookReference ? `notebook-${notebookReference.sessionId}` : 'jobs'}
@@ -622,6 +617,7 @@ const ConversationPanel = ({
                         }}
                       />
                     ) : null}
+                    <SubagentsBar session={activeSession} permissions={pendingPermissions} />
                     {notebookReference ? (
                       <button
                         type="button"
@@ -990,11 +986,6 @@ const ConversationPanel = ({
                             Switching in this turn
                           </span>
                         ) : null}
-
-                        <SubagentComposerAggregate
-                          session={activeSession}
-                          permissions={pendingPermissions}
-                        />
 
                         <div className="flex-1" />
 

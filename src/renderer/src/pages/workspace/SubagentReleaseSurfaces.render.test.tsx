@@ -13,9 +13,8 @@ import { createInitialSessionState, useSessionStore } from '@/stores/session-sto
 
 import {
   SubagentAvailabilityNotice,
-  SubagentComposerAggregate,
   SubagentPreview,
-  SubagentSummaryCard
+  SubagentsBar
 } from './SubagentReleaseSurfaces'
 import { MobilePreviewSheet } from './MobilePreviewSheet'
 
@@ -227,37 +226,81 @@ describe('release-gate Subagent surfaces', () => {
     useSessionStore.setState({ ...createInitialSessionState(), sessions: [createSession()] })
   })
 
-  it('renders one summary with text statuses and opens one stable Session preview', () => {
+  it('shows total and running counts, then switches the stable preview from the expanded bar', () => {
     const session = createSession()
-    const { rerender } = render(<SubagentSummaryCard session={session} permissions={[]} />)
+    render(<SubagentsBar session={session} permissions={[]} />)
 
-    expect(screen.getAllByRole('region', { name: 'Subagent summary' })).toHaveLength(1)
-    expect(
-      screen.getByRole('button', { name: /Evidence landscape, running/i }).className
-    ).toContain('focus-visible:ring-[3px]')
-    expect(screen.getByRole('button', { name: /Challenge assumptions, error/i })).toBeTruthy()
+    const bar = screen.getByRole('button', { name: '2 subagents, 1 running' })
+    expect(bar.textContent).toContain('2 subagents')
+    expect(bar.textContent).toContain('1 running')
+    expect(bar.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByRole('button', { name: /Evidence landscape, running/i })).toBeNull()
 
-    fireEvent.click(screen.getByRole('button', { name: /Evidence landscape, running/i }))
-    fireEvent.click(screen.getByRole('button', { name: /Challenge assumptions, error/i }))
+    fireEvent.click(bar)
+    expect(bar.getAttribute('aria-expanded')).toBe('true')
+    const errorRow = screen.getByRole('button', { name: /Challenge assumptions, error/i })
+    expect(errorRow.className).toContain('border-border-300/15')
+    expect(within(errorRow).getByTitle('Challenge assumptions').className).toContain(
+      'font-semibold'
+    )
+    fireEvent.click(errorRow)
     expect(
       usePreviewWorkbenchStore
         .getState()
         .items.filter((item) => item.id === 'tool:session-1:subagents')
     ).toHaveLength(1)
 
-    rerender(<SubagentSummaryCard session={session} permissions={[]} />)
     expect(usePreviewWorkbenchStore.getState().items[0]).toMatchObject({
       selectedAgentFrameId: 'child-b'
     })
+    expect(bar.getAttribute('aria-expanded')).toBe('false')
   })
 
-  it('keeps Composer to one aggregate and exposes a count-only polite live region', () => {
-    render(<SubagentComposerAggregate session={createSession()} permissions={[]} />)
+  it('shows a truncated single name with hover text and only a running icon', () => {
+    const session = createSession()
+    const longName = 'Reproduce the complete statistical analysis with sensitivity checks'
+    const singleSession: ChatSession = {
+      ...session,
+      conversationGraph: session.conversationGraph
+        ? {
+            ...session.conversationGraph,
+            frames: session.conversationGraph.frames
+              .filter(({ id }) => id !== 'child-b')
+              .map((frame) =>
+                frame.id === 'child-a' ? { ...frame, delegateName: longName } : frame
+              )
+          }
+        : undefined,
+      runtimeContext: session.runtimeContext
+        ? {
+            ...session.runtimeContext,
+            delegatedWork: session.runtimeContext.delegatedWork
+              ? {
+                  ...session.runtimeContext.delegatedWork,
+                  records: session.runtimeContext.delegatedWork.records.filter(
+                    ({ agentFrameId }) => agentFrameId !== 'child-b'
+                  )
+                }
+              : undefined
+          }
+        : undefined
+    }
+    render(<SubagentsBar session={singleSession} permissions={[]} />)
 
-    const aggregate = screen.getByRole('button', { name: '1 subagent running' })
-    expect(aggregate.getAttribute('aria-live')).toBe('polite')
-    expect(aggregate.textContent).not.toContain('Evidence landscape')
-    expect(aggregate.className).toContain('focus-visible:ring-[3px]')
+    const bar = screen.getByRole('button', { name: `${longName}, running` })
+    expect(bar.title).toBe(longName)
+    expect(bar.querySelector('.truncate')?.textContent).toBe(longName)
+    expect(within(bar).getByLabelText('Running')).toBeTruthy()
+    expect(bar.textContent).not.toContain('1 subagent')
+    expect(bar.textContent).not.toContain('running')
+    expect(bar.getAttribute('aria-expanded')).toBeNull()
+
+    fireEvent.click(bar)
+
+    expect(screen.queryByLabelText('Subagents')).toBeNull()
+    expect(usePreviewWorkbenchStore.getState().items[0]).toMatchObject({
+      selectedAgentFrameId: 'child-a'
+    })
   })
 
   it('provides a read-only Frame selector, raw status, error detail, and Close focus return', () => {
@@ -322,15 +365,21 @@ describe('release-gate Subagent surfaces', () => {
       selectedAgentFrameId: 'child-b'
     }
     usePreviewWorkbenchStore.getState().upsertAndActivateItem(item)
-    render(<SubagentPreview item={item} />)
+    const { rerender } = render(<SubagentPreview item={item} />)
+    expect(screen.getByText('Provider turn failed')).toBeTruthy()
 
     fireEvent.change(screen.getByLabelText('Subagent Frame'), { target: { value: 'child-a' } })
 
-    expect(screen.getByText('Fourteen strong studies remain.')).toBeTruthy()
     expect(usePreviewWorkbenchStore.getState().items).toHaveLength(1)
     expect(usePreviewWorkbenchStore.getState().items[0]).toMatchObject({
       selectedAgentFrameId: 'child-a'
     })
+    const updatedItem = usePreviewWorkbenchStore.getState().items[0]
+    if (updatedItem?.type !== 'tool') throw new Error('Expected the Subagents preview item')
+    rerender(<SubagentPreview item={updatedItem} />)
+
+    expect(screen.getByText('Fourteen strong studies remain.')).toBeTruthy()
+    expect(screen.queryByText('Provider turn failed')).toBeNull()
   })
 
   it('streams the selected running Frame without mutating root state and completes token usage on stop', async () => {

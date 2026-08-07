@@ -1,7 +1,7 @@
 import type { NotebookRunRecord } from '../../../../shared/notebook'
 import type { ChatSession } from '@/stores/session-store'
 
-type NotebookFrameFilterValue = 'all' | 'unattributed' | `frame:${string}`
+type NotebookFrameFilterValue = `frame:${string}`
 type NotebookFrameFilterOption = Readonly<{
   value: NotebookFrameFilterValue
   label: string
@@ -16,38 +16,30 @@ const createNotebookFrameFilterOptions = (
   for (const run of runs) {
     if (run.agentFrameId) counts.set(run.agentFrameId, (counts.get(run.agentFrameId) ?? 0) + 1)
   }
-  const options: NotebookFrameFilterOption[] = [
-    { value: 'all', label: 'All', count: runs.length },
-    ...[...counts].map(([agentFrameId, count]) => ({
-      value: `frame:${agentFrameId}` as const,
-      label: frameLabels[agentFrameId] ?? agentFrameId,
-      count
-    }))
-  ]
-  const unattributedCount = runs.filter((run) => !run.agentFrameId).length
-  if (unattributedCount > 0) {
-    options.push({ value: 'unattributed', label: 'Unattributed', count: unattributedCount })
-  }
-  return options
+  return Object.entries(frameLabels).flatMap(([agentFrameId, label]) => {
+    const count = counts.get(agentFrameId)
+    return count
+      ? [
+          {
+            value: `frame:${agentFrameId}` as const,
+            label,
+            count
+          }
+        ]
+      : []
+  })
 }
 
 const projectNotebookRunsForFrame = (
   runs: readonly NotebookRunRecord[],
   filter: NotebookFrameFilterValue
 ): NotebookRunRecord[] => {
-  if (filter === 'all') return [...runs]
-  if (filter === 'unattributed') return runs.filter((run) => !run.agentFrameId)
   const agentFrameId = filter.slice('frame:'.length)
   return runs.filter((run) => run.agentFrameId === agentFrameId)
 }
 
-const notebookFrameFilterForExport = (
-  filter: NotebookFrameFilterValue
-): string | null | undefined => {
-  if (filter === 'all') return undefined
-  if (filter === 'unattributed') return null
-  return filter.slice('frame:'.length)
-}
+const notebookFrameFilterForExport = (filter: NotebookFrameFilterValue): string =>
+  filter.slice('frame:'.length)
 
 const filterNotebookRunsForSessionBranch = (
   runs: NotebookRunRecord[],
@@ -67,12 +59,11 @@ const notebookFrameLabels = (session: ChatSession): Record<string, string> => {
   const graph = session.conversationGraph
   if (!graph) return {}
   return Object.fromEntries(
-    graph.frames.map((frame) => [
-      frame.id,
-      frame.id === graph.rootFrameId
-        ? 'Main agent'
-        : (frame.delegateName ?? frame.agentName ?? frame.id)
-    ])
+    graph.frames.flatMap((frame) => {
+      if (frame.id === graph.rootFrameId) return [[frame.id, 'Main Agent']]
+      if (frame.kind !== 'delegate' || !frame.delegateName) return []
+      return [[frame.id, frame.delegateName]]
+    })
   )
 }
 

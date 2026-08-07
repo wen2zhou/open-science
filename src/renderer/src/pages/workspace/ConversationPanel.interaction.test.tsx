@@ -1160,7 +1160,9 @@ describe('ConversationPanel fix loop lock', () => {
     renderPanel({ activeSession: detachedChildSession, canSendMessage: true, onCancelRun })
 
     expect(container.querySelector('[aria-label="Send message"]')).toBeNull()
-    expect(container.textContent).toContain('1 subagent running')
+    expect(container.querySelector('[data-testid="subagents-bar"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Running"]')).not.toBeNull()
+    expect(container.textContent).not.toContain('1 subagent running')
     const stop = container.querySelector('[aria-label="Cancel run"]') as HTMLButtonElement
     expect(stop).not.toBeNull()
 

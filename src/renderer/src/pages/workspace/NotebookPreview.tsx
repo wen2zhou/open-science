@@ -2,6 +2,7 @@ import { useCallback, useEffect, useState } from 'react'
 
 import type { PreviewToolItem } from '@/stores/preview-workbench-store'
 import { useNotebookEnvStore } from '@/stores/notebook-env-store'
+import { useSessionStore } from '@/stores/session-store'
 import { cn } from '@/lib/utils'
 
 import type {
@@ -29,6 +30,7 @@ import {
 } from './notebook-cell-utils'
 import {
   createNotebookFrameFilterOptions,
+  notebookFrameLabels,
   projectNotebookRunsForFrame,
   type NotebookFrameFilterValue
 } from './session-notebook-projection'
@@ -215,7 +217,10 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   const [actionError, setActionError] = useState<string | null>(null)
   const [isRestarting, setIsRestarting] = useState(false)
   const [activeKind, setActiveKind] = useState<NotebookKernelKind>('python')
-  const [frameFilter, setFrameFilter] = useState<NotebookFrameFilterValue>('all')
+  const [frameFilter, setFrameFilter] = useState<NotebookFrameFilterValue>()
+  const session = useSessionStore((state) =>
+    state.sessions.find((candidate) => candidate.id === item.notebook.sessionId)
+  )
   // Selected environment within the active python/r pane; undefined lets the effective-env
   // computation below default to the first (canonical-default-first) environment.
   const [activeEnv, setActiveEnv] = useState<string | undefined>(undefined)
@@ -314,23 +319,16 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   const isTerminalLocked =
     isLoading || isSubmitting || isAgentWriting || Boolean(notebookState?.activeRunId) || gated
   const runs = notebookState?.runs ?? notebookState?.recentRuns ?? []
-  const frameLabels = Object.fromEntries(
-    runs.flatMap((run) =>
-      run.agentFrameId
-        ? [
-            [
-              run.agentFrameId,
-              run.agentFrameId === run.rootFrameId ? 'Main agent' : run.agentFrameId
-            ]
-          ]
-        : []
-    )
+  const frameOptions = createNotebookFrameFilterOptions(
+    runs,
+    session ? notebookFrameLabels(session) : {}
   )
-  const frameOptions = createNotebookFrameFilterOptions(runs, frameLabels)
   const effectiveFrameFilter = frameOptions.some((option) => option.value === frameFilter)
     ? frameFilter
-    : 'all'
-  const projectedRuns = projectNotebookRunsForFrame(runs, effectiveFrameFilter)
+    : frameOptions[0]?.value
+  const projectedRuns = effectiveFrameFilter
+    ? projectNotebookRunsForFrame(runs, effectiveFrameFilter)
+    : []
 
   // Surface a tab only for kernel kinds that actually produced a run — no default python/r tabs on a
   // fresh notebook; a kernel's tab appears once it has been used.
@@ -413,18 +411,19 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
       {gated ? (
         <EnvProvisionOverlay ui={provisionUi} onRetry={() => void retryProvision()} />
       ) : null}
-      {runs.length > 0 ? (
+      {frameOptions.length > 0 ? (
         <div className="flex max-w-full shrink-0 items-center gap-2 overflow-hidden border-b border-border-100 px-2 py-1.5">
           <label
             htmlFor={`notebook-preview-frame-filter-${item.notebook.sessionId}`}
             className="shrink-0 text-xs text-text-300"
           >
-            Agent Frame
+            Agent
           </label>
           <select
             id={`notebook-preview-frame-filter-${item.notebook.sessionId}`}
-            aria-label="Filter notebook runs by Agent Frame"
-            value={effectiveFrameFilter}
+            aria-label="Filter notebook runs by Agent"
+            value={effectiveFrameFilter ?? ''}
+            title={frameOptions.find(({ value }) => value === effectiveFrameFilter)?.label}
             onChange={(event) =>
               setFrameFilter(event.currentTarget.value as NotebookFrameFilterValue)
             }

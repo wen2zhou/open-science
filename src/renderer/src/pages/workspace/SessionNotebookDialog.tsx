@@ -128,17 +128,16 @@ const SessionNotebookContent = ({
   const [exportingAll, setExportingAll] = useState(false)
   const [exportError, setExportError] = useState<string>()
   const [exportSuccess, setExportSuccess] = useState<string>()
-  const [frameFilter, setFrameFilter] = useState<NotebookFrameFilterValue>('all')
+  const [frameFilter, setFrameFilter] = useState<NotebookFrameFilterValue>()
   const shortId = sessionId.slice(0, 8)
-  const producerFrames = new Set(
-    runs.flatMap((run) => (run.agentFrameId ? [run.agentFrameId] : []))
-  )
-  const agents = producerFrames.size || (runs.some((run) => run.source === 'agent') ? 1 : 0)
   const frameOptions = createNotebookFrameFilterOptions(runs, frameLabels)
   const effectiveFrameFilter = frameOptions.some((option) => option.value === frameFilter)
     ? frameFilter
-    : 'all'
-  const projectedRuns = projectNotebookRunsForFrame(runs, effectiveFrameFilter)
+    : frameOptions[0]?.value
+  const projectedRuns = effectiveFrameFilter
+    ? projectNotebookRunsForFrame(runs, effectiveFrameFilter)
+    : []
+  const agents = frameOptions.length
   // Only python/r runs are "cells" in the notebook sense; repl/bash are control-plane/shell runs
   // that share the run history but never became a notebook cell.
   const cells = runs.filter((run) => {
@@ -163,7 +162,7 @@ const SessionNotebookContent = ({
     (run) => resolveRunKernelKind(run) === effectiveActiveKind
   )
   const busy = exporting || exportingAll
-  const exportDisabled = status !== 'ready' || runs.length === 0 || busy
+  const exportDisabled = status !== 'ready' || projectedRuns.length === 0 || busy
 
   // The main button's "current tab" = the kernel whose .ipynb will be saved. repl/bash tabs fold
   // into the most recent data kernel so the file still has a real kernelspec; sessions that never
@@ -172,16 +171,15 @@ const SessionNotebookContent = ({
     kindsWithRuns.has(kernel as NotebookKernelKind)
   )
   const mixedDataKernels = dataKernelsWithRuns.length >= 2
-  const resolvedDataKernel = resolveDataKernelForTab(runs, effectiveActiveKind)
+  const resolvedDataKernel = resolveDataKernelForTab(projectedRuns, effectiveActiveKind)
 
   const handleExport = async (): Promise<void> => {
+    if (!effectiveFrameFilter) return
     setExporting(true)
     setExportError(undefined)
     setExportSuccess(undefined)
     try {
-      const exportFilter = notebookFrameFilterForExport(effectiveFrameFilter)
-      if (exportFilter === undefined) await onExport(effectiveActiveKind)
-      else await onExport(effectiveActiveKind, exportFilter)
+      await onExport(effectiveActiveKind, notebookFrameFilterForExport(effectiveFrameFilter))
     } catch (exportFailure) {
       // A canceled Save As resolves rather than throws, so reaching here is a real failure —
       // keep a diagnostic trail in addition to the footer banner.
@@ -193,13 +191,12 @@ const SessionNotebookContent = ({
   }
 
   const handleExportAll = async (): Promise<void> => {
+    if (!effectiveFrameFilter) return
     setExportingAll(true)
     setExportError(undefined)
     setExportSuccess(undefined)
     try {
-      const exportFilter = notebookFrameFilterForExport(effectiveFrameFilter)
-      const message =
-        exportFilter === undefined ? await onExportAll() : await onExportAll(exportFilter)
+      const message = await onExportAll(notebookFrameFilterForExport(effectiveFrameFilter))
       if (message) setExportSuccess(message)
     } catch (exportFailure) {
       console.error('Failed to export notebooks by kernel:', exportFailure)
@@ -248,6 +245,10 @@ const SessionNotebookContent = ({
           <p className="px-5 py-16 text-center text-sm text-muted-foreground">
             No execution records for this session.
           </p>
+        ) : frameOptions.length === 0 ? (
+          <p className="px-5 py-16 text-center text-sm text-muted-foreground">
+            No Main Agent or Subagent execution records for this session.
+          </p>
         ) : (
           <>
             <div className="flex max-w-full items-center gap-2 overflow-hidden border-b border-border bg-muted px-3 py-2">
@@ -255,12 +256,13 @@ const SessionNotebookContent = ({
                 htmlFor={`notebook-frame-filter-${sessionId}`}
                 className="shrink-0 text-xs text-muted-foreground"
               >
-                Agent Frame
+                Agent
               </label>
               <select
                 id={`notebook-frame-filter-${sessionId}`}
-                aria-label="Filter notebook runs by Agent Frame"
-                value={effectiveFrameFilter}
+                aria-label="Filter notebook runs by Agent"
+                value={effectiveFrameFilter ?? ''}
+                title={frameOptions.find(({ value }) => value === effectiveFrameFilter)?.label}
                 onChange={(event) => {
                   setFrameFilter(event.currentTarget.value as NotebookFrameFilterValue)
                   setExportSuccess(undefined)

@@ -5,6 +5,7 @@ import { SessionNotebookContent } from './SessionNotebookDialog'
 import {
   createNotebookFrameFilterOptions,
   filterNotebookRunsForSessionBranch,
+  notebookFrameLabels,
   projectNotebookRunsForFrame
 } from './session-notebook-projection'
 import type { NotebookRunRecord } from '../../../../shared/notebook'
@@ -22,6 +23,8 @@ const makeRun = (overrides: Partial<NotebookRunRecord> = {}): NotebookRunRecord 
   outputs: [],
   artifacts: [],
   workingFiles: [],
+  rootFrameId: 'root-frame-s1',
+  agentFrameId: 'root-frame-s1',
   ...overrides
 })
 
@@ -31,9 +34,16 @@ const renderContent = (props: {
   runs: NotebookRunRecord[]
   status: 'loading' | 'error' | 'ready'
   error?: string
+  frameLabels?: Readonly<Record<string, string>>
 }): string =>
   renderToStaticMarkup(
-    <SessionNotebookContent onClose={vi.fn()} onExport={vi.fn()} onExportAll={vi.fn()} {...props} />
+    <SessionNotebookContent
+      onClose={vi.fn()}
+      onExport={vi.fn()}
+      onExportAll={vi.fn()}
+      frameLabels={{ 'root-frame-s1': 'Main Agent' }}
+      {...props}
+    />
   )
 
 describe('SessionNotebookContent', () => {
@@ -147,11 +157,34 @@ describe('Session Notebook producer projection', () => {
       agentFrameId: 'root-frame-s1'
     }),
     makeRun({ runId: 'child-two-run', startedAt: 2, agentFrameId: 'frame-two' }),
-    makeRun({ runId: 'legacy-run', startedAt: 3 }),
+    makeRun({
+      runId: 'legacy-run',
+      startedAt: 3,
+      rootFrameId: undefined,
+      agentFrameId: undefined
+    }),
     makeRun({ runId: 'child-one-run', startedAt: 4, agentFrameId: 'frame-one' })
   ]
 
-  it('derives All, actual producer Frames, and Unattributed without changing chronological order', () => {
+  it('names only the Main Agent and delegated Subagents from the Session graph', () => {
+    expect(
+      notebookFrameLabels({
+        conversationGraph: {
+          rootFrameId: 'root-frame-s1',
+          frames: [
+            { id: 'root-frame-s1', kind: 'root' },
+            { id: 'frame-one', kind: 'delegate', delegateName: 'Evidence check' },
+            { id: 'review-frame', kind: 'review', agentName: 'Reviewer' }
+          ]
+        }
+      } as never)
+    ).toEqual({
+      'root-frame-s1': 'Main Agent',
+      'frame-one': 'Evidence check'
+    })
+  })
+
+  it('derives named Main Agent and Subagent producers without All or Unattributed', () => {
     expect(
       createNotebookFrameFilterOptions(attributedRuns, {
         'root-frame-s1': 'Main agent',
@@ -159,42 +192,41 @@ describe('Session Notebook producer projection', () => {
         'frame-two': 'Sensitivity check'
       })
     ).toEqual([
-      { value: 'all', label: 'All', count: 4 },
       { value: 'frame:root-frame-s1', label: 'Main agent', count: 1 },
-      { value: 'frame:frame-two', label: 'Sensitivity check', count: 1 },
       { value: 'frame:frame-one', label: 'Evidence check', count: 1 },
-      { value: 'unattributed', label: 'Unattributed', count: 1 }
-    ])
-    expect(projectNotebookRunsForFrame(attributedRuns, 'all').map((run) => run.runId)).toEqual([
-      'root-run',
-      'child-two-run',
-      'legacy-run',
-      'child-one-run'
+      { value: 'frame:frame-two', label: 'Sensitivity check', count: 1 }
     ])
     expect(
       projectNotebookRunsForFrame(attributedRuns, 'frame:frame-two').map((run) => run.runId)
     ).toEqual(['child-two-run'])
-    expect(
-      projectNotebookRunsForFrame(attributedRuns, 'unattributed').map((run) => run.runId)
-    ).toEqual(['legacy-run'])
   })
 
-  it('omits Unattributed when every Run has an Agent Frame and preserves the existing empty state', () => {
-    expect(
-      createNotebookFrameFilterOptions(attributedRuns.filter((run) => run.agentFrameId))
-    ).not.toContainEqual(expect.objectContaining({ value: 'unattributed' }))
+  it('does not expose raw Frame IDs when producer names are unavailable', () => {
+    expect(createNotebookFrameFilterOptions(attributedRuns)).toEqual([])
 
     const html = renderContent({ sessionId: 's1', runs: [], status: 'ready' })
     expect(html).toContain('No execution records for this session.')
-    expect(html).not.toContain('aria-label="Filter notebook runs by Agent Frame"')
+    expect(html).not.toContain('aria-label="Filter notebook runs by Agent"')
   })
 
-  it('renders a labelled native Frame filter that remains usable at narrow widths', () => {
-    const html = renderContent({ sessionId: 's1', runs: attributedRuns, status: 'ready' })
+  it('renders a named Agent filter that remains usable at narrow widths', () => {
+    const html = renderContent({
+      sessionId: 's1',
+      runs: attributedRuns,
+      status: 'ready',
+      frameLabels: {
+        'root-frame-s1': 'Main Agent',
+        'frame-one': 'Evidence check',
+        'frame-two': 'Sensitivity check'
+      }
+    })
 
-    expect(html).toContain('aria-label="Filter notebook runs by Agent Frame"')
-    expect(html).toContain('>All · 4 runs</option>')
-    expect(html).toContain('>Unattributed · 1 run</option>')
+    expect(html).toContain('aria-label="Filter notebook runs by Agent"')
+    expect(html).toContain('>Main Agent · 1 run</option>')
+    expect(html).toContain('>Evidence check · 1 run</option>')
+    expect(html).not.toContain('>All ·')
+    expect(html).not.toContain('Unattributed')
+    expect(html).not.toContain('>frame-one ·')
     expect(html).toContain('max-w-full')
     expect(html).toContain('focus-visible:ring-[3px]')
   })
