@@ -50,6 +50,51 @@ const startLoop = (
 }
 
 describe('repl_loop local RPC transport', () => {
+  it('exposes host.help as a thin Host SDK help RPC adapter', async () => {
+    let received: { method?: string; params?: Record<string, unknown> } = {}
+    const server = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => (body += chunk))
+      request.on('end', () => {
+        received = JSON.parse(body)
+        response.writeHead(200, { 'content-type': 'application/json' }).end(
+          JSON.stringify({
+            result: {
+              kind: 'operation',
+              id: 'host.delegate',
+              availability: { status: 'available' }
+            }
+          })
+        )
+      })
+    })
+    const connection = await listenForLocalRpc(server, {
+      name: 'repl-loop-host-sdk-help-test',
+      transport: 'pipe'
+    })
+    const { child, send } = startLoop({
+      OPEN_SCIENCE_MCP_RPC_ENDPOINT: connection.endpoint,
+      OPEN_SCIENCE_MCP_RPC_SOCKET_PATH: connection.socketPath,
+      OPEN_SCIENCE_MCP_RPC_TOKEN: 'test-token'
+    })
+
+    try {
+      const result = await send("return await host.help('delegate')")
+      expect(result.error).toBeNull()
+      expect(JSON.parse(result.result ?? '{}')).toEqual({
+        kind: 'operation',
+        id: 'host.delegate',
+        availability: { status: 'available' }
+      })
+      expect(received).toEqual({ method: 'hostSdkHelp', params: { query: 'delegate' } })
+    } finally {
+      child.kill()
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      )
+    }
+  }, 60_000)
+
   it('routes host.mcp through the issued local socket', async () => {
     let received: { method?: string; params?: { server?: string } } = {}
     let authorization: string | undefined
@@ -176,7 +221,61 @@ describe('repl_loop local RPC transport', () => {
     }
   }, 60_000)
 
-  it('routes host.send_message through delegated work and projects a continuation receipt', async () => {
+  it('routes host.send_message kind through delegated work and projects a continuation receipt', async () => {
+    let received: { method?: string; params?: Record<string, unknown> } = {}
+    const server = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => (body += chunk))
+      request.on('end', () => {
+        received = JSON.parse(body)
+        response.writeHead(200, { 'content-type': 'application/json' }).end(
+          JSON.stringify({
+            result: {
+              kind: 'continued',
+              child: { frameId: 'child-frame', attemptId: 'attempt-2', status: 'running' }
+            }
+          })
+        )
+      })
+    })
+    const connection = await listenForLocalRpc(server, {
+      name: 'repl-loop-delegated-work-test',
+      transport: 'pipe'
+    })
+    const { child, send } = startLoop({
+      OPEN_SCIENCE_MCP_RPC_ENDPOINT: connection.endpoint,
+      OPEN_SCIENCE_MCP_RPC_SOCKET_PATH: connection.socketPath,
+      OPEN_SCIENCE_MCP_RPC_TOKEN: 'test-token',
+      OPEN_SCIENCE_NOTEBOOK_SESSION_ID: 'session-1'
+    })
+
+    try {
+      const result = await send(
+        "return JSON.stringify(await host.send_message('child-frame', 'Check a counterexample', 'question'))"
+      )
+      expect(result.error).toBeNull()
+      expect(JSON.parse(result.result as string)).toEqual({
+        kind: 'continued',
+        child: { frame_id: 'child-frame', attempt_id: 'attempt-2', status: 'running' }
+      })
+      expect(received).toEqual({
+        method: 'delegatedWorkCall',
+        params: {
+          op: 'send_message',
+          target: 'child-frame',
+          message: 'Check a counterexample',
+          kind: 'question'
+        }
+      })
+    } finally {
+      child.kill()
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      )
+    }
+  }, 60_000)
+
+  it('keeps the two-argument host.send_message call compatible', async () => {
     let received: { method?: string; params?: Record<string, unknown> } = {}
     const server = createServer((request, response) => {
       let body = ''
@@ -219,6 +318,65 @@ describe('repl_loop local RPC transport', () => {
           op: 'send_message',
           target: 'child-frame',
           message: 'Check a counterexample'
+        }
+      })
+      expect(received.params).not.toHaveProperty('kind')
+    } finally {
+      child.kill()
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      )
+    }
+  }, 60_000)
+
+  it('projects a Delegate-to-parent queued send_message receipt without a child', async () => {
+    let received: { method?: string; params?: Record<string, unknown> } = {}
+    const server = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => (body += chunk))
+      request.on('end', () => {
+        received = JSON.parse(body)
+        response.writeHead(200, { 'content-type': 'application/json' }).end(
+          JSON.stringify({
+            result: {
+              kind: 'queued',
+              messageId: 'message-1',
+              targetFrameId: 'parent-frame',
+              attemptId: 'attempt-1'
+            }
+          })
+        )
+      })
+    })
+    const connection = await listenForLocalRpc(server, {
+      name: 'repl-loop-delegated-work-test',
+      transport: 'pipe'
+    })
+    const { child, send } = startLoop({
+      OPEN_SCIENCE_MCP_RPC_ENDPOINT: connection.endpoint,
+      OPEN_SCIENCE_MCP_RPC_SOCKET_PATH: connection.socketPath,
+      OPEN_SCIENCE_MCP_RPC_TOKEN: 'test-token',
+      OPEN_SCIENCE_NOTEBOOK_SESSION_ID: 'session-1'
+    })
+
+    try {
+      const result = await send(
+        "return JSON.stringify(await host.send_message('parent', 'Which cohort?', 'question'))"
+      )
+      expect(result.error).toBeNull()
+      expect(JSON.parse(result.result as string)).toEqual({
+        kind: 'queued',
+        message_id: 'message-1',
+        target_frame_id: 'parent-frame',
+        attempt_id: 'attempt-1'
+      })
+      expect(received).toEqual({
+        method: 'delegatedWorkCall',
+        params: {
+          op: 'send_message',
+          target: 'parent',
+          message: 'Which cohort?',
+          kind: 'question'
         }
       })
     } finally {

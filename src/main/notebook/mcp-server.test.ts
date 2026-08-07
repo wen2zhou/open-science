@@ -112,6 +112,21 @@ describe('notebook MCP server config', () => {
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).not.toContain('will not resolve a bare relative name')
   })
 
+  it('directs agents to authoritative Host SDK help before delegation without copying its schema', () => {
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Main/root agents')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain("await host.help('delegate')")
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('before the first delegation')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('registered/documented topics')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Nested delegation is unsupported')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Delegate agents must not call')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain("host.send_message('parent', message, kind?)")
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain("`'info'` or `'question'`")
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).not.toContain('{task')
+
+    expect(REPL_EXECUTE_DOC).toContain("await host.help('delegate')")
+    expect(REPL_EXECUTE_DOC).toContain('before the first delegation')
+  })
+
   it('does not inject a 4000-character output instruction into agent guidance', () => {
     const agentGuidance = [
       NOTEBOOK_SYSTEM_PROMPT_APPEND,
@@ -245,6 +260,17 @@ describe('repl_execute tool', () => {
     expect(tool?.description).not.toContain('./handoff/')
     expect(tool?.description.toLowerCase()).toContain('connector')
     expect(tool?.description).toContain('notebook_execute')
+  })
+
+  it('advertises the role-scoped subagent Host SDK on the only tool that can call it', () => {
+    expect(tool?.description).toContain('Main/root agents')
+    expect(tool?.description).toContain('host.help')
+    expect(tool?.description).toContain("host.help('delegate')")
+    expect(tool?.description).toContain('registered/documented topics')
+    expect(tool?.description).toContain('host.send_message')
+    expect(tool?.description).toContain('Nested delegation is unsupported')
+    expect(tool?.description).toContain('Delegate agents must not call')
+    expect(tool?.description).toContain("host.send_message('parent', message, kind?)")
   })
 
   it('forwards repl_execute input to the executeControl RPC method', async () => {

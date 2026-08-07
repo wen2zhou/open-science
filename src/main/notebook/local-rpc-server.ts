@@ -43,6 +43,8 @@ import type {
   AuthenticatedDelegateCaller,
   DurableDelegatedWork
 } from '../delegated-work/durable-delegated-work'
+import { hostSdkHelp } from '../host-sdk/help'
+import { parseDelegateRpcCall } from '../host-sdk/delegate-contract'
 
 const log = createLogger('notebook:local-rpc')
 
@@ -208,7 +210,13 @@ const ARTIFACT_RPC_METHODS = new Set<ArtifactRpcMethod>([
 // Capabilities are revoked when the turn ends. This upper bound only limits abandoned tokens, so
 // it must comfortably exceed long notebook executions that remain inside one active turn.
 const DEFAULT_ARTIFACT_RPC_CAPABILITY_TTL_MS = 2 * 60 * 60 * 1_000
-const CONTROL_RPC_METHODS = new Set(['mcpCall', 'computeCall', 'agentsCall', 'delegatedWorkCall'])
+const CONTROL_RPC_METHODS = new Set([
+  'mcpCall',
+  'computeCall',
+  'agentsCall',
+  'hostSdkHelp',
+  'delegatedWorkCall'
+])
 const SKILL_IMPORT_RPC_METHODS = new Set(['skillImport'])
 const PLAN_RPC_METHODS = new Set(['planCall'])
 
@@ -922,7 +930,9 @@ class NotebookLocalRpcServer {
                     sessionBinding.activeControlInvocation?.originatingUserMessageId,
                   tool_invocation_id: sessionBinding.activeControlInvocation?.toolInvocationId
                 }
-              : {})
+              : method === 'hostSdkHelp'
+                ? { caller_role: sessionBinding.delegatedWorkRole }
+                : {})
           }
         } else {
           if (authorization !== `Bearer ${this.token}`) {
@@ -1372,6 +1382,13 @@ class NotebookLocalRpcServer {
       )
     }
 
+    if (method === 'hostSdkHelp') {
+      return hostSdkHelp.query(params.query, {
+        callerRole: params.caller_role === 'delegate' ? 'delegate' : 'main',
+        capabilities: { delegation: Boolean(this.delegatedWorkService) }
+      })
+    }
+
     if (method === 'delegatedWorkCall') {
       if (!this.delegatedWorkService) throw new Error('Delegated Work service is not configured.')
       const projectId = typeof params.project_id === 'string' ? params.project_id : ''
@@ -1445,20 +1462,8 @@ class NotebookLocalRpcServer {
         return this.delegatedWorkService.collect(caller, frameIds)
       }
       if (op !== 'delegate') throw new Error('Delegated Work operation is invalid.')
-      if (!isRecord(params.request) && !Array.isArray(params.request)) {
-        throw new Error('host.delegate requires one request object or a non-empty request array.')
-      }
-      if (params.options !== undefined && !isRecord(params.options)) {
-        throw new Error('host.delegate options must be an object.')
-      }
-      const request = params.request as Parameters<DurableDelegatedWork['delegate']>[1]
-      const requestedOptions = isRecord(params.options) ? params.options : {}
-      if (requestedOptions.wait !== undefined && typeof requestedOptions.wait !== 'boolean') {
-        throw new Error('host.delegate wait must be a boolean.')
-      }
-      const delegateOptions =
-        typeof requestedOptions.wait === 'boolean' ? { wait: requestedOptions.wait } : {}
-      return this.delegatedWorkService.delegate(caller, request, delegateOptions)
+      const call = parseDelegateRpcCall(params)
+      return this.delegatedWorkService.delegate(caller, call.request, call.options)
     }
 
     const handler = resolveNotebookLocalRpcHandler(this.service, method, params)

@@ -10,12 +10,16 @@ const NOTEBOOK_MCP_SERVER_NAME = 'open-science-notebook'
 const MAX_RUNTIME_RESULTS = 40
 const MAX_ENVIRONMENT_RESULTS = 30
 
+const HOST_SDK_DISCOVERY_GUIDANCE =
+  "Host SDK discovery (use from `repl_execute`): `await host.help()` lists registered/documented topics; query an exact operation instead of guessing its arguments or results. Main/root agents must call `await host.help('delegate')` before the first delegation and follow that returned contract. Nested delegation is unsupported: Delegate agents must not call delegation or child-control methods; they may call `await host.send_message('parent', message, kind?)`, where kind is `'info'` or `'question'`."
+
 // Scoped prompt addendum that only applies when the agent is given notebook tools.
 const NOTEBOOK_SYSTEM_PROMPT_APPEND = [
   '<open_science_notebook_instructions>',
   'Notebook tool instructions (only applies when using open-science-notebook tools).',
   'Notebook preview is only for code and execution results; keep chat, explanation, and diagnosis in the chat area.',
   'Use `notebook_execute` for one persistent Python/R cell per call; reuse `cellId` to rerun a cell. Python/R data kernels cannot call connectors. Use `repl_execute` for `host.mcp`/`host.compute`. For large cross-kernel data, write under `process.env.OPEN_SCIENCE_HANDOFF_DIR` in the REPL and read the same `OPEN_SCIENCE_HANDOFF_DIR` path from Python/R.',
+  HOST_SDK_DISCOVERY_GUIDANCE,
   'Each runtime is a separate persistent namespace. Create named runtimes with `manage_environments`, select them with the bind/switch tools, and use files to move data across runtimes. Memory is lost on restart or app reopen; run history and files survive.',
   'The notebook already runs inside a writable session workspace. The cwd is already the session data dir; use plain relative paths for normal inputs and outputs. The connector handoff directory is outside that cwd and must be resolved from `OPEN_SCIENCE_HANDOFF_DIR`. Never copy a saved file onto the same path. Do not modify original user files.',
   'Use `inspect_packages` for version checks and `manage_packages` for installs. Never install inside a cell or shell. App-managed runtime contents belong under `$OPEN_SCIENCE_RUNTIME_DIR`, never the project, workspace, system Python, or a user global environment.',
@@ -137,6 +141,7 @@ const SWITCH_RUNTIME_DOC = [
 const REPL_EXECUTE_DOC = [
   'Run JavaScript in the persistent control-plane REPL, separate from notebook_execute Python/R data kernels.',
   'Only this kernel can call connectors (`await host.mcp(server, method, args)`) and remote compute (`host.compute`; load its skill for the API).',
+  HOST_SDK_DISCOVERY_GUIDANCE,
   'Globals persist and a trailing expression is returned. Return results directly when they are for Agent inspection. To hand off large data from the REPL to Python/R, write it under process.env.OPEN_SCIENCE_HANDOFF_DIR; Python/R reads the same OPEN_SCIENCE_HANDOFF_DIR path. Use notebook_execute for analysis code.'
 ].join('\n')
 

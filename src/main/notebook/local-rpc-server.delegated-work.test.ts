@@ -15,6 +15,50 @@ afterEach(async () => {
 })
 
 describe('authenticated delegatedWorkCall route', () => {
+  it('describes delegate availability from the authenticated control binding without an active invocation', async () => {
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: { delegate: vi.fn() }
+    })
+    const main = await server.issueControlConnection('session-1', 'project-1', 'root-frame')
+    const child = await server.issueControlConnection('session-1', 'project-1', 'child-frame', {
+      role: 'delegate',
+      attemptId: 'attempt-1'
+    })
+
+    const ask = async (endpoint: string, token: string, callerRole: string): Promise<unknown> => {
+      const response = await fetch(endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'hostSdkHelp',
+          params: { query: 'delegate', caller_role: callerRole }
+        })
+      })
+      expect(response.status).toBe(200)
+      return response.json()
+    }
+
+    await expect(ask(main.endpoint, main.token, 'delegate')).resolves.toMatchObject({
+      result: { kind: 'operation', availability: { status: 'available' } }
+    })
+    await expect(ask(child.endpoint, child.token, 'main')).resolves.toMatchObject({
+      result: {
+        kind: 'operation',
+        availability: {
+          status: 'unavailable',
+          reason: 'Nested delegation is unsupported for Delegate agents.'
+        }
+      }
+    })
+
+    main.release()
+    child.release()
+  })
+
   it('forwards a request array through the authenticated host seam without reordering it', async () => {
     const delegate = vi.fn(async () => ({
       kind: 'receipts' as const,

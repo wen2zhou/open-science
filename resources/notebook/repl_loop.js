@@ -1059,6 +1059,23 @@ async function delegateRpc(request, options = {}) {
   }
 }
 
+async function hostHelp(query = undefined) {
+  if (!RPC_ENDPOINT) throw new Error('host.help is unavailable: control RPC endpoint not set')
+  const res = await capturedRpcFetch(RPC_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
+    body: JSON.stringify({
+      method: 'hostSdkHelp',
+      params: { ...(query !== undefined ? { query } : {}) }
+    })
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok || body.error) {
+    throw new Error(`host.help: ${body.error || 'HTTP ' + res.status}`)
+  }
+  return body.result
+}
+
 async function hostDelegate(request, options = {}) {
   return delegateRpc(request, options)
 }
@@ -1118,7 +1135,7 @@ async function hostCollect(frameIds) {
   return delegatedObservationRpc('collect', frameIds)
 }
 
-async function hostSendMessage(target, message) {
+async function hostSendMessage(target, message, kind = undefined) {
   if (!RPC_ENDPOINT) {
     throw new Error('host.send_message is unavailable: control RPC endpoint not set')
   }
@@ -1127,7 +1144,12 @@ async function hostSendMessage(target, message) {
     headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
     body: JSON.stringify({
       method: 'delegatedWorkCall',
-      params: { op: 'send_message', target, message }
+      params: {
+        op: 'send_message',
+        target,
+        message,
+        ...(kind !== undefined ? { kind } : {})
+      }
     })
   })
   const body = await res.json().catch(() => ({}))
@@ -1135,6 +1157,14 @@ async function hostSendMessage(target, message) {
     throw new Error(`host.send_message: ${body.error || 'HTTP ' + res.status}`)
   }
   const outcome = body.result || {}
+  if (outcome.kind === 'queued') {
+    return {
+      kind: outcome.kind,
+      message_id: outcome.messageId,
+      target_frame_id: outcome.targetFrameId,
+      ...(outcome.attemptId ? { attempt_id: outcome.attemptId } : {})
+    }
+  }
   const child = outcome.child || {}
   return {
     kind: outcome.kind,
@@ -1334,6 +1364,7 @@ const hostCompute = {
 // Persistent sandbox: user-declared globals persist across requests (assign to `globalThis`/bare).
 const sandbox = {
   host: {
+    help: hostHelp,
     mcp: hostMcp,
     compute: hostCompute,
     agents: hostAgents,
