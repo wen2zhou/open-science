@@ -330,6 +330,8 @@ describe('NotebookPreview per-kernel tabs', () => {
       'select[aria-label="Filter notebook runs by Agent Frame"]'
     )
     expect(filter?.value).toBe('all')
+    expect(filter?.className).toContain('focus-visible:ring-[3px]')
+    expect(filter?.className).not.toContain('focus-visible:ring-2')
     expect(filter?.textContent).toContain('Main agent · 1 run')
     expect(filter?.textContent).toContain('frame-child · 1 run')
     expect(filter?.textContent).toContain('Unattributed · 1 run')

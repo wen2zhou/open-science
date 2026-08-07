@@ -81,6 +81,7 @@ import {
   SubagentComposerAggregate,
   SubagentSummaryCard
 } from './SubagentReleaseSurfaces'
+import { projectSessionSubagents } from './subagent-release-projection'
 
 const composerInteractiveTransitionClassName = 'transition-colors duration-200 ease-out'
 
@@ -331,6 +332,8 @@ const ConversationPanel = ({
   const allJobsForSession = useSessionJobStore((s) => s.allJobsForSession)
   const hasAnyJobs = activeSession !== undefined && allJobsForSession(activeSession.id).length > 0
   const activeBranchPlan = selectActiveBranchPlan(activeSession)
+  const hasRunningSubagents =
+    projectSessionSubagents(activeSession, pendingPermissions).runningCount > 0
   const activePendingPlan = activeBranchPlan?.approval === 'pending' ? activeBranchPlan : undefined
   const activePendingPlanKey = activePendingPlan
     ? `${activePendingPlan.artifactVersionId}:${activePendingPlan.revision}`
@@ -1012,8 +1015,11 @@ const ConversationPanel = ({
                         {activeSession?.status === 'running' ||
                         activeSession?.status === 'waiting-permission' ||
                         activeSession?.compacting ||
-                        activeSession?.fixLoopActive ? (
+                        activeSession?.fixLoopActive ||
+                        hasRunningSubagents ? (
                           // Running sessions expose cancel instead of send to prevent overlapping turns.
+                          // Detached children can outlive a wait=false Main turn, so their durable
+                          // running aggregate keeps the same root cascade reachable after Main settles.
                           // During a fix loop the main agent may be idle (the reviewer-review sub-phase runs
                           // in a separate ACP session), so fixLoopActive keeps the cancel affordance
                           // reachable across the whole loop, not just the agent-fix running turn.

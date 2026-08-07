@@ -1046,6 +1046,56 @@ describe('ConversationPanel fix loop lock', () => {
     fixLoopActive: true
   }
 
+  const detachedChildSession: ChatSession = {
+    ...idleSession,
+    status: 'idle',
+    activeRun: undefined,
+    conversationGraph: {
+      schemaVersion: 1,
+      rootFrameId: 'detached-root',
+      activeFrameId: 'detached-root',
+      frames: [
+        {
+          id: 'detached-root',
+          originBindingState: 'root',
+          kind: 'root',
+          status: 'completed',
+          activeBranchId: 'detached-root-branch',
+          createdAt: 1,
+          completedAt: 2
+        },
+        {
+          id: 'detached-child',
+          parentFrameId: 'detached-root',
+          originMessageId: 'detached-origin',
+          originBindingState: 'validated',
+          kind: 'delegate',
+          status: 'running',
+          activeBranchId: 'detached-child-branch',
+          createdAt: 2
+        }
+      ],
+      branches: [
+        {
+          id: 'detached-root-branch',
+          agentFrameId: 'detached-root',
+          createdAt: 1,
+          updatedAt: 2
+        },
+        {
+          id: 'detached-child-branch',
+          agentFrameId: 'detached-child',
+          createdAt: 2,
+          updatedAt: 2
+        }
+      ],
+      messages: [],
+      activities: [],
+      activityGroups: [],
+      runtimeSegments: []
+    }
+  }
+
   it('send button is disabled when canSendMessage is false (fix loop active)', () => {
     // canSendMessage is passed from outside (computed by WorkspacePage)
     renderPanel({ activeSession: idleSession, canSendMessage: false })
@@ -1103,6 +1153,48 @@ describe('ConversationPanel fix loop lock', () => {
     })
 
     expect(onCancelRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps root Stop available after a wait=false Main turn settles with a child running', () => {
+    const onCancelRun = vi.fn()
+    renderPanel({ activeSession: detachedChildSession, canSendMessage: true, onCancelRun })
+
+    expect(container.querySelector('[aria-label="Send message"]')).toBeNull()
+    expect(container.textContent).toContain('1 subagent running')
+    const stop = container.querySelector('[aria-label="Cancel run"]') as HTMLButtonElement
+    expect(stop).not.toBeNull()
+
+    act(() => stop.click())
+    expect(onCancelRun).toHaveBeenCalledOnce()
+  })
+
+  it('preserves duplicate prevention, progress, and failure recovery for detached-only Stop', async () => {
+    let rejectStop!: (error: Error) => void
+    const onCancelRun = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectStop = reject
+        })
+    )
+    renderPanel({ activeSession: detachedChildSession, canSendMessage: true, onCancelRun })
+
+    const stop = container.querySelector('[aria-label="Cancel run"]') as HTMLButtonElement
+    act(() => {
+      stop.click()
+      stop.click()
+    })
+    expect(onCancelRun).toHaveBeenCalledOnce()
+    expect(stop.disabled).toBe(true)
+    expect(stop.getAttribute('aria-label')).toBe('Stopping run and subagents')
+
+    await act(async () => {
+      rejectStop(new Error('detached cascade unavailable'))
+      await Promise.resolve()
+    })
+
+    const retry = container.querySelector('[aria-label="Cancel run"]') as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    expect(container.textContent).toContain('detached cascade unavailable')
   })
 
   it('shows cascade progress, prevents duplicate Stop, and restores the control after failure', async () => {

@@ -428,7 +428,7 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
             onChange={(event) =>
               setFrameFilter(event.currentTarget.value as NotebookFrameFilterValue)
             }
-            className="min-h-8 min-w-0 max-w-full flex-1 rounded-md border border-border-100 bg-bg-200 px-2 text-xs text-text-100 outline-none focus-visible:ring-2 focus-visible:ring-ring/50"
+            className="min-h-8 min-w-0 max-w-full flex-1 rounded-md border border-border-100 bg-bg-200 px-2 text-xs text-text-100 outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
           >
             {frameOptions.map((option) => (
               <option key={option.value} value={option.value}>
