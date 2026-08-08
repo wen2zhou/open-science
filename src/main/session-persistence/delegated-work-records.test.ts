@@ -134,6 +134,9 @@ describe('delegated-work Session records', () => {
       frameworkId: 'codex',
       startedAt: 20
     })
+    expect(
+      durable().conversationGraph?.messages.find(({ id }) => id === 'child-prompt-1')
+    ).toMatchObject({ runtimeSegmentId: 'segment-1' })
     await coordinator.applyAgentEvent(key, {
       expectedRevision: 2,
       frameId: 'child-frame-1',

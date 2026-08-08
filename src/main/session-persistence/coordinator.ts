@@ -1147,6 +1147,14 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       if (graph.runtimeSegments.some((segment) => segment.id === input.runtimeSegmentId)) {
         throw new Error(`Runtime Segment already exists: ${input.runtimeSegmentId}`)
       }
+      const frame = graph.frames.find((candidate) => candidate.id === input.frameId)
+      const branch = graph.branches.find((candidate) => candidate.id === frame?.activeBranchId)
+      const promptMessage = graph.messages.find(
+        (message) => message.id === branch?.headMessageId && message.role === 'user'
+      )
+      if (!frame || !branch || !promptMessage) {
+        throw new Error('Delegated runtime has no current Frame, Branch, or prompt Message.')
+      }
       graph.runtimeSegments.push({
         id: input.runtimeSegmentId,
         agentFrameId: input.frameId,
@@ -1156,6 +1164,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
         ...(input.model ? { model: input.model } : {}),
         startedAt: input.startedAt
       })
+      promptMessage.runtimeSegmentId = input.runtimeSegmentId
       const attempts = record.attempts as DelegatedWorkAttemptRecord[]
       attempts[attempts.length - 1] = {
         ...attempt,

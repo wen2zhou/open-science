@@ -7,6 +7,7 @@ import { createLinearConversationGraph } from '../../shared/conversation-graph'
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import { NotebookLocalRpcServer } from '../notebook/local-rpc-server'
 import { ArtifactTurnOwner } from '../acp/artifact-turn-owner'
+import { ArtifactProvenanceRepository } from '../artifacts/provenance-repository'
 import { ArtifactRepository } from '../artifacts/repository'
 import { ArtifactRunRegistry } from '../artifacts/run-registry'
 import {
@@ -511,6 +512,14 @@ describe('production delegated-work composition', () => {
 
   it('composes execution-scoped Artifact evidence into production result and Frame detail', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-artifacts-'))
+    const proofState: { harness?: CompositionHarness } = {}
+    const ownership = new ArtifactProvenanceRepository({
+      storageRoot: root,
+      getClient: async () => {
+        throw new Error('ownership validation must not open the project database')
+      },
+      loadSession: async () => proofState.harness?.durable()
+    })
     const versionsByRun = new Map<string, ArtifactFile[]>()
     const finalized: Array<{
       attemptId: string
@@ -552,6 +561,20 @@ describe('production delegated-work composition', () => {
         turns,
         artifactStorageSessionId: ({ sessionId }) => `artifact-${sessionId}`,
         finalizePublication: async (publication, terminalMessageId, scope) => {
+          await ownership.validateFinalizationOwnership({
+            projectId: scope.session.projectId,
+            appSessionId: scope.session.sessionId,
+            artifactRunId: publication.runId,
+            artifactVersionIds: publication.artifacts.flatMap((artifact) =>
+              artifact.versionId ? [artifact.versionId] : []
+            ),
+            rootFrameId: scope.rootFrameId,
+            agentFrameId: scope.agentFrameId,
+            messageBranchId: scope.messageBranchId,
+            runtimeSegmentId: scope.runtimeSegmentId,
+            promptMessageId: scope.promptMessageId,
+            messageId: terminalMessageId
+          })
           finalized.push({
             attemptId: scope.attemptId,
             terminalMessageId,
@@ -568,6 +591,7 @@ describe('production delegated-work composition', () => {
             .flatMap((entry) => entry.artifacts)
       }
     })
+    proofState.harness = harness
 
     const pending = harness.composition.host.delegate(harness.caller, { task: 'Create evidence' })
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -582,6 +606,7 @@ describe('production delegated-work composition', () => {
 
     const result = await pending
     if (result.kind !== 'results') throw new Error('expected terminal delegated result')
+    expect(result.children[0].error?.message).toBeUndefined()
     expect(result).toMatchObject({
       kind: 'results',
       children: [
