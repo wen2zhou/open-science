@@ -34,6 +34,7 @@ type ExecutionControl = Readonly<{
   rejectAcceptance(error?: Error): void
   emit(event: DelegateExecutionEvent): void
   complete(response: string, turnUsage?: AcpTurnTokenUsage): void
+  completeTurn(response: string, turnUsage?: AcpTurnTokenUsage): Promise<void>
   fail(error?: Error): void
   cancel(): void
   rejectNextPermissionProfile(error?: Error): void
@@ -131,6 +132,8 @@ const createDeterministicDelegateExecution = (
       const completion = deferred<DelegateExecutionOutcome>()
       const listeners = new Set<(event: DelegateExecutionEvent) => void>()
       const messages: string[] = []
+      const queuedTurns: Array<DelegateExecutionInput['turn']> = []
+      let activeTurn = input.turn
       const permissionProfiles: PermissionProfileId[] = []
       const responses: DelegatePermissionResponse[] = []
       let permissionProfileFailure: Error | undefined
@@ -145,7 +148,19 @@ const createDeterministicDelegateExecution = (
         complete: (response, turnUsage) => {
           if (terminal) return
           terminal = true
-          completion.resolve({ status: 'completed', response, ...(turnUsage ? { turnUsage } : {}) })
+          void (async () => {
+            await activeTurn?.complete?.(response, turnUsage)
+            completion.resolve({
+              status: 'completed',
+              response,
+              ...(turnUsage ? { turnUsage } : {})
+            })
+          })().catch((error) => completion.reject(error))
+        },
+        async completeTurn(response, turnUsage) {
+          await activeTurn?.complete?.(response, turnUsage)
+          activeTurn = queuedTurns.shift()
+          await activeTurn?.begin?.()
         },
         fail: (error = new Error('execution failed')) => {
           if (terminal) return
@@ -184,8 +199,9 @@ const createDeterministicDelegateExecution = (
           listeners.add(listener)
           return () => listeners.delete(listener)
         },
-        async sendMessage(message) {
+        async sendMessage(message, turn) {
           messages.push(message)
+          queuedTurns.push(turn)
         },
         async setPermissionProfile(profile) {
           if (permissionProfileFailure) {

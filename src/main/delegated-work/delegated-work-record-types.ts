@@ -2,6 +2,7 @@ import type { AcpTurnTokenUsage } from '../../shared/acp'
 import type { ArtifactFile } from '../../shared/artifacts'
 import type {
   PersistedActivityGroup,
+  DelegatedCallerSource,
   PersistedMessageImage,
   PersistedToolActivity
 } from '../../shared/session-persistence'
@@ -84,6 +85,7 @@ type DurablePendingMessage = Readonly<{
   targetAttemptId?: string
   text: string
   kind: 'info' | 'question'
+  callerSource?: DelegatedCallerSource
   createdAt: number
   deliveredAt?: number
 }>
@@ -93,6 +95,8 @@ type DurableMessage = {
   frameId: string
   role: 'user' | 'assistant'
   content: string
+  responseToMessageId?: string
+  runtimeSegmentId?: string
   status?: 'complete' | 'error'
   eventIds?: string[]
   images?: PersistedMessageImage[]
@@ -158,6 +162,7 @@ type ContinueChildInput = Readonly<{
   message: string
   resolvedAgent: DurableResolvedAgent
   startedAt: number
+  callerSource: DelegatedCallerSource
 }>
 
 type DelegatedWorkDurableRecords = Readonly<{
@@ -167,11 +172,19 @@ type DelegatedWorkDurableRecords = Readonly<{
     frameId: string,
     attemptId: string,
     runtimeSegmentId: string
-  ): Promise<Readonly<{ rootFrameId: string; messageBranchId: string; promptMessageId: string }>>
+  ): Promise<
+    Readonly<{
+      rootFrameId: string
+      messageBranchId: string
+      promptMessageId: string
+      runtimeSegmentId: string
+    }>
+  >
   stageTerminalMessage(frameId: string, attemptId: string, message: DurableMessage): Promise<void>
   stageTerminalActivities?(
     frameId: string,
     attemptId: string,
+    runtimeSegmentId: string,
     activities: readonly PersistedToolActivity[],
     activityGroups: readonly PersistedActivityGroup[]
   ): Promise<void>
@@ -186,6 +199,26 @@ type DelegatedWorkDurableRecords = Readonly<{
     attemptId: string,
     messageId: string,
     deliveredAt: number
+  ): Promise<void>
+  startPendingTurn(
+    frameId: string,
+    attemptId: string,
+    pendingMessageId: string,
+    promptMessageId: string,
+    runtimeSegmentId: string
+  ): Promise<
+    Readonly<{
+      rootFrameId: string
+      messageBranchId: string
+      promptMessageId: string
+      runtimeSegmentId: string
+    }>
+  >
+  completeTurn(
+    frameId: string,
+    attemptId: string,
+    runtimeSegmentId: string,
+    endedAt: number
   ): Promise<void>
   snapshot(): Promise<DurableSnapshot>
 }>

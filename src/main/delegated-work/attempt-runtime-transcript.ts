@@ -25,6 +25,7 @@ type ProjectAttemptRuntimeTranscriptInput = Readonly<{
   updates: readonly AcpAgentRuntimeUpdate[]
   frameId: string
   promptMessageId: string
+  runtimeSegmentId?: string
   fallbackResponse: string
   endedAt: number
   turnUsage?: AcpTurnTokenUsage
@@ -105,6 +106,7 @@ const projectAttemptRuntimeTranscript = (
         frameId: scope.agentFrameId,
         role: 'assistant',
         content: text,
+        responseToMessageId: promptMessageId,
         eventIds: [event.id],
         ...(event.image ? { images: [{ id: event.id, ...event.image }] } : {}),
         createdAt: event.timestamp,
@@ -199,6 +201,7 @@ const projectAttemptRuntimeTranscript = (
       frameId,
       role: 'assistant',
       content: input.fallbackResponse,
+      responseToMessageId: promptMessageId,
       eventIds: [],
       createdAt: input.endedAt,
       updatedAt: input.endedAt,
@@ -249,6 +252,7 @@ const stageAttemptRuntimeTranscript = async (
   await records.stageTerminalActivities?.(
     frameId,
     attemptId,
+    input.runtimeSegmentId ?? input.updates[0]?.scope.runtimeSegmentId ?? '',
     transcript.activities,
     transcript.activityGroups
   )

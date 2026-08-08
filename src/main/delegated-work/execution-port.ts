@@ -57,13 +57,26 @@ type DelegateExecutionInput = Readonly<{
   profile?: string
   continuation: boolean
   artifactCurrentRunFile?: string
+  turn?: DelegateChildTurnIdentity
+}>
+
+type DelegateChildTurnIdentity = Readonly<{
+  promptMessageId: string
+  messageBranchId: string
+  runtimeSegmentId: string
+  begin?(): Promise<void>
+  complete?(
+    response: string,
+    turnUsage?: AcpTurnTokenUsage,
+    turnUsageUnavailable?: true
+  ): Promise<void>
 }>
 
 type RunningDelegateExecution = Readonly<{
   accepted: Promise<void>
   completion: Promise<DelegateExecutionOutcome>
   subscribe(listener: (event: DelegateExecutionEvent) => void): () => void
-  sendMessage(message: string): Promise<void>
+  sendMessage(message: string, turn?: DelegateChildTurnIdentity): Promise<void>
   setPermissionProfile(profile: PermissionProfileId): Promise<void>
   respondToPermission(response: DelegatePermissionResponse): Promise<void>
   cancel(): Promise<void>
@@ -87,6 +100,7 @@ export type {
   DelegateExecutionErrorCode,
   DelegateExecutionEvent,
   DelegateExecutionInput,
+  DelegateChildTurnIdentity,
   DelegateExecutionOutcome,
   DelegatePermissionResponse,
   RunningDelegateExecution

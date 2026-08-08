@@ -45,6 +45,7 @@ import type {
 } from '../delegated-work/durable-delegated-work'
 import { hostSdkHelp } from '../host-sdk/help'
 import { parseDelegateRpcCall } from '../host-sdk/delegate-contract'
+import { createNestedDelegateInvocationId } from '../../shared/delegated-caller-source'
 
 const log = createLogger('notebook:local-rpc')
 
@@ -1425,7 +1426,7 @@ class NotebookLocalRpcServer {
         ...(attemptId ? { attemptId } : {}),
         originMessageId,
         toolInvocationId: delegationCallId
-          ? `${toolInvocationId}\u0000delegate\u0000${delegationCallId}`
+          ? createNestedDelegateInvocationId(toolInvocationId, delegationCallId)
           : toolInvocationId
       }
       if (params.operation === 'stop_children') {

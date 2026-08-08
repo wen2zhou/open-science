@@ -2121,6 +2121,11 @@ class ArtifactProvenanceRepository {
     }
     for (const [field, value] of Object.entries(expected)) {
       if (producerRun[field as keyof typeof expected] !== value) {
+        if (field === 'agentFrameId') {
+          throw new Error(
+            'Notebook producer run belongs to a different agent frame. Have the producing agent publish it directly, or reference an already completed Artifact Version.'
+          )
+        }
         throw new Error(
           `Notebook producer run does not belong to the active Artifact ${field}: ${producerRunId}`
         )

@@ -293,6 +293,7 @@ describe('ACP delegate execution production adapter', () => {
     const secondPrompt = deferred<PromptResponse>()
     const secondStarted = deferred<void>()
     let callbacks!: AcpDelegateExecutionCallbacks
+    const completedTurns: unknown[] = []
     const execution = createAcpDelegateExecution({
       capacity: 1,
       prepare: async (input) => ({
@@ -333,15 +334,37 @@ describe('ACP delegate execution production adapter', () => {
       }
     })
     const reservation = await execution.reserve(1)
-    const running = execution.run(makeInput('message-boundary'), reservation.slotIds[0])
+    const running = execution.run(
+      {
+        ...makeInput('message-boundary'),
+        turn: {
+          promptMessageId: 'prompt-message-boundary',
+          messageBranchId: 'branch-message-boundary',
+          runtimeSegmentId: 'segment-message-boundary',
+          complete: async (_response, usage) => {
+            completedTurns.push(['first', usage])
+          }
+        }
+      },
+      reservation.slotIds[0]
+    )
     const events: unknown[] = []
     running.subscribe((event) => events.push(event))
     await running.accepted
 
     let delivered = false
-    const delivery = running.sendMessage('new parent context').then(() => {
-      delivered = true
-    })
+    const delivery = running
+      .sendMessage('new parent context', {
+        promptMessageId: 'prompt-message-second',
+        messageBranchId: 'branch-message-boundary',
+        runtimeSegmentId: 'segment-message-second',
+        complete: async (_response, usage) => {
+          completedTurns.push(['second', usage])
+        }
+      })
+      .then(() => {
+        delivered = true
+      })
     await Promise.resolve()
     expect(delivered).toBe(false)
 
@@ -386,6 +409,10 @@ describe('ACP delegate execution production adapter', () => {
       status: 'completed',
       turnUsage: { inputTokens: 30, cacheTokens: 6, outputTokens: 8, turnCount: 2 }
     })
+    expect(completedTurns).toEqual([
+      ['first', { inputTokens: 10, cacheTokens: 2, outputTokens: 3, turnCount: 1 }],
+      ['second', { inputTokens: 20, cacheTokens: 4, outputTokens: 5, turnCount: 1 }]
+    ])
     expect(events).toEqual([
       {
         kind: 'runtime',
@@ -395,8 +422,8 @@ describe('ACP delegate execution production adapter', () => {
             sessionId: 'session-1',
             agentFrameId: 'frame-message-boundary',
             attemptId: 'message-boundary',
-            runtimeSegmentId: 'segment-message-boundary',
-            promptMessageId: 'prompt-message-boundary'
+            runtimeSegmentId: 'segment-message-second',
+            promptMessageId: 'prompt-message-second'
           },
           event: {
             id: 'second-provider-stop',

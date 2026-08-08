@@ -8,7 +8,12 @@ import type {
 type DelegatedArtifactEvidenceOptions = Readonly<{
   turns: Pick<
     ArtifactTurnOwner,
-    'openExecution' | 'finalize' | 'dispose' | 'handleForExecution' | 'handoffFile'
+    | 'openExecution'
+    | 'finalize'
+    | 'dispose'
+    | 'handleForExecution'
+    | 'handoffFile'
+    | 'publishHandoff'
   >
   artifactStorageSessionId(session: DelegatedArtifactScope['session']): string
   finalizePublication(
@@ -41,6 +46,7 @@ const createDelegatedArtifactEvidence = (
     })
     return Object.freeze({
       execution: Object.freeze({ currentRunFile: options.turns.handoffFile(handle) }),
+      activateAt: (currentRunFile: string) => options.turns.publishHandoff(handle, currentRunFile),
       async finalize(terminalMessageId: string) {
         const publication = await options.turns.finalize(handle)
         if (publication) {

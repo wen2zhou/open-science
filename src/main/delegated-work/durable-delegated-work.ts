@@ -23,6 +23,13 @@ import {
   createAttemptRuntimeTranscriptStager,
   terminalizeUnsuccessfulAttempt
 } from './attempt-runtime-transcript'
+import {
+  createDelegatedTurnLifecycle,
+  type DelegatedArtifactEvidence,
+  type DelegatedArtifactHandle,
+  type DelegatedArtifactProjectionScope,
+  type DelegatedArtifactScope
+} from './delegated-turn-lifecycle'
 import type {
   DelegatedWorkDurableRecords,
   DurableAttempt,
@@ -126,36 +133,6 @@ type ReadOnlyAgentFrameDetail = Readonly<{
     // Existing Reviewer projection; renderers reuse ReviewerCard without delegated-only status.
     reviews?: readonly ReviewWithChecks[]
   }>[]
-}>
-
-type DelegatedArtifactScope = Readonly<{
-  session: SessionKey
-  executionId: string
-  attemptId: string
-  rootFrameId: string
-  agentFrameId: string
-  messageBranchId: string
-  runtimeSegmentId: string
-  promptMessageId: string
-  agentName: string
-}>
-
-type DelegatedArtifactProjectionScope = DelegatedArtifactScope &
-  Readonly<{
-    runtimeSegmentIds: readonly string[]
-    terminalMessageId?: string
-  }>
-
-type DelegatedArtifactHandle = Readonly<{
-  execution?: Readonly<{ currentRunFile: string }>
-  finalize(terminalMessageId: string): Promise<void>
-  dispose(): Promise<void>
-}>
-
-type DelegatedArtifactEvidence = Readonly<{
-  open(scope: DelegatedArtifactScope): Promise<DelegatedArtifactHandle>
-  revoke?(scope: DelegatedArtifactProjectionScope): Promise<void>
-  project(scope: DelegatedArtifactProjectionScope): Promise<readonly ArtifactFile[]>
 }>
 
 type DelegatedReviewProjectionScope = Readonly<{
@@ -282,7 +259,7 @@ const createDurableDelegatedWork = (options: {
     {
       attemptId: string
       completion: Promise<void>
-      deliver(message: string): Promise<void>
+      deliver(message: DurablePendingMessage): Promise<void>
       setPermissionProfile(profile: PermissionProfileId): Promise<void>
       cancel(reason: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'): Promise<void>
       executionStarted(): boolean
@@ -314,8 +291,21 @@ const createDurableDelegatedWork = (options: {
       rejectHandle = reject
     })
     void deliveryHandle.catch(() => undefined)
-    let artifact: DelegatedArtifactHandle | undefined
     const runtimeUpdates: AcpAgentRuntimeUpdate[] = []
+    const turnLifecycle = createDelegatedTurnLifecycle({
+      records: options.records,
+      artifactEvidence: options.artifactEvidence,
+      session,
+      attemptId: attempt.id,
+      agentFrameId: child.frameId,
+      agentName:
+        attempt.resolvedAgent.kind === 'specialist'
+          ? attempt.resolvedAgent.displayName
+          : 'Main Agent',
+      runtimeUpdates,
+      now,
+      createMessageId: () => createId('message')
+    })
     let cancelRequested = false
     let cancellationReason: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted' =
       'main_agent_stop'
@@ -342,20 +332,8 @@ const createDurableDelegatedWork = (options: {
           rejectHandle(new Error('delegate execution is no longer running'))
           return
         }
-        artifact = await options.artifactEvidence?.open({
-          session,
-          executionId: attempt.id,
-          attemptId: attempt.id,
-          rootFrameId: startedContext.rootFrameId,
-          agentFrameId: child.frameId,
-          messageBranchId: startedContext.messageBranchId,
-          runtimeSegmentId,
-          promptMessageId: startedContext.promptMessageId,
-          agentName:
-            attempt.resolvedAgent.kind === 'specialist'
-              ? attempt.resolvedAgent.displayName
-              : 'Main Agent'
-        })
+        await turnLifecycle.openInitial(startedContext)
+        const artifact = turnLifecycle.currentArtifact()
         const runningAttempt = running.get(child.frameId)
         if (runningAttempt?.attemptId === attempt.id) runningAttempt.artifact = artifact
         const ready = await snapshotChild(child.frameId)
@@ -378,7 +356,8 @@ const createDurableDelegatedWork = (options: {
           ...(artifact?.execution
             ? { artifactCurrentRunFile: artifact.execution.currentRunFile }
             : {}),
-          continuation
+          continuation,
+          turn: turnLifecycle.create(startedContext, true)
         }
         handle = options.execution.run(executionInput, slotId)
         resolveHandle(handle)
@@ -391,8 +370,8 @@ const createDurableDelegatedWork = (options: {
             eventScope.sessionId !== session.sessionId ||
             eventScope.agentFrameId !== child.frameId ||
             eventScope.attemptId !== attempt.id ||
-            eventScope.runtimeSegmentId !== runtimeSegmentId ||
-            eventScope.promptMessageId !== startedContext.promptMessageId
+            !eventScope.runtimeSegmentId ||
+            !eventScope.promptMessageId
           ) {
             return
           }
@@ -404,20 +383,23 @@ const createDurableDelegatedWork = (options: {
         const outcome = await handle.completion
         const endedAt = now()
         if (outcome.status === 'completed' && !cancelRequested) {
-          const transcript = await stageRuntimeTranscript({
-            terminalStatus: 'completed',
-            endedAt,
-            fallbackResponse: outcome.response,
-            ...(outcome.turnUsage
-              ? { turnUsage: outcome.turnUsage }
-              : outcome.turnUsageUnavailable
-                ? { turnUsageUnavailable: true }
-                : {})
-          })
-          const terminalMessage = transcript?.terminalMessage
+          const lastTurnMessage = turnLifecycle.lastTurnMessage()
+          const transcript = lastTurnMessage
+            ? undefined
+            : await stageRuntimeTranscript({
+                terminalStatus: 'completed',
+                endedAt,
+                fallbackResponse: outcome.response,
+                ...(outcome.turnUsage
+                  ? { turnUsage: outcome.turnUsage }
+                  : outcome.turnUsageUnavailable
+                    ? { turnUsageUnavailable: true }
+                    : {})
+              })
+          const terminalMessage = lastTurnMessage ?? transcript?.terminalMessage
           if (!terminalMessage)
             throw new Error('Completed delegated runtime has no terminal Message.')
-          await artifact?.finalize(terminalMessage.id)
+          if (!lastTurnMessage) await turnLifecycle.finalizeFallback(terminalMessage.id)
           await options.records.terminalize({
             frameId: child.frameId,
             attemptId: attempt.id,
@@ -450,7 +432,7 @@ const createDurableDelegatedWork = (options: {
         }
       } finally {
         permissionOwner.clearAttempt(child.frameId, attempt.id)
-        await artifact?.dispose().catch(() => undefined)
+        await turnLifecycle.dispose()
         await reservation.release(slotId).catch(() => undefined)
         if (running.get(child.frameId)?.attemptId === attempt.id) running.delete(child.frameId)
       }
@@ -459,7 +441,29 @@ const createDurableDelegatedWork = (options: {
       attemptId: attempt.id,
       completion,
       async deliver(message) {
-        await (await deliveryHandle).sendMessage(message)
+        if (!context) throw new Error('delegate execution has no active child Turn')
+        const pendingContext = {
+          rootFrameId: context.rootFrameId,
+          messageBranchId: context.messageBranchId,
+          promptMessageId: createId('message'),
+          runtimeSegmentId: createId('runtime')
+        }
+        const lifecycle = turnLifecycle.create(pendingContext, false)
+        await (
+          await deliveryHandle
+        ).sendMessage(message.text, {
+          ...lifecycle,
+          async begin() {
+            context = await options.records.startPendingTurn(
+              child.frameId,
+              attempt.id,
+              message.id,
+              pendingContext.promptMessageId,
+              pendingContext.runtimeSegmentId
+            )
+            await lifecycle.begin?.()
+          }
+        })
       },
       async setPermissionProfile(profile) {
         await (await deliveryHandle).setPermissionProfile(profile)
@@ -748,6 +752,10 @@ const createDurableDelegatedWork = (options: {
             targetFrameId: source.parentFrameId,
             text: message.trim(),
             kind,
+            callerSource: {
+              rootMessageId: caller.originMessageId,
+              toolInvocationId: caller.toolInvocationId
+            },
             createdAt: now()
           }
           await options.records.appendPendingMessage(
@@ -829,6 +837,10 @@ const createDurableDelegatedWork = (options: {
             targetAttemptId: previous.id,
             text: message.trim(),
             kind,
+            callerSource: {
+              rootMessageId: caller.originMessageId,
+              toolInvocationId: caller.toolInvocationId
+            },
             createdAt: now()
           }
           try {
@@ -856,7 +868,7 @@ const createDurableDelegatedWork = (options: {
             const deliveryFrameId = child.frameId
             const deliveryAttemptId = previous.id
             void active
-              .deliver(pendingMessage.text)
+              .deliver(pendingMessage)
               .then(() =>
                 options.records.markMessageDelivered(
                   deliveryFrameId,
@@ -910,7 +922,11 @@ const createDurableDelegatedWork = (options: {
             userMessageId: createId('message'),
             message: message.trim(),
             resolvedAgent,
-            startedAt: now()
+            startedAt: now(),
+            callerSource: {
+              rootMessageId: caller.originMessageId,
+              toolInvocationId: caller.toolInvocationId
+            }
           })
         } catch (error) {
           await reservation.releaseAll()

@@ -17,6 +17,12 @@ import type {
   HandoffLifecycleEventSource
 } from '../../../../shared/handoff-lifecycle'
 import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
+import {
+  createLinearConversationGraph,
+  projectConversationMessage,
+  resolveActiveConversationMessages
+} from '../../../../shared/conversation-graph'
+import { normalizeSessionFile } from '../../../../shared/session-persistence'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
@@ -557,6 +563,169 @@ describe('WorkspaceMessageScroller artifact click behavior', () => {
       selectedVersionId: 'artifact-version-1',
       versionNumber: 2
     })
+  })
+
+  it('renders a child-owned Version at its restored Notebook delegate invocation without copying root ownership', async () => {
+    const { WorkspaceMessageScroller } = await import('./WorkspaceMessageScroller')
+    const descriptor: ArtifactVersionDescriptor = {
+      id: 'child-version',
+      projectName: 'default',
+      sessionId: 'session-42',
+      name: 'child.md',
+      mimeType: 'text/markdown',
+      size: 12,
+      mtimeMs: 10,
+      artifactId: 'child-artifact',
+      versionId: 'child-version',
+      versionNumber: 1,
+      checksum: 'b'.repeat(64),
+      createdAt: '2026-08-08T00:00:00.000Z',
+      state: 'finalized'
+    }
+    window.api.artifacts.resolveVersionDescriptors = vi.fn().mockResolvedValue([descriptor])
+    const session = createSession({
+      id: 'session-42',
+      status: 'idle',
+      messages: [createMessage({ id: 'root-prompt' })]
+    })
+    session.conversationGraph = createLinearConversationGraph({
+      sessionId: session.id,
+      messages: session.messages,
+      frameworkId: 'codex',
+      createdAt: 1,
+      updatedAt: 1
+    })
+    const graph = session.conversationGraph!
+    const rootBranch = graph.branches[0]
+    const rootRuntime = graph.runtimeSegments[0]
+    const nestedDelegateInvocationId = 'notebook-run-42-1\u0000delegate\u00001'
+    const invocation = {
+      id: 'provider-repl-call',
+      kind: 'tool' as const,
+      title: 'repl_execute',
+      status: 'completed' as const,
+      sortIndex: 1,
+      eventIds: [],
+      createdAt: 2,
+      updatedAt: 2,
+      promptMessageId: 'root-prompt'
+    }
+    session.activities = [invocation]
+    graph.activities.push({
+      ...invocation,
+      agentFrameId: graph.rootFrameId,
+      messageBranchId: rootBranch.id,
+      runtimeSegmentId: rootRuntime.id,
+      promptMessageId: 'root-prompt'
+    })
+    graph.frames.push({
+      id: 'child-frame',
+      parentFrameId: graph.rootFrameId,
+      originMessageId: 'root-prompt',
+      originBindingState: 'validated',
+      kind: 'delegate',
+      status: 'completed',
+      activeBranchId: 'child-branch',
+      createdAt: 3,
+      completedAt: 5
+    })
+    graph.branches.push({
+      id: 'child-branch',
+      agentFrameId: 'child-frame',
+      headMessageId: 'child-answer',
+      createdAt: 3,
+      updatedAt: 5
+    })
+    graph.messages.push(
+      {
+        id: 'child-prompt',
+        role: 'user',
+        content: 'work',
+        status: 'complete',
+        eventIds: [],
+        delegatedCallerSource: {
+          rootMessageId: 'root-prompt',
+          toolInvocationId: nestedDelegateInvocationId
+        },
+        agentFrameId: 'child-frame',
+        introducedOnBranchId: 'child-branch',
+        revisionRootMessageId: 'child-prompt',
+        createdAt: 3,
+        updatedAt: 3
+      },
+      {
+        id: 'child-answer',
+        role: 'agent',
+        content: 'done',
+        status: 'complete',
+        eventIds: [],
+        artifactIds: ['child-version'],
+        responseToMessageId: 'child-prompt',
+        agentFrameId: 'child-frame',
+        introducedOnBranchId: 'child-branch',
+        parentMessageId: 'child-prompt',
+        createdAt: 5,
+        updatedAt: 5
+      }
+    )
+    const rootBefore = structuredClone(graph.messages.find(({ id }) => id === 'root-prompt'))
+
+    const normalized = normalizeSessionFile(session)!
+    expect(
+      normalized.conversationGraph?.activities.find(({ id }) => id === nestedDelegateInvocationId)
+    ).toMatchObject({
+      title: 'Delegate subagent',
+      promptMessageId: 'root-prompt'
+    })
+    const rootSession = { ...session, ...normalized } as ChatSession
+    root = createRoot(container)
+    await act(async () => {
+      root.render(
+        <WorkspaceMessageScroller activeSession={rootSession} onSendEditedMessage={vi.fn()} />
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const card = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Preview generated file child.md"]'
+    )
+    expect(card).not.toBeNull()
+    expect(graph.messages.find(({ id }) => id === 'root-prompt')).toEqual(rootBefore)
+    expect(graph.messages.find(({ id }) => id === 'root-prompt')?.artifactIds).toBeUndefined()
+    await act(async () => card?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    const rootInvocationPreview = upsertAndActivateItem.mock.calls.at(-1)?.[0]
+    expect(rootInvocationPreview).toEqual(
+      expect.objectContaining({
+        artifactId: 'child-artifact',
+        selectedVersionId: 'child-version',
+        path: 'artifact-version:default/session-42/child-artifact/child-version'
+      })
+    )
+
+    const childGraph = structuredClone(normalized.conversationGraph)!
+    childGraph.activeFrameId = 'child-frame'
+    const childSession: ChatSession = {
+      ...rootSession,
+      conversationGraph: childGraph,
+      messages: resolveActiveConversationMessages(childGraph).map((message, index) => ({
+        ...projectConversationMessage(message),
+        sortIndex: index + 1
+      }))
+    }
+    upsertAndActivateItem.mockClear()
+    await act(async () => {
+      root.render(
+        <WorkspaceMessageScroller activeSession={childSession} onSendEditedMessage={vi.fn()} />
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+    const childOwnerCard = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Preview generated file child.md"]'
+    )
+    expect(childOwnerCard).not.toBeNull()
+    await act(async () => childOwnerCard?.dispatchEvent(new MouseEvent('click', { bubbles: true })))
+    expect(upsertAndActivateItem).toHaveBeenCalledWith(rootInvocationPreview)
   })
 
   it('shows a resolved copied generated card after the active Session updates during lookup', async () => {

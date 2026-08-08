@@ -25,8 +25,10 @@ import type {
 } from '../../shared/session-persistence'
 import type {
   AppendPendingMessageInput,
+  AttachDelegatedMessageArtifactsInput,
   AttemptAgentEventInput,
   ChildRecord,
+  CompleteChildTurnInput,
   CreateChildrenInput,
   CreatedChild,
   DelegatedWorkRecordCommands,
@@ -34,6 +36,7 @@ import type {
   SessionKey,
   StartContinuationAttemptInput,
   StartAttemptRuntimeInput,
+  StartPendingMessageTurnInput,
   TransitionAttemptInput
 } from '../delegated-work/session-records'
 import type { ManagedFileSoftDeleteToken } from '../project-files/repository'
@@ -1058,6 +1061,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
           delegatedTask: child.task,
           ...(child.context ? { delegatedContext: child.context } : {}),
           ...(child.inputs?.length ? { delegatedInputVersionIds: [...child.inputs] } : {}),
+          delegatedCallerSource: child.callerSource,
           status: 'complete',
           eventIds: [],
           agentFrameId: child.frameId,
@@ -1119,6 +1123,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
         introducedOnBranchId: branch.id,
         ...(branch.headMessageId ? { parentMessageId: branch.headMessageId } : {}),
         revisionRootMessageId: input.messageId,
+        delegatedCallerSource: input.callerSource,
         createdAt: input.startedAt,
         updatedAt: input.startedAt
       })
@@ -1354,6 +1359,161 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
         ...message,
         deliveredAt: input.deliveredAt
       }
+    })
+  }
+
+  startPendingMessageTurn(key: SessionKey, input: StartPendingMessageTurnInput): Promise<void> {
+    return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) => {
+      const { record, attempt } = assertCurrentRunningAttempt(
+        records,
+        input.frameId,
+        input.attemptId
+      )
+      const pending = record.pendingMessages.find(({ id }) => id === input.pendingMessageId)
+      if (
+        !pending ||
+        pending.sourceFrameId === input.frameId ||
+        pending.targetFrameId !== input.frameId ||
+        pending.targetAttemptId !== input.attemptId ||
+        !pending.callerSource
+      ) {
+        throw new Error('Pending child Turn has no authenticated Main caller source.')
+      }
+      if (
+        graph.messages.some(({ id }) => id === input.promptMessageId) ||
+        graph.runtimeSegments.some(({ id }) => id === input.runtimeSegmentId)
+      ) {
+        throw new Error('Pending child Turn contains a duplicate durable identity.')
+      }
+      const frame = graph.frames.find(({ id }) => id === input.frameId)
+      const branch = graph.branches.find(({ id }) => id === frame?.activeBranchId)
+      if (!frame || !branch) throw new Error('Pending child Turn has no active Branch.')
+      graph.runtimeSegments.push({
+        id: input.runtimeSegmentId,
+        agentFrameId: input.frameId,
+        frameworkId: input.frameworkId,
+        startedAt: input.startedAt
+      })
+      graph.messages.push({
+        id: input.promptMessageId,
+        role: 'user',
+        content: pending.text,
+        status: 'complete',
+        eventIds: [],
+        delegatedCallerSource: pending.callerSource,
+        agentFrameId: input.frameId,
+        introducedOnBranchId: branch.id,
+        ...(branch.headMessageId ? { parentMessageId: branch.headMessageId } : {}),
+        revisionRootMessageId: input.promptMessageId,
+        runtimeSegmentId: input.runtimeSegmentId,
+        createdAt: input.startedAt,
+        updatedAt: input.startedAt
+      })
+      branch.headMessageId = input.promptMessageId
+      branch.updatedAt = input.startedAt
+      const attempts = record.attempts as DelegatedWorkAttemptRecord[]
+      attempts[attempts.length - 1] = {
+        ...attempt,
+        runtimeSegmentIds: [...attempt.runtimeSegmentIds, input.runtimeSegmentId]
+      }
+    })
+  }
+
+  completeChildTurn(key: SessionKey, input: CompleteChildTurnInput): Promise<void> {
+    return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) => {
+      const { attempt } = assertCurrentRunningAttempt(records, input.frameId, input.attemptId)
+      if (!attempt.runtimeSegmentIds.includes(input.runtimeSegmentId)) {
+        throw new Error('Child Turn Runtime Segment is outside the Attempt.')
+      }
+      const segment = graph.runtimeSegments.find(
+        ({ id, agentFrameId }) => id === input.runtimeSegmentId && agentFrameId === input.frameId
+      )
+      if (!segment) throw new Error('Child Turn Runtime Segment is missing.')
+      if (segment.endedAt !== undefined) {
+        if (segment.endedAt === input.endedAt) return
+        throw new Error('Child Turn Runtime Segment completion is immutable.')
+      }
+      if (input.endedAt < segment.startedAt) throw new Error('Child Turn ends before it starts.')
+      segment.endedAt = input.endedAt
+    })
+  }
+
+  attachDelegatedMessageArtifacts(
+    key: SessionKey,
+    input: AttachDelegatedMessageArtifactsInput
+  ): Promise<void> {
+    return this.enqueue(async () => {
+      if (this.deletedProjects.has(key.projectId)) {
+        throw new Error('Cannot mutate a session whose project has been deleted.')
+      }
+      if (this.deletedSessions.has(sessionKey(key.projectId, key.sessionId))) {
+        throw new Error('Cannot mutate a session that has been deleted.')
+      }
+      const session = await this.loadRuntimeContextSession(key.projectId, key.sessionId, 'patch')
+      const materialized = materializeSessionConversationGraph(session)
+      const graph = structuredClone(materialized.conversationGraph)
+      if (!graph) throw new Error('Session Conversation Graph could not be materialized.')
+      const record = delegatedRecords(session.runtimeContext ?? emptySessionRuntimeContext()).find(
+        ({ agentFrameId }) => agentFrameId === input.frameId
+      )
+      const attempt = record?.attempts.find(({ id }) => id === input.attemptId)
+      if (!record || !attempt) throw new Error('Delegated Artifact owner Attempt is missing.')
+      const owner = graph.messages.find(
+        ({ id, agentFrameId, role, status }) =>
+          id === input.messageId &&
+          agentFrameId === input.frameId &&
+          role === 'agent' &&
+          status === 'complete'
+      )
+      if (
+        !owner?.runtimeSegmentId ||
+        !attempt.runtimeSegmentIds.includes(owner.runtimeSegmentId) ||
+        input.artifacts.length === 0
+      ) {
+        throw new Error('Delegated Artifact owner is outside the completed Turn.')
+      }
+      const artifactIds = input.artifacts.map(({ versionId, id }) => versionId ?? id)
+      const nextOwnerIds = appendUnique(owner.artifactIds, artifactIds)
+      const nextArtifacts = [
+        ...(materialized.artifacts ?? []).map((artifact) => structuredClone(artifact))
+      ]
+      let artifactsChanged = false
+      for (const artifact of input.artifacts) {
+        const persisted: PersistedArtifact = {
+          id: artifact.versionId ?? artifact.id,
+          ...(artifact.artifactId ? { artifactId: artifact.artifactId } : {}),
+          ...(artifact.versionId ? { versionId: artifact.versionId } : {}),
+          ...(artifact.versionNumber !== undefined
+            ? { versionNumber: artifact.versionNumber }
+            : {}),
+          kind: 'managed-file',
+          path: artifact.path,
+          fileUrl: artifact.fileUrl,
+          name: artifact.name,
+          ...(artifact.mimeType ? { mimeType: artifact.mimeType } : {}),
+          size: artifact.size,
+          mtimeMs: artifact.mtimeMs,
+          ...(artifact.checksum ? { sha256: artifact.checksum } : {})
+        }
+        const index = nextArtifacts.findIndex(({ id }) => id === persisted.id)
+        if (index < 0) {
+          nextArtifacts.push(persisted)
+          artifactsChanged = true
+        } else if (!persistedArtifactsEqual(nextArtifacts[index], persisted)) {
+          nextArtifacts[index] = persisted
+          artifactsChanged = true
+        }
+      }
+      const ownerChanged = nextOwnerIds.length !== (owner.artifactIds?.length ?? 0)
+      if (!ownerChanged && !artifactsChanged) return
+      owner.artifactIds = nextOwnerIds
+      await this.repository.saveSession({
+        ...materialized,
+        conversationGraph: graph,
+        artifacts: nextArtifacts,
+        filesRevision: (materialized.filesRevision ?? 0) + 1,
+        updatedAt: Math.max(materialized.updatedAt + 1, Date.now())
+      })
     })
   }
 

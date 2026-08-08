@@ -13,6 +13,7 @@ import type { PermissionProfileId } from '../../shared/permission-profiles'
 import {
   DelegateExecutionError,
   type DelegateCapacityReservation,
+  type DelegateChildTurnIdentity,
   type DelegateExecution,
   type DelegateExecutionEvent,
   type DelegateExecutionInput,
@@ -254,7 +255,12 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     void acceptance.promise.catch(() => undefined)
     void terminal.promise.catch(() => undefined)
     const listeners = new Set<(event: DelegateExecutionEvent) => void>()
-    const pendingMessages: Array<Readonly<{ text: string; acceptance: Deferred<void> }>> = []
+    type QueuedPrompt = Readonly<{
+      text: string
+      acceptance: Deferred<void>
+      turn?: DelegateChildTurnIdentity
+    }>
+    const pendingMessages: QueuedPrompt[] = []
     const pendingPermissions = new Set<string>()
     let providerSessionId: string | undefined
     let runtime: AcpDelegateRuntime | undefined
@@ -271,9 +277,11 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     let sawStopEvent = false
     let turnUsageAvailable = true
     let lastStopEvent: AcpAgentRuntimeUpdate['event'] | undefined
+    let currentStopEvent: AcpAgentRuntimeUpdate['event'] | undefined
     // Provider event ids are unique within this Attempt-owned runtime lifetime.
     const seenStopEventIds = new Set<string>()
-    let activeMessage: Readonly<{ text: string; acceptance: Deferred<void> }> | undefined
+    let activeMessage: QueuedPrompt | undefined
+    let activeTurn: QueuedPrompt['turn']
 
     const settleAccepted = (error?: unknown): void => {
       if (acceptedSettled) return
@@ -315,7 +323,7 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
           publish({ kind: 'message', text })
         }
 
-        const promptMessageId = scope?.provenance.promptMessageId
+        const promptMessageId = activeTurn?.promptMessageId ?? scope?.provenance.promptMessageId
         if (!scope || !promptMessageId) return
         const {
           sessionId: providerOwnedSessionId,
@@ -330,13 +338,14 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
             sessionId: scope.provenance.sessionId,
             agentFrameId: scope.provenance.agentFrameId,
             attemptId: input.attemptId,
-            runtimeSegmentId: scope.provenance.runtimeSegmentId,
+            runtimeSegmentId: activeTurn?.runtimeSegmentId ?? scope.provenance.runtimeSegmentId,
             promptMessageId
           },
           event: ownedEvent
         }
         if (event.kind === 'stop') {
           lastStopEvent = ownedEvent
+          currentStopEvent = ownedEvent
           return
         }
         publish({ kind: 'runtime', update })
@@ -418,15 +427,18 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
       sessionId: providerSessionId!,
       text,
       suppressUserMessage: true,
-      ...(scope?.provenance.promptMessageId
+      ...((activeTurn?.promptMessageId ?? scope?.provenance.promptMessageId)
         ? {
             provenanceContext: {
-              promptMessageId: scope.provenance.promptMessageId,
-              agentFrameId: scope.provenance.agentFrameId,
-              ...(scope.provenance.messageBranchId
-                ? { messageBranchId: scope.provenance.messageBranchId }
+              promptMessageId: activeTurn?.promptMessageId ?? scope!.provenance.promptMessageId!,
+              agentFrameId: scope!.provenance.agentFrameId,
+              ...((activeTurn?.messageBranchId ?? scope!.provenance.messageBranchId)
+                ? {
+                    messageBranchId:
+                      activeTurn?.messageBranchId ?? scope!.provenance.messageBranchId
+                  }
                 : {}),
-              runtimeSegmentId: scope.provenance.runtimeSegmentId
+              runtimeSegmentId: activeTurn?.runtimeSegmentId ?? scope!.provenance.runtimeSegmentId
             }
           }
         : {})
@@ -479,18 +491,35 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         }
 
         let nextPrompt = options.buildPrompt?.(input) ?? input.task
+        activeTurn =
+          input.turn ??
+          (scope.provenance.promptMessageId
+            ? {
+                promptMessageId: scope.provenance.promptMessageId,
+                messageBranchId: scope.provenance.messageBranchId ?? '',
+                runtimeSegmentId: scope.provenance.runtimeSegmentId
+              }
+            : undefined)
         let response = ''
         while (!cancelRequested) {
+          await activeTurn?.begin?.()
           currentResponse = []
           const outcome = await runtime.sendAppContinuation(promptRequest(nextPrompt))
           activeMessage?.acceptance.resolve()
           activeMessage = undefined
           response = currentResponse.join('')
           if (cancelRequested || outcome.stopReason === 'cancelled') break
+          await activeTurn?.complete?.(
+            response,
+            currentStopEvent?.turnUsage,
+            currentStopEvent && !currentStopEvent.turnUsage ? true : undefined
+          )
+          currentStopEvent = undefined
           const queued = pendingMessages.shift()
           if (queued === undefined) break
           nextPrompt = queued.text
           activeMessage = queued
+          activeTurn = queued.turn ?? activeTurn
         }
 
         if (!cancelRequested && lastStopEvent) {
@@ -504,8 +533,8 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
                 sessionId: scope.provenance.sessionId,
                 agentFrameId: scope.provenance.agentFrameId,
                 attemptId: input.attemptId,
-                runtimeSegmentId: scope.provenance.runtimeSegmentId,
-                promptMessageId: scope.provenance.promptMessageId!
+                runtimeSegmentId: activeTurn?.runtimeSegmentId ?? scope.provenance.runtimeSegmentId,
+                promptMessageId: activeTurn?.promptMessageId ?? scope.provenance.promptMessageId!
               },
               event:
                 turnUsageAvailable && turnUsage
@@ -551,11 +580,11 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         if (!terminalSettled) listeners.add(listener)
         return () => listeners.delete(listener)
       },
-      async sendMessage(message) {
+      async sendMessage(message, turn) {
         if (!writable || terminalSettled || cancelRequested) {
           throw new Error('delegate execution is no longer running')
         }
-        const pending = { text: message, acceptance: deferred<void>() }
+        const pending: QueuedPrompt = { text: message, acceptance: deferred<void>(), turn }
         void pending.acceptance.promise.catch(() => undefined)
         pendingMessages.push(pending)
         return pending.acceptance.promise

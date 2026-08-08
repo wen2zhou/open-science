@@ -158,8 +158,8 @@ describe('Session delegated-work adapter', () => {
     const ids = {
       frame: ['child-frame'],
       attempt: ['attempt-1'],
-      message: ['prompt-1', 'pending-1'],
-      runtime: ['runtime-1']
+      message: ['prompt-1', 'pending-1', 'prompt-2', 'answer-1'],
+      runtime: ['runtime-1', 'runtime-2']
     }
     const work = createDurableDelegatedWork({
       execution,
@@ -175,6 +175,14 @@ describe('Session delegated-work adapter', () => {
       toolInvocationId: 'dispatch'
     }
     await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    await expect
+      .poll(async () => {
+        const prompt = (await readSession()).conversationGraph?.messages.find(
+          ({ id }) => id === 'prompt-1'
+        )
+        return prompt?.delegatedCallerSource
+      })
+      .toEqual({ rootMessageId: 'root-prompt', toolInvocationId: 'dispatch' })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.control('attempt-1').accept()
 
@@ -197,11 +205,29 @@ describe('Session delegated-work adapter', () => {
           targetAttemptId: 'attempt-1',
           text: 'Additional evidence',
           kind: 'info',
+          callerSource: { rootMessageId: 'root-prompt', toolInvocationId: 'message-call' },
           createdAt: 50,
           deliveredAt: 50
         }
       ])
     expect(execution.control('attempt-1').deliveredMessages()).toEqual(['Additional evidence'])
+    await execution.control('attempt-1').completeTurn('Initial answer')
+    await expect
+      .poll(async () => {
+        const durable = await readSession()
+        return durable.conversationGraph?.messages.find(
+          ({ delegatedCallerSource }) => delegatedCallerSource?.toolInvocationId === 'message-call'
+        )
+      })
+      .toMatchObject({
+        role: 'user',
+        content: 'Additional evidence',
+        delegatedCallerSource: {
+          rootMessageId: 'root-prompt',
+          toolInvocationId: 'message-call'
+        },
+        runtimeSegmentId: 'runtime-2'
+      })
   })
   it('starts an admitted array against revisioned Session records without sibling conflicts', async () => {
     const { coordinator, readSession } = createHarness()
@@ -969,9 +995,26 @@ describe('Session delegated-work adapter', () => {
     expect(
       after.conversationGraph!.messages.filter(({ agentFrameId }) => agentFrameId === 'child-frame')
     ).toMatchObject([
-      { id: 'prompt-1', role: 'user', content: 'Initial task' },
+      {
+        id: 'prompt-1',
+        role: 'user',
+        content: 'Initial task',
+        delegatedCallerSource: {
+          rootMessageId: 'root-prompt',
+          toolInvocationId: 'dispatch-call'
+        }
+      },
       { id: 'answer-1', role: 'agent', content: 'Initial answer' },
-      { id: 'prompt-2', role: 'user', content: 'Follow up in place', parentMessageId: 'answer-1' }
+      {
+        id: 'prompt-2',
+        role: 'user',
+        content: 'Follow up in place',
+        parentMessageId: 'answer-1',
+        delegatedCallerSource: {
+          rootMessageId: 'root-prompt',
+          toolInvocationId: 'continuation-call'
+        }
+      }
     ])
   })
 

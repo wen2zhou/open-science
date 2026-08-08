@@ -12,6 +12,11 @@ const workspaceMessageScrollerPath = resolve(__dirname, 'WorkspaceMessageScrolle
 const workspaceActivityGroupPath = resolve(__dirname, 'WorkspaceActivityGroup.tsx')
 const workspaceAgentLoadingRowPath = resolve(__dirname, 'WorkspaceAgentLoadingRow.tsx')
 const workspaceMessageItemPath = resolve(__dirname, 'WorkspaceMessageItem.tsx')
+const workspaceArtifactVisibilityPath = resolve(__dirname, 'WorkspaceArtifactVisibility.tsx')
+const workspaceInvocationArtifactPlacementPath = resolve(
+  __dirname,
+  'WorkspaceInvocationArtifactPlacement.tsx'
+)
 const workspaceToolActivityGroupsPath = resolve(__dirname, 'workspace-tool-activity-groups.ts')
 const workspaceToolActivityStylePath = resolve(__dirname, 'workspace-tool-activity-style.ts')
 const workspaceWebSearchActivityRowPath = resolve(__dirname, 'WorkspaceWebSearchActivityRow.tsx')
@@ -400,6 +405,8 @@ describe('conversation message scroller integration', () => {
 
   it('keeps transcript rendering modules focused by responsibility', () => {
     expect(existsSync(workspaceMessageItemPath)).toBe(true)
+    expect(existsSync(workspaceArtifactVisibilityPath)).toBe(true)
+    expect(existsSync(workspaceInvocationArtifactPlacementPath)).toBe(true)
     expect(existsSync(workspaceActivityGroupPath)).toBe(true)
     expect(existsSync(workspaceWebSearchActivityRowPath)).toBe(true)
     expect(existsSync(workspaceAgentLoadingRowPath)).toBe(true)
@@ -418,6 +425,9 @@ describe('conversation message scroller integration', () => {
     expect(workspaceMessageScrollerSource).toContain(
       "import { WorkspaceMessageItem } from './WorkspaceMessageItem'"
     )
+    expect(workspaceMessageScrollerSource).toContain("from './WorkspaceArtifactVisibility'")
+    expect(workspaceMessageScrollerSource).not.toContain('projectRootArtifactVisibility')
+    expect(workspaceMessageScrollerSource).not.toContain('resolveVersionDescriptors')
     expect(workspaceMessageScrollerSource).toContain(
       "import { WorkspaceActivityGroup } from './WorkspaceActivityGroup'"
     )

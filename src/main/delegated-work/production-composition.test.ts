@@ -1,15 +1,21 @@
-import { access, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import { afterEach, describe, expect, it } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createLinearConversationGraph } from '../../shared/conversation-graph'
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import { NotebookLocalRpcServer } from '../notebook/local-rpc-server'
 import { ArtifactTurnOwner } from '../acp/artifact-turn-owner'
+import { createNotebookArtifactSourceScopeProvider } from '../notebook/artifact-source-scope'
 import { ArtifactProvenanceRepository } from '../artifacts/provenance-repository'
 import { ArtifactRepository } from '../artifacts/repository'
 import { ArtifactRunRegistry } from '../artifacts/run-registry'
+import { writeArtifactFileForCurrentRun } from '../artifacts/mcp-server'
+import { createArtifactHandlers } from '../artifacts/ipc'
+import { createProjectDbClient, ensureProjectSchema } from '../projects/prisma-client'
+import { createFrameNotebookLane } from '../notebook/lane-identity'
+import { NotebookRunRepository } from '../notebook/repository'
 import {
   SessionPersistenceCoordinator,
   type SessionFileIndex,
@@ -25,9 +31,13 @@ import type { AuthenticatedDelegateCaller } from './durable-delegated-work'
 import type { ArtifactFile } from '../../shared/artifacts'
 import type { ReviewWithChecks } from '../../shared/reviewer'
 import type { DelegatedWorkRecordCommands } from './session-records'
+import { projectRootArtifactVisibility } from '../../shared/artifact-visibility'
+import { normalizeSessionFile } from '../../shared/session-persistence'
+import { finalizeDelegatedArtifactPublication } from './delegated-artifact-publication'
 
 let root: string | undefined
 let server: NotebookLocalRpcServer | undefined
+let disconnect: (() => Promise<void>) | undefined
 
 const fileIndex: SessionFileIndex = {
   syncSession: async () => [],
@@ -44,6 +54,7 @@ type CompositionHarness = Readonly<{
   selected: AgentFrameworkId[]
   session: PersistedChatSession
   durable(): PersistedChatSession
+  replaceDurable(session: PersistedChatSession): void
   caller: AuthenticatedDelegateCaller
   commands: DelegatedWorkRecordCommands
 }>
@@ -56,7 +67,12 @@ const createCompositionHarness = async (
   owners: Pick<
     ProductionDelegatedWorkOptions,
     'artifactEvidence' | 'reviewEvidence' | 'parentMessages'
-  > = {}
+  > = {},
+  initialRootInvocations: readonly Readonly<{
+    rootMessageId: string
+    toolInvocationId: string
+    createdAt: number
+  }>[] = []
 ): Promise<CompositionHarness> => {
   const rootMessage = {
     id: `root-message-${frameworkId}`,
@@ -85,6 +101,53 @@ const createCompositionHarness = async (
     filesRevision: 1,
     createdAt: 1,
     updatedAt: 2
+  }
+  if (initialRootInvocations.length > 0) {
+    const graph = session.conversationGraph!
+    const rootBranch = graph.branches.find(
+      ({ agentFrameId }) => agentFrameId === graph.rootFrameId
+    )!
+    let parentMessageId = rootMessage.id
+    for (const invocation of initialRootInvocations) {
+      graph.messages.push({
+        id: invocation.rootMessageId,
+        role: 'user',
+        content: invocation.toolInvocationId,
+        status: 'complete',
+        eventIds: [],
+        agentFrameId: graph.rootFrameId,
+        introducedOnBranchId: rootBranch.id,
+        parentMessageId,
+        revisionRootMessageId: invocation.rootMessageId,
+        createdAt: invocation.createdAt,
+        updatedAt: invocation.createdAt
+      })
+      parentMessageId = invocation.rootMessageId
+    }
+    rootBranch.headMessageId = parentMessageId
+    graph.activities.push(
+      ...[
+        {
+          rootMessageId: rootMessage.id,
+          toolInvocationId: `call-${frameworkId}`,
+          createdAt: 2
+        },
+        ...initialRootInvocations
+      ].map((invocation, index) => ({
+        id: invocation.toolInvocationId,
+        kind: 'tool' as const,
+        title: 'delegate',
+        status: 'completed' as const,
+        sortIndex: index + 1,
+        eventIds: [],
+        createdAt: invocation.createdAt,
+        updatedAt: invocation.createdAt,
+        agentFrameId: graph.rootFrameId,
+        messageBranchId: rootBranch.id,
+        promptMessageId: invocation.rootMessageId,
+        runtimeSegmentId: graph.runtimeSegments[0].id
+      }))
+    )
   }
   let durable = structuredClone(session)
   const repository: SessionMutationRepository = {
@@ -144,6 +207,9 @@ const createCompositionHarness = async (
     selected,
     session,
     durable: () => durable,
+    replaceDurable(session) {
+      durable = structuredClone(session)
+    },
     caller: {
       session: { projectId: session.projectId, sessionId: session.id },
       frameId: session.conversationGraph!.rootFrameId,
@@ -158,6 +224,8 @@ const createCompositionHarness = async (
 afterEach(async () => {
   await server?.close()
   server = undefined
+  await disconnect?.()
+  disconnect = undefined
   if (root) await rm(root, { recursive: true, force: true })
   root = undefined
 })
@@ -273,6 +341,7 @@ describe('production delegated-work composition', () => {
       body: JSON.stringify({
         method: 'delegatedWorkCall',
         params: {
+          delegation_call_id: '1',
           request: { task: 'Inspect staged evidence', inputs: ['upload-version:version-1'] }
         }
       })
@@ -294,6 +363,18 @@ describe('production delegated-work composition', () => {
       readFile(join(input.workspaceCwd!, 'inputs', '01-evidence.csv'), 'utf8')
     ).resolves.toBe('sample,value\na,1\n')
     expect(durable.runtimeContext?.delegatedWork?.records[0].attempts[0].status).toBe('completed')
+    expect(
+      durable.conversationGraph?.activities.find(
+        ({ id }) => id === 'delegate-call\u0000delegate\u00001'
+      )
+    ).toMatchObject({
+      title: 'Delegate subagent',
+      status: 'completed',
+      agentFrameId: graph.rootFrameId,
+      messageBranchId: graph.frames.find(({ id }) => id === graph.rootFrameId)?.activeBranchId,
+      promptMessageId: rootMessage.id,
+      runtimeSegmentId: graph.runtimeSegments[0].id
+    })
 
     endInvocation()
     connection.release()
@@ -510,8 +591,376 @@ describe('production delegated-work composition', () => {
     expect(harness.composition.root.unavailableReasons?.()).toEqual({})
   })
 
-  it('composes execution-scoped Artifact evidence into production result and Frame detail', async () => {
+  it('keeps rejected Artifact finalization invisible and leaves durable ownership unchanged', async () => {
+    const rootMessage = {
+      id: 'root-prompt',
+      role: 'user' as const,
+      content: 'delegate',
+      status: 'complete' as const,
+      eventIds: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const durable: PersistedChatSession = {
+      id: 'session-atomic',
+      projectId: 'project-1',
+      title: 'atomic',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [rootMessage],
+      conversationGraph: createLinearConversationGraph({
+        sessionId: 'session-atomic',
+        messages: [rootMessage],
+        createdAt: 1,
+        updatedAt: 1
+      }),
+      filesRevision: 1,
+      createdAt: 1,
+      updatedAt: 5
+    }
+    const graph = durable.conversationGraph!
+    const rootBranch = graph.branches[0]
+    graph.activities.push({
+      id: 'delegate-call',
+      kind: 'tool',
+      title: 'delegate',
+      status: 'completed',
+      sortIndex: 1,
+      eventIds: [],
+      createdAt: 2,
+      updatedAt: 2,
+      agentFrameId: graph.rootFrameId,
+      messageBranchId: rootBranch.id,
+      promptMessageId: rootMessage.id,
+      runtimeSegmentId: graph.runtimeSegments[0].id
+    })
+    graph.frames.push({
+      id: 'child-frame',
+      parentFrameId: graph.rootFrameId,
+      originMessageId: rootMessage.id,
+      originBindingState: 'validated',
+      kind: 'delegate',
+      status: 'completed',
+      activeBranchId: 'child-branch',
+      createdAt: 2,
+      completedAt: 5
+    })
+    graph.branches.push({
+      id: 'child-branch',
+      agentFrameId: 'child-frame',
+      headMessageId: 'child-answer',
+      createdAt: 2,
+      updatedAt: 5
+    })
+    graph.runtimeSegments.push({
+      id: 'child-runtime',
+      agentFrameId: 'child-frame',
+      frameworkId: 'codex',
+      startedAt: 2,
+      endedAt: 5
+    })
+    graph.messages.push(
+      {
+        id: 'child-prompt',
+        role: 'user',
+        content: 'work',
+        status: 'complete',
+        eventIds: [],
+        delegatedCallerSource: {
+          rootMessageId: rootMessage.id,
+          toolInvocationId: 'delegate-call'
+        },
+        agentFrameId: 'child-frame',
+        introducedOnBranchId: 'child-branch',
+        revisionRootMessageId: 'child-prompt',
+        runtimeSegmentId: 'child-runtime',
+        createdAt: 2,
+        updatedAt: 2
+      },
+      {
+        id: 'child-answer',
+        role: 'agent',
+        content: 'done',
+        status: 'complete',
+        eventIds: [],
+        responseToMessageId: 'child-prompt',
+        agentFrameId: 'child-frame',
+        introducedOnBranchId: 'child-branch',
+        parentMessageId: 'child-prompt',
+        runtimeSegmentId: 'child-runtime',
+        createdAt: 5,
+        updatedAt: 5
+      }
+    )
+    const attach = vi.fn(async (_key, input) => {
+      graph.messages.find(({ id }) => id === input.messageId)!.artifactIds = input.artifacts.map(
+        ({ versionId, id }) => versionId ?? id
+      )
+      durable.artifacts = input.artifacts.map((artifact) => ({
+        id: artifact.versionId ?? artifact.id,
+        artifactId: artifact.artifactId,
+        versionId: artifact.versionId,
+        kind: 'managed-file' as const,
+        path: artifact.path
+      }))
+    })
+    const artifact: ArtifactFile = {
+      id: 'version-atomic',
+      artifactId: 'artifact-atomic',
+      versionId: 'version-atomic',
+      projectName: 'project-1',
+      sessionId: durable.id,
+      runId: 'run-atomic',
+      name: 'atomic.md',
+      path: '/managed/atomic.md',
+      fileUrl: 'file:///managed/atomic.md',
+      size: 1,
+      mtimeMs: 1
+    }
+
+    await expect(
+      finalizeDelegatedArtifactPublication({
+        publication: {
+          appSessionId: durable.id,
+          artifactStorageSessionId: durable.id,
+          runId: 'run-atomic',
+          promptMessageId: 'child-prompt',
+          artifactClaimId: 'claim-atomic',
+          artifacts: [artifact]
+        },
+        terminalMessageId: 'child-answer',
+        scope: {
+          session: { projectId: durable.projectId, sessionId: durable.id },
+          executionId: 'attempt-atomic',
+          attemptId: 'attempt-atomic',
+          rootFrameId: graph.rootFrameId,
+          agentFrameId: 'child-frame',
+          messageBranchId: 'child-branch',
+          runtimeSegmentId: 'child-runtime',
+          promptMessageId: 'child-prompt',
+          agentName: 'delegate'
+        },
+        commands: {
+          attachDelegatedMessageArtifacts: attach
+        } as unknown as DelegatedWorkRecordCommands,
+        handlers: {
+          finalizeRunArtifacts: async () => {
+            throw new Error('finalization rejected')
+          }
+        }
+      })
+    ).rejects.toThrow('finalization rejected')
+    expect(attach).not.toHaveBeenCalled()
+    expect(graph.messages.find(({ id }) => id === 'child-answer')?.artifactIds).toBeUndefined()
+    expect(durable.artifacts).toBeUndefined()
+    expect(projectRootArtifactVisibility(durable, rootBranch.id)).toMatchObject({ placements: [] })
+  })
+
+  it('publishes a child frame Notebook file through the Artifact write boundary and projects its Version', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-notebook-artifacts-'))
+    const client = createProjectDbClient(root)
+    disconnect = () => client.$disconnect()
+    await ensureProjectSchema(client)
+    const artifactRepository = new ArtifactRepository(root)
+    const artifactMcpRepository = new ArtifactRepository(root)
+    const artifactRunRegistry = new ArtifactRunRegistry()
+    const notebookRepository = new NotebookRunRepository(root)
+    const harnessRef: { current?: CompositionHarness } = {}
+    const provenance = new ArtifactProvenanceRepository({
+      storageRoot: root,
+      getClient: async () => client,
+      compatibilityRepository: artifactRepository,
+      notebookRepository,
+      loadSession: async () => harnessRef.current?.durable()
+    })
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      artifactProvenance: {
+        createVersion: (request) => provenance.createVersion(request),
+        replayVersion: (request) => provenance.replayVersion(request)
+      }
+    })
+    const connection = await server.ensureStarted()
+    const turns = new ArtifactTurnOwner({
+      dataRoot: root,
+      repository: artifactRepository,
+      runRegistry: artifactRunRegistry,
+      notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(root),
+      issueRpcCapability: (binding) => server!.issueArtifactRunCapability(binding),
+      revokeRpcCapability: (token) => server!.revokeArtifactRunCapability(token),
+      provenance
+    })
+    const artifactHandlers = createArtifactHandlers(artifactRepository, artifactRunRegistry, {
+      provenance
+    })
+    const harness = await createCompositionHarness(root, 'codex', undefined, undefined, {
+      artifactEvidence: {
+        turns,
+        artifactStorageSessionId: ({ sessionId }) => sessionId,
+        finalizePublication: (publication, terminalMessageId, scope) =>
+          finalizeDelegatedArtifactPublication({
+            publication,
+            terminalMessageId,
+            scope,
+            commands: harnessRef.current!.commands,
+            handlers: artifactHandlers
+          }).then(() => undefined),
+        project: (scope) =>
+          scope.terminalMessageId
+            ? artifactRepository.listMessageFiles({
+                projectName: scope.session.projectId,
+                sessionId: scope.session.sessionId,
+                messageId: scope.terminalMessageId
+              })
+            : Promise.resolve([])
+      }
+    })
+    harnessRef.current = harness
+
+    const pending = harness.composition.host.delegate(harness.caller, {
+      task: 'Create Notebook evidence'
+    })
+    await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+    const control = harness.execution.controls()[0]
+    const childTurn = control.input.turn!
+    const notebookSessionRoot = join(
+      root,
+      'notebooks',
+      'project-1',
+      'session-codex',
+      'frames',
+      control.input.frameId
+    )
+    const notebookDataDir = join(notebookSessionRoot, 'data')
+    const lane = createFrameNotebookLane('project-1', 'session-codex', control.input.frameId)
+    await notebookRepository.loadOrCreate({
+      projectName: 'project-1',
+      sessionId: 'session-codex',
+      workspaceCwd: control.input.workspaceCwd!,
+      lane
+    })
+    const sourcePath = join(notebookDataDir, 'evidence.txt')
+    await mkdir(notebookDataDir, { recursive: true })
+    await writeFile(sourcePath, 'child notebook evidence', 'utf8')
+    const sourceStat = await stat(sourcePath)
+    const rootFrameId = harness.durable().conversationGraph!.rootFrameId
+    await notebookRepository.appendRun({
+      projectName: 'project-1',
+      sessionId: 'session-codex',
+      lane,
+      run: {
+        runId: 'child-notebook-run-1',
+        cellId: 'child-cell-1',
+        source: 'agent',
+        kernelKind: 'python',
+        script: 'write_evidence()',
+        status: 'completed',
+        startedAt: sourceStat.mtimeMs - 100,
+        endedAt: sourceStat.mtimeMs + 100,
+        text: { stdout: '', stderr: '', traceback: '', plain: [] },
+        outputs: [],
+        artifacts: [],
+        workingFiles: [
+          {
+            path: sourcePath,
+            relativePath: 'data/evidence.txt',
+            kind: 'other',
+            size: sourceStat.size,
+            mtimeMs: sourceStat.mtimeMs,
+            createdByRunId: 'child-notebook-run-1'
+          }
+        ],
+        rootFrameId,
+        agentFrameId: control.input.frameId,
+        messageBranchId: childTurn.messageBranchId,
+        runtimeSegmentId: childTurn.runtimeSegmentId,
+        promptMessageId: childTurn.promptMessageId
+      }
+    })
+    const environment = {
+      storageRoot: root,
+      projectName: 'project-1',
+      sessionId: 'session-codex',
+      currentRunFile: control.input.artifactCurrentRunFile!,
+      allowedImportRoots: [control.input.workspaceCwd!],
+      rpcEndpoint: connection.endpoint
+    }
+    const outsidePath = join(root, 'outside-child-frame.txt')
+    await writeFile(outsidePath, 'outside', 'utf8')
+    await expect(
+      writeArtifactFileForCurrentRun(artifactMcpRepository, environment, {
+        filename: 'outside-child-frame.txt',
+        source: { kind: 'localPath', path: outsidePath },
+        producerRunId: 'child-notebook-run-1'
+      })
+    ).rejects.toThrow(/outside allowed artifact import roots/i)
+    const siblingDataDir = join(
+      root,
+      'notebooks',
+      'project-1',
+      'session-codex',
+      'frames',
+      'sibling-frame',
+      'data'
+    )
+    const siblingSourcePath = join(siblingDataDir, 'sibling.txt')
+    await mkdir(siblingDataDir, { recursive: true })
+    await writeFile(siblingSourcePath, 'sibling evidence', 'utf8')
+    await expect(
+      writeArtifactFileForCurrentRun(artifactMcpRepository, environment, {
+        filename: 'sibling.txt',
+        source: { kind: 'localPath', path: siblingSourcePath },
+        producerRunId: 'child-notebook-run-1'
+      })
+    ).rejects.toThrow(/outside allowed artifact import roots/i)
+
+    // Exercise the exported write boundary used by the registered tool. MCP protocol transport and
+    // tool registration remain covered by the focused mcp-server contract tests.
+    const version = await writeArtifactFileForCurrentRun(artifactMcpRepository, environment, {
+      filename: 'evidence.txt',
+      mimeType: 'text/plain',
+      source: { kind: 'localPath', path: 'evidence.txt' },
+      producerRunId: 'child-notebook-run-1'
+    })
+    expect(version).toMatchObject({
+      name: 'evidence.txt',
+      producerRunId: 'child-notebook-run-1'
+    })
+
+    control.accept()
+    control.complete('Notebook evidence ready', {
+      inputTokens: 1,
+      cacheTokens: 0,
+      outputTokens: 1,
+      turnCount: 1
+    })
+    const result = await pending
+    expect(result).toMatchObject({
+      kind: 'results',
+      children: [
+        {
+          status: 'completed',
+          artifactsCreated: [
+            {
+              versionId: version.versionId,
+              name: 'evidence.txt'
+            }
+          ]
+        }
+      ]
+    })
+  })
+
+  it('keeps running and continued production Turns independently owned across a late reload', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-artifacts-'))
+    const laterCallers = [
+      { rootMessageId: 'root-message-running', toolInvocationId: 'call-running', createdAt: 3 },
+      {
+        rootMessageId: 'root-message-continuation',
+        toolInvocationId: 'call-continuation',
+        createdAt: 5
+      }
+    ]
     const proofState: { harness?: CompositionHarness } = {}
     const ownership = new ArtifactProvenanceRepository({
       storageRoot: root,
@@ -526,72 +975,89 @@ describe('production delegated-work composition', () => {
       terminalMessageId: string
       artifacts: readonly ArtifactFile[]
     }> = []
+    const artifactRepository = new ArtifactRepository(root)
+    const artifactRunRegistry = new ArtifactRunRegistry()
     const turns = new ArtifactTurnOwner({
       dataRoot: root,
-      repository: new ArtifactRepository(root),
-      runRegistry: new ArtifactRunRegistry(),
+      repository: artifactRepository,
+      runRegistry: artifactRunRegistry,
       now: () => 10,
       provenance: {
         listRunVersions: async ({ artifactRunId }) => versionsByRun.get(artifactRunId) ?? [],
         writeAppGeneratedVersion: async (request) => {
+          const pendingFile = await artifactRepository.writePendingFile({
+            projectName: request.projectId,
+            sessionId: request.artifactStorageSessionId,
+            runId: request.artifactRunId,
+            filename: request.filename,
+            mimeType: request.contentType,
+            kind: request.kind,
+            source: { kind: 'inline', content: request.content, encoding: 'utf8' }
+          })
           const file: ArtifactFile = {
+            ...pendingFile,
             id: `version-${request.artifactRunId}`,
             artifactId: `artifact-${request.agentFrameId}`,
             versionId: `version-${request.artifactRunId}`,
             versionNumber: 1,
             checksum: request.content,
             createdAt: '2026-08-07T00:00:00.000Z',
-            projectName: request.projectId,
-            sessionId: request.appSessionId,
-            runId: request.artifactRunId,
-            name: request.filename,
-            path: `/managed/${request.filename}`,
-            fileUrl: `file:///managed/${request.filename}`,
-            size: request.content.length,
-            mtimeMs: 1
+            sessionId: request.appSessionId
           }
           versionsByRun.set(request.artifactRunId, [file])
           return file
         }
       }
     })
-    const execution = createDeterministicDelegateExecution()
-    const harness = await createCompositionHarness(root, 'codex', execution, undefined, {
-      artifactEvidence: {
-        turns,
-        artifactStorageSessionId: ({ sessionId }) => `artifact-${sessionId}`,
-        finalizePublication: async (publication, terminalMessageId, scope) => {
-          await ownership.validateFinalizationOwnership({
-            projectId: scope.session.projectId,
-            appSessionId: scope.session.sessionId,
-            artifactRunId: publication.runId,
-            artifactVersionIds: publication.artifacts.flatMap((artifact) =>
-              artifact.versionId ? [artifact.versionId] : []
-            ),
-            rootFrameId: scope.rootFrameId,
-            agentFrameId: scope.agentFrameId,
-            messageBranchId: scope.messageBranchId,
-            runtimeSegmentId: scope.runtimeSegmentId,
-            promptMessageId: scope.promptMessageId,
-            messageId: terminalMessageId
-          })
-          finalized.push({
-            attemptId: scope.attemptId,
-            terminalMessageId,
-            artifacts: publication.artifacts
-          })
-        },
-        project: async (scope) =>
-          finalized
-            .filter(
-              (entry) =>
-                entry.attemptId === scope.attemptId &&
-                entry.terminalMessageId === scope.terminalMessageId
-            )
-            .flatMap((entry) => entry.artifacts)
-      }
+    const artifactHandlers = createArtifactHandlers(artifactRepository, artifactRunRegistry, {
+      provenance: {
+        finalizeRun: async (request) => {
+          await ownership.validateFinalizationOwnership(request)
+          return versionsByRun.get(request.artifactRunId) ?? []
+        }
+      } as unknown as ArtifactProvenanceRepository
     })
+    const execution = createDeterministicDelegateExecution()
+    const harness = await createCompositionHarness(
+      root,
+      'codex',
+      execution,
+      undefined,
+      {
+        artifactEvidence: {
+          turns,
+          artifactStorageSessionId: ({ sessionId }) => `artifact-${sessionId}`,
+          finalizePublication: async (publication, terminalMessageId, scope) => {
+            const artifacts = await finalizeDelegatedArtifactPublication({
+              publication,
+              terminalMessageId,
+              scope,
+              commands: proofState.harness!.commands,
+              handlers: artifactHandlers
+            })
+            finalized.push({
+              attemptId: scope.attemptId,
+              terminalMessageId,
+              artifacts
+            })
+          },
+          project: async (scope) =>
+            finalized
+              .filter(
+                ({ attemptId, terminalMessageId }) =>
+                  attemptId === scope.attemptId && terminalMessageId === scope.terminalMessageId
+              )
+              .flatMap(({ artifacts }) => artifacts)
+        }
+      },
+      laterCallers
+    )
     proofState.harness = harness
+
+    const rootGraph = harness.durable().conversationGraph!
+    const rootBranch = rootGraph.branches.find(
+      ({ agentFrameId }) => agentFrameId === rootGraph.rootFrameId
+    )!
 
     const pending = harness.composition.host.delegate(harness.caller, { task: 'Create evidence' })
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -602,7 +1068,43 @@ describe('production delegated-work composition', () => {
     const turn = turns.handleForExecution(control.input.attemptId)
     await turns.write(turn, { filename: 'evidence.md', content: 'exact child evidence' })
     control.accept()
-    control.complete('Evidence ready')
+    await harness.composition.host.sendMessage(
+      {
+        ...harness.caller,
+        originMessageId: laterCallers[0].rootMessageId,
+        toolInvocationId: laterCallers[0].toolInvocationId
+      },
+      control.input.frameId,
+      'Create running evidence',
+      'info'
+    )
+    await expect.poll(() => control.deliveredMessages()).toEqual(['Create running evidence'])
+    await control.completeTurn('Evidence ready', {
+      inputTokens: 10,
+      cacheTokens: 2,
+      outputTokens: 3,
+      turnCount: 1
+    })
+    await expect(
+      turns.write(turn, { filename: 'late.md', content: 'must reject after Turn seal' })
+    ).rejects.toThrow()
+    const runningPrompt = harness
+      .durable()
+      .conversationGraph!.messages.find(
+        ({ delegatedCallerSource }) =>
+          delegatedCallerSource?.toolInvocationId === laterCallers[0].toolInvocationId
+      )!
+    const runningTurn = turns.handleForExecution(`${control.input.attemptId}:${runningPrompt.id}`)
+    await turns.write(runningTurn, {
+      filename: 'running.md',
+      content: 'running child evidence'
+    })
+    control.complete('Running evidence ready', {
+      inputTokens: 20,
+      cacheTokens: 4,
+      outputTokens: 6,
+      turnCount: 1
+    })
 
     const result = await pending
     if (result.kind !== 'results') throw new Error('expected terminal delegated result')
@@ -615,8 +1117,8 @@ describe('production delegated-work composition', () => {
           artifactsCreated: [
             {
               versionId: expect.stringMatching(/^version-artifact-run-/),
-              name: 'evidence.md',
-              checksum: 'exact child evidence'
+              name: 'running.md',
+              checksum: 'running child evidence'
             }
           ]
         }
@@ -628,13 +1130,92 @@ describe('production delegated-work composition', () => {
     ).resolves.toMatchObject({
       messages: [
         { role: 'user', content: 'Create evidence' },
+        { role: 'assistant', content: 'Evidence ready', artifacts: [{ name: 'evidence.md' }] },
+        { role: 'user', content: 'Create running evidence' },
         {
           role: 'assistant',
-          content: 'Evidence ready',
+          content: 'Running evidence ready',
           artifacts: [{ versionId: result.children[0].artifactsCreated[0].versionId }]
         }
       ]
     })
+
+    const continued = await harness.composition.host.sendMessage(
+      {
+        ...harness.caller,
+        originMessageId: laterCallers[1].rootMessageId,
+        toolInvocationId: laterCallers[1].toolInvocationId
+      },
+      child.frameId,
+      'Create continuation evidence',
+      'info'
+    )
+    expect(continued.kind).toBe('continued')
+    if (continued.kind !== 'continued') throw new Error('expected terminal continuation')
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    const continuationControl = execution.control(continued.child.attemptId)
+    const continuationTurn = turns.handleForExecution(continued.child.attemptId)
+    await turns.write(continuationTurn, {
+      filename: 'continuation.md',
+      content: 'continued child evidence'
+    })
+    continuationControl.accept()
+    continuationControl.complete('Continuation evidence ready')
+    await expect
+      .poll(
+        () =>
+          harness
+            .durable()
+            .runtimeContext?.delegatedWork?.records[0].attempts.find(
+              ({ id }) => id === continued.child.attemptId
+            )?.status
+      )
+      .toBe('completed')
+
+    const reloaded = normalizeSessionFile(harness.durable())!
+    const childOwners = finalized.map((entry) => {
+      const owner = reloaded.conversationGraph!.messages.find(
+        ({ id }) => id === entry.terminalMessageId
+      )
+      if (!owner) throw new Error('reloaded child Artifact owner is missing')
+      return owner
+    })
+    const rootOwner = reloaded.conversationGraph!.messages.find(
+      ({ id }) => id === harness.caller.originMessageId
+    )!
+    expect(finalized).toHaveLength(3)
+    expect(
+      new Set(finalized.flatMap(({ artifacts }) => artifacts.map(({ versionId }) => versionId)))
+        .size
+    ).toBe(3)
+    expect(childOwners.every((owner) => owner?.artifactIds?.length === 1)).toBe(true)
+    expect(new Set(childOwners.map((owner) => owner?.id)).size).toBe(3)
+    expect(new Set(childOwners.map((owner) => owner?.runtimeSegmentId).filter(Boolean)).size).toBe(
+      3
+    )
+    expect(rootOwner.artifactIds).toBeUndefined()
+    const placements = projectRootArtifactVisibility(reloaded, rootBranch.id).placements
+    expect(
+      placements.map(({ rootMessageId, toolInvocationId }) => [rootMessageId, toolInvocationId])
+    ).toEqual([
+      [harness.caller.originMessageId, harness.caller.toolInvocationId],
+      [laterCallers[0].rootMessageId, laterCallers[0].toolInvocationId],
+      [laterCallers[1].rootMessageId, laterCallers[1].toolInvocationId]
+    ])
+    for (const placement of placements) {
+      const owner = childOwners.find(({ id }) => id === placement.ownerMessageId)!
+      const descriptor = reloaded.artifacts!.find(({ id }) => id === placement.artifactVersionId)!
+      const frame = await harness.composition.host.readAgentFrame(
+        harness.caller.session,
+        child.frameId
+      )
+      if (!frame) throw new Error('reloaded child Frame is missing')
+      const frameArtifact = frame.messages
+        .flatMap(({ artifacts }) => artifacts ?? [])
+        .find(({ versionId }) => versionId === placement.artifactVersionId)!
+      expect(owner.artifactIds).toContain(placement.artifactVersionId)
+      expect(frameArtifact.path).toBe(descriptor.path)
+    }
   })
 
   it('projects production Reviewer rows only for the exact completed child scope', async () => {

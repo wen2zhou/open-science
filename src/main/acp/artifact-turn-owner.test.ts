@@ -7,6 +7,7 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { ArtifactFile } from '../../shared/artifacts'
 import { ArtifactRepository, getArtifactCurrentRunFilePath } from '../artifacts/repository'
 import { ArtifactRunRegistry } from '../artifacts/run-registry'
+import { createNotebookArtifactSourceScopeProvider } from '../notebook/artifact-source-scope'
 import { ArtifactTurnOwner } from './artifact-turn-owner'
 
 const roots: string[] = []
@@ -62,6 +63,87 @@ describe('ArtifactTurnOwner', () => {
     expect(Object.getOwnPropertyNames(ArtifactTurnOwner.prototype)).not.toEqual(
       expect.arrayContaining(['open', 'promptMessageIdFor', 'writeForActiveTurn'])
     )
+  })
+
+  it('does not grant Notebook source scope to an owner that did not opt in', async () => {
+    const dataRoot = await createRoot()
+    const issuedBindings: Array<Record<string, unknown>> = []
+    const owner = new ArtifactTurnOwner({
+      dataRoot,
+      repository: new ArtifactRepository(dataRoot),
+      runRegistry: new ArtifactRunRegistry(),
+      issueRpcCapability: (binding) => {
+        issuedBindings.push(binding)
+        return 'artifact-only-capability'
+      }
+    })
+
+    const turn = await owner.openExecution({
+      executionId: 'artifact-only-execution',
+      appSessionId: 'session-1',
+      artifactStorageSessionId: 'artifact-session-1',
+      projectId: 'project-1',
+      agentName: 'Artifact-only Agent'
+    })
+    const handoff = JSON.parse(await readFile(owner.handoffFile(turn), 'utf8')) as Record<
+      string,
+      unknown
+    >
+
+    expect(handoff).not.toHaveProperty('notebookSessionId')
+    expect(handoff).not.toHaveProperty('notebookDataDir')
+    expect(handoff).not.toHaveProperty('notebookSessionRoot')
+    expect(issuedBindings[0]).not.toHaveProperty('notebookSessionId')
+
+    await owner.dispose(turn)
+  })
+
+  it('uses provenance frame identity for Notebook scope even on the root transport', async () => {
+    const dataRoot = await createRoot()
+    const owner = new ArtifactTurnOwner({
+      dataRoot,
+      repository: new ArtifactRepository(dataRoot),
+      runRegistry: new ArtifactRunRegistry(),
+      notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot)
+    })
+
+    const turn = await owner.openRootExecution({
+      executionId: 'root-transport-child-frame',
+      appSessionId: 'session-1',
+      artifactStorageSessionId: 'artifact-session-1',
+      projectId: 'project-1',
+      agentName: 'Child Agent',
+      provenanceContext: {
+        rootFrameId: 'root-frame-session-1',
+        agentFrameId: 'child-frame-1'
+      }
+    })
+    const handoff = JSON.parse(await readFile(owner.handoffFile(turn), 'utf8')) as Record<
+      string,
+      unknown
+    >
+
+    expect(handoff).toMatchObject({
+      notebookDataDir: join(
+        dataRoot,
+        'notebooks',
+        'project-1',
+        'session-1',
+        'frames',
+        'child-frame-1',
+        'data'
+      ),
+      notebookSessionRoot: join(
+        dataRoot,
+        'notebooks',
+        'project-1',
+        'session-1',
+        'frames',
+        'child-frame-1'
+      )
+    })
+
+    await owner.dispose(turn)
   })
 
   it('keeps concurrent executions in one Session independently addressable through opaque handles', async () => {
@@ -223,6 +305,7 @@ describe('ArtifactTurnOwner', () => {
       revokeRpcCapability: (token) => {
         revoked.push(token)
       },
+      notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot),
       notebook: {
         setArtifactProvenanceContext: (_sessionId, context) => notebookContexts.push(context)
       }
@@ -281,6 +364,7 @@ describe('ArtifactTurnOwner', () => {
         issuedBindings.push(binding)
         return 'secret-capability'
       },
+      notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot),
       notebook: {
         setArtifactProvenanceContext: (_sessionId, context) => notebookContexts.push(context)
       }
@@ -333,8 +417,23 @@ describe('ArtifactTurnOwner', () => {
       artifactRunId: 'artifact-run-123-1',
       rpcCapabilityToken: 'secret-capability',
       notebookSessionId: 'session-1',
-      notebookDataDir: join(dataRoot, 'notebooks', 'project-1', 'session-1', 'data'),
-      notebookSessionRoot: join(dataRoot, 'notebooks', 'project-1', 'session-1')
+      notebookDataDir: join(
+        dataRoot,
+        'notebooks',
+        'project-1',
+        'session-1',
+        'frames',
+        'agent-1',
+        'data'
+      ),
+      notebookSessionRoot: join(
+        dataRoot,
+        'notebooks',
+        'project-1',
+        'session-1',
+        'frames',
+        'agent-1'
+      )
     })
 
     const snapshot = owner.snapshot(turn)
@@ -510,6 +609,7 @@ describe('ArtifactTurnOwner', () => {
       revokeRpcCapability: (token) => {
         revoked.push(token)
       },
+      notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot),
       notebook: {
         setArtifactProvenanceContext: (sessionId, context) => {
           notebookContexts.push({ sessionId, context })
@@ -609,6 +709,7 @@ describe('ArtifactTurnOwner', () => {
       revokeRpcCapability: async () => {
         throw new Error('revoke failed')
       },
+      notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot),
       notebook: {
         setArtifactProvenanceContext: (_sessionId, context) => notebookContexts.push(context)
       }
@@ -786,6 +887,7 @@ describe('ArtifactTurnOwner', () => {
         revoked.push(token)
         throw new Error('cleanup revoke failed')
       },
+      notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot),
       notebook: {
         setArtifactProvenanceContext: (_sessionId, context) => {
           contexts.push(context)
@@ -821,6 +923,7 @@ describe('ArtifactTurnOwner', () => {
       dataRoot,
       repository: new ArtifactRepository(dataRoot),
       runRegistry: new ArtifactRunRegistry(),
+      notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot),
       notebook: {
         setArtifactProvenanceContext: (_sessionId, context) => contexts.push(context)
       }

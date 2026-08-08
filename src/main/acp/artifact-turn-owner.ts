@@ -4,7 +4,6 @@ import { dirname, join } from 'node:path'
 
 import type { ArtifactFile } from '../../shared/artifacts'
 import type { ArtifactRpcCapabilityBinding } from '../../shared/artifact-provenance'
-import { getNotebookDataRoot, getNotebookSessionRoot } from '../notebook/repository'
 import type { ArtifactRunContext } from '../artifacts/mcp-server'
 import { ArtifactRepository, getArtifactCurrentRunFilePath } from '../artifacts/repository'
 import { ArtifactRunRegistry } from '../artifacts/run-registry'
@@ -63,6 +62,21 @@ type ArtifactTurnSnapshot = {
   terminalResult?: { kind: 'empty' } | { kind: 'publication'; artifactCount: number }
 }
 
+type NotebookArtifactSourceScope = Required<
+  Pick<ArtifactRunContext, 'notebookSessionId' | 'notebookDataDir' | 'notebookSessionRoot'>
+>
+
+type NotebookArtifactSourceScopeRequest = Readonly<{
+  projectId: string
+  appSessionId: string
+  rootFrameId: string
+  agentFrameId: string
+}>
+
+type NotebookArtifactSourceScopeProvider = (
+  request: NotebookArtifactSourceScopeRequest
+) => NotebookArtifactSourceScope
+
 type ArtifactTurnProvenance = {
   listRunVersions: (request: {
     projectId: string
@@ -99,6 +113,7 @@ type ArtifactTurnOwnerOptions = {
   revokeRpcCapability?: (token: string) => Promise<void> | void
   provenance?: ArtifactTurnProvenance
   writeHandoffFile?: (filePath: string, content: string) => Promise<void>
+  notebookArtifactSourceScope?: NotebookArtifactSourceScopeProvider
   notebook?: {
     setArtifactProvenanceContext?: (
       sessionId: string,
@@ -132,6 +147,7 @@ type ArtifactTurn = {
   promptMessageId: string
   agentName: string
   rpcCapabilityToken?: string
+  notebookArtifactSourceScope?: NotebookArtifactSourceScope
   phase: 'open' | 'sealing' | 'finalized' | 'disposed'
   inFlightAppWrites: Set<Promise<ArtifactFile>>
   writeDrainPromise?: Promise<void>
@@ -196,7 +212,9 @@ class ArtifactTurnOwner {
         runtimeSegmentId: turn.runtimeSegmentId,
         promptMessageId: turn.promptMessageId,
         agentName: turn.agentName,
-        ...(this.options.notebook ? { notebookSessionId: turn.appSessionId } : {}),
+        ...(turn.notebookArtifactSourceScope
+          ? { notebookSessionId: turn.notebookArtifactSourceScope.notebookSessionId }
+          : {}),
         allowedMethods: ['artifactCreateVersion', 'artifactReplayVersion']
       })
       if (turn.rpcCapabilityToken) runContext.rpcCapabilityToken = turn.rpcCapabilityToken
@@ -260,6 +278,15 @@ class ArtifactTurnOwner {
 
   handoffFile(handle: ArtifactTurnHandle): string {
     return this.resolve(handle).currentRunFile
+  }
+
+  async publishHandoff(handle: ArtifactTurnHandle, targetFile: string): Promise<void> {
+    const turn = this.resolve(handle)
+    if (turn.phase !== 'open') throw new Error('Artifact turn is not open.')
+    await this.withHandoffLock(targetFile, async () => {
+      await mkdir(dirname(targetFile), { recursive: true })
+      await this.writeHandoffFile(targetFile, this.createRunContext(turn))
+    })
   }
 
   snapshot(handle: ArtifactTurnHandle): ArtifactTurnSnapshot {
@@ -378,7 +405,7 @@ class ArtifactTurnOwner {
       request.projectId,
       request.artifactStorageSessionId
     )
-    return {
+    const turn: ArtifactTurn = {
       executionId: request.executionId,
       updatesSessionNotebookContext: rootTransport,
       appSessionId: request.appSessionId,
@@ -400,10 +427,17 @@ class ArtifactTurnOwner {
       phase: 'open',
       inFlightAppWrites: new Set()
     }
+    const notebookArtifactSourceScope = this.options.notebookArtifactSourceScope?.({
+      projectId: turn.projectId,
+      appSessionId: turn.appSessionId,
+      rootFrameId: turn.rootFrameId,
+      agentFrameId: turn.agentFrameId
+    })
+    return notebookArtifactSourceScope ? { ...turn, notebookArtifactSourceScope } : turn
   }
 
   private createRunContext(turn: ArtifactTurn): ArtifactRunContext {
-    const base = {
+    return {
       artifactRunId: turn.runId,
       executionId: turn.executionId,
       appSessionId: turn.appSessionId,
@@ -415,24 +449,9 @@ class ArtifactTurnOwner {
       messageAncestry: turn.messageAncestry,
       runtimeSegmentId: turn.runtimeSegmentId,
       promptMessageId: turn.promptMessageId,
-      agentName: turn.agentName
+      agentName: turn.agentName,
+      ...turn.notebookArtifactSourceScope
     }
-    return this.options.notebook
-      ? {
-          ...base,
-          notebookSessionId: turn.appSessionId,
-          notebookDataDir: getNotebookDataRoot(
-            this.options.dataRoot,
-            turn.projectId,
-            turn.appSessionId
-          ),
-          notebookSessionRoot: getNotebookSessionRoot(
-            this.options.dataRoot,
-            turn.projectId,
-            turn.appSessionId
-          )
-        }
-      : base
   }
 
   private closeWrites(turn: ArtifactTurn): Promise<void> {
@@ -623,6 +642,7 @@ export { ArtifactTurnOwner }
 export type {
   ArtifactTurnHandle,
   ArtifactTurnOwnerOptions,
+  NotebookArtifactSourceScopeProvider,
   ArtifactTurnPublication,
   ArtifactTurnSnapshot,
   ArtifactTurnWriteInput,

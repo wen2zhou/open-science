@@ -40,6 +40,8 @@ import {
   type PersistedSessionManifest,
   type PersistedUploadedAttachment,
   type PersistedSessionStatus,
+  type SessionDelegatedWorkRuntimeContext,
+  type SessionRuntimeContext,
   type PersistedToolActivity
 } from '../../../shared/session-persistence'
 import type { UpdateSessionArchiveRequest } from '../../../shared/session-persistence'
@@ -505,6 +507,188 @@ const withTransientSessionState = (
     pendingContextReplayMessageId: source.pendingContextReplayMessageId
   }
 }
+
+const mergeCollectionByIdentity = <Item>(
+  currentItems: readonly Item[],
+  incomingItems: readonly Item[],
+  identity: (item: Item) => string,
+  resolveConflict: (currentItem: Item, incomingItem: Item) => Item
+): Item[] => {
+  const incomingByIdentity = new Map(incomingItems.map((item) => [identity(item), item]))
+  const merged = currentItems.map((item) => {
+    const itemIdentity = identity(item)
+    const candidate = incomingByIdentity.get(itemIdentity)
+    if (!candidate) return structuredClone(item)
+    incomingByIdentity.delete(itemIdentity)
+    return structuredClone(resolveConflict(item, candidate))
+  })
+  merged.push(...[...incomingByIdentity.values()].map((item) => structuredClone(item)))
+  return merged
+}
+
+const mergeConversationGraphByIdentity = (
+  current: NonNullable<PersistedChatSession['conversationGraph']>,
+  incoming: NonNullable<PersistedChatSession['conversationGraph']>,
+  incomingWinsConflicts = false
+): NonNullable<PersistedChatSession['conversationGraph']> => {
+  const newerUpdatedAt = <Item extends { updatedAt: number }>(left: Item, right: Item): boolean =>
+    right.updatedAt > left.updatedAt
+  const merge = <Item extends { id: string }>(
+    currentItems: readonly Item[],
+    incomingItems: readonly Item[],
+    preferIncoming: (currentItem: Item, incomingItem: Item) => boolean
+  ): Item[] =>
+    mergeCollectionByIdentity(
+      currentItems,
+      incomingItems,
+      ({ id }) => id,
+      (currentItem, incomingItem) =>
+        preferIncoming(currentItem, incomingItem) ? incomingItem : currentItem
+    )
+  return {
+    ...structuredClone(current),
+    frames: mergeCollectionByIdentity(
+      current.frames,
+      incoming.frames,
+      ({ id }) => id,
+      (left, right) => {
+        if (incomingWinsConflicts) {
+          return left.id === current.rootFrameId
+            ? { ...right, activeBranchId: left.activeBranchId }
+            : right
+        }
+        return (right.completedAt ?? right.createdAt) > (left.completedAt ?? left.createdAt)
+          ? right
+          : left
+      }
+    ),
+    branches: merge(current.branches, incoming.branches, (left, right) => {
+      const isCurrentRootBranch =
+        left.agentFrameId === current.rootFrameId &&
+        left.id === current.frames.find(({ id }) => id === current.rootFrameId)?.activeBranchId
+      // Streaming intentionally advances only the flat projection until persistence materializes
+      // the Branch graph. A newer durable save echo may therefore be the first copy whose head
+      // includes the streamed Message. Preserve a genuinely newer local Branch, but do not keep a
+      // stale local head merely because it is active.
+      return isCurrentRootBranch
+        ? newerUpdatedAt(left, right)
+        : incomingWinsConflicts || newerUpdatedAt(left, right)
+    }),
+    messages: merge(
+      current.messages,
+      incoming.messages,
+      (left, right) => incomingWinsConflicts || newerUpdatedAt(left, right)
+    ),
+    activities: merge(
+      current.activities,
+      incoming.activities,
+      (left, right) => incomingWinsConflicts || newerUpdatedAt(left, right)
+    ),
+    activityGroups: merge(
+      current.activityGroups,
+      incoming.activityGroups,
+      (left, right) => incomingWinsConflicts || newerUpdatedAt(left, right)
+    ),
+    runtimeSegments: merge(
+      current.runtimeSegments,
+      incoming.runtimeSegments,
+      (left, right) =>
+        incomingWinsConflicts ||
+        (right.endedAt ?? right.startedAt) > (left.endedAt ?? left.startedAt)
+    )
+  }
+}
+
+const mergeDelegatedWorkByIdentity = (
+  current: SessionDelegatedWorkRuntimeContext | undefined,
+  incoming: SessionDelegatedWorkRuntimeContext | undefined,
+  preferIncomingConflicts: boolean
+): SessionDelegatedWorkRuntimeContext | undefined => {
+  if (!incoming) return current ? structuredClone(current) : undefined
+  if (!current) return structuredClone(incoming)
+  const resolve = <Item>(currentItem: Item, incomingItem: Item): Item =>
+    preferIncomingConflicts ? incomingItem : currentItem
+  return {
+    records: mergeCollectionByIdentity(
+      current.records,
+      incoming.records,
+      ({ agentFrameId }) => agentFrameId,
+      (record, candidate) => ({
+        agentFrameId: record.agentFrameId,
+        attempts: mergeCollectionByIdentity(
+          record.attempts,
+          candidate.attempts,
+          ({ id }) => id,
+          resolve
+        ),
+        pendingMessages: mergeCollectionByIdentity(
+          record.pendingMessages,
+          candidate.pendingMessages,
+          ({ id }) => id,
+          resolve
+        )
+      })
+    )
+  }
+}
+
+const mergeRuntimeContextByOwner = (
+  current: SessionRuntimeContext | undefined,
+  incoming: SessionRuntimeContext | undefined
+): SessionRuntimeContext | undefined => {
+  if (!incoming) return current ? structuredClone(current) : undefined
+  if (!current) return structuredClone(incoming)
+  const incomingAdvanced = incoming.revision > current.revision
+  const delegatedWork = mergeDelegatedWorkByIdentity(
+    current.delegatedWork,
+    incoming.delegatedWork,
+    incomingAdvanced
+  )
+  return {
+    version: 1,
+    revision: Math.max(current.revision, incoming.revision),
+    ...(incomingAdvanced && incoming.plan
+      ? { plan: structuredClone(incoming.plan) }
+      : current.plan
+        ? { plan: structuredClone(current.plan) }
+        : incoming.plan
+          ? { plan: structuredClone(incoming.plan) }
+          : {}),
+    ...(delegatedWork ? { delegatedWork } : {})
+  }
+}
+
+const mergeNewerPersistedSessionByIdentity = (
+  current: ChatSession,
+  incoming: PersistedChatSession
+): PersistedChatSession => ({
+  ...structuredClone(incoming),
+  messages: mergeCollectionByIdentity(
+    current.messages,
+    incoming.messages,
+    ({ id }) => id,
+    (_currentMessage, incomingMessage) => incomingMessage
+  ),
+  runtimeContext: mergeRuntimeContextByOwner(current.runtimeContext, incoming.runtimeContext),
+  ...(current.conversationGraph && incoming.conversationGraph
+    ? {
+        conversationGraph: mergeConversationGraphByIdentity(
+          current.conversationGraph,
+          incoming.conversationGraph,
+          true
+        )
+      }
+    : current.conversationGraph && !incoming.conversationGraph
+      ? { conversationGraph: structuredClone(current.conversationGraph) }
+      : {}),
+  artifacts: mergeCollectionByIdentity(
+    current.artifacts ?? [],
+    incoming.artifacts ?? [],
+    ({ id }) => id,
+    (_currentArtifact, incomingArtifact) => incomingArtifact
+  ),
+  filesRevision: Math.max(current.filesRevision ?? 0, incoming.filesRevision ?? 0)
+})
 
 const isSameSubmittedUpload = (
   current: PersistedUploadedAttachment,
@@ -1459,48 +1643,64 @@ const createSessionStoreInitializer = (): StateCreator<SessionStore> => (set, ge
   upsertPersistedSession: (session) => {
     set((state) => {
       const existing = state.sessions.find((candidate) => candidate.id === session.id)
-      if (existing && existing.updatedAt > session.updatedAt) {
-        if (existing.archivedAt === session.archivedAt) return state
-        const withoutPreviousArchive = { ...existing }
-        delete withoutPreviousArchive.archivedAt
-        const projected: ChatSession = {
-          ...withoutPreviousArchive,
-          ...(session.archivedAt === undefined ? {} : { archivedAt: session.archivedAt })
-        }
-        externallyHydratedSessions.add(projected)
-        return {
-          sessions: state.sessions.map((candidate) =>
-            candidate.id === session.id ? projected : candidate
-          )
-        }
-      }
-      if (existing && existing.updatedAt === session.updatedAt) {
-        const flat = mergeDurableUploadProjection(
-          existing.messages,
-          existing.messages,
-          session.messages
-        )
-        const graph = existing.conversationGraph
-          ? mergeDurableUploadProjection(
-              existing.conversationGraph.messages,
-              existing.conversationGraph.messages,
-              session.conversationGraph?.messages ?? session.messages
-            )
-          : undefined
+      if (existing && existing.updatedAt >= session.updatedAt) {
+        const incomingRuntimeRevision = session.runtimeContext?.revision ?? -1
+        const existingRuntimeRevision = existing.runtimeContext?.revision ?? -1
+        const runtimeAdvanced = incomingRuntimeRevision > existingRuntimeRevision
+        const sameTimestamp = existing.updatedAt === session.updatedAt
+        const runtimeIdentityMerge =
+          sameTimestamp && incomingRuntimeRevision === existingRuntimeRevision
+        const filesAdvanced = (session.filesRevision ?? 0) > (existing.filesRevision ?? 0)
+        const fileIdentityMerge =
+          sameTimestamp && (session.filesRevision ?? 0) === (existing.filesRevision ?? 0)
         const archiveChanged = existing.archivedAt !== session.archivedAt
-        if (!flat.changed && !graph?.changed && !archiveChanged) return state
+        const flat = sameTimestamp
+          ? mergeDurableUploadProjection(existing.messages, existing.messages, session.messages)
+          : { messages: existing.messages, changed: false }
+        if (
+          !runtimeAdvanced &&
+          !runtimeIdentityMerge &&
+          !filesAdvanced &&
+          !fileIdentityMerge &&
+          !archiveChanged &&
+          !flat.changed
+        ) {
+          return state
+        }
         const withoutPreviousArchive = { ...existing }
         delete withoutPreviousArchive.archivedAt
+        const artifactsById = new Map(
+          [...(existing.artifacts ?? []), ...(session.artifacts ?? [])].map((artifact) => [
+            artifact.id,
+            artifact
+          ])
+        )
         const projected: ChatSession = {
           ...withoutPreviousArchive,
           ...(session.archivedAt === undefined ? {} : { archivedAt: session.archivedAt }),
           messages: flat.messages,
-          ...(graph?.changed
+          ...(runtimeAdvanced || runtimeIdentityMerge
             ? {
-                conversationGraph: {
-                  ...existing.conversationGraph!,
-                  messages: graph.messages
-                }
+                runtimeContext: mergeRuntimeContextByOwner(
+                  existing.runtimeContext,
+                  session.runtimeContext
+                ),
+                ...(session.conversationGraph
+                  ? {
+                      conversationGraph: existing.conversationGraph
+                        ? mergeConversationGraphByIdentity(
+                            existing.conversationGraph,
+                            session.conversationGraph
+                          )
+                        : structuredClone(session.conversationGraph)
+                    }
+                  : {})
+              }
+            : {}),
+          ...(filesAdvanced || fileIdentityMerge
+            ? {
+                filesRevision: Math.max(existing.filesRevision ?? 0, session.filesRevision ?? 0),
+                artifacts: [...artifactsById.values()]
               }
             : {})
         }
@@ -1511,11 +1711,16 @@ const createSessionStoreInitializer = (): StateCreator<SessionStore> => (set, ge
           )
         }
       }
-
-      const hydratedSession = hydrateSession(session)
+      const incomingProjection =
+        existing && session.updatedAt > existing.updatedAt
+          ? mergeNewerPersistedSessionByIdentity(existing, session)
+          : session
+      const hydratedSession = existing
+        ? withTransientSessionState(incomingProjection, existing)
+        : hydrateSession(session)
       const currentPlanProjection = matchesPersistedPlanProjection(
         existing?.activePlanProjection,
-        session
+        incomingProjection
       )
         ? { activePlanProjection: existing.activePlanProjection }
         : {}

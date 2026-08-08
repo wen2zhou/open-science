@@ -151,7 +151,8 @@ const createInMemoryDelegatedWorkRecords = (input: {
       return {
         rootFrameId: state.rootFrameId,
         messageBranchId: child.messageBranchId,
-        promptMessageId: promptMessage.id
+        promptMessageId: promptMessage.id,
+        runtimeSegmentId
       }
     },
     async stageTerminalMessage(frameId, attemptId, message) {
@@ -210,6 +211,39 @@ const createInMemoryDelegatedWorkRecords = (input: {
       if (!message) throw new Error(`Pending Message not found: ${messageId}`)
       if (message.deliveredAt !== undefined) return
       child.pendingMessages[index] = { ...message, deliveredAt }
+    },
+    async startPendingTurn(
+      frameId,
+      attemptId,
+      pendingMessageId,
+      promptMessageId,
+      runtimeSegmentId
+    ) {
+      findRunning(frameId, attemptId).runtimeSegmentIds.push(runtimeSegmentId)
+      const child = state.records.find((candidate) => candidate.frameId === frameId)!
+      const pending = child.pendingMessages.find(({ id }) => id === pendingMessageId)
+      if (!pending?.callerSource) {
+        throw new Error('Pending child Turn has no authenticated Main caller source.')
+      }
+      state.messages.push({
+        id: promptMessageId,
+        frameId,
+        role: 'user',
+        content: pending.text,
+        createdAt: pending.createdAt
+      })
+      return {
+        rootFrameId: state.rootFrameId,
+        messageBranchId: child.messageBranchId,
+        promptMessageId,
+        runtimeSegmentId
+      }
+    },
+    async completeTurn(frameId, attemptId, runtimeSegmentId) {
+      const attempt = findRunning(frameId, attemptId)
+      if (!attempt.runtimeSegmentIds.includes(runtimeSegmentId)) {
+        throw new Error('Child Turn Runtime Segment is outside the Attempt.')
+      }
     },
     snapshot: async () => structuredClone(state)
   }

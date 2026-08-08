@@ -1,10 +1,12 @@
 import type { AgentFrameworkId } from '../../shared/settings'
+import type { ArtifactFile } from '../../shared/artifacts'
 import type {
   DelegatedWorkAttemptRecord,
   DelegatedWorkCancellationReason,
   DelegatedWorkPendingMessage,
   DelegatedWorkRecord,
   DelegatedWorkResolvedAgent,
+  DelegatedCallerSource,
   PersistedActivityGroup,
   PersistedChatMessage,
   PersistedToolActivity
@@ -23,6 +25,7 @@ type CreateChildRecordInput = Readonly<{
   inputs?: readonly string[]
   resolvedAgent: DelegatedWorkResolvedAgent
   startedAt: number
+  callerSource: DelegatedCallerSource
 }>
 
 type CreateChildrenInput = Readonly<{
@@ -59,6 +62,7 @@ type StartContinuationAttemptInput = Readonly<{
   message: string
   resolvedAgent: DelegatedWorkResolvedAgent
   startedAt: number
+  callerSource: DelegatedCallerSource
 }>
 
 type AttemptAgentEvent =
@@ -112,6 +116,32 @@ type MarkMessageDeliveredInput = Readonly<{
   deliveredAt: number
 }>
 
+type StartPendingMessageTurnInput = Readonly<{
+  expectedRevision: number
+  frameId: string
+  attemptId: string
+  pendingMessageId: string
+  promptMessageId: string
+  runtimeSegmentId: string
+  frameworkId: AgentFrameworkId
+  startedAt: number
+}>
+
+type CompleteChildTurnInput = Readonly<{
+  expectedRevision: number
+  frameId: string
+  attemptId: string
+  runtimeSegmentId: string
+  endedAt: number
+}>
+
+type AttachDelegatedMessageArtifactsInput = Readonly<{
+  frameId: string
+  attemptId: string
+  messageId: string
+  artifacts: readonly ArtifactFile[]
+}>
+
 type ChildRecord = Readonly<{
   frameId: string
   parentFrameId: string
@@ -132,14 +162,22 @@ type DelegatedWorkRecordCommands = Readonly<{
   transitionAttempt(key: SessionKey, input: TransitionAttemptInput): Promise<void>
   appendPendingMessage(key: SessionKey, input: AppendPendingMessageInput): Promise<void>
   markMessageDelivered(key: SessionKey, input: MarkMessageDeliveredInput): Promise<void>
+  startPendingMessageTurn(key: SessionKey, input: StartPendingMessageTurnInput): Promise<void>
+  completeChildTurn(key: SessionKey, input: CompleteChildTurnInput): Promise<void>
+  attachDelegatedMessageArtifacts(
+    key: SessionKey,
+    input: AttachDelegatedMessageArtifactsInput
+  ): Promise<void>
   readChildren(key: SessionKey, parentFrameId: string): Promise<readonly ChildRecord[]>
 }>
 
 export type {
   AppendPendingMessageInput,
+  AttachDelegatedMessageArtifactsInput,
   AttemptAgentEvent,
   AttemptAgentEventInput,
   ChildRecord,
+  CompleteChildTurnInput,
   CreateChildRecordInput,
   CreateChildrenInput,
   CreatedChild,
@@ -149,5 +187,6 @@ export type {
   SessionKey,
   StartContinuationAttemptInput,
   StartAttemptRuntimeInput,
+  StartPendingMessageTurnInput,
   TransitionAttemptInput
 }

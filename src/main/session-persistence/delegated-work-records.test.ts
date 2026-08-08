@@ -106,7 +106,8 @@ const child = (
   task: overrides.task ?? `Research part ${index}`,
   ...(overrides.name ? { name: overrides.name } : {}),
   resolvedAgent: { kind: 'main' as const },
-  startedAt: 10 + index
+  startedAt: 10 + index,
+  callerSource: { rootMessageId: 'root-prompt', toolInvocationId: `delegate-${index}` }
 })
 
 describe('delegated-work Session records', () => {
@@ -274,7 +275,8 @@ describe('delegated-work Session records', () => {
         messageId: 'continuation-2',
         message: 'Check one more source.',
         resolvedAgent: { kind: 'main' },
-        startedAt: 23
+        startedAt: 23,
+        callerSource: { rootMessageId: 'root-prompt', toolInvocationId: 'continue-2' }
       }),
       coordinator.startContinuationAttempt(key, {
         expectedRevision: 4,
@@ -284,7 +286,8 @@ describe('delegated-work Session records', () => {
         messageId: 'continuation-3',
         message: 'Competing continuation.',
         resolvedAgent: { kind: 'main' },
-        startedAt: 23
+        startedAt: 23,
+        callerSource: { rootMessageId: 'root-prompt', toolInvocationId: 'continue-3' }
       })
     ])
 

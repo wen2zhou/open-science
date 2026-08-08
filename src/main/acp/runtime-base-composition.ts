@@ -26,6 +26,7 @@ import { AcpSessionCapabilityOwner } from './session-capability-owner'
 import { AcpSessionConfigurator } from './session-configurator'
 import { AcpSessionInteractionOwner } from './session-interaction-owner'
 import { AcpSessionPresentationPolicy } from './session-presentation-policy'
+import { createNotebookArtifactSourceScopeProvider } from '../notebook/artifact-source-scope'
 import { ArtifactTurnOwner } from './artifact-turn-owner'
 import { AcpTurnSkillOwner } from './turn-skill-owner'
 
@@ -145,6 +146,9 @@ const composeAcpRuntimeBaseOwners = (options: AcpRuntimeOptions) => {
           provenance: options.artifacts.provenance,
           ...(options.notebook
             ? {
+                notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(
+                  options.artifacts.dataRoot
+                ),
                 notebook: {
                   setArtifactProvenanceContext: options.notebook.setArtifactProvenanceContext
                 }

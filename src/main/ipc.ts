@@ -108,6 +108,7 @@ import { registerNotebookIpcHandlers } from './notebook/ipc'
 import { registerRuntimeIpcHandlers } from './notebook/runtime-ipc'
 import { NotebookRunRepository, getRuntimeRoot } from './notebook/repository'
 import { NotebookLocalRpcServer } from './notebook/local-rpc-server'
+import { createNotebookArtifactSourceScopeProvider } from './notebook/artifact-source-scope'
 import { NotebookInputRegistry } from './notebook/input-registry'
 import { effectiveMirrorAsync } from './notebook/mirror-probe'
 import { createProductionProvisioner, type RuntimeProvisioner } from './notebook/provisioner'
@@ -164,6 +165,7 @@ import type { NotebookRuntimeSettings } from './settings/capabilities'
 import type { WindowSettingsCapabilities } from './settings/service-capabilities'
 import { createProductionDelegatedWorkComposition } from './delegated-work/production-composition'
 import { createProductionDelegatedFrameworkRuntime } from './delegated-work/production-framework-runtime'
+import { finalizeDelegatedArtifactPublication } from './delegated-work/delegated-artifact-publication'
 import { createSettingsWorkflows } from './settings/workflows'
 import { ProfileService } from './specialist/service'
 import { SpecialistRepository } from './specialist/repository'
@@ -1052,9 +1054,10 @@ const createApplicationModules = async (
       runtimeRef.current?.getSnapshot().permissionProfiles[sessionId]?.selectedProfile
   })
   const delegatedArtifactTurns = new ArtifactTurnOwner({
-    dataRoot: resolveDataRoot(),
+    dataRoot,
     repository: artifactRepository,
     runRegistry: artifactRunRegistry,
+    notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot),
     issueRpcCapability: (binding) => requireNotebookRpcServer().issueArtifactRunCapability(binding),
     revokeRpcCapability: (token) => requireNotebookRpcServer().revokeArtifactRunCapability(token),
     provenance: artifactProvenanceRepository
@@ -1098,12 +1101,15 @@ const createApplicationModules = async (
     artifactEvidence: {
       turns: delegatedArtifactTurns,
       artifactStorageSessionId: ({ sessionId }) => sessionId,
-      finalizePublication: async (publication, terminalMessageId) => {
+      finalizePublication: async (publication, terminalMessageId, scope) => {
         const handlers = artifactHandlersRef.current
         if (!handlers) throw new Error('Artifact finalization owner is not available.')
-        await handlers.finalizeRunArtifacts({
-          claimId: publication.artifactClaimId,
-          messageId: terminalMessageId
+        await finalizeDelegatedArtifactPublication({
+          publication,
+          terminalMessageId,
+          scope,
+          commands: sessionPersistenceCoordinator,
+          handlers
         })
       },
       project: (scope) =>

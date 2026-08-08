@@ -2138,6 +2138,33 @@ describe('artifact provenance repository', () => {
       projectName: 'project-1',
       sessionId: 'artifact-session-1',
       runId: 'artifact-run-1',
+      filename: 'cross-frame.png',
+      source: createPngInlineSource('cross-frame bytes')
+    })
+    await expect(
+      repository.createVersion({
+        projectId: 'project-1',
+        appSessionId: 'session-1',
+        artifactStorageSessionId: 'artifact-session-1',
+        artifactRunId: 'artifact-run-1',
+        writeOperationId: 'write-cross-frame-producer',
+        writeRequestChecksum: 'f'.repeat(64),
+        ...graph,
+        agentFrameId: 'parent-frame-1',
+        notebookSessionId: 'session-1',
+        producerRunId: 'notebook-run-owner',
+        sourceKind: 'inline',
+        filename: 'cross-frame.png',
+        contentType: 'image/png'
+      })
+    ).rejects.toThrow(
+      'Notebook producer run belongs to a different agent frame. Have the producing agent publish it directly, or reference an already completed Artifact Version.'
+    )
+
+    await compatibilityRepository.writePendingFile({
+      projectName: 'project-1',
+      sessionId: 'artifact-session-1',
+      runId: 'artifact-run-1',
       filename: 'spoof.png',
       source: createPngInlineSource('different artifact bytes')
     })

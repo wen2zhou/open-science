@@ -78,7 +78,11 @@ const createSessionDelegatedWorkRecords = (
             context: child.request.context,
             inputs: child.request.inputs,
             resolvedAgent: child.resolvedAgent,
-            startedAt: child.startedAt
+            startedAt: child.startedAt,
+            callerSource: {
+              rootMessageId: input.caller.originMessageId,
+              toolInvocationId: input.caller.toolInvocationId
+            }
           }))
         })
       )
@@ -93,7 +97,8 @@ const createSessionDelegatedWorkRecords = (
           messageId: input.userMessageId,
           message: input.message,
           resolvedAgent: input.resolvedAgent,
-          startedAt: input.startedAt
+          startedAt: input.startedAt,
+          callerSource: input.callerSource
         })
       )
     },
@@ -111,7 +116,7 @@ const createSessionDelegatedWorkRecords = (
           ...(attempt?.resolvedAgent.kind === 'specialist'
             ? { agentName: attempt.resolvedAgent.displayName }
             : {}),
-          startedAt: Date.now()
+          startedAt: attempt?.startedAt ?? Date.now()
         })
       )
       const session = await load()
@@ -127,7 +132,8 @@ const createSessionDelegatedWorkRecords = (
       return {
         rootFrameId: graph.rootFrameId,
         messageBranchId: branch.id,
-        promptMessageId: promptMessage.id
+        promptMessageId: promptMessage.id,
+        runtimeSegmentId
       }
     },
     async stageTerminalMessage(frameId, attemptId, message) {
@@ -146,6 +152,7 @@ const createSessionDelegatedWorkRecords = (
               id: message.id,
               role: 'agent',
               content: message.content,
+              responseToMessageId: message.responseToMessageId,
               status: message.status ?? 'complete',
               eventIds: [...(message.eventIds ?? [])],
               images: message.images?.map((image) => ({ ...image })),
@@ -159,11 +166,13 @@ const createSessionDelegatedWorkRecords = (
         })
       )
     },
-    async stageTerminalActivities(frameId, attemptId, activities, activityGroups) {
-      const attempt = (await load()).runtimeContext?.delegatedWork?.records
-        .find((record) => record.agentFrameId === frameId)
-        ?.attempts.find((candidate) => candidate.id === attemptId)
-      const runtimeSegmentId = attempt?.runtimeSegmentIds.at(-1) ?? ''
+    async stageTerminalActivities(
+      frameId,
+      attemptId,
+      runtimeSegmentId,
+      activities,
+      activityGroups
+    ) {
       for (const activity of activities) {
         if (!activity.promptMessageId) continue
         await mutate((expectedRevision) =>
@@ -218,6 +227,7 @@ const createSessionDelegatedWorkRecords = (
                   id: input.terminalMessage.id,
                   role: 'agent',
                   content: input.terminalMessage.content,
+                  responseToMessageId: input.terminalMessage.responseToMessageId,
                   status: input.terminalMessage.status ?? 'complete',
                   eventIds: [...(input.terminalMessage.eventIds ?? [])],
                   images: input.terminalMessage.images?.map((image) => ({ ...image })),
@@ -273,6 +283,51 @@ const createSessionDelegatedWorkRecords = (
         })
       )
     },
+    async startPendingTurn(
+      frameId,
+      attemptId,
+      pendingMessageId,
+      promptMessageId,
+      runtimeSegmentId
+    ) {
+      const pending = (await load()).runtimeContext?.delegatedWork?.records
+        .find((record) => record.agentFrameId === frameId)
+        ?.pendingMessages.find(({ id }) => id === pendingMessageId)
+      await mutate((expectedRevision) =>
+        options.commands.startPendingMessageTurn(key, {
+          expectedRevision,
+          frameId,
+          attemptId,
+          pendingMessageId,
+          promptMessageId,
+          runtimeSegmentId,
+          frameworkId: options.frameworkId,
+          startedAt: pending?.createdAt ?? Date.now()
+        })
+      )
+      const session = await load()
+      const graph = materializeSessionConversationGraph(session).conversationGraph
+      const frame = graph?.frames.find(({ id }) => id === frameId)
+      const branch = graph?.branches.find(({ id }) => id === frame?.activeBranchId)
+      if (!graph || !frame || !branch) throw new Error('Pending child Turn is not durable.')
+      return {
+        rootFrameId: graph.rootFrameId,
+        messageBranchId: branch.id,
+        promptMessageId,
+        runtimeSegmentId
+      }
+    },
+    async completeTurn(frameId, attemptId, runtimeSegmentId, endedAt) {
+      await mutate((expectedRevision) =>
+        options.commands.completeChildTurn(key, {
+          expectedRevision,
+          frameId,
+          attemptId,
+          runtimeSegmentId,
+          endedAt
+        })
+      )
+    },
     async snapshot(): Promise<DurableSnapshot> {
       const session = await load()
       const graph = materializeSessionConversationGraph(session).conversationGraph
@@ -318,6 +373,8 @@ const createSessionDelegatedWorkRecords = (
             frameId: message.agentFrameId,
             role: message.role === 'agent' ? 'assistant' : 'user',
             content: message.content,
+            responseToMessageId: message.responseToMessageId,
+            runtimeSegmentId: message.runtimeSegmentId,
             createdAt: message.createdAt
           }))
       }

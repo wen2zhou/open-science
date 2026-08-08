@@ -27,6 +27,7 @@ import {
 } from './session-plan/contract'
 import {
   createLinearConversationGraph,
+  materializeNestedDelegateActivities,
   projectConversationMessage,
   resolveActiveConversationMessages,
   synchronizeActiveConversationActivities,
@@ -40,6 +41,7 @@ import {
   type PersistedMessageNode,
   type PersistedRuntimeSegment
 } from './conversation-graph'
+import { parseNestedDelegateInvocationId } from './delegated-caller-source'
 
 // One JSON file per session (sessions/<projectId>/<sessionId>.json) carries this envelope version.
 export const SESSION_FILE_VERSION = 2
@@ -76,6 +78,11 @@ export type DelegatedWorkResolvedAgent =
       displayName: string
     }>
 
+export type DelegatedCallerSource = Readonly<{
+  rootMessageId: string
+  toolInvocationId: string
+}>
+
 export type DelegatedWorkAttemptRecord = Readonly<{
   id: string
   status: DelegatedWorkAttemptStatus
@@ -96,6 +103,7 @@ export type DelegatedWorkPendingMessage = Readonly<{
   targetAttemptId?: string
   text: string
   kind: 'info' | 'question'
+  callerSource?: DelegatedCallerSource
   createdAt: number
   deliveredAt?: number
 }>
@@ -194,6 +202,8 @@ export type PersistedChatMessage = {
   delegatedTask?: string
   delegatedContext?: string
   delegatedInputVersionIds?: string[]
+  // Durable source of a Main-to-child ACP Turn. Frame origin remains immutable lineage only.
+  delegatedCallerSource?: DelegatedCallerSource
   // Bounded raster blocks emitted directly by ACP agent_message_chunk notifications.
   images?: PersistedMessageImage[]
   // Structured mention segments for the styled user bubble; optional for backward compatibility.
@@ -362,6 +372,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 // Reads string fields from untrusted persisted payloads.
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' ? value : undefined
+
+const sanitizeDelegatedCallerSource = (value: unknown): DelegatedCallerSource | undefined => {
+  if (!isRecord(value) || !hasOnlyFields(value, ['rootMessageId', 'toolInvocationId'])) {
+    return undefined
+  }
+  const rootMessageId = asString(value.rootMessageId)
+  const toolInvocationId = asString(value.toolInvocationId)
+  return rootMessageId && toolInvocationId ? { rootMessageId, toolInvocationId } : undefined
+}
 
 // Reads finite numeric fields from untrusted persisted payloads.
 const asNumber = (value: unknown): number | undefined =>
@@ -690,6 +709,9 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
           'targetAttemptId',
           'text',
           'kind',
+          'callerSource',
+          'callerMessageId',
+          'toolInvocationId',
           'createdAt',
           'deliveredAt'
         ])
@@ -706,6 +728,21 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
       const text = asString(rawMessage.text)
       const kind = asString(rawMessage.kind) as 'info' | 'question' | undefined
       const createdAt = asNumber(rawMessage.createdAt)
+      const explicitCallerSource = sanitizeDelegatedCallerSource(rawMessage.callerSource)
+      const legacyCallerMessageId = asString(rawMessage.callerMessageId)
+      const legacyToolInvocationId = asString(rawMessage.toolInvocationId)
+      const callerSource =
+        explicitCallerSource ??
+        (legacyCallerMessageId && legacyToolInvocationId
+          ? {
+              rootMessageId: legacyCallerMessageId,
+              toolInvocationId: legacyToolInvocationId
+            }
+          : undefined)
+      const hasCallerSourcePayload =
+        rawMessage.callerSource !== undefined ||
+        rawMessage.callerMessageId !== undefined ||
+        rawMessage.toolInvocationId !== undefined
       const deliveredAt =
         rawMessage.deliveredAt === undefined ? undefined : asNumber(rawMessage.deliveredAt)
       if (
@@ -715,6 +752,7 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
         (rawMessage.sourceAttemptId !== undefined && !sourceAttemptId) ||
         !targetFrameId ||
         (rawMessage.targetAttemptId !== undefined && !targetAttemptId) ||
+        (hasCallerSourcePayload && !callerSource) ||
         !text ||
         !kind ||
         !['info', 'question'].includes(kind) ||
@@ -734,6 +772,7 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
         ...(targetAttemptId ? { targetAttemptId } : {}),
         text,
         kind,
+        ...(callerSource ? { callerSource } : {}),
         createdAt,
         ...(deliveredAt !== undefined ? { deliveredAt } : {})
       })
@@ -1408,6 +1447,14 @@ const sanitizeMessage = (
   const delegatedTask = asString(message.delegatedTask)
   const delegatedContext = asString(message.delegatedContext)
   const delegatedInputVersionIds = asStringArray(message.delegatedInputVersionIds)
+  const explicitDelegatedCallerSource = sanitizeDelegatedCallerSource(message.delegatedCallerSource)
+  const legacyCallerMessageId = asString(message.delegatedCallerMessageId)
+  const legacyToolInvocationId = asString(message.delegatedToolInvocationId)
+  const delegatedCallerSource =
+    explicitDelegatedCallerSource ??
+    (legacyCallerMessageId && legacyToolInvocationId
+      ? { rootMessageId: legacyCallerMessageId, toolInvocationId: legacyToolInvocationId }
+      : undefined)
   const uploads = Array.isArray(message.uploads)
     ? message.uploads
         .map((attachment) =>
@@ -1435,6 +1482,7 @@ const sanitizeMessage = (
   if (delegatedInputVersionIds.length > 0) {
     sanitized.delegatedInputVersionIds = delegatedInputVersionIds
   }
+  if (delegatedCallerSource) sanitized.delegatedCallerSource = delegatedCallerSource
   if (uploads.length > 0) sanitized.uploads = uploads
   if (parts.length > 0) sanitized.parts = parts
   if (images) sanitized.images = images
@@ -1653,39 +1701,95 @@ const sanitizeConversationGraph = (
   }
   try {
     validateConversationGraph(graph)
-    return graph
+    return materializeNestedDelegateActivities(graph)
   } catch {
     return undefined
   }
+}
+
+export type ConversationGraphMaterializationPhase = 'create' | 'messages' | 'activities'
+
+export class ConversationGraphMaterializationError extends Error {
+  readonly phase: ConversationGraphMaterializationPhase
+  override readonly cause: unknown
+
+  constructor(phase: ConversationGraphMaterializationPhase, cause: unknown) {
+    super('Conversation graph materialization failed.')
+    this.name = 'ConversationGraphMaterializationError'
+    this.phase = phase
+    this.cause = cause
+  }
+}
+
+const materializeGraphPhase = <Result>(
+  phase: ConversationGraphMaterializationPhase,
+  operation: () => Result
+): Result => {
+  try {
+    return operation()
+  } catch (error) {
+    throw new ConversationGraphMaterializationError(phase, error)
+  }
+}
+
+const projectActiveNestedDelegateActivities = (
+  graph: PersistedConversationGraph
+): PersistedToolActivity[] => {
+  const activeMessageIds = new Set(resolveActiveConversationMessages(graph).map(({ id }) => id))
+  return graph.activities.flatMap(
+    ({ agentFrameId, messageBranchId, runtimeSegmentId, ...activity }) => {
+      void agentFrameId
+      void messageBranchId
+      void runtimeSegmentId
+      return parseNestedDelegateInvocationId(activity.id) !== undefined &&
+        activeMessageIds.has(activity.promptMessageId)
+        ? [activity]
+        : []
+    }
+  )
 }
 
 export const materializeSessionConversationGraph = (
   session: PersistedChatSession
 ): PersistedChatSession => {
   const messageGraph = session.conversationGraph
-    ? synchronizeActiveConversationMessages(
-        session.conversationGraph,
-        session.messages,
-        session.updatedAt
+    ? materializeGraphPhase('messages', () =>
+        synchronizeActiveConversationMessages(
+          session.conversationGraph!,
+          session.messages,
+          session.updatedAt
+        )
       )
-    : createLinearConversationGraph({
-        sessionId: session.id,
-        messages: session.messages,
-        frameworkId: session.agentFrameworkId,
-        backendId: session.agentBackendId,
-        model: session.agentModel,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt
-      })
-  const graph = synchronizeActiveConversationActivities(
-    messageGraph,
-    session.activities ?? [],
-    session.activityGroups ?? []
+    : materializeGraphPhase('create', () =>
+        createLinearConversationGraph({
+          sessionId: session.id,
+          messages: session.messages,
+          frameworkId: session.agentFrameworkId,
+          backendId: session.agentBackendId,
+          model: session.agentModel,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt
+        })
+      )
+  const graph = materializeGraphPhase('activities', () =>
+    materializeNestedDelegateActivities(
+      synchronizeActiveConversationActivities(
+        messageGraph,
+        session.activities ?? [],
+        session.activityGroups ?? []
+      )
+    )
   )
+  const nestedDelegateActivities = projectActiveNestedDelegateActivities(graph)
+  const activityIds = new Set((session.activities ?? []).map(({ id }) => id))
   return {
     ...session,
     conversationGraph: graph,
-    messages: resolveActiveConversationMessages(graph).map(projectConversationMessage)
+    messages: resolveActiveConversationMessages(graph).map(projectConversationMessage),
+    activities: [
+      ...(session.activities ?? []),
+      ...nestedDelegateActivities.filter(({ id }) => !activityIds.has(id))
+    ]
   }
 }
 
@@ -1806,8 +1910,14 @@ const sanitizeSession = (
   if (session.conversationGraph !== undefined) {
     const graph = sanitizeConversationGraph(session.conversationGraph, options)
     if (!graph) return undefined
+    const nestedDelegateActivities = projectActiveNestedDelegateActivities(graph)
+    const activityIds = new Set((sanitized.activities ?? []).map(({ id }) => id))
     sanitized.conversationGraph = graph
     sanitized.messages = resolveActiveConversationMessages(graph).map(projectConversationMessage)
+    sanitized.activities = [
+      ...(sanitized.activities ?? []),
+      ...nestedDelegateActivities.filter(({ id }) => !activityIds.has(id))
+    ]
   } else {
     sanitized.conversationGraph = createLinearConversationGraph({
       sessionId: sanitized.id,

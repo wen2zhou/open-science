@@ -50,6 +50,31 @@ class DelegatedWorkProjectionOwner {
     }
   }
 
+  private messageScope(
+    snapshot: DurableSnapshot,
+    child: DurableChild,
+    attempt: DurableAttempt,
+    message: DurableSnapshot['messages'][number]
+  ): DelegatedArtifactProjectionScope | undefined {
+    if (!message.runtimeSegmentId || !message.responseToMessageId) return undefined
+    return {
+      session: snapshot.session,
+      executionId: attempt.id,
+      attemptId: attempt.id,
+      rootFrameId: snapshot.rootFrameId,
+      agentFrameId: child.frameId,
+      messageBranchId: child.messageBranchId,
+      runtimeSegmentId: message.runtimeSegmentId,
+      promptMessageId: message.responseToMessageId,
+      agentName:
+        attempt.resolvedAgent.kind === 'specialist'
+          ? attempt.resolvedAgent.displayName
+          : 'Main Agent',
+      runtimeSegmentIds: [message.runtimeSegmentId],
+      terminalMessageId: message.id
+    }
+  }
+
   async projectSnapshotResult(
     snapshot: DurableSnapshot,
     child: DurableChild
@@ -94,12 +119,17 @@ class DelegatedWorkProjectionOwner {
     const messages = await Promise.all(
       snapshot.messages
         .filter((message) => message.frameId === frameId)
-        .map(async ({ id, role, content }) => {
+        .map(async (message) => {
+          const { role, content } = message
           const owningAttempt = child.attempts.find(
-            (candidate) => candidate.terminalMessageId === id
+            (candidate) =>
+              candidate.terminalMessageId === message.id ||
+              (message.runtimeSegmentId
+                ? candidate.runtimeSegmentIds.includes(message.runtimeSegmentId)
+                : false)
           )
           const artifacts = owningAttempt
-            ? await this.projectArtifacts(snapshot, child, owningAttempt)
+            ? await this.projectMessageArtifacts(snapshot, child, owningAttempt, message)
             : []
           const reviews =
             owningAttempt?.status === 'completed' && owningAttempt.terminalMessageId
@@ -138,6 +168,19 @@ class DelegatedWorkProjectionOwner {
   ): Promise<readonly ArtifactFile[]> {
     const scope = this.attemptScope(snapshot, child, attempt)
     return scope && this.artifactEvidence ? this.artifactEvidence.project(scope) : []
+  }
+
+  private async projectMessageArtifacts(
+    snapshot: DurableSnapshot,
+    child: DurableChild,
+    attempt: DurableAttempt,
+    message: DurableSnapshot['messages'][number]
+  ): Promise<readonly ArtifactFile[]> {
+    const scope = this.messageScope(snapshot, child, attempt, message)
+    if (scope && this.artifactEvidence) return this.artifactEvidence.project(scope)
+    return message.id === attempt.terminalMessageId
+      ? this.projectArtifacts(snapshot, child, attempt)
+      : []
   }
 }
 
