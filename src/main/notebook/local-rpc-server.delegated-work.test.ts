@@ -214,6 +214,50 @@ describe('authenticated delegatedWorkCall route', () => {
     connection.release()
   })
 
+  it('injects the app-owned runtime Specialist and ignores an Agent-forged parent identity', async () => {
+    const delegate = vi.fn(async () => ({ kind: 'receipts' as const, children: [] }))
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: { delegate }
+    })
+    server.registerSessionSpecialist('trusted-session', 'trusted-specialist')
+    const connection = await server.issueControlConnection(
+      'trusted-session',
+      'trusted-project',
+      'trusted-root-frame'
+    )
+    const endInvocation = connection.beginControlInvocation({
+      turnId: 'turn-1',
+      controlInvocationGeneration: 1,
+      toolInvocationId: 'trusted-tool-call',
+      originatingUserMessageId: 'trusted-origin-message'
+    })
+
+    const response = await fetch(connection.endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        method: 'delegatedWorkCall',
+        params: {
+          request: { task: 'Inherit trusted identity' },
+          parent_specialist_profile_id: 'forged-specialist'
+        }
+      })
+    })
+
+    expect(response.status).toBe(200)
+    expect(delegate).toHaveBeenCalledWith(
+      expect.objectContaining({ parentSpecialistProfileId: 'trusted-specialist' }),
+      { task: 'Inherit trusted identity' },
+      {}
+    )
+    endInvocation()
+    connection.release()
+  })
+
   it('rejects delegation when no authenticated control invocation is active', async () => {
     const delegate = vi.fn()
     server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {

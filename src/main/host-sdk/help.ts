@@ -76,7 +76,7 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
     'Only the Main/root Agent can call host.delegate; nested delegation is unsupported.',
     'Call await host.agents.list() to discover Specialist profile ids and public names.',
     'Set profile to a stable id or unique exact public name returned by host.agents.list().',
-    'Omitting profile always selects Main Agent; the Session Specialist binding is not inherited.',
+    'Omitting profile inherits the authenticated parent Specialist; a Main Agent parent still selects Main Agent.',
     'A request array is admitted atomically and must be non-empty.',
     'Dispatch can be rejected before execution when capacity, framework, Specialist, or input admission is unavailable.',
     'Each child receives only its task, explicit context, and declared immutable inputs.',

@@ -42,17 +42,9 @@ import type {
   DurableDelegateResult,
   DurablePendingMessage
 } from './delegated-work-record-types'
+import type { AuthenticatedDelegateCaller } from './authenticated-delegate-caller'
 
 type SessionKey = Readonly<{ projectId: string; sessionId: string }>
-
-type AuthenticatedDelegateCaller = Readonly<{
-  session: SessionKey
-  frameId: string
-  role: 'main' | 'delegate' | 'reviewer'
-  originMessageId: string
-  toolInvocationId: string
-  attemptId?: string
-}>
 
 type DurableDelegateRequest = Readonly<{
   task: string
@@ -587,7 +579,10 @@ const createDurableDelegatedWork = (options: {
         'Delegated work is unavailable for this Agent framework configuration. Open Settings and choose a certified configuration.'
       )
     }
-    const { requests, resolvedAgents } = await admissionPolicy.admit(requestOrRequests)
+    const { requests, resolvedAgents } = await admissionPolicy.admit(
+      requestOrRequests,
+      caller.parentSpecialistProfileId
+    )
     let reservation: DelegateCapacityReservation
     try {
       reservation = await options.execution.reserve(requests.length)
@@ -1067,7 +1062,6 @@ const createDurableDelegatedWork = (options: {
 
 export { DurableDelegatedWorkError, createDurableDelegatedWork, createInMemoryDelegatedWorkRecords }
 export type {
-  AuthenticatedDelegateCaller,
   DelegatedArtifactEvidence,
   DelegatedArtifactHandle,
   DelegatedArtifactProjectionScope,
@@ -1093,6 +1087,7 @@ export type {
   SessionSubagentSummary,
   StopOutcome
 }
+export type { AuthenticatedDelegateCaller } from './authenticated-delegate-caller'
 export type {
   DelegatedWorkDurableRecords,
   DurableMessage,

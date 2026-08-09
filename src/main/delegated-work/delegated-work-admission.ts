@@ -19,7 +19,8 @@ class DelegatedWorkAdmissionPolicy {
   ) {}
 
   async admit(
-    requestOrRequests: DurableDelegateRequest | readonly DurableDelegateRequest[]
+    requestOrRequests: DurableDelegateRequest | readonly DurableDelegateRequest[],
+    parentSpecialistProfileId?: string
   ): Promise<
     Readonly<{
       requests: readonly DurableDelegateRequest[]
@@ -70,8 +71,17 @@ class DelegatedWorkAdmissionPolicy {
         'an explicit delegate context cannot be empty'
       )
     }
+    const inheritedAgent = requests.some((request) => request.profile === undefined)
+      ? parentSpecialistProfileId === undefined
+        ? ({ kind: 'main' } as const)
+        : await this.resolveAgent(parentSpecialistProfileId)
+      : undefined
     const resolvedAgents = await Promise.all(
-      requests.map((request) => this.resolveRequestedAgent(request.profile))
+      requests.map((request) =>
+        request.profile === undefined
+          ? (inheritedAgent as DurableResolvedAgent)
+          : this.resolveRequestedAgent(request.profile)
+      )
     )
     if (
       requests.some(

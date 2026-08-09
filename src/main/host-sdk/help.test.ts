@@ -119,6 +119,10 @@ describe('Host SDK help', () => {
       },
       availability: { status: 'available' }
     })
+    if (canonical.kind !== 'operation') throw new Error('expected delegate operation help')
+    expect(canonical.constraints).toContain(
+      'Omitting profile inherits the authenticated parent Specialist; a Main Agent parent still selects Main Agent.'
+    )
   })
 
   it('returns structured suggestions for unknown topics', () => {

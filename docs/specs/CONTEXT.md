@@ -137,7 +137,7 @@ _Avoid_: Permission Profile, approval prompt
 ## Research Capabilities
 
 **Main Agent**:
-The built-in general-purpose research agent. A Session may bind a Specialist for its root conversation, but `host.delegate()` uses the Main Agent when no `profile` is supplied. Only an explicitly supplied `profile` selects a Specialist; the Session binding is never the child default. It is an agent role, not a reusable Specialist profile.
+The built-in general-purpose research agent. A Session may bind a Specialist for its root conversation. Delegated child identity defaults are governed by the accepted Subagent identity-resolution spec rather than by this glossary. It is an agent role, not a reusable Specialist profile.
 _Avoid_: Specialist, Reviewer
 
 **Attempt**:

@@ -26,6 +26,9 @@ describe('Agent-facing delegate contract', () => {
       }
     })
     expect(requestArray).toEqual({ type: 'array', minItems: 1, items: singleRequest })
+    expect(singleRequest.properties.profile.description).toContain(
+      'Omit to inherit the authenticated parent Specialist'
+    )
   })
 
   it('normalizes wire request and options shapes without replacing domain admission validation', () => {

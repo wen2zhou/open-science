@@ -15,6 +15,8 @@ const DELEGATION_BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect jo
 const DELEGATION_PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const DELEGATION_STOP_PROMPT = 'Run the production delegation Stop journey.'
 const DELEGATION_UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
+const DELEGATION_INHERITED_SPECIALIST_PROMPT =
+  'Run the production inherited Specialist delegation journey.'
 const DELEGATED_TERMINAL_TASK = 'Complete the certified delegated terminal fixture.'
 const DELEGATED_BOUNDED_SLOW_TASK = 'Complete the bounded fixture after a delay.'
 const DELEGATED_PERMISSION_TASK = 'Request the delegated fixture permission.'
@@ -314,6 +316,18 @@ if (process.argv.includes('--version')) {
             throw new Error(`Unsupported delegation was admitted: ${JSON.stringify(delegated)}`)
           }
           reply = 'Subagents are unavailable for this session configuration.'
+        } else if (prompt.includes(DELEGATION_INHERITED_SPECIALIST_PROMPT)) {
+          const delegated = controlResultValue(
+            await runProductionDelegation(context.params.sessionId, DELEGATED_TERMINAL_TASK, true)
+          )
+          if (
+            delegated.kind !== 'results' ||
+            delegated.children?.[0]?.status !== 'completed' ||
+            delegated.children?.[0]?.agent_name !== 'Release Specialist'
+          ) {
+            throw new Error(`Inherited Specialist delegation failed: ${JSON.stringify(delegated)}`)
+          }
+          reply = 'Production inherited Specialist delegation completed.'
         } else if (prompt.includes(DELEGATED_BOUNDED_SLOW_TASK)) {
           await new Promise((resolve) => setTimeout(resolve, 3_000))
           reply = 'Delayed bounded child completed.'

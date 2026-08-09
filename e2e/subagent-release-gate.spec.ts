@@ -11,6 +11,7 @@ const BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect journey.'
 const PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const STOP_PROMPT = 'Run the production delegation Stop journey.'
 const UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
+const INHERITED_SPECIALIST_PROMPT = 'Run the production inherited Specialist delegation journey.'
 const TERMINAL_CHILD = 'Complete the certified delegated terminal fixture.'
 const PERMISSION_CHILD = 'Request the delegated fixture permission.'
 const STOP_CHILD = 'Wait until the Main Agent stops delegated fixture A.'
@@ -320,6 +321,48 @@ test('rejects an unsupported Specialist configuration before child admission', a
   expect(admittedChildren).toEqual({ records: 0, frames: 0 })
 })
 
+test('inherits a real root Specialist when profile is omitted and preserves its label after restart', async ({
+  app
+}) => {
+  test.setTimeout(180_000)
+  let page = await app.completeOnboarding()
+  page = await app.configureFakeAgent()
+  await createProject(page, 'Inherited Specialist release gate')
+  const specialist = await page.evaluate(async () =>
+    window.api.specialist.create({
+      name: 'RELEASE_SPECIALIST',
+      displayName: 'Release Specialist',
+      description: 'Production-composed S4 identity fixture.',
+      systemPrompt: 'Preserve the release Specialist identity.'
+    })
+  )
+
+  await page.getByRole('button', { name: /Agent controls:/ }).click()
+  await page.getByTestId('specialist-submenu-trigger').hover()
+  await page.getByTestId(`specialist-option-${specialist.id}`).click()
+  await sendPrompt(
+    page,
+    INHERITED_SPECIALIST_PROMPT,
+    'Production inherited Specialist delegation completed.',
+    120_000
+  )
+  await expectDurableChildStatus(page, TERMINAL_CHILD, 'completed')
+  const inheritedChildTrigger = page.getByRole('button', { name: TERMINAL_CHILD })
+  await inheritedChildTrigger.click()
+  const inheritedPreview = page.getByRole('region', { name: 'Subagents' })
+  await expect(inheritedPreview).toContainText('Release Specialist')
+  await inheritedPreview.getByRole('button', { name: 'Close Subagents preview' }).click()
+  await expect(inheritedChildTrigger).toBeFocused()
+
+  page = await app.restart()
+  await page
+    .getByRole('region', { name: 'Recent sessions' })
+    .getByRole('button', { name: INHERITED_SPECIALIST_PROMPT })
+    .click()
+  await page.getByRole('button', { name: TERMINAL_CHILD }).click()
+  await expect(page.getByRole('region', { name: 'Subagents' })).toContainText('Release Specialist')
+})
+
 test('ships one durable, scalable, keyboard-operable persisted Subagent surface', async ({
   app
 }) => {
@@ -334,15 +377,15 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
     .getByRole('button', { name: ROOT_PROMPT })
     .click()
 
-  const summary = page.getByRole('region', { name: 'Subagent summary' })
-  await expect(summary).toHaveCount(1)
-  const childRows = summary.getByRole('button')
+  const summaryTrigger = page.getByRole('button', { name: '24 subagents, 6 running' })
+  await summaryTrigger.click()
+  const childRows = page.getByRole('button', { name: /^Release Child \d{2},/ })
   await expect(childRows).toHaveCount(CHILD_COUNT)
   await expect(childRows.first()).toHaveAccessibleName('Release Child 01, running')
   await expect(childRows.nth(1)).toHaveAccessibleName('Release Child 02, completed')
   await expect(childRows.nth(2)).toHaveAccessibleName('Release Child 03, cancelled')
   await expect(childRows.nth(3)).toHaveAccessibleName('Release Child 04, error')
-  await expect(page.getByRole('button', { name: '6 subagents running' })).toHaveCount(1)
+  await expect(summaryTrigger).toHaveCount(1)
 
   await childRows.nth(19).focus()
   await page.keyboard.press('Enter')
@@ -356,7 +399,6 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
   await expect(preview.getByText('Durable transcript for Release Child 02')).toBeVisible()
 
   await preview.getByRole('button', { name: 'Close Subagents preview' }).click()
-  await expect(childRows.nth(19)).toBeFocused()
 
   await page.setViewportSize({ width: 390, height: 844 })
   const mobilePreview = page.getByRole('region', { name: 'Subagents' })
@@ -365,7 +407,8 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
     .then(() => true)
     .catch(() => false)
   if (!reopenedOnResize) {
-    await page.getByRole('button', { name: '6 subagents running' }).click()
+    await summaryTrigger.click()
+    await page.getByRole('button', { name: 'Release Child 05, running' }).click()
   }
   await expect(mobilePreview).toHaveCount(1)
   await page.getByRole('combobox', { name: 'Subagent Frame' }).selectOption('release-child-05')
@@ -396,10 +439,9 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
     .getByRole('region', { name: 'Recent sessions' })
     .getByRole('button', { name: ROOT_PROMPT })
     .click()
-  await expect(
-    page.getByRole('region', { name: 'Subagent summary' }).getByRole('button')
-  ).toHaveCount(CHILD_COUNT)
-  await page.getByRole('button', { name: '6 subagents running' }).click()
+  await page.getByRole('button', { name: '24 subagents, 6 running' }).click()
+  await expect(page.getByRole('button', { name: /^Release Child \d{2},/ })).toHaveCount(CHILD_COUNT)
+  await page.getByRole('button', { name: 'Release Child 05, running' }).click()
   await expect(page.getByRole('combobox', { name: 'Subagent Frame' })).toHaveValue(
     'release-child-05'
   )

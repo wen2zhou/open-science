@@ -1098,6 +1098,97 @@ describe('durable delegated work', () => {
     ).resolves.toMatchObject({ resolvedAgent: { kind: 'main' } })
   })
 
+  it('inherits the authenticated parent Specialist for omitted profiles while explicit profiles override it', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const resolveSpecialist = vi.fn(async (profileId: string) =>
+      specialist({
+        id: profileId,
+        displayName: profileId === 'parent-specialist' ? 'Parent Specialist' : 'Explicit Specialist'
+      })
+    )
+    const work = createDurableDelegatedWork({ execution, records, resolveSpecialist })
+
+    const outcome = await work.delegate(
+      { ...caller, parentSpecialistProfileId: 'parent-specialist' },
+      [
+        { task: 'Inherited first' },
+        { task: 'Explicit second', profile: 'explicit-specialist' },
+        { task: 'Inherited third' }
+      ],
+      { wait: false }
+    )
+
+    expect(resolveSpecialist).toHaveBeenCalledWith('parent-specialist')
+    expect(resolveSpecialist).toHaveBeenCalledWith('explicit-specialist')
+    expect(outcome.children.map((child) => child.agentName)).toEqual([
+      'Parent Specialist',
+      'Explicit Specialist',
+      'Parent Specialist'
+    ])
+    expect(
+      (await records.snapshot()).records.map((child) => child.attempts[0].resolvedAgent)
+    ).toEqual([
+      {
+        kind: 'specialist',
+        profileId: 'parent-specialist',
+        revision: 7,
+        displayName: 'Parent Specialist'
+      },
+      {
+        kind: 'specialist',
+        profileId: 'explicit-specialist',
+        revision: 7,
+        displayName: 'Explicit Specialist'
+      },
+      {
+        kind: 'specialist',
+        profileId: 'parent-specialist',
+        revision: 7,
+        displayName: 'Parent Specialist'
+      }
+    ])
+    await expect.poll(() => execution.controls()).toHaveLength(3)
+    expect(execution.controls().map(({ input }) => input.profile)).toEqual([
+      'parent-specialist',
+      'explicit-specialist',
+      'parent-specialist'
+    ])
+  })
+
+  it('fails an unavailable inherited Specialist batch before capacity, workspace, or durable mutation', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const prepare = vi.fn()
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      resolveSpecialist: async (profileId) =>
+        profileId === 'explicit-specialist' ? specialist({ id: profileId }) : undefined,
+      workspace: { prepare }
+    })
+
+    await expect(
+      work.delegate(
+        { ...caller, parentSpecialistProfileId: 'deleted-parent-specialist' },
+        [{ task: 'Inherited child' }, { task: 'Explicit child', profile: 'explicit-specialist' }],
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+
+    expect(execution.reservationCounts()).toEqual([])
+    expect(prepare).not.toHaveBeenCalled()
+    expect((await records.snapshot()).records).toEqual([])
+  })
+
   it('accepts either a stable Specialist id or its unique exact public name while an omitted profile stays Main', async () => {
     const storage = await mkdtemp(join(tmpdir(), 'delegated-profile-reference-'))
     try {
@@ -2761,8 +2852,8 @@ describe('durable delegated work', () => {
     const resolveSpecialist = vi.fn(async () => liveProfile)
     const work = createDurableDelegatedWork({ execution, records, resolveSpecialist })
     const dispatched = await work.delegate(
-      caller,
-      { task: 'Specialist analysis', profile: liveProfile.id },
+      { ...caller, parentSpecialistProfileId: liveProfile.id },
+      { task: 'Specialist analysis' },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -2772,7 +2863,11 @@ describe('durable delegated work', () => {
     liveProfile = specialist({ displayName: 'Renamed Evidence Analyst', revision: 8 })
 
     await work.sendMessage(
-      { ...caller, toolInvocationId: 'specialist-continuation' },
+      {
+        ...caller,
+        parentSpecialistProfileId: 'different-current-parent',
+        toolInvocationId: 'specialist-continuation'
+      },
       dispatched.children[0].frameId,
       'Recheck the analysis'
     )

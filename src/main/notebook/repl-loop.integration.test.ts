@@ -182,10 +182,10 @@ describe('repl_loop local RPC transport', () => {
       expect(output.error).toBeNull()
       expect(JSON.parse(output.result ?? '{}')).toEqual({
         profile_description:
-          'Stable Specialist id or unique exact public name from await host.agents.list(). Omit to use Main Agent regardless of the Session binding.',
+          'Stable Specialist id or unique exact public name from await host.agents.list(). Omit to inherit the authenticated parent Specialist; a Main Agent parent uses Main Agent.',
         constraints: expect.arrayContaining([
           'Call await host.agents.list() to discover Specialist profile ids and public names.',
-          'Omitting profile always selects Main Agent; the Session Specialist binding is not inherited.'
+          'Omitting profile inherits the authenticated parent Specialist; a Main Agent parent still selects Main Agent.'
         ]),
         delegated: {
           kind: 'results',

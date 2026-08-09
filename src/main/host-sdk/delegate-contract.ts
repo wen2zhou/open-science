@@ -48,7 +48,7 @@ const DELEGATE_REQUEST_OBJECT_SCHEMA = {
       type: 'string',
       minLength: 1,
       description:
-        'Stable Specialist id or unique exact public name from await host.agents.list(). Omit to use Main Agent regardless of the Session binding.'
+        'Stable Specialist id or unique exact public name from await host.agents.list(). Omit to inherit the authenticated parent Specialist; a Main Agent parent uses Main Agent.'
     },
     context: {
       type: 'string',

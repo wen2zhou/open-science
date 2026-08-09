@@ -662,7 +662,7 @@ describe('Session delegated-work adapter', () => {
     })
   })
 
-  it('persists and projects the dispatch-time Specialist label independently of Session binding', async () => {
+  it('persists and projects an inherited dispatch-time Specialist label independently of Session binding', async () => {
     const { coordinator, readSession } = createHarness()
     const execution = createDeterministicDelegateExecution()
     const rootFrameId = createSession().conversationGraph!.rootFrameId
@@ -698,15 +698,12 @@ describe('Session delegated-work adapter', () => {
       session: key,
       frameId: rootFrameId,
       role: 'main',
+      parentSpecialistProfileId: 'stable-specialist-id',
       originMessageId: rootPrompt.id,
       toolInvocationId: 'specialist-tool-call'
     }
 
-    await work.delegate(
-      caller,
-      { task: 'Audit sources', profile: 'stable-specialist-id' },
-      { wait: false }
-    )
+    await work.delegate(caller, { task: 'Audit sources' }, { wait: false })
 
     const expected = {
       kind: 'specialist',
