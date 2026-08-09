@@ -256,6 +256,40 @@ describe('release-gate Subagent surfaces', () => {
     expect(bar.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('collapses the expanded list when clicking elsewhere in the app', () => {
+    const session = createSession()
+    render(
+      <>
+        <span data-testid="app-surface">elsewhere in the app</span>
+        <SubagentsBar session={session} permissions={[]} />
+      </>
+    )
+
+    const bar = screen.getByRole('button', { name: '2 subagents, 1 running' })
+    fireEvent.click(bar)
+    expect(bar.getAttribute('aria-expanded')).toBe('true')
+    expect(screen.getByLabelText('Subagents')).toBeTruthy()
+
+    fireEvent.click(screen.getByTestId('app-surface'))
+
+    expect(bar.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByLabelText('Subagents')).toBeNull()
+  })
+
+  it('collapses the expanded list on Escape', () => {
+    const session = createSession()
+    render(<SubagentsBar session={session} permissions={[]} />)
+
+    const bar = screen.getByRole('button', { name: '2 subagents, 1 running' })
+    fireEvent.click(bar)
+    expect(bar.getAttribute('aria-expanded')).toBe('true')
+
+    fireEvent.keyDown(document, { key: 'Escape' })
+
+    expect(bar.getAttribute('aria-expanded')).toBe('false')
+    expect(screen.queryByLabelText('Subagents')).toBeNull()
+  })
+
   it('shows a truncated single name with hover text and only a running icon', () => {
     const session = createSession()
     const longName = 'Reproduce the complete statistical analysis with sensitivity checks'

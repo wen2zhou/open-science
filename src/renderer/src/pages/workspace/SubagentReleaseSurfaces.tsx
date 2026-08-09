@@ -79,10 +79,33 @@ type SubagentSurfaceProps = {
 
 const SubagentsBar = ({ session, permissions }: SubagentSurfaceProps): React.JSX.Element | null => {
   const [expanded, setExpanded] = useState(false)
+  const containerRef = useRef<HTMLDivElement>(null)
   const summary = useMemo(
     () => projectSessionSubagents(session, permissions),
     [permissions, session]
   )
+
+  useEffect(() => {
+    if (!expanded) return
+    // Listen on `click` (not `mousedown`) so the trigger button's own onClick toggle still pairs:
+    // the button lives inside `containerRef`, so its click never reaches this outside handler and
+    // re-toggles the list. Escape closes the list to match the keyboard affordance of aria-haspopup.
+    const onOutsideClick = (event: MouseEvent): void => {
+      if (containerRef.current && !containerRef.current.contains(event.target as Node)) {
+        setExpanded(false)
+      }
+    }
+    const onKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === 'Escape') setExpanded(false)
+    }
+    document.addEventListener('click', onOutsideClick)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('click', onOutsideClick)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [expanded])
+
   if (!session || summary.children.length === 0) return null
 
   const single = summary.children.length === 1 ? summary.children[0] : undefined
@@ -97,7 +120,7 @@ const SubagentsBar = ({ session, permissions }: SubagentSurfaceProps): React.JSX
   }
 
   return (
-    <div className="relative min-w-0" data-testid="subagents-bar">
+    <div ref={containerRef} className="relative min-w-0" data-testid="subagents-bar">
       <button
         type="button"
         aria-label={accessibleLabel}
