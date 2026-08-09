@@ -335,17 +335,77 @@ describe('AcpRuntimeCoordinator', () => {
     expect(delegated.setPermissionProfile).toHaveBeenCalledWith('session-1', 'ask')
 
     await coordinator.cancelPrompt({ sessionId: 'session-1' })
-    expect(delegated.stopSession).toHaveBeenCalledWith('session-1')
+    expect(delegated.stopSession).not.toHaveBeenCalled()
     expect(created[0].cancelPrompt).toHaveBeenCalledWith({ sessionId: 'session-1' })
 
     created[0].cancelPrompt.mockRejectedValueOnce(new Error('root cancel failed'))
     await expect(coordinator.cancelPrompt({ sessionId: 'session-1' })).rejects.toThrow(
       'root cancel failed'
     )
-    expect(delegated.stopSession).toHaveBeenCalledTimes(2)
+    expect(delegated.stopSession).not.toHaveBeenCalled()
 
     await expect(coordinator.prepareForQuit()).resolves.toBe('completed')
     expect(delegated.stopAll).toHaveBeenCalledOnce()
+  })
+
+  it('fences only the active Conversation Turn and exposes a separate Subagent Stop scope', async () => {
+    const prompt = createDeferred<unknown>()
+    let rejectChildCancellation!: (error: Error) => void
+    const childCancellation = new Promise<void>((_resolve, reject) => {
+      rejectChildCancellation = reject
+    })
+    const cancelTurn = vi.fn(() => childCancellation)
+    const stopActiveBranch = vi.fn(async () => undefined)
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const delegated = {
+      pendingPermissions: vi.fn(() => []),
+      subscribe: vi.fn(() => () => undefined),
+      respondToPermission: vi.fn(async () => false),
+      setPermissionProfile: vi.fn(async () => undefined),
+      cancelTurn,
+      stopActiveBranch,
+      stopSession: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      deleteSession: vi.fn(async () => undefined)
+    }
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'codex',
+          sessionIds: ['session-1'],
+          callbacks,
+          prompt: () => prompt.promise
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      delegated
+    )
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    const running = coordinator.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'Turn B',
+      provenanceContext: { promptMessageId: 'turn-b-message' }
+    })
+    await Promise.resolve()
+
+    const cancelling = coordinator.cancelPrompt({ sessionId: session.sessionId })
+    await vi.waitFor(() => expect(created[0].cancelPrompt).toHaveBeenCalledOnce())
+    expect(cancelTurn).toHaveBeenCalledWith('session-1', 'turn-b-message')
+    expect(delegated.stopSession).not.toHaveBeenCalled()
+    rejectChildCancellation(new Error('one child Stop failed'))
+    await expect(cancelling).rejects.toThrow('one child Stop failed')
+    await coordinator.cancelPrompt({ sessionId: session.sessionId, scope: 'subagents' })
+    expect(stopActiveBranch).toHaveBeenCalledWith('session-1')
+    prompt.resolve({ stopReason: 'cancelled' })
+    await running
   })
 
   it('retains a sanitized app-visible Specialist handoff failure until session deletion', async () => {

@@ -101,17 +101,30 @@ class DelegatedWorkReadModel {
     caller: AuthenticatedDelegateCaller,
     frameId: string
   ): Promise<DurableChild> {
-    const snapshot = await this.records.snapshot()
-    const child = snapshot.records.find(
-      (candidate) =>
-        sameSession(snapshot.session, caller.session) &&
-        candidate.frameId === frameId &&
-        candidate.parentFrameId === caller.frameId
-    )
-    if (caller.role !== 'main' || !child) {
+    const snapshot = await this.authenticatedSnapshot(caller)
+    const child = snapshot.records.find((candidate) => candidate.frameId === frameId)
+    if (!child || !this.isActiveAuthorizedChild(snapshot, caller, child)) {
       throw new DurableDelegatedWorkError('authorization', 'caller cannot access delegated child')
     }
     return child
+  }
+
+  async pinAuthorizedChildren(
+    caller: AuthenticatedDelegateCaller,
+    frameIds: readonly string[]
+  ): Promise<readonly DurableChild[]> {
+    if (
+      !Array.isArray(frameIds) ||
+      frameIds.length === 0 ||
+      frameIds.some((frameId) => typeof frameId !== 'string' || !frameId.trim())
+    ) {
+      throw new DurableDelegatedWorkError(
+        'admission_rejection',
+        'stop requires at least one child Frame id'
+      )
+    }
+    const snapshot = await this.authenticatedSnapshot(caller)
+    return this.selectAuthorizedChildren(snapshot, caller, frameIds)
   }
 
   private async authenticatedSnapshot(

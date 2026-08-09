@@ -15,6 +15,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
   session: SessionKey
   rootFrameId: string
   originMessageId: string
+  originMessageIds?: readonly string[]
 }): DelegatedWorkDurableRecords => {
   const state: {
     session: SessionKey
@@ -25,7 +26,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
   } = {
     session: { ...input.session },
     rootFrameId: input.rootFrameId,
-    originMessageIds: [input.originMessageId],
+    originMessageIds: [...(input.originMessageIds ?? [input.originMessageId])],
     records: [],
     messages: []
   }
@@ -84,6 +85,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
           attempts: [
             {
               id: child.attemptId,
+              initiatingTurnMessageId: admission.caller.originMessageId,
               status: 'running' as const,
               resolvedAgent: structuredClone(child.resolvedAgent),
               runtimeSegmentIds: [],
@@ -129,6 +131,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
       }
       child.attempts.push({
         id: input.attemptId,
+        initiatingTurnMessageId: input.initiatingTurnMessageId,
         status: 'running',
         resolvedAgent: structuredClone(input.resolvedAgent),
         runtimeSegmentIds: [],

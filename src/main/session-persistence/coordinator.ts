@@ -1032,6 +1032,9 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
         throw new Error('Delegate child creation contains a duplicate durable identity.')
       }
       for (const child of input.children) {
+        if (child.initiatingTurnMessageId !== input.originMessageId) {
+          throw new Error('Initial delegated Attempt must belong to its admitting root Turn.')
+        }
         const content = child.context ? `${child.task}\n\nContext:\n${child.context}` : child.task
         graph.frames.push({
           id: child.frameId,
@@ -1075,6 +1078,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
           attempts: [
             {
               id: child.attemptId,
+              initiatingTurnMessageId: child.initiatingTurnMessageId,
               status: 'running',
               resolvedAgent: child.resolvedAgent,
               runtimeSegmentIds: [],
@@ -1111,6 +1115,16 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       }
       const frame = graph.frames.find((candidate) => candidate.id === input.frameId)
       if (!frame) throw new Error(`Delegate Frame not found: ${input.frameId}`)
+      const rootPath = resolveActiveConversationMessages({
+        ...graph,
+        activeFrameId: graph.rootFrameId
+      })
+      if (
+        input.initiatingTurnMessageId !== input.callerSource.rootMessageId ||
+        !rootPath.some((message) => message.id === input.initiatingTurnMessageId)
+      ) {
+        throw new Error('Continuation Attempt initiating Turn is outside the active root Branch.')
+      }
       const branch = graph.branches.find((candidate) => candidate.id === frame.activeBranchId)
       if (!branch) throw new Error(`Delegate Branch not found: ${frame.activeBranchId}`)
       graph.messages.push({
@@ -1131,6 +1145,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       branch.updatedAt = input.startedAt
       ;(record.attempts as DelegatedWorkAttemptRecord[]).push({
         id: input.attemptId,
+        initiatingTurnMessageId: input.initiatingTurnMessageId,
         status: 'running',
         resolvedAgent: input.resolvedAgent,
         runtimeSegmentIds: [],

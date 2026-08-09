@@ -67,7 +67,10 @@ import { PreviewPanel } from './PreviewPanel'
 import { RenameSessionDialog } from './RenameSessionDialog'
 import { SessionNotebookDialog } from './SessionNotebookDialog'
 import { JobDetailModal } from '@/components/JobDetailModal'
-import { getVisiblePermissionRequests } from './session-permissions'
+import {
+  getVisiblePermissionRequests,
+  hasBlockingRootPermissionRequest
+} from './session-permissions'
 import { WorkspaceSidebar } from './WorkspaceSidebar'
 import { useJobAnalysisEffect } from '@/lib/compute/useJobAnalysisEffect'
 import { selectActiveBranchPlan } from './session-plan/active-branch-plan'
@@ -948,8 +951,13 @@ const WorkspacePage = ({
     )
   }
   const visiblePermissionRequests = useMemo(
-    () => getVisiblePermissionRequests(pendingPermissions, activeSession?.id),
-    [activeSession?.id, pendingPermissions]
+    () =>
+      getVisiblePermissionRequests(
+        pendingPermissions,
+        activeSession?.id,
+        activeSession?.conversationGraph
+      ),
+    [activeSession?.conversationGraph, activeSession?.id, pendingPermissions]
   )
   const activeNotebookReference = activeSession ? notebookReferences[activeSession.id] : undefined
   const activePermissionProfile =
@@ -1033,7 +1041,8 @@ const WorkspacePage = ({
     attachmentTransfers.length === 0 &&
     (!docIsEmpty(draftDoc) || attachments.length > 0) &&
     activeSession?.status !== 'running' &&
-    activeSession?.status !== 'waiting-permission' &&
+    (activeSession?.status !== 'waiting-permission' ||
+      !hasBlockingRootPermissionRequest(pendingPermissions, activeSession?.id)) &&
     !activeSessionHasRuntimeInteraction &&
     !activeSession?.fixLoopActive &&
     // A graph-integrity failure keeps only the in-memory terminal projection. Require restart before
@@ -2507,6 +2516,15 @@ const WorkspacePage = ({
             onRemoveAttachment={removeComposerAttachment}
             onCancelAttachmentTransfer={cancelAttachmentTransfer}
             onCancelRun={cancelActiveRun}
+            onStopSubagents={() => {
+              if (!activeSession) return
+              return window.api.acp
+                .cancel({
+                  sessionId: activeSession.id,
+                  scope: 'subagents'
+                })
+                .then(() => undefined)
+            }}
             onResumeSession={resumeActiveSession}
             onOpenNotebook={openNotebookPreview}
             onTogglePreviewPanel={togglePreviewPanel}

@@ -71,6 +71,8 @@ type RootDelegatedWorkControl = Readonly<{
   subscribe(listener: (event: RootDelegatedWorkEvent) => void): () => void
   respondToPermission(response: AcpPermissionResponse): Promise<boolean>
   setPermissionProfile(sessionId: string, profile: PermissionProfileId): Promise<void>
+  cancelTurn?(sessionId: string, initiatingTurnMessageId: string): Promise<void>
+  stopActiveBranch?(sessionId: string): Promise<void>
   stopSession(sessionId: string): Promise<void>
   stopAll(): Promise<void>
   deleteSession(sessionId: string): Promise<void>
@@ -105,6 +107,10 @@ const createProductionDelegatedWorkComposition = (
   >()
   const listeners = new Set<(event: RootDelegatedWorkEvent) => void>()
   const unavailableReasons = new Map<string, string>()
+  const cancelledTurns = new Set<string>()
+  const cancelledSessionTurns = new Set<string>()
+  const cancelledTurnKey = (key: SessionKey, messageId: string): string =>
+    `${keyOf(key)}\u0000${messageId}`
   const artifactEvidence = options.artifactEvidence
     ? createDelegatedArtifactEvidence(options.artifactEvidence)
     : undefined
@@ -174,7 +180,18 @@ const createProductionDelegatedWorkComposition = (
       reviewEvidence,
       deliverToParent: options.parentMessages?.deliver,
       onRootPermissionEvent: (event) => observePermission(key, event),
-      onAgentRuntimeUpdate: options.onAgentRuntimeUpdate
+      onAgentRuntimeUpdate: options.onAgentRuntimeUpdate,
+      assertTurnOpen: (session, messageId) => {
+        if (
+          cancelledTurns.has(cancelledTurnKey(session, messageId)) ||
+          cancelledSessionTurns.has(`${session.sessionId}\u0000${messageId}`)
+        ) {
+          throw new DurableDelegatedWorkError(
+            'conflict',
+            'the initiating Conversation Turn is cancelled and cannot admit delegated work'
+          )
+        }
+      }
     })
     await work.recoverInterrupted()
     return Object.freeze({ key, work })
@@ -272,6 +289,33 @@ const createProductionDelegatedWorkComposition = (
     async setPermissionProfile(sessionId, profile) {
       const scoped = await worksForSession(sessionId)
       await Promise.all(scoped.map(({ key, work }) => work.setPermissionProfile(key, profile)))
+    },
+    async cancelTurn(sessionId, initiatingTurnMessageId) {
+      cancelledSessionTurns.add(`${sessionId}\u0000${initiatingTurnMessageId}`)
+      const pendingScoped = [...works.entries()].filter(([identity]) =>
+        identity.endsWith(`\u0000${sessionId}`)
+      )
+      // Fence synchronously, before the first await. Host admissions already holding this scoped work
+      // re-check the composition-owned fence immediately before their durable commit.
+      for (const [identity] of pendingScoped) {
+        cancelledTurns.add(`${identity}\u0000${initiatingTurnMessageId}`)
+      }
+      const scoped = await Promise.all(pendingScoped.map(([, work]) => work))
+      await Promise.all(
+        scoped.map(({ key, work }) => work.cancelTurn(key, initiatingTurnMessageId))
+      )
+    },
+    async stopActiveBranch(sessionId) {
+      const scoped = await worksForSession(sessionId)
+      const results = await Promise.allSettled(
+        scoped.map(({ key, work }) => work.stopActiveBranch(key))
+      )
+      const failures = results.flatMap((result) =>
+        result.status === 'rejected' ? [result.reason] : []
+      )
+      if (failures.length > 0) {
+        throw new AggregateError(failures, 'One or more Subagent Attempts could not be stopped.')
+      }
     },
     async stopSession(sessionId) {
       const scoped = await worksForSession(sessionId)

@@ -12,6 +12,7 @@ const NOTEBOOK_LIFECYCLE_PROMPT = 'Verify the notebook lifecycle.'
 const ARTIFACT_PROVENANCE_PROMPT = 'Create a provenance artifact.'
 const DELEGATION_TERMINAL_PROMPT = 'Run the production delegation terminal journey.'
 const DELEGATION_BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect journey.'
+const DELEGATION_BOUNDED_RECOLLECT_PROMPT = 'Collect the running Subagent in Turn B.'
 const DELEGATION_PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const DELEGATION_STOP_PROMPT = 'Run the production delegation Stop journey.'
 const DELEGATION_UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
@@ -273,31 +274,24 @@ if (process.argv.includes('--version')) {
           const dispatched = controlResultValue(
             await executeControlCode(
               context.params.sessionId,
-              `globalThis.s1Pending = await host.delegate([{ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)} }, { task: ${JSON.stringify(DELEGATED_BOUNDED_SLOW_TASK)} }], { wait: false }); return globalThis.s1Pending`
-            )
-          )
-          const mixed = controlResultValue(
-            await executeControlCode(
-              context.params.sessionId,
-              `const handles = globalThis.s1Pending.children.map(({ frame_id, attempt_id }) => ({ frame_id, attempt_id })); await host.collect([handles[0]], { timeout_seconds: 30 }); return await host.collect(handles, { timeout_seconds: 0 })`
+              `globalThis.s2Pending = await host.delegate([{ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)} }, { task: ${JSON.stringify(DELEGATED_BOUNDED_SLOW_TASK)} }], { timeout_seconds: 1 }); return globalThis.s2Pending`
             )
           )
           if (
-            dispatched.kind !== 'receipts' ||
-            mixed.length !== 2 ||
-            mixed[0].status !== 'completed' ||
-            mixed[1].status !== 'running' ||
-            Object.hasOwn(mixed[1], 'artifacts_created')
+            dispatched.kind !== 'observations' ||
+            dispatched.children.length !== 2 ||
+            dispatched.children[0].status !== 'completed' ||
+            dispatched.children[1].status !== 'running' ||
+            Object.hasOwn(dispatched.children[1], 'artifacts_created')
           ) {
-            throw new Error(
-              `Bounded mixed observation failed: ${JSON.stringify({ dispatched, mixed })}`
-            )
+            throw new Error(`Timed delegate observation failed: ${JSON.stringify(dispatched)}`)
           }
-          await new Promise((resolve) => setTimeout(resolve, 3_200))
+          reply = 'Production bounded delegate returned while a Subagent kept running.'
+        } else if (prompt.includes(DELEGATION_BOUNDED_RECOLLECT_PROMPT)) {
           const terminal = controlResultValue(
             await executeControlCode(
               context.params.sessionId,
-              `const slow = globalThis.s1Pending.children[1]; return await host.collect([{ frame_id: slow.frame_id, attempt_id: slow.attempt_id }], { timeout_seconds: 0 })`
+              `const slow = globalThis.s2Pending.children[1]; return await host.collect([{ frame_id: slow.frame_id, attempt_id: slow.attempt_id }], { timeout_seconds: 30 })`
             )
           )
           if (terminal.length !== 1 || terminal[0].status !== 'completed') {

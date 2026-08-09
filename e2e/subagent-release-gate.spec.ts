@@ -8,6 +8,7 @@ const ROOT_PROMPT = 'Coordinate the release-gate delegates.'
 const CHILD_COUNT = 24
 const TERMINAL_PROMPT = 'Run the production delegation terminal journey.'
 const BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect journey.'
+const BOUNDED_RECOLLECT_PROMPT = 'Collect the running Subagent in Turn B.'
 const PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const STOP_PROMPT = 'Run the production delegation Stop journey.'
 const UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
@@ -61,6 +62,7 @@ const expectRenderedChildStatus = async (
       })
       .first()
   ).toBeVisible()
+  await trigger.click()
 }
 
 const seedDelegatedWork = async (page: Page, projectId: string): Promise<void> => {
@@ -240,12 +242,19 @@ test('projects real production-composed delegation, permission, and Stop lifecyc
     'Production delegation reached a terminal result.',
     120_000
   )
-  await expect(page.getByRole('button', { name: TERMINAL_CHILD })).toBeVisible()
   await expectDurableChildStatus(page, TERMINAL_CHILD, 'completed')
 
   await sendPrompt(
     page,
     BOUNDED_COLLECT_PROMPT,
+    'Production bounded delegate returned while a Subagent kept running.',
+    120_000
+  )
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible()
+  await expect(page.getByRole('button', { name: 'Stop subagents' })).toBeVisible()
+  await sendPrompt(
+    page,
+    BOUNDED_RECOLLECT_PROMPT,
     'Production bounded collect journey completed.',
     120_000
   )
@@ -258,14 +267,12 @@ test('projects real production-composed delegation, permission, and Stop lifecyc
   await expect(permissionCard).toContainText('Read delegated evidence', {
     timeout: 120_000
   })
-  await expect(page.getByRole('button', { name: PERMISSION_CHILD })).toBeVisible()
   await expectDurableChildStatus(page, PERMISSION_CHILD, 'running')
   await expectRenderedChildStatus(page, PERMISSION_CHILD, 'running', true)
   await page.getByRole('button', { name: /^Allow/ }).click()
   await expect(page.getByText('Production delegated permission journey completed.')).toBeVisible({
     timeout: 120_000
   })
-  await expect(page.getByRole('button', { name: PERMISSION_CHILD })).toBeVisible()
   await expectDurableChildStatus(page, PERMISSION_CHILD, 'completed')
   await expectRenderedChildStatus(page, PERMISSION_CHILD, 'completed')
 
@@ -274,21 +281,13 @@ test('projects real production-composed delegation, permission, and Stop lifecyc
   await expect(page.getByText('Production delegation is running.')).toBeVisible({
     timeout: 120_000
   })
-  await expect(page.getByRole('button', { name: STOP_CHILD })).toBeVisible()
-  await expect(page.getByRole('button', { name: STOP_CHILD_TWO })).toBeVisible()
   await expectDurableChildStatus(page, STOP_CHILD, 'running')
   await expectDurableChildStatus(page, STOP_CHILD_TWO, 'running')
   await expectRenderedChildStatus(page, STOP_CHILD, 'running')
   await expectRenderedChildStatus(page, STOP_CHILD_TWO, 'running')
   await page.getByRole('button', { name: 'Cancel run' }).click()
-  await expect(page.getByRole('button', { name: STOP_CHILD })).toBeVisible({
-    timeout: 120_000
-  })
   await expectDurableChildStatus(page, STOP_CHILD, 'cancelled')
   await expectRenderedChildStatus(page, STOP_CHILD, 'cancelled')
-  await expect(page.getByRole('button', { name: STOP_CHILD_TWO })).toBeVisible({
-    timeout: 120_000
-  })
   await expectDurableChildStatus(page, STOP_CHILD_TWO, 'cancelled')
   await expectRenderedChildStatus(page, STOP_CHILD_TWO, 'cancelled')
 })
@@ -377,15 +376,16 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
     .getByRole('button', { name: ROOT_PROMPT })
     .click()
 
-  const summaryTrigger = page.getByRole('button', { name: '24 subagents, 6 running' })
-  await summaryTrigger.click()
-  const childRows = page.getByRole('button', { name: /^Release Child \d{2},/ })
+  const summary = page.getByTestId('subagents-bar')
+  await expect(summary).toHaveCount(1)
+  await summary.locator(':scope > button').click()
+  const childRows = summary.locator('[aria-label="Subagents"] > button')
   await expect(childRows).toHaveCount(CHILD_COUNT)
   await expect(childRows.first()).toHaveAccessibleName('Release Child 01, running')
   await expect(childRows.nth(1)).toHaveAccessibleName('Release Child 02, completed')
   await expect(childRows.nth(2)).toHaveAccessibleName('Release Child 03, cancelled')
   await expect(childRows.nth(3)).toHaveAccessibleName('Release Child 04, error')
-  await expect(summaryTrigger).toHaveCount(1)
+  await expect(summary.locator(':scope > button')).toHaveAccessibleName('24 subagents, 6 running')
 
   await childRows.nth(19).focus()
   await page.keyboard.press('Enter')
@@ -399,6 +399,7 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
   await expect(preview.getByText('Durable transcript for Release Child 02')).toBeVisible()
 
   await preview.getByRole('button', { name: 'Close Subagents preview' }).click()
+  await expect(summary.locator(':scope > button')).toBeFocused()
 
   await page.setViewportSize({ width: 390, height: 844 })
   const mobilePreview = page.getByRole('region', { name: 'Subagents' })
@@ -407,8 +408,7 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
     .then(() => true)
     .catch(() => false)
   if (!reopenedOnResize) {
-    await summaryTrigger.click()
-    await page.getByRole('button', { name: 'Release Child 05, running' }).click()
+    await page.getByTestId('subagents-bar').locator(':scope > button').click()
   }
   await expect(mobilePreview).toHaveCount(1)
   await page.getByRole('combobox', { name: 'Subagent Frame' }).selectOption('release-child-05')
@@ -439,9 +439,12 @@ test('ships one durable, scalable, keyboard-operable persisted Subagent surface'
     .getByRole('region', { name: 'Recent sessions' })
     .getByRole('button', { name: ROOT_PROMPT })
     .click()
-  await page.getByRole('button', { name: '24 subagents, 6 running' }).click()
-  await expect(page.getByRole('button', { name: /^Release Child \d{2},/ })).toHaveCount(CHILD_COUNT)
-  await page.getByRole('button', { name: 'Release Child 05, running' }).click()
+  const restartedSummary = page.getByTestId('subagents-bar')
+  await restartedSummary.locator(':scope > button').click()
+  await expect(restartedSummary.locator('[aria-label="Subagents"] > button')).toHaveCount(
+    CHILD_COUNT
+  )
+  await restartedSummary.locator(':scope > button').click()
   await expect(page.getByRole('combobox', { name: 'Subagent Frame' })).toHaveValue(
     'release-child-05'
   )

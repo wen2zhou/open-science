@@ -85,6 +85,9 @@ export type DelegatedCallerSource = Readonly<{
 
 export type DelegatedWorkAttemptRecord = Readonly<{
   id: string
+  // Durable identity of the root Message whose Conversation Turn admitted this Attempt.
+  // Legacy terminal Attempts may omit it; new initial and continuation Attempts always write it.
+  initiatingTurnMessageId?: string
   status: DelegatedWorkAttemptStatus
   resolvedAgent: DelegatedWorkResolvedAgent
   runtimeSegmentIds: readonly string[]
@@ -610,6 +613,7 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
         !isRecord(rawAttempt) ||
         !hasOnlyFields(rawAttempt, [
           'id',
+          'initiatingTurnMessageId',
           'status',
           'resolvedAgent',
           'runtimeSegmentIds',
@@ -623,12 +627,17 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
         return undefined
       }
       const id = asString(rawAttempt.id)
+      const initiatingTurnMessageId =
+        rawAttempt.initiatingTurnMessageId === undefined
+          ? undefined
+          : asString(rawAttempt.initiatingTurnMessageId)
       const status = asString(rawAttempt.status) as DelegatedWorkAttemptStatus | undefined
       const resolvedAgent = sanitizeDelegatedWorkResolvedAgent(rawAttempt.resolvedAgent)
       const startedAt = asNumber(rawAttempt.startedAt)
       const runtimeSegmentIds = asStringArray(rawAttempt.runtimeSegmentIds)
       if (
         !id ||
+        (rawAttempt.initiatingTurnMessageId !== undefined && !initiatingTurnMessageId) ||
         attemptIds.has(id) ||
         !status ||
         !DELEGATED_WORK_ATTEMPT_STATUSES.has(status) ||
@@ -684,6 +693,7 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
       }
       attempts.push({
         id,
+        ...(initiatingTurnMessageId ? { initiatingTurnMessageId } : {}),
         status,
         resolvedAgent,
         runtimeSegmentIds,

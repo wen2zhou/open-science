@@ -1,7 +1,7 @@
 ---
 decision_id: SUB-DEC-0004
 title: 并发 Turn 下的 Turn-scoped Cancel 与 branch-scoped Stop
-status: proposed
+status: accepted
 affects_specs:
   - SUB-DELEGATE-WAIT
 compatibility: persistence-impact

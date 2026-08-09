@@ -607,6 +607,7 @@ export type AcpPromptRequest = {
 
 export type AcpCancelPromptRequest = {
   sessionId: string
+  scope?: 'turn' | 'subagents'
 }
 
 export type AcpDeleteSessionRequest = {

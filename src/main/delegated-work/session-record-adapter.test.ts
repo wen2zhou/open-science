@@ -986,8 +986,18 @@ describe('Session delegated-work adapter', () => {
       status: 'running'
     })
     expect(after.runtimeContext?.delegatedWork?.records[0].attempts).toMatchObject([
-      { id: 'attempt-1', status: 'completed', terminalMessageId: 'answer-1' },
-      { id: 'attempt-2', status: 'running', resolvedAgent: { kind: 'main' } }
+      {
+        id: 'attempt-1',
+        initiatingTurnMessageId: rootPrompt.id,
+        status: 'completed',
+        terminalMessageId: 'answer-1'
+      },
+      {
+        id: 'attempt-2',
+        initiatingTurnMessageId: rootPrompt.id,
+        status: 'running',
+        resolvedAgent: { kind: 'main' }
+      }
     ])
     expect(
       after.conversationGraph!.messages.filter(({ agentFrameId }) => agentFrameId === 'child-frame')

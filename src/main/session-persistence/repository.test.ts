@@ -49,6 +49,50 @@ afterEach(async () => {
 })
 
 describe('session persistence repository (per-session files)', () => {
+  it('preserves one immutable pre-S2 Session backup before the first initiating-Turn write', async () => {
+    const repository = new SessionRepository(await createStorageRoot())
+    const legacy = createSession({
+      title: 'Before S2: {"initiatingTurnMessageId":"ordinary user content"}'
+    })
+    await repository.saveSession(legacy)
+    const filePath = join(storageRoot!, 'sessions', 'project-a', 'session-1.json')
+    const beforeUpgrade = await readFile(filePath, 'utf8')
+    const upgraded = createSession({
+      title: 'After S2',
+      runtimeContext: {
+        version: 1,
+        revision: 1,
+        delegatedWork: {
+          records: [
+            {
+              agentFrameId: 'child-frame',
+              attempts: [
+                {
+                  id: 'attempt-1',
+                  initiatingTurnMessageId: 'message-1',
+                  status: 'cancelled',
+                  resolvedAgent: { kind: 'main' },
+                  runtimeSegmentIds: [],
+                  startedAt: 1710000000001,
+                  endedAt: 1710000000002,
+                  cancellationReason: 'main_agent_stop'
+                }
+              ],
+              pendingMessages: []
+            }
+          ]
+        }
+      }
+    })
+
+    await repository.saveSession(upgraded)
+    const backupPath = `${filePath}.pre-s2-backup`
+    await expect(readFile(backupPath, 'utf8')).resolves.toBe(beforeUpgrade)
+    await repository.saveSession({ ...upgraded, title: 'Later S2 edit' })
+    await expect(readFile(backupPath, 'utf8')).resolves.toBe(beforeUpgrade)
+    await expect(readFile(filePath, 'utf8')).resolves.toContain('Later S2 edit')
+  })
+
   it('saves each session to sessions/<projectId>/<id>.json and loads it back', async () => {
     const repository = new SessionRepository(await createStorageRoot())
     const session = createSession()

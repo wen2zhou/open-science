@@ -172,6 +172,7 @@ type ConversationPanelProps = {
   onRemoveAttachment: (attachment: UploadedAttachment) => void
   onCancelAttachmentTransfer: (transfer: ComposerUploadTransfer) => void
   onCancelRun: () => void | Promise<void>
+  onStopSubagents?: () => void | Promise<void>
   onResumeSession: () => Promise<void>
   onOpenNotebook: (notebook: NotebookSessionReference) => void
   onTogglePreviewPanel?: () => void
@@ -248,6 +249,7 @@ const ConversationPanel = ({
   onRemoveAttachment,
   onCancelAttachmentTransfer,
   onCancelRun,
+  onStopSubagents = onCancelRun,
   onResumeSession,
   onOpenNotebook,
   onTogglePreviewPanel = () => undefined,
@@ -295,14 +297,14 @@ const ConversationPanel = ({
     setIsReportOpen(true)
   }
 
-  const handleStop = (): void => {
+  const submitStop = (action: () => void | Promise<void>): void => {
     if (stopSubmissionPendingRef.current) return
     stopSubmissionPendingRef.current = true
     setIsStopping(true)
     setStopError(undefined)
     let outcome: void | Promise<void>
     try {
-      outcome = onCancelRun()
+      outcome = action()
     } catch (error) {
       stopSubmissionPendingRef.current = false
       setIsStopping(false)
@@ -324,6 +326,10 @@ const ConversationPanel = ({
       })
   }
 
+  const handleStop = (): void => submitStop(onCancelRun)
+
+  const handleStopSubagents = (): void => submitStop(onStopSubagents)
+
   // Unconditional hook: check if the active session has any jobs (running or finished).
   const allJobsForSession = useSessionJobStore((s) => s.allJobsForSession)
   const hasAnyJobs = activeSession !== undefined && allJobsForSession(activeSession.id).length > 0
@@ -331,6 +337,13 @@ const ConversationPanel = ({
   const subagentSummary = projectSessionSubagents(activeSession, pendingPermissions)
   const hasSubagents = subagentSummary.children.length > 0
   const hasRunningSubagents = subagentSummary.runningCount > 0
+  const effectiveCanSend = canSendMessage && !isStopping
+  const rootTurnBusy =
+    activeSession?.status === 'running' ||
+    (activeSession?.status === 'waiting-permission' &&
+      pendingPermissions.some((permission) => !permission.delegated)) ||
+    activeSession?.compacting === true ||
+    activeSession?.fixLoopActive === true
   const activePendingPlan = activeBranchPlan?.approval === 'pending' ? activeBranchPlan : undefined
   const activePendingPlanKey = activePendingPlan
     ? `${activePendingPlan.artifactVersionId}:${activePendingPlan.revision}`
@@ -388,12 +401,12 @@ const ConversationPanel = ({
 
   // Submits the current doc, passing the ids of any skills picked as inline chips.
   const handleSubmit = (): void => {
-    if (!canEditDraft) return
+    if (!canEditDraft || !effectiveCanSend) return
     onSendMessage(docToSkillIds(draftDoc))
   }
 
   const handleBranchInNewSession = (): void => {
-    if (!canSendMessage || !onBranchInNewSession) return
+    if (!effectiveCanSend || !onBranchInNewSession) return
     onBranchInNewSession(docToSkillIds(draftDoc))
   }
 
@@ -427,7 +440,7 @@ const ConversationPanel = ({
   const hasTextDraft = draftDoc.nodes.some(
     (node) => node.type === 'text' && node.text.trim().length > 0
   )
-  const canPlanFirst = canSendMessage && hasTextDraft && onPlanFirst !== undefined
+  const canPlanFirst = effectiveCanSend && hasTextDraft && onPlanFirst !== undefined
 
   const handlePlanFirst = (): void => {
     if (!canPlanFirst || !onPlanFirst) return
@@ -1003,11 +1016,7 @@ const ConversationPanel = ({
                             Grouped on the right with Send, mirroring the reference composer layout. */}
                         <ComposerModelPicker />
 
-                        {activeSession?.status === 'running' ||
-                        activeSession?.status === 'waiting-permission' ||
-                        activeSession?.compacting ||
-                        activeSession?.fixLoopActive ||
-                        hasRunningSubagents ? (
+                        {rootTurnBusy ? (
                           // Running sessions expose cancel instead of send to prevent overlapping turns.
                           // Detached children can outlive a wait=false Main turn, so their durable
                           // running aggregate keeps the same root cascade reachable after Main settles.
@@ -1053,7 +1062,7 @@ const ConversationPanel = ({
                               aria-label="Send message options"
                               className={cn(
                                 'flex rounded-md bg-primary text-primary-foreground [@media(pointer:coarse)]:mx-3',
-                                !canSendMessage && 'opacity-50'
+                                !effectiveCanSend && 'opacity-50'
                               )}
                             >
                               <Tooltip>
@@ -1063,7 +1072,7 @@ const ConversationPanel = ({
                                     variant="ghost"
                                     size="icon"
                                     onClick={handleSubmit}
-                                    disabled={!canSendMessage}
+                                    disabled={!effectiveCanSend}
                                     className={composerSplitSendPrimaryButtonClassName}
                                     aria-label="Send message"
                                   >
@@ -1086,7 +1095,7 @@ const ConversationPanel = ({
                                         size="icon"
                                         disabled={
                                           !canPlanFirst &&
-                                          (!canSendMessage || !onBranchInNewSession)
+                                          (!effectiveCanSend || !onBranchInNewSession)
                                         }
                                         className={composerSplitSendMenuButtonClassName}
                                         aria-label="More send options"
@@ -1118,7 +1127,7 @@ const ConversationPanel = ({
                                   </DropdownMenuItem>
                                   <DropdownMenuItem
                                     data-testid="menu-branch-in-new-session"
-                                    disabled={!canSendMessage || !onBranchInNewSession}
+                                    disabled={!effectiveCanSend || !onBranchInNewSession}
                                     onSelect={handleBranchInNewSession}
                                     className="whitespace-nowrap [@media(pointer:coarse)]:min-h-11"
                                   >
@@ -1136,13 +1145,37 @@ const ConversationPanel = ({
                           <button
                             type="button"
                             onClick={handleSubmit}
-                            disabled={!canSendMessage}
+                            disabled={!effectiveCanSend}
                             className={composerSendButtonClassName}
                             aria-label="Send message"
                           >
                             <ArrowUp className="size-4" strokeWidth={2.2} aria-hidden="true" />
                           </button>
                         )}
+                        {hasRunningSubagents && !rootTurnBusy ? (
+                          <button
+                            type="button"
+                            onClick={handleStopSubagents}
+                            disabled={isStopping}
+                            className={composerCancelButtonClassName}
+                            aria-label={isStopping ? 'Stopping subagents' : 'Stop subagents'}
+                          >
+                            {isStopping ? (
+                              <Loader2 className="size-3.5 animate-spin" aria-hidden="true" />
+                            ) : (
+                              <Square className="size-3.5" strokeWidth={2.2} aria-hidden="true" />
+                            )}
+                          </button>
+                        ) : null}
+                        {stopError ? (
+                          <span
+                            className="max-w-48 truncate text-[11px] text-danger-000"
+                            role="alert"
+                            title={stopError}
+                          >
+                            {stopError}
+                          </span>
+                        ) : null}
                       </div>
                     </div>
                   </form>

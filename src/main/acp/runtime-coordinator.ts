@@ -661,13 +661,26 @@ class AcpRuntimeCoordinator {
   }
 
   async cancelPrompt(request: AcpCancelPromptRequest): Promise<AcpStateSnapshot> {
+    if (request.scope === 'subagents') {
+      await this.delegatedWork?.stopActiveBranch?.(request.sessionId)
+      return this.getSnapshot()
+    }
+    const initiatingTurnMessageId = this.activePromptRequests.get(request.sessionId)?.request
+      .provenanceContext?.promptMessageId
+    // Production delegated-work establishes its admission fence synchronously before this call
+    // returns a Promise. Keep the pinned child stops in flight so a cleanup failure cannot prevent
+    // the root Attempt from being invalidated and cancelled.
+    const delegatedCancellation = initiatingTurnMessageId
+      ? (this.delegatedWork?.cancelTurn?.(request.sessionId, initiatingTurnMessageId) ??
+        Promise.resolve())
+      : Promise.resolve()
     this.invalidateSessionTurn(request.sessionId)
-    const [rootCancellation, delegatedCancellation] = await Promise.allSettled([
+    const [rootCancellation, childCancellation] = await Promise.allSettled([
       Promise.resolve().then(() => this.runtimeForSession(request.sessionId).cancelPrompt(request)),
-      this.delegatedWork?.stopSession(request.sessionId) ?? Promise.resolve()
+      delegatedCancellation
     ])
     if (rootCancellation.status === 'rejected') throw rootCancellation.reason
-    if (delegatedCancellation.status === 'rejected') throw delegatedCancellation.reason
+    if (childCancellation.status === 'rejected') throw childCancellation.reason
     return this.getSnapshot()
   }
 

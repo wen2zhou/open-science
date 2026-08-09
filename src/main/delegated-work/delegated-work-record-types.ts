@@ -19,6 +19,7 @@ type DurableResolvedAgent =
 
 type DurableAttempt = {
   id: string
+  initiatingTurnMessageId?: string
   status: 'running' | 'completed' | 'cancelled' | 'error'
   resolvedAgent: DurableResolvedAgent
   runtimeSegmentIds: string[]
@@ -77,6 +78,7 @@ type DurableDelegateOutcome =
       }>[]
     }>
   | Readonly<{ kind: 'results'; children: readonly DurableDelegateResult[] }>
+  | Readonly<{ kind: 'observations'; children: readonly DurableDelegateObservation[] }>
 
 type DurableChild = {
   frameId: string
@@ -178,6 +180,7 @@ type ContinueChildInput = Readonly<{
   resolvedAgent: DurableResolvedAgent
   startedAt: number
   callerSource: DelegatedCallerSource
+  initiatingTurnMessageId: string
 }>
 
 type DelegatedWorkDurableRecords = Readonly<{

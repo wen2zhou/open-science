@@ -82,7 +82,8 @@ const createSessionDelegatedWorkRecords = (
             callerSource: {
               rootMessageId: input.caller.originMessageId,
               toolInvocationId: input.caller.toolInvocationId
-            }
+            },
+            initiatingTurnMessageId: input.caller.originMessageId
           }))
         })
       )
@@ -98,7 +99,8 @@ const createSessionDelegatedWorkRecords = (
           message: input.message,
           resolvedAgent: input.resolvedAgent,
           startedAt: input.startedAt,
-          callerSource: input.callerSource
+          callerSource: input.callerSource,
+          initiatingTurnMessageId: input.initiatingTurnMessageId
         })
       )
     },

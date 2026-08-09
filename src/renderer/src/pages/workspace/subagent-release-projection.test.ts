@@ -202,6 +202,25 @@ describe('release-gate Subagent projection', () => {
     expect(session.conversationGraph?.activeFrameId).toBe('root')
   })
 
+  it('removes validated children when their origin leaves the active root Branch', () => {
+    const session = createSession(1)
+    const graph = session.conversationGraph!
+    graph.messages.push({
+      id: 'alternate-root',
+      role: 'user',
+      content: 'alternate',
+      status: 'complete',
+      eventIds: [],
+      agentFrameId: graph.rootFrameId,
+      introducedOnBranchId: 'root-branch',
+      createdAt: 2,
+      updatedAt: 2
+    })
+    graph.branches.find(({ id }) => id === 'root-branch')!.headMessageId = 'alternate-root'
+
+    expect(projectSessionSubagents(session, []).children).toEqual([])
+  })
+
   it('fails closed when framework support is absent and returns actionable availability copy', () => {
     expect(
       resolveDelegatedWorkAvailability('opencode', [

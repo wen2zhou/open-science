@@ -43,6 +43,173 @@ const specialist = (overrides: Partial<SpecialistFixture> = {}): SpecialistFixtu
 })
 
 describe('durable delegated work', () => {
+  it('returns timed observations only after every child has established launch', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+
+    await expect(
+      work.delegate(caller, [{ task: 'finish during startup' }, { task: 'keep running' }], {
+        timeoutSeconds: 0
+      })
+    ).resolves.toMatchObject({
+      kind: 'observations',
+      children: [{ status: 'running' }, { status: 'running' }]
+    })
+    expect(execution.controls()).toHaveLength(2)
+  })
+
+  it('terminalizes cancellation that wins before a timed launch establishes its handle', async () => {
+    const execution = createDeterministicDelegateExecution()
+    let releaseWorkspace!: () => void
+    const workspaceBarrier = new Promise<void>((resolve) => {
+      releaseWorkspace = resolve
+    })
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      workspace: {
+        async prepare() {
+          await workspaceBarrier
+          return { cwd: '/workspace/child' }
+        }
+      }
+    })
+
+    const observing = work.delegate(caller, { task: 'cancel before launch' }, { timeoutSeconds: 0 })
+    await expect.poll(async () => (await records.snapshot()).records).toHaveLength(1)
+    const cancelling = work.cancelTurn(caller.session, caller.originMessageId)
+    releaseWorkspace()
+
+    await expect(cancelling).resolves.toEqual([expect.objectContaining({ status: 'cancelled' })])
+    await expect(observing).resolves.toMatchObject({
+      kind: 'observations',
+      children: [{ status: 'cancelled' }]
+    })
+    expect(execution.controls()).toEqual([])
+  })
+
+  it('rejects conflicting or invalid timed delegate options before reservation', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+
+    await expect(
+      work.delegate(caller, { task: 'never admitted' }, { wait: false, timeoutSeconds: 1 })
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    await expect(
+      work.delegate(
+        { ...caller, toolInvocationId: 'invalid-timeout' },
+        { task: 'never admitted either' },
+        { timeoutSeconds: Number.NaN }
+      )
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    expect(execution.reservationCounts()).toEqual([])
+    await expect(records.snapshot()).resolves.toMatchObject({ records: [] })
+  })
+
+  it('cancels only Attempts initiated by the fenced Turn and rejects later admission', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId,
+      originMessageIds: ['turn-a', 'turn-b']
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const turnA = { ...caller, originMessageId: 'turn-a', toolInvocationId: 'delegate-a' }
+    const turnB = { ...caller, originMessageId: 'turn-b', toolInvocationId: 'delegate-b' }
+    const childA = await work.delegate(turnA, { task: 'A child' }, { wait: false })
+    const childB = await work.delegate(turnB, { task: 'B child' }, { wait: false })
+
+    await work.cancelTurn(caller.session, 'turn-b')
+    await expect(work.children(turnA)).resolves.toEqual([
+      expect.objectContaining({ frameId: childA.children[0].frameId, status: 'running' }),
+      expect.objectContaining({ frameId: childB.children[0].frameId, status: 'cancelled' })
+    ])
+    await expect(
+      work.delegate(
+        { ...turnB, toolInvocationId: 'late-b' },
+        { task: 'late B child' },
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'conflict' })
+    expect(execution.controls()[0].input.attemptId).toBe(childA.children[0].attemptId)
+  })
+
+  it('durably terminalizes every fenced-Turn Attempt when cleanup partially fails', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let failedOnce = false
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      async revokeAttemptWrites() {
+        if (!failedOnce) {
+          failedOnce = true
+          throw new Error('injected Turn cleanup failure')
+        }
+      }
+    })
+    await work.delegate(caller, [{ task: 'first' }, { task: 'second' }], { wait: false })
+
+    await expect(work.cancelTurn(caller.session, caller.originMessageId)).rejects.toThrow(
+      'could not be stopped'
+    )
+    expect(
+      (await records.snapshot()).records.map((child) => child.attempts.at(-1)!.status)
+    ).toEqual(['cancelled', 'cancelled'])
+    await expect.poll(() => execution.releasedFrames()).toHaveLength(2)
+  })
+
+  it('linearizes a Turn fence before an initial admission waiting to commit', async () => {
+    const execution = createDeterministicDelegateExecution()
+    let releaseReservation!: () => void
+    const reservationBarrier = new Promise<void>((resolve) => {
+      releaseReservation = resolve
+    })
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({
+      execution: {
+        ...execution,
+        async reserve(count) {
+          const reservation = await execution.reserve(count)
+          await reservationBarrier
+          return reservation
+        }
+      },
+      records
+    })
+    const pending = work.delegate(caller, { task: 'racing admission' }, { wait: false })
+    await expect.poll(() => execution.reservationCounts()).toEqual([1])
+
+    await work.cancelTurn(caller.session, caller.originMessageId)
+    releaseReservation()
+    await expect(pending).rejects.toMatchObject({ code: 'conflict' })
+    await expect(records.snapshot()).resolves.toMatchObject({ records: [] })
+  })
+
   it('publishes live runtime updates only for their trusted running Attempt', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({
@@ -195,6 +362,46 @@ describe('durable delegated work', () => {
 
     execution.controls()[0].complete('done')
     execution.controls()[1].complete('denied')
+  })
+
+  it('removes delegated permissions on branch change and rejects a stale response', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const durableRecords = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let activeOrigins = [caller.originMessageId]
+    const records = {
+      ...durableRecords,
+      async snapshot() {
+        return { ...(await durableRecords.snapshot()), originMessageIds: [...activeOrigins] }
+      }
+    }
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(caller, { task: 'permission work' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].emit({
+      kind: 'permission',
+      awaiting: true,
+      requestId: 'permission-stale',
+      title: 'Read evidence',
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+    })
+    const response = {
+      requestId: 'permission-stale',
+      frameId: dispatched.children[0].frameId,
+      attemptId: dispatched.children[0].attemptId,
+      optionId: 'allow'
+    }
+    await expect(work.rootPermissionRequests(caller.session)).resolves.toHaveLength(1)
+
+    activeOrigins = ['other-branch']
+    await expect(work.rootPermissionRequests(caller.session)).resolves.toEqual([])
+    await expect(work.respondToPermission(caller.session, response)).rejects.toMatchObject({
+      code: 'conflict'
+    })
+    expect(execution.controls()[0].permissionResponses()).toEqual([])
   })
 
   it('settles permission response, terminal, and Stop races exactly once', async () => {

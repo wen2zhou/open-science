@@ -42,6 +42,12 @@ describe('Agent-facing delegate contract', () => {
       options: { wait: false }
     })
     expect(parseDelegateRpcCall({ request: [] })).toEqual({ request: [], options: {} })
+    expect(
+      parseDelegateRpcCall({
+        request: { task: 'Observe' },
+        options: { timeout_seconds: 0 }
+      })
+    ).toEqual({ request: { task: 'Observe' }, options: { timeoutSeconds: 0 } })
     expect(parseDelegateRpcCall({ request: { task: '' } })).toEqual({
       request: { task: '' },
       options: {}
@@ -52,6 +58,12 @@ describe('Agent-facing delegate contract', () => {
     expect(() =>
       parseDelegateRpcCall({ request: { task: 'Audit' }, options: { wait: 'no' } })
     ).toThrow('host.delegate wait must be a boolean.')
+    expect(() =>
+      parseDelegateRpcCall({
+        request: { task: 'Audit' },
+        options: { wait: false, timeout_seconds: 1 }
+      })
+    ).toThrow('cannot be combined')
   })
 })
 

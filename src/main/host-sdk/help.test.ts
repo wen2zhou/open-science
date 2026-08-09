@@ -24,7 +24,8 @@ describe('Host SDK help', () => {
           kind: 'operation',
           path: 'host.delegate',
           aliases: ['delegate'],
-          summary: 'Dispatch one Subagent or an atomic fan-out and optionally wait for completion.',
+          summary:
+            'Dispatch one Subagent or an atomic fan-out and optionally observe for a bounded time.',
           availability: { status: 'available' }
         }
       ],
@@ -66,7 +67,10 @@ describe('Host SDK help', () => {
       },
       options: {
         type: 'object',
-        properties: { wait: { type: 'boolean', default: true } }
+        properties: {
+          wait: { type: 'boolean', default: true },
+          timeout_seconds: { type: 'number', minimum: 0, maximum: 1800 }
+        }
       },
       returns: {
         discriminator: { propertyName: 'kind' },
@@ -80,6 +84,14 @@ describe('Host SDK help', () => {
                   optional: [],
                   properties: { status: { type: 'string', enum: ['running'] } }
                 }
+              }
+            }
+          },
+          {
+            properties: {
+              kind: { type: 'string', enum: ['observations'] },
+              children: {
+                items: { oneOf: ['terminal_result', 'running_observation'] }
               }
             }
           },

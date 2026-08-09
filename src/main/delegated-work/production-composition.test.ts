@@ -298,6 +298,12 @@ describe('production delegated-work composition', () => {
     }
     await expect(harness.composition.host.children(alternateCaller)).resolves.toEqual([])
     await expect(
+      harness.composition.root.stopActiveBranch?.(harness.session.id)
+    ).resolves.toBeUndefined()
+    expect(harness.durable().runtimeContext?.delegatedWork?.records[0].attempts[0].status).toBe(
+      'running'
+    )
+    await expect(
       harness.composition.host.collect(alternateCaller, [receipt.children[0].frameId], {
         timeoutSeconds: 0
       })
@@ -1459,5 +1465,86 @@ describe('production delegated-work composition', () => {
     await restarted.root.deleteSession(harness.session.id)
 
     await expect(access(stableSessionWorkspace)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('keeps a Turn fence when cancellation precedes scoped-work creation', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-prework-fence-'))
+    const harness = await createCompositionHarness(root, 'codex')
+
+    await harness.composition.root.cancelTurn?.(harness.session.id, harness.caller.originMessageId)
+    await expect(
+      harness.composition.host.delegate(
+        harness.caller,
+        { task: 'must not cross the fence' },
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'conflict' })
+    expect(harness.durable().runtimeContext?.delegatedWork).toBeUndefined()
+    expect(harness.execution.reservationCounts()).toEqual([])
+  })
+
+  it('production-composes branch Stop partial failure without rolling back successful targets', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-partial-stop-'))
+    const handles = new Map<string, { executionId: string }>()
+    let failedOnce = false
+    const harness = await createCompositionHarness(root, 'codex', undefined, undefined, {
+      artifactEvidence: {
+        turns: {
+          async openExecution({ executionId }: { executionId: string }) {
+            const handle = { executionId }
+            handles.set(executionId, handle)
+            return handle
+          },
+          async finalize() {
+            return undefined
+          },
+          async dispose(handle: { executionId: string }) {
+            if (handle.executionId.includes('attempt') && !failedOnce) {
+              failedOnce = true
+              throw new Error('injected branch Stop cleanup failure')
+            }
+          },
+          handleForExecution(executionId: string) {
+            const handle = handles.get(executionId)
+            if (!handle) throw new Error(`No active Artifact turn for ${executionId}`)
+            return handle
+          },
+          handoffFile: () => '/tmp/current-run.json',
+          async publishHandoff() {
+            return undefined
+          }
+        } as never,
+        artifactStorageSessionId: ({ sessionId }) => sessionId,
+        async finalizePublication() {
+          return undefined
+        },
+        async project() {
+          return []
+        }
+      }
+    })
+    const receipt = await harness.composition.host.delegate(
+      harness.caller,
+      [{ task: 'first Stop target' }, { task: 'second Stop target' }],
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(2)
+
+    await expect(harness.composition.root.stopActiveBranch?.(harness.session.id)).rejects.toThrow(
+      'could not be stopped'
+    )
+    const statusesAfterFailure = harness
+      .durable()
+      .runtimeContext!.delegatedWork!.records.map((record) => record.attempts.at(-1)!.status)
+    expect(statusesAfterFailure.sort()).toEqual(['cancelled', 'running'])
+    await expect(
+      harness.composition.root.stopActiveBranch?.(harness.session.id)
+    ).resolves.toBeUndefined()
+    expect(
+      harness
+        .durable()
+        .runtimeContext!.delegatedWork!.records.map((record) => record.attempts.at(-1)!.status)
+    ).toEqual(['cancelled', 'cancelled'])
+    expect(receipt.children).toHaveLength(2)
   })
 })

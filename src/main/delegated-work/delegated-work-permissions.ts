@@ -83,8 +83,14 @@ class RootDelegatePermissionOwner {
     )
     return [...this.permissions.values()]
       .filter((permission) => {
+        const child = snapshot.records.find((candidate) => candidate.frameId === permission.frameId)
         const attempt = currentAttempts.get(permission.frameId)
-        return attempt?.id === permission.attemptId && attempt.status === 'running'
+        return (
+          child?.originBindingState === 'validated' &&
+          snapshot.originMessageIds.includes(child.originMessageId) &&
+          attempt?.id === permission.attemptId &&
+          attempt.status === 'running'
+        )
       })
       .map((permission) => this.request(permission))
   }
@@ -102,6 +108,8 @@ class RootDelegatePermissionOwner {
     const permission = this.permissions.get(key)
     if (
       !permission ||
+      child?.originBindingState !== 'validated' ||
+      !snapshot.originMessageIds.includes(child.originMessageId) ||
       !attempt ||
       attempt.id !== response.attemptId ||
       attempt.status !== 'running'

@@ -1059,7 +1059,7 @@ async function delegateRpc(request, options = {}) {
       status: child.status,
       ...(child.terminalMessageId ? { terminal_message_id: child.terminalMessageId } : {}),
       ...(child.response !== undefined ? { response: child.response } : {}),
-      ...(outcome.kind === 'results' ? { artifacts_created: child.artifactsCreated || [] } : {}),
+      ...(child.status !== 'running' ? { artifacts_created: child.artifactsCreated || [] } : {}),
       ...(child.cancellationReason ? { cancellation_reason: child.cancellationReason } : {}),
       ...(child.error ? { error: child.error } : {})
     }))

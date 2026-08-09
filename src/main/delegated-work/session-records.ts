@@ -26,6 +26,7 @@ type CreateChildRecordInput = Readonly<{
   resolvedAgent: DelegatedWorkResolvedAgent
   startedAt: number
   callerSource: DelegatedCallerSource
+  initiatingTurnMessageId: string
 }>
 
 type CreateChildrenInput = Readonly<{
@@ -63,6 +64,7 @@ type StartContinuationAttemptInput = Readonly<{
   resolvedAgent: DelegatedWorkResolvedAgent
   startedAt: number
   callerSource: DelegatedCallerSource
+  initiatingTurnMessageId: string
 }>
 
 type AttemptAgentEvent =

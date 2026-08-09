@@ -80,6 +80,7 @@ type SubagentSurfaceProps = {
 const SubagentsBar = ({ session, permissions }: SubagentSurfaceProps): React.JSX.Element | null => {
   const [expanded, setExpanded] = useState(false)
   const containerRef = useRef<HTMLDivElement>(null)
+  const summaryTriggerRef = useRef<HTMLButtonElement>(null)
   const summary = useMemo(
     () => projectSessionSubagents(session, permissions),
     [permissions, session]
@@ -114,14 +115,15 @@ const SubagentsBar = ({ session, permissions }: SubagentSurfaceProps): React.JSX
     ? `${single.title}${single.status === 'running' ? ', running' : ''}`
     : `${summary.children.length} subagents${summary.runningCount ? `, ${summary.runningCount} running` : ''}`
 
-  const selectChild = (child: SessionSubagentChild, trigger: HTMLElement): void => {
+  const selectChild = (child: SessionSubagentChild): void => {
     setExpanded(false)
-    openSubagentPreview(session, child, trigger)
+    openSubagentPreview(session, child, summaryTriggerRef.current ?? undefined)
   }
 
   return (
     <div ref={containerRef} className="relative min-w-0" data-testid="subagents-bar">
       <button
+        ref={summaryTriggerRef}
         type="button"
         aria-label={accessibleLabel}
         aria-expanded={single ? undefined : expanded}
@@ -167,7 +169,7 @@ const SubagentsBar = ({ session, permissions }: SubagentSurfaceProps): React.JSX
               type="button"
               aria-label={`${child.title}, ${child.status}${child.awaitingPermission ? ', waiting for permission' : ''}`}
               className="grid min-h-11 w-full grid-cols-[minmax(0,1fr)_auto_auto] items-center gap-3 border-b border-border-300/15 px-3.5 py-2.5 text-left last:border-b-0 hover:bg-bg-100/60 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-inset focus-visible:ring-ring/50"
-              onClick={(event) => selectChild(child, event.currentTarget)}
+              onClick={() => selectChild(child)}
             >
               <span className="min-w-0">
                 <span

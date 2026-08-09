@@ -777,6 +777,45 @@ describe('normalizeSessionFile with activities', () => {
     expect(restored?.runtimeContext).toBeUndefined()
   })
 
+  it('reads legacy terminal Attempts without inventing an initiating Turn association', () => {
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      runtimeContext: {
+        version: 1,
+        revision: 1,
+        delegatedWork: {
+          records: [
+            {
+              agentFrameId: 'legacy-child',
+              attempts: [
+                {
+                  id: 'legacy-attempt',
+                  status: 'cancelled',
+                  resolvedAgent: { kind: 'main' },
+                  runtimeSegmentIds: [],
+                  startedAt: 1,
+                  endedAt: 2,
+                  cancellationReason: 'runtime_interrupted'
+                }
+              ],
+              pendingMessages: []
+            }
+          ]
+        }
+      }
+    })
+
+    expect(restored?.runtimeContext?.delegatedWork?.records[0].attempts[0]).toEqual({
+      id: 'legacy-attempt',
+      status: 'cancelled',
+      resolvedAgent: { kind: 'main' },
+      runtimeSegmentIds: [],
+      startedAt: 1,
+      endedAt: 2,
+      cancellationReason: 'runtime_interrupted'
+    })
+  })
+
   it('preserves a valid archive timestamp across a file round-trip', () => {
     const persisted = createSessionFile({
       ...(createSessionWithActivity(undefined) as PersistedChatSession),

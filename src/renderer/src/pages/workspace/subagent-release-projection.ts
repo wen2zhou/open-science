@@ -38,6 +38,18 @@ type SubagentFrameProjection = Readonly<{
 type DelegatedWorkAvailability =
   Readonly<{ available: true }> | Readonly<{ available: false; title: string; description: string }>
 
+const resolveActiveRootMessageIds = (
+  graph: NonNullable<PersistedChatSession['conversationGraph']>
+): ReadonlySet<string> | undefined => {
+  const root = graph.frames.find((frame) => frame.id === graph.rootFrameId)
+  if (!root) return undefined
+  try {
+    return new Set(resolveMessageBranchPath(graph, root.activeBranchId).map(({ id }) => id))
+  } catch {
+    return undefined
+  }
+}
+
 const latestAttempt = (
   session: PersistedChatSession,
   frameId: string
@@ -61,9 +73,18 @@ const projectSessionSubagents = (
 ): SessionSubagentProjection => {
   const graph = session?.conversationGraph
   if (!session || !graph) return { runningCount: 0, children: [] }
+  const activeRootMessageIds = resolveActiveRootMessageIds(graph)
+  if (!activeRootMessageIds) return { runningCount: 0, children: [] }
 
   const children = graph.frames
-    .filter((frame) => frame.kind === 'delegate' && frame.parentFrameId === graph.rootFrameId)
+    .filter(
+      (frame) =>
+        frame.kind === 'delegate' &&
+        frame.parentFrameId === graph.rootFrameId &&
+        (frame.originBindingState === 'legacy-unavailable' ||
+          (frame.originBindingState === 'validated' &&
+            Boolean(frame.originMessageId && activeRootMessageIds.has(frame.originMessageId))))
+    )
     .map((frame): SessionSubagentChild => {
       const attempt = latestAttempt(session, frame.id)
       const awaitingPermission =
@@ -135,7 +156,12 @@ const resolveDelegatedWorkAvailability = (
   }
 }
 
-export { projectSessionSubagents, resolveDelegatedWorkAvailability, selectSubagentFrame }
+export {
+  projectSessionSubagents,
+  resolveActiveRootMessageIds,
+  resolveDelegatedWorkAvailability,
+  selectSubagentFrame
+}
 export type {
   DelegatedWorkAvailability,
   SessionSubagentChild,

@@ -58,7 +58,7 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   id: 'host.delegate',
   path: 'host.delegate',
   aliases: ['delegate'],
-  summary: 'Dispatch one Subagent or an atomic fan-out and optionally wait for completion.',
+  summary: 'Dispatch one Subagent or an atomic fan-out and optionally observe for a bounded time.',
   call_forms: [
     {
       signature: 'await host.delegate(request, options?)',
@@ -80,6 +80,8 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
     'A request array is admitted atomically and must be non-empty.',
     'Dispatch can be rejected before execution when capacity, framework, Specialist, or input admission is unavailable.',
     'Each child receives only its task, explicit context, and declared immutable inputs.',
+    'An explicit timeout_seconds starts after every admitted child establishes launch and returns observations without stopping running children.',
+    'wait:false cannot be combined with timeout_seconds; omitting timeout_seconds preserves all-settled waiting.',
     'Use the returned frame_id values with await host.collect(frame_ids) after an asynchronous dispatch.'
   ],
   examples: [
@@ -90,6 +92,10 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
     {
       title: 'Select a Specialist discovered from the public catalog',
       code: "const [specialist] = await host.agents.list()\nconst outcome = await host.delegate({ task: 'Verify the statistical assumptions', profile: specialist.id })"
+    },
+    {
+      title: 'Observe an atomic fan-out for a bounded time',
+      code: "globalThis.delegation = await host.delegate([{ task: 'Search trial registries' }, { task: 'Audit the analysis' }], { timeout_seconds: 30 })"
     },
     {
       title: 'Dispatch in parallel, continue, then collect',

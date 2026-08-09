@@ -74,6 +74,12 @@ const DELEGATE_OPTIONS_SCHEMA = {
       type: 'boolean',
       default: true,
       description: 'Wait for all children to settle when true.'
+    },
+    timeout_seconds: {
+      type: 'number',
+      minimum: 0,
+      maximum: 1800,
+      description: 'Bounded observation wait after every admitted child has established launch.'
     }
   }
 } as const
@@ -115,6 +121,16 @@ const DELEGATE_AGENT_CONTRACT = {
               }
             }
           }
+        }
+      },
+      {
+        description: 'Returned when options.timeout_seconds is explicit.',
+        type: 'object',
+        required: ['kind', 'children'],
+        optional: [],
+        properties: {
+          kind: { type: 'string', enum: ['observations'] },
+          children: { type: 'array', items: { oneOf: ['terminal_result', 'running_observation'] } }
         }
       },
       {
@@ -185,7 +201,7 @@ const DELEGATE_AGENT_CONTRACT = {
 
 type DelegateRpcCall = Readonly<{
   request: Parameters<DurableDelegatedWork['delegate']>[1]
-  options: Readonly<{ wait?: boolean }>
+  options: Readonly<{ wait?: boolean; timeoutSeconds?: number }>
 }>
 
 type CollectRpcCall = Readonly<{
@@ -208,11 +224,27 @@ const parseDelegateRpcCall = (params: Readonly<Record<string, unknown>>): Delega
   if (requestedOptions.wait !== undefined && typeof requestedOptions.wait !== 'boolean') {
     throw new Error('host.delegate wait must be a boolean.')
   }
+  const timeoutSeconds = requestedOptions.timeout_seconds
+  if (
+    timeoutSeconds !== undefined &&
+    (typeof timeoutSeconds !== 'number' ||
+      !Number.isFinite(timeoutSeconds) ||
+      timeoutSeconds < 0 ||
+      timeoutSeconds > 1800)
+  ) {
+    throw new Error('host.delegate timeout_seconds must be a finite number from 0 through 1800.')
+  }
+  if (requestedOptions.wait === false && timeoutSeconds !== undefined) {
+    throw new Error('host.delegate wait:false cannot be combined with timeout_seconds.')
+  }
   return {
     // Semantic request validation remains in DelegatedWorkAdmissionPolicy so RPC callers retain
     // the existing domain errors for empty arrays, tasks, profiles, contexts, and input identities.
     request: request as DurableDelegateRequest | readonly DurableDelegateRequest[],
-    options: typeof requestedOptions.wait === 'boolean' ? { wait: requestedOptions.wait } : {}
+    options: {
+      ...(typeof requestedOptions.wait === 'boolean' ? { wait: requestedOptions.wait } : {}),
+      ...(typeof timeoutSeconds === 'number' ? { timeoutSeconds } : {})
+    }
   }
 }
 
