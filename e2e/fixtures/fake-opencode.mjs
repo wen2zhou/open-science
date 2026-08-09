@@ -3,6 +3,8 @@
 import * as acp from '@agentclientprotocol/sdk'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
+import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 
 const VERSION = '1.0.0'
@@ -15,6 +17,8 @@ const DELEGATION_BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect jo
 const DELEGATION_BOUNDED_RECOLLECT_PROMPT = 'Collect the running Subagent in Turn B.'
 const DELEGATION_PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const DELEGATION_STOP_PROMPT = 'Run the production delegation Stop journey.'
+const DELEGATION_BRANCH_A_PROMPT = 'Start the inactive-branch Stop certification journey.'
+const DELEGATION_BRANCH_B_PROMPT = 'Start the active-branch partial Stop certification journey.'
 const DELEGATION_UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
 const DELEGATION_INHERITED_SPECIALIST_PROMPT =
   'Run the production inherited Specialist delegation journey.'
@@ -24,6 +28,9 @@ const DELEGATED_PERMISSION_TASK = 'Request the delegated fixture permission.'
 const DELEGATED_WAIT_MARKER = 'Wait until the Main Agent stops'
 const DELEGATED_WAIT_TASK = `${DELEGATED_WAIT_MARKER} delegated fixture A.`
 const DELEGATED_WAIT_TASK_TWO = `${DELEGATED_WAIT_MARKER} delegated fixture B.`
+const DELEGATED_BRANCH_A_TASK = `${DELEGATED_WAIT_MARKER} inactive branch child A.`
+const DELEGATED_BRANCH_B_TASK = `${DELEGATED_WAIT_MARKER} active branch child B1.`
+const DELEGATED_BRANCH_B_TASK_TWO = `${DELEGATED_WAIT_MARKER} active branch child B2.`
 
 const sessionRoutes = new Map()
 const sessionCancellationResolvers = new Map()
@@ -46,6 +53,17 @@ const toolResult = (name, result) => {
 }
 
 const frameworkServerName = (name) => name.replaceAll('-', '_')
+
+const delegatedArtifactHandoff = async (mcpServers) => {
+  const currentRunFile = mcpServers
+    .flatMap((server) => server.env ?? [])
+    .find((entry) => entry.name === 'OPEN_SCIENCE_ARTIFACT_CURRENT_RUN_FILE')?.value
+  if (!currentRunFile) return {}
+  const executionId = await readFile(currentRunFile, 'utf8')
+    .then((content) => JSON.parse(content).executionId)
+    .catch(() => undefined)
+  return { artifactCurrentRunFile: currentRunFile, artifactExecutionId: executionId }
+}
 
 const withMcpClient = async (sessionId, serverName, operation) => {
   const route = sessionRoutes.get(sessionId)
@@ -106,10 +124,37 @@ const runProductionDelegationRequest = async (sessionId, request, wait) =>
 const runProductionDelegation = async (sessionId, task, wait) =>
   runProductionDelegationRequest(sessionId, { task }, wait)
 
+const runProductionTimedDelegationRequest = async (sessionId, request) =>
+  executeControlCode(
+    sessionId,
+    `return await host.delegate(${JSON.stringify(request)}, { timeout_seconds: 0 })`
+  )
+
 const waitForSessionCancellation = (sessionId) =>
   new Promise((resolve) => {
     sessionCancellationResolvers.set(sessionId, resolve)
   })
+
+const captureDelegatedHandoff = async (sessionId, task) => {
+  const captureRoot = process.env.OPEN_SCIENCE_E2E_HANDOFF_CAPTURE_ROOT
+  if (!captureRoot) throw new Error('The delegated handoff capture root is unavailable.')
+  const route = sessionRoutes.get(sessionId)
+  const currentRunFile = route?.artifactCurrentRunFile
+  if (!currentRunFile)
+    throw new Error('The delegated Artifact handoff was not routed to the Agent.')
+  await mkdir(captureRoot, { recursive: true })
+  const captureKey = Buffer.from(task).toString('base64url')
+  const sabotagePlan = join(captureRoot, `${captureKey}.sabotage`)
+  const shouldSabotage = await readFile(sabotagePlan, 'utf8')
+    .then(() => true)
+    .catch(() => false)
+  if (!shouldSabotage) return
+  await rm(sabotagePlan, { force: true })
+  await writeFile(
+    join(captureRoot, `${captureKey}.json`),
+    JSON.stringify({ executionId: route.artifactExecutionId, handoffPath: currentRunFile })
+  )
+}
 
 const verifyProviderBridge = () => {
   const config = JSON.parse(process.env.OPENCODE_CONFIG_CONTENT ?? '{}')
@@ -209,18 +254,22 @@ if (process.argv.includes('--version')) {
       authMethods: []
     }))
     .onRequest(acp.methods.agent.authenticate, () => ({}))
-    .onRequest(acp.methods.agent.session.new, (context) => {
+    .onRequest(acp.methods.agent.session.new, async (context) => {
       const sessionId = `e2e-session-${nextSessionId++}`
+      const mcpServers = context.params.mcpServers ?? []
       sessionRoutes.set(sessionId, {
         cwd: context.params.cwd,
-        mcpServers: context.params.mcpServers ?? []
+        mcpServers,
+        ...(await delegatedArtifactHandoff(mcpServers))
       })
       return { sessionId }
     })
-    .onRequest(acp.methods.agent.session.resume, (context) => {
+    .onRequest(acp.methods.agent.session.resume, async (context) => {
+      const mcpServers = context.params.mcpServers ?? []
       sessionRoutes.set(context.params.sessionId, {
         cwd: context.params.cwd,
-        mcpServers: context.params.mcpServers ?? []
+        mcpServers,
+        ...(await delegatedArtifactHandoff(mcpServers))
       })
       return {}
     })
@@ -230,6 +279,10 @@ if (process.argv.includes('--version')) {
         .join('')
 
       if (prompt.includes(DELEGATED_WAIT_MARKER)) {
+        await captureDelegatedHandoff(
+          context.params.sessionId,
+          prompt.includes(DELEGATED_BRANCH_B_TASK_TWO) ? DELEGATED_BRANCH_B_TASK_TWO : prompt
+        )
         await waitForSessionCancellation(context.params.sessionId)
         return { stopReason: 'cancelled' }
       }
@@ -301,6 +354,17 @@ if (process.argv.includes('--version')) {
         } else if (prompt.includes(DELEGATION_PERMISSION_PROMPT)) {
           await runProductionDelegation(context.params.sessionId, DELEGATED_PERMISSION_TASK, true)
           reply = 'Production delegated permission journey completed.'
+        } else if (prompt.includes(DELEGATION_BRANCH_A_PROMPT)) {
+          await runProductionTimedDelegationRequest(context.params.sessionId, {
+            task: DELEGATED_BRANCH_A_TASK
+          })
+          reply = 'Inactive branch child A is running.'
+        } else if (prompt.includes(DELEGATION_BRANCH_B_PROMPT)) {
+          await runProductionTimedDelegationRequest(context.params.sessionId, [
+            { task: DELEGATED_BRANCH_B_TASK },
+            { task: DELEGATED_BRANCH_B_TASK_TWO }
+          ])
+          reply = 'Active branch children B1 and B2 are running.'
         } else if (prompt.includes(DELEGATION_UNAVAILABLE_PROMPT)) {
           const delegated = await executeControlCode(
             context.params.sessionId,

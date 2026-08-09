@@ -11,12 +11,17 @@ const BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect journey.'
 const BOUNDED_RECOLLECT_PROMPT = 'Collect the running Subagent in Turn B.'
 const PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const STOP_PROMPT = 'Run the production delegation Stop journey.'
+const BRANCH_A_PROMPT = 'Start the inactive-branch Stop certification journey.'
+const BRANCH_B_PROMPT = 'Start the active-branch partial Stop certification journey.'
 const UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
 const INHERITED_SPECIALIST_PROMPT = 'Run the production inherited Specialist delegation journey.'
 const TERMINAL_CHILD = 'Complete the certified delegated terminal fixture.'
 const PERMISSION_CHILD = 'Request the delegated fixture permission.'
 const STOP_CHILD = 'Wait until the Main Agent stops delegated fixture A.'
 const STOP_CHILD_TWO = 'Wait until the Main Agent stops delegated fixture B.'
+const BRANCH_A_CHILD = 'Wait until the Main Agent stops inactive branch child A.'
+const BRANCH_B_CHILD = 'Wait until the Main Agent stops active branch child B1.'
+const BRANCH_B_CHILD_TWO = 'Wait until the Main Agent stops active branch child B2.'
 
 const expectDurableChildStatus = async (
   page: Page,
@@ -318,6 +323,62 @@ test('rejects an unsupported Specialist configuration before child admission', a
     }
   })
   expect(admittedChildren).toEqual({ records: 0, frames: 0 })
+})
+
+test('stops only the active branch and exposes a retryable partial failure', async ({ app }) => {
+  test.setTimeout(180_000)
+  let page = await app.completeOnboarding()
+  page = await app.configureFakeAgent()
+  await createProject(page, 'Branch Stop release gate')
+
+  await sendPrompt(page, BRANCH_A_PROMPT, 'Inactive branch child A is running.', 120_000)
+  await expectDurableChildStatus(page, BRANCH_A_CHILD, 'running')
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible({ timeout: 30_000 })
+
+  const conversation = page.getByRole('region', { name: 'Conversation' })
+  await app.armDelegatedHandoffCleanupSabotage(BRANCH_B_CHILD_TWO)
+  await conversation.getByText(BRANCH_A_PROMPT, { exact: true }).hover()
+  await conversation.getByRole('button', { name: 'Edit message' }).click()
+  await conversation.getByRole('textbox', { name: 'Edit message' }).fill(BRANCH_B_PROMPT)
+  await conversation.getByRole('button', { name: 'Send', exact: true }).click()
+  await expect(page.getByText('Active branch children B1 and B2 are running.')).toBeVisible({
+    timeout: 120_000
+  })
+  await expectDurableChildStatus(page, BRANCH_B_CHILD, 'running')
+  await expectDurableChildStatus(page, BRANCH_B_CHILD_TWO, 'running')
+  await expectDurableChildStatus(page, BRANCH_A_CHILD, 'running')
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeVisible({ timeout: 30_000 })
+
+  const subagents = page.getByTestId('subagents-bar')
+  await subagents.locator(':scope > button').click()
+  await expect(subagents.getByRole('button', { name: `${BRANCH_B_CHILD}, running` })).toBeVisible()
+  await expect(
+    subagents.getByRole('button', { name: `${BRANCH_B_CHILD_TWO}, running` })
+  ).toBeVisible()
+  await expect(subagents.getByRole('button', { name: new RegExp(BRANCH_A_CHILD) })).toHaveCount(0)
+  await subagents.locator(':scope > button').click()
+
+  await app.sabotageDelegatedHandoffCleanup(BRANCH_B_CHILD_TWO)
+  await page.getByRole('button', { name: 'Stop subagents' }).click()
+  await expectDurableChildStatus(page, BRANCH_B_CHILD, 'cancelled')
+  await expectDurableChildStatus(page, BRANCH_B_CHILD_TWO, 'running')
+  await expect(page.getByRole('alert')).toContainText(
+    'One or more Subagent Attempts could not be stopped.'
+  )
+  await page.getByRole('textbox', { name: 'Ask anything' }).fill('Send gate restored after Stop.')
+  await expect(page.getByRole('button', { name: 'Send message' })).toBeEnabled()
+  await expect(page.getByRole('button', { name: 'Stop subagents' })).toBeEnabled()
+
+  await app.restoreDelegatedHandoffCleanup(BRANCH_B_CHILD_TWO)
+  await page.getByRole('button', { name: 'Stop subagents' }).click()
+  await expectDurableChildStatus(page, BRANCH_B_CHILD_TWO, 'cancelled')
+
+  await conversation.getByRole('button', { name: 'Previous message revision' }).click()
+  await expect(conversation.getByText(BRANCH_A_PROMPT, { exact: true })).toBeVisible()
+  await expectDurableChildStatus(page, BRANCH_A_CHILD, 'running')
+  await expectRenderedChildStatus(page, BRANCH_A_CHILD, 'running')
+  await page.getByRole('button', { name: 'Stop subagents' }).click()
+  await expectDurableChildStatus(page, BRANCH_A_CHILD, 'cancelled')
 })
 
 test('inherits a real root Specialist when profile is omitted and preserves its label after restart', async ({

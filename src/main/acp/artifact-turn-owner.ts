@@ -153,6 +153,7 @@ type ArtifactTurn = {
   writeDrainPromise?: Promise<void>
   finalizationPromise?: Promise<ArtifactTurnPublication | undefined>
   disposalPromise?: Promise<void>
+  disposalStarted: boolean
   terminalResult?: { kind: 'empty' } | { kind: 'publication'; artifactCount: number }
 }
 
@@ -353,7 +354,7 @@ class ArtifactTurnOwner {
 
   finalize(handle: ArtifactTurnHandle): Promise<ArtifactTurnPublication | undefined> {
     const turn = this.resolve(handle)
-    if (turn.disposalPromise && !turn.finalizationPromise) {
+    if (turn.disposalStarted && !turn.finalizationPromise) {
       return Promise.reject(new Error('Artifact turn is already disposing or disposed.'))
     }
     if (!turn.finalizationPromise) {
@@ -372,7 +373,14 @@ class ArtifactTurnOwner {
 
   dispose(handle: ArtifactTurnHandle): Promise<void> {
     const turn = this.resolve(handle)
-    turn.disposalPromise ??= this.disposeAfterFinalization(turn)
+    if (!turn.disposalPromise) {
+      turn.disposalStarted = true
+      const disposal = this.disposeAfterFinalization(turn)
+      turn.disposalPromise = disposal
+      void disposal.catch(() => {
+        if (turn.disposalPromise === disposal) turn.disposalPromise = undefined
+      })
+    }
     return turn.disposalPromise
   }
 
@@ -425,7 +433,8 @@ class ArtifactTurnOwner {
       promptMessageId,
       agentName: request.agentName,
       phase: 'open',
-      inFlightAppWrites: new Set()
+      inFlightAppWrites: new Set(),
+      disposalStarted: false
     }
     const notebookArtifactSourceScope = this.options.notebookArtifactSourceScope?.({
       projectId: turn.projectId,
@@ -463,14 +472,18 @@ class ArtifactTurnOwner {
           this.options.revokeRpcCapability?.(turn.rpcCapabilityToken as string)
         )
       : Promise.resolve()
-    turn.writeDrainPromise = (async () => {
+    const writeDrain = (async () => {
       const [rpcResult] = await Promise.allSettled([
         rpcDrain,
         Promise.allSettled([...turn.inFlightAppWrites])
       ])
       if (rpcResult.status === 'rejected') throw rpcResult.reason
     })()
-    return turn.writeDrainPromise
+    turn.writeDrainPromise = writeDrain
+    void writeDrain.catch(() => {
+      if (turn.writeDrainPromise === writeDrain) turn.writeDrainPromise = undefined
+    })
+    return writeDrain
   }
 
   private async finalizeTurn(turn: ArtifactTurn): Promise<ArtifactTurnPublication | undefined> {
@@ -594,7 +607,8 @@ class ArtifactTurnOwner {
         }
       } catch (error) {
         cleanupErrors.push(error)
-      } finally {
+      }
+      if (cleanupErrors.length === 0) {
         if (this.activeTurnsByHandoffFile.get(turn.currentRunFile) === turn) {
           this.activeTurnsByHandoffFile.delete(turn.currentRunFile)
         }

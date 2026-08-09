@@ -53,7 +53,7 @@ Subagent 功能的目标，是让 Main Agent 能把可独立执行的工作可�
 
 ## 当前建议
 
-S1已通过production-composed release gate并达到`certified`。S2合同与`SUB-DEC-0004..0005`已`accepted`，实现已达到`conformant`；inactive-branch Stop与partial-failure进入真实desktop-composed journey后才可提升为`certified`。S4的production-composed release gate已通过，accepted Interface与Adapter行为达到`conformant`；required完整lint仍有未修改基线blocker，因此暂不标记`certified`。不得把S3及后续行为并入S2或S4。
+S1与S2均已通过production-composed release gate并达到`certified`；S2真实desktop journey覆盖inactive-branch Stop、partial failure、Send gate恢复与失败项重试。S4的production-composed release gate已通过，accepted Interface与Adapter行为达到`conformant`；required完整lint仍有未修改基线blocker，因此暂不标记`certified`。不得把S3及后续行为并入S2或S4。
 
 当前 decisions：
 
@@ -68,7 +68,7 @@ S1已通过production-composed release gate并达到`certified`。S2合同与`SU
 | ID  | 阶段                               | 本阶段交付给用户的能力                                                           | 决策状态      | 实现状态      | Owner Module / Seam                                                          | 前置依赖                          | 计划文档                                                                |
 | --- | ---------------------------------- | -------------------------------------------------------------------------------- | ------------- | ------------- | ---------------------------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------- |
 | S1  | Bounded `collect`                  | Main Agent 在同一 Turn 内有界观察结果、跨 cells 再收集；后台 child 不被取消      | `accepted`    | `certified`   | 现有 `DelegatedWorkReadModel`；外部 `DurableDelegatedWork.collect` Interface | `SUB-DEC-0002..0003`              | `delegated-wait.md`                                                     |
-| S2  | Bounded `delegate` wait            | 有界委派后可结束当前 Turn；后续 Turn 可继续控制 child，Cancel 不误杀旧 Turn 工作 | `accepted`    | `conformant`  | 现有 `DurableDelegatedWork` 与 Read Model                                    | S1、`SUB-DEC-0002..0005`          | `delegate-wait.md`                                                      |
+| S2  | Bounded `delegate` wait            | 有界委派后可结束当前 Turn；后续 Turn 可继续控制 child，Cancel 不误杀旧 Turn 工作 | `accepted`    | `certified`   | 现有 `DurableDelegatedWork` 与 Read Model                                    | S1、`SUB-DEC-0002..0005`          | `delegate-wait.md`                                                      |
 | S3  | Lifecycle observation              | 调用方能可靠区分排队、运行、等待权限、各类终态与重启中断                         | `exploratory` | `not-started` | 现有 Read Model 与 `DelegatedWorkProjectionOwner`                            | S1 的状态投影约定                 | `lifecycle-observation.md`                                              |
 | S4  | 省略 `profile` 时继承父 Specialist | 未显式选择 Specialist 的 child 按 accepted decision 继承父 Specialist            | `accepted`    | `conformant`  | 现有 `DelegatedWorkAdmissionPolicy`                                          | `SUB-DEC-0001`                    | `decisions/0001-default-subagent-identity.md`、`identity-resolution.md` |
 | S5  | 可靠消息递送                       | Main Agent 能确认补充指令处于 queued、runtime accepted 或 failed，并安全重试     | `exploratory` | `not-started` | 现有 `DelegateExecution` seam 与 durable message records                     | 无                                | `message-delivery.md`                                                   |

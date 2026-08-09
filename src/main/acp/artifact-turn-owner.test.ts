@@ -688,7 +688,7 @@ describe('ArtifactTurnOwner', () => {
     await owner.dispose(replacement)
   })
 
-  it('clears active ownership even when capability revocation fails', async () => {
+  it('keeps active ownership retryable when capability revocation fails', async () => {
     const dataRoot = await createRoot()
     const notebookContexts: unknown[] = []
     const writeStarted = createDeferred()
@@ -706,9 +706,10 @@ describe('ArtifactTurnOwner', () => {
         }
       },
       issueRpcCapability: () => 'capability-1',
-      revokeRpcCapability: async () => {
-        throw new Error('revoke failed')
-      },
+      revokeRpcCapability: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('revoke failed'))
+        .mockResolvedValue(undefined),
       notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot),
       notebook: {
         setArtifactProvenanceContext: (_sessionId, context) => notebookContexts.push(context)
@@ -749,9 +750,13 @@ describe('ArtifactTurnOwner', () => {
     await expect(disposal).rejects.toThrow('revoke failed')
 
     expect(disposalSettled).toBe(true)
-    expect(owner.activeRunIds()).toEqual([])
+    expect(owner.activeRunIds()).toEqual([owner.snapshot(turn).runId])
     await expect(readFile(currentRunFile, 'utf8')).resolves.toBe('{}\n')
     expect(notebookContexts.at(-1)).toBeUndefined()
+
+    await owner.dispose(owner.handleForExecution(owner.snapshot(turn).executionId as string))
+    expect(owner.activeRunIds()).toEqual([])
+    expect(owner.snapshot(turn).phase).toBe('disposed')
   })
 
   it('clears a stale turn handoff when its replacement uses a different storage Session', async () => {
@@ -916,7 +921,7 @@ describe('ArtifactTurnOwner', () => {
     expect(owner.activeRunIds()).toEqual([])
   })
 
-  it('clears Notebook context and ownership when handoff cleanup fails', async () => {
+  it('keeps a failed disposal retryable without reopening a successfully disposed turn', async () => {
     const dataRoot = await createRoot()
     const contexts: unknown[] = []
     const owner = new ArtifactTurnOwner({
@@ -942,11 +947,31 @@ describe('ArtifactTurnOwner', () => {
     await rm(currentRunFile)
     await mkdir(currentRunFile)
 
-    await expect(owner.dispose(turn)).rejects.toThrow()
+    const firstDisposal = owner.dispose(turn)
+    expect(owner.dispose(turn)).toBe(firstDisposal)
+    await expect(firstDisposal).rejects.toThrow()
 
     expect(contexts.at(-1)).toBeUndefined()
+    expect(owner.activeRunIds()).toEqual([owner.snapshot(turn).runId])
+    expect(owner.handleForExecution(owner.snapshot(turn).executionId as string)).toBe(turn)
+    expect(owner.snapshot(turn).phase).toBe('sealing')
+    await expect(owner.finalize(turn)).rejects.toThrow(/disposing or disposed/i)
+
+    await rm(currentRunFile, { recursive: true })
+    const retry = owner.dispose(
+      owner.handleForExecution(owner.snapshot(turn).executionId as string)
+    )
+    expect(owner.dispose(turn)).toBe(retry)
+    await retry
+
     expect(owner.activeRunIds()).toEqual([])
+    expect(() => owner.handleForExecution(owner.snapshot(turn).executionId as string)).toThrow(
+      /No active Artifact turn/
+    )
     expect(owner.snapshot(turn).phase).toBe('disposed')
+    expect(owner.dispose(turn)).toBe(retry)
+    await expect(owner.dispose(turn)).resolves.toBeUndefined()
+    await expect(owner.finalize(turn)).rejects.toThrow(/disposing or disposed/i)
   })
 
   it('revokes a capability and publishes no active state when opening the handoff fails', async () => {

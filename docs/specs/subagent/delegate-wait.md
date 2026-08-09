@@ -2,11 +2,10 @@
 spec_id: SUB-DELEGATE-WAIT
 title: S2 有界 delegate wait 与跨 Turn 后台 child
 decision_status: accepted
-implementation_status: conformant
+implementation_status: certified
 compatibility: persistence-impact
 owner_module: DurableDelegatedWork
 supersedes: []
-last_verified_sha: 0d2deb0a
 ---
 
 # S2 有界 `delegate` wait 与跨 Turn 后台 child
@@ -19,7 +18,7 @@ Main Agent 在Turn A原子委派一批Subagent，并选择等待有限时间。d
 
 ## 依赖与状态
 
-- accepted + conformant实现前置：S1 `SUB-DELEGATED-WAIT`的observation、selector、deadline和current inventory语义。
+- accepted + certified实现前置：S1 `SUB-DELEGATED-WAIT`的observation、selector、deadline和current inventory语义。
 - 依赖 decisions：
   - accepted：[`SUB-DEC-0002`](decisions/0002-bounded-wait-interface.md)
   - accepted：[`SUB-DEC-0003`](decisions/0003-cross-turn-child-control.md)
@@ -216,4 +215,18 @@ npm run test:e2e -- e2e/subagent-release-gate.spec.ts
 - `DELEGATE-015、020`：新initial/continuation Attempt写入`initiatingTurnMessageId`；新reader兼容缺失字段的旧terminal Attempt；Session-wide stop与restart原因保持独立。
 - `SUB-DEC-0005`：首次写入S2 Attempt schema前，Repository以`COPYFILE_EXCL`建立create-once `*.json.pre-s2-backup`；普通Session扫描忽略该后缀，后续S2保存不会覆盖备份。
 
-最终证据与candidate由包含本文档的紧随Git commit及handoff记录；最终验证保留S4基线`c503a521`及workspace集成parent`0d2deb0a`。当前实现状态为`conformant`：accepted Interface、Adapter、persistence、Renderer行为与production composition gates通过；Playwright桌面journey覆盖timed两Turn、permission和Turn Cancel，但尚未在桌面层自然注入inactive-branch Stop与partial-failure。根据本spec的certified release gate，这两条未进入同一production-composed desktop journey前不得标`certified`。
+### S2 认证结果（2026-08-10）
+
+候选身份由紧随本文档的Git commit记录；本文档不写入自引用SHA。最终认证在从`244f807d52cdc19489f328b4b6ec159a9c6e064e`创建的detached隔离worktree中完成，仅应用本阶段owner修复与desktop release-gate diff，未包含共享工作树中的并发改动。
+
+| 条款                         | 命令                                                                                                                                                                                                                       | 结果                                                                                                                                                   |
+| ---------------------------- | -------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------ |
+| `DELEGATE-018..019`          | `npx playwright test e2e/subagent-release-gate.spec.ts`                                                                                                                                                                    | `5 passed`；真实Electron journey覆盖inactive Branch A、active Branch B固定targets、B1成功/B2清理失败、aggregate alert、Send gate恢复、重试与最终清理。 |
+| `DELEGATE-019` cleanup retry | `npx vitest run src/main/acp/artifact-turn-owner.test.ts src/main/acp/runtime-base-composition.test.ts src/main/delegated-work/delegated-artifact-evidence.test.ts src/main/delegated-work/production-composition.test.ts` | `4 files / 40 tests passed`；并发dispose共享in-flight promise，失败保留ownership，恢复后重试成功，成功dispose保持幂等且不可重开。                      |
+| `DELEGATE-001..020` build    | `npm run build:e2e`                                                                                                                                                                                                        | 通过；Renderer、preload与main production composition均成功构建。                                                                                       |
+| 变更面静态检查               | `npx prettier --check <5 owned files>`；`npx eslint <5 owned files>`；`npm run typecheck:node`                                                                                                                             | 全部通过。                                                                                                                                             |
+| Standards + Spec             | `$code-review`，两个`gpt-5.6-sol` medium只读reviewer，固定点`244f807d52cdc19489f328b4b6ec159a9c6e064e`                                                                                                                     | Standards `0 findings`；Spec `0 findings`。                                                                                                            |
+
+release gate保持真实Renderer → IPC → Runtime Coordinator → production composition → durable persistence链路。fixture只在测试进程捕获真实delegated Artifact handoff，并将精确handoff文件替换为同路径目录，从而令production非recursive cleanup确定性失败；没有新增production test hook。首次失败后successful sibling保持terminal，failed Attempt仍在current inventory中可重试；切回Previous message revision确认inactive A仍running。由此S2达到`accepted + certified`。
+
+剩余风险：本认证只覆盖本地Electron desktop与仓库fake ACP provider，不覆盖跨平台packaging或真实provider；S2仍不承诺running child跨app restart恢复。方案B rollback仍会丢失`.pre-s2-backup`之后的Session变更，且没有downgrade migration。
