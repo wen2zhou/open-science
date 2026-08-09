@@ -42,9 +42,11 @@ import { WorkspaceAgentLoadingRow } from './WorkspaceAgentLoadingRow'
 import { WorkspaceMessageItem } from './WorkspaceMessageItem'
 import type { ArtifactMentionPart } from './WorkspaceMessageItem'
 import { useWorkspaceArtifactVisibility, type MessageArtifact } from './WorkspaceArtifactVisibility'
-import { WorkspaceInvocationArtifactPlacement } from './WorkspaceInvocationArtifactPlacement'
 import { useWorkspaceMessageEditState } from './workspace-message-edit-state-context'
-import { createConversationItems } from './workspace-conversation-items'
+import {
+  createConversationItems,
+  resolveTurnTerminalAgentMessageIds
+} from './workspace-conversation-items'
 import { groupConversationItems } from './workspace-tool-activity-groups'
 import type { ActivityExpansionOverrides } from './workspace-tool-activity-groups'
 import { useSessionJobStore } from '@/stores/session-job-store'
@@ -266,27 +268,10 @@ const WorkspaceMessageScrollerImpl = ({
   // Assistant text can be split into several messages around tool calls. All fragments share the
   // prompt they respond to, but only the last visible fragment in that turn owns whole-turn metadata.
   // Legacy unlinked messages remain independent so older transcripts do not lose their timestamps.
-  const assistantFooterMessageIds = useMemo(() => {
-    const footerIds = new Set<string>()
-    const footerIdByPromptMessageId = new Map<string, string>()
-
-    for (const item of conversationItems) {
-      if (item.type !== 'message' || item.message.role !== 'agent') continue
-
-      const promptMessageId = item.message.responseToMessageId
-      if (!promptMessageId) {
-        footerIds.add(item.message.id)
-        continue
-      }
-
-      const previousFooterId = footerIdByPromptMessageId.get(promptMessageId)
-      if (previousFooterId) footerIds.delete(previousFooterId)
-      footerIdByPromptMessageId.set(promptMessageId, item.message.id)
-      footerIds.add(item.message.id)
-    }
-
-    return footerIds
-  }, [conversationItems])
+  const assistantFooterMessageIds = useMemo(
+    () => resolveTurnTerminalAgentMessageIds(activeSession?.messages ?? []),
+    [activeSession]
+  )
   const agentLoadingPhase = getAgentLoadingPhase(activeSession)
   const messageCreatedAtById = new Map(
     activeSession?.messages.map((message) => [message.id, message.createdAt]) ?? []
@@ -682,11 +667,6 @@ const WorkspaceMessageScrollerImpl = ({
                     return <WorkspacePlanActivityRecord key={item.id} activity={item.activity} />
                   }
 
-                  const artifactPlacementId = `artifact-placement-${item.id}`
-                  const placementArtifacts = artifactVisibility.artifactsForInvocations(
-                    item.activities.map(({ id }) => id),
-                    artifactPlacementId
-                  )
                   return (
                     <div key={item.id}>
                       <WorkspaceActivityGroup
@@ -697,11 +677,6 @@ const WorkspaceMessageScrollerImpl = ({
                         onToggleRow={toggleActivityRow}
                         jobsByActivityId={jobsByActivityId}
                         onOpenJobDetail={handleOpenJobDetail}
-                      />
-                      <WorkspaceInvocationArtifactPlacement
-                        placementId={artifactPlacementId}
-                        artifacts={placementArtifacts}
-                        onPreviewArtifact={onPreviewArtifact}
                       />
                     </div>
                   )

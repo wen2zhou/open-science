@@ -8,6 +8,7 @@ import {
   type ArtifactVersionDescriptor
 } from '../../../../shared/artifact-provenance'
 import { projectRootArtifactVisibility } from '../../../../shared/artifact-visibility'
+import { resolveTurnTerminalAgentMessageIds } from './workspace-conversation-items'
 
 type MessageArtifact = NonNullable<ChatSession['artifacts']>[number] & {
   resolvedProjectId?: string
@@ -169,7 +170,6 @@ const useWorkspaceArtifactVisibility = (
   activeSession: ChatSession | undefined
 ): Readonly<{
   artifactsForMessage(message: ChatSession['messages'][number]): MessageArtifact[]
-  artifactsForInvocations(invocationIds: readonly string[], placementId: string): MessageArtifact[]
 }> => {
   const projection = useMemo(() => {
     const graph = activeSession?.conversationGraph
@@ -183,37 +183,51 @@ const useWorkspaceArtifactVisibility = (
     () => projection?.placements.map(({ artifactVersionId }) => artifactVersionId) ?? [],
     [projection]
   )
+  const projectedArtifactVersionIdsByRootMessageId = useMemo(() => {
+    const byRootMessageId = new Map<string, string[]>()
+    for (const placement of projection?.placements ?? []) {
+      const versionIds = byRootMessageId.get(placement.rootMessageId)
+      if (versionIds) versionIds.push(placement.artifactVersionId)
+      else byRootMessageId.set(placement.rootMessageId, [placement.artifactVersionId])
+    }
+    return byRootMessageId
+  }, [projection])
+  // The terminal agent fragment of each turn is the only place projected child Versions render,
+  // mirroring how main-agent artifacts attach to the turn's final assistant message.
+  const terminalAgentMessageIds = useMemo(
+    () => resolveTurnTerminalAgentMessageIds(activeSession?.messages ?? []),
+    [activeSession]
+  )
   const historicalArtifacts = useHistoricalArtifactDescriptors(activeSession, projectedVersionIds)
   const artifactsForMessage = useCallback(
-    (message: ChatSession['messages'][number]) =>
-      activeSession ? getMessageArtifacts(activeSession, message, historicalArtifacts) : [],
-    [activeSession, historicalArtifacts]
-  )
-  const artifactsForInvocations = useCallback(
-    (invocationIds: readonly string[], placementId: string) => {
+    (message: ChatSession['messages'][number]) => {
       if (!activeSession) return []
-      const invocationSet = new Set(invocationIds)
-      const artifactIds = (projection?.placements ?? [])
-        .filter(({ toolInvocationId }) => invocationSet.has(toolInvocationId))
-        .map(({ artifactVersionId }) => artifactVersionId)
+      const projectedVersionIdsForTurn =
+        message.role === 'agent' &&
+        message.responseToMessageId &&
+        terminalAgentMessageIds.has(message.id)
+          ? projectedArtifactVersionIdsByRootMessageId.get(message.responseToMessageId)
+          : undefined
+      if (!projectedVersionIdsForTurn || projectedVersionIdsForTurn.length === 0) {
+        return getMessageArtifacts(activeSession, message, historicalArtifacts)
+      }
       return getMessageArtifacts(
         activeSession,
         {
-          id: placementId,
-          role: 'agent',
-          content: '',
-          status: 'complete',
-          eventIds: [],
-          artifactIds,
-          createdAt: 0,
-          updatedAt: 0
+          ...message,
+          artifactIds: [...(message.artifactIds ?? []), ...projectedVersionIdsForTurn]
         },
         historicalArtifacts
       )
     },
-    [activeSession, historicalArtifacts, projection]
+    [
+      activeSession,
+      historicalArtifacts,
+      projectedArtifactVersionIdsByRootMessageId,
+      terminalAgentMessageIds
+    ]
   )
-  return { artifactsForMessage, artifactsForInvocations }
+  return { artifactsForMessage }
 }
 
 export { useWorkspaceArtifactVisibility }

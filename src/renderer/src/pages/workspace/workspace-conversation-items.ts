@@ -198,11 +198,47 @@ const createConversationItems = (
   })
 }
 
+// Each user turn may be answered by several agent fragments (text split around tool calls). Only
+// the chronologically last fragment owns the whole-turn surface — footer, usage, and the projected
+// child Versions. This resolves that terminal fragment id set from raw chat messages so the
+// transcript scroller and the artifact visibility hook share one definition.
+const resolveTurnTerminalAgentMessageIds = (messages: readonly ChatMessage[]): Set<string> => {
+  const footerIds = new Set<string>()
+  const footerByPrompt = new Map<string, string>()
+  const ordered = messages.map((message, index) => ({
+    id: message.id,
+    role: message.role,
+    responseToMessageId: message.responseToMessageId,
+    createdAt: message.createdAt,
+    sortIndex: message.sortIndex ?? index
+  }))
+  ordered.sort(
+    (left, right) =>
+      left.createdAt - right.createdAt ||
+      left.sortIndex - right.sortIndex ||
+      left.id.localeCompare(right.id)
+  )
+  for (const message of ordered) {
+    if (message.role !== 'agent') continue
+    const promptId = message.responseToMessageId
+    if (!promptId) {
+      footerIds.add(message.id)
+      continue
+    }
+    const previousId = footerByPrompt.get(promptId)
+    if (previousId) footerIds.delete(previousId)
+    footerByPrompt.set(promptId, message.id)
+    footerIds.add(message.id)
+  }
+  return footerIds
+}
+
 export {
   createConversationItems,
   formatActivityTitle,
   formatNotebookToolName,
   getNotebookToolSuffix,
-  isActivityActive
+  isActivityActive,
+  resolveTurnTerminalAgentMessageIds
 }
 export type { ConversationItem }
