@@ -51,6 +51,20 @@ type DurableDelegateResult = Readonly<{
   error?: Readonly<{ code: string; message: string }>
 }>
 
+type DurableRunningObservation = Readonly<{
+  frameId: string
+  attemptId: string
+  name: string
+  agentName: string
+  status: 'running'
+}>
+
+type DurableDelegateObservation = DurableDelegateResult | DurableRunningObservation
+
+type DurableCollectSelector = string | Readonly<{ frameId: string; attemptId: string }>
+
+type DurableCollectOptions = Readonly<{ timeoutSeconds?: number }>
+
 type DurableDelegateOutcome =
   | Readonly<{
       kind: 'receipts'
@@ -68,6 +82,7 @@ type DurableChild = {
   frameId: string
   parentFrameId: string
   originMessageId: string
+  originBindingState: 'validated' | 'legacy-unavailable'
   title: string
   task: string
   context?: string
@@ -228,6 +243,9 @@ export type {
   DurableAttempt,
   DurableChild,
   DurableChildSummary,
+  DurableCollectOptions,
+  DurableCollectSelector,
+  DurableDelegateObservation,
   DurableDelegateOutcome,
   DurableDelegateResult,
   DurableMessage,

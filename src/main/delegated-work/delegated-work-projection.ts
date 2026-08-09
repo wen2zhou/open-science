@@ -5,6 +5,7 @@ import type {
   DelegatedReviewEvidence,
   DelegatedWorkDurableRecords,
   DurableDelegateResult,
+  DurableDelegateObservation,
   DurableSnapshot,
   ReadOnlyAgentFrameDetail
 } from './durable-delegated-work'
@@ -26,11 +27,17 @@ class DelegatedWorkProjectionOwner {
     attempt: DurableAttempt
   ): DelegatedArtifactProjectionScope | undefined {
     const runtimeSegmentId = attempt.runtimeSegmentIds.at(-1)
+    const terminalMessage = attempt.terminalMessageId
+      ? snapshot.messages.find((message) => message.id === attempt.terminalMessageId)
+      : undefined
     const promptMessages = snapshot.messages.filter(
       (message) => message.frameId === child.frameId && message.role === 'user'
     )
-    const attemptIndex = child.attempts.findIndex((candidate) => candidate.id === attempt.id)
-    const promptMessageId = promptMessages[attemptIndex]?.id
+    const runtimePrompt = promptMessages.find(
+      (message) =>
+        !!message.runtimeSegmentId && attempt.runtimeSegmentIds.includes(message.runtimeSegmentId)
+    )
+    const promptMessageId = terminalMessage?.responseToMessageId ?? runtimePrompt?.id
     if (!runtimeSegmentId || !promptMessageId) return undefined
     return {
       session: snapshot.session,
@@ -77,9 +84,9 @@ class DelegatedWorkProjectionOwner {
 
   async projectSnapshotResult(
     snapshot: DurableSnapshot,
-    child: DurableChild
+    child: DurableChild,
+    attempt: DurableAttempt = currentAttempt(child)
   ): Promise<DurableDelegateResult | undefined> {
-    const attempt = currentAttempt(child)
     if (attempt.status === 'running') return undefined
     const terminalMessage = attempt.terminalMessageId
       ? snapshot.messages.find((message) => message.id === attempt.terminalMessageId)
@@ -98,6 +105,25 @@ class DelegatedWorkProjectionOwner {
       artifactsCreated: await this.projectArtifacts(snapshot, child, attempt),
       ...(attempt.cancellationReason ? { cancellationReason: attempt.cancellationReason } : {}),
       ...(attempt.error ? { error: attempt.error } : {})
+    }
+  }
+
+  async projectSnapshotObservation(
+    snapshot: DurableSnapshot,
+    child: DurableChild,
+    attempt: DurableAttempt
+  ): Promise<DurableDelegateObservation> {
+    const terminal = await this.projectSnapshotResult(snapshot, child, attempt)
+    if (terminal) return terminal
+    return {
+      frameId: child.frameId,
+      attemptId: attempt.id,
+      name: child.title,
+      agentName:
+        attempt.resolvedAgent.kind === 'specialist'
+          ? attempt.resolvedAgent.displayName
+          : 'Main Agent',
+      status: 'running'
     }
   }
 

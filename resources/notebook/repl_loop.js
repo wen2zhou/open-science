@@ -1107,14 +1107,22 @@ async function hostStopChild(frameIds) {
   }))
 }
 
-async function delegatedObservationRpc(op, frameIds = undefined) {
+async function delegatedObservationRpc(op, selectors = undefined, options = undefined) {
   if (!RPC_ENDPOINT) throw new Error(`host.${op} is unavailable: control RPC endpoint not set`)
   const res = await capturedRpcFetch(RPC_ENDPOINT, {
     method: 'POST',
     headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
     body: JSON.stringify({
       method: 'delegatedWorkCall',
-      params: { op, ...(frameIds !== undefined ? { frame_ids: frameIds } : {}) }
+      params: {
+        op,
+        ...(selectors !== undefined
+          ? op === 'collect'
+            ? { selectors }
+            : { frame_ids: selectors }
+          : {}),
+        ...(options !== undefined ? { options } : {})
+      }
     })
   })
   const body = await res.json().catch(() => ({}))
@@ -1130,7 +1138,9 @@ async function delegatedObservationRpc(op, frameIds = undefined) {
     status: child.status,
     ...(child.terminalMessageId ? { terminal_message_id: child.terminalMessageId } : {}),
     ...(child.response !== undefined ? { response: child.response } : {}),
-    ...(op === 'collect' ? { artifacts_created: child.artifactsCreated || [] } : {}),
+    ...(op === 'collect' && child.status !== 'running'
+      ? { artifacts_created: child.artifactsCreated || [] }
+      : {}),
     ...(child.cancellationReason ? { cancellation_reason: child.cancellationReason } : {}),
     ...(child.error ? { error: child.error } : {})
   }))
@@ -1140,8 +1150,8 @@ async function hostChildren(frameIds = undefined) {
   return delegatedObservationRpc('children', frameIds)
 }
 
-async function hostCollect(frameIds) {
-  return delegatedObservationRpc('collect', frameIds)
+async function hostCollect(selectors, options = undefined) {
+  return delegatedObservationRpc('collect', selectors, options)
 }
 
 async function hostSendMessage(target, message, kind = undefined) {

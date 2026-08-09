@@ -352,6 +352,8 @@ const createSessionDelegatedWorkRecords = (
               frameId: frame.id,
               parentFrameId: frame.parentFrameId ?? '',
               originMessageId: frame.originMessageId ?? '',
+              originBindingState:
+                frame.originBindingState === 'validated' ? 'validated' : 'legacy-unavailable',
               title: frame.delegateName ?? frame.agentName ?? frame.id,
               task: firstMessage.delegatedTask ?? firstMessage.content,
               context: firstMessage.delegatedContext,

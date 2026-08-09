@@ -35,6 +35,9 @@ import type {
   DurableAttempt,
   DurableChild,
   DurableChildSummary,
+  DurableCollectOptions,
+  DurableCollectSelector,
+  DurableDelegateObservation,
   DurableDelegateOutcome,
   DurableDelegateResult,
   DurablePendingMessage
@@ -167,8 +170,9 @@ type DurableDelegatedWork = Readonly<{
   ): Promise<readonly DurableChildSummary[]>
   collect(
     caller: AuthenticatedDelegateCaller,
-    frameIds: readonly string[]
-  ): Promise<readonly DurableDelegateResult[]>
+    selectors: readonly DurableCollectSelector[],
+    options?: DurableCollectOptions
+  ): Promise<readonly DurableDelegateObservation[]>
   sendMessage(
     caller: AuthenticatedDelegateCaller,
     targetFrameId: string | 'parent',
@@ -229,6 +233,7 @@ const createDurableDelegatedWork = (options: {
   now?: () => number
   createId?: (kind: 'frame' | 'attempt' | 'message' | 'runtime') => string
   collectPollIntervalMs?: number
+  collectMonotonicNow?: () => number
 }): DurableDelegatedWork => {
   const now = options.now ?? Date.now
   const createId = options.createId ?? ((kind: string) => `${kind}-${randomUUID()}`)
@@ -247,7 +252,8 @@ const createDurableDelegatedWork = (options: {
   const readModel = new DelegatedWorkReadModel(
     options.records,
     projectionOwner,
-    options.collectPollIntervalMs ?? 10
+    options.collectPollIntervalMs ?? 10,
+    options.collectMonotonicNow
   )
   const admissionPolicy = new DelegatedWorkAdmissionPolicy(
     options.resolveSpecialist,
@@ -628,6 +634,7 @@ const createDurableDelegatedWork = (options: {
       frameId: admission.frameId,
       parentFrameId: caller.frameId,
       originMessageId: caller.originMessageId,
+      originBindingState: 'validated',
       title: admission.title,
       task: admission.request.task,
       context: admission.request.context,
@@ -696,9 +703,10 @@ const createDurableDelegatedWork = (options: {
     },
     async collect(
       caller: AuthenticatedDelegateCaller,
-      frameIds: readonly string[]
-    ): Promise<readonly DurableDelegateResult[]> {
-      return readModel.collect(caller, frameIds)
+      selectors: readonly DurableCollectSelector[],
+      collectOptions?: DurableCollectOptions
+    ): Promise<readonly DurableDelegateObservation[]> {
+      return readModel.collect(caller, selectors, collectOptions)
     },
     sendMessage(
       caller: AuthenticatedDelegateCaller,
@@ -1070,6 +1078,9 @@ export type {
   DurableDelegateOutcome,
   DurableDelegateRequest,
   DurableDelegateResult,
+  DurableCollectOptions,
+  DurableCollectSelector,
+  DurableDelegateObservation,
   DurableSendMessageOutcome,
   DurableDelegatedWork,
   ParentMessageDelivery,

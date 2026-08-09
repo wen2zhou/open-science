@@ -1,7 +1,38 @@
 import type {
+  DurableCollectOptions,
+  DurableCollectSelector,
   DurableDelegateRequest,
   DurableDelegatedWork
 } from '../delegated-work/durable-delegated-work'
+
+const COLLECT_AGENT_CONTRACT = {
+  selectors: {
+    type: 'array',
+    minItems: 1,
+    items: {
+      oneOf: [
+        { type: 'string', minLength: 1 },
+        {
+          type: 'object',
+          required: ['frame_id', 'attempt_id'],
+          properties: { frame_id: { type: 'string' }, attempt_id: { type: 'string' } }
+        }
+      ]
+    }
+  },
+  options: {
+    type: 'object',
+    properties: {
+      timeout_seconds: { type: 'number', minimum: 0, maximum: 1800, default: 30 }
+    }
+  },
+  returns: { type: 'array', items: { oneOf: ['terminal_result', 'running_observation'] } },
+  errors: {
+    thrown_type: 'Error',
+    message_prefix: 'host.collect: ',
+    domain_error_code_exposed: false
+  }
+} as const
 
 const DELEGATE_REQUEST_OBJECT_SCHEMA = {
   type: 'object',
@@ -157,6 +188,11 @@ type DelegateRpcCall = Readonly<{
   options: Readonly<{ wait?: boolean }>
 }>
 
+type CollectRpcCall = Readonly<{
+  selectors: readonly DurableCollectSelector[]
+  options: DurableCollectOptions
+}>
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
@@ -180,5 +216,47 @@ const parseDelegateRpcCall = (params: Readonly<Record<string, unknown>>): Delega
   }
 }
 
-export { DELEGATE_AGENT_CONTRACT, parseDelegateRpcCall }
-export type { DelegateRpcCall }
+const parseCollectRpcCall = (params: Readonly<Record<string, unknown>>): CollectRpcCall => {
+  if (!Array.isArray(params.selectors) || params.selectors.length === 0) {
+    throw new Error('host.collect requires a non-empty selectors array.')
+  }
+  const selectors = params.selectors.map((selector) => {
+    if (typeof selector === 'string' && selector.trim()) return selector
+    if (
+      isRecord(selector) &&
+      typeof selector.frame_id === 'string' &&
+      selector.frame_id.trim() &&
+      typeof selector.attempt_id === 'string' &&
+      selector.attempt_id.trim()
+    ) {
+      return { frameId: selector.frame_id, attemptId: selector.attempt_id }
+    }
+    throw new Error('host.collect selectors must be frame ids or Frame/Attempt handles.')
+  })
+  if (params.options !== undefined && !isRecord(params.options)) {
+    throw new Error('host.collect options must be an object.')
+  }
+  const requestedOptions = isRecord(params.options) ? params.options : {}
+  const timeoutSeconds = requestedOptions.timeout_seconds
+  if (
+    timeoutSeconds !== undefined &&
+    (typeof timeoutSeconds !== 'number' ||
+      !Number.isFinite(timeoutSeconds) ||
+      timeoutSeconds < 0 ||
+      timeoutSeconds > 1800)
+  ) {
+    throw new Error('host.collect timeout_seconds must be a finite number from 0 through 1800.')
+  }
+  return {
+    selectors,
+    options: timeoutSeconds === undefined ? {} : { timeoutSeconds }
+  }
+}
+
+export {
+  COLLECT_AGENT_CONTRACT,
+  DELEGATE_AGENT_CONTRACT,
+  parseCollectRpcCall,
+  parseDelegateRpcCall
+}
+export type { CollectRpcCall, DelegateRpcCall }

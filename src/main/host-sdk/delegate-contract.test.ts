@@ -1,6 +1,11 @@
 import { describe, expect, it } from 'vitest'
 
-import { DELEGATE_AGENT_CONTRACT, parseDelegateRpcCall } from './delegate-contract'
+import {
+  COLLECT_AGENT_CONTRACT,
+  DELEGATE_AGENT_CONTRACT,
+  parseCollectRpcCall,
+  parseDelegateRpcCall
+} from './delegate-contract'
 
 describe('Agent-facing delegate contract', () => {
   it('owns a machine-readable single-request or non-empty-array input schema', () => {
@@ -44,5 +49,29 @@ describe('Agent-facing delegate contract', () => {
     expect(() =>
       parseDelegateRpcCall({ request: { task: 'Audit' }, options: { wait: 'no' } })
     ).toThrow('host.delegate wait must be a boolean.')
+  })
+})
+
+describe('Agent-facing collect contract', () => {
+  it('normalizes string and explicit Attempt selectors with bounded options', () => {
+    expect(
+      parseCollectRpcCall({
+        selectors: ['frame-1', { frame_id: 'frame-2', attempt_id: 'attempt-2' }],
+        options: { timeout_seconds: 0 }
+      })
+    ).toEqual({
+      selectors: ['frame-1', { frameId: 'frame-2', attemptId: 'attempt-2' }],
+      options: { timeoutSeconds: 0 }
+    })
+    expect(COLLECT_AGENT_CONTRACT.options.properties.timeout_seconds).toMatchObject({
+      minimum: 0,
+      maximum: 1800,
+      default: 30
+    })
+    for (const invalid of [-1, 1801, Number.NaN, Number.POSITIVE_INFINITY, '30']) {
+      expect(() =>
+        parseCollectRpcCall({ selectors: ['frame-1'], options: { timeout_seconds: invalid } })
+      ).toThrow('finite number from 0 through 1800')
+    }
   })
 })

@@ -75,6 +75,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
           frameId: child.frameId,
           parentFrameId: admission.caller.frameId,
           originMessageId: admission.caller.originMessageId,
+          originBindingState: 'validated' as const,
           title: child.title,
           task: child.request.task,
           context: child.request.context,
@@ -148,6 +149,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
         .reverse()
         .find((message) => message.frameId === frameId && message.role === 'user')
       if (!promptMessage) throw new Error('Delegated Attempt has no prompt Message.')
+      promptMessage.runtimeSegmentId = runtimeSegmentId
       return {
         rootFrameId: state.rootFrameId,
         messageBranchId: child.messageBranchId,

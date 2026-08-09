@@ -402,25 +402,45 @@ describe('repl_loop local RPC transport', () => {
         const call = JSON.parse(body)
         received.push(call)
         const result =
-          call.params.op === 'children'
-            ? [
-                {
-                  frameId: 'child-1',
-                  attemptId: 'attempt-1',
-                  title: 'Source trace',
-                  status: 'running'
-                }
-              ]
-            : [
-                {
-                  frameId: 'child-1',
-                  attemptId: 'attempt-1',
-                  status: 'completed',
-                  terminalMessageId: 'message-1',
-                  response: 'Durable answer',
-                  artifactsCreated: []
-                }
-              ]
+          call.params.op === undefined
+            ? {
+                kind: 'receipts',
+                children: [
+                  {
+                    frameId: 'child-1',
+                    attemptId: 'attempt-1',
+                    name: 'Source trace',
+                    agentName: 'Main Agent',
+                    status: 'running'
+                  }
+                ]
+              }
+            : call.params.op === 'children'
+              ? [
+                  {
+                    frameId: 'child-1',
+                    attemptId: 'attempt-1',
+                    title: 'Source trace',
+                    status: 'running'
+                  }
+                ]
+              : [
+                  {
+                    frameId: 'child-1',
+                    attemptId: 'attempt-1',
+                    status: 'completed',
+                    terminalMessageId: 'message-1',
+                    response: 'Durable answer',
+                    artifactsCreated: []
+                  },
+                  {
+                    frameId: 'child-2',
+                    attemptId: 'attempt-2',
+                    name: 'Long analysis',
+                    agentName: 'Main Agent',
+                    status: 'running'
+                  }
+                ]
         response
           .writeHead(200, { 'content-type': 'application/json' })
           .end(JSON.stringify({ result }))
@@ -438,11 +458,23 @@ describe('repl_loop local RPC transport', () => {
     })
 
     try {
-      const output = await send(
-        "return { children: await host.children(), results: await host.collect(['child-1']) }"
+      const firstCell = await send(
+        "globalThis.pendingDelegation = await host.delegate({ task: 'Trace sources', name: 'Source trace' }, { wait: false }); return { delegated: globalThis.pendingDelegation, children: await host.children() }"
       )
-      expect(output.error).toBeNull()
-      expect(JSON.parse(output.result ?? '{}')).toEqual({
+      expect(firstCell.error).toBeNull()
+      expect(JSON.parse(firstCell.result ?? '{}')).toEqual({
+        delegated: {
+          kind: 'receipts',
+          children: [
+            {
+              frame_id: 'child-1',
+              attempt_id: 'attempt-1',
+              name: 'Source trace',
+              agent_name: 'Main Agent',
+              status: 'running'
+            }
+          ]
+        },
         children: [
           {
             frame_id: 'child-1',
@@ -450,7 +482,13 @@ describe('repl_loop local RPC transport', () => {
             title: 'Source trace',
             status: 'running'
           }
-        ],
+        ]
+      })
+      const secondCell = await send(
+        'return { results: await host.collect(globalThis.pendingDelegation.children.map(({ frame_id, attempt_id }) => ({ frame_id, attempt_id })), { timeout_seconds: 0 }) }'
+      )
+      expect(secondCell.error).toBeNull()
+      expect(JSON.parse(secondCell.result ?? '{}')).toEqual({
         results: [
           {
             frame_id: 'child-1',
@@ -459,14 +497,33 @@ describe('repl_loop local RPC transport', () => {
             terminal_message_id: 'message-1',
             response: 'Durable answer',
             artifacts_created: []
+          },
+          {
+            frame_id: 'child-2',
+            attempt_id: 'attempt-2',
+            name: 'Long analysis',
+            agent_name: 'Main Agent',
+            status: 'running'
           }
         ]
       })
       expect(received).toEqual([
+        {
+          method: 'delegatedWorkCall',
+          params: {
+            request: { task: 'Trace sources', name: 'Source trace' },
+            options: { wait: false },
+            delegation_call_id: '1'
+          }
+        },
         { method: 'delegatedWorkCall', params: { op: 'children' } },
         {
           method: 'delegatedWorkCall',
-          params: { op: 'collect', frame_ids: ['child-1'] }
+          params: {
+            op: 'collect',
+            selectors: [{ frame_id: 'child-1', attempt_id: 'attempt-1' }],
+            options: { timeout_seconds: 0 }
+          }
         }
       ])
     } finally {

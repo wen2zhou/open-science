@@ -44,7 +44,7 @@ import type {
   DurableDelegatedWork
 } from '../delegated-work/durable-delegated-work'
 import { hostSdkHelp } from '../host-sdk/help'
-import { parseDelegateRpcCall } from '../host-sdk/delegate-contract'
+import { parseCollectRpcCall, parseDelegateRpcCall } from '../host-sdk/delegate-contract'
 import { createNestedDelegateInvocationId } from '../../shared/delegated-caller-source'
 
 const log = createLogger('notebook:local-rpc')
@@ -1459,6 +1459,16 @@ class NotebookLocalRpcServer {
         return this.delegatedWorkService.sendMessage(caller, target, message, kind)
       }
       if (op === 'children' || op === 'collect') {
+        if (op === 'collect') {
+          if (!this.delegatedWorkService.collect) {
+            throw new Error('host.collect is not configured.')
+          }
+          const call = parseCollectRpcCall({
+            selectors: params.selectors ?? params.frame_ids,
+            options: params.options
+          })
+          return this.delegatedWorkService.collect(caller, call.selectors, call.options)
+        }
         if (
           params.frame_ids !== undefined &&
           (!Array.isArray(params.frame_ids) ||
@@ -1473,11 +1483,6 @@ class NotebookLocalRpcServer {
           }
           return this.delegatedWorkService.children(caller, frameIds)
         }
-        if (!frameIds) throw new Error('host.collect requires frame_ids.')
-        if (!this.delegatedWorkService.collect) {
-          throw new Error('host.collect is not configured.')
-        }
-        return this.delegatedWorkService.collect(caller, frameIds)
       }
       if (op !== 'delegate') throw new Error('Delegated Work operation is invalid.')
       const call = parseDelegateRpcCall(params)

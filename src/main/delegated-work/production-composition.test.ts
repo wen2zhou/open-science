@@ -3,7 +3,12 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { createLinearConversationGraph } from '../../shared/conversation-graph'
+import {
+  activateConversationBranch,
+  createLinearConversationGraph,
+  forkEditedConversationMessage,
+  synchronizeActiveConversationMessages
+} from '../../shared/conversation-graph'
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import { NotebookLocalRpcServer } from '../notebook/local-rpc-server'
 import { ArtifactTurnOwner } from '../acp/artifact-turn-owner'
@@ -231,6 +236,88 @@ afterEach(async () => {
 })
 
 describe('production delegated-work composition', () => {
+  it('fails an in-flight collect closed after a production Session branch switch without stopping the child', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-branch-race-'))
+    const harness = await createCompositionHarness(root, 'codex')
+    const receipt = await harness.composition.host.delegate(
+      harness.caller,
+      { task: 'Keep running across observation expiry' },
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+    harness.execution.controls()[0].accept()
+
+    const collecting = harness.composition.host.collect(
+      harness.caller,
+      [receipt.children[0].frameId],
+      { timeoutSeconds: 1 }
+    )
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    const switched = structuredClone(harness.durable())
+    const graph = switched.conversationGraph!
+    const activeBranchId = graph.frames.find(({ id }) => id === graph.rootFrameId)!.activeBranchId
+    const forked = forkEditedConversationMessage(
+      graph,
+      harness.caller.originMessageId,
+      'alternate-root-branch',
+      50
+    )
+    switched.conversationGraph = synchronizeActiveConversationMessages(
+      forked,
+      [
+        {
+          id: 'alternate-root-message',
+          role: 'user',
+          content: 'Alternate branch',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 50,
+          updatedAt: 50
+        }
+      ],
+      50
+    )
+    switched.messages = [
+      {
+        id: 'alternate-root-message',
+        role: 'user',
+        content: 'Alternate branch',
+        status: 'complete',
+        eventIds: [],
+        createdAt: 50,
+        updatedAt: 50
+      }
+    ]
+    harness.replaceDurable(switched)
+
+    await expect(collecting).rejects.toMatchObject({ code: 'authorization' })
+    const alternateCaller = {
+      ...harness.caller,
+      originMessageId: 'alternate-root-message',
+      toolInvocationId: 'alternate-branch-read'
+    }
+    await expect(harness.composition.host.children(alternateCaller)).resolves.toEqual([])
+    await expect(
+      harness.composition.host.collect(alternateCaller, [receipt.children[0].frameId], {
+        timeoutSeconds: 0
+      })
+    ).rejects.toMatchObject({ code: 'authorization' })
+    expect(harness.execution.controls()[0].input.attemptId).toBe(receipt.children[0].attemptId)
+
+    const restored = structuredClone(harness.durable())
+    restored.conversationGraph = activateConversationBranch(
+      restored.conversationGraph!,
+      activeBranchId
+    )
+    restored.messages = structuredClone(harness.session.messages)
+    harness.replaceDurable(restored)
+    await expect(
+      harness.composition.host.collect(harness.caller, [receipt.children[0].frameId], {
+        timeoutSeconds: 0
+      })
+    ).resolves.toMatchObject([{ status: 'running' }])
+  })
+
   it('runs authenticated Host delegation through durable Session records and a staged Frame cwd', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-composition-'))
     const rootMessage = {

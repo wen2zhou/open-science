@@ -1688,6 +1688,263 @@ describe('durable delegated work', () => {
     ])
   })
 
+  it('returns a bounded mixed observation without stopping the running child', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(
+      caller,
+      [{ task: 'finished' }, { task: 'still running' }],
+      {
+        wait: false
+      }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    for (const control of execution.controls()) control.accept()
+    execution.controls()[0].complete('done')
+    await expect
+      .poll(() => work.children(caller))
+      .toMatchObject([{ status: 'completed' }, { status: 'running' }])
+
+    await expect(
+      work.collect(
+        caller,
+        dispatched.children.map(({ frameId }) => frameId),
+        { timeoutSeconds: 0 }
+      )
+    ).resolves.toEqual([
+      expect.objectContaining({
+        frameId: dispatched.children[0].frameId,
+        attemptId: dispatched.children[0].attemptId,
+        status: 'completed',
+        response: 'done',
+        artifactsCreated: []
+      }),
+      {
+        frameId: dispatched.children[1].frameId,
+        attemptId: dispatched.children[1].attemptId,
+        name: 'still running',
+        agentName: 'Main Agent',
+        status: 'running'
+      }
+    ])
+    await expect(work.children(caller)).resolves.toMatchObject([
+      { status: 'completed' },
+      { status: 'running' }
+    ])
+
+    execution.controls()[1].complete('later')
+    await expect
+      .poll(() => work.children(caller))
+      .toMatchObject([{ status: 'completed' }, { status: 'completed' }])
+    await expect(
+      work.collect(caller, [dispatched.children[1].frameId], { timeoutSeconds: 0 })
+    ).resolves.toMatchObject([{ status: 'completed', response: 'later' }])
+  })
+
+  it('pins explicit Attempt handles and rejects mismatched pairs as one batch', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const dispatched = await work.delegate(caller, { task: 'historical' }, { wait: false })
+    const handle = dispatched.children[0]
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    execution.controls()[0].complete('historical result')
+    await expect.poll(() => work.children(caller)).toMatchObject([{ status: 'completed' }])
+    const continuation = await work.sendMessage(
+      { ...caller, toolInvocationId: 'continue-after-pin' },
+      handle.frameId,
+      'continue'
+    )
+    expect(continuation.kind).toBe('continued')
+
+    await expect(
+      work.collect(caller, [{ frameId: handle.frameId, attemptId: handle.attemptId }], {
+        timeoutSeconds: 0
+      })
+    ).resolves.toEqual([
+      {
+        frameId: handle.frameId,
+        attemptId: handle.attemptId,
+        name: 'historical',
+        agentName: 'Main Agent',
+        status: 'completed',
+        terminalMessageId: expect.any(String),
+        response: 'historical result',
+        artifactsCreated: []
+      }
+    ])
+    await expect(
+      work.collect(caller, [handle.frameId, handle.frameId], { timeoutSeconds: 0 })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        status: 'running',
+        attemptId: expect.not.stringMatching(handle.attemptId)
+      }),
+      expect.objectContaining({
+        status: 'running',
+        attemptId: expect.not.stringMatching(handle.attemptId)
+      })
+    ])
+    await expect(
+      work.collect(caller, [{ frameId: handle.frameId, attemptId: 'wrong-attempt' }], {
+        timeoutSeconds: 0
+      })
+    ).rejects.toMatchObject({ code: 'authorization' })
+  })
+
+  it('uses the 30 second default, accepts 1800, and rejects invalid wait budgets', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const readings = [0, 30_000, 0, 1_800_000]
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      collectMonotonicNow: () => readings.shift() ?? 1_800_000
+    })
+    const dispatched = await work.delegate(caller, { task: 'bounded' }, { wait: false })
+    await expect(work.collect(caller, [dispatched.children[0].frameId])).resolves.toMatchObject([
+      { status: 'running' }
+    ])
+    await expect(
+      work.collect(caller, [dispatched.children[0].frameId], { timeoutSeconds: 1800 })
+    ).resolves.toMatchObject([{ status: 'running' }])
+    for (const timeoutSeconds of [-1, 1801, Number.NaN, Number.POSITIVE_INFINITY]) {
+      await expect(
+        work.collect(caller, [dispatched.children[0].frameId], { timeoutSeconds })
+      ).rejects.toMatchObject({ code: 'admission_rejection' })
+    }
+  })
+
+  it('uses one post-deadline durable snapshot as the final race decision', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const durableRecords = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const dispatched = await createDurableDelegatedWork({
+      execution,
+      records: durableRecords
+    }).delegate(caller, { task: 'deadline race' }, { wait: false })
+    let snapshots = 0
+    const readings = [0, 1000]
+    const observing = createDurableDelegatedWork({
+      execution: createDeterministicDelegateExecution(),
+      collectMonotonicNow: () => readings.shift() ?? 1000,
+      records: {
+        ...durableRecords,
+        async snapshot() {
+          const snapshot = await durableRecords.snapshot()
+          snapshots += 1
+          if (snapshots < 2) return snapshot
+          snapshot.records[0].attempts[0].status = 'completed'
+          snapshot.records[0].attempts[0].terminalMessageId = 'deadline-terminal'
+          return {
+            ...snapshot,
+            messages: [
+              ...snapshot.messages,
+              {
+                id: 'deadline-terminal',
+                frameId: dispatched.children[0].frameId,
+                role: 'assistant' as const,
+                content: 'committed at deadline',
+                responseToMessageId: snapshot.messages[0].id,
+                createdAt: 1000
+              }
+            ]
+          }
+        }
+      }
+    })
+
+    await expect(
+      observing.collect(caller, [dispatched.children[0].frameId], { timeoutSeconds: 1 })
+    ).resolves.toMatchObject([{ status: 'completed', response: 'committed at deadline' }])
+    expect(snapshots).toBe(2)
+  })
+
+  it('fails closed when active-branch authorization changes during a bounded collect', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const durableRecords = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const dispatched = await createDurableDelegatedWork({
+      execution,
+      records: durableRecords
+    }).delegate(caller, { task: 'keep running' }, { wait: false })
+    let snapshots = 0
+    const observing = createDurableDelegatedWork({
+      execution: createDeterministicDelegateExecution(),
+      collectPollIntervalMs: 1,
+      records: {
+        ...durableRecords,
+        async snapshot() {
+          const snapshot = await durableRecords.snapshot()
+          snapshots += 1
+          return snapshots > 1 ? { ...snapshot, originMessageIds: ['another-branch'] } : snapshot
+        }
+      }
+    })
+
+    await expect(
+      observing.collect(caller, [dispatched.children[0].frameId], { timeoutSeconds: 1 })
+    ).rejects.toMatchObject({ code: 'authorization' })
+    await expect(
+      createDurableDelegatedWork({ execution, records: durableRecords }).children(caller)
+    ).resolves.toMatchObject([{ status: 'running' }])
+  })
+
+  it('hides legacy-unavailable children and diagnoses direct access fail-closed', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const durableRecords = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const dispatched = await createDurableDelegatedWork({
+      execution,
+      records: durableRecords
+    }).delegate(caller, { task: 'legacy child' }, { wait: false })
+    const legacyRecords = {
+      ...durableRecords,
+      async snapshot() {
+        const snapshot = await durableRecords.snapshot()
+        return {
+          ...snapshot,
+          records: snapshot.records.map((child) => ({
+            ...child,
+            originBindingState: 'legacy-unavailable' as const
+          }))
+        }
+      }
+    }
+    const observing = createDurableDelegatedWork({ execution, records: legacyRecords })
+
+    await expect(observing.children(caller)).resolves.toEqual([])
+    await expect(
+      observing.collect(caller, [dispatched.children[0].frameId], { timeoutSeconds: 0 })
+    ).rejects.toMatchObject({
+      code: 'authorization',
+      message: expect.stringContaining('legacy')
+    })
+  })
+
   it('blocks by default and projects the result from the durable terminal Message', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({
@@ -2111,6 +2368,9 @@ describe('durable delegated work', () => {
         }
       })
     ])
+    await expect(
+      afterRestart.collect(caller, [receipt.children[0].frameId], { timeoutSeconds: 0 })
+    ).resolves.toMatchObject([{ status: 'cancelled', cancellationReason: 'runtime_interrupted' }])
   })
 
   it('deletes child workspaces only after Session children have terminal history', async () => {

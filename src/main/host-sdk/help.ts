@@ -1,4 +1,4 @@
-import { DELEGATE_AGENT_CONTRACT } from './delegate-contract'
+import { COLLECT_AGENT_CONTRACT, DELEGATE_AGENT_CONTRACT } from './delegate-contract'
 
 type HostSdkHelpContext = Readonly<{
   callerRole: 'main' | 'delegate'
@@ -114,8 +114,46 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   }
 }
 
+const COLLECT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
+  kind: 'operation',
+  id: 'host.collect',
+  path: 'host.collect',
+  aliases: ['collect'],
+  summary: 'Observe pinned Subagent Attempts until all settle or a bounded deadline expires.',
+  call_forms: [
+    {
+      signature: 'await host.collect(selectors, options?)',
+      accepts: 'non_empty_selector_array'
+    }
+  ],
+  request: COLLECT_AGENT_CONTRACT.selectors,
+  options: COLLECT_AGENT_CONTRACT.options,
+  returns: COLLECT_AGENT_CONTRACT.returns,
+  constraints: [
+    'timeout_seconds defaults to 30 and must be a finite number from 0 through 1800.',
+    'A string pins the current Attempt; a frame_id/attempt_id handle can select history.',
+    'Expiry returns running observations and never stops or cancels a Subagent.',
+    'Only direct children on the active Message Branch are discoverable and collectible.'
+  ],
+  examples: [
+    {
+      title: 'Cell 1 — preserve handles',
+      code: "globalThis.pendingDelegation = await host.delegate({ task: 'Trace sources' }, { wait: false })"
+    },
+    {
+      title: 'Cell 2 — collect pinned Attempts',
+      code: 'await host.collect(globalThis.pendingDelegation.children.map(({ frame_id, attempt_id }) => ({ frame_id, attempt_id })), { timeout_seconds: 30 })'
+    }
+  ],
+  errors: COLLECT_AGENT_CONTRACT.errors,
+  resolveAvailability: DELEGATE_DESCRIPTOR.resolveAvailability
+}
+
 // Adding another documented Host SDK operation only requires registering its descriptor here.
-const OPERATION_DESCRIPTORS: readonly HostSdkHelpOperationDescriptor[] = [DELEGATE_DESCRIPTOR]
+const OPERATION_DESCRIPTORS: readonly HostSdkHelpOperationDescriptor[] = [
+  COLLECT_DESCRIPTOR,
+  DELEGATE_DESCRIPTOR
+]
 const MAX_HELP_QUERY_CHARS = 128
 const MAX_HELP_RESULT_CHARS = 16_000
 

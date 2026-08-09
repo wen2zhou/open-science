@@ -227,8 +227,8 @@ const createProductionDelegatedWorkComposition = (
     async children(caller, frameIds) {
       return (await workFor(caller.session)).work.children(caller, frameIds)
     },
-    async collect(caller, frameIds) {
-      return (await workFor(caller.session)).work.collect(caller, frameIds)
+    async collect(caller, selectors, collectOptions) {
+      return (await workFor(caller.session)).work.collect(caller, selectors, collectOptions)
     },
     async stopChildren(caller, frameIds) {
       return (await workFor(caller.session)).work.stopChildren(caller, frameIds)

@@ -11,6 +11,15 @@ describe('Host SDK help', () => {
       coverage: 'registered_topics_only',
       topics: [
         {
+          id: 'host.collect',
+          kind: 'operation',
+          path: 'host.collect',
+          aliases: ['collect'],
+          summary:
+            'Observe pinned Subagent Attempts until all settle or a bounded deadline expires.',
+          availability: { status: 'available' }
+        },
+        {
           id: 'host.delegate',
           kind: 'operation',
           path: 'host.delegate',
@@ -20,6 +29,26 @@ describe('Host SDK help', () => {
         }
       ],
       hint: "Query an exact topic, for example await host.help('delegate')."
+    })
+  })
+
+  it('documents bounded collect selectors and the default without terminal fields on running', () => {
+    const collect = hostSdkHelp.query('collect', mainContext)
+    expect(collect).toMatchObject({
+      kind: 'operation',
+      id: 'host.collect',
+      request: { type: 'array', minItems: 1 },
+      options: {
+        properties: {
+          timeout_seconds: { type: 'number', minimum: 0, maximum: 1800, default: 30 }
+        }
+      }
+    })
+    expect(collect).toMatchObject({
+      examples: [
+        { title: 'Cell 1 — preserve handles', code: expect.stringContaining('globalThis') },
+        { title: 'Cell 2 — collect pinned Attempts', code: expect.stringContaining('globalThis') }
+      ]
     })
   })
 
@@ -96,7 +125,7 @@ describe('Host SDK help', () => {
     expect(hostSdkHelp.query('delegte', mainContext)).toEqual({
       kind: 'not_found',
       query: 'delegte',
-      suggestions: ['host.delegate']
+      suggestions: ['host.delegate', 'host.collect']
     })
   })
 

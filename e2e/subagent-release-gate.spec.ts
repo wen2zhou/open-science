@@ -7,6 +7,7 @@ import { test } from './fixtures/electron-app'
 const ROOT_PROMPT = 'Coordinate the release-gate delegates.'
 const CHILD_COUNT = 24
 const TERMINAL_PROMPT = 'Run the production delegation terminal journey.'
+const BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect journey.'
 const PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const STOP_PROMPT = 'Run the production delegation Stop journey.'
 const UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
@@ -14,6 +15,52 @@ const TERMINAL_CHILD = 'Complete the certified delegated terminal fixture.'
 const PERMISSION_CHILD = 'Request the delegated fixture permission.'
 const STOP_CHILD = 'Wait until the Main Agent stops delegated fixture A.'
 const STOP_CHILD_TWO = 'Wait until the Main Agent stops delegated fixture B.'
+
+const expectDurableChildStatus = async (
+  page: Page,
+  name: string,
+  status: 'running' | 'completed' | 'cancelled' | 'error'
+): Promise<void> => {
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async ({ childName }) => {
+          const loaded = await window.api.sessions.loadAll()
+          for (const session of loaded.sessions) {
+            const frame = session.conversationGraph?.frames.find(
+              (candidate) => candidate.delegateName === childName
+            )
+            const record = session.runtimeContext?.delegatedWork?.records.find(
+              (candidate) => candidate.agentFrameId === frame?.id
+            )
+            const current = record?.attempts.at(-1)
+            if (current) return current.status
+          }
+          return undefined
+        },
+        { childName: name }
+      )
+    )
+    .toBe(status)
+}
+
+const expectRenderedChildStatus = async (
+  page: Page,
+  name: string,
+  status: 'running' | 'completed' | 'cancelled' | 'error',
+  awaitingPermission = false
+): Promise<void> => {
+  const bar = page.getByTestId('subagents-bar')
+  const trigger = bar.locator(':scope > button')
+  if ((await trigger.getAttribute('aria-expanded')) !== 'true') await trigger.click()
+  await expect(
+    bar
+      .getByRole('button', {
+        name: `${name}, ${status}${awaitingPermission ? ', waiting for permission' : ''}`
+      })
+      .first()
+  ).toBeVisible()
+}
 
 const seedDelegatedWork = async (page: Page, projectId: string): Promise<void> => {
   await page.evaluate(
@@ -192,9 +239,16 @@ test('projects real production-composed delegation, permission, and Stop lifecyc
     'Production delegation reached a terminal result.',
     120_000
   )
-  const summary = page.getByRole('region', { name: 'Subagent summary' })
-  await expect(summary).toHaveCount(1)
-  await expect(summary.getByRole('button', { name: `${TERMINAL_CHILD}, completed` })).toBeVisible()
+  await expect(page.getByRole('button', { name: TERMINAL_CHILD })).toBeVisible()
+  await expectDurableChildStatus(page, TERMINAL_CHILD, 'completed')
+
+  await sendPrompt(
+    page,
+    BOUNDED_COLLECT_PROMPT,
+    'Production bounded collect journey completed.',
+    120_000
+  )
+  await expectRenderedChildStatus(page, TERMINAL_CHILD, 'completed')
 
   const composer = page.getByRole('textbox', { name: 'Ask anything' })
   await composer.fill(PERMISSION_PROMPT)
@@ -203,33 +257,39 @@ test('projects real production-composed delegation, permission, and Stop lifecyc
   await expect(permissionCard).toContainText('Read delegated evidence', {
     timeout: 120_000
   })
-  await expect(
-    summary.getByRole('button', {
-      name: `${PERMISSION_CHILD}, running, waiting for permission`
-    })
-  ).toBeVisible()
+  await expect(page.getByRole('button', { name: PERMISSION_CHILD })).toBeVisible()
+  await expectDurableChildStatus(page, PERMISSION_CHILD, 'running')
+  await expectRenderedChildStatus(page, PERMISSION_CHILD, 'running', true)
   await page.getByRole('button', { name: /^Allow/ }).click()
   await expect(page.getByText('Production delegated permission journey completed.')).toBeVisible({
     timeout: 120_000
   })
-  await expect(
-    summary.getByRole('button', { name: `${PERMISSION_CHILD}, completed` })
-  ).toBeVisible()
+  await expect(page.getByRole('button', { name: PERMISSION_CHILD })).toBeVisible()
+  await expectDurableChildStatus(page, PERMISSION_CHILD, 'completed')
+  await expectRenderedChildStatus(page, PERMISSION_CHILD, 'completed')
 
   await composer.fill(STOP_PROMPT)
   await page.getByRole('button', { name: 'Send message' }).click()
   await expect(page.getByText('Production delegation is running.')).toBeVisible({
     timeout: 120_000
   })
-  await expect(summary.getByRole('button', { name: `${STOP_CHILD}, running` })).toBeVisible()
-  await expect(summary.getByRole('button', { name: `${STOP_CHILD_TWO}, running` })).toBeVisible()
+  await expect(page.getByRole('button', { name: STOP_CHILD })).toBeVisible()
+  await expect(page.getByRole('button', { name: STOP_CHILD_TWO })).toBeVisible()
+  await expectDurableChildStatus(page, STOP_CHILD, 'running')
+  await expectDurableChildStatus(page, STOP_CHILD_TWO, 'running')
+  await expectRenderedChildStatus(page, STOP_CHILD, 'running')
+  await expectRenderedChildStatus(page, STOP_CHILD_TWO, 'running')
   await page.getByRole('button', { name: 'Cancel run' }).click()
-  await expect(summary.getByRole('button', { name: `${STOP_CHILD}, cancelled` })).toBeVisible({
+  await expect(page.getByRole('button', { name: STOP_CHILD })).toBeVisible({
     timeout: 120_000
   })
-  await expect(summary.getByRole('button', { name: `${STOP_CHILD_TWO}, cancelled` })).toBeVisible({
+  await expectDurableChildStatus(page, STOP_CHILD, 'cancelled')
+  await expectRenderedChildStatus(page, STOP_CHILD, 'cancelled')
+  await expect(page.getByRole('button', { name: STOP_CHILD_TWO })).toBeVisible({
     timeout: 120_000
   })
+  await expectDurableChildStatus(page, STOP_CHILD_TWO, 'cancelled')
+  await expectRenderedChildStatus(page, STOP_CHILD_TWO, 'cancelled')
 })
 
 test('rejects an unsupported Specialist configuration before child admission', async ({ app }) => {

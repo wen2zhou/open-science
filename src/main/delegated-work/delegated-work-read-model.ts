@@ -5,7 +5,9 @@ import type {
   AuthenticatedDelegateCaller,
   DelegatedWorkDurableRecords,
   DurableChildSummary,
-  DurableDelegateResult,
+  DurableCollectOptions,
+  DurableCollectSelector,
+  DurableDelegateObservation,
   DurableSnapshot
 } from './durable-delegated-work'
 
@@ -15,7 +17,8 @@ class DelegatedWorkReadModel {
   constructor(
     private readonly records: DelegatedWorkDurableRecords,
     private readonly projections: DelegatedWorkProjectionOwner,
-    private readonly collectPollIntervalMs: number
+    private readonly collectPollIntervalMs: number,
+    private readonly monotonicNow: () => number = () => performance.now()
   ) {}
 
   async children(
@@ -41,24 +44,56 @@ class DelegatedWorkReadModel {
 
   async collect(
     caller: AuthenticatedDelegateCaller,
-    frameIds: readonly string[]
-  ): Promise<readonly DurableDelegateResult[]> {
-    if (!Array.isArray(frameIds) || frameIds.length === 0) {
+    selectors: readonly DurableCollectSelector[],
+    options: DurableCollectOptions = {}
+  ): Promise<readonly DurableDelegateObservation[]> {
+    if (!Array.isArray(selectors) || selectors.length === 0) {
       throw new DurableDelegatedWorkError(
         'admission_rejection',
         'collect requires at least one child'
       )
     }
-    for (;;) {
-      const snapshot = await this.authenticatedSnapshot(caller)
-      const children = this.selectAuthorizedChildren(snapshot, caller, frameIds)
-      const results = await Promise.all(
-        children.map((child) => this.projections.projectSnapshotResult(snapshot, child))
+    const timeoutSeconds = options.timeoutSeconds ?? 30
+    if (
+      typeof timeoutSeconds !== 'number' ||
+      !Number.isFinite(timeoutSeconds) ||
+      timeoutSeconds < 0 ||
+      timeoutSeconds > 1800
+    ) {
+      throw new DurableDelegatedWorkError(
+        'admission_rejection',
+        'collect timeoutSeconds must be a finite number from 0 through 1800'
       )
-      if (results.every((result) => result !== undefined)) {
-        return results as readonly DurableDelegateResult[]
+    }
+    const initialSnapshot = await this.authenticatedSnapshot(caller)
+    const pinned = this.pinSelectors(initialSnapshot, caller, selectors)
+    const startedAt = this.monotonicNow()
+    let snapshot = initialSnapshot
+    for (;;) {
+      const attempts = this.resolvePinned(snapshot, caller, pinned)
+      const observations = await Promise.all(
+        attempts.map(({ child, attempt }) =>
+          this.projections.projectSnapshotObservation(snapshot, child, attempt)
+        )
+      )
+      if (observations.every((observation) => observation.status !== 'running')) {
+        return observations
       }
-      await new Promise((resolve) => setTimeout(resolve, this.collectPollIntervalMs))
+      if (timeoutSeconds === 0) return observations
+      if (this.monotonicNow() - startedAt >= timeoutSeconds * 1000) {
+        const decidingSnapshot = await this.authenticatedSnapshot(caller)
+        const decidingAttempts = this.resolvePinned(decidingSnapshot, caller, pinned)
+        return Promise.all(
+          decidingAttempts.map(({ child, attempt }) =>
+            this.projections.projectSnapshotObservation(decidingSnapshot, child, attempt)
+          )
+        )
+      }
+      const remainingMs = timeoutSeconds * 1000 - (this.monotonicNow() - startedAt)
+      await new Promise((resolve) =>
+        setTimeout(resolve, Math.min(this.collectPollIntervalMs, Math.max(0, remainingMs)))
+      )
+      snapshot = await this.authenticatedSnapshot(caller)
     }
   }
 
@@ -103,8 +138,8 @@ class DelegatedWorkReadModel {
     caller: AuthenticatedDelegateCaller,
     frameIds?: readonly string[]
   ): readonly DurableChild[] {
-    const directChildren = snapshot.records.filter(
-      (child) => child.parentFrameId === caller.frameId
+    const directChildren = snapshot.records.filter((child) =>
+      this.isActiveAuthorizedChild(snapshot, caller, child)
     )
     if (!frameIds) return directChildren
     const selected = frameIds.map((frameId) =>
@@ -117,6 +152,76 @@ class DelegatedWorkReadModel {
       )
     }
     return selected as readonly DurableChild[]
+  }
+
+  private isActiveAuthorizedChild(
+    snapshot: DurableSnapshot,
+    caller: AuthenticatedDelegateCaller,
+    child: DurableChild
+  ): boolean {
+    return (
+      child.parentFrameId === caller.frameId &&
+      child.originBindingState === 'validated' &&
+      !!child.originMessageId &&
+      snapshot.originMessageIds.includes(child.originMessageId)
+    )
+  }
+
+  private pinSelectors(
+    snapshot: DurableSnapshot,
+    caller: AuthenticatedDelegateCaller,
+    selectors: readonly DurableCollectSelector[]
+  ): readonly Readonly<{ frameId: string; attemptId: string }>[] {
+    return selectors.map((selector) => {
+      if (
+        typeof selector !== 'string' &&
+        (!selector ||
+          typeof selector !== 'object' ||
+          typeof selector.frameId !== 'string' ||
+          typeof selector.attemptId !== 'string')
+      ) {
+        throw new DurableDelegatedWorkError('admission_rejection', 'collect selector is invalid')
+      }
+      const frameId = typeof selector === 'string' ? selector : selector.frameId
+      const child = snapshot.records.find((candidate) => candidate.frameId === frameId)
+      if (!child || !this.isActiveAuthorizedChild(snapshot, caller, child)) {
+        throw new DurableDelegatedWorkError(
+          'authorization',
+          child?.originBindingState === 'legacy-unavailable'
+            ? 'delegated child branch ownership is unavailable for legacy data'
+            : 'one or more requested children are outside the authenticated parent conversation'
+        )
+      }
+      const attemptId = typeof selector === 'string' ? currentAttempt(child).id : selector.attemptId
+      if (!child.attempts.some((attempt) => attempt.id === attemptId)) {
+        throw new DurableDelegatedWorkError(
+          'authorization',
+          'one or more requested Attempts are outside the authenticated delegated child'
+        )
+      }
+      return { frameId, attemptId }
+    })
+  }
+
+  private resolvePinned(
+    snapshot: DurableSnapshot,
+    caller: AuthenticatedDelegateCaller,
+    pinned: readonly Readonly<{ frameId: string; attemptId: string }>[]
+  ): readonly Readonly<{
+    child: DurableChild
+    attempt: DurableChild['attempts'][number]
+  }>[] {
+    return pinned.map(({ frameId, attemptId }) => {
+      const child = snapshot.records.find((candidate) => candidate.frameId === frameId)
+      const attempt = child?.attempts.find((candidate) => candidate.id === attemptId)
+      if (!child || !attempt || !this.isActiveAuthorizedChild(snapshot, caller, child)) {
+        throw new DurableDelegatedWorkError(
+          'authorization',
+          'delegated child authorization changed while collecting observations'
+        )
+      }
+      return { child, attempt }
+    })
   }
 }
 

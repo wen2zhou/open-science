@@ -423,7 +423,13 @@ describe('authenticated delegatedWorkCall route', () => {
     execution.controls()[0].accept()
     execution.controls()[0].complete('Durable RPC answer')
 
-    await expect(call({ op: 'collect', frame_ids: [frameId] })).resolves.toMatchObject([
+    await expect(
+      call({
+        op: 'collect',
+        selectors: [{ frame_id: frameId, attempt_id: receipt.children[0].attemptId }],
+        options: { timeout_seconds: 0 }
+      })
+    ).resolves.toMatchObject([
       { frameId, status: 'completed', response: 'Durable RPC answer', artifactsCreated: [] }
     ])
     endInvocation()

@@ -11,10 +11,12 @@ const PROVIDER_BRIDGE_PROMPT = 'Verify the provider bridge.'
 const NOTEBOOK_LIFECYCLE_PROMPT = 'Verify the notebook lifecycle.'
 const ARTIFACT_PROVENANCE_PROMPT = 'Create a provenance artifact.'
 const DELEGATION_TERMINAL_PROMPT = 'Run the production delegation terminal journey.'
+const DELEGATION_BOUNDED_COLLECT_PROMPT = 'Run the production bounded collect journey.'
 const DELEGATION_PERMISSION_PROMPT = 'Run the production delegated permission journey.'
 const DELEGATION_STOP_PROMPT = 'Run the production delegation Stop journey.'
 const DELEGATION_UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
 const DELEGATED_TERMINAL_TASK = 'Complete the certified delegated terminal fixture.'
+const DELEGATED_BOUNDED_SLOW_TASK = 'Complete the bounded fixture after a delay.'
 const DELEGATED_PERMISSION_TASK = 'Request the delegated fixture permission.'
 const DELEGATED_WAIT_MARKER = 'Wait until the Main Agent stops'
 const DELEGATED_WAIT_TASK = `${DELEGATED_WAIT_MARKER} delegated fixture A.`
@@ -78,6 +80,19 @@ const executeControlCode = async (sessionId, code) =>
       })
     )
   )
+
+const controlResultValue = (execution) => {
+  if (execution?.status !== 'completed') {
+    throw new Error(`Control REPL execution failed: ${JSON.stringify(execution)}`)
+  }
+  const text = execution.outputs
+    ?.map((output) => output?.data?.['text/plain'])
+    .find((value) => typeof value === 'string')
+  if (typeof text !== 'string') {
+    throw new Error(`Control REPL returned no display value: ${JSON.stringify(execution)}`)
+  }
+  return JSON.parse(text)
+}
 
 const runProductionDelegationRequest = async (sessionId, request, wait) =>
   executeControlCode(
@@ -252,6 +267,41 @@ if (process.argv.includes('--version')) {
             throw new Error(`Production delegation failed: ${JSON.stringify(delegated)}`)
           }
           reply = 'Production delegation reached a terminal result.'
+        } else if (prompt.includes(DELEGATION_BOUNDED_COLLECT_PROMPT)) {
+          const dispatched = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `globalThis.s1Pending = await host.delegate([{ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)} }, { task: ${JSON.stringify(DELEGATED_BOUNDED_SLOW_TASK)} }], { wait: false }); return globalThis.s1Pending`
+            )
+          )
+          const mixed = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `const handles = globalThis.s1Pending.children.map(({ frame_id, attempt_id }) => ({ frame_id, attempt_id })); await host.collect([handles[0]], { timeout_seconds: 30 }); return await host.collect(handles, { timeout_seconds: 0 })`
+            )
+          )
+          if (
+            dispatched.kind !== 'receipts' ||
+            mixed.length !== 2 ||
+            mixed[0].status !== 'completed' ||
+            mixed[1].status !== 'running' ||
+            Object.hasOwn(mixed[1], 'artifacts_created')
+          ) {
+            throw new Error(
+              `Bounded mixed observation failed: ${JSON.stringify({ dispatched, mixed })}`
+            )
+          }
+          await new Promise((resolve) => setTimeout(resolve, 3_200))
+          const terminal = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `const slow = globalThis.s1Pending.children[1]; return await host.collect([{ frame_id: slow.frame_id, attempt_id: slow.attempt_id }], { timeout_seconds: 0 })`
+            )
+          )
+          if (terminal.length !== 1 || terminal[0].status !== 'completed') {
+            throw new Error(`Bounded terminal recollect failed: ${JSON.stringify(terminal)}`)
+          }
+          reply = 'Production bounded collect journey completed.'
         } else if (prompt.includes(DELEGATION_PERMISSION_PROMPT)) {
           await runProductionDelegation(context.params.sessionId, DELEGATED_PERMISSION_TASK, true)
           reply = 'Production delegated permission journey completed.'
@@ -264,6 +314,9 @@ if (process.argv.includes('--version')) {
             throw new Error(`Unsupported delegation was admitted: ${JSON.stringify(delegated)}`)
           }
           reply = 'Subagents are unavailable for this session configuration.'
+        } else if (prompt.includes(DELEGATED_BOUNDED_SLOW_TASK)) {
+          await new Promise((resolve) => setTimeout(resolve, 3_000))
+          reply = 'Delayed bounded child completed.'
         } else if (prompt.includes(DELEGATED_PERMISSION_TASK)) {
           const permission = await context.client.request(
             acp.methods.client.session.requestPermission,
