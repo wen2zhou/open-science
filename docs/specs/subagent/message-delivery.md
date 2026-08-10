@@ -2,11 +2,11 @@
 spec_id: SUB-MESSAGE-DELIVERY
 title: Main Agent 与 direct Subagent 的可靠双向通信
 decision_status: accepted
-implementation_status: conformant
+implementation_status: certified
 compatibility: persistence-impact
 owner_module: DurableDelegatedWork
 supersedes: []
-last_verified_sha: b340587ed35ee1a8aa4749805355b74ee6277e5a
+last_verified_sha: 39985ecd8510978586271a97205f5dd1bd75f6c7
 ---
 
 # Main Agent 与 direct Subagent 的可靠双向通信
@@ -148,7 +148,7 @@ MSG-020 gate必须从真实`host.send_message/message_receipt/resolve_message`�
 
 当前candidate已原子切换Host SDK/local RPC到options输入与snake_case receipt，并实现durable command identity、CAS dispatch fence、terminal receipt、same-lane uncertain fence、bounded observation、root-only acknowledge、terminal continuation command/Attempt共同commit、Session restart recovery和message owner quarantine。`DurableDelegatedWork`、Session record adapter、production composition、Host help、local RPC与REPL focused gates已通过。
 
-实现状态为`conformant`。消息协议由独立`ReliableMessageDeliveryOwner`与`SessionMessageDeliveryPersistenceOwner`承载，原有composer/facade architecture completion gates已恢复；root user prompt与upward continuation通过同一个`AcpRuntimeCoordinator` admission lock线性化，并在该锁内完成branch重验与dispatch fence。production-composed Playwright journeys已分别贯通真实Host RPC、Session persistence、child execution、root scheduler和Renderer-visible Main continuation，并覆盖两child公平仲裁、并发真实user prompt、branch park跨restart恢复及provider acceptance后receipt commit失败窗口。最终组合gate中branch journey通过，但post-fence journey在restart前通过exact Session/owner/fence durability barrier后，新进程仍将Session catalog判为不可读；因此MSG-020 release gate未通过，不标记`certified`。
+实现状态为`certified`。消息协议由独立`ReliableMessageDeliveryOwner`与`SessionMessageDeliveryPersistenceOwner`承载，原有composer/facade architecture completion gates已恢复；root user prompt与upward continuation通过同一个`AcpRuntimeCoordinator` admission lock线性化，并在该锁内完成branch重验与dispatch fence。production-composed Playwright release gate在同一次运行中通过全部四项journey：Main→child→Main roundtrip、branch park/restart、provider acceptance后receipt commit失败与restart recovery、两child upward lane和真实user prompt公平仲裁。post-fence fixture使用exact persisted `message_id`执行Main Host receipt observation，Session catalog decode、owner hydration、durable uncertain recovery、真实Host RPC与Renderer-visible Main continuation均已贯通。
 
 当前evidence覆盖：
 
@@ -156,4 +156,4 @@ MSG-020 gate必须从真实`host.send_message/message_receipt/resolve_message`�
 - MSG-005..007：`help.test.ts`、`local-rpc-server.delegated-work.test.ts`与`repl-loop.integration.test.ts`；
 - MSG-008..010 root安全边界、单一admission lock、branch CAS与weak fairness：`runtime-coordinator.test.ts`、`production-composition.test.ts`及Playwright branch/fairness journeys；
 - MSG-019：`production-frameworks.test.ts`逐一经过Codex、Claude Code、OpenCode production factory边界，覆盖prompt accepted、成功完成fallback与pre-accept failure；uncertain由共享durable owner故障注入覆盖。该证据使用project-owned fake backend，不声称外部CLI实机认证；
-- MSG-020：`e2e/subagent-release-gate.spec.ts`真实desktop journeys覆盖Main→child→Main receipt、Renderer Main continuation、两upward lanes与真实user prompt、branch park/restart/wake以及post-fence durable receipt失败窗口；branch+post-fence组合运行当前因上述restart hydration blocker未通过，故只作为`conformant`证据。
+- MSG-020：`e2e/subagent-release-gate.spec.ts`真实desktop journeys覆盖Main→child→Main receipt、Renderer Main continuation、两upward lanes与真实user prompt、branch park/restart/wake以及post-fence durable receipt失败窗口；四项在同一次production-composed release gate中全部通过，因此作为`certified`证据。
