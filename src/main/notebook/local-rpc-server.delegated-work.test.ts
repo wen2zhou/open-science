@@ -1,10 +1,8 @@
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { createDeterministicDelegateExecution } from '../delegated-work/deterministic-execution'
-import {
-  createDurableDelegatedWork,
-  createInMemoryDelegatedWorkRecords
-} from '../delegated-work/durable-delegated-work'
+import { createInMemoryDelegatedWorkRecords } from '../delegated-work/durable-delegated-work'
+import { createTestDurableDelegatedWork as createDurableDelegatedWork } from '../delegated-work/durable-delegated-work-test-fixture'
 import { NotebookLocalRpcServer } from './local-rpc-server'
 
 let server: NotebookLocalRpcServer | undefined

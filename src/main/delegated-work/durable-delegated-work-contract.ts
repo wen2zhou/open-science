@@ -5,7 +5,11 @@ import type { ReviewWithChecks } from '../../shared/reviewer'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import type { AuthenticatedDelegateCaller } from './authenticated-delegate-caller'
 import type { DelegatedArtifactEvidence } from './delegated-turn-lifecycle'
-import type { DelegateExecution, DelegatePermissionResponse } from './execution-port'
+import type {
+  DelegateExecution,
+  DelegatePermissionResponse,
+  DelegatedExecutionModelAdmission
+} from './execution-port'
 import type {
   DelegatedWorkDurableRecords,
   DurableAttempt,
@@ -166,6 +170,9 @@ type CreateDurableDelegatedWorkOptions = Readonly<{
   execution: DelegateExecution
   records: DelegatedWorkDurableRecords
   assertAvailable?: (caller: AuthenticatedDelegateCaller) => Promise<void> | void
+  resolveExecutionModel: (
+    caller: AuthenticatedDelegateCaller
+  ) => Promise<DelegatedExecutionModelAdmission> | DelegatedExecutionModelAdmission
   resolveSpecialist?: (
     profileId: string
   ) => Promise<SpecialistDelegationProfile | undefined> | SpecialistDelegationProfile | undefined

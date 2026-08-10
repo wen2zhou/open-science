@@ -237,6 +237,10 @@ class AcpRuntimeCoordinator {
     }
   }
 
+  captureSessionBackend(sessionId: string): ReturnType<AcpRuntime['captureBackend']> | undefined {
+    return this.findRuntimeForSession(sessionId)?.captureBackend()
+  }
+
   callSessionPlan(input: Parameters<AcpRuntime['callSessionPlan']>[0]): Promise<unknown> {
     const runtime = this.sessionRuntimes.get(input.sessionId) ?? this.activeRuntime
     if (!runtime) return Promise.reject(new Error('No active runtime owns the Session Plan call.'))

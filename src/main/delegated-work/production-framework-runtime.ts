@@ -10,17 +10,18 @@ import {
   DEFAULT_PERMISSION_PROFILE,
   type PermissionProfileId
 } from '../../shared/permission-profiles'
-import type { AgentModelConfig, ResolvedAgentBackend, SessionSetup } from '../agent-framework'
+import {
+  releaseResolvedAgentBackendLeases,
+  type AgentModelConfig,
+  type ResolvedAgentBackend,
+  type SessionSetup
+} from '../agent-framework'
 import { createAcpRuntime, type AcpRuntimeCompositionOptions } from '../acp/runtime-composition'
 import type { NotebookLocalRpcServer } from '../notebook/local-rpc-server'
 import type { NotebookRpcConnection } from '../notebook/mcp-server'
-import { CODEX_ACP_VERSION, CODEX_VERSION } from '../settings/managed-codex'
 import type { SessionKey } from './session-records'
 import type { AcpDelegateExecutionCallbacks, PreparedDelegateExecution } from './acp-execution'
-import { assertClaudeCodeDelegatedWorkAvailable } from './claude-code-execution'
-import { assertCodexLaunchIsolated } from './codex-execution'
 import type { DelegateExecutionInput } from './execution-port'
-import { assertOpenCodeNativeDelegationDisabled } from './opencode-execution'
 import {
   createProductionDelegatedFrameworks,
   type PreparedProductionFrameworkScope,
@@ -45,14 +46,6 @@ type ProductionFrameworkRuntimeOptions = Readonly<{
   resolvePermissionProfile?(sessionId: string): PermissionProfileId | undefined
 }>
 
-const releaseBackendLeases = async (backend: ResolvedAgentBackend): Promise<void> => {
-  await Promise.allSettled([
-    backend.responsesBridgeLease?.release(),
-    backend.anthropicBridgeLease?.release(),
-    backend.providerTransportLease?.release()
-  ])
-}
-
 const openCodeModelConfig = (backend: ResolvedAgentBackend): AgentModelConfig => ({
   env: { ...backend.env },
   configFiles: [
@@ -72,36 +65,6 @@ const sessionSetup = (backend: ResolvedAgentBackend): SessionSetup =>
     ...(backend.sessionOptions ? { sessionOptions: backend.sessionOptions } : {})
   })
 
-const assertResolvedBackendAvailable = (
-  frameworkId: PersistedChatSession['agentFrameworkId'],
-  backend: ResolvedAgentBackend,
-  runtimeHome: string
-): void => {
-  if (backend.framework.id !== frameworkId) {
-    throw new Error('Resolved delegated backend does not match the Session framework.')
-  }
-  if (frameworkId === 'claude-code') {
-    assertClaudeCodeDelegatedWorkAvailable(sessionSetup(backend))
-    return
-  }
-  if (frameworkId === 'opencode') {
-    assertOpenCodeNativeDelegationDisabled(openCodeModelConfig(backend))
-    return
-  }
-  if (frameworkId === 'codex') {
-    const spawn = {
-      executablePath: backend.executablePath,
-      args: [...(backend.args ?? [])],
-      env: { ...backend.env, HOME: runtimeHome, CODEX_HOME: runtimeHome },
-      proxyEnvironmentMode: backend.proxyEnvironmentMode
-    }
-    assertCodexLaunchIsolated(spawn, runtimeHome, {
-      nativeVersion: CODEX_VERSION,
-      adapterVersion: CODEX_ACP_VERSION
-    })
-  }
-}
-
 const createProductionDelegatedFrameworkRuntime = (
   options: ProductionFrameworkRuntimeOptions
 ): ProductionDelegatedFrameworks =>
@@ -110,26 +73,34 @@ const createProductionDelegatedFrameworkRuntime = (
     async certify(session) {
       const frameworkId = session.agentFrameworkId
       if (!frameworkId) throw new Error('Delegated Work Session has no framework identity.')
-      const auditRuntimeHome = join(options.dataRoot, 'delegated-work', '.certification')
       const preparedAttempts = new Map<
         string,
-        Readonly<{ backend: ResolvedAgentBackend; connection: NotebookRpcConnection }>
+        Readonly<{
+          backend: ResolvedAgentBackend
+          connection: NotebookRpcConnection
+          releaseBackend: boolean
+        }>
       >()
-      const assertProviderAvailable = async (): Promise<void> => {
-        const backend = await options.runtime.settingsService.resolveAgentBackend({ frameworkId })
-        try {
-          assertResolvedBackendAvailable(frameworkId, backend, auditRuntimeHome)
-        } finally {
-          await releaseBackendLeases(backend)
-        }
-      }
+      // The exact provider/model is validated by admission's model resolver. This certification hook
+      // must not read the process-wide Active model, which may differ from the originating Session.
+      const assertProviderAvailable = async (): Promise<void> => undefined
       const prepare = async (
         input: DelegateExecutionInput
       ): Promise<PreparedProductionFrameworkScope> => {
         if (!input.workspaceCwd) throw new Error('Delegated Attempt has no prepared Frame cwd.')
-        const backend = await options.runtime.settingsService.resolveAgentBackend({ frameworkId })
+        if (!input.executionModel) {
+          throw new Error('Delegated Attempt has no admitted model snapshot.')
+        }
+        const resolveAdmitted = options.runtime.settingsService.resolveAdmittedSubagentBackend
+        if (!input.executionBackend && !resolveAdmitted) {
+          throw new Error('Admitted delegated backend resolution is unavailable.')
+        }
+        const releaseResolvedBackend = input.executionBackend === undefined
+        const backend =
+          input.executionBackend ??
+          (await resolveAdmitted!.call(options.runtime.settingsService, input.executionModel))
         if (backend.framework.id !== frameworkId) {
-          await releaseBackendLeases(backend)
+          if (releaseResolvedBackend) await releaseResolvedAgentBackendLeases(backend)
           throw new Error('Resolved delegated backend changed framework during admission.')
         }
         const runtimeHome = join(
@@ -170,7 +141,11 @@ const createProductionDelegatedFrameworkRuntime = (
               return attempt?.id === input.attemptId && attempt.status === 'running'
             }
           })
-          preparedAttempts.set(input.attemptId, { backend, connection: capability })
+          preparedAttempts.set(input.attemptId, {
+            backend,
+            connection: capability,
+            releaseBackend: releaseResolvedBackend
+          })
           const base: PreparedDelegateExecution = {
             executionId: input.attemptId,
             provenance: {
@@ -195,7 +170,7 @@ const createProductionDelegatedFrameworkRuntime = (
             async disposeResources() {
               const owned = preparedAttempts.get(input.attemptId)
               preparedAttempts.delete(input.attemptId)
-              if (owned) await releaseBackendLeases(owned.backend)
+              if (owned?.releaseBackend) await releaseResolvedAgentBackendLeases(owned.backend)
               await rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
             }
           }
@@ -224,7 +199,7 @@ const createProductionDelegatedFrameworkRuntime = (
           throw new Error(`Unsupported delegated-work framework: ${String(unsupported)}`)
         } catch (error) {
           preparedAttempts.delete(input.attemptId)
-          await releaseBackendLeases(backend)
+          if (releaseResolvedBackend) await releaseResolvedAgentBackendLeases(backend)
           await rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
           throw error
         }
@@ -254,7 +229,7 @@ const createProductionDelegatedFrameworkRuntime = (
             ...(agentProcess ? { spawnAgent: () => agentProcess } : {})
           })
         } catch (error) {
-          void releaseBackendLeases(owned.backend)
+          if (owned.releaseBackend) void releaseResolvedAgentBackendLeases(owned.backend)
           throw error
         }
       }

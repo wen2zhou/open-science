@@ -195,6 +195,7 @@ import type {
   SetClosePreferenceRequest,
   SetAppIconVariantRequest,
   SetReasoningEffortRequest,
+  SetSubagentModelRequest,
   SetSkillEnabledRequest,
   SettingsSnapshot,
   AppIconPreview,
@@ -397,6 +398,8 @@ export interface OpenScienceAPI {
     setActiveProvider(request: SetActiveProviderRequest): Promise<SettingsSnapshot>
     setAgentFramework(request: SetAgentFrameworkRequest): Promise<SettingsSnapshot>
     setReasoningEffort(request: SetReasoningEffortRequest): Promise<SettingsSnapshot>
+    setSubagentModel(request: SetSubagentModelRequest): Promise<SettingsSnapshot>
+    onChanged(listener: (snapshot: SettingsSnapshot) => void): () => void
     setNotificationsEnabled(request: SetNotificationsEnabledRequest): Promise<SettingsSnapshot>
     setConversationSkillImportEnabled(
       request: SetConversationSkillImportEnabledRequest

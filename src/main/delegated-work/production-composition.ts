@@ -18,7 +18,7 @@ import {
   type DelegatedReviewEvidenceOptions
 } from './delegated-review-evidence'
 import type { DelegatedWorkRecordCommands, SessionKey } from './session-records'
-import type { DelegateExecution } from './execution-port'
+import type { DelegateExecution, DelegatedExecutionModelAdmission } from './execution-port'
 import {
   createDurableDelegatedWork,
   DurableDelegatedWorkError,
@@ -57,6 +57,7 @@ type ProductionDelegatedWorkOptions = Readonly<{
   reviewEvidence?: DelegatedReviewEvidenceOptions
   parentMessages?: Readonly<{ deliver(delivery: ParentMessageDelivery): Promise<void> }>
   onAgentRuntimeUpdate?(update: AcpAgentRuntimeUpdate): void
+  resolveExecutionModel(session: PersistedChatSession): Promise<DelegatedExecutionModelAdmission>
 }>
 
 type RootDelegatedWorkEvent =
@@ -171,6 +172,17 @@ const createProductionDelegatedWorkComposition = (
     const work = createDurableDelegatedWork({
       execution: framework.execution,
       records,
+      resolveExecutionModel: async () => {
+        try {
+          return await options.resolveExecutionModel(session)
+        } catch (error) {
+          throw new DurableDelegatedWorkError(
+            'admission_rejection',
+            `configured Subagent model is unavailable: ${error instanceof Error ? error.message : String(error)}`,
+            'The configured Subagent model is unavailable. Open Settings → Model → Subagent model and choose an available model.'
+          )
+        }
+      },
       assertAvailable: framework.assertAvailable,
       resolveSpecialist: options.resolveSpecialist,
       resolveSpecialistReference: options.resolveSpecialistReference,

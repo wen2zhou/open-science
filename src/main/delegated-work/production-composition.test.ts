@@ -44,6 +44,24 @@ let root: string | undefined
 let server: NotebookLocalRpcServer | undefined
 let disconnect: (() => Promise<void>) | undefined
 
+const testExecutionModel = (
+  frameworkId: AgentFrameworkId
+): Awaited<ReturnType<ProductionDelegatedWorkOptions['resolveExecutionModel']>> => ({
+  snapshot: {
+    frameworkId,
+    providerId: 'test-provider',
+    backendId: `${frameworkId}:test-provider`,
+    modelRoute:
+      frameworkId === 'claude-code'
+        ? 'claude-anthropic'
+        : frameworkId === 'opencode'
+          ? 'opencode-anthropic'
+          : 'codex-responses',
+    model: 'test-model',
+    reasoningEffort: 'default'
+  }
+})
+
 const fileIndex: SessionFileIndex = {
   syncSession: async () => [],
   softDeleteSession: async () => 'delete-session',
@@ -77,7 +95,8 @@ const createCompositionHarness = async (
     rootMessageId: string
     toolInvocationId: string
     createdAt: number
-  }>[] = []
+  }>[] = [],
+  resolveExecutionModel?: ProductionDelegatedWorkOptions['resolveExecutionModel']
 ): Promise<CompositionHarness> => {
   const rootMessage = {
     id: `root-message-${frameworkId}`,
@@ -204,6 +223,7 @@ const createCompositionHarness = async (
         }
       }
     },
+    resolveExecutionModel: resolveExecutionModel ?? (async () => testExecutionModel(frameworkId)),
     ...owners
   })
   return {
@@ -236,6 +256,180 @@ afterEach(async () => {
 })
 
 describe('production delegated-work composition', () => {
+  it('records the admitted cross-provider model on every child Runtime Segment', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-model-snapshot-'))
+    const execution = createDeterministicDelegateExecution()
+    const resolveExecutionModel = vi.fn(async () => ({
+      snapshot: {
+        frameworkId: 'opencode' as const,
+        providerId: 'provider-b',
+        backendId: 'opencode:provider-b',
+        modelRoute: 'opencode-openai' as const,
+        model: 'model-b',
+        reasoningEffort: 'high' as const
+      }
+    }))
+    const harness = await createCompositionHarness(
+      root,
+      'opencode',
+      execution,
+      undefined,
+      {},
+      [],
+      resolveExecutionModel
+    )
+
+    await harness.composition.host.delegate(
+      harness.caller,
+      [{ task: 'first' }, { task: 'second' }],
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(2)
+    await expect.poll(() => harness.durable().conversationGraph?.runtimeSegments.length).toBe(3)
+
+    expect(resolveExecutionModel).toHaveBeenCalledOnce()
+    expect(harness.durable().conversationGraph?.runtimeSegments.slice(-2)).toEqual([
+      expect.objectContaining({
+        frameworkId: 'opencode',
+        backendId: 'opencode:provider-b',
+        model: 'model-b'
+      }),
+      expect.objectContaining({
+        frameworkId: 'opencode',
+        backendId: 'opencode:provider-b',
+        model: 'model-b'
+      })
+    ])
+  })
+
+  it('reuses the first admitted route for continuation after Settings change and restart', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-model-continuation-'))
+    const initialModel = {
+      frameworkId: 'opencode' as const,
+      providerId: 'provider-a',
+      backendId: 'opencode:provider-a',
+      modelRoute: 'opencode-openai' as const,
+      model: 'model-a',
+      reasoningEffort: 'high' as const
+    }
+    const harness = await createCompositionHarness(
+      root,
+      'opencode',
+      undefined,
+      undefined,
+      {},
+      [],
+      async () => ({ snapshot: initialModel })
+    )
+    const receipt = await harness.composition.host.delegate(
+      harness.caller,
+      { task: 'Preserve admitted route' },
+      { wait: false }
+    )
+    if (receipt.kind !== 'receipts') throw new Error('expected a running receipt')
+    await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+    harness.execution.controls()[0].accept()
+    harness.execution.controls()[0].complete('Initial result')
+    await expect
+      .poll(() => harness.durable().runtimeContext?.delegatedWork?.records[0]?.attempts[0]?.status)
+      .toBe('completed')
+
+    const restartedExecution = createDeterministicDelegateExecution()
+    const changedSettingsResolver = vi.fn(async () => ({
+      snapshot: {
+        ...initialModel,
+        providerId: 'provider-b',
+        backendId: 'opencode:provider-b',
+        model: 'model-b'
+      }
+    }))
+    const restarted = createProductionDelegatedWorkComposition({
+      dataRoot: root,
+      sessions: {
+        commands: harness.commands,
+        readSession: async () => harness.durable()
+      },
+      resolveInput: async () => {
+        throw new Error('no inputs')
+      },
+      frameworks: {
+        async forSession(current) {
+          return {
+            frameworkId: current.agentFrameworkId!,
+            execution: restartedExecution,
+            assertAvailable: async () => undefined
+          }
+        }
+      },
+      resolveExecutionModel: changedSettingsResolver
+    })
+    const continued = await restarted.host.sendMessage(
+      harness.caller,
+      receipt.children[0].frameId,
+      'Continue with the same route'
+    )
+    if (continued.kind !== 'continued') throw new Error('expected continuation')
+    await expect.poll(() => restartedExecution.controls()).toHaveLength(1)
+
+    const attempts = harness.durable().runtimeContext?.delegatedWork?.records[0]?.attempts
+    expect(attempts).toHaveLength(2)
+    expect(attempts?.[1]?.executionModel).toEqual(initialModel)
+    expect(restartedExecution.controls()[0].input.executionModel).toEqual(initialModel)
+    expect(changedSettingsResolver).not.toHaveBeenCalled()
+  })
+
+  it('fails a validation-failed fixed model before workspace, reservation, or durable child creation', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-model-unavailable-'))
+    const execution = createDeterministicDelegateExecution()
+    const harness = await createCompositionHarness(
+      root,
+      'opencode',
+      execution,
+      undefined,
+      {},
+      [],
+      async () => {
+        throw new Error('provider validation failed')
+      }
+    )
+
+    await expect(
+      harness.composition.host.delegate(harness.caller, { task: 'must not exist' })
+    ).rejects.toMatchObject({
+      code: 'admission_rejection',
+      userFacingUnavailableReason: expect.stringContaining('Settings → Model → Subagent model')
+    })
+    expect(execution.reservationCounts()).toEqual([])
+    expect(harness.durable().runtimeContext?.delegatedWork?.records ?? []).toEqual([])
+    await expect(access(join(root, 'delegated-work', 'project-1'))).rejects.toThrow()
+  })
+
+  it('rejects a missing originating runtime owner without capturing Active or creating children', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-missing-runtime-owner-'))
+    const execution = createDeterministicDelegateExecution()
+    const harness = await createCompositionHarness(
+      root,
+      'opencode',
+      execution,
+      undefined,
+      {},
+      [],
+      async () => {
+        throw new Error('The originating Session runtime is unavailable.')
+      }
+    )
+
+    await expect(
+      harness.composition.host.delegate(harness.caller, { task: 'must not exist' })
+    ).rejects.toMatchObject({
+      code: 'admission_rejection',
+      userFacingUnavailableReason: expect.stringContaining('Settings → Model → Subagent model')
+    })
+    expect(execution.reservationCounts()).toEqual([])
+    expect(harness.durable().runtimeContext?.delegatedWork?.records ?? []).toEqual([])
+    await expect(access(join(root, 'delegated-work', 'project-1'))).rejects.toThrow()
+  })
+
   it('fails an in-flight collect closed after a production Session branch switch without stopping the child', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-branch-race-'))
     const harness = await createCompositionHarness(root, 'codex')
@@ -406,7 +600,8 @@ describe('production delegated-work composition', () => {
             assertAvailable: async () => undefined
           }
         }
-      }
+      },
+      resolveExecutionModel: async () => testExecutionModel('codex')
     })
     server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
       transport: 'tcp',
@@ -1458,7 +1653,8 @@ describe('production delegated-work composition', () => {
             assertAvailable: async () => undefined
           }
         }
-      }
+      },
+      resolveExecutionModel: async () => testExecutionModel('codex')
     } as ProductionDelegatedWorkOptions)
 
     expect(receipt.children[0]).toBeDefined()

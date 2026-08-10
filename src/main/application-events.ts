@@ -24,7 +24,8 @@ import type {
 import type {
   ClaudeInstallEvent,
   ConnectorApprovalRequest,
-  ConversationSkillImportApprovalRequest
+  ConversationSkillImportApprovalRequest,
+  SettingsSnapshot
 } from '../shared/settings'
 import type { CompletionHandoffLifecycleEvent, PendingSwitchBroadcast } from '../shared/specialist'
 import type { MigrationProgress } from '../shared/storage'
@@ -58,6 +59,7 @@ export type ApplicationEventMap = {
   'specialist:handoff-lifecycle-changed': CompletionHandoffLifecycleEvent
   'specialist:handoff-lifecycle': CompletionGateLifecycleEvent
   'settings:install-log': ClaudeInstallEvent
+  'settings:changed': SettingsSnapshot
   'storage:migrate-progress': MigrationProgress
   'reviewer:updated': ReviewUpdateEvent
   'reviewer:suppress-next-auto-review': ReviewSuppressionEvent

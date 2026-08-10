@@ -27,6 +27,7 @@ import {
   isCodexSubscriptionProviderId,
   isReasoningEffort
 } from '../../shared/settings'
+import type { SubagentModelConfiguration } from '../../shared/settings'
 import { isOfficialVendorId } from '../../shared/provider-registry'
 import {
   isCustomReasoningEffortTransport,
@@ -111,6 +112,20 @@ const asBooleanRecord = (value: unknown): Record<string, boolean> => {
   )
 
   return Object.fromEntries(entries)
+}
+
+const sanitizeSubagentModel = (value: unknown): SubagentModelConfiguration => {
+  if (!isRecord(value)) return { mode: 'inherit' }
+  if (value.mode === 'inherit') return { mode: 'inherit' }
+  if (value.mode === 'fixed') {
+    const providerId = asString(value.providerId)
+    const model = asString(value.model)
+    const reasoningEffort = asString(value.reasoningEffort)
+    if (providerId && model && isReasoningEffort(reasoningEffort)) {
+      return { mode: 'fixed', providerId, model, reasoningEffort }
+    }
+  }
+  return { mode: 'inherit' }
 }
 
 const CUSTOM_MCP_TRANSPORTS = new Set<StoredCustomMcpServer['transport']>([
@@ -447,7 +462,8 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
   ]
   const settings: StoredSettings = {
     version: SETTINGS_FILE_VERSION,
-    providers
+    providers,
+    subagentModel: sanitizeSubagentModel(value.subagentModel)
   }
   const claudeSubscriptionProviderId = asString(value.claudeSubscriptionProviderId)
 
@@ -947,6 +963,19 @@ class SettingsRepository {
     return this.mutate((settings) => ({ ...settings, reasoningEffort: effort }))
   }
 
+  async setSubagentModel(
+    configuration: SubagentModelConfiguration,
+    validate?: (
+      settings: StoredSettings,
+      configuration: SubagentModelConfiguration
+    ) => SubagentModelConfiguration | void
+  ): Promise<StoredSettings> {
+    return this.mutate((settings) => {
+      const committed = validate?.(settings, configuration) ?? configuration
+      return { ...settings, subagentModel: structuredClone(committed) }
+    })
+  }
+
   // Persists the desktop-notification preference; read fresh at notification time so it applies
   // immediately, without a restart.
   async setNotificationsEnabled(enabled: boolean): Promise<StoredSettings> {
@@ -1335,4 +1364,4 @@ class SettingsRepository {
   }
 }
 
-export { SettingsRepository, sanitizeSettings }
+export { SettingsRepository, sanitizeSettings, sanitizeSubagentModel }

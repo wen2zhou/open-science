@@ -6,6 +6,7 @@ import type {
   PersistedMessageImage,
   PersistedToolActivity
 } from '../../shared/session-persistence'
+import type { ResolvedSubagentModelSnapshot } from '../../shared/session-persistence'
 import type { AuthenticatedDelegateCaller, DurableDelegateRequest } from './durable-delegated-work'
 
 type DurableResolvedAgent =
@@ -22,6 +23,7 @@ type DurableAttempt = {
   initiatingTurnMessageId?: string
   status: 'running' | 'completed' | 'cancelled' | 'error'
   resolvedAgent: DurableResolvedAgent
+  executionModel?: ResolvedSubagentModelSnapshot
   runtimeSegmentIds: string[]
   startedAt: number
   endedAt?: number
@@ -140,6 +142,7 @@ type AdmitChildInput = Readonly<{
   title: string
   request: DurableDelegateRequest
   resolvedAgent: DurableResolvedAgent
+  executionModel?: ResolvedSubagentModelSnapshot
   startedAt: number
 }>
 
@@ -178,6 +181,7 @@ type ContinueChildInput = Readonly<{
   userMessageId: string
   message: string
   resolvedAgent: DurableResolvedAgent
+  executionModel?: ResolvedSubagentModelSnapshot
   startedAt: number
   callerSource: DelegatedCallerSource
   initiatingTurnMessageId: string

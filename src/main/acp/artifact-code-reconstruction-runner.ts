@@ -3,7 +3,7 @@ import { join } from 'node:path'
 
 import type { AcpRuntimeEvent } from '../../shared/acp'
 import type { AgentFrameworkId } from '../../shared/settings'
-import type { ResolvedAgentBackend } from '../agent-framework'
+import { releaseResolvedAgentBackendLeases, type ResolvedAgentBackend } from '../agent-framework'
 import type { ExplicitAgentBackendTarget } from '../settings/backend-resolver'
 import { composeAcpRuntimeBaseOwners } from './runtime-base-composition'
 import { composeAcpRuntimeSessionOwners } from './runtime-session-composition'
@@ -40,15 +40,6 @@ const record = (value: unknown): Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : {}
-
-const releaseUnattachedBackend = async (backend: ResolvedAgentBackend): Promise<void> => {
-  const owned: Array<{ release: () => Promise<void> }> = []
-  if (backend.responsesBridgeLease) owned.push(backend.responsesBridgeLease)
-  if (backend.anthropicBridgeLease) owned.push(backend.anthropicBridgeLease)
-  if (backend.providerTransportLease) owned.push(backend.providerTransportLease)
-  const leases = new Set(owned)
-  await Promise.all([...leases].map((lease) => lease.release().catch(() => undefined)))
-}
 
 const prepareOpenCodeBackend = async (
   backend: ResolvedAgentBackend,
@@ -298,7 +289,7 @@ export class ArtifactCodeReconstructionRunner {
         backend?.responsesBridgeLease?.unregisterToolLessSession?.(sessionId)
       }
       await runtime?.shutdownForQuit().catch(() => undefined)
-      if (backend && !backendTransferred) await releaseUnattachedBackend(backend)
+      if (backend && !backendTransferred) await releaseResolvedAgentBackendLeases(backend)
       if (this.activeRuntime === runtime) this.activeRuntime = undefined
       if (jobRoot) await rm(jobRoot, { recursive: true, force: true }).catch(() => undefined)
       this.running = false

@@ -17,10 +17,10 @@ import {
 } from './certification-contract.test'
 import type { DelegateExecutionInput } from './execution-port'
 import {
-  createDurableDelegatedWork,
   createInMemoryDelegatedWorkRecords,
   type AuthenticatedDelegateCaller
 } from './durable-delegated-work'
+import { createTestDurableDelegatedWork as createDurableDelegatedWork } from './durable-delegated-work-test-fixture'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
 
 type Deferred<Value> = Readonly<{

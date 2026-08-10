@@ -8,12 +8,12 @@ import type { ReviewWithChecks } from '../../shared/reviewer'
 import { createProfileService } from '../specialist/service'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
 import {
-  createDurableDelegatedWork,
   createInMemoryDelegatedWorkRecords,
   type AuthenticatedDelegateCaller,
   type DelegatedArtifactEvidence,
   type DelegatedReviewEvidence
 } from './durable-delegated-work'
+import { createTestDurableDelegatedWork as createDurableDelegatedWork } from './durable-delegated-work-test-fixture'
 
 const caller: AuthenticatedDelegateCaller = {
   session: { projectId: 'project-1', sessionId: 'session-1' },
@@ -43,6 +43,131 @@ const specialist = (overrides: Partial<SpecialistFixture> = {}): SpecialistFixtu
 })
 
 describe('durable delegated work', () => {
+  it('resolves one model snapshot before reservation and gives it to every child in the batch', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const snapshot = {
+      frameworkId: 'opencode' as const,
+      providerId: 'provider-b',
+      backendId: 'opencode:provider-b',
+      modelRoute: 'opencode-openai' as const,
+      model: 'model-b',
+      reasoningEffort: 'high' as const
+    }
+    const admissionRelease = vi.fn(async () => undefined)
+    const claimReleases = [vi.fn(async () => undefined), vi.fn(async () => undefined)]
+    let nextClaim = 0
+    const backend = {
+      framework: { id: 'opencode' },
+      env: { OPENAI_API_KEY: 'admission-memory-secret' }
+    } as never
+    const backendLease = {
+      claim: vi.fn(() => ({ backend, release: claimReleases[nextClaim++] })),
+      release: admissionRelease
+    }
+    const resolveExecutionModel = vi.fn(async () => ({ snapshot, backendLease }))
+    const work = createDurableDelegatedWork({ execution, records, resolveExecutionModel })
+
+    await work.delegate(caller, [{ task: 'one' }, { task: 'two' }], { wait: false })
+
+    expect(resolveExecutionModel).toHaveBeenCalledOnce()
+    await expect.poll(() => execution.controls()).toHaveLength(2)
+    expect(backendLease.claim).toHaveBeenCalledTimes(2)
+    expect(admissionRelease).toHaveBeenCalledOnce()
+    expect(execution.controls().map(({ input }) => input.executionBackend)).toEqual([
+      backend,
+      backend
+    ])
+    expect(execution.controls().map(({ input }) => input.executionModel)).toEqual([
+      expect.objectContaining({
+        providerId: 'provider-b',
+        model: 'model-b',
+        reasoningEffort: 'high'
+      }),
+      expect.objectContaining({
+        providerId: 'provider-b',
+        model: 'model-b',
+        reasoningEffort: 'high'
+      })
+    ])
+    expect(
+      (await records.snapshot()).records.map((child) => child.attempts[0].executionModel)
+    ).toEqual([
+      expect.objectContaining({ providerId: 'provider-b', model: 'model-b' }),
+      expect.objectContaining({ providerId: 'provider-b', model: 'model-b' })
+    ])
+    expect(JSON.stringify(await records.snapshot())).not.toContain('admission-memory-secret')
+    expect(claimReleases[0]).not.toHaveBeenCalled()
+    expect(claimReleases[1]).not.toHaveBeenCalled()
+    execution.controls()[0].accept()
+    execution.controls()[0].fail(new Error('first child failed after launch'))
+    execution.controls()[1].accept()
+    execution.controls()[1].cancel()
+    await expect
+      .poll(() => claimReleases.every((release) => release.mock.calls.length === 1))
+      .toBe(true)
+  })
+
+  it('releases an admission backend lease when batch capacity reservation fails', async () => {
+    const execution = createDeterministicDelegateExecution()
+    execution.rejectNextReservation('capacity')
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const release = vi.fn(async () => undefined)
+    const claim = vi.fn()
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      resolveExecutionModel: async () => ({
+        snapshot: {
+          frameworkId: 'opencode',
+          providerId: 'provider-b',
+          backendId: 'opencode:provider-b',
+          modelRoute: 'opencode-openai',
+          model: 'model-b',
+          reasoningEffort: 'high'
+        },
+        backendLease: { claim, release }
+      })
+    })
+
+    await expect(work.delegate(caller, [{ task: 'one' }, { task: 'two' }])).rejects.toMatchObject({
+      code: 'capacity'
+    })
+    expect(release).toHaveBeenCalledOnce()
+    expect(claim).not.toHaveBeenCalled()
+    await expect(records.snapshot()).resolves.toMatchObject({ records: [] })
+  })
+
+  it('rejects an unavailable configured model without capacity or durable child side effects', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      resolveExecutionModel: async () => {
+        throw new Error('configured model unavailable')
+      }
+    })
+
+    await expect(work.delegate(caller, { task: 'must not start' })).rejects.toThrow(
+      'configured model unavailable'
+    )
+    expect(execution.reservationCounts()).toEqual([])
+    await expect(records.snapshot()).resolves.toMatchObject({ records: [] })
+  })
+
   it('returns timed observations only after every child has established launch', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({
@@ -2982,6 +3107,16 @@ describe('durable delegated work', () => {
     const work = createDurableDelegatedWork({
       execution,
       records,
+      resolveExecutionModel: async () => ({
+        snapshot: {
+          frameworkId: 'codex',
+          providerId: 'stable-provider',
+          backendId: 'codex:stable-provider',
+          modelRoute: 'codex-responses',
+          model: 'stable-model',
+          reasoningEffort: 'max'
+        }
+      }),
       workspace: {
         async prepare(_session, frameId) {
           workspaceFrames.push(frameId)
@@ -3025,8 +3160,19 @@ describe('durable delegated work', () => {
     expect(execution.controls()[1].input).toMatchObject({
       frameId,
       task: 'Check a counterexample',
-      continuation: true
+      continuation: true,
+      executionModel: {
+        providerId: 'stable-provider',
+        model: 'stable-model',
+        reasoningEffort: 'max'
+      }
     })
+    expect(
+      (await records.snapshot()).records[0].attempts.map((attempt) => attempt.executionModel)
+    ).toEqual([
+      expect.objectContaining({ providerId: 'stable-provider', model: 'stable-model' }),
+      expect.objectContaining({ providerId: 'stable-provider', model: 'stable-model' })
+    ])
     expect(execution.controls()[1].input).not.toHaveProperty('profile')
     expect(workspaceFrames).toEqual([frameId, frameId])
     await expect(work.sessionSummary(caller.session)).resolves.toEqual({

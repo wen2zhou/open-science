@@ -14,10 +14,8 @@ import { NotebookLocalRpcServer } from './local-rpc-server'
 import { AgentsService } from '../agents/agents-service'
 import { createProfileService } from '../specialist/service'
 import { createDeterministicDelegateExecution } from '../delegated-work/deterministic-execution'
-import {
-  createDurableDelegatedWork,
-  createInMemoryDelegatedWorkRecords
-} from '../delegated-work/durable-delegated-work'
+import { createInMemoryDelegatedWorkRecords } from '../delegated-work/durable-delegated-work'
+import { createTestDurableDelegatedWork as createDurableDelegatedWork } from '../delegated-work/durable-delegated-work-test-fixture'
 
 // Run with: RUN_KERNEL=1 npx vitest run src/main/notebook/repl-loop.integration.test.ts
 // Node is always available in vitest, so the only gate is RUN_KERNEL. The child is spawned exactly

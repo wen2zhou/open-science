@@ -23,6 +23,7 @@ import {
 import {
   DEFAULT_AGENT_FRAMEWORK_ID,
   getAgentFramework,
+  releaseResolvedAgentBackendLeases,
   type AgentModelCatalogEntry,
   type AgentModelChangeTarget,
   type AgentModelRoute,
@@ -95,7 +96,14 @@ export type ExplicitAgentBackendTarget = Readonly<{
   providerId: string
   model: Readonly<{ kind: 'required'; id: string }> | Readonly<{ kind: 'provider-default' }>
   reasoningEffort: ReasoningEffort
+  resolvedReasoningEffort?: ResolvedReasoningEffort
 }>
+
+export type AdmittedAgentBackendTarget = ExplicitAgentBackendTarget &
+  Readonly<{
+    expectedBackendId: string
+    expectedModelRoute: AgentModelRoute
+  }>
 
 export type AgentSpawnConfig = {
   envOverrides: Record<string, string>
@@ -493,8 +501,25 @@ export class AgentBackendResolver {
       target.providerId,
       modelSelection,
       target.reasoningEffort,
-      context
+      context,
+      target.resolvedReasoningEffort
     )
+  }
+
+  async resolveAdmittedTarget(
+    target: AdmittedAgentBackendTarget,
+    context: AgentBackendResolutionContext = {}
+  ): Promise<ResolvedAgentBackend> {
+    const backend = await this.resolveExplicitTarget(target, context)
+    if (
+      backend.framework.id === target.frameworkId &&
+      backend.backendId === target.expectedBackendId &&
+      backend.modelRoute === target.expectedModelRoute
+    ) {
+      return backend
+    }
+    await releaseResolvedAgentBackendLeases(backend)
+    throw new Error('The configured Subagent backend route changed since admission.')
   }
 
   async resolveActiveReasoningEffort(intent: ReasoningEffort): Promise<ResolvedReasoningEffort> {
@@ -540,7 +565,8 @@ export class AgentBackendResolver {
     providerId: string | undefined,
     modelSelection: RuntimeProviderModelSelection,
     effortIntent: ReasoningEffort,
-    context: AgentBackendResolutionContext
+    context: AgentBackendResolutionContext,
+    explicitResolvedEffort?: ResolvedReasoningEffort
   ): Promise<ResolvedAgentBackend> {
     const framework = getAgentFramework(frameworkId)
     const storedProvider = providerId
@@ -569,7 +595,7 @@ export class AgentBackendResolver {
     const modelRoute = forceNativeResponsesCompatibility
       ? 'codex-responses-compatibility'
       : configuredModelRoute
-    const resolvedEffort = resolvedModelEffort(effortIntent, target)
+    const resolvedEffort = explicitResolvedEffort ?? resolvedModelEffort(effortIntent, target)
     const sessionEffort: ModelReasoningEffort | undefined =
       resolvedEffort === 'default' ? undefined : resolvedEffort
     const supportedReasoningEfforts = target.reasoningEffortProfile.supported

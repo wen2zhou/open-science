@@ -46,6 +46,7 @@ import type {
   PreviewGitHubSkillRequest,
   PreviewSkillZipRequest,
   ReasoningEffort,
+  SubagentModelConfiguration,
   SkillBundlePreviewResult,
   SkillImportPreviewContent,
   SkillSource,
@@ -60,10 +61,15 @@ import type { PackageMirror } from '../../shared/mirror'
 import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement, RuntimeSelection } from '../../shared/notebook-runtime'
 import type { ResolvedReasoningEffort } from '../../shared/reasoning-effort'
+import type { ResolvedSubagentModelSnapshot } from '../../shared/session-persistence'
+import { createDelegateExecutionBackendLease } from '../delegated-work/execution-backend-lease'
+import type { DelegatedExecutionModelAdmission } from '../delegated-work/execution-port'
 import { resolveStorageRoot } from '../storage-root'
 import {
   DEFAULT_AGENT_FRAMEWORK_ID,
+  getAgentFramework,
   listAgentFrameworks,
+  releaseResolvedAgentBackendLeases,
   type AgentModelChangeTarget,
   type AgentFrameworkId,
   type ResolvedAgentBackend
@@ -273,6 +279,7 @@ class SettingsService {
       onboardingCompletedAt: preferences.onboardingCompletedAt,
       packageMirror: settings.packageMirror,
       reasoningEffort: preferences.reasoningEffort,
+      subagentModel: settings.subagentModel ?? { mode: 'inherit' },
       notificationsEnabled: preferences.notificationsEnabled,
       conversationSkillImportEnabled: preferences.conversationSkillImportEnabled,
       closePreference: preferences.closePreference,
@@ -384,11 +391,127 @@ class SettingsService {
     return this.getSettingsView()
   }
 
+  async setSubagentModel(configuration: SubagentModelConfiguration): Promise<SettingsSnapshot> {
+    await this.repository.setSubagentModel(configuration, (settings, candidate) => {
+      if (candidate.mode === 'inherit') return
+      const provider = settings.providers.find((entry) => entry.id === candidate.providerId)
+      const validationFailed =
+        provider?.lastValidationFailure !== undefined &&
+        (provider.lastValidatedAt === undefined ||
+          provider.lastValidationFailure.at >= provider.lastValidatedAt)
+      if (!provider || validationFailed) {
+        throw new Error(
+          'The selected Subagent model is no longer available. Refresh the model catalog.'
+        )
+      }
+      const framework = getAgentFramework(settings.agentFrameworkId ?? DEFAULT_AGENT_FRAMEWORK_ID)
+      const target = this.providers.resolveRuntimeTarget(
+        provider,
+        { kind: 'required', model: candidate.model },
+        framework
+      )
+      if (
+        !target.frameworkCompatible ||
+        (framework.id === 'codex' && !target.modelBridgeSupported)
+      ) {
+        throw new Error(
+          'The selected Subagent model is not available for the active Agent Framework. Refresh the model catalog.'
+        )
+      }
+      return target.reasoningEffortProfile.supported
+        ? candidate
+        : { ...candidate, reasoningEffort: 'default' }
+    })
+    return this.getSettingsView()
+  }
+
   // Projects one of the app's five stable user-intent slots through the active model's static effort
   // profile. This is intentionally async only because settings are read from disk; capability lookup
   // is synchronous and never performs provider discovery or a network request.
   async resolveActiveReasoningEffort(intent: ReasoningEffort): Promise<ResolvedReasoningEffort> {
     return this.backendResolver.resolveActiveReasoningEffort(intent)
+  }
+
+  async admitSubagentExecutionModel(
+    frameworkId: AgentFrameworkId,
+    inherited: Readonly<{
+      backendId?: string
+      modelRoute?: ResolvedSubagentModelSnapshot['modelRoute']
+      model?: string
+      reasoningEffort?: Exclude<ResolvedReasoningEffort, 'default'>
+    }>
+  ): Promise<DelegatedExecutionModelAdmission> {
+    const settings = await this.repository.getSettings()
+    const configuration = settings.subagentModel ?? { mode: 'inherit' as const }
+    if (configuration.mode === 'inherit') {
+      const prefix = `${frameworkId}:`
+      const providerId = inherited.backendId?.startsWith(prefix)
+        ? inherited.backendId.slice(prefix.length)
+        : undefined
+      if (!providerId || !inherited.backendId || !inherited.modelRoute || !inherited.model) {
+        throw new Error('The originating Session has no complete Main Agent runtime model.')
+      }
+      const snapshot = Object.freeze({
+        frameworkId,
+        providerId,
+        backendId: inherited.backendId,
+        modelRoute: inherited.modelRoute,
+        model: inherited.model,
+        reasoningEffort: inherited.reasoningEffort ?? 'default'
+      })
+      const backend = await this.resolveAdmittedSubagentBackend(snapshot)
+      return Object.freeze({
+        snapshot,
+        backendLease: createDelegateExecutionBackendLease(backend)
+      })
+    }
+
+    const provider = settings.providers.find(
+      (candidate) => candidate.id === configuration.providerId
+    )
+    const validationFailed =
+      provider?.lastValidationFailure !== undefined &&
+      (provider.lastValidatedAt === undefined ||
+        provider.lastValidationFailure.at >= provider.lastValidatedAt)
+    if (validationFailed) {
+      throw new Error('The configured Subagent model provider validation failed.')
+    }
+
+    const backend = await this.resolveExplicitAgentBackend({
+      frameworkId,
+      providerId: configuration.providerId,
+      model: { kind: 'required', id: configuration.model },
+      reasoningEffort: configuration.reasoningEffort
+    })
+    try {
+      if (!backend.backendId || !backend.modelRoute) {
+        throw new Error('The configured Subagent model has no stable runtime route.')
+      }
+      const snapshot = Object.freeze({
+        frameworkId,
+        providerId: configuration.providerId,
+        backendId: backend.backendId,
+        modelRoute: backend.modelRoute,
+        model: configuration.model,
+        reasoningEffort: backend.sessionEffort ?? 'default'
+      })
+      return Object.freeze({
+        snapshot,
+        backendLease: createDelegateExecutionBackendLease(backend)
+      })
+    } catch (error) {
+      await releaseResolvedAgentBackendLeases(backend)
+      throw error
+    }
+  }
+
+  async resolveSubagentExecutionModel(
+    frameworkId: AgentFrameworkId,
+    inherited: Parameters<SettingsService['admitSubagentExecutionModel']>[1]
+  ): Promise<ResolvedSubagentModelSnapshot> {
+    const admission = await this.admitSubagentExecutionModel(frameworkId, inherited)
+    await admission.backendLease?.release()
+    return admission.snapshot
   }
 
   async resolveActiveModelChangeTarget(): Promise<AgentModelChangeTarget | undefined> {
@@ -935,6 +1058,24 @@ class SettingsService {
     context: AgentBackendResolutionContext = {}
   ): Promise<ResolvedAgentBackend> {
     return this.backendResolver.resolveExplicitTarget(target, context)
+  }
+
+  async resolveAdmittedSubagentBackend(
+    snapshot: ResolvedSubagentModelSnapshot,
+    context: AgentBackendResolutionContext = {}
+  ): Promise<ResolvedAgentBackend> {
+    return this.backendResolver.resolveAdmittedTarget(
+      {
+        frameworkId: snapshot.frameworkId,
+        providerId: snapshot.providerId,
+        model: { kind: 'required', id: snapshot.model },
+        reasoningEffort: 'default',
+        resolvedReasoningEffort: snapshot.reasoningEffort,
+        expectedBackendId: snapshot.backendId,
+        expectedModelRoute: snapshot.modelRoute
+      },
+      context
+    )
   }
 
   async resolveAgentBackend(

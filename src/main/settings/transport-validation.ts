@@ -2,7 +2,8 @@ import {
   isAppIconVariant,
   isReasoningEffort,
   type AppIconVariant,
-  type ReasoningEffort
+  type ReasoningEffort,
+  type SubagentModelConfiguration
 } from '../../shared/settings'
 import type { CloseActionPreference } from '../../shared/window-controls'
 
@@ -25,6 +26,35 @@ const readReasoningEffort = (request: unknown): ReasoningEffort => {
     throw new Error(`Unknown reasoning effort: ${String(effort)}`)
   }
   return effort
+}
+
+const readSubagentModel = (request: unknown): SubagentModelConfiguration => {
+  const configuration = readField(request, 'configuration')
+  if (typeof configuration !== 'object' || configuration === null || Array.isArray(configuration)) {
+    throw new Error('Invalid Subagent model configuration.')
+  }
+  const value = configuration as Record<string, unknown>
+  if (value.mode === 'inherit' && Object.keys(value).length === 1) return { mode: 'inherit' }
+  if (
+    value.mode === 'fixed' &&
+    Object.keys(value).every((key) =>
+      ['mode', 'providerId', 'model', 'reasoningEffort'].includes(key)
+    ) &&
+    Object.keys(value).length === 4 &&
+    typeof value.providerId === 'string' &&
+    value.providerId.trim() !== '' &&
+    typeof value.model === 'string' &&
+    value.model.trim() !== '' &&
+    isReasoningEffort(value.reasoningEffort)
+  ) {
+    return {
+      mode: 'fixed',
+      providerId: value.providerId,
+      model: value.model,
+      reasoningEffort: value.reasoningEffort
+    }
+  }
+  throw new Error('Invalid Subagent model configuration.')
 }
 
 const readConversationSkillImportEnabled = (request: unknown): boolean => {
@@ -64,5 +94,6 @@ export {
   readConversationSkillImportEnabled,
   readIsolatedClaudeToken,
   readNotificationsEnabled,
-  readReasoningEffort
+  readReasoningEffort,
+  readSubagentModel
 }

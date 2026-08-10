@@ -5,6 +5,7 @@ import type { PermissionProfileId } from '../../shared/permission-profiles'
 import {
   DelegateExecutionError,
   type DelegateCapacityReservation,
+  type DelegateExecutionBackendClaim,
   type DelegateExecution,
   type DelegateExecutionInput
 } from './execution-port'
@@ -12,7 +13,7 @@ import { RootDelegatePermissionOwner } from './delegated-work-permissions'
 import { DelegatedWorkProjectionOwner } from './delegated-work-projection'
 import { DelegatedWorkReadModel } from './delegated-work-read-model'
 import { currentAttempt, sameSession } from './delegated-work-record-invariants'
-import { DelegatedWorkAdmissionPolicy } from './delegated-work-admission'
+import { createAdmissionGate, DelegatedWorkAdmissionPolicy } from './delegated-work-admission'
 import { DurableDelegatedWorkError } from './durable-delegated-work-error'
 import { createInMemoryDelegatedWorkRecords } from './in-memory-delegated-work-records'
 import {
@@ -66,15 +67,7 @@ const createDurableDelegatedWork = (
   const messageOutcomes = new Map<string, Promise<DurableSendMessageOutcome>>()
   const stoppingSessions = new Set<string>()
   const cancelledTurns = new Set<string>()
-  let admissionTail: Promise<void> = Promise.resolve()
-  const withAdmissionLock = <Result>(operation: () => Promise<Result>): Promise<Result> => {
-    const result = admissionTail.then(operation)
-    admissionTail = result.then(
-      () => undefined,
-      () => undefined
-    )
-    return result
-  }
+  const withAdmissionLock = createAdmissionGate()
   const turnIdentity = (session: SessionKey, messageId: string): string =>
     `${session.projectId}\u0000${session.sessionId}\u0000${messageId}`
   const assertTurnOpen = async (session: SessionKey, messageId: string): Promise<void> => {
@@ -131,7 +124,8 @@ const createDurableDelegatedWork = (
     reservation: DelegateCapacityReservation,
     slotId: string,
     task = child.task,
-    continuation = false
+    continuation = false,
+    executionBackendClaim?: DelegateExecutionBackendClaim
   ): Readonly<{ completion: Promise<void>; established: Promise<void> }> => {
     const attempt = currentAttempt(child)
     const runtimeSegmentId = createId('runtime')
@@ -200,6 +194,8 @@ const createDurableDelegatedWork = (
           frameId: child.frameId,
           attemptId: attempt.id,
           runtimeSegmentId,
+          executionModel: attempt.executionModel!,
+          ...(executionBackendClaim ? { executionBackend: executionBackendClaim.backend } : {}),
           task,
           ...(continuation ? {} : { context: child.context }),
           inputs: child.inputs,
@@ -297,6 +293,7 @@ const createDurableDelegatedWork = (
       } finally {
         permissionOwner.clearAttempt(child.frameId, attempt.id)
         await turnLifecycle.dispose()
+        await executionBackendClaim?.release().catch(() => undefined)
         await reservation.release(slotId).catch(() => undefined)
         if (running.get(child.frameId)?.attemptId === attempt.id) running.delete(child.frameId)
       }
@@ -539,10 +536,13 @@ const createDurableDelegatedWork = (
       requestOrRequests,
       caller.parentSpecialistProfileId
     )
+    const executionModelAdmission = await options.resolveExecutionModel(caller)
+    const executionModel = executionModelAdmission.snapshot
     let reservation: DelegateCapacityReservation
     try {
       reservation = await options.execution.reserve(requests.length)
     } catch (error) {
+      await executionModelAdmission.backendLease?.release().catch(() => undefined)
       if (error instanceof DelegateExecutionError) {
         throw new DurableDelegatedWorkError(error.code, error.message)
       }
@@ -569,6 +569,7 @@ const createDurableDelegatedWork = (
         title,
         request: { ...request, task },
         resolvedAgent: resolvedAgents[index],
+        executionModel,
         startedAt: now()
       }
     })
@@ -582,6 +583,7 @@ const createDurableDelegatedWork = (
       })
     } catch (error) {
       await reservation.releaseAll()
+      await executionModelAdmission.backendLease?.release().catch(() => undefined)
       throw error
     }
     const children: DurableChild[] = admissions.map((admission) => ({
@@ -600,14 +602,25 @@ const createDurableDelegatedWork = (
           initiatingTurnMessageId: caller.originMessageId,
           status: 'running',
           resolvedAgent: structuredClone(admission.resolvedAgent),
+          executionModel: structuredClone(admission.executionModel),
           runtimeSegmentIds: [],
           startedAt: admission.startedAt
         }
       ],
       pendingMessages: []
     }))
+    const claims = children.map(() => executionModelAdmission.backendLease?.claim())
+    await executionModelAdmission.backendLease?.release().catch(() => undefined)
     const launches = children.map((child, index) =>
-      launch(child, caller.session, reservation, reservation.slotIds[index])
+      launch(
+        child,
+        caller.session,
+        reservation,
+        reservation.slotIds[index],
+        child.task,
+        false,
+        claims[index]
+      )
     )
     const completions = launches.map(({ completion }) => completion)
     const receipts = admissions.map(({ frameId, attemptId, title, resolvedAgent }) => ({
@@ -873,6 +886,13 @@ const createDurableDelegatedWork = (
           previous.resolvedAgent.kind === 'main'
             ? ({ kind: 'main' } as const)
             : await admissionPolicy.resolveAgent(previous.resolvedAgent.profileId)
+        const executionModel = child.attempts[0]?.executionModel
+        if (!executionModel) {
+          throw new DurableDelegatedWorkError(
+            'admission_rejection',
+            'historical delegated work has no stable Subagent model snapshot'
+          )
+        }
         let reservation: DelegateCapacityReservation
         try {
           reservation = await options.execution.reserve(1)
@@ -896,6 +916,7 @@ const createDurableDelegatedWork = (
               userMessageId: createId('message'),
               message: message.trim(),
               resolvedAgent,
+              executionModel,
               startedAt: now(),
               callerSource: {
                 rootMessageId: caller.originMessageId,

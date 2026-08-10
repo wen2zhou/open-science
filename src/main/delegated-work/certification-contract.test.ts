@@ -8,13 +8,13 @@ import {
   type NativeDelegationAudit
 } from './certification'
 import {
-  createDurableDelegatedWork,
   createInMemoryDelegatedWorkRecords,
   type AuthenticatedDelegateCaller,
   type DelegatedArtifactScope,
   type DelegatedReviewProjectionScope,
   type DurableDelegatedWork
 } from './durable-delegated-work'
+import { createTestDurableDelegatedWork as createDurableDelegatedWork } from './durable-delegated-work-test-fixture'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
 import type {
   DelegateExecution,

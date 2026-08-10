@@ -1,5 +1,10 @@
 import type { PackageMirror } from '../../../shared/mirror'
-import type { AppIconVariant, ReasoningEffort, SettingsSnapshot } from '../../../shared/settings'
+import type {
+  AppIconVariant,
+  ReasoningEffort,
+  SettingsSnapshot,
+  SubagentModelConfiguration
+} from '../../../shared/settings'
 import type { CloseActionPreference } from '../../../shared/window-controls'
 import { isMirrorConfigured } from '../pages/settings/mirror-view'
 import type {
@@ -11,6 +16,8 @@ type SettingsPreferencesState = {
   onboardingCompletedAt?: number
   packageMirror?: PackageMirror
   reasoningEffort: ReasoningEffort
+  subagentModel?: SubagentModelConfiguration
+  subagentModelPending?: boolean
   notificationsEnabled: boolean
   conversationSkillImportEnabled: boolean
   closePreference: CloseActionPreference | undefined
@@ -26,6 +33,7 @@ type OptimisticPreferenceField =
 
 export type SettingsPreferencesActions = {
   setReasoningEffort: (effort: ReasoningEffort) => Promise<void>
+  setSubagentModel: (configuration: SubagentModelConfiguration) => Promise<void>
   setNotificationsEnabled: (enabled: boolean) => Promise<void>
   setConversationSkillImportEnabled: (enabled: boolean) => Promise<void>
   setClosePreference: (preference: CloseActionPreference | undefined) => Promise<void>
@@ -43,7 +51,8 @@ type SettingsPreferencesCommands = Pick<
   | 'setAppIconVariant'
   | 'markOnboardingComplete'
   | 'setPackageMirror'
->
+> &
+  Partial<Pick<Window['api']['settings'], 'getSettings' | 'setSubagentModel'>>
 
 type SettingsPreferencesSliceOptions = {
   getState: () => SettingsPreferencesState
@@ -82,7 +91,7 @@ export const createSettingsPreferencesSlice = ({
 
     try {
       const snapshot = await write.run(command)
-      write.complete({ value: snapshot[field] as SettingsPreferencesState[Field] })
+      write.complete({ value: snapshot[field] as unknown as SettingsPreferencesState[Field] })
       if (!write.isCurrent()) return
       reconcileSnapshot(snapshot)
       write.succeed()
@@ -97,6 +106,30 @@ export const createSettingsPreferencesSlice = ({
   }
 
   return {
+    setSubagentModel: async (configuration) => {
+      const write = writeCoordinator.begin('subagentModel')
+      setState({ subagentModelPending: true })
+      try {
+        const snapshot = await getCommands().setSubagentModel!({ configuration })
+        if (!write.isCurrent()) return
+        reconcileSnapshot(snapshot)
+        write.succeed()
+      } catch (error) {
+        write.fail('Could not save Subagent model. Refresh the model catalog and try again.')
+        console.error('Failed to set Subagent model', error)
+        const refresh = getCommands().getSettings
+        if (refresh) {
+          try {
+            reconcileSnapshot(await refresh())
+          } catch (refreshError) {
+            console.error('Failed to refresh Settings after rejected Subagent model', refreshError)
+          }
+        }
+      } finally {
+        if (write.isCurrent()) setState({ subagentModelPending: false })
+      }
+    },
+
     setReasoningEffort: (effort) =>
       runOptimisticWrite(
         'reasoningEffort',

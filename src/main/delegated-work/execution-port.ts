@@ -1,5 +1,7 @@
 import type { AcpAgentRuntimeUpdate, AcpPermissionScope, AcpTurnTokenUsage } from '../../shared/acp'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
+import type { ResolvedSubagentModelSnapshot } from '../../shared/session-persistence'
+import type { ResolvedAgentBackend } from '../agent-framework'
 
 type DelegateExecutionErrorCode = 'capacity' | 'unsupported_framework'
 
@@ -50,6 +52,10 @@ type DelegateExecutionInput = Readonly<{
   frameId: string
   attemptId: string
   runtimeSegmentId: string
+  executionModel?: ResolvedSubagentModelSnapshot
+  // Admission-only capability. It is never persisted; the durable owner releases it after this
+  // Attempt settles, while the production runtime consumes only the lease-free backend view.
+  executionBackend?: ResolvedAgentBackend
   task: string
   context?: string
   inputs: readonly string[]
@@ -58,6 +64,21 @@ type DelegateExecutionInput = Readonly<{
   continuation: boolean
   artifactCurrentRunFile?: string
   turn?: DelegateChildTurnIdentity
+}>
+
+type DelegateExecutionBackendClaim = Readonly<{
+  backend: ResolvedAgentBackend
+  release(): Promise<void>
+}>
+
+type DelegateExecutionBackendLease = Readonly<{
+  claim(): DelegateExecutionBackendClaim
+  release(): Promise<void>
+}>
+
+type DelegatedExecutionModelAdmission = Readonly<{
+  snapshot: ResolvedSubagentModelSnapshot
+  backendLease?: DelegateExecutionBackendLease
 }>
 
 type DelegateChildTurnIdentity = Readonly<{
@@ -96,12 +117,15 @@ type DelegateExecution = Readonly<{
 export { DelegateExecutionError }
 export type {
   DelegateCapacityReservation,
+  DelegateExecutionBackendClaim,
+  DelegateExecutionBackendLease,
   DelegateExecution,
   DelegateExecutionErrorCode,
   DelegateExecutionEvent,
   DelegateExecutionInput,
   DelegateChildTurnIdentity,
   DelegateExecutionOutcome,
+  DelegatedExecutionModelAdmission,
   DelegatePermissionResponse,
   RunningDelegateExecution
 }

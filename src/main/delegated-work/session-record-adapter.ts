@@ -78,6 +78,7 @@ const createSessionDelegatedWorkRecords = (
             context: child.request.context,
             inputs: child.request.inputs,
             resolvedAgent: child.resolvedAgent,
+            ...(child.executionModel ? { executionModel: child.executionModel } : {}),
             startedAt: child.startedAt,
             callerSource: {
               rootMessageId: input.caller.originMessageId,
@@ -98,6 +99,7 @@ const createSessionDelegatedWorkRecords = (
           messageId: input.userMessageId,
           message: input.message,
           resolvedAgent: input.resolvedAgent,
+          ...(input.executionModel ? { executionModel: input.executionModel } : {}),
           startedAt: input.startedAt,
           callerSource: input.callerSource,
           initiatingTurnMessageId: input.initiatingTurnMessageId
@@ -114,7 +116,13 @@ const createSessionDelegatedWorkRecords = (
           frameId,
           attemptId,
           runtimeSegmentId,
-          frameworkId: options.frameworkId,
+          frameworkId: attempt?.executionModel?.frameworkId ?? options.frameworkId,
+          ...(attempt?.executionModel
+            ? {
+                backendId: attempt.executionModel.backendId,
+                model: attempt.executionModel.model
+              }
+            : {}),
           ...(attempt?.resolvedAgent.kind === 'specialist'
             ? { agentName: attempt.resolvedAgent.displayName }
             : {}),
@@ -364,6 +372,9 @@ const createSessionDelegatedWorkRecords = (
               attempts: record.attempts.map((attempt) => ({
                 ...attempt,
                 resolvedAgent: structuredClone(attempt.resolvedAgent),
+                ...(attempt.executionModel
+                  ? { executionModel: structuredClone(attempt.executionModel) }
+                  : {}),
                 runtimeSegmentIds: [...attempt.runtimeSegmentIds]
               })),
               pendingMessages: record.pendingMessages.map((message) => ({ ...message }))

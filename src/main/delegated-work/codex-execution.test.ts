@@ -14,10 +14,8 @@ import {
   delegatedWorkCertificationContract,
   type DelegatedWorkCertificationDriver
 } from './certification-contract.test'
-import {
-  createDurableDelegatedWork,
-  createInMemoryDelegatedWorkRecords
-} from './durable-delegated-work'
+import { createInMemoryDelegatedWorkRecords } from './durable-delegated-work'
+import { createTestDurableDelegatedWork as createDurableDelegatedWork } from './durable-delegated-work-test-fixture'
 import type { DelegateExecutionInput } from './execution-port'
 
 type Deferred<Value> = Readonly<{

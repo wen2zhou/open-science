@@ -816,6 +816,55 @@ describe('normalizeSessionFile with activities', () => {
     })
   })
 
+  it('round-trips a resolved Subagent model snapshot without backfilling legacy Attempts', () => {
+    const baseAttempt = {
+      id: 'attempt-with-model',
+      status: 'cancelled',
+      resolvedAgent: { kind: 'main' },
+      runtimeSegmentIds: [],
+      startedAt: 1,
+      endedAt: 2,
+      cancellationReason: 'runtime_interrupted'
+    }
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      runtimeContext: {
+        version: 1,
+        revision: 1,
+        delegatedWork: {
+          records: [
+            {
+              agentFrameId: 'child-frame',
+              attempts: [
+                {
+                  ...baseAttempt,
+                  executionModel: {
+                    frameworkId: 'opencode',
+                    providerId: 'provider-b',
+                    backendId: 'opencode:provider-b',
+                    modelRoute: 'opencode-openai',
+                    model: 'model-b',
+                    reasoningEffort: 'high'
+                  }
+                }
+              ],
+              pendingMessages: []
+            }
+          ]
+        }
+      }
+    })
+
+    expect(restored?.runtimeContext?.delegatedWork?.records[0].attempts[0].executionModel).toEqual({
+      frameworkId: 'opencode',
+      providerId: 'provider-b',
+      backendId: 'opencode:provider-b',
+      modelRoute: 'opencode-openai',
+      model: 'model-b',
+      reasoningEffort: 'high'
+    })
+  })
+
   it('preserves a valid archive timestamp across a file round-trip', () => {
     const persisted = createSessionFile({
       ...(createSessionWithActivity(undefined) as PersistedChatSession),

@@ -1064,6 +1064,19 @@ const createApplicationModules = async (
   })
   const delegatedWork = createProductionDelegatedWorkComposition({
     dataRoot: resolveDataRoot(),
+    resolveExecutionModel: async (session) => {
+      if (!session.agentFrameworkId) {
+        throw new Error('The originating Session has no Agent Framework identity.')
+      }
+      const backend = runtimeRef.current?.captureSessionBackend(session.id)
+      if (!backend) throw new Error('The originating Session runtime is unavailable.')
+      return settingsService.admitSubagentExecutionModel(session.agentFrameworkId, {
+        backendId: backend.backendId,
+        modelRoute: backend.modelRoute,
+        model: backend.context.model,
+        reasoningEffort: backend.session.effort
+      })
+    },
     onAgentRuntimeUpdate: (update) => broadcastToRenderers('acp:agent-runtime-update', update),
     sessions: {
       commands: sessionPersistenceCoordinator,

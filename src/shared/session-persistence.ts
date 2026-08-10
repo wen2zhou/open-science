@@ -17,6 +17,7 @@ import {
   type PermissionProfileId
 } from './permission-profiles'
 import type { AgentFrameworkId } from './settings'
+import type { ResolvedReasoningEffort } from './reasoning-effort'
 import { sanitizeActivityGroupTitle } from './activity-groups'
 import {
   parsePlanDocumentV1,
@@ -78,6 +79,21 @@ export type DelegatedWorkResolvedAgent =
       displayName: string
     }>
 
+export type ResolvedSubagentModelSnapshot = Readonly<{
+  frameworkId: AgentFrameworkId
+  providerId: string
+  backendId: string
+  modelRoute:
+    | 'claude-anthropic'
+    | 'opencode-anthropic'
+    | 'opencode-openai'
+    | 'codex-responses'
+    | 'codex-responses-compatibility'
+    | 'codex-bridge'
+  model: string
+  reasoningEffort: ResolvedReasoningEffort
+}>
+
 export type DelegatedCallerSource = Readonly<{
   rootMessageId: string
   toolInvocationId: string
@@ -90,6 +106,7 @@ export type DelegatedWorkAttemptRecord = Readonly<{
   initiatingTurnMessageId?: string
   status: DelegatedWorkAttemptStatus
   resolvedAgent: DelegatedWorkResolvedAgent
+  executionModel?: ResolvedSubagentModelSnapshot
   runtimeSegmentIds: readonly string[]
   startedAt: number
   endedAt?: number
@@ -583,6 +600,63 @@ const sanitizeDelegatedWorkResolvedAgent = (
   return { kind: 'specialist', profileId, revision, displayName }
 }
 
+const SUBAGENT_MODEL_ROUTES = new Set<ResolvedSubagentModelSnapshot['modelRoute']>([
+  'claude-anthropic',
+  'opencode-anthropic',
+  'opencode-openai',
+  'codex-responses',
+  'codex-responses-compatibility',
+  'codex-bridge'
+])
+const SUBAGENT_REASONING_EFFORTS = new Set<ResolvedReasoningEffort>([
+  'default',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra'
+])
+
+const sanitizeResolvedSubagentModelSnapshot = (
+  value: unknown
+): ResolvedSubagentModelSnapshot | undefined => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyFields(value, [
+      'frameworkId',
+      'providerId',
+      'backendId',
+      'modelRoute',
+      'model',
+      'reasoningEffort'
+    ])
+  )
+    return undefined
+  const frameworkId = asString(value.frameworkId) as AgentFrameworkId | undefined
+  const providerId = asString(value.providerId)
+  const backendId = asString(value.backendId)
+  const modelRoute = asString(value.modelRoute) as
+    ResolvedSubagentModelSnapshot['modelRoute'] | undefined
+  const model = asString(value.model)
+  const reasoningEffort = asString(value.reasoningEffort) as ResolvedReasoningEffort | undefined
+  if (
+    !frameworkId ||
+    !AGENT_FRAMEWORK_IDS.has(frameworkId) ||
+    !providerId ||
+    !backendId ||
+    !modelRoute ||
+    !SUBAGENT_MODEL_ROUTES.has(modelRoute) ||
+    !model ||
+    !reasoningEffort ||
+    !SUBAGENT_REASONING_EFFORTS.has(reasoningEffort)
+  )
+    return undefined
+  return { frameworkId, providerId, backendId, modelRoute, model, reasoningEffort }
+}
+
 const sanitizeSessionDelegatedWorkRuntimeContext = (
   value: unknown
 ): SessionDelegatedWorkRuntimeContext | undefined => {
@@ -616,6 +690,7 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
           'initiatingTurnMessageId',
           'status',
           'resolvedAgent',
+          'executionModel',
           'runtimeSegmentIds',
           'startedAt',
           'endedAt',
@@ -633,6 +708,10 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
           : asString(rawAttempt.initiatingTurnMessageId)
       const status = asString(rawAttempt.status) as DelegatedWorkAttemptStatus | undefined
       const resolvedAgent = sanitizeDelegatedWorkResolvedAgent(rawAttempt.resolvedAgent)
+      const executionModel =
+        rawAttempt.executionModel === undefined
+          ? undefined
+          : sanitizeResolvedSubagentModelSnapshot(rawAttempt.executionModel)
       const startedAt = asNumber(rawAttempt.startedAt)
       const runtimeSegmentIds = asStringArray(rawAttempt.runtimeSegmentIds)
       if (
@@ -642,6 +721,7 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
         !status ||
         !DELEGATED_WORK_ATTEMPT_STATUSES.has(status) ||
         !resolvedAgent ||
+        (rawAttempt.executionModel !== undefined && !executionModel) ||
         startedAt === undefined ||
         startedAt < 0 ||
         !Array.isArray(rawAttempt.runtimeSegmentIds) ||
@@ -696,6 +776,7 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
         ...(initiatingTurnMessageId ? { initiatingTurnMessageId } : {}),
         status,
         resolvedAgent,
+        ...(executionModel ? { executionModel } : {}),
         runtimeSegmentIds,
         startedAt,
         ...(endedAt !== undefined ? { endedAt } : {}),

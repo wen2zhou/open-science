@@ -20,10 +20,8 @@ import {
 import { SpecialistRepository } from '../specialist/repository'
 import { ProfileService } from '../specialist/service'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
-import {
-  createDurableDelegatedWork,
-  type AuthenticatedDelegateCaller
-} from './durable-delegated-work'
+import { type AuthenticatedDelegateCaller } from './durable-delegated-work'
+import { createTestDurableDelegatedWork as createDurableDelegatedWork } from './durable-delegated-work-test-fixture'
 import { createSessionDelegatedWorkRecords } from './session-record-adapter'
 
 const key = { projectId: 'project-1', sessionId: 'session-1' } as const

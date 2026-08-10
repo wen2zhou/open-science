@@ -425,6 +425,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.logoutIsolatedCodex',
       'settings.logoutSharedClaude',
       'settings.markOnboardingComplete',
+      'settings.onChanged',
       'settings.onConnectorApprovalRequest',
       'settings.onInstallLog',
       'settings.onSkillImportApprovalRequest',
@@ -453,6 +454,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.setPackageMirror',
       'settings.setReasoningEffort',
       'settings.setSkillEnabled',
+      'settings.setSubagentModel',
       'settings.setToolPermission',
       'settings.uninstallClaude',
       'settings.uninstallCodex',
@@ -546,10 +548,10 @@ describe('preload bridge — Connector configuration files', () => {
 })
 
 describe('preload bridge — runtime renderer contract catalog', () => {
-  it('routes all 179 owned contracts through their cataloged Electron channels', async () => {
+  it('routes all 181 owned contracts through their cataloged Electron channels', async () => {
     const requestContracts = runtimeContracts.filter(({ kind }) => kind === 'method')
 
-    expect(runtimeContracts).toHaveLength(179)
+    expect(runtimeContracts).toHaveLength(181)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()

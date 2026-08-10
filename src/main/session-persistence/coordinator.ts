@@ -1081,6 +1081,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
               initiatingTurnMessageId: child.initiatingTurnMessageId,
               status: 'running',
               resolvedAgent: child.resolvedAgent,
+              ...(child.executionModel ? { executionModel: child.executionModel } : {}),
               runtimeSegmentIds: [],
               startedAt: child.startedAt
             }
@@ -1148,6 +1149,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
         initiatingTurnMessageId: input.initiatingTurnMessageId,
         status: 'running',
         resolvedAgent: input.resolvedAgent,
+        ...(input.executionModel ? { executionModel: input.executionModel } : {}),
         runtimeSegmentIds: [],
         startedAt: input.startedAt
       })

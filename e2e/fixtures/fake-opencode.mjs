@@ -22,6 +22,12 @@ const DELEGATION_BRANCH_B_PROMPT = 'Start the active-branch partial Stop certifi
 const DELEGATION_UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
 const DELEGATION_INHERITED_SPECIALIST_PROMPT =
   'Run the production inherited Specialist delegation journey.'
+const SUBAGENT_MODEL_BATCH_PROMPT = 'Run the Subagent model batch journey.'
+const SUBAGENT_MODEL_CONTINUATION_START_PROMPT = 'Start the Subagent model continuation journey.'
+const SUBAGENT_MODEL_CONTINUATION_FINISH_PROMPT = 'Finish the Subagent model continuation journey.'
+const SUBAGENT_MODEL_UNAVAILABLE_PROMPT = 'Verify the Subagent model unavailable journey.'
+const SUBAGENT_MODEL_INHERITED_PROMPT = 'Run the inherited Subagent model journey.'
+const SUBAGENT_MODEL_HOLDER_PROMPT = 'Create the global Active model holder.'
 const DELEGATED_TERMINAL_TASK = 'Complete the certified delegated terminal fixture.'
 const DELEGATED_BOUNDED_SLOW_TASK = 'Complete the bounded fixture after a delay.'
 const DELEGATED_PERMISSION_TASK = 'Request the delegated fixture permission.'
@@ -63,6 +69,83 @@ const delegatedArtifactHandoff = async (mcpServers) => {
     .then((content) => JSON.parse(content).executionId)
     .catch(() => undefined)
   return { artifactCurrentRunFile: currentRunFile, artifactExecutionId: executionId }
+}
+
+const parseMcpResponse = (body) => {
+  const dataLine = body.split('\n').find((line) => line.startsWith('data:'))
+  const json = dataLine ? dataLine.slice('data:'.length).trim() : body.trim()
+  return json ? JSON.parse(json) : {}
+}
+
+const submitReviewerPass = async (mcpServers) => {
+  const server = mcpServers.find((candidate) => candidate.type === 'http')
+  if (!server?.url) return false
+  const token =
+    server.headers
+      ?.find((header) => header.name?.toLowerCase() === 'authorization')
+      ?.value?.replace('Bearer ', '') ?? ''
+  const baseHeaders = {
+    accept: 'application/json, text/event-stream',
+    authorization: `Bearer ${token}`,
+    'content-type': 'application/json'
+  }
+  const initialize = await fetch(server.url, {
+    method: 'POST',
+    headers: baseHeaders,
+    body: JSON.stringify({
+      jsonrpc: '2.0',
+      id: 1,
+      method: 'initialize',
+      params: {
+        protocolVersion: '2024-11-05',
+        capabilities: {},
+        clientInfo: { name: 'open-science-e2e-reviewer', version: '1.0' }
+      }
+    })
+  })
+  if (!initialize.ok) throw new Error(`Reviewer MCP initialize failed: ${initialize.status}`)
+  const initialized = parseMcpResponse(await initialize.text())
+  const sessionId = initialize.headers.get('mcp-session-id')
+  if (!sessionId || !initialized.result) {
+    throw new Error('Reviewer MCP initialize did not return a session.')
+  }
+  const headers = { ...baseHeaders, 'mcp-session-id': sessionId }
+  await fetch(server.url, {
+    method: 'POST',
+    headers,
+    body: JSON.stringify({ jsonrpc: '2.0', method: 'notifications/initialized', params: {} })
+  })
+  let nextId = 2
+  const callTool = async (name, args) => {
+    const response = await fetch(server.url, {
+      method: 'POST',
+      headers,
+      body: JSON.stringify({
+        jsonrpc: '2.0',
+        id: nextId++,
+        method: 'tools/call',
+        params: { name, arguments: args }
+      })
+    })
+    if (!response.ok) throw new Error(`${name} failed: ${response.status}`)
+    const payload = parseMcpResponse(await response.text())
+    if (payload.error) throw new Error(`${name} failed: ${payload.error.message ?? 'unknown'}`)
+    if (payload.result?.isError) {
+      throw new Error(payload.result.content?.[0]?.text ?? `${name} returned an error`)
+    }
+    return payload.result
+  }
+  await callTool('read_turn', {})
+  await callTool('submit_findings', {
+    checks: [
+      {
+        status: 'pass',
+        claim: 'The completed turn follows the requested production path.',
+        evidence: 'The Reviewer read the frozen turn through its scoped evidence server.'
+      }
+    ]
+  })
+  return true
 }
 
 const withMcpClient = async (sessionId, serverName, operation) => {
@@ -307,7 +390,11 @@ if (process.argv.includes('--version')) {
 
       let reply = 'Deterministic reply: Summarize the deterministic fixture.'
       try {
-        if (prompt.includes(PROVIDER_BRIDGE_PROMPT)) {
+        if (
+          await submitReviewerPass(sessionRoutes.get(context.params.sessionId)?.mcpServers ?? [])
+        ) {
+          reply = ''
+        } else if (prompt.includes(PROVIDER_BRIDGE_PROMPT)) {
           reply = verifyProviderBridge()
         } else if (prompt.includes(NOTEBOOK_LIFECYCLE_PROMPT)) {
           reply = await verifyNotebookLifecycle(context.params.sessionId)
@@ -386,6 +473,69 @@ if (process.argv.includes('--version')) {
             throw new Error(`Inherited Specialist delegation failed: ${JSON.stringify(delegated)}`)
           }
           reply = 'Production inherited Specialist delegation completed.'
+        } else if (prompt.includes(SUBAGENT_MODEL_BATCH_PROMPT)) {
+          const delegated = controlResultValue(
+            await runProductionDelegationRequest(
+              context.params.sessionId,
+              [
+                { task: `${DELEGATED_TERMINAL_TASK} batch A` },
+                { task: `${DELEGATED_TERMINAL_TASK} batch B` }
+              ],
+              true
+            )
+          )
+          if (
+            delegated.kind !== 'results' ||
+            delegated.children?.length !== 2 ||
+            delegated.children.some((child) => child.status !== 'completed')
+          ) {
+            throw new Error(`Subagent model batch failed: ${JSON.stringify(delegated)}`)
+          }
+          reply = 'Subagent model batch completed.'
+        } else if (prompt.includes(SUBAGENT_MODEL_CONTINUATION_START_PROMPT)) {
+          const delegated = controlResultValue(
+            await runProductionDelegation(context.params.sessionId, DELEGATED_TERMINAL_TASK, true)
+          )
+          const child = delegated.children?.[0]
+          if (delegated.kind !== 'results' || child?.status !== 'completed') {
+            throw new Error(`Subagent model initial Attempt failed: ${JSON.stringify(delegated)}`)
+          }
+          globalThis.subagentModelContinuationFrameId = child.frame_id
+          reply = 'Subagent model initial Attempt completed.'
+        } else if (prompt.includes(SUBAGENT_MODEL_CONTINUATION_FINISH_PROMPT)) {
+          const frameId = globalThis.subagentModelContinuationFrameId
+          if (!frameId) throw new Error('Subagent model continuation Frame was not captured.')
+          const continued = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `const receipt = await host.send_message(${JSON.stringify(frameId)}, "Continue after Settings changed"); return await host.collect([{ frame_id: receipt.child.frame_id, attempt_id: receipt.child.attempt_id }], { timeout_seconds: 30 })`
+            )
+          )
+          if (continued.length !== 1 || continued[0].status !== 'completed') {
+            throw new Error(`Subagent model continuation failed: ${JSON.stringify(continued)}`)
+          }
+          reply = 'Subagent model continuation completed.'
+        } else if (prompt.includes(SUBAGENT_MODEL_UNAVAILABLE_PROMPT)) {
+          const delegated = await executeControlCode(
+            context.params.sessionId,
+            `return await host.delegate([{ task: "Unavailable batch A" }, { task: "Unavailable batch B" }], { wait: false })`
+          )
+          if (delegated.status !== 'failed') {
+            throw new Error(`Unavailable Subagent model was admitted: ${JSON.stringify(delegated)}`)
+          }
+          reply = 'Unavailable Subagent model rejected the whole batch.'
+        } else if (prompt.includes(SUBAGENT_MODEL_INHERITED_PROMPT)) {
+          const delegated = await runProductionDelegation(
+            context.params.sessionId,
+            'Complete the inherited Subagent model fixture.',
+            true
+          )
+          if (delegated.status !== 'completed') {
+            throw new Error(`Inherited Subagent model failed: ${JSON.stringify(delegated)}`)
+          }
+          reply = 'Inherited Subagent model completed.'
+        } else if (prompt.includes(SUBAGENT_MODEL_HOLDER_PROMPT)) {
+          reply = 'Global Active model holder completed.'
         } else if (prompt.includes(DELEGATED_BOUNDED_SLOW_TASK)) {
           await new Promise((resolve) => setTimeout(resolve, 3_000))
           reply = 'Delayed bounded child completed.'

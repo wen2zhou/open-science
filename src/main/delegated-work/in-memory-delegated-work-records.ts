@@ -88,6 +88,9 @@ const createInMemoryDelegatedWorkRecords = (input: {
               initiatingTurnMessageId: admission.caller.originMessageId,
               status: 'running' as const,
               resolvedAgent: structuredClone(child.resolvedAgent),
+              ...(child.executionModel
+                ? { executionModel: structuredClone(child.executionModel) }
+                : {}),
               runtimeSegmentIds: [],
               startedAt: child.startedAt
             }
@@ -134,6 +137,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
         initiatingTurnMessageId: input.initiatingTurnMessageId,
         status: 'running',
         resolvedAgent: structuredClone(input.resolvedAgent),
+        ...(input.executionModel ? { executionModel: structuredClone(input.executionModel) } : {}),
         runtimeSegmentIds: [],
         startedAt: input.startedAt
       })

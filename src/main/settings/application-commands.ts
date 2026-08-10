@@ -13,6 +13,7 @@ import type {
   SetClosePreferenceRequest,
   SetNotificationsEnabledRequest,
   SetPackageMirrorRequest,
+  SetSubagentModelRequest,
   ValidateProviderRequest
 } from '../../shared/settings'
 import {
@@ -26,7 +27,8 @@ import type { SettingsService } from './service'
 import {
   readAppIconVariant,
   readClosePreference,
-  readNotificationsEnabled
+  readNotificationsEnabled,
+  readSubagentModel
 } from './transport-validation'
 import type { AppearanceSettingsWorkflows } from './workflows/appearance'
 
@@ -60,6 +62,7 @@ type CoreSettingsCommandStore = Pick<
   | 'setClosePreference'
   | 'setNotificationsEnabled'
   | 'setPackageMirror'
+  | 'setSubagentModel'
   | 'validateProvider'
 >
 
@@ -218,6 +221,11 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [request: SetPackageMirrorRequest],
     StoreResult<'setPackageMirror'>
   >('settings:set-package-mirror'),
+  setSubagentModel: defineApplicationCommand<
+    'settings:set-subagent-model',
+    readonly [request: SetSubagentModelRequest],
+    StoreResult<'setSubagentModel'>
+  >('settings:set-subagent-model'),
   validateProvider: defineApplicationCommand<
     'settings:validate-provider',
     readonly [request: ValidateProviderRequest],
@@ -256,6 +264,7 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
   settingsCoreApplicationCommands.setClosePreference,
   settingsCoreApplicationCommands.setNotificationsEnabled,
   settingsCoreApplicationCommands.setPackageMirror,
+  settingsCoreApplicationCommands.setSubagentModel,
   settingsCoreApplicationCommands.validateProvider
 ] as const)
 
@@ -344,6 +353,8 @@ const registerCoreSettingsApplicationCommands = (
         requireLocalCaller(callerContext, 'settings:set-package-mirror')
         return dependencies.service.setPackageMirror(args[0])
       },
+      'settings:set-subagent-model': ({ args }) =>
+        dependencies.service.setSubagentModel(readSubagentModel(args[0])),
       'settings:validate-provider': ({ args }) => dependencies.service.validateProvider(args[0])
     })
     return scope.complete()

@@ -441,6 +441,10 @@ class AcpRuntime {
     return this.publication.getSnapshot()
   }
 
+  captureBackend(): AcpBackendGenerationView {
+    return this.backend
+  }
+
   callSessionPlan(input: AcpSessionPlanCall): Promise<unknown> {
     return this.sessionPlanWorkflow.call(input)
   }

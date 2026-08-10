@@ -64,8 +64,143 @@ const backend = (frameworkId: AgentFrameworkId): ResolvedAgentBackend => {
   }
 }
 
+const delegatedSession = (frameworkId: AgentFrameworkId): PersistedChatSession => ({
+  ...session(frameworkId),
+  conversationGraph: {
+    schemaVersion: 1,
+    rootFrameId: 'root-frame',
+    activeFrameId: 'child-frame',
+    frames: [
+      {
+        id: 'root-frame',
+        originBindingState: 'root',
+        kind: 'root',
+        status: 'completed',
+        activeBranchId: 'root-branch',
+        createdAt: 1,
+        completedAt: 2
+      },
+      {
+        id: 'child-frame',
+        parentFrameId: 'root-frame',
+        originMessageId: 'root-prompt',
+        originBindingState: 'validated',
+        kind: 'delegate',
+        status: 'running',
+        activeBranchId: 'child-branch',
+        createdAt: 2
+      }
+    ],
+    branches: [
+      {
+        id: 'root-branch',
+        agentFrameId: 'root-frame',
+        headMessageId: 'root-prompt',
+        createdAt: 1,
+        updatedAt: 1
+      },
+      {
+        id: 'child-branch',
+        agentFrameId: 'child-frame',
+        headMessageId: 'child-prompt',
+        createdAt: 2,
+        updatedAt: 2
+      }
+    ],
+    messages: [
+      {
+        id: 'root-prompt',
+        role: 'user',
+        content: 'Coordinate',
+        status: 'complete',
+        eventIds: [],
+        createdAt: 1,
+        updatedAt: 1,
+        agentFrameId: 'root-frame',
+        introducedOnBranchId: 'root-branch',
+        revisionRootMessageId: 'root-prompt'
+      },
+      {
+        id: 'child-prompt',
+        role: 'user',
+        content: 'Investigate',
+        status: 'complete',
+        eventIds: [],
+        createdAt: 2,
+        updatedAt: 2,
+        agentFrameId: 'child-frame',
+        introducedOnBranchId: 'child-branch',
+        revisionRootMessageId: 'child-prompt'
+      }
+    ],
+    activities: [],
+    activityGroups: [],
+    runtimeSegments: []
+  }
+})
+
 describe('production delegated framework runtime bridge', () => {
-  it('certifies each durable framework through its exact resolved production backend', async () => {
+  it('prepares an admitted Attempt from its transient backend after the provider was deleted', async () => {
+    const dataRoot = await mkdtemp(join(tmpdir(), 'delegated-framework-deleted-provider-'))
+    const workspaceCwd = await mkdtemp(join(tmpdir(), 'delegated-framework-workspace-'))
+    const resolveAdmittedSubagentBackend = vi.fn(async () => {
+      throw new Error('configured provider is unavailable')
+    })
+    const issueDelegatedNotebookConnection = vi.fn(async () => ({
+      endpoint: 'http://127.0.0.1:1',
+      token: 'attempt-token',
+      release: () => undefined,
+      revoke: async () => undefined
+    }))
+    const durable = delegatedSession('opencode')
+    const admittedBackend = backend('opencode')
+    const frameworks = createProductionDelegatedFrameworkRuntime({
+      capacity: 1,
+      dataRoot,
+      runtime: { settingsService: { resolveAdmittedSubagentBackend } } as never,
+      notebookRpcServer: () => ({ issueDelegatedNotebookConnection }) as never,
+      readSession: async () => durable
+    })
+
+    try {
+      const selected = await frameworks.forSession(session('opencode'))
+      const reservation = await selected.execution.reserve(1)
+      const executionModel = {
+        frameworkId: 'opencode' as const,
+        providerId: 'deleted-provider',
+        backendId: 'opencode:deleted-provider',
+        modelRoute: 'opencode-openai' as const,
+        model: 'admitted-model',
+        reasoningEffort: 'high' as const
+      }
+      const running = selected.execution.run(
+        {
+          session: { projectId: 'project-1', sessionId: 'session-opencode' },
+          frameId: 'child-frame',
+          attemptId: 'attempt-1',
+          runtimeSegmentId: 'runtime-1',
+          executionModel,
+          executionBackend: admittedBackend,
+          task: 'Investigate',
+          inputs: [],
+          workspaceCwd,
+          continuation: true
+        },
+        reservation.slotIds[0]
+      )
+
+      await expect(running.completion).rejects.not.toThrow('configured provider is unavailable')
+      expect(resolveAdmittedSubagentBackend).not.toHaveBeenCalled()
+      expect(issueDelegatedNotebookConnection).toHaveBeenCalledOnce()
+    } finally {
+      await Promise.all([
+        rm(dataRoot, { recursive: true, force: true }),
+        rm(workspaceCwd, { recursive: true, force: true })
+      ])
+    }
+  })
+
+  it('certifies framework availability without consulting the process Active model', async () => {
     const selected: AgentFrameworkId[] = []
     const release = vi.fn(async () => undefined)
     const frameworks = createProductionDelegatedFrameworkRuntime({
@@ -96,11 +231,11 @@ describe('production delegated framework runtime bridge', () => {
       await expect(certified.assertAvailable()).resolves.toBeUndefined()
     }
 
-    expect(selected).toEqual(['claude-code', 'opencode', 'codex'])
-    expect(release).toHaveBeenCalledTimes(3)
+    expect(selected).toEqual([])
+    expect(release).not.toHaveBeenCalled()
   })
 
-  it('keeps Session certification non-secret and resolves the current backend only at admission', async () => {
+  it('keeps Session certification non-secret and defers exact model resolution to Attempt preparation', async () => {
     const release = vi.fn(async () => undefined)
     const resolveAgentBackend = vi.fn(async () => ({
       ...backend('opencode'),
@@ -127,8 +262,8 @@ describe('production delegated framework runtime bridge', () => {
 
     await certified.assertAvailable()
 
-    expect(resolveAgentBackend).toHaveBeenCalledOnce()
-    expect(release).toHaveBeenCalledOnce()
+    expect(resolveAgentBackend).not.toHaveBeenCalled()
+    expect(release).not.toHaveBeenCalled()
     expect(JSON.stringify(certified)).not.toContain('attempt-only-secret')
   })
 
@@ -237,7 +372,7 @@ describe('production delegated framework runtime bridge', () => {
       dataRoot,
       runtime: {
         settingsService: {
-          async resolveAgentBackend() {
+          async resolveAdmittedSubagentBackend() {
             return {
               ...backend('opencode'),
               env: {
@@ -273,6 +408,14 @@ describe('production delegated framework runtime bridge', () => {
           frameId: 'child-frame',
           attemptId: 'attempt-1',
           runtimeSegmentId: 'runtime-1',
+          executionModel: {
+            frameworkId: 'opencode',
+            providerId: 'provider-a',
+            backendId: 'opencode:provider-a',
+            modelRoute: 'opencode-openai',
+            model: 'model-a',
+            reasoningEffort: 'default'
+          },
           task: 'Investigate',
           inputs: [],
           workspaceCwd,
@@ -282,7 +425,7 @@ describe('production delegated framework runtime bridge', () => {
       )
 
       await expect(running.completion).rejects.toMatchObject({ code: 'unsupported_framework' })
-      expect(release).toHaveBeenCalledTimes(2)
+      expect(release).toHaveBeenCalledOnce()
     } finally {
       await Promise.all([
         rm(dataRoot, { recursive: true, force: true }),

@@ -7,6 +7,7 @@ import type {
   DelegatedWorkRecord,
   DelegatedWorkResolvedAgent,
   DelegatedCallerSource,
+  ResolvedSubagentModelSnapshot,
   PersistedActivityGroup,
   PersistedChatMessage,
   PersistedToolActivity
@@ -24,6 +25,7 @@ type CreateChildRecordInput = Readonly<{
   context?: string
   inputs?: readonly string[]
   resolvedAgent: DelegatedWorkResolvedAgent
+  executionModel?: ResolvedSubagentModelSnapshot
   startedAt: number
   callerSource: DelegatedCallerSource
   initiatingTurnMessageId: string
@@ -62,6 +64,7 @@ type StartContinuationAttemptInput = Readonly<{
   messageId: string
   message: string
   resolvedAgent: DelegatedWorkResolvedAgent
+  executionModel?: ResolvedSubagentModelSnapshot
   startedAt: number
   callerSource: DelegatedCallerSource
   initiatingTurnMessageId: string

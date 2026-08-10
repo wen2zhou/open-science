@@ -62,6 +62,7 @@ const createFakeRuntime = (options: {
   sendAppContinuation: ReturnType<typeof vi.fn>
   applyReasoningEffortChange: ReturnType<typeof vi.fn>
   applyModelChange: ReturnType<typeof vi.fn>
+  captureBackend: ReturnType<typeof vi.fn>
   setPermissionProfile: ReturnType<typeof vi.fn>
   respondToPermission: ReturnType<typeof vi.fn>
   emitEvent: (event: AcpRuntimeEvent) => void
@@ -123,6 +124,7 @@ const createFakeRuntime = (options: {
   const requestProviderReconnect = vi.fn(async () => undefined)
   const applyReasoningEffortChange = vi.fn(async () => true)
   const applyModelChange = vi.fn(async () => true)
+  const captureBackend = vi.fn(() => ({ backendId: `${options.frameworkId}:owned` }) as never)
   const setPermissionProfile = vi.fn(async () => snapshot)
   const respondToPermission = vi.fn(() => snapshot)
   const shutdown = vi.fn()
@@ -211,6 +213,7 @@ const createFakeRuntime = (options: {
     requestProviderReconnect,
     applyReasoningEffortChange,
     applyModelChange,
+    captureBackend,
     setPermissionProfile,
     respondToPermission,
     shutdown,
@@ -235,6 +238,7 @@ const createFakeRuntime = (options: {
     sendAppContinuation,
     applyReasoningEffortChange,
     applyModelChange,
+    captureBackend,
     setPermissionProfile,
     respondToPermission,
     emitEvent: (event) => {
@@ -259,6 +263,27 @@ const createFakeRuntime = (options: {
 }
 
 describe('AcpRuntimeCoordinator', () => {
+  it('does not capture the process Active backend for a Session without an owning runtime', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['owned-session'],
+        callbacks
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+
+    expect(coordinator.captureSessionBackend('missing-session')).toBeUndefined()
+    expect(created[0].captureBackend).not.toHaveBeenCalled()
+    await coordinator.createSession()
+    expect(coordinator.captureSessionBackend('owned-session')).toMatchObject({
+      backendId: 'claude-code:owned'
+    })
+    expect(created[0].captureBackend).toHaveBeenCalledOnce()
+  })
+
   it('projects delegated permissions and cascades root permission and Stop controls', async () => {
     const rootPermission: AcpPermissionRequest = {
       requestId: 'delegated:permission-1',

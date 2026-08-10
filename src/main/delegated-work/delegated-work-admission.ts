@@ -7,6 +7,18 @@ import type {
 
 type DurableResolvedAgent = DurableSnapshot['records'][number]['attempts'][number]['resolvedAgent']
 
+const createAdmissionGate = (): (<Result>(operation: () => Promise<Result>) => Promise<Result>) => {
+  let tail: Promise<void> = Promise.resolve()
+  return <Result>(operation: () => Promise<Result>): Promise<Result> => {
+    const result = tail.then(operation)
+    tail = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
+  }
+}
+
 class DelegatedWorkAdmissionPolicy {
   constructor(
     private readonly resolveSpecialistById?: (
@@ -189,4 +201,4 @@ class DelegatedWorkAdmissionPolicy {
   }
 }
 
-export { DelegatedWorkAdmissionPolicy }
+export { createAdmissionGate, DelegatedWorkAdmissionPolicy }
