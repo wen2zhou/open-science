@@ -281,8 +281,13 @@ const mergeCollectionByIdentity = <Item>(
 const mergeConversationGraphByIdentity = (
   current: NonNullable<PersistedChatSession['conversationGraph']>,
   incoming: NonNullable<PersistedChatSession['conversationGraph']>,
-  incomingWinsConflicts = false
+  options: Readonly<{
+    incomingWinsConflicts?: boolean
+    incomingOwnsFrameConflicts?: boolean
+  }> = {}
 ): NonNullable<PersistedChatSession['conversationGraph']> => {
+  const incomingWinsConflicts = options.incomingWinsConflicts ?? false
+  const incomingOwnsFrameConflicts = options.incomingOwnsFrameConflicts ?? incomingWinsConflicts
   const newerUpdatedAt = <Item extends { updatedAt: number }>(left: Item, right: Item): boolean =>
     right.updatedAt > left.updatedAt
   const merge = <Item extends { id: string }>(
@@ -304,7 +309,7 @@ const mergeConversationGraphByIdentity = (
       incoming.frames,
       ({ id }) => id,
       (left, right) => {
-        if (incomingWinsConflicts) {
+        if (incomingOwnsFrameConflicts) {
           return left.id === current.rootFrameId
             ? { ...right, activeBranchId: left.activeBranchId }
             : right
@@ -436,7 +441,7 @@ const mergeNewerPersistedSessionByIdentity = (
         conversationGraph: mergeConversationGraphByIdentity(
           current.conversationGraph,
           incoming.conversationGraph,
-          true
+          { incomingWinsConflicts: true }
         )
       }
     : current.conversationGraph && !incoming.conversationGraph
@@ -568,7 +573,10 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
                       conversationGraph: existing.conversationGraph
                         ? mergeConversationGraphByIdentity(
                             existing.conversationGraph,
-                            session.conversationGraph
+                            session.conversationGraph,
+                            // A continuation removes completedAt without changing the Frame's
+                            // createdAt, so runtime revision—not Frame timestamps—owns lifecycle.
+                            { incomingOwnsFrameConflicts: runtimeAdvanced }
                           )
                         : structuredClone(session.conversationGraph)
                     }

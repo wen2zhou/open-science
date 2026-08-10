@@ -254,6 +254,81 @@ describe('release-gate Subagent surfaces', () => {
     expect(bar.getAttribute('aria-expanded')).toBe('false')
   })
 
+  it('shows a terminal child continuation as running before its first Agent response', () => {
+    const completed = structuredClone(createSession())
+    const completedFrame = completed.conversationGraph?.frames.find(({ id }) => id === 'child-a')
+    const completedAttempt = completed.runtimeContext?.delegatedWork?.records
+      .find(({ agentFrameId }) => agentFrameId === 'child-a')
+      ?.attempts.at(-1)
+    if (!completedFrame || !completedAttempt) throw new Error('Expected child-a fixtures')
+    completedFrame.status = 'completed'
+    completedFrame.completedAt = completed.updatedAt + 4
+    Object.assign(completedAttempt, {
+      status: 'completed',
+      endedAt: completed.updatedAt + 4
+    })
+    useSessionStore.getState().hydrateSessions([completed])
+
+    const continued = structuredClone(completed)
+    const continuedGraph = continued.conversationGraph!
+    const continuedFrame = continuedGraph.frames.find(({ id }) => id === 'child-a')!
+    const continuedBranch = continuedGraph.branches.find(
+      ({ id }) => id === continuedFrame.activeBranchId
+    )!
+    const continuedAt = completed.updatedAt + 5
+    const continuedRuntime = continued.runtimeContext!
+    const continuedDelegatedWork = continuedRuntime.delegatedWork!
+    continued.runtimeContext = {
+      ...continuedRuntime,
+      revision: continuedRuntime.revision + 1,
+      delegatedWork: {
+        ...continuedDelegatedWork,
+        records: continuedDelegatedWork.records.map((record) =>
+          record.agentFrameId === 'child-a'
+            ? {
+                ...record,
+                attempts: [
+                  ...record.attempts,
+                  {
+                    id: 'attempt-a-continuation',
+                    status: 'running' as const,
+                    resolvedAgent: { kind: 'main' as const },
+                    runtimeSegmentIds: [],
+                    startedAt: continuedAt
+                  }
+                ]
+              }
+            : record
+        )
+      }
+    }
+    continuedFrame.status = 'running'
+    delete continuedFrame.completedAt
+    continuedGraph.messages.push({
+      id: 'child-a-continuation',
+      role: 'user',
+      content: 'Continue with the new evidence.',
+      status: 'complete',
+      eventIds: [],
+      agentFrameId: 'child-a',
+      introducedOnBranchId: continuedBranch.id,
+      parentMessageId: continuedBranch.headMessageId,
+      createdAt: continuedAt,
+      updatedAt: continuedAt
+    })
+    continuedBranch.headMessageId = 'child-a-continuation'
+    continuedBranch.updatedAt = continuedAt
+
+    useSessionStore.getState().upsertPersistedSession(continued)
+
+    const merged = useSessionStore.getState().sessions[0]
+    expect(merged.conversationGraph?.messages.some(({ id }) => id === 'child-a-continuation')).toBe(
+      true
+    )
+    render(<SubagentsBar session={merged} permissions={[]} />)
+    expect(screen.getByRole('button', { name: '2 subagents, 1 running' })).toBeTruthy()
+  })
+
   it('collapses the expanded list when clicking elsewhere in the app', () => {
     const session = createSession()
     render(
