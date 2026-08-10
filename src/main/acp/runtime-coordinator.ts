@@ -652,8 +652,8 @@ class AcpRuntimeCoordinator {
     sessionId: string,
     operation: () => Promise<Result>
   ): Promise<Result> {
-    const previous = this.rootAdmissionTails.get(sessionId) ?? Promise.resolve()
-    const result = previous.catch(() => undefined).then(operation)
+    const previous = this.rootAdmissionTails.get(sessionId)
+    const result = previous ? previous.catch(() => undefined).then(operation) : operation()
     const tail = result.then(
       () => undefined,
       () => undefined
