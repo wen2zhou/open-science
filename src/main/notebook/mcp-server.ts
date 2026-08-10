@@ -17,12 +17,17 @@ const NOTEBOOK_MCP_SERVER_NAME = 'open-science-notebook'
 const MAX_RUNTIME_RESULTS = 40
 const MAX_ENVIRONMENT_RESULTS = 30
 
+const HOST_SDK_DISCOVERY_GUIDANCE =
+  "Host SDK discovery (use from `repl_execute`): `await host.help()` lists registered/documented topics; query an exact operation instead of guessing its arguments or results. Main/root agents must call `await host.help('delegate')` before the first delegation and follow that returned contract. Nested delegation is unsupported: Delegate agents must not call delegation or child-control methods; they may call `await host.send_message('parent', message, kind?)`, where kind is `'info'` or `'question'`."
+
 // Scoped prompt addendum that only applies when the agent is given notebook tools.
 const NOTEBOOK_SYSTEM_PROMPT_APPEND = [
   '<open_science_notebook_instructions>',
   'Notebook tool instructions (only applies when using open-science-notebook tools).',
   'In Default mode, use `ask_user_question` as the first tool call when a request has materially different interpretations; do not inspect or use other tools first, and never print a textual choice list. Put all 1-3 known questions in one call with 2-4 real options each. Infer minor reversible details and omit Other; the UI adds custom, agent-decide, and Skip. It shows questions one at a time, then continues the task after Finish. A pending result ends the turn normally.',
   'Notebook preview is only for code and execution results; keep chat, explanation, and diagnosis in the chat area.',
+  'Use `notebook_execute` for one persistent Python/R cell per call; reuse `cellId` to rerun a cell. Python/R data kernels cannot call connectors. Use `repl_execute` for `host.mcp`/`host.compute`. For large cross-kernel data, write under `process.env.OPEN_SCIENCE_HANDOFF_DIR` in the REPL and read the same `OPEN_SCIENCE_HANDOFF_DIR` path from Python/R.',
+  HOST_SDK_DISCOVERY_GUIDANCE,
   'Use `notebook_execute` for one persistent Python/R cell per call; reuse `cellId` to rerun it. Python/R data kernels cannot call connectors; use `repl_execute` for `host.mcp`/`host.compute`/`host.agents`/`host.skills`. For large cross-kernel data, write under `process.env.OPEN_SCIENCE_HANDOFF_DIR` in the REPL and read that path from Python/R.',
   'Each runtime is a separate persistent namespace. Create named runtimes with `manage_environments`, select them with the bind/switch tools, and use files to move data across runtimes. Memory is lost on restart or app reopen; run history and files survive.',
   'The notebook already runs inside a writable session workspace. The cwd is already the session data dir; use plain relative paths for normal inputs and outputs. The connector handoff directory is outside that cwd and must be resolved from `OPEN_SCIENCE_HANDOFF_DIR`. Never copy a saved file onto the same path. Do not modify original user files.',
@@ -166,6 +171,8 @@ const SWITCH_RUNTIME_DOC = [
 // Control-plane REPL contract, embedded as the repl_execute description so the agent always sees it.
 const REPL_EXECUTE_DOC = [
   'Run JavaScript in the persistent control-plane REPL, separate from notebook_execute Python/R data kernels.',
+  'Only this kernel can call connectors (`await host.mcp(server, method, args)`) and remote compute (`host.compute`; load its skill for the API).',
+  HOST_SDK_DISCOVERY_GUIDANCE,
   'Only this kernel can call connectors (`await host.mcp(server, method, args)`), remote compute (`host.compute`; load its skill for the API), Specialist management (`host.agents`), and Skill authoring (`host.skills`).',
   'Globals persist and a trailing expression is returned. Return results directly when they are for Agent inspection. To hand off large data from the REPL to Python/R, write it under process.env.OPEN_SCIENCE_HANDOFF_DIR; Python/R reads the same OPEN_SCIENCE_HANDOFF_DIR path. Use notebook_execute for analysis code.'
 ].join('\n')

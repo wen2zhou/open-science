@@ -444,6 +444,7 @@ const hookKeys = [
   'permissionProfiles',
   'permissionGrants',
   'contextUsageBySession',
+  'delegatedWorkUnavailableBySession',
   'promptInFlightSessionIds',
   'sendPreparationInFlightSessionIds',
   'nativeContextCompactionSessionIds',
@@ -512,7 +513,7 @@ describe('workspace runtime architecture', () => {
       expect(physicalLines(`${ownerTargets.get(name)}.ts`), name).toBeLessThanOrEqual(660)
     }
   })
-  it('keeps the established 18-key hook interface', () => {
+  it('keeps the established 19-key hook interface', () => {
     const runtimeType = typeLiteralAlias(facadeFile, 'WorkspaceAgentRuntime')
     const owner = variableArrow(facadeFile, 'useOwnedWorkspaceAgentRuntime')
     const consumer = variableArrow(facadeFile, 'useWorkspaceAgentRuntime')

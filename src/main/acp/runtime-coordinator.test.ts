@@ -69,6 +69,8 @@ const createFakeRuntime = (options: {
   sendAppContinuation: ReturnType<typeof vi.fn>
   applyReasoningEffortChange: ReturnType<typeof vi.fn>
   applyModelChange: ReturnType<typeof vi.fn>
+  captureBackend: ReturnType<typeof vi.fn>
+  setPermissionProfile: ReturnType<typeof vi.fn>
   respondToPermission: ReturnType<typeof vi.fn>
   requestUserInput: ReturnType<typeof vi.fn>
   emitEvent: (event: AcpRuntimeEvent) => void
@@ -130,6 +132,8 @@ const createFakeRuntime = (options: {
   const requestProviderReconnect = vi.fn(async () => undefined)
   const applyReasoningEffortChange = vi.fn(async () => true)
   const applyModelChange = vi.fn(async () => true)
+  const captureBackend = vi.fn(() => ({ backendId: `${options.frameworkId}:owned` }) as never)
+  const setPermissionProfile = vi.fn(async () => snapshot)
   const respondToPermission = vi.fn((response: AcpPermissionResponse) => {
     options.callbacks.onPermissionSettled?.(
       response.requestId,
@@ -225,6 +229,8 @@ const createFakeRuntime = (options: {
     requestProviderReconnect,
     applyReasoningEffortChange,
     applyModelChange,
+    captureBackend,
+    setPermissionProfile,
     respondToPermission,
     requestUserInput,
     shutdown,
@@ -249,6 +255,8 @@ const createFakeRuntime = (options: {
     sendAppContinuation,
     applyReasoningEffortChange,
     applyModelChange,
+    captureBackend,
+    setPermissionProfile,
     respondToPermission,
     requestUserInput,
     emitEvent: (event) => {
@@ -273,6 +281,176 @@ const createFakeRuntime = (options: {
 }
 
 describe('AcpRuntimeCoordinator', () => {
+  it('does not capture the process Active backend for a Session without an owning runtime', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['owned-session'],
+        callbacks
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+
+    expect(coordinator.captureSessionBackend('missing-session')).toBeUndefined()
+    expect(created[0].captureBackend).not.toHaveBeenCalled()
+    await coordinator.createSession()
+    expect(coordinator.captureSessionBackend('owned-session')).toMatchObject({
+      backendId: 'claude-code:owned'
+    })
+    expect(created[0].captureBackend).toHaveBeenCalledOnce()
+  })
+
+  it('projects delegated permissions and cascades root permission and Stop controls', async () => {
+    const rootPermission: AcpPermissionRequest = {
+      requestId: 'delegated:permission-1',
+      sessionId: 'session-1',
+      toolCallId: 'child-frame',
+      title: 'Read evidence',
+      options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }],
+      delegated: {
+        frameId: 'child-frame',
+        attemptId: 'child-attempt',
+        childTitle: 'Evidence child',
+        riskScope: 'This call only'
+      }
+    }
+    let listener: ((event: unknown) => void) | undefined
+    const delegated = {
+      pendingPermissions: vi.fn(() => [rootPermission]),
+      subscribe: vi.fn((next: (event: unknown) => void) => {
+        listener = next
+        return () => undefined
+      }),
+      respondToPermission: vi.fn(async () => true),
+      setPermissionProfile: vi.fn(async () => undefined),
+      stopSession: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      deleteSession: vi.fn(async () => undefined)
+    }
+    const permissionEvents: unknown[] = []
+    const stateChanges: AcpStateSnapshot[] = []
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'codex',
+          sessionIds: ['session-1'],
+          callbacks
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {
+        onPermissionRequest: (request) => permissionEvents.push(request),
+        onStateChanged: (snapshot) => stateChanges.push(snapshot)
+      },
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      delegated
+    )
+
+    expect(coordinator.getSnapshot().pendingPermissions).toEqual([rootPermission])
+    listener?.({ kind: 'permission-requested', request: rootPermission })
+    expect(permissionEvents).toEqual([rootPermission])
+    expect(stateChanges.at(-1)?.pendingPermissions).toEqual([rootPermission])
+
+    await coordinator.respondToPermission({
+      requestId: rootPermission.requestId,
+      optionId: 'allow'
+    })
+    expect(delegated.respondToPermission).toHaveBeenCalledWith({
+      requestId: rootPermission.requestId,
+      optionId: 'allow'
+    })
+    expect(created[0].respondToPermission).not.toHaveBeenCalled()
+
+    await coordinator.setPermissionProfile({ sessionId: 'session-1', profile: 'ask' })
+    expect(created[0].setPermissionProfile).toHaveBeenCalledWith({
+      sessionId: 'session-1',
+      profile: 'ask'
+    })
+    expect(delegated.setPermissionProfile).toHaveBeenCalledWith('session-1', 'ask')
+
+    await coordinator.cancelPrompt({ sessionId: 'session-1' })
+    expect(delegated.stopSession).not.toHaveBeenCalled()
+    expect(created[0].cancelPrompt).toHaveBeenCalledWith({ sessionId: 'session-1' })
+
+    created[0].cancelPrompt.mockRejectedValueOnce(new Error('root cancel failed'))
+    await expect(coordinator.cancelPrompt({ sessionId: 'session-1' })).rejects.toThrow(
+      'root cancel failed'
+    )
+    expect(delegated.stopSession).not.toHaveBeenCalled()
+
+    await expect(coordinator.prepareForQuit()).resolves.toBe('completed')
+    expect(delegated.stopAll).toHaveBeenCalledOnce()
+  })
+
+  it('fences only the active Conversation Turn and exposes a separate Subagent Stop scope', async () => {
+    const prompt = createDeferred<unknown>()
+    let rejectChildCancellation!: (error: Error) => void
+    const childCancellation = new Promise<void>((_resolve, reject) => {
+      rejectChildCancellation = reject
+    })
+    const cancelTurn = vi.fn(() => childCancellation)
+    const stopActiveBranch = vi.fn(async () => undefined)
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const delegated = {
+      pendingPermissions: vi.fn(() => []),
+      subscribe: vi.fn(() => () => undefined),
+      respondToPermission: vi.fn(async () => false),
+      setPermissionProfile: vi.fn(async () => undefined),
+      cancelTurn,
+      stopActiveBranch,
+      stopSession: vi.fn(async () => undefined),
+      stopAll: vi.fn(async () => undefined),
+      deleteSession: vi.fn(async () => undefined)
+    }
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        const fake = createFakeRuntime({
+          frameworkId: 'codex',
+          sessionIds: ['session-1'],
+          callbacks,
+          prompt: () => prompt.promise
+        })
+        created.push(fake)
+        return fake.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      delegated
+    )
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    const running = coordinator.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'Turn B',
+      provenanceContext: { promptMessageId: 'turn-b-message' }
+    })
+    await Promise.resolve()
+
+    const cancelling = coordinator.cancelPrompt({ sessionId: session.sessionId })
+    await vi.waitFor(() => expect(created[0].cancelPrompt).toHaveBeenCalledOnce())
+    expect(cancelTurn).toHaveBeenCalledWith('session-1', 'turn-b-message')
+    expect(delegated.stopSession).not.toHaveBeenCalled()
+    rejectChildCancellation(new Error('one child Stop failed'))
+    await expect(cancelling).rejects.toThrow('one child Stop failed')
+    await coordinator.cancelPrompt({ sessionId: session.sessionId, scope: 'subagents' })
+    expect(stopActiveBranch).toHaveBeenCalledWith('session-1')
+    prompt.resolve({ stopReason: 'cancelled' })
+    await running
+  })
+
   it('combines only the quit-blocking prompts reported by each runtime generation', async () => {
     const coordinator = new AcpRuntimeCoordinator(
       (callbacks) =>
@@ -506,6 +684,7 @@ describe('AcpRuntimeCoordinator', () => {
 
   it('reports continuation startup only after the provider accepts it', async () => {
     const acceptProviderPrompt = createDeferred()
+    const onProviderPromptAccepted = vi.fn()
     const coordinator = new AcpRuntimeCoordinator(
       (callbacks) =>
         createFakeRuntime({
@@ -513,7 +692,8 @@ describe('AcpRuntimeCoordinator', () => {
           sessionIds: ['session-1'],
           callbacks,
           beforeProviderPromptAccepted: async () => acceptProviderPrompt.promise
-        }).runtime
+        }).runtime,
+      { onProviderPromptAccepted }
     )
     const session = await coordinator.createSession()
     let started = false
@@ -527,6 +707,10 @@ describe('AcpRuntimeCoordinator', () => {
     acceptProviderPrompt.resolve()
     await starting
     expect(started).toBe(true)
+    expect(onProviderPromptAccepted).toHaveBeenCalledWith(
+      session.sessionId,
+      expect.stringMatching(/^prompt-attempt-/)
+    )
   })
 
   it('routes native compaction to the session owner and publishes only owned capabilities', async () => {

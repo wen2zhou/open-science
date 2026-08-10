@@ -9,7 +9,8 @@ import {
   isClaudeSubscriptionProviderId,
   isCodexSubscriptionProvider,
   isCodexSubscriptionProviderId,
-  isReasoningEffort
+  isReasoningEffort,
+  type SubagentModelConfiguration
 } from '../../shared/settings'
 import { isPermissionProfileId } from '../../shared/permission-profiles'
 import type { NotebookLanguage } from '../../shared/notebook'
@@ -53,6 +54,19 @@ const asBooleanRecord = (value: unknown): Record<string, boolean> => {
     (entry): entry is [string, boolean] => typeof entry[1] === 'boolean'
   )
   return Object.fromEntries(entries)
+}
+
+const sanitizeSubagentModel = (value: unknown): SubagentModelConfiguration => {
+  if (!isRecord(value) || value.mode === 'inherit') return { mode: 'inherit' }
+  if (value.mode === 'fixed') {
+    const providerId = asString(value.providerId)
+    const model = asString(value.model)
+    const reasoningEffort = asString(value.reasoningEffort)
+    if (providerId && model && isReasoningEffort(reasoningEffort)) {
+      return { mode: 'fixed', providerId, model, reasoningEffort }
+    }
+  }
+  return { mode: 'inherit' }
 }
 
 // Validates the per-language manual-interpreter catalog without applying platform-specific rules.
@@ -155,7 +169,11 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
     ...sanitizedProviders.filter((provider) => !isCodexSubscriptionProvider(provider.type)),
     ...(migratedCodexProvider ? [migratedCodexProvider] : [])
   ]
-  const settings: StoredSettings = { version: SETTINGS_FILE_VERSION, providers }
+  const settings: StoredSettings = {
+    version: SETTINGS_FILE_VERSION,
+    providers,
+    subagentModel: sanitizeSubagentModel(value.subagentModel)
+  }
   const claudeSubscriptionProviderId = asString(value.claudeSubscriptionProviderId)
   if (
     claudeSubscriptionProviderId &&
@@ -271,4 +289,4 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
   return settings
 }
 
-export { sanitizeSettings }
+export { sanitizeSettings, sanitizeSubagentModel }

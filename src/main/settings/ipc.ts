@@ -43,6 +43,7 @@ import {
   type SetConversationSkillImportEnabledRequest,
   type SetNotificationsEnabledRequest,
   type SetReasoningEffortRequest,
+  type SetSubagentModelRequest,
   type SetSkillEnabledRequest,
   type SetToolPermissionRequest,
   type UpdateSkillRequest,
@@ -62,7 +63,8 @@ import {
   readConversationSkillImportEnabled,
   readIsolatedClaudeToken,
   readNotificationsEnabled,
-  readReasoningEffort
+  readReasoningEffort,
+  readSubagentModel
 } from './transport-validation'
 
 const log = createLogger('settings-ipc')
@@ -157,6 +159,12 @@ const registerSettingsIpcHandlers = ({
       return workflows.runtime.setReasoningEffort({ effort })
     }
   )
+  ipcMainHandle('settings:set-subagent-model', async (_event, request: SetSubagentModelRequest) => {
+    const configuration = readSubagentModel(request)
+    const snapshot = await service.setSubagentModel(configuration)
+    broadcastToRenderers('settings:changed', snapshot)
+    return snapshot
+  })
   ipcMainHandle(
     'settings:set-notifications-enabled',
     async (_event, request: SetNotificationsEnabledRequest) => {

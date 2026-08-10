@@ -2008,6 +2008,7 @@ describe('SessionPersistenceCoordinator', () => {
       'operation phase',
       'operation phase',
       'operation phase',
+      'operation phase',
       'operation completed'
     ])
     expect(
@@ -2016,6 +2017,7 @@ describe('SessionPersistenceCoordinator', () => {
         .filter(Boolean)
     ).toEqual([
       'load-authority',
+      'recover-delegated-work',
       'reconcile-unread-sessions',
       'reconcile-derived-state',
       'reconcile-derived-state'

@@ -5,6 +5,8 @@ import { MAX_ACP_SESSION_IMAGE_BYTES } from './acp'
 import {
   SESSION_FILE_VERSION,
   createSessionFile,
+  ConversationGraphMaterializationError,
+  materializeSessionConversationGraph,
   sanitizeActivityGroup,
   normalizeSessionFile,
   sanitizeMessageImages,
@@ -76,6 +78,36 @@ const createHistoricalPlan = (): ActivePlanProjection => ({
   stepStatuses: { 'Analyze data': { status: 'completed', updatedAt: 4 } },
   stepStates: { 'Analyze data': { status: 'completed' } },
   counts: { phases: 1, delegations: 1, steps: 1, completed: 1, inProgress: 0 }
+})
+
+describe('conversation graph materialization diagnostics', () => {
+  it('identifies message synchronization failures without exposing the raw graph error', () => {
+    const session: PersistedChatSession = {
+      id: 'session-1',
+      projectId: 'project-a',
+      title: 'Session',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [],
+      conversationGraph: createLinearConversationGraph({
+        sessionId: 'session-1',
+        messages: [],
+        createdAt: 1,
+        updatedAt: 1
+      }),
+      createdAt: 1,
+      updatedAt: 1
+    }
+    session.conversationGraph!.activeFrameId = 'missing-private-frame-id'
+
+    expect(() => materializeSessionConversationGraph(session)).toThrowError(
+      expect.objectContaining<Partial<ConversationGraphMaterializationError>>({
+        name: 'ConversationGraphMaterializationError',
+        phase: 'messages',
+        message: 'Conversation graph materialization failed.'
+      })
+    )
+  })
 })
 
 describe('branch Plan history persistence', () => {
@@ -1015,6 +1047,160 @@ describe('sanitizeActivityGroup', () => {
 })
 
 describe('normalizeSessionFile with activities', () => {
+  it('normalizes delegated caller identity as one value and fails closed on legacy half-state', () => {
+    const baseMessage = {
+      id: 'child-prompt',
+      role: 'user',
+      content: 'work',
+      status: 'complete',
+      eventIds: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const paired = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      messages: [
+        {
+          ...baseMessage,
+          delegatedCallerMessageId: 'root-prompt',
+          delegatedToolInvocationId: 'delegate-call'
+        }
+      ]
+    })
+    const half = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      messages: [{ ...baseMessage, delegatedCallerMessageId: 'root-prompt' }]
+    })
+
+    expect(paired?.messages[0]).toMatchObject({
+      delegatedCallerSource: {
+        rootMessageId: 'root-prompt',
+        toolInvocationId: 'delegate-call'
+      }
+    })
+    expect(paired?.messages[0]).not.toHaveProperty('delegatedCallerMessageId')
+    expect(half?.messages[0]).not.toHaveProperty('delegatedCallerSource')
+  })
+
+  it('rejects pending delegated work whose legacy caller identity is only half present', () => {
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      runtimeContext: {
+        version: 1,
+        revision: 1,
+        delegatedWork: {
+          records: [
+            {
+              agentFrameId: 'child-frame',
+              attempts: [],
+              pendingMessages: [
+                {
+                  id: 'pending-1',
+                  sourceFrameId: 'root-frame',
+                  targetFrameId: 'child-frame',
+                  text: 'continue',
+                  kind: 'info',
+                  callerMessageId: 'root-prompt',
+                  createdAt: 2
+                }
+              ]
+            }
+          ]
+        }
+      }
+    })
+
+    expect(restored?.runtimeContext).toBeUndefined()
+  })
+
+  it('reads legacy terminal Attempts without inventing an initiating Turn association', () => {
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      runtimeContext: {
+        version: 1,
+        revision: 1,
+        delegatedWork: {
+          records: [
+            {
+              agentFrameId: 'legacy-child',
+              attempts: [
+                {
+                  id: 'legacy-attempt',
+                  status: 'cancelled',
+                  resolvedAgent: { kind: 'main' },
+                  runtimeSegmentIds: [],
+                  startedAt: 1,
+                  endedAt: 2,
+                  cancellationReason: 'runtime_interrupted'
+                }
+              ],
+              pendingMessages: []
+            }
+          ]
+        }
+      }
+    })
+
+    expect(restored?.runtimeContext?.delegatedWork?.records[0].attempts[0]).toEqual({
+      id: 'legacy-attempt',
+      status: 'cancelled',
+      resolvedAgent: { kind: 'main' },
+      runtimeSegmentIds: [],
+      startedAt: 1,
+      endedAt: 2,
+      cancellationReason: 'runtime_interrupted'
+    })
+  })
+
+  it('round-trips a resolved Subagent model snapshot without backfilling legacy Attempts', () => {
+    const baseAttempt = {
+      id: 'attempt-with-model',
+      status: 'cancelled',
+      resolvedAgent: { kind: 'main' },
+      runtimeSegmentIds: [],
+      startedAt: 1,
+      endedAt: 2,
+      cancellationReason: 'runtime_interrupted'
+    }
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      runtimeContext: {
+        version: 1,
+        revision: 1,
+        delegatedWork: {
+          records: [
+            {
+              agentFrameId: 'child-frame',
+              attempts: [
+                {
+                  ...baseAttempt,
+                  executionModel: {
+                    frameworkId: 'opencode',
+                    providerId: 'provider-b',
+                    backendId: 'opencode:provider-b',
+                    modelRoute: 'opencode-openai',
+                    model: 'model-b',
+                    reasoningEffort: 'high'
+                  }
+                }
+              ],
+              pendingMessages: []
+            }
+          ]
+        }
+      }
+    })
+
+    expect(restored?.runtimeContext?.delegatedWork?.records[0].attempts[0].executionModel).toEqual({
+      frameworkId: 'opencode',
+      providerId: 'provider-b',
+      backendId: 'opencode:provider-b',
+      modelRoute: 'opencode-openai',
+      model: 'model-b',
+      reasoningEffort: 'high'
+    })
+  })
+
   it('preserves a valid archive timestamp across a file round-trip', () => {
     const persisted = createSessionFile({
       ...(createSessionWithActivity(undefined) as PersistedChatSession),

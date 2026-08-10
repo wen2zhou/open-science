@@ -36,12 +36,14 @@ import { createAcpCreateSessionWorkflow } from './acp/create-session-workflow'
 import { createAcpHandlerWorkflows } from './acp/handler-workflows'
 import { createAcpTaskAgentPort } from './acp/task-agent-port'
 import { ArtifactCodeReconstructionRunner } from './acp/artifact-code-reconstruction-runner'
+import { ArtifactTurnOwner } from './acp/artifact-turn-owner'
 import { ArchiveCoordinator } from './archive/coordinator'
 import { ArtifactCodeReconstructionService } from './artifacts/code-reconstruction'
 import {
   createArtifactHandlers,
   createDefaultArtifactRepository,
-  registerArtifactIpcHandlers
+  registerArtifactIpcHandlers,
+  type ArtifactHandlers
 } from './artifacts/ipc'
 import { ArtifactProvenanceRepository } from './artifacts/provenance-repository'
 import { ProvenanceMessageSnapshotRepository } from './artifacts/provenance-message-snapshot'
@@ -114,6 +116,7 @@ import { registerNotebookIpcHandlers } from './notebook/ipc'
 import { registerRuntimeIpcHandlers } from './notebook/runtime-ipc'
 import { NotebookRunRepository, getRuntimeRoot } from './notebook/repository'
 import { NotebookLocalRpcServer } from './notebook/local-rpc-server'
+import { createNotebookArtifactSourceScopeProvider } from './notebook/artifact-source-scope'
 import { NotebookInputRegistry } from './notebook/input-registry'
 import { effectiveMirrorAsync } from './notebook/mirror-probe'
 import { createProductionProvisioner, type RuntimeProvisioner } from './notebook/provisioner'
@@ -122,6 +125,7 @@ import { createRuntimeSelectionWorkflows } from './notebook/runtime-selection-wo
 import { runtimeRoot } from './notebook/runtime-paths'
 import type { NotebookEnvironmentManager } from './notebook/runtime-service'
 import { parseArtifactVersionLocator } from '../shared/artifact-provenance'
+import { parseUploadVersionReference } from '../shared/uploads'
 import { DEFAULT_ARTIFACT_PROJECT_NAME } from '../shared/artifacts'
 import type { NotebookLanguage } from '../shared/notebook'
 import { OFFICE_PREVIEW_STATE_CHANNEL } from '../shared/office-preview'
@@ -132,7 +136,11 @@ import {
   createProjectHandlers,
   registerPreviewStateIpcHandlers
 } from './projects/ipc'
-import { createReviewerCommandOwner, registerReviewerIpcHandlers } from './reviewer/ipc'
+import {
+  createReviewerCommandOwner,
+  registerReviewerIpcHandlers,
+  type ReviewerCommandOwner
+} from './reviewer/ipc'
 import {
   createDefaultReviewRepository,
   createDefaultSessionRepository,
@@ -169,6 +177,9 @@ import { SettingsService } from './settings/service'
 import { SettingsRepository } from './settings/repository'
 import type { NotebookRuntimeSettings } from './settings/capabilities'
 import type { WindowSettingsCapabilities } from './settings/service-capabilities'
+import { createProductionDelegatedWorkComposition } from './delegated-work/production-composition'
+import { createProductionDelegatedFrameworkRuntime } from './delegated-work/production-framework-runtime'
+import { finalizeDelegatedArtifactPublication } from './delegated-work/delegated-artifact-publication'
 import { createSettingsWorkflows } from './settings/workflows'
 import { showSettingsSaveDialog } from './settings/save-dialog'
 import { ProfileService } from './specialist/service'
@@ -489,6 +500,13 @@ const createApplicationModules = async (
   })
   const managedPreviewOwners = createManagedPreviewOwnerRegistry(previewResources)
 
+  // Permission scope validation starts before the ACP coordinator is constructed. Keep the late-bound
+  // reference here so a first-turn Session grant can recognize its live owner before the renderer's
+  // asynchronous session persistence finishes.
+  const artifactHandlersRef: { current: ArtifactHandlers | undefined } = { current: undefined }
+  const reviewerCommandOwnerRef: { current: ReviewerCommandOwner | undefined } = {
+    current: undefined
+  }
   const notebookActivityRef: {
     current:
       { getActiveNotebookSessions(): { projectName: string; sessionId: string }[] } | undefined
@@ -1107,6 +1125,171 @@ const createApplicationModules = async (
       await sessionPersistenceCoordinator.saveSessionSpecialistBinding(session, specialistId)
     }
   })
+  const notebookRpcServerRef: { current?: NotebookLocalRpcServer } = {}
+  const requireNotebookRpcServer = (): NotebookLocalRpcServer => {
+    if (!notebookRpcServerRef.current) throw new Error('Notebook RPC server is not composed yet.')
+    return notebookRpcServerRef.current
+  }
+  const delegatedFrameworks = createProductionDelegatedFrameworkRuntime({
+    capacity: 4,
+    dataRoot: resolveDataRoot(),
+    runtime: {
+      mcpEntryPath: mainEntryPath,
+      repository: artifactRepository,
+      runRegistry: artifactRunRegistry,
+      provenanceRepository: artifactProvenanceRepository,
+      uploadRepository,
+      peekNotebookHandoffContext: (sessionId) => notebookService.peekHandoffContext(sessionId),
+      authorizeSkillImportReferencedUploads: (projectId, sessionId, paths) =>
+        conversationSkillImporter.authorizeReferencedUploads(projectId, sessionId, paths),
+      settingsService,
+      permissionGrantRegistry,
+      profileService,
+      sessionPersistenceCoordinator
+    },
+    notebookRpcServer: requireNotebookRpcServer,
+    readSession: ({ projectId, sessionId }) => sessionRepository.loadSession(projectId, sessionId),
+    resolvePermissionProfile: (sessionId) =>
+      runtimeRef.current?.getSnapshot().permissionProfiles[sessionId]?.selectedProfile
+  })
+  const delegatedArtifactTurns = new ArtifactTurnOwner({
+    dataRoot,
+    repository: artifactRepository,
+    runRegistry: artifactRunRegistry,
+    notebookArtifactSourceScope: createNotebookArtifactSourceScopeProvider(dataRoot),
+    issueRpcCapability: (binding) => requireNotebookRpcServer().issueArtifactRunCapability(binding),
+    revokeRpcCapability: (token) => requireNotebookRpcServer().revokeArtifactRunCapability(token),
+    provenance: artifactProvenanceRepository
+  })
+  const delegatedWork = createProductionDelegatedWorkComposition({
+    dataRoot: resolveDataRoot(),
+    resolveExecutionModel: async (session) => {
+      if (!session.agentFrameworkId) {
+        throw new Error('The originating Session has no Agent Framework identity.')
+      }
+      const backend = runtimeRef.current?.captureSessionBackend(session.id)
+      if (!backend) throw new Error('The originating Session runtime is unavailable.')
+      return settingsService.admitSubagentExecutionModel(session.agentFrameworkId, {
+        backendId: backend.backendId,
+        modelRoute: backend.modelRoute,
+        model: backend.context.model,
+        reasoningEffort: backend.session.effort
+      })
+    },
+    onAgentRuntimeUpdate: (update) => broadcastToRenderers('acp:agent-runtime-update', update),
+    sessions: {
+      commands: sessionPersistenceCoordinator,
+      readSession: ({ projectId, sessionId }) =>
+        sessionRepository.loadSession(projectId, sessionId),
+      findSessions: async (sessionId) =>
+        (await sessionRepository.loadAll()).sessions.filter((session) => session.id === sessionId)
+    },
+    async resolveInput(identity, session) {
+      const artifact = parseArtifactVersionLocator(identity)
+      if (artifact) {
+        if (
+          artifact.projectId !== session.projectId ||
+          artifact.appSessionId !== session.sessionId
+        ) {
+          throw new Error('Artifact Version belongs to a different Session.')
+        }
+        const resolved = await artifactProvenanceRepository.resolveVersionContent(artifact)
+        return { path: resolved.path, filename: resolved.filename }
+      }
+      if (!parseUploadVersionReference(identity)) {
+        throw new Error('Delegated input is not an immutable Version identity.')
+      }
+      const resolved = await uploadRepository.resolveSessionUpload(
+        session.sessionId,
+        { path: identity },
+        session.projectId
+      )
+      return { path: resolved.path, filename: resolved.name }
+    },
+    frameworks: delegatedFrameworks,
+    resolveSpecialist: (profileId) => profileService.resolveRunnableById(profileId),
+    resolveSpecialistReference: (profileReference) =>
+      profileService.resolveRunnableByReference(profileReference),
+    artifactEvidence: {
+      turns: delegatedArtifactTurns,
+      artifactStorageSessionId: ({ sessionId }) => sessionId,
+      finalizePublication: async (publication, terminalMessageId, scope) => {
+        const handlers = artifactHandlersRef.current
+        if (!handlers) throw new Error('Artifact finalization owner is not available.')
+        await finalizeDelegatedArtifactPublication({
+          publication,
+          terminalMessageId,
+          scope,
+          commands: sessionPersistenceCoordinator,
+          handlers
+        })
+      },
+      project: (scope) =>
+        scope.terminalMessageId
+          ? artifactRepository.listMessageFiles({
+              projectName: scope.session.projectId,
+              sessionId: scope.session.sessionId,
+              messageId: scope.terminalMessageId
+            })
+          : Promise.resolve([])
+    },
+    reviewEvidence: {
+      loadSession: ({ projectId, sessionId }) =>
+        sessionRepository.loadSession(projectId, sessionId),
+      reviews: {
+        run: (request) => {
+          const owner = reviewerCommandOwnerRef.current
+          if (!owner) return Promise.reject(new Error('Reviewer owner is not available.'))
+          return owner.run(request)
+        },
+        getForSession: (request) => {
+          const owner = reviewerCommandOwnerRef.current
+          if (!owner) return Promise.reject(new Error('Reviewer owner is not available.'))
+          return owner.getForSession(request)
+        }
+      }
+    },
+    parentMessages: {
+      async deliver(delivery) {
+        const runtime = runtimeRef.current
+        if (!runtime) throw new Error('ACP runtime is not available.')
+        const session = await sessionRepository.loadSession(
+          delivery.session.projectId,
+          delivery.session.sessionId
+        )
+        const graph = session?.conversationGraph
+        const rootFrame = graph?.frames.find((frame) => frame.id === delivery.targetFrameId)
+        const rootBranch = graph?.branches.find((branch) => branch.id === rootFrame?.activeBranchId)
+        if (
+          !session ||
+          session.id !== delivery.session.sessionId ||
+          session.projectId !== delivery.session.projectId ||
+          graph?.rootFrameId !== delivery.targetFrameId ||
+          !rootBranch ||
+          !graph.messages.some((message) => message.id === delivery.originMessageId)
+        ) {
+          throw new Error('Parent message durable root provenance is unavailable.')
+        }
+        await runtime.startContinuation({
+          sessionId: delivery.session.sessionId,
+          text:
+            `[Delegated ${delivery.kind} from Frame ${delivery.sourceFrameId}, ` +
+            `Attempt ${delivery.sourceAttemptId}]\n\n${delivery.text}`,
+          suppressUserMessage: true,
+          provenanceContext: {
+            promptMessageId: delivery.originMessageId,
+            rootFrameId: graph.rootFrameId,
+            agentFrameId: graph.rootFrameId,
+            messageBranchId: rootBranch.id,
+            messageBranchAncestry: [rootBranch.id],
+            messageAncestry: [delivery.originMessageId],
+            runtimeSegmentId: `delegated-message-${delivery.messageId}`
+          }
+        })
+      }
+    }
+  })
+
   const hostSkillsCatalog: HostSkillsCatalog = {
     list: () => settingsService.listHostSkills(),
     withSkillRead: (id, read) => settingsService.withHostSkillRead(id, read),
@@ -1164,18 +1347,25 @@ const createApplicationModules = async (
       },
       inputRegistry: notebookInputRegistry,
       agentsService,
+      delegatedWorkService: delegatedWork.host,
       skillsService: hostSkillsService
     }),
     createNotebookLocalRpcModule
   )
+  notebookRpcServerRef.current = notebookRpcServer
   // Register ownership before ACP construction. Reverse disposal therefore drains ACP + Notebook
   // through the coordinator first, then releases the local bridge without creating a second runtime
   // shutdown owner; rollback also closes a server started during partial composition.
   // The RPC server needs the runtime service to dispatch to, and the runtime service needs the RPC
   // server's (lazily-started) connection for host.mcp() env injection — wire the second half here to
   // avoid a construction cycle.
-  notebookService.setMcpRpcConnectionResolver(({ sessionId, projectId }) =>
-    notebookRpcServer.issueControlConnection(sessionId, projectId)
+  notebookService.setMcpRpcConnectionResolver(({ sessionId, projectId, agentFrameId, attemptId }) =>
+    notebookRpcServer.issueControlConnection(
+      sessionId,
+      projectId,
+      agentFrameId,
+      attemptId ? { role: 'delegate', attemptId } : { role: 'main' }
+    )
   )
   // The renderer's approval card responds here; the broker resolves the held connector call.
   declareElectronAdapter('connector-approvals', () => {
@@ -1276,6 +1466,7 @@ const createApplicationModules = async (
       initializationBarrier: initialConnectorSkillsReady,
       profileService,
       sessionPersistenceCoordinator,
+      delegatedWork: delegatedWork.root,
       sideChatRelays: mainPromptSideChatRelay
     },
     (options) => {
@@ -1903,6 +2094,7 @@ const createApplicationModules = async (
     withSessionMutation: (projectId, sessionId, mutation) =>
       sessionPersistenceCoordinator.runSessionMutation(projectId, sessionId, mutation)
   })
+  artifactHandlersRef.current = artifactHandlers
   declareElectronAdapter('artifacts', () =>
     registerArtifactIpcHandlers(
       artifactRepository,
@@ -1986,6 +2178,7 @@ const createApplicationModules = async (
     ) => sessionPersistenceCoordinator.runSessionMutation(projectId, sessionId, mutation)
   }
   const reviewerCommandOwner = createReviewerCommandOwner(reviewerOptions)
+  reviewerCommandOwnerRef.current = reviewerCommandOwner
   declareElectronAdapter('reviewer', () => {
     registerReviewerIpcHandlers(reviewerOptions, reviewerCommandOwner)
   })

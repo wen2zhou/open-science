@@ -506,6 +506,29 @@ export type AcpRuntimeEvent = {
   raw?: unknown
 }
 
+// Durable app-owned identity for one live Agent Runtime Segment. Provider Session and prompt ids are
+// deliberately excluded from the nested event below so consumers have exactly one routing owner.
+export type AcpAgentRuntimeScope = Readonly<{
+  projectId: string
+  sessionId: string
+  agentFrameId: string
+  attemptId: string
+  runtimeSegmentId: string
+  promptMessageId: string
+}>
+
+export type AcpAgentRuntimeEvent = Readonly<
+  Omit<AcpRuntimeEvent, 'sessionId' | 'promptMessageId'> & {
+    sessionId?: never
+    promptMessageId?: never
+  }
+>
+
+export type AcpAgentRuntimeUpdate = Readonly<{
+  scope: AcpAgentRuntimeScope
+  event: AcpAgentRuntimeEvent
+}>
+
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
 
@@ -569,6 +592,14 @@ export type AcpPermissionRequest = {
   commandPrefix?: string[]
   rawInput?: unknown
   options: AcpPermissionOption[]
+  // App-owned delegated execution attribution. Provider payloads cannot set this projection;
+  // the delegated-work owner binds it from the trusted Frame/Attempt execution handle.
+  delegated?: Readonly<{
+    frameId: string
+    attemptId: string
+    childTitle: string
+    riskScope: string
+  }>
 }
 
 // An Open Science-owned tool grant. `categoryKey` is the broker's opaque matcher key;
@@ -599,6 +630,10 @@ export type AcpStateSnapshot = {
   // Latest context-window usage for each logical app session's current agent-context generation.
   // Missing means unknown or invalidated; framework switches and reconnects clear the old generation.
   contextUsageBySession: Record<string, AcpContextUsage>
+  // Monotonic process-local signal that durable delegated-work records changed. The renderer uses
+  // it only to refresh the authoritative Session projection; the records remain persistence-owned.
+  delegatedWorkRevision?: number
+  delegatedWorkUnavailableBySession?: Record<string, string>
   // Sessions whose attached framework exposes a native compaction control turn. Missing is accepted
   // from an older main process during a rolling dev reload.
   nativeContextCompactionSessionIds?: string[]
@@ -741,6 +776,7 @@ export type AcpPromptRequest = {
 
 export type AcpCancelPromptRequest = {
   sessionId: string
+  scope?: 'turn' | 'subagents'
 }
 
 export type AcpDeleteSessionRequest = {

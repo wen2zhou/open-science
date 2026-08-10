@@ -48,6 +48,7 @@ type BackendRoutePlanInput = Readonly<{
   frameworkId: AgentFrameworkId
   target: ProviderRuntimeTarget
   effortIntent: ReasoningEffort
+  resolvedEffort?: ResolvedReasoningEffort
   conversationSkillImportEnabled: boolean
   forceNativeResponsesCompatibility?: boolean
 }>
@@ -166,7 +167,7 @@ class BackendRoutePlanner {
       )
     }
     const modelRoute = forcedCompatibility ? 'codex-responses-compatibility' : configuredRoute
-    const resolvedEffort = modelEffort(input.effortIntent, input.target)
+    const resolvedEffort = input.resolvedEffort ?? modelEffort(input.effortIntent, input.target)
     const sessionEffort = resolvedEffort === 'default' ? undefined : resolvedEffort
     const supportedReasoningEfforts = input.target.reasoningEffortProfile.supported
       ? [...new Set(input.target.reasoningEffortProfile.slots)]

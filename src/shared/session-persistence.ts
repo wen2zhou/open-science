@@ -20,6 +20,7 @@ import {
   type PermissionProfileId
 } from './permission-profiles'
 import type { AgentFrameworkId } from './settings'
+import type { ResolvedReasoningEffort } from './reasoning-effort'
 import { sanitizeActivityGroupTitle } from './activity-groups'
 import { sanitizeElicitationProjection, type ElicitationProjection } from './elicitation'
 import {
@@ -31,6 +32,7 @@ import {
 } from './session-plan/contract'
 import {
   createLinearConversationGraph,
+  materializeNestedDelegateActivities,
   projectConversationMessage,
   resolveActiveConversationMessages,
   synchronizeActiveConversationActivities,
@@ -44,6 +46,7 @@ import {
   type PersistedMessageNode,
   type PersistedRuntimeSegment
 } from './conversation-graph'
+import { parseNestedDelegateInvocationId } from './delegated-caller-source'
 import {
   EXACT_PERMISSION_QUALIFIER_PATTERN,
   PERMISSION_CAPABILITY_KINDS,
@@ -71,7 +74,80 @@ export type SessionRuntimeContextValue =
   | SessionRuntimeContextValue[]
   | { [key: string]: SessionRuntimeContextValue }
 
-export type SessionRuntimeContextOwner = 'plan' | 'permission'
+export type SessionRuntimeContextOwner =
+  'plan' | 'delegatedWork' | 'permission' | 'sideChat' | 'sideChatRelays'
+
+export type DelegatedWorkAttemptStatus = 'running' | 'completed' | 'cancelled' | 'error'
+export type DelegatedWorkCancellationReason =
+  'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
+
+export type DelegatedWorkResolvedAgent =
+  | Readonly<{ kind: 'main' }>
+  | Readonly<{
+      kind: 'specialist'
+      profileId: string
+      revision: number
+      displayName: string
+    }>
+
+export type ResolvedSubagentModelSnapshot = Readonly<{
+  frameworkId: AgentFrameworkId
+  providerId: string
+  backendId: string
+  modelRoute:
+    | 'claude-anthropic'
+    | 'opencode-anthropic'
+    | 'opencode-openai'
+    | 'codex-responses'
+    | 'codex-responses-compatibility'
+    | 'codex-bridge'
+  model: string
+  reasoningEffort: ResolvedReasoningEffort
+}>
+
+export type DelegatedCallerSource = Readonly<{
+  rootMessageId: string
+  toolInvocationId: string
+}>
+
+export type DelegatedWorkAttemptRecord = Readonly<{
+  id: string
+  // Durable identity of the root Message whose Conversation Turn admitted this Attempt.
+  // Legacy terminal Attempts may omit it; new initial and continuation Attempts always write it.
+  initiatingTurnMessageId?: string
+  status: DelegatedWorkAttemptStatus
+  resolvedAgent: DelegatedWorkResolvedAgent
+  executionModel?: ResolvedSubagentModelSnapshot
+  runtimeSegmentIds: readonly string[]
+  startedAt: number
+  endedAt?: number
+  terminalMessageId?: string
+  cancellationReason?: DelegatedWorkCancellationReason
+  error?: Readonly<{ code: string; message: string }>
+}>
+
+export type DelegatedWorkPendingMessage = Readonly<{
+  id: string
+  sourceFrameId: string
+  sourceAttemptId?: string
+  targetFrameId: string
+  targetAttemptId?: string
+  text: string
+  kind: 'info' | 'question'
+  callerSource?: DelegatedCallerSource
+  createdAt: number
+  deliveredAt?: number
+}>
+
+export type DelegatedWorkRecord = Readonly<{
+  agentFrameId: string
+  attempts: readonly DelegatedWorkAttemptRecord[]
+  pendingMessages: readonly DelegatedWorkPendingMessage[]
+}>
+
+export type SessionDelegatedWorkRuntimeContext = Readonly<{
+  records: readonly DelegatedWorkRecord[]
+}>
 
 export type SessionPlanApproval = 'pending' | 'approved' | 'rejected'
 export type SessionPlanStepStatus = 'in_progress' | 'completed' | 'blocked' | 'skipped'
@@ -135,15 +211,21 @@ export type SessionRuntimeContext = Readonly<{
   version: 1
   revision: number
   plan?: SessionPlanRuntimeContext
+  delegatedWork?: SessionDelegatedWorkRuntimeContext
   permission?: SessionPermissionRuntimeContext
   sideChat?: PersistedSideChat
   sideChatRelays?: readonly PersistedSideChatRelay[]
 }>
 
-export type SessionRuntimeContextPatch = Readonly<{
-  plan?: SessionPlanRuntimeContext | undefined
-  permission?: SessionPermissionRuntimeContext | undefined
-}>
+export type SessionRuntimeContextPatch = Readonly<
+  Partial<{
+    plan: SessionPlanRuntimeContext | undefined
+    delegatedWork: SessionDelegatedWorkRuntimeContext | undefined
+    permission: SessionPermissionRuntimeContext | undefined
+    sideChat: PersistedSideChat | undefined
+    sideChatRelays: readonly PersistedSideChatRelay[] | undefined
+  }>
+>
 
 // Stores artifact references only; file bytes stay on disk under the managed artifact root.
 export type PersistedArtifact = {
@@ -187,6 +269,12 @@ export type PersistedChatMessage = {
   // Links a message to session-level artifact metadata without duplicating file records per message.
   artifactIds?: string[]
   uploads?: PersistedUploadedAttachment[]
+  // Delegate assignment metadata keeps execution inputs reconstructable without parsing display text.
+  delegatedTask?: string
+  delegatedContext?: string
+  delegatedInputVersionIds?: string[]
+  // Durable source of a Main-to-child ACP Turn. Frame origin remains immutable lineage only.
+  delegatedCallerSource?: DelegatedCallerSource
   // Bounded raster blocks emitted directly by ACP agent_message_chunk notifications.
   images?: PersistedMessageImage[]
   // Structured mention segments for the styled user bubble; optional for backward compatibility.
@@ -202,6 +290,15 @@ export type PersistedChatMessage = {
   contextWindowSamples?: AcpContextWindowSample[]
   // Marks the final Agent message for a turn whose provider did not report usable totals.
   turnUsageUnavailable?: true
+  structuredOutputEvidence?: Readonly<{
+    attemptId: string
+    dialect: '2020-12'
+    profile: 'ajv-8-draft-2020-12-v1'
+    schemaDigest: string
+    schema: unknown
+    accepted?: Readonly<{ value: unknown; acceptedAt: number }>
+  }>
+  structuredOutputEvidenceInvalid?: true
   createdAt: number
   // Stable terminal timestamps survive later artifact/upload reconciliation that advances updatedAt.
   completedAt?: number
@@ -391,6 +488,15 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 // Reads string fields from untrusted persisted payloads.
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' ? value : undefined
+
+const sanitizeDelegatedCallerSource = (value: unknown): DelegatedCallerSource | undefined => {
+  if (!isRecord(value) || !hasOnlyFields(value, ['rootMessageId', 'toolInvocationId'])) {
+    return undefined
+  }
+  const rootMessageId = asString(value.rootMessageId)
+  const toolInvocationId = asString(value.toolInvocationId)
+  return rootMessageId && toolInvocationId ? { rootMessageId, toolInvocationId } : undefined
+}
 
 // Reads finite numeric fields from untrusted persisted payloads.
 const asNumber = (value: unknown): number | undefined =>
@@ -732,6 +838,315 @@ const sanitizeSessionPlanRuntimeContext = (
   }
 }
 
+const DELEGATED_WORK_ATTEMPT_STATUSES = new Set<DelegatedWorkAttemptStatus>([
+  'running',
+  'completed',
+  'cancelled',
+  'error'
+])
+const DELEGATED_WORK_CANCELLATION_REASONS = new Set<DelegatedWorkCancellationReason>([
+  'main_agent_stop',
+  'session_stop',
+  'runtime_interrupted'
+])
+
+const hasOnlyFields = (value: Record<string, unknown>, fields: readonly string[]): boolean =>
+  Object.keys(value).every((field) => fields.includes(field))
+
+const sanitizeDelegatedWorkResolvedAgent = (
+  value: unknown
+): DelegatedWorkResolvedAgent | undefined => {
+  if (!isRecord(value)) return undefined
+  if (value.kind === 'main' && hasOnlyFields(value, ['kind'])) return { kind: 'main' }
+  if (value.kind !== 'specialist') return undefined
+  if (!hasOnlyFields(value, ['kind', 'profileId', 'revision', 'displayName'])) return undefined
+  const profileId = asString(value.profileId)
+  const revision = asNumber(value.revision)
+  const displayName = asString(value.displayName)
+  if (
+    !profileId ||
+    revision === undefined ||
+    !Number.isSafeInteger(revision) ||
+    revision < 1 ||
+    !displayName
+  ) {
+    return undefined
+  }
+  return { kind: 'specialist', profileId, revision, displayName }
+}
+
+const SUBAGENT_MODEL_ROUTES = new Set<ResolvedSubagentModelSnapshot['modelRoute']>([
+  'claude-anthropic',
+  'opencode-anthropic',
+  'opencode-openai',
+  'codex-responses',
+  'codex-responses-compatibility',
+  'codex-bridge'
+])
+const SUBAGENT_REASONING_EFFORTS = new Set<ResolvedReasoningEffort>([
+  'default',
+  'none',
+  'minimal',
+  'low',
+  'medium',
+  'high',
+  'xhigh',
+  'max',
+  'ultra'
+])
+
+const sanitizeResolvedSubagentModelSnapshot = (
+  value: unknown
+): ResolvedSubagentModelSnapshot | undefined => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyFields(value, [
+      'frameworkId',
+      'providerId',
+      'backendId',
+      'modelRoute',
+      'model',
+      'reasoningEffort'
+    ])
+  )
+    return undefined
+  const frameworkId = asString(value.frameworkId) as AgentFrameworkId | undefined
+  const providerId = asString(value.providerId)
+  const backendId = asString(value.backendId)
+  const modelRoute = asString(value.modelRoute) as
+    ResolvedSubagentModelSnapshot['modelRoute'] | undefined
+  const model = asString(value.model)
+  const reasoningEffort = asString(value.reasoningEffort) as ResolvedReasoningEffort | undefined
+  if (
+    !frameworkId ||
+    !AGENT_FRAMEWORK_IDS.has(frameworkId) ||
+    !providerId ||
+    !backendId ||
+    !modelRoute ||
+    !SUBAGENT_MODEL_ROUTES.has(modelRoute) ||
+    !model ||
+    !reasoningEffort ||
+    !SUBAGENT_REASONING_EFFORTS.has(reasoningEffort)
+  )
+    return undefined
+  return { frameworkId, providerId, backendId, modelRoute, model, reasoningEffort }
+}
+
+const sanitizeSessionDelegatedWorkRuntimeContext = (
+  value: unknown
+): SessionDelegatedWorkRuntimeContext | undefined => {
+  if (!isRecord(value) || !hasOnlyFields(value, ['records']) || !Array.isArray(value.records)) {
+    return undefined
+  }
+  const frameIds = new Set<string>()
+  const attemptIds = new Set<string>()
+  const pendingMessageIds = new Set<string>()
+  const records: DelegatedWorkRecord[] = []
+  for (const rawRecord of value.records) {
+    if (
+      !isRecord(rawRecord) ||
+      !hasOnlyFields(rawRecord, ['agentFrameId', 'attempts', 'pendingMessages']) ||
+      !Array.isArray(rawRecord.attempts) ||
+      rawRecord.attempts.length === 0 ||
+      !Array.isArray(rawRecord.pendingMessages)
+    ) {
+      return undefined
+    }
+    const agentFrameId = asString(rawRecord.agentFrameId)
+    if (!agentFrameId || frameIds.has(agentFrameId)) return undefined
+    frameIds.add(agentFrameId)
+    const attempts: DelegatedWorkAttemptRecord[] = []
+    let runningCount = 0
+    for (const rawAttempt of rawRecord.attempts) {
+      if (
+        !isRecord(rawAttempt) ||
+        !hasOnlyFields(rawAttempt, [
+          'id',
+          'initiatingTurnMessageId',
+          'status',
+          'resolvedAgent',
+          'executionModel',
+          'runtimeSegmentIds',
+          'startedAt',
+          'endedAt',
+          'terminalMessageId',
+          'cancellationReason',
+          'error'
+        ])
+      ) {
+        return undefined
+      }
+      const id = asString(rawAttempt.id)
+      const initiatingTurnMessageId =
+        rawAttempt.initiatingTurnMessageId === undefined
+          ? undefined
+          : asString(rawAttempt.initiatingTurnMessageId)
+      const status = asString(rawAttempt.status) as DelegatedWorkAttemptStatus | undefined
+      const resolvedAgent = sanitizeDelegatedWorkResolvedAgent(rawAttempt.resolvedAgent)
+      const executionModel =
+        rawAttempt.executionModel === undefined
+          ? undefined
+          : sanitizeResolvedSubagentModelSnapshot(rawAttempt.executionModel)
+      const startedAt = asNumber(rawAttempt.startedAt)
+      const runtimeSegmentIds = asStringArray(rawAttempt.runtimeSegmentIds)
+      if (
+        !id ||
+        (rawAttempt.initiatingTurnMessageId !== undefined && !initiatingTurnMessageId) ||
+        attemptIds.has(id) ||
+        !status ||
+        !DELEGATED_WORK_ATTEMPT_STATUSES.has(status) ||
+        !resolvedAgent ||
+        (rawAttempt.executionModel !== undefined && !executionModel) ||
+        startedAt === undefined ||
+        startedAt < 0 ||
+        !Array.isArray(rawAttempt.runtimeSegmentIds) ||
+        runtimeSegmentIds.length !== rawAttempt.runtimeSegmentIds.length ||
+        new Set(runtimeSegmentIds).size !== runtimeSegmentIds.length
+      ) {
+        return undefined
+      }
+      attemptIds.add(id)
+      const endedAt = rawAttempt.endedAt === undefined ? undefined : asNumber(rawAttempt.endedAt)
+      const terminalMessageId =
+        rawAttempt.terminalMessageId === undefined
+          ? undefined
+          : asString(rawAttempt.terminalMessageId)
+      const cancellationReason =
+        rawAttempt.cancellationReason === undefined
+          ? undefined
+          : (asString(rawAttempt.cancellationReason) as DelegatedWorkCancellationReason | undefined)
+      let error: { code: string; message: string } | undefined
+      if (rawAttempt.error !== undefined) {
+        if (!isRecord(rawAttempt.error) || !hasOnlyFields(rawAttempt.error, ['code', 'message'])) {
+          return undefined
+        }
+        const code = asString(rawAttempt.error.code)
+        const message = asString(rawAttempt.error.message)
+        if (!code || !message) return undefined
+        error = { code, message }
+      }
+      if (status === 'running') {
+        runningCount += 1
+        if (
+          endedAt !== undefined ||
+          terminalMessageId !== undefined ||
+          cancellationReason !== undefined ||
+          error !== undefined
+        ) {
+          return undefined
+        }
+      } else if (endedAt === undefined || endedAt < startedAt) {
+        return undefined
+      }
+      if (status === 'completed' && terminalMessageId === undefined) return undefined
+      if (
+        (status === 'cancelled') !== (cancellationReason !== undefined) ||
+        (cancellationReason && !DELEGATED_WORK_CANCELLATION_REASONS.has(cancellationReason)) ||
+        (status === 'error') !== (error !== undefined)
+      ) {
+        return undefined
+      }
+      attempts.push({
+        id,
+        ...(initiatingTurnMessageId ? { initiatingTurnMessageId } : {}),
+        status,
+        resolvedAgent,
+        ...(executionModel ? { executionModel } : {}),
+        runtimeSegmentIds,
+        startedAt,
+        ...(endedAt !== undefined ? { endedAt } : {}),
+        ...(terminalMessageId ? { terminalMessageId } : {}),
+        ...(cancellationReason ? { cancellationReason } : {}),
+        ...(error ? { error } : {})
+      })
+    }
+    if (runningCount > 1 || (runningCount === 1 && attempts.at(-1)?.status !== 'running')) {
+      return undefined
+    }
+    const pendingMessages: DelegatedWorkPendingMessage[] = []
+    for (const rawMessage of rawRecord.pendingMessages) {
+      if (
+        !isRecord(rawMessage) ||
+        !hasOnlyFields(rawMessage, [
+          'id',
+          'sourceFrameId',
+          'sourceAttemptId',
+          'targetFrameId',
+          'targetAttemptId',
+          'text',
+          'kind',
+          'callerSource',
+          'callerMessageId',
+          'toolInvocationId',
+          'createdAt',
+          'deliveredAt'
+        ])
+      ) {
+        return undefined
+      }
+      const id = asString(rawMessage.id)
+      const sourceFrameId = asString(rawMessage.sourceFrameId)
+      const sourceAttemptId =
+        rawMessage.sourceAttemptId === undefined ? undefined : asString(rawMessage.sourceAttemptId)
+      const targetFrameId = asString(rawMessage.targetFrameId)
+      const targetAttemptId =
+        rawMessage.targetAttemptId === undefined ? undefined : asString(rawMessage.targetAttemptId)
+      const text = asString(rawMessage.text)
+      const kind = asString(rawMessage.kind) as 'info' | 'question' | undefined
+      const createdAt = asNumber(rawMessage.createdAt)
+      const explicitCallerSource = sanitizeDelegatedCallerSource(rawMessage.callerSource)
+      const legacyCallerMessageId = asString(rawMessage.callerMessageId)
+      const legacyToolInvocationId = asString(rawMessage.toolInvocationId)
+      const callerSource =
+        explicitCallerSource ??
+        (legacyCallerMessageId && legacyToolInvocationId
+          ? {
+              rootMessageId: legacyCallerMessageId,
+              toolInvocationId: legacyToolInvocationId
+            }
+          : undefined)
+      const hasCallerSourcePayload =
+        rawMessage.callerSource !== undefined ||
+        rawMessage.callerMessageId !== undefined ||
+        rawMessage.toolInvocationId !== undefined
+      const deliveredAt =
+        rawMessage.deliveredAt === undefined ? undefined : asNumber(rawMessage.deliveredAt)
+      if (
+        !id ||
+        pendingMessageIds.has(id) ||
+        !sourceFrameId ||
+        (rawMessage.sourceAttemptId !== undefined && !sourceAttemptId) ||
+        !targetFrameId ||
+        (rawMessage.targetAttemptId !== undefined && !targetAttemptId) ||
+        (hasCallerSourcePayload && !callerSource) ||
+        !text ||
+        !kind ||
+        !['info', 'question'].includes(kind) ||
+        createdAt === undefined ||
+        createdAt < 0 ||
+        (rawMessage.deliveredAt !== undefined &&
+          (deliveredAt === undefined || deliveredAt < createdAt))
+      ) {
+        return undefined
+      }
+      pendingMessageIds.add(id)
+      pendingMessages.push({
+        id,
+        sourceFrameId,
+        ...(sourceAttemptId ? { sourceAttemptId } : {}),
+        targetFrameId,
+        ...(targetAttemptId ? { targetAttemptId } : {}),
+        text,
+        kind,
+        ...(callerSource ? { callerSource } : {}),
+        createdAt,
+        ...(deliveredAt !== undefined ? { deliveredAt } : {})
+      })
+    }
+    records.push({ agentFrameId, attempts, pendingMessages })
+  }
+  return { records }
+}
 const PERMISSION_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
 const PERMISSION_SCOPES = new Set(['once', 'session', 'project', 'global'])
 const PERMISSION_OPTION_KINDS = new Set([
@@ -950,6 +1365,7 @@ export const sanitizeSessionRuntimeContext = (
     version: 1
     revision: number
     plan?: SessionPlanRuntimeContext
+    delegatedWork?: SessionDelegatedWorkRuntimeContext
     permission?: SessionPermissionRuntimeContext
     sideChat?: PersistedSideChat
     sideChatRelays?: readonly PersistedSideChatRelay[]
@@ -962,17 +1378,21 @@ export const sanitizeSessionRuntimeContext = (
   const budget = { remaining: 2_000 }
   for (const [owner, ownerValue] of Object.entries(value)) {
     if (owner === 'version' || owner === 'revision') continue
-    if (owner === 'plan' || owner === 'permission') {
+    if (owner === 'plan' || owner === 'delegatedWork' || owner === 'permission') {
       const sanitizedJson = sanitizeRuntimeContextValue(ownerValue, budget)
       if (sanitizedJson === undefined) return undefined
       if (owner === 'plan') {
         const plan = sanitizeSessionPlanRuntimeContext(sanitizedJson)
         if (!plan) return undefined
         result.plan = plan
-      } else {
+      } else if (owner === 'permission') {
         const permission = sanitizeSessionPermissionRuntimeContext(sanitizedJson)
         if (!permission) return undefined
         result.permission = permission
+      } else {
+        const delegatedWork = sanitizeSessionDelegatedWorkRuntimeContext(sanitizedJson)
+        if (!delegatedWork) return undefined
+        result.delegatedWork = delegatedWork
       }
       continue
     }
@@ -1736,6 +2156,96 @@ export const sanitizeSessionUploadedAttachments = (
   }
 }
 
+const sanitizeStructuredJson = (
+  value: unknown,
+  limits: { bytes: number; nodes: number; depth: number; properties: number; items: number }
+): unknown | undefined => {
+  try {
+    let nodes = 0
+    const inspect = (candidate: unknown, depth: number): boolean => {
+      nodes += 1
+      if (nodes > limits.nodes || depth > limits.depth) return false
+      if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean')
+        return true
+      if (typeof candidate === 'number')
+        return Number.isFinite(candidate) && !Object.is(candidate, -0)
+      if (Array.isArray(candidate)) {
+        return (
+          candidate.length <= limits.items &&
+          Object.keys(candidate).length === candidate.length &&
+          candidate.every((item) => inspect(item, depth + 1))
+        )
+      }
+      if (!isRecord(candidate) || Object.getPrototypeOf(candidate) !== Object.prototype)
+        return false
+      const keys = Object.keys(candidate)
+      return (
+        keys.length <= limits.properties &&
+        !keys.some((key) => key === '__proto__' || key === 'prototype' || key === 'constructor') &&
+        keys.every((key) => inspect(candidate[key], depth + 1))
+      )
+    }
+    if (!inspect(value, 0)) return undefined
+    const serialized = JSON.stringify(value)
+    if (serialized === undefined || Buffer.byteLength(serialized, 'utf8') > limits.bytes)
+      return undefined
+    return JSON.parse(serialized) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+const sanitizeStructuredOutputEvidence = (
+  value: unknown
+): PersistedChatMessage['structuredOutputEvidence'] | undefined => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyFields(value, ['attemptId', 'dialect', 'profile', 'schemaDigest', 'schema', 'accepted'])
+  )
+    return undefined
+  const attemptId = asString(value.attemptId)
+  const schemaDigest = asString(value.schemaDigest)
+  if (
+    !attemptId ||
+    value.dialect !== '2020-12' ||
+    value.profile !== 'ajv-8-draft-2020-12-v1' ||
+    !schemaDigest ||
+    !/^[a-f0-9]{64}$/.test(schemaDigest)
+  )
+    return undefined
+  const schema = sanitizeStructuredJson(value.schema, {
+    bytes: 64 * 1024,
+    nodes: 1_000,
+    depth: 32,
+    properties: 128,
+    items: 128
+  })
+  if (schema === undefined || (typeof schema !== 'boolean' && !isRecord(schema))) return undefined
+  let accepted: { value: unknown; acceptedAt: number } | undefined
+  if (value.accepted !== undefined) {
+    if (!isRecord(value.accepted) || !hasOnlyFields(value.accepted, ['value', 'acceptedAt']))
+      return undefined
+    const acceptedAt = asNumber(value.accepted.acceptedAt)
+    const acceptedValue = sanitizeStructuredJson(value.accepted.value, {
+      bytes: 256 * 1024,
+      nodes: 5_000,
+      depth: 32,
+      properties: 256,
+      items: 1_000
+    })
+    if (acceptedAt === undefined || acceptedAt < 0 || acceptedValue === undefined) return undefined
+    accepted = { value: acceptedValue, acceptedAt }
+  }
+  return {
+    attemptId,
+    dialect: '2020-12',
+    profile: 'ajv-8-draft-2020-12-v1',
+    schemaDigest,
+    schema,
+    ...(accepted ? { accepted } : {})
+  }
+}
+
 // Rebuilds a message from durable UI fields and strips unknown renderer payload.
 const sanitizeMessage = (
   message: unknown,
@@ -1761,6 +2271,17 @@ const sanitizeMessage = (
   const streamId = asString(message.streamId)
   const responseToMessageId = asString(message.responseToMessageId)
   const artifactIds = asStringArray(message.artifactIds)
+  const delegatedTask = asString(message.delegatedTask)
+  const delegatedContext = asString(message.delegatedContext)
+  const delegatedInputVersionIds = asStringArray(message.delegatedInputVersionIds)
+  const explicitDelegatedCallerSource = sanitizeDelegatedCallerSource(message.delegatedCallerSource)
+  const legacyCallerMessageId = asString(message.delegatedCallerMessageId)
+  const legacyToolInvocationId = asString(message.delegatedToolInvocationId)
+  const delegatedCallerSource =
+    explicitDelegatedCallerSource ??
+    (legacyCallerMessageId && legacyToolInvocationId
+      ? { rootMessageId: legacyCallerMessageId, toolInvocationId: legacyToolInvocationId }
+      : undefined)
   const uploads = Array.isArray(message.uploads)
     ? message.uploads
         .map((attachment) =>
@@ -1785,10 +2306,19 @@ const sanitizeMessage = (
       : []
   const completedAt = asNumber(message.completedAt)
   const failedAt = asNumber(message.failedAt)
+  const structuredOutputEvidence = sanitizeStructuredOutputEvidence(
+    message.structuredOutputEvidence
+  )
 
   if (streamId) sanitized.streamId = streamId
   if (responseToMessageId) sanitized.responseToMessageId = responseToMessageId
   if (artifactIds.length > 0) sanitized.artifactIds = artifactIds
+  if (delegatedTask) sanitized.delegatedTask = delegatedTask
+  if (delegatedContext) sanitized.delegatedContext = delegatedContext
+  if (delegatedInputVersionIds.length > 0) {
+    sanitized.delegatedInputVersionIds = delegatedInputVersionIds
+  }
+  if (delegatedCallerSource) sanitized.delegatedCallerSource = delegatedCallerSource
   if (uploads.length > 0) sanitized.uploads = uploads
   if (parts.length > 0) sanitized.parts = parts
   if (role === 'user' && message.turnIntent === 'plan-first') sanitized.turnIntent = 'plan-first'
@@ -1804,6 +2334,13 @@ const sanitizeMessage = (
   if (turnUsage) sanitized.turnUsage = turnUsage
   if (contextWindowSamples.length > 0) sanitized.contextWindowSamples = contextWindowSamples
   if (turnUsageUnavailable) sanitized.turnUsageUnavailable = true
+  if (structuredOutputEvidence) sanitized.structuredOutputEvidence = structuredOutputEvidence
+  if (
+    message.structuredOutputEvidenceInvalid === true ||
+    (message.structuredOutputEvidence !== undefined && !structuredOutputEvidence)
+  ) {
+    sanitized.structuredOutputEvidenceInvalid = true
+  }
   if (role === 'user' && message.interrupted === true) sanitized.interrupted = true
   if (role === 'agent' && sanitized.status === 'complete') {
     sanitized.completedAt = completedAt ?? sanitized.updatedAt
@@ -2025,39 +2562,95 @@ const sanitizeConversationGraph = (
   }
   try {
     validateConversationGraph(graph)
-    return graph
+    return materializeNestedDelegateActivities(graph)
   } catch {
     return undefined
   }
+}
+
+export type ConversationGraphMaterializationPhase = 'create' | 'messages' | 'activities'
+
+export class ConversationGraphMaterializationError extends Error {
+  readonly phase: ConversationGraphMaterializationPhase
+  override readonly cause: unknown
+
+  constructor(phase: ConversationGraphMaterializationPhase, cause: unknown) {
+    super('Conversation graph materialization failed.')
+    this.name = 'ConversationGraphMaterializationError'
+    this.phase = phase
+    this.cause = cause
+  }
+}
+
+const materializeGraphPhase = <Result>(
+  phase: ConversationGraphMaterializationPhase,
+  operation: () => Result
+): Result => {
+  try {
+    return operation()
+  } catch (error) {
+    throw new ConversationGraphMaterializationError(phase, error)
+  }
+}
+
+const projectActiveNestedDelegateActivities = (
+  graph: PersistedConversationGraph
+): PersistedToolActivity[] => {
+  const activeMessageIds = new Set(resolveActiveConversationMessages(graph).map(({ id }) => id))
+  return graph.activities.flatMap(
+    ({ agentFrameId, messageBranchId, runtimeSegmentId, ...activity }) => {
+      void agentFrameId
+      void messageBranchId
+      void runtimeSegmentId
+      return parseNestedDelegateInvocationId(activity.id) !== undefined &&
+        activeMessageIds.has(activity.promptMessageId)
+        ? [activity]
+        : []
+    }
+  )
 }
 
 export const materializeSessionConversationGraph = (
   session: PersistedChatSession
 ): PersistedChatSession => {
   const messageGraph = session.conversationGraph
-    ? synchronizeActiveConversationMessages(
-        session.conversationGraph,
-        session.messages,
-        session.updatedAt
+    ? materializeGraphPhase('messages', () =>
+        synchronizeActiveConversationMessages(
+          session.conversationGraph!,
+          session.messages,
+          session.updatedAt
+        )
       )
-    : createLinearConversationGraph({
-        sessionId: session.id,
-        messages: session.messages,
-        frameworkId: session.agentFrameworkId,
-        backendId: session.agentBackendId,
-        model: session.agentModel,
-        createdAt: session.createdAt,
-        updatedAt: session.updatedAt
-      })
-  const graph = synchronizeActiveConversationActivities(
-    messageGraph,
-    session.activities ?? [],
-    session.activityGroups ?? []
+    : materializeGraphPhase('create', () =>
+        createLinearConversationGraph({
+          sessionId: session.id,
+          messages: session.messages,
+          frameworkId: session.agentFrameworkId,
+          backendId: session.agentBackendId,
+          model: session.agentModel,
+          createdAt: session.createdAt,
+          updatedAt: session.updatedAt
+        })
+      )
+  const graph = materializeGraphPhase('activities', () =>
+    materializeNestedDelegateActivities(
+      synchronizeActiveConversationActivities(
+        messageGraph,
+        session.activities ?? [],
+        session.activityGroups ?? []
+      )
+    )
   )
+  const nestedDelegateActivities = projectActiveNestedDelegateActivities(graph)
+  const activityIds = new Set((session.activities ?? []).map(({ id }) => id))
   return {
     ...session,
     conversationGraph: graph,
-    messages: resolveActiveConversationMessages(graph).map(projectConversationMessage)
+    messages: resolveActiveConversationMessages(graph).map(projectConversationMessage),
+    activities: [
+      ...(session.activities ?? []),
+      ...nestedDelegateActivities.filter(({ id }) => !activityIds.has(id))
+    ]
   }
 }
 
@@ -2234,8 +2827,14 @@ const sanitizeSession = (
   if (session.conversationGraph !== undefined) {
     const graph = sanitizeConversationGraph(session.conversationGraph, options)
     if (!graph) return undefined
+    const nestedDelegateActivities = projectActiveNestedDelegateActivities(graph)
+    const activityIds = new Set((sanitized.activities ?? []).map(({ id }) => id))
     sanitized.conversationGraph = graph
     sanitized.messages = resolveActiveConversationMessages(graph).map(projectConversationMessage)
+    sanitized.activities = [
+      ...(sanitized.activities ?? []),
+      ...nestedDelegateActivities.filter(({ id }) => !activityIds.has(id))
+    ]
   } else {
     sanitized.conversationGraph = createLinearConversationGraph({
       sessionId: sanitized.id,

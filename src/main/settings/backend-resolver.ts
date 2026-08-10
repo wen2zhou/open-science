@@ -15,7 +15,9 @@ import {
 import type { ResolvedReasoningEffort } from '../../shared/reasoning-effort'
 import {
   getAgentFramework,
+  releaseResolvedAgentBackendLeases,
   type AgentModelChangeTarget,
+  type AgentModelRoute,
   type AgentFrameworkId,
   type ResolvedAgentBackend
 } from '../agent-framework'
@@ -47,6 +49,12 @@ import {
 } from './provider-transport-owner'
 
 export type { AgentBackendSelection, ExplicitAgentBackendTarget } from './backend-selection-owner'
+
+export type AdmittedAgentBackendTarget = ExplicitAgentBackendTarget &
+  Readonly<{
+    expectedBackendId: string
+    expectedModelRoute: AgentModelRoute
+  }>
 
 export type AgentBackendResolutionContext = {
   forcedSkillIds?: string[]
@@ -204,6 +212,22 @@ export class AgentBackendResolver {
     return this.resolveBackendSelection(await this.selection.resolveExplicitTarget(target), context)
   }
 
+  async resolveAdmittedTarget(
+    target: AdmittedAgentBackendTarget,
+    context: AgentBackendResolutionContext = {}
+  ): Promise<ResolvedAgentBackend> {
+    const backend = await this.resolveExplicitTarget(target, context)
+    if (
+      backend.framework.id === target.frameworkId &&
+      backend.backendId === target.expectedBackendId &&
+      backend.modelRoute === target.expectedModelRoute
+    ) {
+      return backend
+    }
+    await releaseResolvedAgentBackendLeases(backend)
+    throw new Error('The configured Subagent backend route changed since admission.')
+  }
+
   async resolveActiveReasoningEffort(intent: ReasoningEffort): Promise<ResolvedReasoningEffort> {
     return this.selection.resolveActiveReasoningEffort(intent)
   }
@@ -218,7 +242,8 @@ export class AgentBackendResolver {
       selection.providerId,
       selection.modelSelection,
       selection.reasoningEffort,
-      context
+      context,
+      selection.resolvedReasoningEffort
     )
   }
 
@@ -243,7 +268,8 @@ export class AgentBackendResolver {
     providerId: string | undefined,
     modelSelection: RuntimeProviderModelSelection,
     effortIntent: ReasoningEffort,
-    context: AgentBackendResolutionContext
+    context: AgentBackendResolutionContext,
+    resolvedEffort?: ResolvedReasoningEffort
   ): Promise<ResolvedAgentBackend> {
     const framework = getAgentFramework(frameworkId)
     const storedProvider = providerId
@@ -299,6 +325,7 @@ export class AgentBackendResolver {
       frameworkId,
       target,
       effortIntent,
+      resolvedEffort,
       conversationSkillImportEnabled:
         settings.conversationSkillImportEnabled ?? DEFAULT_CONVERSATION_SKILL_IMPORT_ENABLED,
       forceNativeResponsesCompatibility

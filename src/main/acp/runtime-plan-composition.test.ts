@@ -135,7 +135,10 @@ const createHarness = (): {
       planService: service,
       planInteractions: interactions,
       sessionInteractions,
-      artifactTurns: { promptMessageIdFor: vi.fn(() => 'prompt-1') }
+      artifactTurns: {
+        handleForExecution: vi.fn(() => 'artifact-turn'),
+        snapshot: vi.fn(() => ({ promptMessageId: 'prompt-1' }))
+      }
     } as unknown as Parameters<typeof composeAcpRuntimePlanWorkflow>[1],
     {
       publication,

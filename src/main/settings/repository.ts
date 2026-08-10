@@ -5,7 +5,8 @@ import type {
   AppIconVariant,
   ClaudeSubscriptionProviderId,
   ClaudeInfo,
-  ReasoningEffort
+  ReasoningEffort,
+  SubagentModelConfiguration
 } from '../../shared/settings'
 import {
   CLAUDE_ISOLATED_PROVIDER_ID,
@@ -258,6 +259,19 @@ class SettingsRepository {
   // Persists the reasoning-effort preference; applied to sessions created after the next reconnect.
   async setReasoningEffort(effort: ReasoningEffort): Promise<StoredSettings> {
     return this.mutate((settings) => ({ ...settings, reasoningEffort: effort }))
+  }
+
+  async setSubagentModel(
+    configuration: SubagentModelConfiguration,
+    validate?: (
+      settings: StoredSettings,
+      configuration: SubagentModelConfiguration
+    ) => SubagentModelConfiguration | void
+  ): Promise<StoredSettings> {
+    return this.mutate((settings) => {
+      const committed = validate?.(settings, configuration) ?? configuration
+      return { ...settings, subagentModel: structuredClone(committed) }
+    })
   }
 
   // Persists the desktop-notification preference; read fresh at notification time so it applies
@@ -642,5 +656,6 @@ class SettingsRepository {
   }
 }
 
-export { SettingsRepository, sanitizeSettings }
+export { SettingsRepository }
+export { sanitizeSettings, sanitizeSubagentModel } from './document-codec'
 export { sanitizeConnectors, sanitizeCustomMcpServer, sanitizePackageMirror } from './record-codec'

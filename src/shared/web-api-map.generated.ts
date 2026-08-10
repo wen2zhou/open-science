@@ -205,6 +205,7 @@ export const WEB_INVOKE_CHANNELS = {
   'settings.setPackageMirror': 'settings:set-package-mirror',
   'settings.setReasoningEffort': 'settings:set-reasoning-effort',
   'settings.setSkillEnabled': 'settings:set-skill-enabled',
+  'settings.setSubagentModel': 'settings:set-subagent-model',
   'settings.setToolPermission': 'settings:set-tool-permission',
   'settings.uninstallClaude': 'settings:uninstall-claude',
   'settings.uninstallCodex': 'settings:uninstall-codex',
@@ -246,6 +247,7 @@ export const WEB_INVOKE_CHANNELS = {
 } as const
 
 export const WEB_EVENT_CHANNELS = {
+  'acp.onAgentRuntimeUpdate': 'acp:agent-runtime-update',
   'acp.onEvent': 'acp:event',
   'acp.onPermissionRequest': 'acp:permission-request',
   'acp.onState': 'acp:state',
@@ -270,6 +272,7 @@ export const WEB_EVENT_CHANNELS = {
   'sessions.onCreated': 'session:created',
   'sessions.onDeleted': 'session:deleted',
   'sessions.onUpdated': 'session:updated',
+  'settings.onChanged': 'settings:changed',
   'settings.onConnectorApprovalRequest': 'connectors:approval-request',
   'settings.onInstallLog': 'settings:install-log',
   'settings.onSkillImportApprovalRequest': 'skills:conversation-import-request',

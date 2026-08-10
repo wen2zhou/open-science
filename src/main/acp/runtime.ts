@@ -152,6 +152,7 @@ type AcpRuntimeOptions = {
   callbacks?: AcpRuntimeCallbacks
   permissionGrantStore?: ConversationPermissionGrantStore
   permissionGrantRegistry?: PermissionGrantRegistry
+  permissionGrantContext?: Readonly<{ projectId: string; sessionId: string }>
   spawnAgent?: () => ChildProcessWithoutNullStreams
   // Resolves the active agent backend (framework + spawn inputs) at connect time so a framework or
   // provider switch takes effect on reconnect. Ignored when an explicit spawnAgent is provided (tests
@@ -238,6 +239,9 @@ type AcpRuntimeArtifactOptions = {
   getRpcConnection?: () => Promise<NotebookRpcConnection>
   issueRpcCapability?: (binding: ArtifactRpcCapabilityBinding) => string
   revokeRpcCapability?: (token: string) => Promise<void> | void
+  // When present, the caller already owns the execution Artifact turn. Runtime only provisions the
+  // MCP transport against this exact handoff and never opens a competing root turn.
+  currentRunFile?: string
   provenance?: Pick<
     import('../artifacts/provenance-repository').ArtifactProvenanceRepository,
     'listRunVersions' | 'writeAppGeneratedVersion'
@@ -500,6 +504,10 @@ class AcpRuntime {
   // Returns an immutable renderer-facing view of connection and session state.
   getSnapshot(): AcpStateSnapshot {
     return this.publication.getSnapshot()
+  }
+
+  captureBackend(): AcpBackendGenerationView {
+    return this.backend
   }
 
   callSessionPlan(input: AcpSessionPlanCall): Promise<unknown> {
@@ -1636,7 +1644,15 @@ class AcpRuntime {
     if (!this.artifactTurns) {
       throw new Error('No active assistant turn to attach a generated file to.')
     }
-    return this.artifactTurns.writeForActiveTurn(sessionId, input)
+    const execution = this.sessionInteractions.current(sessionId)
+    if (!execution || execution.kind !== 'prompt') {
+      throw new Error('No active assistant turn to attach a generated file to.')
+    }
+    const artifact = this.artifactTurns.handleForExecution(execution.turnToken)
+    if (this.artifactTurns.snapshot(artifact).phase !== 'open') {
+      throw new Error('No active assistant turn to attach a generated file to.')
+    }
+    return this.artifactTurns.write(artifact, input)
   }
 
   private handleElicitationRequest(

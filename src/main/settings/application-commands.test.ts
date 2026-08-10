@@ -50,6 +50,7 @@ const expectedChannels = [
   'settings:set-default-permission-profile',
   'settings:set-notifications-enabled',
   'settings:set-package-mirror',
+  'settings:set-subagent-model',
   'settings:validate-provider'
 ] as const
 
@@ -113,7 +114,7 @@ const createDependencies = (): Readonly<{
 }
 
 describe('Settings core application commands', () => {
-  it('installs the exact 35-command inventory and dispatches a remote-safe preflight query', async () => {
+  it('installs the exact 36-command inventory and dispatches a remote-safe preflight query', async () => {
     const { dependencies, serviceMethod } = createDependencies()
     const preflight = { agentReady: true }
     serviceMethod('getPreflight').mockResolvedValue(preflight)
@@ -166,6 +167,7 @@ describe('Settings core application commands', () => {
     await invoke('previewSkillZip', [{ dataBase64: 'AA==' }])
     await invoke('refreshProviderModels', [{ providerId: 'provider-1' }])
     await invoke('scanRepoSkills', [{ repo: 'org/repo' }])
+    await invoke('setSubagentModel', [{ configuration: { mode: 'inherit' } }])
     await invoke('validateProvider', [{ providerId: 'provider-1' }])
 
     expect(serviceMethod('getConnectorDetail')).toHaveBeenCalledWith('connector-1')
@@ -182,6 +184,7 @@ describe('Settings core application commands', () => {
       providerId: 'provider-1'
     })
     expect(serviceMethod('scanRepoSkills')).toHaveBeenCalledWith({ repo: 'org/repo' })
+    expect(serviceMethod('setSubagentModel')).toHaveBeenCalledWith({ mode: 'inherit' })
     expect(serviceMethod('validateProvider')).toHaveBeenCalledWith({ providerId: 'provider-1' })
   })
 

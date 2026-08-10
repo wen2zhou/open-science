@@ -185,6 +185,7 @@ describe('workspace Agent Runtime hook contract', () => {
         'permissionProfiles',
         'permissionGrants',
         'contextUsageBySession',
+        'delegatedWorkUnavailableBySession',
         'promptInFlightSessionIds',
         'sendPreparationInFlightSessionIds',
         'nativeContextCompactionSessionIds',
@@ -206,6 +207,7 @@ describe('workspace Agent Runtime hook contract', () => {
       permissionProfiles: snapshot.permissionProfiles,
       permissionGrants: snapshot.permissionGrants,
       contextUsageBySession: snapshot.contextUsageBySession,
+      delegatedWorkUnavailableBySession: {},
       promptInFlightSessionIds: ['session-1'],
       sendPreparationInFlightSessionIds: [],
       nativeContextCompactionSessionIds: ['session-1']

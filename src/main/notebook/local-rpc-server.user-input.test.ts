@@ -21,7 +21,11 @@ describe('NotebookLocalRpcServer user input bridge', () => {
     server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
       requestUserInput
     })
-    const connection = await server.issueSessionConnection('pre-session-alias', 'project-1')
+    const connection = await server.issueSessionConnection(
+      'pre-session-alias',
+      'project-1',
+      'root-frame-pre-session-alias'
+    )
     server.registerSessionAlias('pre-session-alias', 'session-1')
 
     const response = await fetchRpc(connection, {
@@ -82,7 +86,11 @@ describe('NotebookLocalRpcServer user input bridge', () => {
     server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
       requestUserInput
     })
-    const connection = await server.issueSessionConnection('session-1', 'project-1')
+    const connection = await server.issueSessionConnection(
+      'session-1',
+      'project-1',
+      'root-frame-session-1'
+    )
 
     const response = await fetchRpc(connection, {
       method: 'POST',

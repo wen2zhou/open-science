@@ -167,7 +167,7 @@ const group = (
 // prettier-ignore
 export const RENDERER_CONTRACT_GROUPS = Object.freeze([
   group('acp', 'acp', [
-    ['onEvent', 'acp:event', EVENT], ['onPermissionRequest', 'acp:permission-request', EVENT], ['onState', 'acp:state', EVENT], ['cancel', 'acp:cancel'],
+    ['onAgentRuntimeUpdate', 'acp:agent-runtime-update', EVENT], ['onEvent', 'acp:event', EVENT], ['onPermissionRequest', 'acp:permission-request', EVENT], ['onState', 'acp:state', EVENT], ['cancel', 'acp:cancel'],
     ['compactSession', 'acp:compact-session'], ['connect', 'acp:connect', WEB, DEFAULT_EMPTY, DEFAULT_EMPTY_ABSENT_ONLY], ['createSession', 'acp:create-session', WEB, DEFAULT_EMPTY, DEFAULT_EMPTY_ABSENT_ONLY],
     ['continueInterruptedTurn', 'acp:continue-interrupted-turn'], ['deleteSession', 'acp:delete-session'], ['disconnect', 'acp:disconnect'], ['getState', 'acp:get-state'], ['getPlanProjection', 'acp:get-plan-projection'],
     ['resetSessionContext', 'acp:reset-session-context'], ['respondToPermission', 'acp:respond-permission'], ['resumeSession', 'acp:resume-session'],
@@ -305,6 +305,7 @@ export const RENDERER_CONTRACT_GROUPS = Object.freeze([
     ['saveSession', 'sessions:save-session', WEB, SESSION_SAVE, SESSION_SAVE_JSON], ['updateArchive', 'sessions:update-archive'], ['sendFlushResponse', 'sessions:flush-response', SEND],
   ]),
   group('settings', 'settings', [
+    ['onChanged', 'settings:changed', EVENT],
     ['addCustomServer', 'settings:add-custom-server'], ['authenticateCustomServer', 'settings:authenticate-custom-server', LOCAL], ['cancelCustomServerAuthentication', 'settings:cancel-custom-server-authentication', LOCAL], ['cancelClaudeLogin', 'settings:cancel-claude-login', LOCAL],
     ['cancelCodexLogin', 'settings:cancel-codex-login', LOCAL], ['cancelIsolatedClaudeLogin', 'settings:cancel-isolated-claude-login', LOCAL],
     ['checkEnvironment', 'settings:check-environment'], ['createSkill', 'settings:create-skill'], ['deleteProvider', 'settings:delete-provider'],
@@ -334,7 +335,7 @@ export const RENDERER_CONTRACT_GROUPS = Object.freeze([
     ['setConnectorAutoAllow', 'settings:set-connector-auto-allow'], ['setConnectorEnabled', 'settings:set-connector-enabled'],
     ['setConversationSkillImportEnabled', 'settings:set-conversation-skill-import-enabled'], ['setCustomServerEnabled', 'settings:set-custom-server-enabled'],
     ['setNcbiCredentials', 'settings:set-ncbi-credentials'], ['setNotificationsEnabled', 'settings:set-notifications-enabled', LOCAL],
-    ['setPackageMirror', 'settings:set-package-mirror', LOCAL], ['setReasoningEffort', 'settings:set-reasoning-effort'],
+    ['setPackageMirror', 'settings:set-package-mirror', LOCAL], ['setReasoningEffort', 'settings:set-reasoning-effort'], ['setSubagentModel', 'settings:set-subagent-model'],
     ['setSkillEnabled', 'settings:set-skill-enabled'], ['setToolPermission', 'settings:set-tool-permission'],
     ['uninstallClaude', 'settings:uninstall-claude', LOCAL], ['uninstallCodex', 'settings:uninstall-codex', LOCAL],
     ['uninstallOpencode', 'settings:uninstall-opencode', LOCAL], ['updateCustomServer', 'settings:update-custom-server'],

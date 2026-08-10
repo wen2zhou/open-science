@@ -897,7 +897,7 @@ describe('ConversationPanel composer intake', () => {
 
   it('submits on Enter through the editor with the picked skill ids', () => {
     const onSendMessage = vi.fn()
-    renderPanel({ onSendMessage })
+    renderPanel({ canSendMessage: true, onSendMessage })
 
     const editor = getComposerEditor()
     const event = new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
@@ -1923,6 +1923,70 @@ describe('ConversationPanel fix loop lock', () => {
     fixLoopActive: true
   }
 
+  const detachedChildSession: ChatSession = {
+    ...idleSession,
+    status: 'idle',
+    activeRun: undefined,
+    conversationGraph: {
+      schemaVersion: 1,
+      rootFrameId: 'detached-root',
+      activeFrameId: 'detached-root',
+      frames: [
+        {
+          id: 'detached-root',
+          originBindingState: 'root',
+          kind: 'root',
+          status: 'completed',
+          activeBranchId: 'detached-root-branch',
+          createdAt: 1,
+          completedAt: 2
+        },
+        {
+          id: 'detached-child',
+          parentFrameId: 'detached-root',
+          originMessageId: 'detached-origin',
+          originBindingState: 'validated',
+          kind: 'delegate',
+          status: 'running',
+          activeBranchId: 'detached-child-branch',
+          createdAt: 2
+        }
+      ],
+      branches: [
+        {
+          id: 'detached-root-branch',
+          agentFrameId: 'detached-root',
+          headMessageId: 'detached-origin',
+          createdAt: 1,
+          updatedAt: 2
+        },
+        {
+          id: 'detached-child-branch',
+          agentFrameId: 'detached-child',
+          createdAt: 2,
+          updatedAt: 2
+        }
+      ],
+      messages: [
+        {
+          id: 'detached-origin',
+          role: 'user',
+          content: 'Delegate background work.',
+          status: 'complete',
+          eventIds: [],
+          agentFrameId: 'detached-root',
+          introducedOnBranchId: 'detached-root-branch',
+          revisionRootMessageId: 'detached-origin',
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ],
+      activities: [],
+      activityGroups: [],
+      runtimeSegments: []
+    }
+  }
+
   it('send button is disabled when canSendMessage is false (fix loop active)', () => {
     // canSendMessage is passed from outside (computed by WorkspacePage)
     renderPanel({ activeSession: idleSession, canSendMessage: false })
@@ -1980,6 +2044,117 @@ describe('ConversationPanel fix loop lock', () => {
     })
 
     expect(onCancelRun).toHaveBeenCalledTimes(1)
+  })
+
+  it('keeps Send and branch-scoped Stop together after a timed Main turn settles', () => {
+    const onCancelRun = vi.fn()
+    const onStopSubagents = vi.fn()
+    renderPanel({
+      activeSession: detachedChildSession,
+      canSendMessage: true,
+      onCancelRun,
+      onStopSubagents
+    })
+
+    expect(container.querySelector('[aria-label="Send message"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="subagents-bar"]')).not.toBeNull()
+    expect(container.querySelector('[aria-label="Running"]')).not.toBeNull()
+    expect(container.textContent).not.toContain('1 subagent running')
+    const stop = container.querySelector('[aria-label="Stop subagents"]') as HTMLButtonElement
+    expect(stop).not.toBeNull()
+
+    act(() => stop.click())
+    expect(onStopSubagents).toHaveBeenCalledOnce()
+    expect(onCancelRun).not.toHaveBeenCalled()
+  })
+
+  it('preserves duplicate prevention, progress, and failure recovery for detached-only Stop', async () => {
+    let rejectStop!: (error: Error) => void
+    const onStopSubagents = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectStop = reject
+        })
+    )
+    renderPanel({ activeSession: detachedChildSession, canSendMessage: true, onStopSubagents })
+
+    const stop = container.querySelector('[aria-label="Stop subagents"]') as HTMLButtonElement
+    act(() => {
+      stop.click()
+      stop.click()
+    })
+    expect(onStopSubagents).toHaveBeenCalledOnce()
+    expect(stop.disabled).toBe(true)
+    expect(stop.getAttribute('aria-label')).toBe('Stopping subagents')
+
+    await act(async () => {
+      rejectStop(new Error('detached cascade unavailable'))
+      await Promise.resolve()
+    })
+
+    const retry = container.querySelector('[aria-label="Stop subagents"]') as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    const stopAlert = container.querySelector('[role="alert"]') as HTMLElement
+    expect(stopAlert.textContent).toContain('detached cascade unavailable')
+    expect(stopAlert.classList.contains('sr-only')).toBe(false)
+  })
+
+  it('uses the same disabled gate for mouse and Enter while branch Stop is pending', () => {
+    const onSendMessage = vi.fn()
+    const onStopSubagents = vi.fn(() => new Promise<void>(() => undefined))
+    renderPanel({
+      activeSession: detachedChildSession,
+      canSendMessage: true,
+      onSendMessage,
+      onStopSubagents
+    })
+    const stop = container.querySelector('[aria-label="Stop subagents"]') as HTMLButtonElement
+    act(() => stop.click())
+
+    const send = container.querySelector('[aria-label="Send message"]') as HTMLButtonElement
+    expect(send.disabled).toBe(true)
+    act(() => {
+      send.click()
+      getComposerEditor().dispatchEvent(
+        new KeyboardEvent('keydown', { key: 'Enter', bubbles: true, cancelable: true })
+      )
+    })
+    expect(onSendMessage).not.toHaveBeenCalled()
+  })
+
+  it('shows cascade progress, prevents duplicate Stop, and restores the control after failure', async () => {
+    let rejectStop!: (error: Error) => void
+    const onCancelRun = vi.fn(
+      () =>
+        new Promise<void>((_resolve, reject) => {
+          rejectStop = reject
+        })
+    )
+    const runningSession: ChatSession = {
+      ...idleSession,
+      status: 'running',
+      activeRun: { promptMessageId: 'msg-1', startedAt: Date.now() }
+    }
+    renderPanel({ activeSession: runningSession, canSendMessage: false, onCancelRun })
+
+    const cancelButton = container.querySelector('[aria-label="Cancel run"]') as HTMLButtonElement
+    act(() => {
+      cancelButton.click()
+      cancelButton.click()
+    })
+
+    expect(onCancelRun).toHaveBeenCalledOnce()
+    expect(cancelButton.disabled).toBe(true)
+    expect(cancelButton.getAttribute('aria-label')).toBe('Stopping run and subagents')
+
+    await act(async () => {
+      rejectStop(new Error('cascade unavailable'))
+      await Promise.resolve()
+    })
+
+    const retry = container.querySelector('[aria-label="Cancel run"]') as HTMLButtonElement
+    expect(retry.disabled).toBe(false)
+    expect(container.textContent).toContain('cascade unavailable')
   })
 
   it('keeps the split-send width while running so adjacent hover controls do not shift', () => {

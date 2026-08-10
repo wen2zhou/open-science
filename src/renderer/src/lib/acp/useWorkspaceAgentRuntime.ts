@@ -37,6 +37,7 @@ import {
   markRunningSessionsDisconnectedOnDrop,
   processVisibleWorkspaceRuntimeEvents,
   processWorkspaceRuntimeEvents,
+  refreshDelegatedWorkSessions,
   syncWorkspaceContextUsage,
   syncWorkspaceElicitationState,
   syncWorkspaceInteractionState,
@@ -106,6 +107,7 @@ type WorkspaceAgentRuntime = {
   permissionProfiles: Record<string, SessionPermissionProfileState>
   permissionGrants: Record<string, AcpPermissionGrant[]>
   contextUsageBySession: Record<string, AcpContextUsage>
+  delegatedWorkUnavailableBySession: Record<string, string>
   promptInFlightSessionIds: string[]
   sendPreparationInFlightSessionIds: string[]
   nativeContextCompactionSessionIds: string[]
@@ -255,6 +257,21 @@ const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
   useEffect(() => {
     syncWorkspaceContextUsage(runtime.state.sessionIds, runtime.state.contextUsageBySession)
   }, [runtime.state.sessionIds, runtime.state.contextUsageBySession])
+
+  // Delegated-work events mutate the main-process Session projection directly. Refresh those
+  // persistence-owned records on the matching runtime signal so child state appears immediately.
+  const delegatedWorkSessionKey = runtime.state.sessionIds.join('\u0000')
+  useEffect(() => {
+    if (runtime.state.delegatedWorkRevision === undefined) return
+    let cancelled = false
+    void refreshDelegatedWorkSessions(
+      delegatedWorkSessionKey.split('\u0000').filter(Boolean),
+      () => cancelled
+    ).catch(() => undefined)
+    return () => {
+      cancelled = true
+    }
+  }, [delegatedWorkSessionKey, runtime.state.delegatedWorkRevision])
 
   useEffect(() => {
     const previousStatus = previousStatusRef.current
@@ -455,6 +472,7 @@ const useOwnedWorkspaceAgentRuntime = (): WorkspaceAgentRuntime => {
     permissionProfiles: runtime.state.permissionProfiles,
     permissionGrants: runtime.state.permissionGrants,
     contextUsageBySession: runtime.state.contextUsageBySession,
+    delegatedWorkUnavailableBySession: runtime.state.delegatedWorkUnavailableBySession ?? {},
     promptInFlightSessionIds: runtime.state.promptInFlightSessionIds,
     sendPreparationInFlightSessionIds,
     nativeContextCompactionSessionIds: runtime.state.nativeContextCompactionSessionIds ?? [],

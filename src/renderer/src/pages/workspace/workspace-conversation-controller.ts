@@ -65,6 +65,7 @@ type WorkspaceConversationControllerOptions = {
   isReviewing: boolean
   promptInFlightSessionIds: string[]
   sendPreparationInFlightSessionIds: string[]
+  hasBlockingRootPermissionRequest: boolean
   newConversationAutoReviewEnabled: boolean
   newConversationEnabledComputeHosts: string[]
   composer: ConversationComposer
@@ -94,7 +95,7 @@ type WorkspaceConversationController = {
     revise: (messageId: string, doc: ComposerDoc) => void
     sideChat: { start: () => void }
     resume: () => Promise<void>
-    cancel: () => void
+    cancel: () => Promise<void>
     delete: () => void
   }
 }
@@ -120,7 +121,7 @@ const canSubmit = (options: WorkspaceConversationControllerOptions): boolean => 
     (!docIsEmpty(composer.view.doc) || composer.view.attachments.length > 0) &&
     activeSession?.status !== 'running' &&
     activeSession?.status !== 'waiting-for-user' &&
-    activeSession?.status !== 'waiting-permission' &&
+    (activeSession?.status !== 'waiting-permission' || !options.hasBlockingRootPermissionRequest) &&
     !hasRuntimeInteraction(options) &&
     !activeSession?.fixLoopActive &&
     !activeSession?.conversationGraphSyncBlocked &&
@@ -333,17 +334,17 @@ const useWorkspaceConversationController = (
         if (!current.isPersistenceReady || !current.activeSession || current.sideChatOpen) return
         await current.runtime.resumeInterruptedSession(current.activeSession.id)
       },
-      cancel: (): void => {
+      cancel: async (): Promise<void> => {
         const current = optionsRef.current
         if (current.sideChatOpen) return
         const session = current.activeSession
         if (!session) return
-        if (session.fixLoopActive) {
-          void current
-            .abortFixLoop({ projectId: session.projectId, appSessionId: session.id })
-            .catch((error: unknown) => console.warn('Failed to abort fix loop:', error))
-        }
-        void current.runtime.cancelRun(session.id)
+        const fixLoopCancellation = session.fixLoopActive
+          ? current
+              .abortFixLoop({ projectId: session.projectId, appSessionId: session.id })
+              .catch((error: unknown) => console.warn('Failed to abort fix loop:', error))
+          : Promise.resolve()
+        await Promise.all([fixLoopCancellation, current.runtime.cancelRun(session.id)])
       },
       delete: (): void => optionsRef.current.session.actions.confirmDelete()
     }

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { NotebookEnvironmentStatus, NotebookRunRecord } from '../../../../shared/notebook'
 import type { ProvisionStatus } from '../../../../shared/notebook-env'
 import { createInitialNotebookEnvState, useNotebookEnvStore } from '../../stores/notebook-env-store'
+import { createInitialSessionState, useSessionStore } from '../../stores/session-store'
 import { EnvProvisionOverlay } from './EnvProvisionOverlay'
 import { NotebookPreview, type NotebookPreviewItem } from './NotebookPreview'
 import { deriveProvisionUi } from './provisioning-view'
@@ -25,6 +26,21 @@ let root: Root
 beforeEach(() => {
   notebookCodeBlockSpy.mockClear()
   useNotebookEnvStore.setState(createInitialNotebookEnvState())
+  useSessionStore.setState({
+    ...createInitialSessionState(),
+    sessions: [
+      {
+        id: 'session-1',
+        conversationGraph: {
+          rootFrameId: 'root-frame-session-1',
+          frames: [
+            { id: 'root-frame-session-1', kind: 'root' },
+            { id: 'frame-child', kind: 'delegate', delegateName: 'Evidence check' }
+          ]
+        }
+      }
+    ]
+  } as never)
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -221,6 +237,8 @@ const makeRun = (overrides: Partial<NotebookRunRecord> = {}): NotebookRunRecord 
   outputs: [],
   artifacts: [],
   workingFiles: [],
+  rootFrameId: 'root-frame-session-1',
+  agentFrameId: 'root-frame-session-1',
   ...overrides
 })
 
@@ -312,6 +330,47 @@ describe('NotebookPreview per-kernel tabs', () => {
     expect(switcher.querySelector('[data-testid="kernel-switcher-bash"]')?.textContent).toBe('Bash')
     // R produced no run here, so its tab does not appear (it shows up only once R is used).
     expect(switcher.querySelector('[data-testid="kernel-switcher-r"]')).toBeNull()
+  })
+
+  it('projects named Main Agent and Subagent Runs without All, legacy, or Frame IDs', async () => {
+    await mountWithRuns([
+      makeRun({
+        runId: 'root',
+        script: 'print("root")',
+        rootFrameId: 'root-frame-session-1',
+        agentFrameId: 'root-frame-session-1'
+      }),
+      makeRun({ runId: 'child', script: 'print("child")', agentFrameId: 'frame-child' }),
+      makeRun({
+        runId: 'legacy',
+        script: 'print("legacy")',
+        rootFrameId: undefined,
+        agentFrameId: undefined
+      })
+    ])
+
+    const filter = container.querySelector<HTMLSelectElement>(
+      'select[aria-label="Filter notebook runs by Agent"]'
+    )
+    expect(filter?.value).toBe('frame:root-frame-session-1')
+    expect(filter?.className).toContain('focus-visible:ring-[3px]')
+    expect(filter?.className).not.toContain('focus-visible:ring-2')
+    expect(filter?.textContent).toContain('Main Agent · 1 run')
+    expect(filter?.textContent).toContain('Evidence check · 1 run')
+    expect(filter?.textContent).not.toContain('All')
+    expect(filter?.textContent).not.toContain('Unattributed')
+    expect(filter?.textContent).not.toContain('frame-child')
+
+    await act(async () => {
+      if (filter) {
+        filter.value = 'frame:frame-child'
+        filter.dispatchEvent(new Event('change', { bubbles: true }))
+      }
+    })
+
+    expect(container.textContent).toContain('print("child")')
+    expect(container.textContent).not.toContain('print("root")')
+    expect(container.textContent).not.toContain('print("legacy")')
   })
 
   it('shows the R tab only once R has produced a run', async () => {

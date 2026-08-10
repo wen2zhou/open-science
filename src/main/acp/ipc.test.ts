@@ -242,7 +242,12 @@ describe('ACP module transport seam', () => {
       'acp:set-permission-profile'
     ])
     expect(invokeChannels).toEqual([...handlers.keys()].sort())
-    expect(eventChannels).toEqual(['acp:event', 'acp:permission-request', 'acp:state'])
+    expect(eventChannels).toEqual([
+      'acp:agent-runtime-update',
+      'acp:event',
+      'acp:permission-request',
+      'acp:state'
+    ])
   })
 
   it('constructs the coordinator before installing Electron handlers', () => {

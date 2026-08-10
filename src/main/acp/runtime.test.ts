@@ -5504,7 +5504,7 @@ describe('ACP runtime session management', () => {
         projectName: 'default-project',
         mcpEntryPath: '/app/out/main/index.js',
         getRpcConnection: ({ sessionId, projectId }) =>
-          notebookRpcServer.issueSessionConnection(sessionId, projectId),
+          notebookRpcServer.issueSessionConnection(sessionId, projectId, `root-frame-${sessionId}`),
         registerSessionAlias: (aliasSessionId, sessionId) =>
           notebookRpcServer.registerSessionAlias(aliasSessionId, sessionId),
         releaseSessionCapabilities: (sessionId) =>
@@ -13381,7 +13381,24 @@ describe('ACP runtime session management', () => {
             emitRawSDKMessages: [{ type: 'assistant' }, { type: 'result' }],
             options: {
               settingSources: ['user'],
-              tools: { type: 'preset', preset: 'claude_code' }
+              tools: { type: 'preset', preset: 'claude_code' },
+              disallowedTools: [
+                'Agent',
+                'Task',
+                'Workflow',
+                'SendMessage',
+                'TeamCreate',
+                'TeamDelete'
+              ],
+              managedSettings: {
+                disableAgentView: true,
+                disableWorkflows: true,
+                workflowKeywordTriggerEnabled: false
+              },
+              env: {
+                CLAUDE_CODE_DISABLE_AGENT_VIEW: '1',
+                CLAUDE_CODE_DISABLE_WORKFLOWS: '1'
+              }
             }
           },
           systemPrompt: {
@@ -22424,7 +22441,14 @@ describe('Specialist Skill scoping', () => {
         }
       }
     })
-    const turn = await owners.artifactTurns!.open({
+    const reservation = owners.sessionInteractions.reservePrompt({
+      sessionId: 'session-1',
+      kind: 'prompt',
+      promptMessageId: 'interaction-1'
+    })
+    const execution = owners.sessionInteractions.activatePrompt(reservation)
+    const turn = await owners.artifactTurns!.openRootExecution({
+      executionId: execution.turnToken,
       appSessionId: 'session-1',
       artifactStorageSessionId: 'session-1',
       projectId: 'project-1',
@@ -22436,6 +22460,7 @@ describe('Specialist Skill scoping', () => {
         owners.planService!.generate({
           projectId: 'project-1',
           sessionId: 'session-1',
+          executionId: execution.turnToken,
           interactionId: 'interaction-1',
           content: {
             task_summary: 'Analyze one dataset',
@@ -22457,6 +22482,7 @@ describe('Specialist Skill scoping', () => {
       ).resolves.toMatchObject({ projection: { artifactVersionId: 'version-1' } })
     } finally {
       await owners.artifactTurns!.dispose(turn)
+      owners.sessionInteractions.release(execution)
     }
   })
 })
