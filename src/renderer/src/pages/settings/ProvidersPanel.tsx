@@ -305,27 +305,27 @@ const ProvidersPanel = ({
         </SettingsSection>
       ) : null}
 
-      <SettingsSection
-        title="Subagent model"
-        aria-label="Subagent model"
-        description="Model used by subagents when Delegation is on."
-        separated={visibleProviders.length > 0}
-      >
-        <div className="max-w-2xl">
-          <SubagentModelSelect />
-        </div>
-      </SettingsSection>
-
       {/* Model-level generation tuning; always visible, unlike the Active model section above
           which needs at least one provider. */}
       <SettingsSection
         title="Reasoning effort"
         aria-label="Reasoning effort"
         description="Higher levels think longer, while lower levels respond faster. Choices follow the selected model and preserve relative strength when models change; some agent frameworks may approximate unsupported levels. Applies to subsequent requests."
-        separated
+        separated={visibleProviders.length > 0}
       >
         <div className="max-w-md">
           <ReasoningEffortSelect />
+        </div>
+      </SettingsSection>
+
+      <SettingsSection
+        title="Subagent model"
+        aria-label="Subagent model"
+        description="Model used by subagents when Delegation is on."
+        separated
+      >
+        <div className="max-w-2xl">
+          <SubagentModelSelect />
         </div>
       </SettingsSection>
 

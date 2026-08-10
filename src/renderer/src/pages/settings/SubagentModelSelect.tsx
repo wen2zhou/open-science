@@ -18,6 +18,8 @@ import {
   projectReasoningEffortIntent,
   resolveReasoningEffortControl
 } from '../../../../shared/reasoning-effort'
+import { ProviderKindIcon } from './provider-icons'
+import { providerKindKey } from './provider-form-value'
 import { SettingsField, SettingsRow } from './SettingsLayout'
 
 const INHERIT_KEY = 'same-as-main-model'
@@ -104,7 +106,28 @@ const SubagentModelSelect = (): React.JSX.Element => {
           }}
         >
           <SelectTrigger aria-label="Subagent model Model">
-            <SelectValue placeholder="Same as main model" />
+            <span className="flex items-center gap-2 truncate">
+              {configuration.mode === 'fixed' && selectedEntry ? (
+                <>
+                  <ProviderKindIcon
+                    kindKey={providerKindKey(selectedEntry.providerType, selectedEntry.vendorId)}
+                    className="size-4"
+                  />
+                  <span className="truncate">
+                    {selectedEntry.label}
+                    <span className="ml-1.5 text-muted-foreground">
+                      · {selectedEntry.providerName}
+                    </span>
+                  </span>
+                </>
+              ) : unavailable ? (
+                <span className="truncate">
+                  {configuration.model} · {configuration.providerId} · Unavailable
+                </span>
+              ) : (
+                <span className="truncate">Same as main model</span>
+              )}
+            </span>
           </SelectTrigger>
           <SelectContent>
             <SelectItem value={INHERIT_KEY}>Same as main model</SelectItem>
@@ -117,7 +140,16 @@ const SubagentModelSelect = (): React.JSX.Element => {
               <SelectGroup key={provider.id}>
                 <SelectLabel>{provider.name}</SelectLabel>
                 {entries.map((entry) => (
-                  <SelectItem key={entry.key} value={entry.key}>
+                  <SelectItem
+                    key={entry.key}
+                    value={entry.key}
+                    icon={
+                      <ProviderKindIcon
+                        kindKey={providerKindKey(entry.providerType, entry.vendorId)}
+                        className="size-4"
+                      />
+                    }
+                  >
                     {entry.label} · {entry.providerName}
                   </SelectItem>
                 ))}
