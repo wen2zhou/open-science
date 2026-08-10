@@ -18,7 +18,11 @@ import {
   type DelegatedReviewEvidenceOptions
 } from './delegated-review-evidence'
 import type { DelegatedWorkRecordCommands, SessionKey } from './session-records'
-import type { DelegateExecution, DelegatedExecutionModelAdmission } from './execution-port'
+import type {
+  DelegateExecution,
+  DelegateMessageAcceptanceEvidence,
+  DelegatedExecutionModelAdmission
+} from './execution-port'
 import {
   createDurableDelegatedWork,
   DurableDelegatedWorkError,
@@ -55,7 +59,9 @@ type ProductionDelegatedWorkOptions = Readonly<{
   ): Promise<SpecialistProfileView | undefined> | SpecialistProfileView | undefined
   artifactEvidence?: DelegatedArtifactEvidenceOptions
   reviewEvidence?: DelegatedReviewEvidenceOptions
-  parentMessages?: Readonly<{ deliver(delivery: ParentMessageDelivery): Promise<void> }>
+  parentMessages?: Readonly<{
+    deliver(delivery: ParentMessageDelivery): Promise<DelegateMessageAcceptanceEvidence>
+  }>
   onAgentRuntimeUpdate?(update: AcpAgentRuntimeUpdate): void
   resolveExecutionModel(session: PersistedChatSession): Promise<DelegatedExecutionModelAdmission>
 }>
@@ -75,6 +81,7 @@ type RootDelegatedWorkControl = Readonly<{
   cancelTurn?(sessionId: string, initiatingTurnMessageId: string): Promise<void>
   stopActiveBranch?(sessionId: string): Promise<void>
   stopSession(sessionId: string): Promise<void>
+  wakeMessages?(sessionId: string): Promise<void>
   stopAll(): Promise<void>
   deleteSession(sessionId: string): Promise<void>
 }>
@@ -87,6 +94,8 @@ type ProductionDelegatedWorkComposition = Readonly<{
     | 'collect'
     | 'stopChildren'
     | 'sendMessage'
+    | 'messageReceipt'
+    | 'resolveMessage'
     | 'submitOutput'
     | 'readAgentFrame'
   >
@@ -271,8 +280,19 @@ const createProductionDelegatedWorkComposition = (
     async stopChildren(caller, frameIds) {
       return (await workFor(caller.session)).work.stopChildren(caller, frameIds)
     },
-    async sendMessage(caller, targetFrameId, message, kind) {
-      return (await workFor(caller.session)).work.sendMessage(caller, targetFrameId, message, kind)
+    async sendMessage(caller, targetFrameId, message, messageOptions) {
+      return (await workFor(caller.session)).work.sendMessage(
+        caller,
+        targetFrameId,
+        message,
+        messageOptions
+      )
+    },
+    async messageReceipt(caller, selector, receiptOptions) {
+      return (await workFor(caller.session)).work.messageReceipt(caller, selector, receiptOptions)
+    },
+    async resolveMessage(caller, messageId, resolveOptions) {
+      return (await workFor(caller.session)).work.resolveMessage(caller, messageId, resolveOptions)
     },
     async readAgentFrame(session, frameId) {
       return (await workFor(session)).work.readAgentFrame(session, frameId)
@@ -341,6 +361,16 @@ const createProductionDelegatedWorkComposition = (
     async stopSession(sessionId) {
       const scoped = await worksForSession(sessionId)
       await Promise.all(scoped.map(({ key, work }) => work.stopSession(key)))
+    },
+    async wakeMessages(sessionId) {
+      const durableSessions = (await options.sessions.findSessions?.(sessionId)) ?? []
+      await Promise.all(
+        durableSessions
+          .filter((session) => session.id === sessionId)
+          .map((session) => workFor({ projectId: session.projectId, sessionId: session.id }))
+      )
+      const scoped = await worksForSession(sessionId)
+      await Promise.all(scoped.map(({ work }) => work.wakeMessages()))
     },
     async stopAll() {
       const scoped = await Promise.all([...works.values()])

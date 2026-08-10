@@ -44,7 +44,7 @@ const delegateExecutionContract = (create: () => DelegateExecutionContractHarnes
       })
 
       await driver.accept('attempt-1')
-      await expect(running.accepted).resolves.toBeUndefined()
+      await expect(running.accepted).resolves.toBe('provider_prompt_accepted')
       expect(completed).toBe(false)
       await driver.complete('attempt-1', 'answer')
       await expect(running.completion).resolves.toEqual({ status: 'completed', response: 'answer' })

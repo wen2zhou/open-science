@@ -99,11 +99,13 @@ const createModuleHarness = (execution: DelegateExecution): ModuleHarness => {
     createId: (kind) => `${kind}-${++counters[kind]}`,
     collectPollIntervalMs: 0,
     deliverToParent: async (delivery) => {
+      await delivery.startDispatch()
       parentDeliveries.push({
         sourceFrameId: delivery.sourceFrameId,
         sourceAttemptId: delivery.sourceAttemptId,
         text: delivery.text
       })
+      return 'provider_prompt_accepted'
     },
     artifactEvidence: {
       async open(scope) {
@@ -422,7 +424,7 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
         role: 'delegate',
         attemptId: 'attempt-1'
       })
-      await harness.work.sendMessage(childCaller, 'parent', 'need a source', 'question')
+      await harness.work.sendMessage(childCaller, 'parent', 'need a source', { kind: 'question' })
       expect(harness.parentDeliveries).toEqual([
         { sourceFrameId: 'frame-1', sourceAttemptId: 'attempt-1', text: 'need a source' }
       ])
@@ -440,8 +442,10 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
       await expect(
         harness.work.sendMessage(withInvocation('continuation'), 'frame-1', 'continue safely')
       ).resolves.toMatchObject({
-        kind: 'continued',
-        child: { frameId: 'frame-1', attemptId: 'attempt-3', status: 'running' }
+        disposition: 'continued',
+        target_frame_id: 'frame-1',
+        continuation_attempt_id: 'attempt-3',
+        status: 'queued'
       })
       await driver.waitForStart('attempt-3')
       expect(driver.startedInputs().at(-1)).toMatchObject({

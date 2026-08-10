@@ -126,27 +126,57 @@ export type DelegatedWorkAttemptRecord = Readonly<{
   error?: Readonly<{ code: string; message: string }>
 }>
 
-export type DelegatedWorkPendingMessage = Readonly<{
-  id: string
+export type DelegatedMessageCommand = Readonly<{
+  messageId: string
+  requestId: string
+  sourcePrincipal: string
+  canonicalDigest: string
   sourceFrameId: string
   sourceAttemptId?: string
   targetFrameId: string
   targetAttemptId?: string
+  continuationAttemptId?: string
+  rootPromptMessageId?: string
+  rootOriginMessageId: string
+  callerRootMessageId: string
+  rootBranchId: string
+  rootBranchRevision: string
+  direction: 'to_child' | 'to_parent'
+  disposition: 'message' | 'continued'
   text: string
   kind: 'info' | 'question'
-  callerSource?: DelegatedCallerSource
-  createdAt: number
-  deliveredAt?: number
+  replyToMessageId?: string
+  retryOfMessageId?: string
+  laneSequence: number
+  queuedAt: number
+  receipt:
+    | Readonly<{ status: 'queued'; dispatchStartedAt?: number; dispatchEpoch?: string }>
+    | Readonly<{
+        status: 'accepted'
+        acceptedAt: number
+        evidence: 'provider_prompt_accepted' | 'provider_prompt_completed'
+      }>
+    | Readonly<{
+        status: 'failed'
+        failedAt: number
+        error: Readonly<{ code: string; message: string; retryable: boolean }>
+      }>
+    | Readonly<{
+        status: 'uncertain'
+        uncertainAt: number
+        resolution: 'pending' | 'acknowledged'
+      }>
 }>
 
 export type DelegatedWorkRecord = Readonly<{
   agentFrameId: string
   attempts: readonly DelegatedWorkAttemptRecord[]
-  pendingMessages: readonly DelegatedWorkPendingMessage[]
 }>
 
 export type SessionDelegatedWorkRuntimeContext = Readonly<{
   records: readonly DelegatedWorkRecord[]
+  messageCommands?: readonly DelegatedMessageCommand[]
+  messageCommandsQuarantine?: unknown
 }>
 
 export type SessionPlanApproval = 'pending' | 'approved' | 'rejected'
@@ -935,20 +965,23 @@ const sanitizeResolvedSubagentModelSnapshot = (
 const sanitizeSessionDelegatedWorkRuntimeContext = (
   value: unknown
 ): SessionDelegatedWorkRuntimeContext | undefined => {
-  if (!isRecord(value) || !hasOnlyFields(value, ['records']) || !Array.isArray(value.records)) {
+  if (
+    !isRecord(value) ||
+    !hasOnlyFields(value, ['records', 'messageCommands', 'messageCommandsQuarantine']) ||
+    !Array.isArray(value.records) ||
+    (value.messageCommands !== undefined && !Array.isArray(value.messageCommands))
+  ) {
     return undefined
   }
   const frameIds = new Set<string>()
   const attemptIds = new Set<string>()
-  const pendingMessageIds = new Set<string>()
   const records: DelegatedWorkRecord[] = []
   for (const rawRecord of value.records) {
     if (
       !isRecord(rawRecord) ||
-      !hasOnlyFields(rawRecord, ['agentFrameId', 'attempts', 'pendingMessages']) ||
+      !hasOnlyFields(rawRecord, ['agentFrameId', 'attempts']) ||
       !Array.isArray(rawRecord.attempts) ||
-      rawRecord.attempts.length === 0 ||
-      !Array.isArray(rawRecord.pendingMessages)
+      rawRecord.attempts.length === 0
     ) {
       return undefined
     }
@@ -1063,89 +1096,154 @@ const sanitizeSessionDelegatedWorkRuntimeContext = (
     if (runningCount > 1 || (runningCount === 1 && attempts.at(-1)?.status !== 'running')) {
       return undefined
     }
-    const pendingMessages: DelegatedWorkPendingMessage[] = []
-    for (const rawMessage of rawRecord.pendingMessages) {
-      if (
-        !isRecord(rawMessage) ||
-        !hasOnlyFields(rawMessage, [
-          'id',
-          'sourceFrameId',
-          'sourceAttemptId',
-          'targetFrameId',
-          'targetAttemptId',
-          'text',
-          'kind',
-          'callerSource',
-          'callerMessageId',
-          'toolInvocationId',
-          'createdAt',
-          'deliveredAt'
-        ])
-      ) {
-        return undefined
-      }
-      const id = asString(rawMessage.id)
-      const sourceFrameId = asString(rawMessage.sourceFrameId)
-      const sourceAttemptId =
-        rawMessage.sourceAttemptId === undefined ? undefined : asString(rawMessage.sourceAttemptId)
-      const targetFrameId = asString(rawMessage.targetFrameId)
-      const targetAttemptId =
-        rawMessage.targetAttemptId === undefined ? undefined : asString(rawMessage.targetAttemptId)
-      const text = asString(rawMessage.text)
-      const kind = asString(rawMessage.kind) as 'info' | 'question' | undefined
-      const createdAt = asNumber(rawMessage.createdAt)
-      const explicitCallerSource = sanitizeDelegatedCallerSource(rawMessage.callerSource)
-      const legacyCallerMessageId = asString(rawMessage.callerMessageId)
-      const legacyToolInvocationId = asString(rawMessage.toolInvocationId)
-      const callerSource =
-        explicitCallerSource ??
-        (legacyCallerMessageId && legacyToolInvocationId
-          ? {
-              rootMessageId: legacyCallerMessageId,
-              toolInvocationId: legacyToolInvocationId
-            }
-          : undefined)
-      const hasCallerSourcePayload =
-        rawMessage.callerSource !== undefined ||
-        rawMessage.callerMessageId !== undefined ||
-        rawMessage.toolInvocationId !== undefined
-      const deliveredAt =
-        rawMessage.deliveredAt === undefined ? undefined : asNumber(rawMessage.deliveredAt)
-      if (
-        !id ||
-        pendingMessageIds.has(id) ||
-        !sourceFrameId ||
-        (rawMessage.sourceAttemptId !== undefined && !sourceAttemptId) ||
-        !targetFrameId ||
-        (rawMessage.targetAttemptId !== undefined && !targetAttemptId) ||
-        (hasCallerSourcePayload && !callerSource) ||
-        !text ||
-        !kind ||
-        !['info', 'question'].includes(kind) ||
-        createdAt === undefined ||
-        createdAt < 0 ||
-        (rawMessage.deliveredAt !== undefined &&
-          (deliveredAt === undefined || deliveredAt < createdAt))
-      ) {
-        return undefined
-      }
-      pendingMessageIds.add(id)
-      pendingMessages.push({
-        id,
-        sourceFrameId,
-        ...(sourceAttemptId ? { sourceAttemptId } : {}),
-        targetFrameId,
-        ...(targetAttemptId ? { targetAttemptId } : {}),
-        text,
-        kind,
-        ...(callerSource ? { callerSource } : {}),
-        createdAt,
-        ...(deliveredAt !== undefined ? { deliveredAt } : {})
-      })
-    }
-    records.push({ agentFrameId, attempts, pendingMessages })
+    records.push({ agentFrameId, attempts })
   }
-  return { records }
+  const messageCommands: DelegatedMessageCommand[] = []
+  if (value.messageCommandsQuarantine !== undefined) {
+    return {
+      records,
+      messageCommandsQuarantine: structuredClone(value.messageCommandsQuarantine)
+    }
+  }
+  const quarantine = (): SessionDelegatedWorkRuntimeContext => ({
+    records,
+    messageCommandsQuarantine: structuredClone(value.messageCommands)
+  })
+  const commandIds = new Set<string>()
+  const commandKeys = new Set<string>()
+  for (const raw of (value.messageCommands ?? []) as unknown[]) {
+    if (
+      !isRecord(raw) ||
+      !hasOnlyFields(raw, [
+        'messageId',
+        'requestId',
+        'sourcePrincipal',
+        'canonicalDigest',
+        'sourceFrameId',
+        'sourceAttemptId',
+        'targetFrameId',
+        'targetAttemptId',
+        'continuationAttemptId',
+        'rootPromptMessageId',
+        'rootOriginMessageId',
+        'callerRootMessageId',
+        'rootBranchId',
+        'rootBranchRevision',
+        'direction',
+        'disposition',
+        'text',
+        'kind',
+        'replyToMessageId',
+        'retryOfMessageId',
+        'laneSequence',
+        'queuedAt',
+        'receipt'
+      ]) ||
+      !isRecord(raw.receipt)
+    )
+      return quarantine()
+    const required = [
+      'messageId',
+      'requestId',
+      'sourcePrincipal',
+      'canonicalDigest',
+      'sourceFrameId',
+      'targetFrameId',
+      'rootOriginMessageId',
+      'callerRootMessageId',
+      'rootBranchId',
+      'rootBranchRevision',
+      'direction',
+      'disposition',
+      'text',
+      'kind'
+    ].map((key) => asString(raw[key]))
+    if (required.some((part) => !part)) return quarantine()
+    const [messageId, requestId, sourcePrincipal] = required as string[]
+    const laneSequence = asNumber(raw.laneSequence)
+    const queuedAt = asNumber(raw.queuedAt)
+    const status = asString(raw.receipt.status)
+    const identity = `${sourcePrincipal}\u0000${requestId}`
+    const optionalStringFields = [
+      'sourceAttemptId',
+      'targetAttemptId',
+      'continuationAttemptId',
+      'rootPromptMessageId',
+      'replyToMessageId',
+      'retryOfMessageId'
+    ]
+    const optionalStringsValid = optionalStringFields.every(
+      (field) => raw[field] === undefined || Boolean(asString(raw[field]))
+    )
+    const toParent = raw.direction === 'to_parent' && raw.disposition === 'message'
+    const toRunningChild = raw.direction === 'to_child' && raw.disposition === 'message'
+    const toContinuedChild = raw.direction === 'to_child' && raw.disposition === 'continued'
+    const routeValid =
+      (toParent &&
+        Boolean(asString(raw.sourceAttemptId)) &&
+        Boolean(asString(raw.rootPromptMessageId)) &&
+        raw.targetAttemptId === undefined &&
+        raw.continuationAttemptId === undefined) ||
+      (toRunningChild &&
+        Boolean(asString(raw.targetAttemptId)) &&
+        raw.sourceAttemptId === undefined &&
+        raw.rootPromptMessageId === undefined &&
+        raw.continuationAttemptId === undefined) ||
+      (toContinuedChild &&
+        Boolean(asString(raw.continuationAttemptId)) &&
+        raw.sourceAttemptId === undefined &&
+        raw.rootPromptMessageId === undefined &&
+        raw.targetAttemptId === undefined)
+    const receiptValid =
+      (status === 'queued' &&
+        hasOnlyFields(raw.receipt, ['status', 'dispatchStartedAt', 'dispatchEpoch']) &&
+        (raw.receipt.dispatchStartedAt === undefined ||
+          (asNumber(raw.receipt.dispatchStartedAt) !== undefined &&
+            asNumber(raw.receipt.dispatchStartedAt)! >= queuedAt!)) &&
+        (raw.receipt.dispatchEpoch === undefined || Boolean(asString(raw.receipt.dispatchEpoch))) &&
+        ((raw.receipt.dispatchStartedAt === undefined) ===
+          (raw.receipt.dispatchEpoch === undefined))) ||
+      (status === 'accepted' &&
+        hasOnlyFields(raw.receipt, ['status', 'acceptedAt', 'evidence']) &&
+        asNumber(raw.receipt.acceptedAt) !== undefined &&
+        asNumber(raw.receipt.acceptedAt)! >= queuedAt! &&
+        ['provider_prompt_accepted', 'provider_prompt_completed'].includes(
+          String(raw.receipt.evidence)
+        )) ||
+      (status === 'failed' &&
+        hasOnlyFields(raw.receipt, ['status', 'failedAt', 'error']) &&
+        asNumber(raw.receipt.failedAt) !== undefined &&
+        asNumber(raw.receipt.failedAt)! >= queuedAt! &&
+        isRecord(raw.receipt.error) &&
+        hasOnlyFields(raw.receipt.error, ['code', 'message', 'retryable']) &&
+        Boolean(asString(raw.receipt.error.code)) &&
+        Boolean(asString(raw.receipt.error.message)) &&
+        typeof raw.receipt.error.retryable === 'boolean') ||
+      (status === 'uncertain' &&
+        hasOnlyFields(raw.receipt, ['status', 'uncertainAt', 'resolution']) &&
+        asNumber(raw.receipt.uncertainAt) !== undefined &&
+        asNumber(raw.receipt.uncertainAt)! >= queuedAt! &&
+        ['pending', 'acknowledged'].includes(String(raw.receipt.resolution)))
+    if (
+      commandIds.has(messageId) ||
+      commandKeys.has(identity) ||
+      laneSequence === undefined ||
+      !Number.isSafeInteger(laneSequence) ||
+      laneSequence < 1 ||
+      queuedAt === undefined ||
+      queuedAt < 0 ||
+      !/^[a-f0-9]{64}$/.test(String(raw.canonicalDigest)) ||
+      !optionalStringsValid ||
+      !routeValid ||
+      !['info', 'question'].includes(String(raw.kind)) ||
+      !receiptValid
+    )
+      return quarantine()
+    commandIds.add(messageId)
+    commandKeys.add(identity)
+    messageCommands.push(structuredClone(raw) as DelegatedMessageCommand)
+  }
+  return { records, ...(value.messageCommands === undefined ? {} : { messageCommands }) }
 }
 const PERMISSION_FINGERPRINT_PATTERN = /^[a-f0-9]{64}$/
 const PERMISSION_SCOPES = new Set(['once', 'session', 'project', 'global'])

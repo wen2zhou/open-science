@@ -141,7 +141,8 @@ const registerSessionPersistenceIpcHandlers = (
   handlers: SessionPersistenceHandlers = createSessionPersistenceHandlers(
     repository,
     reviewRepository
-  )
+  ),
+  onSessionSaved?: (session: PersistedChatSession) => Promise<void> | void
 ): void => {
   // Keep persistence IPC separate from ACP runtime commands; it owns durable UI state only.
   // loadAll can replay pending deletions and every mutation can materialize provenance/upload bytes.
@@ -151,7 +152,7 @@ const registerSessionPersistenceIpcHandlers = (
     'sessions:save-session',
     async (event, session: PersistedChatSession, options?: SaveSessionOptions) => {
       const originClientId = getLifecycleClientId(event)
-      return withDataRootWrite(async () => {
+      const durable = await withDataRootWrite(async () => {
         const result = await handlers.saveSession(session, options)
         broadcastLifecycleEvent(
           result.created ? LIFECYCLE_CHANNELS.sessionCreated : LIFECYCLE_CHANNELS.sessionUpdated,
@@ -162,6 +163,8 @@ const registerSessionPersistenceIpcHandlers = (
         )
         return result.session
       })
+      void Promise.resolve(onSessionSaved?.(durable)).catch(() => undefined)
+      return durable
     }
   )
   ipcMainHandle('sessions:update-archive', async (event, request: UpdateSessionArchiveRequest) => {

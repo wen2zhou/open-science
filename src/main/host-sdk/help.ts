@@ -188,10 +188,112 @@ const SUBMIT_OUTPUT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
       : { status: 'unavailable', reason: 'Only a delegated child Attempt can submit output.' }
 }
 
+const MESSAGE_AVAILABILITY = DELEGATE_DESCRIPTOR.resolveAvailability
+const SEND_MESSAGE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
+  kind: 'operation',
+  id: 'host.send_message',
+  path: 'host.send_message',
+  aliases: ['send_message'],
+  summary: 'Durably queue a reliable message to a direct child or its root parent.',
+  call_forms: [
+    {
+      signature: 'await host.send_message(target, message, options?)',
+      accepts: 'target_message_options'
+    }
+  ],
+  request: { target: { type: 'string' }, message: { type: 'string', minLength: 1 } },
+  options: {
+    kind: { enum: ['info', 'question'], default: 'info' },
+    request_id: { type: 'string' },
+    reply_to_message_id: { type: 'string' }
+  },
+  returns: {
+    type: 'delivery_receipt',
+    direction: ['to_child', 'to_parent'],
+    disposition: ['message', 'continued'],
+    status: ['queued', 'accepted', 'failed', 'uncertain']
+  },
+  constraints: [
+    'Receipt is delivery evidence, never a reply.',
+    'Same request_id and payload recover one durable command; a different payload conflicts.',
+    'uncertain is never automatically retried.'
+  ],
+  examples: [
+    {
+      title: 'Ask a child',
+      code: "await host.send_message(child.frame_id, 'Which source supports this?', { kind: 'question', request_id: 'source-question-1' })"
+    }
+  ],
+  errors: { thrown_type: 'Error', domain_error_code_exposed: false },
+  resolveAvailability: MESSAGE_AVAILABILITY
+}
+const MESSAGE_RECEIPT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
+  kind: 'operation',
+  id: 'host.message_receipt',
+  path: 'host.message_receipt',
+  aliases: ['message_receipt'],
+  summary: 'Observe an owned delivery receipt for a bounded time.',
+  call_forms: [
+    {
+      signature: 'await host.message_receipt(message_id_or_request_id, options?)',
+      accepts: 'selector_options'
+    }
+  ],
+  request: { selector: { type: 'string' } },
+  options: { timeout_seconds: { type: 'number', minimum: 0, maximum: 1800, default: 30 } },
+  returns: { type: 'delivery_receipt', status: ['queued', 'accepted', 'failed', 'uncertain'] },
+  constraints: [
+    'Authorization is revalidated for every observation.',
+    'Timeout returns the latest receipt and changes no delivery state.'
+  ],
+  examples: [
+    {
+      title: 'Observe',
+      code: 'await host.message_receipt(receipt.message_id, { timeout_seconds: 30 })'
+    }
+  ],
+  errors: { thrown_type: 'Error', domain_error_code_exposed: false },
+  resolveAvailability: MESSAGE_AVAILABILITY
+}
+const RESOLVE_MESSAGE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
+  kind: 'operation',
+  id: 'host.resolve_message',
+  path: 'host.resolve_message',
+  aliases: ['resolve_message'],
+  summary: 'Acknowledge an uncertain delivery risk and release its lane fence.',
+  call_forms: [
+    {
+      signature: "await host.resolve_message(message_id, { action: 'acknowledge_uncertain' })",
+      accepts: 'message_resolution'
+    }
+  ],
+  request: { message_id: { type: 'string' } },
+  options: { action: { enum: ['acknowledge_uncertain'] } },
+  returns: { type: 'delivery_receipt', status: ['uncertain'], resolution: ['acknowledged'] },
+  constraints: [
+    'Root Main only.',
+    'Does not mark accepted or failed and does not retry the payload.'
+  ],
+  examples: [
+    {
+      title: 'Release fence',
+      code: "await host.resolve_message(receipt.message_id, { action: 'acknowledge_uncertain' })"
+    }
+  ],
+  errors: { thrown_type: 'Error', domain_error_code_exposed: false },
+  resolveAvailability: ({ callerRole, capabilities }) =>
+    callerRole === 'main'
+      ? MESSAGE_AVAILABILITY({ callerRole, capabilities })
+      : { status: 'unavailable', reason: 'Only root Main can resolve uncertain delivery.' }
+}
+
 // Adding another documented Host SDK operation only requires registering its descriptor here.
 const OPERATION_DESCRIPTORS: readonly HostSdkHelpOperationDescriptor[] = [
   COLLECT_DESCRIPTOR,
   DELEGATE_DESCRIPTOR,
+  MESSAGE_RECEIPT_DESCRIPTOR,
+  RESOLVE_MESSAGE_DESCRIPTOR,
+  SEND_MESSAGE_DESCRIPTOR,
   SUBMIT_OUTPUT_DESCRIPTOR
 ]
 const MAX_HELP_QUERY_CHARS = 128

@@ -29,6 +29,30 @@ describe('Host SDK help', () => {
           availability: { status: 'available' }
         },
         {
+          id: 'host.message_receipt',
+          kind: 'operation',
+          path: 'host.message_receipt',
+          aliases: ['message_receipt'],
+          summary: 'Observe an owned delivery receipt for a bounded time.',
+          availability: { status: 'available' }
+        },
+        {
+          id: 'host.resolve_message',
+          kind: 'operation',
+          path: 'host.resolve_message',
+          aliases: ['resolve_message'],
+          summary: 'Acknowledge an uncertain delivery risk and release its lane fence.',
+          availability: { status: 'available' }
+        },
+        {
+          id: 'host.send_message',
+          kind: 'operation',
+          path: 'host.send_message',
+          aliases: ['send_message'],
+          summary: 'Durably queue a reliable message to a direct child or its root parent.',
+          availability: { status: 'available' }
+        },
+        {
           id: 'host.submit_output',
           kind: 'operation',
           path: 'host.submit_output',
@@ -159,7 +183,7 @@ describe('Host SDK help', () => {
     expect(hostSdkHelp.query('delegte', mainContext)).toEqual({
       kind: 'not_found',
       query: 'delegte',
-      suggestions: ['host.delegate', 'host.collect', 'host.submit_output']
+      suggestions: ['host.delegate', 'host.collect', 'host.send_message']
     })
   })
 

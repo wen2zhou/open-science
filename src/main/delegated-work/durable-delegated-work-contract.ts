@@ -8,6 +8,7 @@ import type { JsonSchema } from './structured-output'
 import type { DelegatedArtifactEvidence } from './delegated-turn-lifecycle'
 import type {
   DelegateExecution,
+  DelegateMessageAcceptanceEvidence,
   DelegatePermissionResponse,
   DelegatedExecutionModelAdmission
 } from './execution-port'
@@ -47,8 +48,12 @@ type ParentMessageDelivery = Readonly<{
   sourceAttemptId: string
   targetFrameId: string
   originMessageId: string
+  rootPromptMessageId: string
+  rootBranchId: string
+  rootBranchRevision: string
   text: string
   kind: 'info' | 'question'
+  startDispatch(): Promise<'started' | 'terminal' | 'blocked'>
 }>
 
 type SessionSubagentSummary = Readonly<{
@@ -83,17 +88,72 @@ type RootDelegatePermissionEvent =
   | Readonly<{ kind: 'requested'; request: RootDelegatePermissionRequest }>
   | Readonly<{ kind: 'settled'; request: RootDelegatePermissionRequest }>
 
-type DurableSendMessageOutcome =
+type MessageReceiptBase = Readonly<{
+  request_id: string
+  message_id: string
+  source_frame_id: string
+  target_frame_id: string
+  reply_to_message_id?: string
+  queued_at: number
+  same_request_safe: true
+}>
+
+type MessageReceiptRoute =
   | Readonly<{
-      kind: 'queued'
-      messageId: string
-      targetFrameId: string
-      attemptId?: string
+      direction: 'to_child'
+      disposition: 'message'
+      target_attempt_id: string
     }>
   | Readonly<{
-      kind: 'continued'
-      child: Readonly<{ frameId: string; attemptId: string; status: 'running' }>
+      direction: 'to_child'
+      disposition: 'continued'
+      continuation_attempt_id: string
     }>
+  | Readonly<{
+      direction: 'to_parent'
+      disposition: 'message'
+      source_attempt_id: string
+      root_prompt_message_id: string
+    }>
+
+type MessageReceiptState =
+  | Readonly<{
+      status: 'queued'
+      dispatch_started_at?: number
+      new_request_retry_safe: false
+    }>
+  | Readonly<{
+      status: 'accepted'
+      accepted_at: number
+      evidence: 'provider_prompt_accepted' | 'provider_prompt_completed'
+      new_request_retry_safe: false
+    }>
+  | Readonly<{
+      status: 'failed'
+      failed_at: number
+      error: Readonly<{
+        code: string
+        message: string
+        retryable: boolean
+        delivery_may_have_occurred: false
+      }>
+      new_request_retry_safe: boolean
+    }>
+  | Readonly<{
+      status: 'uncertain'
+      uncertain_at: number
+      delivery_may_have_occurred: true
+      resolution: 'pending' | 'acknowledged'
+      new_request_retry_safe: false
+    }>
+
+type DurableSendMessageOutcome = MessageReceiptBase & MessageReceiptRoute & MessageReceiptState
+
+type DurableSendMessageOptions = Readonly<{
+  kind?: 'info' | 'question'
+  requestId?: string
+  replyToMessageId?: string
+}>
 
 type ReadOnlyAgentFrameDetail = Readonly<{
   frameId: string
@@ -151,7 +211,17 @@ type DurableDelegatedWork = Readonly<{
     caller: AuthenticatedDelegateCaller,
     targetFrameId: string | 'parent',
     message: string,
-    kind?: 'info' | 'question'
+    options?: DurableSendMessageOptions
+  ): Promise<DurableSendMessageOutcome>
+  messageReceipt(
+    caller: AuthenticatedDelegateCaller,
+    selector: string,
+    options?: Readonly<{ timeoutSeconds?: number }>
+  ): Promise<DurableSendMessageOutcome>
+  resolveMessage(
+    caller: AuthenticatedDelegateCaller,
+    messageId: string,
+    options: Readonly<{ action: 'acknowledge_uncertain' }>
   ): Promise<DurableSendMessageOutcome>
   sessionSummary(session: SessionKey): Promise<SessionSubagentSummary>
   readAgentFrame(
@@ -169,6 +239,7 @@ type DurableDelegatedWork = Readonly<{
   stopActiveBranch(session: SessionKey): Promise<readonly StopOutcome[]>
   stopSession(session: SessionKey): Promise<readonly StopOutcome[]>
   recoverInterrupted(): Promise<RecoveryOutcome>
+  wakeMessages(): Promise<void>
   deleteSession(session: SessionKey): Promise<void>
 }>
 
@@ -204,7 +275,9 @@ type CreateDurableDelegatedWorkOptions = Readonly<{
     frameId: string
     attemptId: string
   }) => Promise<void> | void
-  deliverToParent?: (delivery: ParentMessageDelivery) => Promise<void>
+  deliverToParent?: (
+    delivery: ParentMessageDelivery
+  ) => Promise<DelegateMessageAcceptanceEvidence>
   artifactEvidence?: DelegatedArtifactEvidence
   reviewEvidence?: DelegatedReviewEvidence
   onRootPermissionEvent?(event: RootDelegatePermissionEvent): void
@@ -223,6 +296,7 @@ export type {
   DurableDelegateRequest,
   DurableDelegatedWork,
   DurableSendMessageOutcome,
+  DurableSendMessageOptions,
   ParentMessageDelivery,
   ReadOnlyAgentFrameDetail,
   RecoveryOutcome,

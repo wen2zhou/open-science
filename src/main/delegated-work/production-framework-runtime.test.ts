@@ -361,7 +361,6 @@ describe('production delegated framework runtime bridge', () => {
                   startedAt: 2
                 }
               ],
-              pendingMessages: []
             }
           ]
         }

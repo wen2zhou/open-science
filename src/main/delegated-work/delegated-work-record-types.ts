@@ -97,8 +97,47 @@ type DurableChild = {
   inputs: readonly string[]
   messageBranchId: string
   attempts: DurableAttempt[]
-  pendingMessages: DurablePendingMessage[]
 }
+
+type MessageDirection = 'to_child' | 'to_parent'
+type MessageDisposition = 'message' | 'continued'
+type MessageEvidence = 'provider_prompt_accepted' | 'provider_prompt_completed'
+
+type DurableMessageReceiptState =
+  | Readonly<{ status: 'queued'; dispatchStartedAt?: number; dispatchEpoch?: string }>
+  | Readonly<{ status: 'accepted'; acceptedAt: number; evidence: MessageEvidence }>
+  | Readonly<{
+      status: 'failed'
+      failedAt: number
+      error: Readonly<{ code: string; message: string; retryable: boolean }>
+    }>
+  | Readonly<{ status: 'uncertain'; uncertainAt: number; resolution: 'pending' | 'acknowledged' }>
+
+type DurableMessageCommand = Readonly<{
+  messageId: string
+  requestId: string
+  sourcePrincipal: string
+  canonicalDigest: string
+  sourceFrameId: string
+  sourceAttemptId?: string
+  targetFrameId: string
+  targetAttemptId?: string
+  continuationAttemptId?: string
+  rootPromptMessageId?: string
+  rootOriginMessageId: string
+  callerRootMessageId: string
+  rootBranchId: string
+  rootBranchRevision: string
+  direction: MessageDirection
+  disposition: MessageDisposition
+  text: string
+  kind: 'info' | 'question'
+  replyToMessageId?: string
+  retryOfMessageId?: string
+  laneSequence: number
+  queuedAt: number
+  receipt: DurableMessageReceiptState
+}>
 
 type DurablePendingMessage = Readonly<{
   id: string
@@ -135,9 +174,13 @@ type DurableMessage = {
 type DurableSnapshot = Readonly<{
   session: Readonly<{ projectId: string; sessionId: string }>
   rootFrameId: string
+  rootBranchId: string
+  rootBranchRevision: string
   originMessageIds: readonly string[]
   records: readonly DurableChild[]
   messages: readonly DurableMessage[]
+  messageCommands: readonly DurableMessageCommand[]
+  messageCommandsQuarantined?: true
 }>
 
 type AdmitChildInput = Readonly<{
@@ -192,6 +235,7 @@ type ContinueChildInput = Readonly<{
   startedAt: number
   callerSource: DelegatedCallerSource
   initiatingTurnMessageId: string
+  messageCommand: DurableMessageCommand
 }>
 
 type DelegatedWorkDurableRecords = Readonly<{
@@ -218,17 +262,6 @@ type DelegatedWorkDurableRecords = Readonly<{
     activityGroups: readonly PersistedActivityGroup[]
   ): Promise<void>
   terminalize(input: TerminalInput): Promise<void>
-  appendPendingMessage(
-    frameId: string,
-    attemptId: string,
-    message: DurablePendingMessage
-  ): Promise<void>
-  markMessageDelivered(
-    frameId: string,
-    attemptId: string,
-    messageId: string,
-    deliveredAt: number
-  ): Promise<void>
   startPendingTurn(
     frameId: string,
     attemptId: string,
@@ -256,6 +289,19 @@ type DelegatedWorkDurableRecords = Readonly<{
     value: JsonValue,
     acceptedAt: number
   ): Promise<'accepted' | 'idempotent'>
+  admitMessage(command: DurableMessageCommand): Promise<'admitted' | 'idempotent'>
+  markMessageDispatchStarted(
+    messageId: string,
+    dispatchStartedAt: number,
+    dispatchEpoch: string,
+    rootBranchId: string,
+    rootBranchRevision: string
+  ): Promise<'started' | 'terminal' | 'blocked'>
+  settleMessage(
+    messageId: string,
+    state: Exclude<DurableMessageReceiptState, { status: 'queued' }>
+  ): Promise<'settled' | 'terminal'>
+  acknowledgeUncertain(messageId: string): Promise<'acknowledged' | 'terminal'>
   snapshot(): Promise<DurableSnapshot>
 }>
 
@@ -270,6 +316,11 @@ export type {
   DurableDelegateOutcome,
   DurableDelegateResult,
   DurableMessage,
+  DurableMessageCommand,
+  DurableMessageReceiptState,
+  MessageDirection,
+  MessageDisposition,
+  MessageEvidence,
   DurablePendingMessage,
   DurableResolvedAgent,
   DurableSnapshot

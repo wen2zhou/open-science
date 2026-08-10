@@ -579,8 +579,10 @@ describe('repl_loop local RPC transport', () => {
         response.writeHead(200, { 'content-type': 'application/json' }).end(
           JSON.stringify({
             result: {
-              kind: 'continued',
-              child: { frameId: 'child-frame', attemptId: 'attempt-2', status: 'running' }
+              direction: 'to_child',
+              disposition: 'continued',
+              status: 'queued',
+              continuation_attempt_id: 'attempt-2'
             }
           })
         )
@@ -599,12 +601,14 @@ describe('repl_loop local RPC transport', () => {
 
     try {
       const result = await send(
-        "return JSON.stringify(await host.send_message('child-frame', 'Check a counterexample', 'question'))"
+        "return JSON.stringify(await host.send_message('child-frame', 'Check a counterexample', { kind: 'question' }))"
       )
       expect(result.error).toBeNull()
       expect(JSON.parse(result.result as string)).toEqual({
-        kind: 'continued',
-        child: { frame_id: 'child-frame', attempt_id: 'attempt-2', status: 'running' }
+        direction: 'to_child',
+        disposition: 'continued',
+        status: 'queued',
+        continuation_attempt_id: 'attempt-2'
       })
       expect(received).toEqual({
         method: 'delegatedWorkCall',
@@ -612,7 +616,7 @@ describe('repl_loop local RPC transport', () => {
           op: 'send_message',
           target: 'child-frame',
           message: 'Check a counterexample',
-          kind: 'question'
+          options: { kind: 'question' }
         }
       })
     } finally {
@@ -633,8 +637,10 @@ describe('repl_loop local RPC transport', () => {
         response.writeHead(200, { 'content-type': 'application/json' }).end(
           JSON.stringify({
             result: {
-              kind: 'continued',
-              child: { frameId: 'child-frame', attemptId: 'attempt-2', status: 'running' }
+              direction: 'to_child',
+              disposition: 'continued',
+              status: 'queued',
+              continuation_attempt_id: 'attempt-2'
             }
           })
         )
@@ -657,8 +663,10 @@ describe('repl_loop local RPC transport', () => {
       )
       expect(result.error).toBeNull()
       expect(JSON.parse(result.result as string)).toEqual({
-        kind: 'continued',
-        child: { frame_id: 'child-frame', attempt_id: 'attempt-2', status: 'running' }
+        direction: 'to_child',
+        disposition: 'continued',
+        status: 'queued',
+        continuation_attempt_id: 'attempt-2'
       })
       expect(received).toEqual({
         method: 'delegatedWorkCall',
@@ -687,10 +695,12 @@ describe('repl_loop local RPC transport', () => {
         response.writeHead(200, { 'content-type': 'application/json' }).end(
           JSON.stringify({
             result: {
-              kind: 'queued',
-              messageId: 'message-1',
-              targetFrameId: 'parent-frame',
-              attemptId: 'attempt-1'
+              direction: 'to_parent',
+              disposition: 'message',
+              status: 'queued',
+              message_id: 'message-1',
+              target_frame_id: 'parent-frame',
+              source_attempt_id: 'attempt-1'
             }
           })
         )
@@ -709,14 +719,16 @@ describe('repl_loop local RPC transport', () => {
 
     try {
       const result = await send(
-        "return JSON.stringify(await host.send_message('parent', 'Which cohort?', 'question'))"
+        "return JSON.stringify(await host.send_message('parent', 'Which cohort?', { kind: 'question' }))"
       )
       expect(result.error).toBeNull()
       expect(JSON.parse(result.result as string)).toEqual({
-        kind: 'queued',
+        direction: 'to_parent',
+        disposition: 'message',
+        status: 'queued',
         message_id: 'message-1',
         target_frame_id: 'parent-frame',
-        attempt_id: 'attempt-1'
+        source_attempt_id: 'attempt-1'
       })
       expect(received).toEqual({
         method: 'delegatedWorkCall',
@@ -724,7 +736,7 @@ describe('repl_loop local RPC transport', () => {
           op: 'send_message',
           target: 'parent',
           message: 'Which cohort?',
-          kind: 'question'
+          options: { kind: 'question' }
         }
       })
     } finally {

@@ -1181,7 +1181,7 @@ async function hostCollect(selectors, options = undefined) {
   return delegatedObservationRpc('collect', selectors, options)
 }
 
-async function hostSendMessage(target, message, kind = undefined) {
+async function hostSendMessage(target, message, options = undefined) {
   if (!RPC_ENDPOINT) {
     throw new Error('host.send_message is unavailable: control RPC endpoint not set')
   }
@@ -1194,7 +1194,7 @@ async function hostSendMessage(target, message, kind = undefined) {
         op: 'send_message',
         target,
         message,
-        ...(kind !== undefined ? { kind } : {})
+        ...(options !== undefined ? { options } : {})
       }
     })
   })
@@ -1202,24 +1202,30 @@ async function hostSendMessage(target, message, kind = undefined) {
   if (!res.ok || body.error) {
     throw new Error(`host.send_message: ${body.error || 'HTTP ' + res.status}`)
   }
-  const outcome = body.result || {}
-  if (outcome.kind === 'queued') {
-    return {
-      kind: outcome.kind,
-      message_id: outcome.messageId,
-      target_frame_id: outcome.targetFrameId,
-      ...(outcome.attemptId ? { attempt_id: outcome.attemptId } : {})
-    }
-  }
-  const child = outcome.child || {}
-  return {
-    kind: outcome.kind,
-    child: {
-      frame_id: child.frameId,
-      attempt_id: child.attemptId,
-      status: child.status
-    }
-  }
+  return body.result
+}
+
+async function hostMessageReceipt(selector, options = undefined) {
+  return delegatedMessageRpc('message_receipt', { selector, options })
+}
+
+async function hostResolveMessage(messageId, options) {
+  return delegatedMessageRpc('resolve_message', {
+    message_id: messageId,
+    action: options && options.action
+  })
+}
+
+async function delegatedMessageRpc(op, params) {
+  if (!RPC_ENDPOINT) throw new Error(`host.${op} is unavailable: control RPC endpoint not set`)
+  const res = await capturedRpcFetch(RPC_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
+    body: JSON.stringify({ method: 'delegatedWorkCall', params: { op, ...params } })
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok || body.error) throw new Error(`host.${op}: ${body.error || 'HTTP ' + res.status}`)
+  return body.result
 }
 
 // host.agents namespace. Methods and filter/write fields are snake_case; returned records are
@@ -1473,6 +1479,8 @@ const sandbox = {
     collect: hostCollect,
     stop_child: hostStopChild,
     send_message: hostSendMessage,
+    message_receipt: hostMessageReceipt,
+    resolve_message: hostResolveMessage,
     submit_output: hostSubmitOutput
   },
   console,

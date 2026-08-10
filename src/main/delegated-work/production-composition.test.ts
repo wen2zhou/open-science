@@ -19,6 +19,7 @@ import { ArtifactProvenanceRepository } from '../artifacts/provenance-repository
 import { ArtifactRepository } from '../artifacts/repository'
 import { ArtifactRunRegistry } from '../artifacts/run-registry'
 import { writeArtifactFileForCurrentRun } from '../artifacts/mcp-server'
+import { DelegateMessageParkedError } from './execution-port'
 import { createArtifactHandlers } from '../artifacts/ipc'
 import { createProjectDbClient, ensureProjectSchema } from '../projects/prisma-client'
 import { createFrameNotebookLane } from '../notebook/lane-identity'
@@ -217,7 +218,9 @@ const createCompositionHarness = async (
     dataRoot,
     sessions: {
       commands: coordinator,
-      readSession: async () => structuredClone(durable)
+      readSession: async () => structuredClone(durable),
+      findSessions: async (sessionId) =>
+        durable.id === sessionId ? [structuredClone(durable)] : []
     },
     resolveInput: async () => {
       throw new Error('no inputs')
@@ -623,7 +626,7 @@ describe('production delegated-work composition', () => {
       receipt.children[0].frameId,
       'Continue with the same route'
     )
-    if (continued.kind !== 'continued') throw new Error('expected continuation')
+    if (continued.disposition !== 'continued') throw new Error('expected continuation')
     await expect.poll(() => restartedExecution.controls()).toHaveLength(1)
 
     const attempts = harness.durable().runtimeContext?.delegatedWork?.records[0]?.attempts
@@ -801,23 +804,23 @@ describe('production delegated-work composition', () => {
       },
       child.frameId,
       'Continue without inheriting the schema',
-      'info'
+      { kind: 'info' }
     )
-    expect(continued.kind).toBe('continued')
-    if (continued.kind !== 'continued') throw new Error('Expected a continued Attempt.')
-    await expect.poll(() => harness.controls.has(continued.child.attemptId)).toBe(true)
+    expect(continued.disposition).toBe('continued')
+    if (continued.disposition !== 'continued') throw new Error('Expected a continued Attempt.')
+    await expect.poll(() => harness.controls.has(continued.continuation_attempt_id)).toBe(true)
     const continuationRunning = await harness.composition.host.collect(
       harness.caller,
-      [continued.child.frameId],
+      [continued.target_frame_id],
       { timeoutSeconds: 0 }
     )
     expect(continuationRunning[0]).not.toHaveProperty('structuredOutput')
     expect(continuationRunning[0]).not.toHaveProperty('structuredOutputUnsatisfied')
     await harness.controls
-      .get(continued.child.attemptId)!
+      .get(continued.continuation_attempt_id)!
       .complete({ submit: false, text: 'Continuation without schema' })
     const continuationTerminal = await harness.composition.host.collect(harness.caller, [
-      continued.child.frameId
+      continued.target_frame_id
     ])
     expect(continuationTerminal[0]).toMatchObject({
       status: 'completed',
@@ -1887,7 +1890,7 @@ describe('production delegated-work composition', () => {
       },
       control.input.frameId,
       'Create running evidence',
-      'info'
+      { kind: 'info' }
     )
     await expect.poll(() => control.deliveredMessages()).toEqual(['Create running evidence'])
     await control.completeTurn('Evidence ready', {
@@ -1959,13 +1962,13 @@ describe('production delegated-work composition', () => {
       },
       child.frameId,
       'Create continuation evidence',
-      'info'
+      { kind: 'info' }
     )
-    expect(continued.kind).toBe('continued')
-    if (continued.kind !== 'continued') throw new Error('expected terminal continuation')
+    expect(continued.disposition).toBe('continued')
+    if (continued.disposition !== 'continued') throw new Error('expected terminal continuation')
     await expect.poll(() => execution.controls()).toHaveLength(2)
-    const continuationControl = execution.control(continued.child.attemptId)
-    const continuationTurn = turns.handleForExecution(continued.child.attemptId)
+    const continuationControl = execution.control(continued.continuation_attempt_id)
+    const continuationTurn = turns.handleForExecution(continued.continuation_attempt_id)
     await turns.write(continuationTurn, {
       filename: 'continuation.md',
       content: 'continued child evidence'
@@ -1978,7 +1981,7 @@ describe('production delegated-work composition', () => {
           harness
             .durable()
             .runtimeContext?.delegatedWork?.records[0].attempts.find(
-              ({ id }) => id === continued.child.attemptId
+              ({ id }) => id === continued.continuation_attempt_id
             )?.status
       )
       .toBe('completed')
@@ -2093,7 +2096,9 @@ describe('production delegated-work composition', () => {
     const harness = await createCompositionHarness(root, 'opencode', undefined, undefined, {
       parentMessages: {
         deliver: async (delivery) => {
+          await delivery.startDispatch()
           deliveries.push(delivery)
+          return 'provider_prompt_accepted'
         }
       }
     })
@@ -2116,22 +2121,76 @@ describe('production delegated-work composition', () => {
       },
       'parent',
       'Need the cohort definition',
-      'question'
+      { kind: 'question' }
     )
 
-    expect(deliveries).toEqual([
-      expect.objectContaining({
-        session: harness.caller.session,
-        sourceFrameId: child.frameId,
-        sourceAttemptId: child.attemptId,
-        targetFrameId: harness.caller.frameId,
-        text: 'Need the cohort definition',
-        kind: 'question'
-      })
-    ])
+    await expect
+      .poll(() => deliveries)
+      .toEqual([
+        expect.objectContaining({
+          session: harness.caller.session,
+          sourceFrameId: child.frameId,
+          sourceAttemptId: child.attemptId,
+          targetFrameId: harness.caller.frameId,
+          text: 'Need the cohort definition',
+          kind: 'question'
+        })
+      ])
     expect(
-      harness.durable().runtimeContext?.delegatedWork?.records[0].pendingMessages[0]
-    ).toHaveProperty('deliveredAt')
+      harness.durable().runtimeContext?.delegatedWork?.messageCommands?.[0].receipt.status
+    ).toBe('accepted')
+  })
+
+  it('discovers a durable queued parent message when a cold composition is woken after restart', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-parent-restart-wake-'))
+    let branchActive = false
+    const deliveries: string[] = []
+    const harness = await createCompositionHarness(root, 'opencode', undefined, undefined, {
+      parentMessages: {
+        deliver: async (delivery) => {
+          if (!branchActive) throw new DelegateMessageParkedError('root branch is parked')
+          await delivery.startDispatch()
+          deliveries.push(delivery.messageId)
+          return 'provider_prompt_accepted'
+        }
+      }
+    })
+    const delegated = await harness.composition.host.delegate(
+      harness.caller,
+      { task: 'Ask after restart' },
+      { wait: false }
+    )
+    await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+    harness.execution.controls()[0].accept()
+    const child = delegated.children[0]
+    const queued = await harness.composition.host.sendMessage(
+      {
+        ...harness.caller,
+        frameId: child.frameId,
+        attemptId: child.attemptId,
+        role: 'delegate',
+        toolInvocationId: 'child-parent-restart-message'
+      },
+      'parent',
+      'Wake after the root branch is restored'
+    )
+    await expect.poll(() => queued.status).toBe('queued')
+
+    branchActive = true
+    const restarted = harness.reopen()
+    await restarted.root.wakeMessages?.(harness.session.id)
+
+    await expect.poll(() => deliveries).toEqual([queued.message_id])
+    await expect
+      .poll(
+        () =>
+          harness
+            .durable()
+            .runtimeContext?.delegatedWork?.messageCommands?.find(
+              ({ messageId }) => messageId === queued.message_id
+            )?.receipt.status
+      )
+      .toBe('accepted')
   })
 
   it('deletes stable child workspaces after restart without relying on the in-memory work cache', async () => {

@@ -18,5 +18,6 @@ describe('durable delegated work architecture', () => {
     expect(composer).toContain('new RootDelegatePermissionOwner(')
     expect(composer).toContain('new DelegatedWorkProjectionOwner(')
     expect(composer).toContain('new DelegatedWorkReadModel(')
+    expect(composer).toContain('new ReliableMessageDeliveryOwner(')
   })
 })

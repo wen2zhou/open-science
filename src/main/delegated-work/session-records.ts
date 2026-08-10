@@ -4,7 +4,7 @@ import type { JsonValue, StructuredOutputEvidence } from './structured-output'
 import type {
   DelegatedWorkAttemptRecord,
   DelegatedWorkCancellationReason,
-  DelegatedWorkPendingMessage,
+  DelegatedMessageCommand,
   DelegatedWorkRecord,
   DelegatedWorkResolvedAgent,
   DelegatedCallerSource,
@@ -70,6 +70,7 @@ type StartContinuationAttemptInput = Readonly<{
   startedAt: number
   callerSource: DelegatedCallerSource
   initiatingTurnMessageId: string
+  messageCommand: DelegatedMessageCommand
 }>
 
 type AttemptAgentEvent =
@@ -108,19 +109,22 @@ type TransitionAttemptInput = Readonly<{
   error?: Readonly<{ code: string; message: string }>
 }>
 
-type AppendPendingMessageInput = Readonly<{
+type AdmitMessageCommandInput = Readonly<{
   expectedRevision: number
-  frameId: string
-  attemptId: string
-  message: DelegatedWorkPendingMessage
+  command: DelegatedMessageCommand
 }>
-
-type MarkMessageDeliveredInput = Readonly<{
+type StartMessageDispatchInput = Readonly<{
   expectedRevision: number
-  frameId: string
-  attemptId: string
   messageId: string
-  deliveredAt: number
+  dispatchStartedAt: number
+  dispatchEpoch: string
+  rootBranchId: string
+  rootBranchRevision: string
+}>
+type SettleMessageInput = Readonly<{
+  expectedRevision: number
+  messageId: string
+  receipt: DelegatedMessageCommand['receipt']
 }>
 
 type StartPendingMessageTurnInput = Readonly<{
@@ -176,8 +180,19 @@ type DelegatedWorkRecordCommands = Readonly<{
   startAttemptRuntime(key: SessionKey, input: StartAttemptRuntimeInput): Promise<void>
   applyAgentEvent(key: SessionKey, input: AttemptAgentEventInput): Promise<void>
   transitionAttempt(key: SessionKey, input: TransitionAttemptInput): Promise<void>
-  appendPendingMessage(key: SessionKey, input: AppendPendingMessageInput): Promise<void>
-  markMessageDelivered(key: SessionKey, input: MarkMessageDeliveredInput): Promise<void>
+  admitMessageCommand(
+    key: SessionKey,
+    input: AdmitMessageCommandInput
+  ): Promise<'admitted' | 'idempotent'>
+  startMessageDispatch(
+    key: SessionKey,
+    input: StartMessageDispatchInput
+  ): Promise<'started' | 'terminal' | 'blocked'>
+  settleMessage(key: SessionKey, input: SettleMessageInput): Promise<'settled' | 'terminal'>
+  acknowledgeUncertainMessage(
+    key: SessionKey,
+    input: Readonly<{ expectedRevision: number; messageId: string }>
+  ): Promise<'acknowledged' | 'terminal'>
   startPendingMessageTurn(key: SessionKey, input: StartPendingMessageTurnInput): Promise<void>
   completeChildTurn(key: SessionKey, input: CompleteChildTurnInput): Promise<void>
   submitStructuredOutput(
@@ -192,7 +207,7 @@ type DelegatedWorkRecordCommands = Readonly<{
 }>
 
 export type {
-  AppendPendingMessageInput,
+  AdmitMessageCommandInput,
   AttachDelegatedMessageArtifactsInput,
   AttemptAgentEvent,
   AttemptAgentEventInput,
@@ -203,7 +218,8 @@ export type {
   CreatedChild,
   DelegatedWorkAttemptRecord,
   DelegatedWorkRecordCommands,
-  MarkMessageDeliveredInput,
+  SettleMessageInput,
+  StartMessageDispatchInput,
   SessionKey,
   StartContinuationAttemptInput,
   StartAttemptRuntimeInput,

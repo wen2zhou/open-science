@@ -7,6 +7,7 @@ import type { ArtifactFile } from '../../shared/artifacts'
 import type { ReviewWithChecks } from '../../shared/reviewer'
 import { createProfileService } from '../specialist/service'
 import { createDeterministicDelegateExecution } from './deterministic-execution'
+import { DelegateMessagePreAcceptanceError } from './execution-port'
 import {
   createInMemoryDelegatedWorkRecords,
   type AuthenticatedDelegateCaller,
@@ -646,23 +647,27 @@ describe('durable delegated work', () => {
         { ...caller, toolInvocationId: 'message-one' },
         dispatched.children[0].frameId,
         'Use newer evidence',
-        'info'
+        { kind: 'info' }
       )
-    ).resolves.toMatchObject({ kind: 'queued', messageId: expect.any(String) })
+    ).resolves.toMatchObject({
+      status: 'queued',
+      disposition: 'message',
+      message_id: expect.any(String)
+    })
     await work.sendMessage(
       { ...caller, toolInvocationId: 'message-two' },
       dispatched.children[0].frameId,
       'Use newer evidence',
-      'info'
+      { kind: 'info' }
     )
 
     expect(execution.controls()[0].deliveredMessages()).toEqual([
       'Use newer evidence',
       'Use newer evidence'
     ])
-    const pending = (await records.snapshot()).records[0].pendingMessages
+    const pending = (await records.snapshot()).messageCommands
     expect(pending).toHaveLength(2)
-    expect(new Set(pending.map(({ id }) => id)).size).toBe(2)
+    expect(new Set(pending.map(({ messageId }) => messageId)).size).toBe(2)
     expect(pending).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -671,7 +676,7 @@ describe('durable delegated work', () => {
           targetAttemptId: dispatched.children[0].attemptId,
           text: 'Use newer evidence',
           kind: 'info',
-          deliveredAt: expect.any(Number)
+          receipt: expect.objectContaining({ status: 'accepted' })
         })
       ])
     )
@@ -685,11 +690,18 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const deliveries: unknown[] = []
+    let upwardDeliveryCount = 0
     const work = createDurableDelegatedWork({
       execution,
       records,
       deliverToParent: async (delivery) => {
+        upwardDeliveryCount += 1
+        if (upwardDeliveryCount === 2) {
+          throw new DelegateMessagePreAcceptanceError('root provider rejected before admission')
+        }
+        await delivery.startDispatch()
         deliveries.push(delivery)
+        return 'provider_prompt_completed'
       }
     })
     const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
@@ -706,11 +718,12 @@ describe('durable delegated work', () => {
     }
 
     await expect(
-      work.sendMessage(delegateCaller, 'parent', 'Which cohort?', 'question')
+      work.sendMessage(delegateCaller, 'parent', 'Which cohort?', { kind: 'question' })
     ).resolves.toMatchObject({
-      kind: 'queued',
-      targetFrameId: caller.frameId,
-      attemptId: child.attemptId
+      status: 'queued',
+      direction: 'to_parent',
+      target_frame_id: caller.frameId,
+      source_attempt_id: child.attemptId
     })
     expect(deliveries).toEqual([
       expect.objectContaining({
@@ -722,14 +735,40 @@ describe('durable delegated work', () => {
         kind: 'question'
       })
     ])
-    expect((await records.snapshot()).records[0].pendingMessages).toEqual([
+    expect((await records.snapshot()).messageCommands).toEqual([
       expect.objectContaining({
         sourceFrameId: child.frameId,
         sourceAttemptId: child.attemptId,
         targetFrameId: caller.frameId,
-        deliveredAt: expect.any(Number)
+        receipt: expect.objectContaining({
+          status: 'accepted',
+          evidence: 'provider_prompt_completed'
+        })
       })
     ])
+
+    const rejected = await work.sendMessage(
+      { ...delegateCaller, toolInvocationId: 'child-pre-accept-rejection' },
+      'parent',
+      'Can the root accept this?',
+      { kind: 'question' }
+    )
+    await expect
+      .poll(async () => (await records.snapshot()).messageCommands[1].receipt)
+      .toMatchObject({
+        status: 'failed',
+        error: expect.objectContaining({ code: 'root_pre_accept_failure' })
+      })
+    await expect(
+      work.messageReceipt(
+        { ...delegateCaller, toolInvocationId: 'read-child-pre-accept-rejection' },
+        rejected.message_id,
+        { timeoutSeconds: 0 }
+      )
+    ).resolves.toMatchObject({
+      status: 'failed',
+      error: { delivery_may_have_occurred: false }
+    })
 
     await expect(
       work.sendMessage(
@@ -740,7 +779,7 @@ describe('durable delegated work', () => {
         },
         'parent',
         'Forged',
-        'info'
+        { kind: 'info' }
       )
     ).rejects.toMatchObject({ code: 'authorization' })
     await expect(
@@ -748,7 +787,7 @@ describe('durable delegated work', () => {
         { ...delegateCaller, attemptId: 'superseded-attempt', toolInvocationId: 'stale' },
         'parent',
         'Late',
-        'info'
+        { kind: 'info' }
       )
     ).rejects.toMatchObject({ code: 'authorization' })
   })
@@ -771,9 +810,9 @@ describe('durable delegated work', () => {
       work.sendMessage(messageCaller, dispatched.children[0].frameId, 'Same text')
     ])
 
-    expect(duplicate).toEqual(first)
+    expect(duplicate.message_id).toBe(first.message_id)
     expect(execution.controls()[0].deliveredMessages()).toEqual(['Same text'])
-    expect((await records.snapshot()).records[0].pendingMessages).toHaveLength(1)
+    expect((await records.snapshot()).messageCommands).toHaveLength(1)
   })
 
   it('retains uncertain delivery as undelivered history and does not replay it after restart', async () => {
@@ -798,28 +837,153 @@ describe('durable delegated work', () => {
     await expect.poll(() => baseExecution.controls()).toHaveLength(1)
     baseExecution.controls()[0].accept()
 
-    await expect(
-      work.sendMessage(
-        { ...caller, toolInvocationId: 'failed-message' },
-        dispatched.children[0].frameId,
-        'Additional context'
-      )
-    ).resolves.toMatchObject({ kind: 'queued' })
-    await Promise.resolve()
-    expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
-      'deliveredAt'
+    const admitted = await work.sendMessage(
+      { ...caller, toolInvocationId: 'failed-message' },
+      dispatched.children[0].frameId,
+      'Additional context'
     )
+    expect(admitted).toMatchObject({ status: 'queued' })
+    await expect
+      .poll(async () => (await records.snapshot()).messageCommands[0].receipt.status)
+      .toBe('uncertain')
+    await expect(
+      work.messageReceipt({ ...caller, toolInvocationId: 'observe-message' }, admitted.message_id, {
+        timeoutSeconds: 0
+      })
+    ).resolves.toMatchObject({ status: 'uncertain', resolution: 'pending' })
+    await expect(
+      work.resolveMessage({ ...caller, toolInvocationId: 'resolve-message' }, admitted.message_id, {
+        action: 'acknowledge_uncertain'
+      })
+    ).resolves.toMatchObject({ status: 'uncertain', resolution: 'acknowledged' })
 
     const restartedExecution = createDeterministicDelegateExecution()
     const restarted = createDurableDelegatedWork({ execution: restartedExecution, records })
     await restarted.recoverInterrupted()
     expect(restartedExecution.controls()).toEqual([])
-    expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
-      'deliveredAt'
-    )
+    expect((await records.snapshot()).messageCommands[0].receipt.status).toBe('uncertain')
   })
 
-  it('uses same-Frame continuation when the target terminalizes during message admission', async () => {
+  it('maps adapter acceptance evidence and proven pre-accept rejection into durable receipts', async () => {
+    const baseExecution = createDeterministicDelegateExecution()
+    let deliveryCount = 0
+    const execution = {
+      ...baseExecution,
+      run(input: Parameters<typeof baseExecution.run>[0], slotId: string) {
+        const handle = baseExecution.run(input, slotId)
+        return {
+          ...handle,
+          async sendMessage() {
+            deliveryCount += 1
+            if (deliveryCount === 1) return 'provider_prompt_completed' as const
+            throw new DelegateMessagePreAcceptanceError('provider rejected before admission')
+          }
+        }
+      }
+    }
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const delegated = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    await expect.poll(() => baseExecution.controls()).toHaveLength(1)
+    baseExecution.controls()[0].accept()
+
+    const completed = await work.sendMessage(
+      { ...caller, toolInvocationId: 'completed-evidence' },
+      delegated.children[0].frameId,
+      'completed evidence'
+    )
+    await expect
+      .poll(async () => (await records.snapshot()).messageCommands[0].receipt)
+      .toMatchObject({ status: 'accepted', evidence: 'provider_prompt_completed' })
+
+    const rejected = await work.sendMessage(
+      { ...caller, toolInvocationId: 'pre-accept-rejection' },
+      delegated.children[0].frameId,
+      'rejected before admission'
+    )
+    await expect
+      .poll(async () => (await records.snapshot()).messageCommands[1].receipt)
+      .toMatchObject({
+        status: 'failed',
+        error: expect.objectContaining({ code: 'provider_pre_accept_failure' })
+      })
+    await expect(
+      work.messageReceipt(
+        { ...caller, toolInvocationId: 'read-completed-evidence' },
+        completed.message_id,
+        { timeoutSeconds: 0 }
+      )
+    ).resolves.toMatchObject({
+      status: 'accepted',
+      evidence: 'provider_prompt_completed'
+    })
+    await expect(
+      work.messageReceipt(
+        { ...caller, toolInvocationId: 'read-pre-accept-rejection' },
+        rejected.message_id,
+        { timeoutSeconds: 0 }
+      )
+    ).resolves.toMatchObject({ status: 'failed', error: { delivery_may_have_occurred: false } })
+  })
+
+  it('keeps an uncertain lane head fenced and reliably schedules its successor after acknowledge', async () => {
+    const baseExecution = createDeterministicDelegateExecution()
+    let deliveryCount = 0
+    const execution = {
+      ...baseExecution,
+      run(input: Parameters<typeof baseExecution.run>[0], slotId: string) {
+        const handle = baseExecution.run(input, slotId)
+        return {
+          ...handle,
+          sendMessage: async () => {
+            deliveryCount += 1
+            if (deliveryCount === 1) throw new Error('acceptance evidence unavailable')
+            return 'provider_prompt_accepted' as const
+          }
+        }
+      }
+    }
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const delegated = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    await expect.poll(() => baseExecution.controls()).toHaveLength(1)
+    baseExecution.controls()[0].accept()
+
+    const first = await work.sendMessage(
+      { ...caller, toolInvocationId: 'lane-first' },
+      delegated.children[0].frameId,
+      'first'
+    )
+    await work.sendMessage(
+      { ...caller, toolInvocationId: 'lane-second' },
+      delegated.children[0].frameId,
+      'second'
+    )
+    await expect
+      .poll(async () => (await records.snapshot()).messageCommands[0].receipt.status)
+      .toBe('uncertain')
+    expect(deliveryCount).toBe(1)
+
+    await work.resolveMessage(
+      { ...caller, toolInvocationId: 'lane-ack' },
+      first.message_id,
+      { action: 'acknowledge_uncertain' }
+    )
+    await expect.poll(() => deliveryCount).toBe(2)
+    await expect
+      .poll(async () => (await records.snapshot()).messageCommands[1].receipt.status)
+      .toBe('accepted')
+  })
+
+  it('keeps the admitted running-Attempt route when the target terminalizes after command commit', async () => {
     const execution = createDeterministicDelegateExecution()
     const durableRecords = createInMemoryDelegatedWorkRecords({
       session: caller.session,
@@ -829,19 +993,20 @@ describe('durable delegated work', () => {
     let raced = false
     const records: typeof durableRecords = {
       ...durableRecords,
-      async appendPendingMessage(frameId, attemptId, message) {
+      async admitMessage(command) {
+        const result = await durableRecords.admitMessage(command)
         if (!raced) {
           raced = true
           await durableRecords.terminalize({
-            frameId,
-            attemptId,
+            frameId: command.targetFrameId,
+            attemptId: command.targetAttemptId!,
             status: 'cancelled',
-            endedAt: message.createdAt,
+            endedAt: command.queuedAt,
             cancellationReason: 'main_agent_stop'
           })
-          execution.control(attemptId).cancel()
+          execution.control(command.targetAttemptId!).cancel()
         }
-        await durableRecords.appendPendingMessage(frameId, attemptId, message)
+        return result
       }
     }
     const work = createDurableDelegatedWork({ execution, records })
@@ -856,20 +1021,16 @@ describe('durable delegated work', () => {
         'Continue after terminal'
       )
     ).resolves.toMatchObject({
-      kind: 'continued',
-      child: { frameId: dispatched.children[0].frameId, status: 'running' }
-    })
-    expect((await records.snapshot()).records[0]).toMatchObject({
-      attempts: [{ status: 'cancelled' }, { status: 'running' }],
-      pendingMessages: []
+      disposition: 'message',
+      target_frame_id: dispatched.children[0].frameId
     })
   })
 
   it('marks a queued Main-to-child message only after the execution delivery boundary resolves', async () => {
     const baseExecution = createDeterministicDelegateExecution()
     let acceptDelivery!: () => void
-    const deliveryBoundary = new Promise<void>((resolve) => {
-      acceptDelivery = resolve
+    const deliveryBoundary = new Promise<'provider_prompt_accepted'>((resolve) => {
+      acceptDelivery = () => resolve('provider_prompt_accepted')
     })
     const execution = {
       ...baseExecution,
@@ -894,23 +1055,21 @@ describe('durable delegated work', () => {
         dispatched.children[0].frameId,
         'Accepted later'
       )
-    ).resolves.toMatchObject({ kind: 'queued' })
-    expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
-      'deliveredAt'
-    )
+    ).resolves.toMatchObject({ status: 'queued' })
+    expect((await records.snapshot()).messageCommands[0].receipt.status).toBe('queued')
 
     acceptDelivery()
 
     await expect
-      .poll(async () => (await records.snapshot()).records[0].pendingMessages[0].deliveredAt)
-      .toEqual(expect.any(Number))
+      .poll(async () => (await records.snapshot()).messageCommands[0].receipt.status)
+      .toBe('accepted')
   })
 
   it('rejects late delivery after cancellation without fabricating deliveredAt', async () => {
     const baseExecution = createDeterministicDelegateExecution()
     let releaseDelivery!: () => void
-    const deliveryGate = new Promise<void>((resolve) => {
-      releaseDelivery = resolve
+    const deliveryGate = new Promise<'provider_prompt_accepted'>((resolve) => {
+      releaseDelivery = () => resolve('provider_prompt_accepted')
     })
     const execution = {
       ...baseExecution,
@@ -933,18 +1092,15 @@ describe('durable delegated work', () => {
       dispatched.children[0].frameId,
       'Too late'
     )
-    await expect
-      .poll(async () => (await records.snapshot()).records[0].pendingMessages)
-      .toHaveLength(1)
+    await expect.poll(async () => (await records.snapshot()).messageCommands).toHaveLength(1)
 
     await work.stopChildren(caller, [dispatched.children[0].frameId])
     releaseDelivery()
 
-    await expect(delivery).resolves.toMatchObject({ kind: 'queued' })
-    await Promise.resolve()
-    expect((await records.snapshot()).records[0].pendingMessages[0]).not.toHaveProperty(
-      'deliveredAt'
-    )
+    await expect(delivery).resolves.toMatchObject({ status: 'queued' })
+    await expect
+      .poll(async () => (await records.snapshot()).messageCommands[0].receipt.status)
+      .toBe('accepted')
   })
 
   it('projects finalized child Artifact evidence from its execution-scoped owner', async () => {
@@ -2188,7 +2344,7 @@ describe('durable delegated work', () => {
       handle.frameId,
       'continue'
     )
-    expect(continuation.kind).toBe('continued')
+    expect(continuation.disposition).toBe('continued')
 
     await expect(
       work.collect(caller, [{ frameId: handle.frameId, attemptId: handle.attemptId }], {
@@ -3150,8 +3306,9 @@ describe('durable delegated work', () => {
     )
 
     expect(continued).toMatchObject({
-      kind: 'continued',
-      child: { frameId, status: 'running' }
+      disposition: 'continued',
+      target_frame_id: frameId,
+      continuation_attempt_id: expect.any(String)
     })
     await expect.poll(() => execution.controls()).toHaveLength(2)
     expect(execution.controls()[1].input.runtimeSegmentId).toBe(
@@ -3303,9 +3460,9 @@ describe('durable delegated work', () => {
         'Do not overlap'
       )
     ).resolves.toMatchObject({
-      kind: 'queued',
-      targetFrameId: dispatched.children[0].frameId,
-      attemptId: dispatched.children[0].attemptId
+      status: 'queued',
+      target_frame_id: dispatched.children[0].frameId,
+      target_attempt_id: dispatched.children[0].attemptId
     })
     expect((await records.snapshot()).records[0].attempts).toHaveLength(1)
     expect((await records.snapshot()).messages).toHaveLength(1)

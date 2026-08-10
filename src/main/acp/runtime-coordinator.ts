@@ -27,6 +27,11 @@ import type { ApprovedSwitchReadBack, ClaudeCodeReplayInput } from '../agents/cl
 import type { AgentUserChoiceRequest, AgentUserChoiceResult } from '../../shared/elicitation'
 import type { AgentModelChangeTarget } from '../agent-framework'
 import type { RootDelegatedWorkControl } from '../delegated-work/production-composition'
+import {
+  DelegateMessageParkedError,
+  DelegateMessagePreAcceptanceError,
+  type DelegateMessageAcceptanceEvidence
+} from '../delegated-work/execution-port'
 import type { ShutdownStepOutcome } from '../lifecycle-shutdown'
 
 const MAX_EVENTS = 500
@@ -128,6 +133,7 @@ class AcpRuntimeCoordinator {
   private readonly activePromptRequests = new Map<string, ActivePromptRequest>()
   private readonly activePromptCounts = new Map<string, number>()
   private readonly interactionReleaseWaiters = new Map<string, Set<() => void>>()
+  private readonly rootAdmissionTails = new Map<string, Promise<void>>()
   private promptAdmissionGuard?: (sessionId: string) => Promise<void>
   private promptAdmissionClosedForQuit = false
   private readonly pendingSessionAdoptions = new Map<string, AcpRuntime>()
@@ -486,6 +492,7 @@ class AcpRuntimeCoordinator {
     this.sessionConnectionStatuses.set(response.sessionId, runtime.getSnapshot().status)
     this.lastRuntime = runtime
     if (transfersOwnership) this.callbacks.onStateChanged?.(this.getSnapshot())
+    await this.delegatedWork?.wakeMessages?.(response.sessionId)
     return response
   }
 
@@ -627,25 +634,59 @@ class AcpRuntimeCoordinator {
     acceptance?: PromptAcceptance
   ): ReturnType<AcpRuntime['sendPrompt']> {
     if (this.promptAdmissionClosedForQuit) return this.rejectPromptForQuit()
-    if (!this.promptAdmissionGuard) return this.dispatchPrompt(request, acceptance, 'sendPrompt')
-    return this.promptAdmissionGuard(request.sessionId).then(() =>
-      this.dispatchPrompt(request, acceptance, 'sendPrompt')
-    )
+    return this.linearizeRootAdmission(request.sessionId, async () => {
+      await this.promptAdmissionGuard?.(request.sessionId)
+      return this.dispatchPrompt(request, acceptance, 'sendPrompt').finally(() =>
+        this.delegatedWork?.wakeMessages?.(request.sessionId)
+      )
+    })
   }
 
   sendAppContinuation(request: AcpPromptRequest): ReturnType<AcpRuntime['sendAppContinuation']> {
-    return this.dispatchPrompt(request, undefined, 'sendAppContinuation')
+    return this.linearizeRootAdmission(request.sessionId, () =>
+      this.dispatchPrompt(request, undefined, 'sendAppContinuation')
+    )
   }
 
-  // Starts an app-owned continuation and resolves only once the provider produces its first update.
-  // A rejection before that point remains a handoff-start failure owned by CompletionGateCoordinator.
+  private linearizeRootAdmission<Result>(
+    sessionId: string,
+    operation: () => Promise<Result>
+  ): Promise<Result> {
+    const previous = this.rootAdmissionTails.get(sessionId) ?? Promise.resolve()
+    const result = previous.catch(() => undefined).then(operation)
+    const tail = result.then(
+      () => undefined,
+      () => undefined
+    )
+    this.rootAdmissionTails.set(sessionId, tail)
+    void tail
+      .finally(() => {
+        if (this.rootAdmissionTails.get(sessionId) === tail) {
+          this.rootAdmissionTails.delete(sessionId)
+        }
+      })
+      .catch(() => undefined)
+    return result
+  }
+
+  // Starts an app-owned continuation and reports the strongest acceptance evidence available.
+  // Validation rejection is proven pre-accept; a provider-call rejection remains conservatively unknown.
   startContinuation(request: AcpPromptRequest): Promise<void> {
-    let resolve!: () => void
+    return this.startContinuationWhen(request, async () => undefined).then(() => undefined)
+  }
+
+  startContinuationWhen(
+    request: AcpPromptRequest,
+    validate: () => Promise<void>
+  ): Promise<DelegateMessageAcceptanceEvidence> {
+    let resolve!: (evidence: DelegateMessageAcceptanceEvidence) => void
     let reject!: (error: unknown) => void
-    const accepted = new Promise<void>((promiseResolve, promiseReject) => {
-      resolve = promiseResolve
-      reject = promiseReject
-    })
+    const accepted = new Promise<DelegateMessageAcceptanceEvidence>(
+      (promiseResolve, promiseReject) => {
+        resolve = promiseResolve
+        reject = promiseReject
+      }
+    )
     const acceptance: PromptAcceptance = {
       resolve: () => undefined,
       reject: () => undefined,
@@ -654,7 +695,7 @@ class AcpRuntimeCoordinator {
     acceptance.resolve = () => {
       if (acceptance.settled) return
       acceptance.settled = true
-      resolve()
+      resolve('provider_prompt_accepted')
     }
     acceptance.reject = (error) => {
       if (acceptance.settled) return
@@ -662,9 +703,22 @@ class AcpRuntimeCoordinator {
       reject(error)
     }
 
-    void this.dispatchPrompt(request, acceptance, 'sendAppContinuation').catch((error) =>
-      acceptance.reject(error)
-    )
+    void this.linearizeRootAdmission(request.sessionId, async () => {
+      try {
+        await validate()
+      } catch (error) {
+        if (error instanceof DelegateMessageParkedError) throw error
+        throw new DelegateMessagePreAcceptanceError(
+          error instanceof Error ? error.message : String(error),
+          error
+        )
+      }
+      await this.dispatchPrompt(request, acceptance, 'sendAppContinuation')
+      if (!acceptance.settled) {
+        acceptance.settled = true
+        resolve('provider_prompt_completed')
+      }
+    }).catch((error) => acceptance.reject(error))
     return accepted
   }
 

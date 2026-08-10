@@ -369,6 +369,36 @@ describe('session persistence IPC handlers', () => {
     expect(repository.loadAll).not.toHaveBeenCalled()
   })
 
+  it('wakes Session-owned work only after the durable save boundary completes', async () => {
+    const session = createSession()
+    const order: string[] = []
+    const repository: SessionPersistenceBackend = {
+      loadAll: vi.fn(),
+      saveSession: vi.fn(),
+      deleteSession: vi.fn(),
+      saveManifest: vi.fn()
+    }
+    const injected: SessionPersistenceHandlers = {
+      loadAll: vi.fn(),
+      saveSession: vi.fn(async () => {
+        order.push('saved')
+        return { created: false, session }
+      }),
+      updateArchive: vi.fn(),
+      deleteSession: vi.fn(),
+      saveManifest: vi.fn()
+    }
+    const wake = vi.fn(async () => {
+      order.push('woken')
+    })
+    registerSessionPersistenceIpcHandlers(repository, createMockReviewRepository(), injected, wake)
+
+    await ipcHandlers.get('sessions:save-session')?.({ sender: { id: 1 } }, session)
+
+    await vi.waitFor(() => expect(order).toEqual(['saved', 'woken']))
+    expect(wake).toHaveBeenCalledWith(session)
+  })
+
   it('preserves an injected handler identity when registration fails', async () => {
     const failure = new Error('registration failed')
     const repository: SessionPersistenceBackend = {

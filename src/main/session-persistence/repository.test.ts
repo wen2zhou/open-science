@@ -78,7 +78,6 @@ describe('session persistence repository (per-session files)', () => {
                   cancellationReason: 'main_agent_stop'
                 }
               ],
-              pendingMessages: []
             }
           ]
         }
@@ -127,7 +126,6 @@ describe('session persistence repository (per-session files)', () => {
                   cancellationReason: 'main_agent_stop'
                 }
               ],
-              pendingMessages: []
             }
           ]
         }

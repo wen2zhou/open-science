@@ -10,6 +10,7 @@ import { AcpRuntimeCoordinator } from './runtime-coordinator'
 import type { AcpRuntime, AcpRuntimeCallbacks } from './runtime'
 import type { ConversationPermissionGrantStore } from './permission-broker'
 import type { AgentModelChangeTarget } from '../agent-framework'
+import { DelegateMessageParkedError } from '../delegated-work/execution-port'
 
 const createDeferred = <Value = void>(): {
   promise: Promise<Value>
@@ -45,6 +46,7 @@ const createFakeRuntime = (options: {
   permissionGrantStore?: ConversationPermissionGrantStore
   beforePromptStart?: () => Promise<void>
   beforeProviderPromptAccepted?: () => Promise<void>
+  skipProviderPromptAccepted?: boolean
   beforeReviewerSession?: () => Promise<void>
   beforeResume?: () => Promise<void>
   afterResumeAttached?: () => Promise<void>
@@ -171,7 +173,9 @@ const createFakeRuntime = (options: {
         ? options.prompt(sessionId)
         : Promise.resolve({ stopReason: 'end_turn' })
       await options.beforeProviderPromptAccepted?.()
-      options.callbacks.onProviderPromptAccepted?.(sessionId, promptAttemptId)
+      if (!options.skipProviderPromptAccepted) {
+        options.callbacks.onProviderPromptAccepted?.(sessionId, promptAttemptId)
+      }
       return await prompt
     } finally {
       options.callbacks.onPromptEnded?.(sessionId, turnToken)
@@ -325,6 +329,7 @@ describe('AcpRuntimeCoordinator', () => {
       }),
       respondToPermission: vi.fn(async () => true),
       setPermissionProfile: vi.fn(async () => undefined),
+      wakeMessages: vi.fn(async () => undefined),
       stopSession: vi.fn(async () => undefined),
       stopAll: vi.fn(async () => undefined),
       deleteSession: vi.fn(async () => undefined)
@@ -369,6 +374,9 @@ describe('AcpRuntimeCoordinator', () => {
       optionId: 'allow'
     })
     expect(created[0].respondToPermission).not.toHaveBeenCalled()
+
+    await coordinator.resumeSession({ sessionId: 'session-1', cwd: '/workspace' })
+    expect(delegated.wakeMessages).toHaveBeenCalledWith('session-1')
 
     await coordinator.setPermissionProfile({ sessionId: 'session-1', profile: 'ask' })
     expect(created[0].setPermissionProfile).toHaveBeenCalledWith({
@@ -1064,6 +1072,95 @@ describe('AcpRuntimeCoordinator', () => {
     expect(created.sendAppContinuation).not.toHaveBeenCalled()
     expect(vi.mocked(created.runtime.buildReviewerSession)).not.toHaveBeenCalled()
     expect(created.compactSession).not.toHaveBeenCalled()
+  })
+
+  it('linearizes real user prompts and upward continuations through one root admission lock', async () => {
+    const prompts = [
+      createDeferred<unknown>(),
+      createDeferred<unknown>(),
+      createDeferred<unknown>()
+    ]
+    let promptIndex = 0
+    let created!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      created = createFakeRuntime({
+        frameworkId: 'codex',
+        sessionIds: ['session-1'],
+        callbacks,
+        prompt: () => prompts[promptIndex++].promise
+      })
+      return created.runtime
+    })
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    const firstUser = coordinator.sendPrompt({ sessionId: session.sessionId, text: 'first user' })
+    await vi.waitFor(() => expect(created.sendPrompt).toHaveBeenCalledOnce())
+
+    const validate = vi.fn(async () => undefined)
+    const upward = coordinator.startContinuationWhen(
+      { sessionId: session.sessionId, text: 'child message' },
+      validate
+    )
+    const laterUser = coordinator.sendPrompt({ sessionId: session.sessionId, text: 'later user' })
+    await Promise.resolve()
+    expect(validate).not.toHaveBeenCalled()
+    expect(created.sendAppContinuation).not.toHaveBeenCalled()
+
+    prompts[0].resolve({ stopReason: 'end_turn' })
+    await firstUser
+    await upward
+    expect(validate).toHaveBeenCalledOnce()
+    expect(created.sendAppContinuation).toHaveBeenCalledOnce()
+    expect(created.sendPrompt).toHaveBeenCalledOnce()
+
+    prompts[1].resolve({ stopReason: 'end_turn' })
+    await vi.waitFor(() => expect(created.sendPrompt).toHaveBeenCalledTimes(2))
+    prompts[2].resolve({ stopReason: 'end_turn' })
+    await laterUser
+  })
+
+  it('revalidates a parked upward branch inside the root lock before any provider call', async () => {
+    let created!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      created = createFakeRuntime({
+        frameworkId: 'opencode',
+        sessionIds: ['session-1'],
+        callbacks
+      })
+      return created.runtime
+    })
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+
+    await expect(
+      coordinator.startContinuationWhen(
+        { sessionId: session.sessionId, text: 'branch A payload' },
+        async () => {
+          throw new DelegateMessageParkedError('branch A is inactive')
+        }
+      )
+    ).rejects.toMatchObject({
+      name: 'DelegateMessageParkedError',
+      message: 'branch A is inactive'
+    })
+    expect(created.sendAppContinuation).not.toHaveBeenCalled()
+  })
+
+  it('returns completion evidence when an upward continuation completes without an acceptance callback', async () => {
+    const coordinator = new AcpRuntimeCoordinator((callbacks) =>
+      createFakeRuntime({
+        frameworkId: 'codex',
+        sessionIds: ['session-1'],
+        callbacks,
+        skipProviderPromptAccepted: true
+      }).runtime
+    )
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+
+    await expect(
+      coordinator.startContinuationWhen(
+        { sessionId: session.sessionId, text: 'completion fallback' },
+        async () => undefined
+      )
+    ).resolves.toBe('provider_prompt_completed')
   })
 
   it('rejects a user prompt still waiting on admission when quit begins', async () => {

@@ -180,6 +180,7 @@ import type { WindowSettingsCapabilities } from './settings/service-capabilities
 import { createProductionDelegatedWorkComposition } from './delegated-work/production-composition'
 import { createProductionDelegatedFrameworkRuntime } from './delegated-work/production-framework-runtime'
 import { finalizeDelegatedArtifactPublication } from './delegated-work/delegated-artifact-publication'
+import { DelegateMessageParkedError } from './delegated-work/execution-port'
 import { createSettingsWorkflows } from './settings/workflows'
 import { showSettingsSaveDialog } from './settings/save-dialog'
 import { ProfileService } from './specialist/service'
@@ -1270,22 +1271,71 @@ const createApplicationModules = async (
         ) {
           throw new Error('Parent message durable root provenance is unavailable.')
         }
-        await runtime.startContinuation({
-          sessionId: delivery.session.sessionId,
-          text:
-            `[Delegated ${delivery.kind} from Frame ${delivery.sourceFrameId}, ` +
-            `Attempt ${delivery.sourceAttemptId}]\n\n${delivery.text}`,
-          suppressUserMessage: true,
-          provenanceContext: {
-            promptMessageId: delivery.originMessageId,
-            rootFrameId: graph.rootFrameId,
-            agentFrameId: graph.rootFrameId,
-            messageBranchId: rootBranch.id,
-            messageBranchAncestry: [rootBranch.id],
-            messageAncestry: [delivery.originMessageId],
-            runtimeSegmentId: `delegated-message-${delivery.messageId}`
+        return runtime.startContinuationWhen(
+          {
+            sessionId: delivery.session.sessionId,
+            text:
+              `[Delegated ${delivery.kind} from Frame ${delivery.sourceFrameId}, ` +
+              `Attempt ${delivery.sourceAttemptId}]\n\n${delivery.text}`,
+            suppressUserMessage: true,
+            provenanceContext: {
+              promptMessageId: delivery.rootPromptMessageId,
+              rootFrameId: graph.rootFrameId,
+              agentFrameId: graph.rootFrameId,
+              messageBranchId: delivery.rootBranchId,
+              messageBranchAncestry: [delivery.rootBranchId],
+              messageAncestry: [delivery.originMessageId],
+              runtimeSegmentId: `delegated-message-${delivery.messageId}`
+            }
+          },
+          async () => {
+            const latest = await sessionRepository.loadSession(
+              delivery.session.projectId,
+              delivery.session.sessionId
+            )
+            const latestGraph = latest?.conversationGraph
+            const latestRoot = latestGraph?.frames.find(({ id }) => id === delivery.targetFrameId)
+            const latestBranch = latestGraph?.branches.find(
+              ({ id }) => id === latestRoot?.activeBranchId
+            )
+            if (
+              !latest ||
+              latestBranch?.id !== delivery.rootBranchId ||
+              `${latestBranch.id}:${latestBranch.createdAt}` !== delivery.rootBranchRevision
+            ) {
+              throw new DelegateMessageParkedError(
+                'Parent message root Branch changed before dispatch.'
+              )
+            }
+            const started = await delivery.startDispatch()
+            if (started !== 'started') {
+              throw new DelegateMessageParkedError(
+                'Parent message dispatch fence was not acquired.'
+              )
+            }
+            if (!runtime.hasLiveSession(latest.projectId, latest.id)) {
+              await runtime.resumeSession({
+                sessionId: latest.id,
+                cwd: latest.cwd,
+                projectName: latest.projectId,
+                ...(latest.permissionProfile
+                  ? { permissionProfile: latest.permissionProfile }
+                  : {}),
+                ...(latest.agentFrameworkId
+                  ? { previousFrameworkId: latest.agentFrameworkId }
+                  : {}),
+                ...(latest.agentBackendId ? { previousBackendId: latest.agentBackendId } : {}),
+                ...(latest.specialistId ? { specialistId: latest.specialistId } : {}),
+                ...(latest.providerSessionId
+                  ? { providerSessionId: latest.providerSessionId }
+                  : {}),
+                ...(latest.providerContinuityToken
+                  ? { providerContinuityToken: latest.providerContinuityToken }
+                  : {})
+              })
+            }
           }
-        })
+        )
       }
     }
   })
@@ -2128,7 +2178,17 @@ const createApplicationModules = async (
     registerSessionPersistenceIpcHandlers(
       sessionPersistenceBackend,
       reviewRepository,
-      sessionPersistenceHandlers
+      sessionPersistenceHandlers,
+      async (session) => {
+        try {
+          await delegatedWork.root.wakeMessages?.(session.id)
+        } catch (error) {
+          createLogger('delegated-work:messages').warn(
+            'message wake after Session activation failed',
+            diagnosticErrorFields(error)
+          )
+        }
+      }
     )
   )
   const conversationExportService = createConversationExportService({

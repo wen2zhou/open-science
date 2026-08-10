@@ -4,10 +4,12 @@ import type { AcpAgentRuntimeUpdate } from '../../shared/acp'
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import {
   DelegateExecutionError,
+  DelegateMessagePreAcceptanceError,
   type DelegateCapacityReservation,
   type DelegateExecutionBackendClaim,
   type DelegateExecution,
-  type DelegateExecutionInput
+  type DelegateExecutionInput,
+  type DelegateMessageAcceptanceEvidence
 } from './execution-port'
 import { RootDelegatePermissionOwner } from './delegated-work-permissions'
 import { DelegatedWorkProjectionOwner } from './delegated-work-projection'
@@ -36,6 +38,7 @@ import type {
   DurableDelegateObservation,
   DurableDelegateOutcome,
   DurableDelegateResult,
+  DurableMessageCommand,
   DurablePendingMessage
 } from './delegated-work-record-types'
 import type { AuthenticatedDelegateCaller } from './authenticated-delegate-caller'
@@ -46,6 +49,7 @@ import type {
   DurableDelegateRequest,
   DurableDelegatedWork,
   DurableSendMessageOutcome,
+  DurableSendMessageOptions,
   ParentMessageDelivery,
   ReadOnlyAgentFrameDetail,
   RecoveryOutcome,
@@ -58,6 +62,7 @@ import type {
   StopOutcome
 } from './durable-delegated-work-contract'
 import { submitStructuredOutput } from './structured-output-submission'
+import { ReliableMessageDeliveryOwner } from './message-delivery-owner'
 
 const createDurableDelegatedWork = (
   options: CreateDurableDelegatedWorkOptions
@@ -65,7 +70,6 @@ const createDurableDelegatedWork = (
   const now = options.now ?? Date.now
   const createId = options.createId ?? ((kind: string) => `${kind}-${randomUUID()}`)
   const invocationOutcomes = new Map<string, Promise<DurableDelegateOutcome>>()
-  const messageOutcomes = new Map<string, Promise<DurableSendMessageOutcome>>()
   const stoppingSessions = new Set<string>()
   const cancelledTurns = new Set<string>()
   const withAdmissionLock = createAdmissionGate()
@@ -105,7 +109,7 @@ const createDurableDelegatedWork = (
     {
       attemptId: string
       completion: Promise<void>
-      deliver(message: DurablePendingMessage): Promise<void>
+      deliver(message: DurablePendingMessage): Promise<DelegateMessageAcceptanceEvidence>
       setPermissionProfile(profile: PermissionProfileId): Promise<void>
       cancel(reason: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'): Promise<void>
       executionStarted(): boolean
@@ -127,7 +131,11 @@ const createDurableDelegatedWork = (
     task = child.task,
     continuation = false,
     executionBackendClaim?: DelegateExecutionBackendClaim
-  ): Readonly<{ completion: Promise<void>; established: Promise<void> }> => {
+  ): Readonly<{
+    completion: Promise<void>
+    established: Promise<void>
+    accepted: Promise<DelegateMessageAcceptanceEvidence>
+  }> => {
     const attempt = currentAttempt(child)
     const runtimeSegmentId = createId('runtime')
     let handle: ReturnType<DelegateExecution['run']> | undefined
@@ -273,7 +281,14 @@ const createDurableDelegatedWork = (
           })
         }
       } catch (error) {
-        rejectHandle(error)
+        rejectHandle(
+          handle
+            ? error
+            : new DelegateMessagePreAcceptanceError(
+                error instanceof Error ? error.message : String(error),
+                error
+              )
+        )
         try {
           const latest = await snapshotChild(child.frameId)
           if (latest && currentAttempt(latest).status === 'running') {
@@ -314,7 +329,7 @@ const createDurableDelegatedWork = (
           runtimeSegmentId: createId('runtime')
         }
         const lifecycle = turnLifecycle.create(pendingContext, false)
-        await (
+        return (
           await deliveryHandle
         ).sendMessage(message.text, {
           ...lifecycle,
@@ -343,8 +358,117 @@ const createDurableDelegatedWork = (
       reservation,
       slotId
     })
-    return { completion, established }
+    const accepted = deliveryHandle.then((candidate) => candidate.accepted)
+    void accepted.catch(() => undefined)
+    return { completion, established, accepted }
   }
+
+  const prepareMessageContinuation = async (
+    caller: AuthenticatedDelegateCaller,
+    child: DurableChild,
+    draft: DurableMessageCommand
+  ): Promise<
+    Readonly<{
+      start(): Readonly<{ accepted: Promise<DelegateMessageAcceptanceEvidence> }>
+      abort(): Promise<void>
+    }>
+  > => {
+    const previous = currentAttempt(child)
+    const priorExecution = running.get(child.frameId)
+    if (priorExecution?.attemptId === previous.id) await priorExecution.completion
+    try {
+      await options.assertAvailable?.(caller)
+    } catch (error) {
+      if (error instanceof DurableDelegatedWorkError) throw error
+      throw new DurableDelegatedWorkError(
+        'unsupported_framework',
+        error instanceof Error ? error.message : String(error)
+      )
+    }
+    const resolvedAgent =
+      previous.resolvedAgent.kind === 'main'
+        ? ({ kind: 'main' } as const)
+        : await admissionPolicy.resolveAgent(previous.resolvedAgent.profileId)
+    const executionModel = child.attempts[0]?.executionModel
+    if (!executionModel) {
+      throw new DurableDelegatedWorkError(
+        'admission_rejection',
+        'historical delegated work has no stable Subagent model snapshot'
+      )
+    }
+    let reservation: DelegateCapacityReservation
+    try {
+      reservation = await options.execution.reserve(1)
+    } catch (error) {
+      if (error instanceof DelegateExecutionError) {
+        throw new DurableDelegatedWorkError(error.code, error.message)
+      }
+      throw new DurableDelegatedWorkError(
+        'capacity',
+        error instanceof Error ? error.message : String(error)
+      )
+    }
+    const attemptId = createId('attempt')
+    const command: DurableMessageCommand = { ...draft, continuationAttemptId: attemptId }
+    try {
+      await assertTurnOpen(caller.session, caller.originMessageId)
+      await options.records.continueChild({
+        frameId: child.frameId,
+        previousAttemptId: previous.id,
+        attemptId,
+        userMessageId: createId('message'),
+        message: command.text.trim(),
+        resolvedAgent,
+        executionModel,
+        startedAt: now(),
+        callerSource: {
+          rootMessageId: caller.originMessageId,
+          toolInvocationId: caller.toolInvocationId
+        },
+        initiatingTurnMessageId: caller.originMessageId,
+        messageCommand: command
+      })
+    } catch (error) {
+      await reservation.releaseAll()
+      if (
+        error &&
+        typeof error === 'object' &&
+        'code' in error &&
+        (error.code === 'revision-conflict' || error.code === 'attempt-conflict')
+      ) {
+        throw new DurableDelegatedWorkError(
+          'conflict',
+          `child ${child.frameId} changed while continuation was admitted`
+        )
+      }
+      throw error
+    }
+    const continued = (await snapshotChild(child.frameId))!
+    return {
+      start: () =>
+        launch(
+          continued,
+          caller.session,
+          reservation,
+          reservation.slotIds[0],
+          command.text.trim(),
+          true
+        ),
+      abort: () => reservation.releaseAll()
+    }
+  }
+
+  const messageDeliveryOwner = new ReliableMessageDeliveryOwner({
+    records: options.records,
+    now,
+    admission: withAdmissionLock,
+    deliverToParent: options.deliverToParent,
+    runningDelivery(frameId, attemptId) {
+      const active = running.get(frameId)
+      return active?.attemptId === attemptId ? active : undefined
+    },
+    prepareContinuation: prepareMessageContinuation
+  })
 
   const stopChild = async (
     child: DurableChild,
@@ -602,8 +726,7 @@ const createDurableDelegatedWork = (
           runtimeSegmentIds: [],
           startedAt: admission.startedAt
         }
-      ],
-      pendingMessages: []
+      ]
     }))
     const claims = children.map(() => executionModelAdmission.backendLease?.claim())
     await executionModelAdmission.backendLease?.release().catch(() => undefined)
@@ -684,271 +807,14 @@ const createDurableDelegatedWork = (
     async submitOutput(caller, submittedValue) {
       return submitStructuredOutput(options.records, caller, submittedValue, now())
     },
-    sendMessage(
-      caller: AuthenticatedDelegateCaller,
-      targetFrameId: string | 'parent',
-      message: string,
-      kind: 'info' | 'question' = 'info'
-    ): Promise<DurableSendMessageOutcome> {
-      const invocationKey = [
-        caller.session.projectId,
-        caller.session.sessionId,
-        caller.frameId,
-        caller.toolInvocationId,
-        'send-message'
-      ].join('\u0000')
-      const existing = messageOutcomes.get(invocationKey)
-      if (existing) return existing
-      const outcome = (async () => {
-        if (typeof message !== 'string' || !message.trim()) {
-          throw new DurableDelegatedWorkError('admission_rejection', 'message cannot be empty')
-        }
-        if (kind !== 'info' && kind !== 'question') {
-          throw new DurableDelegatedWorkError(
-            'admission_rejection',
-            'message kind must be info or question'
-          )
-        }
-        if (targetFrameId === 'parent') {
-          const snapshot = await options.records.snapshot()
-          const source = snapshot.records.find(
-            (candidate) => candidate.frameId === caller.frameId
-          ) as DurableChild | undefined
-          const sourceAttempt = source && currentAttempt(source)
-          if (
-            caller.role !== 'delegate' ||
-            !sameSession(snapshot.session, caller.session) ||
-            !source ||
-            source.parentFrameId !== snapshot.rootFrameId ||
-            sourceAttempt?.status !== 'running' ||
-            sourceAttempt.id !== caller.attemptId ||
-            !caller.toolInvocationId.trim()
-          ) {
-            throw new DurableDelegatedWorkError(
-              'authorization',
-              'delegate message is outside its authenticated current parent relationship'
-            )
-          }
-          const pendingMessage: DurablePendingMessage = {
-            id: createId('message'),
-            sourceFrameId: source.frameId,
-            sourceAttemptId: sourceAttempt.id,
-            targetFrameId: source.parentFrameId,
-            text: message.trim(),
-            kind,
-            callerSource: {
-              rootMessageId: caller.originMessageId,
-              toolInvocationId: caller.toolInvocationId
-            },
-            createdAt: now()
-          }
-          await options.records.appendPendingMessage(
-            source.frameId,
-            sourceAttempt.id,
-            pendingMessage
-          )
-          if (!options.deliverToParent) {
-            throw new DurableDelegatedWorkError(
-              'execution_failure',
-              'parent app-owned message delivery is unavailable'
-            )
-          }
-          try {
-            await options.deliverToParent({
-              messageId: pendingMessage.id,
-              session: caller.session,
-              sourceFrameId: source.frameId,
-              sourceAttemptId: sourceAttempt.id,
-              targetFrameId: source.parentFrameId,
-              originMessageId: caller.originMessageId,
-              text: pendingMessage.text,
-              kind: pendingMessage.kind
-            })
-            await options.records.markMessageDelivered(
-              source.frameId,
-              sourceAttempt.id,
-              pendingMessage.id,
-              now()
-            )
-          } catch (error) {
-            if (error instanceof DurableDelegatedWorkError) throw error
-            throw new DurableDelegatedWorkError(
-              'execution_failure',
-              `parent message delivery failed: ${error instanceof Error ? error.message : String(error)}`
-            )
-          }
-          return {
-            kind: 'queued' as const,
-            messageId: pendingMessage.id,
-            targetFrameId: source.parentFrameId,
-            attemptId: sourceAttempt.id
-          }
-        }
-        if (caller.role !== 'main') {
-          throw new DurableDelegatedWorkError(
-            'authorization',
-            'only the Main Agent can continue delegated work'
-          )
-        }
-        const snapshot = await options.records.snapshot()
-        if (
-          !sameSession(snapshot.session, caller.session) ||
-          caller.frameId !== snapshot.rootFrameId ||
-          !snapshot.originMessageIds.includes(caller.originMessageId) ||
-          !caller.toolInvocationId.trim()
-        ) {
-          throw new DurableDelegatedWorkError(
-            'authorization',
-            'continuation caller is outside the active root conversation'
-          )
-        }
-        let child = snapshot.records.find(
-          (candidate) =>
-            candidate.frameId === targetFrameId && candidate.parentFrameId === caller.frameId
-        ) as DurableChild | undefined
-        if (!child) {
-          throw new DurableDelegatedWorkError(
-            'authorization',
-            `caller cannot access child ${targetFrameId}`
-          )
-        }
-        let previous = currentAttempt(child)
-        if (previous.status === 'running') {
-          const pendingMessage: DurablePendingMessage = {
-            id: createId('message'),
-            sourceFrameId: caller.frameId,
-            targetFrameId: child.frameId,
-            targetAttemptId: previous.id,
-            text: message.trim(),
-            kind,
-            callerSource: {
-              rootMessageId: caller.originMessageId,
-              toolInvocationId: caller.toolInvocationId
-            },
-            createdAt: now()
-          }
-          try {
-            await options.records.appendPendingMessage(child.frameId, previous.id, pendingMessage)
-          } catch (error) {
-            const latest = await snapshotChild(child.frameId)
-            if (latest && currentAttempt(latest).status !== 'running') {
-              child = latest
-              previous = currentAttempt(latest)
-            } else {
-              throw error
-            }
-          }
-          if (previous.status === 'running') {
-            const active = running.get(child.frameId)
-            if (!active || active.attemptId !== previous.id) {
-              throw new DurableDelegatedWorkError(
-                'conflict',
-                'the target Attempt is no longer available for delivery'
-              )
-            }
-            // The Host result means durably queued. Provider delivery can only begin after the
-            // child's current ACP turn yields, so keep that boundary in the background and stamp the
-            // record only when RunningDelegateExecution confirms provider acceptance.
-            const deliveryFrameId = child.frameId
-            const deliveryAttemptId = previous.id
-            void active
-              .deliver(pendingMessage)
-              .then(() =>
-                options.records.markMessageDelivered(
-                  deliveryFrameId,
-                  deliveryAttemptId,
-                  pendingMessage.id,
-                  now()
-                )
-              )
-              .catch(() => undefined)
-            return {
-              kind: 'queued' as const,
-              messageId: pendingMessage.id,
-              targetFrameId: child.frameId,
-              attemptId: previous.id
-            }
-          }
-        }
-        const priorExecution = running.get(targetFrameId)
-        if (priorExecution?.attemptId === previous.id) await priorExecution.completion
-        try {
-          await options.assertAvailable?.(caller)
-        } catch (error) {
-          if (error instanceof DurableDelegatedWorkError) throw error
-          throw new DurableDelegatedWorkError(
-            'unsupported_framework',
-            error instanceof Error ? error.message : String(error)
-          )
-        }
-        const resolvedAgent =
-          previous.resolvedAgent.kind === 'main'
-            ? ({ kind: 'main' } as const)
-            : await admissionPolicy.resolveAgent(previous.resolvedAgent.profileId)
-        const executionModel = child.attempts[0]?.executionModel
-        if (!executionModel) {
-          throw new DurableDelegatedWorkError(
-            'admission_rejection',
-            'historical delegated work has no stable Subagent model snapshot'
-          )
-        }
-        let reservation: DelegateCapacityReservation
-        try {
-          reservation = await options.execution.reserve(1)
-        } catch (error) {
-          if (error instanceof DelegateExecutionError) {
-            throw new DurableDelegatedWorkError(error.code, error.message)
-          }
-          throw new DurableDelegatedWorkError(
-            'capacity',
-            error instanceof Error ? error.message : String(error)
-          )
-        }
-        const attemptId = createId('attempt')
-        try {
-          await withAdmissionLock(async () => {
-            await assertTurnOpen(caller.session, caller.originMessageId)
-            await options.records.continueChild({
-              frameId: targetFrameId,
-              previousAttemptId: previous.id,
-              attemptId,
-              userMessageId: createId('message'),
-              message: message.trim(),
-              resolvedAgent,
-              executionModel,
-              startedAt: now(),
-              callerSource: {
-                rootMessageId: caller.originMessageId,
-                toolInvocationId: caller.toolInvocationId
-              },
-              initiatingTurnMessageId: caller.originMessageId
-            })
-          })
-        } catch (error) {
-          await reservation.releaseAll()
-          if (
-            error &&
-            typeof error === 'object' &&
-            'code' in error &&
-            (error.code === 'revision-conflict' || error.code === 'attempt-conflict')
-          ) {
-            throw new DurableDelegatedWorkError(
-              'conflict',
-              `child ${targetFrameId} changed while continuation was admitted`
-            )
-          }
-          throw error
-        }
-        const continued = (await snapshotChild(targetFrameId))!
-        launch(continued, caller.session, reservation, reservation.slotIds[0], message.trim(), true)
-        return {
-          kind: 'continued' as const,
-          child: { frameId: targetFrameId, attemptId, status: 'running' as const }
-        }
-      })()
-      messageOutcomes.set(invocationKey, outcome)
-      void outcome.catch(() => messageOutcomes.delete(invocationKey))
-      return outcome
+    sendMessage(caller, targetFrameId, message, sendOptions) {
+      return messageDeliveryOwner.sendMessage(caller, targetFrameId, message, sendOptions)
+    },
+    messageReceipt(caller, selector, receiptOptions) {
+      return messageDeliveryOwner.messageReceipt(caller, selector, receiptOptions)
+    },
+    resolveMessage(caller, messageId, resolveOptions) {
+      return messageDeliveryOwner.resolveMessage(caller, messageId, resolveOptions)
     },
     async sessionSummary(session: SessionKey): Promise<SessionSubagentSummary> {
       const snapshot = await options.records.snapshot()
@@ -1066,7 +932,12 @@ const createDurableDelegatedWork = (
         const result = await projectionOwner.projectResult(child.frameId)
         if (result) interrupted.push(result)
       }
+      const recovered = await options.records.snapshot()
+      await messageDeliveryOwner.recover(recovered)
       return { interrupted }
+    },
+    async wakeMessages() {
+      messageDeliveryOwner.wake(await options.records.snapshot())
     },
     async deleteSession(session) {
       await stopSession(session)
@@ -1097,6 +968,7 @@ export type {
   DurableCollectSelector,
   DurableDelegateObservation,
   DurableSendMessageOutcome,
+  DurableSendMessageOptions,
   DurableDelegatedWork,
   ParentMessageDelivery,
   ReadOnlyAgentFrameDetail,
@@ -1112,6 +984,7 @@ export type { AuthenticatedDelegateCaller } from './authenticated-delegate-calle
 export type {
   DelegatedWorkDurableRecords,
   DurableMessage,
+  DurableMessageCommand,
   DurablePendingMessage,
   DurableSnapshot
 } from './delegated-work-record-types'

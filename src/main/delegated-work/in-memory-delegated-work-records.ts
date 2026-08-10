@@ -3,7 +3,7 @@ import { currentAttempt, sameSession } from './delegated-work-record-invariants'
 import type {
   DelegatedWorkDurableRecords,
   DurableMessage,
-  DurablePendingMessage,
+  DurableMessageCommand,
   DurableSnapshot
 } from './durable-delegated-work'
 import { canonicalStructuredOutputEqual } from './structured-output'
@@ -21,15 +21,21 @@ const createInMemoryDelegatedWorkRecords = (input: {
   const state: {
     session: SessionKey
     rootFrameId: string
+    rootBranchId: string
+    rootBranchRevision: string
     originMessageIds: string[]
     records: DurableChild[]
     messages: DurableMessage[]
+    messageCommands: DurableMessageCommand[]
   } = {
     session: { ...input.session },
     rootFrameId: input.rootFrameId,
+    rootBranchId: 'root-branch',
+    rootBranchRevision: 'root-branch:0',
     originMessageIds: [...(input.originMessageIds ?? [input.originMessageId])],
     records: [],
-    messages: []
+    messages: [],
+    messageCommands: []
   }
   const findRunning = (frameId: string, attemptId: string): DurableAttempt => {
     const child = state.records.find((candidate) => candidate.frameId === frameId)
@@ -97,7 +103,6 @@ const createInMemoryDelegatedWorkRecords = (input: {
               startedAt: child.startedAt
             }
           ],
-          pendingMessages: []
         }))
       )
       state.messages.push(
@@ -153,6 +158,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
         content: input.message,
         createdAt: input.startedAt
       })
+      state.messageCommands.push(structuredClone(input.messageCommand))
     },
     async startRuntime(frameId, attemptId, runtimeSegmentId) {
       findRunning(frameId, attemptId).runtimeSegmentIds.push(runtimeSegmentId)
@@ -195,37 +201,6 @@ const createInMemoryDelegatedWorkRecords = (input: {
         attempt.error = { ...terminal.error }
       }
     },
-    async appendPendingMessage(frameId, attemptId, message: DurablePendingMessage) {
-      const child = state.records.find((candidate) => candidate.frameId === frameId)
-      const attempt = child && currentAttempt(child)
-      if (!child || !attempt || attempt.id !== attemptId || attempt.status !== 'running') {
-        throw new DurableDelegatedWorkError(
-          'conflict',
-          'Pending Message Attempt is not current and running.'
-        )
-      }
-      if (
-        state.records.some((record) => record.pendingMessages.some(({ id }) => id === message.id))
-      ) {
-        throw new Error(`Pending Message already exists: ${message.id}`)
-      }
-      child.pendingMessages.push(structuredClone(message))
-    },
-    async markMessageDelivered(frameId, attemptId, messageId, deliveredAt) {
-      const child = state.records.find((candidate) => candidate.frameId === frameId)
-      const attempt = child && currentAttempt(child)
-      if (!child || !attempt || attempt.id !== attemptId || attempt.status !== 'running') {
-        throw new DurableDelegatedWorkError(
-          'conflict',
-          'Pending Message Attempt is not current and running.'
-        )
-      }
-      const index = child.pendingMessages.findIndex(({ id }) => id === messageId)
-      const message = child.pendingMessages[index]
-      if (!message) throw new Error(`Pending Message not found: ${messageId}`)
-      if (message.deliveredAt !== undefined) return
-      child.pendingMessages[index] = { ...message, deliveredAt }
-    },
     async startPendingTurn(
       frameId,
       attemptId,
@@ -235,16 +210,19 @@ const createInMemoryDelegatedWorkRecords = (input: {
     ) {
       findRunning(frameId, attemptId).runtimeSegmentIds.push(runtimeSegmentId)
       const child = state.records.find((candidate) => candidate.frameId === frameId)!
-      const pending = child.pendingMessages.find(({ id }) => id === pendingMessageId)
-      if (!pending?.callerSource) {
-        throw new Error('Pending child Turn has no authenticated Main caller source.')
-      }
+      const pending = state.messageCommands.find(
+        ({ messageId, targetFrameId, targetAttemptId }) =>
+          messageId === pendingMessageId &&
+          targetFrameId === frameId &&
+          targetAttemptId === attemptId
+      )
+      if (!pending) throw new Error('Pending child Turn has no durable message command.')
       state.messages.push({
         id: promptMessageId,
         frameId,
         role: 'user',
         content: pending.text,
-        createdAt: pending.createdAt
+        createdAt: pending.queuedAt
       })
       return {
         rootFrameId: state.rootFrameId,
@@ -280,6 +258,79 @@ const createInMemoryDelegatedWorkRecords = (input: {
         accepted: { value: structuredClone(value), acceptedAt }
       }
       return 'accepted'
+    },
+    async admitMessage(command) {
+      const existing = state.messageCommands.find(
+        (candidate) =>
+          candidate.sourcePrincipal === command.sourcePrincipal &&
+          candidate.requestId === command.requestId
+      )
+      if (existing) {
+        if (existing.canonicalDigest !== command.canonicalDigest) {
+          throw new DurableDelegatedWorkError(
+            'conflict',
+            'message request_id was already used for a different request'
+          )
+        }
+        return 'idempotent'
+      }
+      if (state.messageCommands.some(({ messageId }) => messageId === command.messageId)) {
+        throw new Error(`Message command already exists: ${command.messageId}`)
+      }
+      state.messageCommands.push(structuredClone(command))
+      return 'admitted'
+    },
+    async markMessageDispatchStarted(
+      messageId,
+      dispatchStartedAt,
+      dispatchEpoch,
+      rootBranchId,
+      rootBranchRevision
+    ) {
+      const index = state.messageCommands.findIndex((command) => command.messageId === messageId)
+      const command = state.messageCommands[index]
+      if (!command) throw new Error(`Message command not found: ${messageId}`)
+      if (command.receipt.status !== 'queued') return 'terminal'
+      if (
+        state.rootBranchId !== rootBranchId ||
+        state.rootBranchRevision !== rootBranchRevision
+      ) return 'blocked'
+      const blocked = state.messageCommands.some(
+        (candidate) =>
+          candidate.sourceFrameId === command.sourceFrameId &&
+          candidate.targetFrameId === command.targetFrameId &&
+          candidate.laneSequence < command.laneSequence &&
+          (candidate.receipt.status === 'queued' ||
+            (candidate.receipt.status === 'uncertain' &&
+              candidate.receipt.resolution === 'pending'))
+      )
+      if (blocked) return 'blocked'
+      if (command.receipt.dispatchStartedAt !== undefined) return 'started'
+      state.messageCommands[index] = {
+        ...command,
+        receipt: { status: 'queued', dispatchStartedAt, dispatchEpoch }
+      }
+      return 'started'
+    },
+    async settleMessage(messageId, receipt) {
+      const index = state.messageCommands.findIndex((command) => command.messageId === messageId)
+      const command = state.messageCommands[index]
+      if (!command) throw new Error(`Message command not found: ${messageId}`)
+      if (command.receipt.status !== 'queued') return 'terminal'
+      state.messageCommands[index] = { ...command, receipt: structuredClone(receipt) }
+      return 'settled'
+    },
+    async acknowledgeUncertain(messageId) {
+      const index = state.messageCommands.findIndex((command) => command.messageId === messageId)
+      const command = state.messageCommands[index]
+      if (!command) throw new Error(`Message command not found: ${messageId}`)
+      if (command.receipt.status !== 'uncertain') return 'terminal'
+      if (command.receipt.resolution === 'acknowledged') return 'acknowledged'
+      state.messageCommands[index] = {
+        ...command,
+        receipt: { ...command.receipt, resolution: 'acknowledged' }
+      }
+      return 'acknowledged'
     },
     snapshot: async () => structuredClone(state)
   }

@@ -18,7 +18,7 @@ const MAX_RUNTIME_RESULTS = 40
 const MAX_ENVIRONMENT_RESULTS = 30
 
 const HOST_SDK_DISCOVERY_GUIDANCE =
-  "Host SDK discovery (use from `repl_execute`): `await host.help()` lists registered/documented topics; query an exact operation instead of guessing its arguments or results. Main/root agents must call `await host.help('delegate')` before the first delegation and follow that returned contract. Nested delegation is unsupported: Delegate agents must not call delegation or child-control methods; they may call `await host.send_message('parent', message, kind?)`, where kind is `'info'` or `'question'`."
+  "Host SDK discovery (use from `repl_execute`): `await host.help()` lists registered/documented topics; query an exact operation instead of guessing its arguments or results. Main/root agents must call `await host.help('delegate')` before the first delegation and follow that returned contract. Nested delegation is unsupported: Delegate agents may call `await host.send_message('parent', message, options?)`; use `host.message_receipt` to observe delivery."
 
 // Scoped prompt addendum that only applies when the agent is given notebook tools.
 const NOTEBOOK_SYSTEM_PROMPT_APPEND = [

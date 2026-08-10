@@ -12,11 +12,13 @@ import {
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import {
   DelegateExecutionError,
+  DelegateMessagePreAcceptanceError,
   type DelegateCapacityReservation,
   type DelegateChildTurnIdentity,
   type DelegateExecution,
   type DelegateExecutionEvent,
   type DelegateExecutionInput,
+  type DelegateMessageAcceptanceEvidence,
   type DelegateExecutionOutcome,
   type DelegatePermissionResponse,
   type RunningDelegateExecution
@@ -250,17 +252,17 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     slot.attemptId = input.attemptId
     activeAttempts.add(input.attemptId)
 
-    const acceptance = deferred<void>()
+    const acceptance = deferred<DelegateMessageAcceptanceEvidence>()
     const terminal = deferred<DelegateExecutionOutcome>()
     void acceptance.promise.catch(() => undefined)
     void terminal.promise.catch(() => undefined)
     const listeners = new Set<(event: DelegateExecutionEvent) => void>()
     type QueuedPrompt = Readonly<{
       text: string
-      acceptance: Deferred<void>
+      acceptance: Deferred<DelegateMessageAcceptanceEvidence>
       turn?: DelegateChildTurnIdentity
     }>
-    const pendingMessages: QueuedPrompt[] = []
+    const queuedPrompts: QueuedPrompt[] = []
     const pendingPermissions = new Set<string>()
     let providerSessionId: string | undefined
     let runtime: AcpDelegateRuntime | undefined
@@ -282,11 +284,15 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     const seenStopEventIds = new Set<string>()
     let activeMessage: QueuedPrompt | undefined
     let activeTurn: QueuedPrompt['turn']
+    let providerPromptStarted = false
 
-    const settleAccepted = (error?: unknown): void => {
+    const settleAccepted = (
+      evidence: DelegateMessageAcceptanceEvidence = 'provider_prompt_completed',
+      error?: unknown
+    ): void => {
       if (acceptedSettled) return
       acceptedSettled = true
-      if (error === undefined) acceptance.resolve()
+      if (error === undefined) acceptance.resolve(evidence)
       else acceptance.reject(error)
     }
     const publish = (event: DelegateExecutionEvent): void => {
@@ -296,8 +302,8 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
     const callbacks: AcpDelegateExecutionCallbacks = {
       onProviderPromptAccepted(sessionId) {
         if (!writable || sessionId !== providerSessionId) return
-        if (activeMessage) activeMessage.acceptance.resolve()
-        else settleAccepted()
+        if (activeMessage) activeMessage.acceptance.resolve('provider_prompt_accepted')
+        else settleAccepted('provider_prompt_accepted')
       },
       onEvent(event) {
         if (!writable || event.sessionId !== providerSessionId) return
@@ -374,7 +380,7 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
       const deliveryError = new Error('delegate execution ended before message delivery')
       activeMessage?.acceptance.reject(deliveryError)
       activeMessage = undefined
-      for (const pending of pendingMessages.splice(0)) pending.acceptance.reject(deliveryError)
+      for (const pending of queuedPrompts.splice(0)) pending.acceptance.reject(deliveryError)
       if (scope && !capabilityRevoked) {
         capabilityRevoked = true
         await scope.capability.revoke()
@@ -467,7 +473,10 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         activeWorkspaces.add(scope.workspace.cwd)
         ownsWorkspace = true
         if (cancelRequested) {
-          settleAccepted()
+          settleAccepted(
+            'provider_prompt_completed',
+            new DelegateMessagePreAcceptanceError('delegate execution was cancelled before provider acceptance')
+          )
           await cleanup()
           terminalSettled = true
           terminal.resolve({ status: 'cancelled' })
@@ -483,7 +492,10 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         })
         providerSessionId = created.sessionId
         if (cancelRequested) {
-          settleAccepted()
+          settleAccepted(
+            'provider_prompt_completed',
+            new DelegateMessagePreAcceptanceError('delegate execution was cancelled before provider acceptance')
+          )
           await cleanup()
           terminalSettled = true
           terminal.resolve({ status: 'cancelled' })
@@ -508,8 +520,10 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         while (!cancelRequested) {
           await activeTurn?.begin?.()
           currentResponse = []
+          providerPromptStarted = true
           const outcome = await runtime.sendAppContinuation(promptRequest(nextPrompt))
-          activeMessage?.acceptance.resolve()
+          if (activeMessage) activeMessage.acceptance.resolve('provider_prompt_completed')
+          else settleAccepted('provider_prompt_completed')
           activeMessage = undefined
           response = currentResponse.join('')
           if (cancelRequested || outcome.stopReason === 'cancelled') break
@@ -519,7 +533,7 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
             currentStopEvent && !currentStopEvent.turnUsage ? true : undefined
           )
           currentStopEvent = undefined
-          const queued = pendingMessages.shift()
+          const queued = queuedPrompts.shift()
           if (queued === undefined) break
           nextPrompt = queued.text
           activeMessage = queued
@@ -562,10 +576,17 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
           })
         }
       } catch (error) {
-        settleAccepted(error)
-        activeMessage?.acceptance.reject(error)
+        const acceptanceError =
+          providerPromptStarted || error instanceof DelegateMessagePreAcceptanceError
+            ? error
+            : new DelegateMessagePreAcceptanceError(
+                error instanceof Error ? error.message : String(error),
+                error
+              )
+        settleAccepted('provider_prompt_completed', acceptanceError)
+        activeMessage?.acceptance.reject(acceptanceError)
         activeMessage = undefined
-        for (const pending of pendingMessages.splice(0)) pending.acceptance.reject(error)
+        for (const pending of queuedPrompts.splice(0)) pending.acceptance.reject(error)
         let terminalError = error
         try {
           await cleanup()
@@ -588,9 +609,13 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
         if (!writable || terminalSettled || cancelRequested) {
           throw new Error('delegate execution is no longer running')
         }
-        const pending: QueuedPrompt = { text: message, acceptance: deferred<void>(), turn }
+        const pending: QueuedPrompt = {
+          text: message,
+          acceptance: deferred<DelegateMessageAcceptanceEvidence>(),
+          turn
+        }
         void pending.acceptance.promise.catch(() => undefined)
-        pendingMessages.push(pending)
+        queuedPrompts.push(pending)
         return pending.acceptance.promise
       },
       async setPermissionProfile(profile) {

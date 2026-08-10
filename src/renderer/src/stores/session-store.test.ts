@@ -544,8 +544,7 @@ describe('session store', () => {
                   endedAt: 8,
                   terminalMessageId: 'child-answer'
                 }
-              ],
-              pendingMessages: []
+              ]
             }
           ]
         }
@@ -666,7 +665,7 @@ describe('session store', () => {
         version: 1,
         revision: 2,
         delegatedWork: {
-          records: [{ agentFrameId: 'child-frame', attempts: [], pendingMessages: [] }]
+          records: [{ agentFrameId: 'child-frame', attempts: [] }]
         }
       },
       conversationGraph: childGraph,
@@ -748,7 +747,7 @@ describe('session store', () => {
         version: 1,
         revision: 4,
         delegatedWork: {
-          records: [{ agentFrameId: 'child-frame', attempts: [], pendingMessages: [] }]
+          records: [{ agentFrameId: 'child-frame', attempts: [] }]
         }
       },
       artifacts: [{ id: 'child-version', kind: 'managed-file', path: 'child.md' }]
@@ -887,7 +886,7 @@ describe('session store', () => {
         version: 1,
         revision: 2,
         delegatedWork: {
-          records: [{ agentFrameId: 'child-frame', attempts: [], pendingMessages: [] }]
+          records: [{ agentFrameId: 'child-frame', attempts: [] }]
         }
       },
       conversationGraph: childGraph,
@@ -933,6 +932,71 @@ describe('session store', () => {
     expect(toPersistedSession(converged).conversationGraph?.messages.map(({ id }) => id)).toEqual(
       expect.arrayContaining(['root-streaming', 'child-answer'])
     )
+  })
+
+  it('hydrates durable reliable-message commands without dropping same-revision renderer owners', () => {
+    const rootMessage = {
+      id: 'root-message',
+      role: 'user' as const,
+      content: 'root prompt',
+      status: 'complete' as const,
+      eventIds: [],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const base: PersistedChatSession = {
+      id: 'session-message-owner',
+      projectId: 'project-message-owner',
+      title: 'message owner',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [rootMessage],
+      conversationGraph: createLinearConversationGraph({
+        sessionId: 'session-message-owner',
+        messages: [rootMessage],
+        createdAt: 1,
+        updatedAt: 1
+      }),
+      runtimeContext: { version: 1, revision: 3, delegatedWork: { records: [] } },
+      filesRevision: 1,
+      createdAt: 1,
+      updatedAt: 3
+    }
+    useSessionStore.getState().hydrateSessions([base])
+    const graph = base.conversationGraph!
+    const command = {
+      messageId: 'durable-message-1',
+      requestId: 'durable-request-1',
+      sourcePrincipal: graph.rootFrameId,
+      canonicalDigest: 'a'.repeat(64),
+      sourceFrameId: graph.rootFrameId,
+      targetFrameId: 'child-frame',
+      targetAttemptId: 'child-attempt',
+      rootOriginMessageId: rootMessage.id,
+      callerRootMessageId: rootMessage.id,
+      rootBranchId: graph.branches[0].id,
+      rootBranchRevision: `${graph.branches[0].id}:${graph.branches[0].createdAt}`,
+      direction: 'to_child' as const,
+      disposition: 'message' as const,
+      text: 'durable directive',
+      kind: 'info' as const,
+      laneSequence: 1,
+      queuedAt: 2,
+      receipt: { status: 'queued' as const }
+    }
+
+    useSessionStore.getState().upsertPersistedSession({
+      ...base,
+      runtimeContext: {
+        version: 1,
+        revision: 3,
+        delegatedWork: { records: [], messageCommands: [command] }
+      }
+    })
+
+    expect(
+      useSessionStore.getState().sessions[0].runtimeContext?.delegatedWork?.messageCommands
+    ).toEqual([command])
   })
 
   it('accepts a newer durable root Branch head before saving the next streamed chunk', () => {

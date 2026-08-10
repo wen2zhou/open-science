@@ -590,8 +590,9 @@ describe('authenticated delegatedWorkCall route', () => {
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toMatchObject({
       result: {
-        kind: 'continued',
-        child: { frameId: dispatched.children[0].frameId, status: 'running' }
+        disposition: 'continued',
+        target_frame_id: dispatched.children[0].frameId,
+        continuation_attempt_id: expect.any(String)
       }
     })
     await expect.poll(() => execution.controls()).toHaveLength(2)
@@ -617,7 +618,9 @@ describe('authenticated delegatedWorkCall route', () => {
       execution,
       records,
       deliverToParent: async (delivery) => {
+        await delivery.startDispatch()
         deliveries.push(delivery)
+        return 'provider_prompt_accepted'
       }
     })
     const dispatched = await work.delegate(
@@ -663,7 +666,7 @@ describe('authenticated delegatedWorkCall route', () => {
           op: 'send_message',
           target: 'parent',
           message: 'Which cohort?',
-          kind: 'question',
+          options: { kind: 'question' },
           project_id: 'forged-project',
           session_id: 'forged-session',
           frame_id: 'forged-frame',
@@ -675,7 +678,7 @@ describe('authenticated delegatedWorkCall route', () => {
 
     expect(response.status).toBe(200)
     await expect(response.json()).resolves.toMatchObject({
-      result: { kind: 'queued', targetFrameId: 'root-frame-session-1' }
+      result: { status: 'queued', direction: 'to_parent', target_frame_id: 'root-frame-session-1' }
     })
     expect(deliveries).toEqual([
       expect.objectContaining({

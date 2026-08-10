@@ -131,7 +131,6 @@ const createSession = (count = 3): PersistedChatSession => {
               startedAt: now + index
             }
           ],
-          pendingMessages: []
         }))
       }
     }

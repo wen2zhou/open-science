@@ -1,11 +1,15 @@
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import type { PromptResponse } from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
 
 import { claudeCodeFramework } from '../agent-framework'
 import { CODEX_ACP_VERSION, CODEX_VERSION } from '../settings/managed-codex'
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import type { AgentFrameworkId } from '../../shared/settings'
-import type { DelegateExecutionInput } from './execution-port'
+import {
+  DelegateMessagePreAcceptanceError,
+  type DelegateExecutionInput
+} from './execution-port'
 import { createProductionDelegatedFrameworks } from './production-frameworks'
 import { productionDelegatedWorkFrameworks } from './production-readiness'
 
@@ -60,6 +64,14 @@ const safeOpenCodeConfig = {
   ]
 }
 
+const deferred = <Value>(): { promise: Promise<Value>; resolve: (value: Value) => void } => {
+  let resolve!: (value: Value) => void
+  const promise = new Promise<Value>((onResolve) => {
+    resolve = onResolve
+  })
+  return { promise, resolve }
+}
+
 describe('production delegated framework factory composition', () => {
   it('publishes support only for frameworks present in the production factory composer', () => {
     expect(productionDelegatedWorkFrameworks()).toEqual(['claude-code', 'opencode', 'codex'])
@@ -68,6 +80,7 @@ describe('production delegated framework factory composition', () => {
   it('selects the certified Claude Code, OpenCode, and Codex production factories', async () => {
     const prepared: AgentFrameworkId[] = []
     const runtimes: AgentFrameworkId[] = []
+    const initialPrompts = new Map<AgentFrameworkId, ReturnType<typeof deferred<PromptResponse>>>()
     const frameworks = createProductionDelegatedFrameworks({
       capacity: 3,
       async certify(durableSession) {
@@ -131,11 +144,19 @@ describe('production delegated framework factory composition', () => {
           createRuntime: (_scope, callbacks) => {
             runtimes.push(frameworkId)
             const providerSessionId = `provider-${frameworkId}`
+            const initial = deferred<PromptResponse>()
+            initialPrompts.set(frameworkId, initial)
+            let promptCount = 0
             return {
               createSession: async () => ({ sessionId: providerSessionId }),
               sendAppContinuation: async () => {
-                callbacks.onProviderPromptAccepted(providerSessionId)
-                return { stopReason: 'end_turn' }
+                promptCount += 1
+                if (promptCount <= 2) callbacks.onProviderPromptAccepted(providerSessionId)
+                if (promptCount === 1) return initial.promise
+                if (promptCount <= 3) return { stopReason: 'end_turn' }
+                throw new DelegateMessagePreAcceptanceError(
+                  `${frameworkId} pre-accept transport failure`
+                )
               },
               cancelPrompt: async () => undefined,
               setPermissionProfile: async () => undefined,
@@ -153,7 +174,17 @@ describe('production delegated framework factory composition', () => {
       await selected.assertAvailable()
       const reservation = await selected.execution.reserve(1)
       const running = selected.execution.run(input(frameworkId), reservation.slotIds[0])
-      await expect(running.completion).resolves.toEqual({ status: 'completed', response: '' })
+      await running.accepted
+      const acceptedDelivery = running.sendMessage('provider accepted evidence')
+      const completedDelivery = running.sendMessage('successful completion fallback evidence')
+      const rejectedDelivery = running.sendMessage('pre-accept failure evidence')
+      initialPrompts.get(frameworkId)!.resolve({ stopReason: 'end_turn' })
+      await expect(acceptedDelivery).resolves.toBe('provider_prompt_accepted')
+      await expect(completedDelivery).resolves.toBe('provider_prompt_completed')
+      await expect(rejectedDelivery).rejects.toThrow(`${frameworkId} pre-accept transport failure`)
+      await expect(running.completion).rejects.toThrow(
+        `${frameworkId} pre-accept transport failure`
+      )
     }
 
     expect(prepared).toEqual(['claude-code', 'opencode', 'codex'])

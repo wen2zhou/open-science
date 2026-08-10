@@ -8,10 +8,7 @@ import type { StoreApi } from 'zustand'
 
 import type { ElicitationProjection } from '../../../shared/acp'
 import type { ActivePlanProjection } from '../../../shared/session-plan/contract'
-import {
-  DEFAULT_PERMISSION_PROFILE,
-  type PermissionProfileId
-} from '../../../shared/permission-profiles'
+import { DEFAULT_PERMISSION_PROFILE, type PermissionProfileId } from '../../../shared/permission-profiles'
 import {
   INTERRUPTED_SESSION_ERROR,
   materializeSessionConversationGraph,
@@ -61,10 +58,7 @@ export type ToolActivity = {
   createdAt: number
   updatedAt: number
 }
-export type ChatSession = Omit<
-  PersistedChatSession,
-  'messages' | 'activities' | 'permissionProfile'
-> & {
+export type ChatSession = Omit<PersistedChatSession, 'messages' | 'activities' | 'permissionProfile'> & {
   permissionProfile?: PermissionProfileId
   messages: ChatMessage[]
   activities?: ToolActivity[]
@@ -374,15 +368,25 @@ const mergeDelegatedWorkByIdentity = (
           candidate.attempts,
           ({ id }) => id,
           resolve
-        ),
-        pendingMessages: mergeCollectionByIdentity(
-          record.pendingMessages,
-          candidate.pendingMessages,
-          ({ id }) => id,
-          resolve
         )
       })
-    )
+    ),
+    ...((incoming.messageCommandsQuarantine ?? current.messageCommandsQuarantine) !== undefined
+      ? {
+          messageCommandsQuarantine: structuredClone(
+            (preferIncomingConflicts
+              ? (incoming.messageCommandsQuarantine ?? current.messageCommandsQuarantine)
+              : (current.messageCommandsQuarantine ?? incoming.messageCommandsQuarantine))!
+          )
+        }
+      : {
+          messageCommands: mergeCollectionByIdentity(
+            current.messageCommands ?? [],
+            incoming.messageCommands ?? [],
+            ({ messageId }) => messageId,
+            resolve
+          )
+        })
   }
 }
 
@@ -580,9 +584,7 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
         }
         externallyHydratedSessions.add(projected)
         return {
-          sessions: state.sessions.map((candidate) =>
-            candidate.id === session.id ? projected : candidate
-          )
+          sessions: state.sessions.map((candidate) => candidate.id === session.id ? projected : candidate)
         } as Partial<State>
       }
 
@@ -696,9 +698,7 @@ export const createSessionPersistenceOwner = <State extends SessionStoreData>(
 
       externallyHydratedSessions.add(projected)
       return {
-        sessions: state.sessions.map((candidate) =>
-          candidate.id === session.id ? projected : candidate
-        )
+        sessions: state.sessions.map((candidate) => candidate.id === session.id ? projected : candidate)
       } as Partial<State>
     })
   }

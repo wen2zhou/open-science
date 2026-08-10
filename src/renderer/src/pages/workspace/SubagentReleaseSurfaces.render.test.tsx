@@ -176,7 +176,6 @@ const createSession = (): ChatSession => {
                 startedAt: now + 1
               }
             ],
-            pendingMessages: []
           },
           {
             agentFrameId: 'child-b',
@@ -196,7 +195,6 @@ const createSession = (): ChatSession => {
                 error: { code: 'provider', message: 'Provider turn failed' }
               }
             ],
-            pendingMessages: []
           }
         ]
       }

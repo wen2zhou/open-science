@@ -372,6 +372,29 @@ describe('delegated-work Session records', () => {
       endedAt: 22,
       terminalMessageId: 'terminal-1'
     })
+    const continuationCommand = (
+      suffix: string,
+      attemptId: string
+    ): Parameters<typeof coordinator.startContinuationAttempt>[1]['messageCommand'] => ({
+      messageId: `message-${suffix}`,
+      requestId: `continue-${suffix}`,
+      sourcePrincipal: 'root-frame',
+      canonicalDigest: `digest-${suffix}`,
+      sourceFrameId: 'root-frame',
+      targetFrameId: 'child-frame-1',
+      continuationAttemptId: attemptId,
+      rootOriginMessageId: 'root-prompt',
+      callerRootMessageId: 'root-prompt',
+      rootBranchId: 'root-branch',
+      rootBranchRevision: 'root-branch:0',
+      direction: 'to_child' as const,
+      disposition: 'continued' as const,
+      text: 'continue',
+      kind: 'info' as const,
+      laneSequence: 1,
+      queuedAt: 23,
+      receipt: { status: 'queued' as const }
+    })
 
     const attempts = await Promise.allSettled([
       coordinator.startContinuationAttempt(key, {
@@ -384,7 +407,8 @@ describe('delegated-work Session records', () => {
         resolvedAgent: { kind: 'main' },
         startedAt: 23,
         callerSource: { rootMessageId: 'root-prompt', toolInvocationId: 'continue-2' },
-        initiatingTurnMessageId: 'root-prompt'
+        initiatingTurnMessageId: 'root-prompt',
+        messageCommand: continuationCommand('2', 'attempt-2')
       }),
       coordinator.startContinuationAttempt(key, {
         expectedRevision: 4,
@@ -396,7 +420,8 @@ describe('delegated-work Session records', () => {
         resolvedAgent: { kind: 'main' },
         startedAt: 23,
         callerSource: { rootMessageId: 'root-prompt', toolInvocationId: 'continue-3' },
-        initiatingTurnMessageId: 'root-prompt'
+        initiatingTurnMessageId: 'root-prompt',
+        messageCommand: continuationCommand('3', 'attempt-3')
       })
     ])
 
@@ -447,111 +472,6 @@ describe('delegated-work Session records', () => {
     await expect(coordinator.readChildren(key, rootFrameId)).resolves.toEqual([])
     expect(durable().runtimeContext).toBeUndefined()
     expect(durable().conversationGraph!.frames).toHaveLength(1)
-  })
-
-  it('recovers running Attempts as interrupted without replaying pending messages', async () => {
-    const { coordinator } = createHarness()
-    const rootFrameId = createRootSession().conversationGraph!.rootFrameId
-    await coordinator.createChildren(key, {
-      expectedRevision: 0,
-      parentFrameId: rootFrameId,
-      originMessageId: rootPrompt.id,
-      children: [child(1)]
-    })
-    await coordinator.appendPendingMessage(key, {
-      expectedRevision: 1,
-      frameId: 'child-frame-1',
-      attemptId: 'attempt-1',
-      message: {
-        id: 'pending-1',
-        sourceFrameId: rootFrameId,
-        targetFrameId: 'child-frame-1',
-        targetAttemptId: 'attempt-1',
-        text: 'Additional context',
-        kind: 'info',
-        createdAt: 20
-      }
-    })
-
-    await expect(coordinator.recoverInterruptedDelegatedWork()).resolves.toEqual([
-      { frameId: 'child-frame-1', attemptId: 'attempt-1' }
-    ])
-    await expect(coordinator.recoverInterruptedDelegatedWork()).resolves.toEqual([])
-    const [recovered] = await coordinator.readChildren(key, rootFrameId)
-    expect(recovered).toMatchObject({
-      status: 'cancelled',
-      record: {
-        attempts: [
-          {
-            status: 'cancelled',
-            cancellationReason: 'runtime_interrupted'
-          }
-        ],
-        pendingMessages: [{ id: 'pending-1' }]
-      }
-    })
-    expect(recovered.record.pendingMessages[0]).not.toHaveProperty('deliveredAt')
-  })
-
-  it('marks only the addressed upward message and fences late delivery after terminal', async () => {
-    const { coordinator } = createHarness()
-    const rootFrameId = createRootSession().conversationGraph!.rootFrameId
-    await coordinator.createChildren(key, {
-      expectedRevision: 0,
-      parentFrameId: rootFrameId,
-      originMessageId: rootPrompt.id,
-      children: [child(1)]
-    })
-    for (const [revision, id] of [
-      [1, 'question-1'],
-      [2, 'question-2']
-    ] as const) {
-      await coordinator.appendPendingMessage(key, {
-        expectedRevision: revision,
-        frameId: 'child-frame-1',
-        attemptId: 'attempt-1',
-        message: {
-          id,
-          sourceFrameId: 'child-frame-1',
-          sourceAttemptId: 'attempt-1',
-          targetFrameId: rootFrameId,
-          text: 'Same question',
-          kind: 'question',
-          createdAt: 20
-        }
-      })
-    }
-
-    await coordinator.markMessageDelivered(key, {
-      expectedRevision: 3,
-      frameId: 'child-frame-1',
-      attemptId: 'attempt-1',
-      messageId: 'question-2',
-      deliveredAt: 21
-    })
-    await coordinator.transitionAttempt(key, {
-      expectedRevision: 4,
-      frameId: 'child-frame-1',
-      attemptId: 'attempt-1',
-      status: 'cancelled',
-      endedAt: 22,
-      cancellationReason: 'main_agent_stop'
-    })
-
-    await expect(
-      coordinator.markMessageDelivered(key, {
-        expectedRevision: 5,
-        frameId: 'child-frame-1',
-        attemptId: 'attempt-1',
-        messageId: 'question-1',
-        deliveredAt: 23
-      })
-    ).rejects.toMatchObject({ code: 'attempt-conflict' })
-    const [record] = await coordinator.readChildren(key, rootFrameId)
-    expect(record.record.pendingMessages).toEqual([
-      expect.not.objectContaining({ deliveredAt: expect.any(Number) }),
-      expect.objectContaining({ id: 'question-2', deliveredAt: 21 })
-    ])
   })
 
   it('runs delegated-work interruption recovery at the startup hydration boundary', async () => {

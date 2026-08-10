@@ -6,6 +6,7 @@ import {
   type DelegateExecutionEvent,
   type DelegateExecutionInput,
   type DelegateExecutionOutcome,
+  type DelegateMessageAcceptanceEvidence,
   type DelegatePermissionResponse,
   type RunningDelegateExecution
 } from './execution-port'
@@ -128,7 +129,7 @@ const createDeterministicDelegateExecution = (
     run(input, slotId): RunningDelegateExecution {
       if (!availableSlots.delete(slotId)) throw new Error(`unavailable slot: ${slotId}`)
       slotFrames.set(slotId, input.frameId)
-      const acceptance = deferred<void>()
+      const acceptance = deferred<DelegateMessageAcceptanceEvidence>()
       const completion = deferred<DelegateExecutionOutcome>()
       const listeners = new Set<(event: DelegateExecutionEvent) => void>()
       const messages: string[] = []
@@ -140,7 +141,7 @@ const createDeterministicDelegateExecution = (
       let terminal = false
       const control: ExecutionControl = {
         input,
-        accept: () => acceptance.resolve(),
+        accept: () => acceptance.resolve('provider_prompt_accepted'),
         rejectAcceptance: (error = new Error('acceptance failed')) => acceptance.reject(error),
         emit: (event) => {
           for (const listener of listeners) listener(event)
@@ -202,6 +203,7 @@ const createDeterministicDelegateExecution = (
         async sendMessage(message, turn) {
           messages.push(message)
           queuedTurns.push(turn)
+          return 'provider_prompt_accepted'
         },
         async setPermissionProfile(profile) {
           if (permissionProfileFailure) {

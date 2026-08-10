@@ -10,6 +10,7 @@ import {
   sanitizeActivityGroup,
   normalizeSessionFile,
   sanitizeMessageImages,
+  sanitizeSessionRuntimeContext,
   sanitizeToolActivity,
   type PersistedChatSession,
   type PersistedSideChat,
@@ -1082,7 +1083,7 @@ describe('normalizeSessionFile with activities', () => {
     expect(half?.messages[0]).not.toHaveProperty('delegatedCallerSource')
   })
 
-  it('rejects pending delegated work whose legacy caller identity is only half present', () => {
+  it('rejects the removed pendingMessages prototype instead of migrating it', () => {
     const restored = normalizeSessionFile({
       ...createSessionWithActivity(undefined),
       runtimeContext: {
@@ -1092,7 +1093,15 @@ describe('normalizeSessionFile with activities', () => {
           records: [
             {
               agentFrameId: 'child-frame',
-              attempts: [],
+              attempts: [
+                {
+                  id: 'attempt-1',
+                  status: 'running',
+                  resolvedAgent: { kind: 'main' },
+                  runtimeSegmentIds: [],
+                  startedAt: 1
+                }
+              ],
               pendingMessages: [
                 {
                   id: 'pending-1',
@@ -1133,8 +1142,7 @@ describe('normalizeSessionFile with activities', () => {
                   endedAt: 2,
                   cancellationReason: 'runtime_interrupted'
                 }
-              ],
-              pendingMessages: []
+              ]
             }
           ]
         }
@@ -1183,8 +1191,7 @@ describe('normalizeSessionFile with activities', () => {
                     reasoningEffort: 'high'
                   }
                 }
-              ],
-              pendingMessages: []
+              ]
             }
           ]
         }
@@ -2001,6 +2008,49 @@ describe('normalizeSessionFile with activities', () => {
     expect(legacy?.enabledComputeHosts).toBeUndefined()
     expect(mixedValid?.enabledComputeHosts).toEqual(['ssh:valid'])
     expect(allInvalid?.enabledComputeHosts).toBeUndefined()
+  })
+
+  it.each([
+    ['invalid route', { direction: 'to_parent', disposition: 'continued' }],
+    ['missing running target', { omitTargetAttemptId: true }],
+    ['receipt shape', { receipt: { status: 'accepted', acceptedAt: 2, evidence: 'unknown' } }]
+  ])('quarantines only the reliable-message owner for an exhaustive %s violation', (_label, patch) => {
+    const commandPatch: Record<string, unknown> = { ...patch }
+    delete commandPatch.omitTargetAttemptId
+    const command: Record<string, unknown> = {
+      messageId: 'message-1',
+      requestId: 'request-1',
+      sourcePrincipal: 'root-frame',
+      canonicalDigest: 'a'.repeat(64),
+      sourceFrameId: 'root-frame',
+      targetFrameId: 'child-frame',
+      targetAttemptId: 'attempt-1',
+      rootOriginMessageId: 'root-prompt',
+      callerRootMessageId: 'root-prompt',
+      rootBranchId: 'root-branch',
+      rootBranchRevision: 'root-prompt',
+      direction: 'to_child',
+      disposition: 'message',
+      text: 'evidence',
+      kind: 'info',
+      laneSequence: 1,
+      queuedAt: 1,
+      receipt: { status: 'queued' },
+      ...commandPatch
+    }
+    if ('omitTargetAttemptId' in patch) delete command.targetAttemptId
+    const sanitized = sanitizeSessionRuntimeContext({
+      version: 1,
+      revision: 7,
+      plan: createRuntimePlan(),
+      delegatedWork: { records: [], messageCommands: [command] }
+    })
+
+    expect(sanitized?.plan).toEqual(createRuntimePlan())
+    expect(sanitized?.delegatedWork).toEqual({
+      records: [],
+      messageCommandsQuarantine: [command]
+    })
   })
 
   it('persists errorReportable only when a model-provider error marked it false', () => {

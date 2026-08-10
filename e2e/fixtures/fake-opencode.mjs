@@ -3,7 +3,7 @@
 import * as acp from '@agentclientprotocol/sdk'
 import { Client } from '@modelcontextprotocol/sdk/client/index.js'
 import { StdioClientTransport } from '@modelcontextprotocol/sdk/client/stdio.js'
-import { mkdir, readFile, rm, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { Readable, Writable } from 'node:stream'
 
@@ -21,6 +21,13 @@ const DELEGATION_BRANCH_A_PROMPT = 'Start the inactive-branch Stop certification
 const DELEGATION_BRANCH_B_PROMPT = 'Start the active-branch partial Stop certification journey.'
 const DELEGATION_UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
 const DELEGATION_STRUCTURED_OUTPUT_PROMPT = 'Run the production structured output journey.'
+const RELIABLE_MESSAGING_PROMPT = 'Run the production reliable messaging journey.'
+const RELIABLE_BRANCH_PARK_PROMPT = 'Start the reliable messaging branch park journey.'
+const RELIABLE_BRANCH_WAKE_PROMPT = 'Wake the reliable messaging branch park journey.'
+const RELIABLE_FAILURE_PROMPT = 'Start the reliable messaging post-fence failure journey.'
+const RELIABLE_FAILURE_OBSERVE_PROMPT = 'Observe the reliable messaging post-fence failure.'
+const RELIABLE_FAIRNESS_PROMPT = 'Start the reliable messaging fairness journey.'
+const RELIABLE_FAIRNESS_USER_PROMPT = 'Run the concurrent real user prompt.'
 const DELEGATION_INHERITED_SPECIALIST_PROMPT =
   'Run the production inherited Specialist delegation journey.'
 const SUBAGENT_MODEL_BATCH_PROMPT = 'Run the Subagent model batch journey.'
@@ -36,6 +43,12 @@ const DELEGATED_WAIT_MARKER = 'Wait until the Main Agent stops'
 const DELEGATED_WAIT_TASK = `${DELEGATED_WAIT_MARKER} delegated fixture A.`
 const DELEGATED_WAIT_TASK_TWO = `${DELEGATED_WAIT_MARKER} delegated fixture B.`
 const DELEGATED_STRUCTURED_OUTPUT_TASK = 'Create certified structured evidence.'
+const DELEGATED_RELIABLE_MESSAGING_TASK = 'Send a reliable question to Main.'
+const DELEGATED_RELIABLE_PARK_TASK = 'Queue a reliable question for branch parking.'
+const DELEGATED_RELIABLE_FAILURE_TASK = 'Queue a reliable question for post-fence failure.'
+const DELEGATED_RELIABLE_FAIRNESS_TASK_A = 'Queue reliable fairness question A.'
+const DELEGATED_RELIABLE_FAIRNESS_TASK_B = 'Queue reliable fairness question B.'
+const RELIABLE_CHILD_DIRECTIVE = 'Use the renderer-visible reliable evidence.'
 const DELEGATED_BRANCH_A_TASK = `${DELEGATED_WAIT_MARKER} inactive branch child A.`
 const DELEGATED_BRANCH_B_TASK = `${DELEGATED_WAIT_MARKER} active branch child B1.`
 const DELEGATED_BRANCH_B_TASK_TWO = `${DELEGATED_WAIT_MARKER} active branch child B2.`
@@ -45,6 +58,14 @@ const sessionRoutes = new Map()
 const sessionCancellationResolvers = new Map()
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
+
+const suspendSessionWrites = async () => {
+  const sessionsRoot = join(process.env.OPEN_SCIENCE_STORAGE_ROOT ?? '', 'sessions')
+  const projects = await readdir(sessionsRoot, { withFileTypes: true })
+  const directories = projects.filter((entry) => entry.isDirectory()).map((entry) => join(sessionsRoot, entry.name))
+  await Promise.all(directories.map((directory) => chmod(directory, 0o500)))
+  return async () => Promise.all(directories.map((directory) => chmod(directory, 0o700)))
+}
 
 const stringEnvironment = (overrides = []) => {
   const environment = Object.fromEntries(
@@ -518,6 +539,95 @@ if (process.argv.includes('--version')) {
             throw new Error(`Inherited Specialist delegation failed: ${JSON.stringify(delegated)}`)
           }
           reply = 'Production inherited Specialist delegation completed.'
+        } else if (prompt.includes(RELIABLE_MESSAGING_PROMPT)) {
+          const dispatched = controlResultValue(
+            await runProductionDelegationRequest(
+              context.params.sessionId,
+              { task: DELEGATED_RELIABLE_MESSAGING_TASK, name: DELEGATED_RELIABLE_MESSAGING_TASK },
+              false
+            )
+          )
+          const child = dispatched.children?.[0]
+          if (!child?.frame_id || !child?.attempt_id) {
+            throw new Error(`Reliable child admission failed: ${JSON.stringify(dispatched)}`)
+          }
+          const downward = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `const sent = await host.send_message(${JSON.stringify(child.frame_id)}, ${JSON.stringify(RELIABLE_CHILD_DIRECTIVE)}, { kind: "info", request_id: "e2e-main-to-child" }); return await host.message_receipt(sent.message_id, { timeout_seconds: 30 })`
+            )
+          )
+          if (downward.status !== 'accepted' || downward.direction !== 'to_child') {
+            throw new Error(`Reliable downward delivery failed: ${JSON.stringify(downward)}`)
+          }
+          reply = 'Production reliable downward message was accepted.'
+        } else if (prompt.includes(RELIABLE_BRANCH_PARK_PROMPT)) {
+          await runProductionDelegationRequest(
+            context.params.sessionId,
+            { task: DELEGATED_RELIABLE_PARK_TASK, name: DELEGATED_RELIABLE_PARK_TASK },
+            false
+          )
+          await delay(500)
+          await context.client.notify(acp.methods.client.session.update, {
+            sessionId: context.params.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: `e2e-message-${nextMessageId++}`,
+              content: { type: 'text', text: 'Branch park upward message queued.' }
+            }
+          })
+          await delay(2_000)
+          reply = 'Reliable branch park source turn completed.'
+        } else if (prompt.includes(RELIABLE_BRANCH_WAKE_PROMPT)) {
+          const receipt = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `return await host.message_receipt("e2e-child-park", { timeout_seconds: 0 })`
+            )
+          )
+          if (receipt.status !== 'queued') {
+            throw new Error(`Reliable parked receipt changed before wake: ${JSON.stringify(receipt)}`)
+          }
+          reply = 'Reliable branch wake admitted.'
+        } else if (prompt.includes(RELIABLE_FAILURE_PROMPT)) {
+          await runProductionDelegationRequest(
+            context.params.sessionId,
+            { task: DELEGATED_RELIABLE_FAILURE_TASK, name: DELEGATED_RELIABLE_FAILURE_TASK },
+            false
+          )
+          await delay(500)
+          reply = 'Reliable post-fence source turn completed.'
+        } else if (prompt.includes(RELIABLE_FAILURE_OBSERVE_PROMPT)) {
+          const receipt = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `return await host.message_receipt("e2e-child-post-fence", { timeout_seconds: 0 })`
+            )
+          )
+          if (receipt.status !== 'uncertain') {
+            throw new Error(`Post-fence recovery was not uncertain: ${JSON.stringify(receipt)}`)
+          }
+          reply = 'Reliable post-fence uncertainty recovered.'
+        } else if (prompt.includes(RELIABLE_FAIRNESS_PROMPT)) {
+          await runProductionDelegationRequest(
+            context.params.sessionId,
+            [
+              { task: DELEGATED_RELIABLE_FAIRNESS_TASK_A, name: DELEGATED_RELIABLE_FAIRNESS_TASK_A },
+              { task: DELEGATED_RELIABLE_FAIRNESS_TASK_B, name: DELEGATED_RELIABLE_FAIRNESS_TASK_B }
+            ],
+            false
+          )
+          await delay(700)
+          await context.client.notify(acp.methods.client.session.update, {
+            sessionId: context.params.sessionId,
+            update: {
+              sessionUpdate: 'agent_message_chunk',
+              messageId: `e2e-message-${nextMessageId++}`,
+              content: { type: 'text', text: 'Two upward lanes are queued.' }
+            }
+          })
+          await delay(1_500)
+          reply = 'Reliable fairness source turn completed.'
         } else if (prompt.includes(SUBAGENT_MODEL_BATCH_PROMPT)) {
           const delegated = controlResultValue(
             await runProductionDelegationRequest(
@@ -553,7 +663,7 @@ if (process.argv.includes('--version')) {
           const continued = controlResultValue(
             await executeControlCode(
               context.params.sessionId,
-              `const receipt = await host.send_message(${JSON.stringify(frameId)}, "Continue after Settings changed"); return await host.collect([{ frame_id: receipt.child.frame_id, attempt_id: receipt.child.attempt_id }], { timeout_seconds: 30 })`
+              `const receipt = await host.send_message(${JSON.stringify(frameId)}, "Continue after Settings changed"); return await host.collect([{ frame_id: receipt.target_frame_id, attempt_id: receipt.continuation_attempt_id }], { timeout_seconds: 30 })`
             )
           )
           if (continued.length !== 1 || continued[0].status !== 'completed') {
@@ -622,6 +732,73 @@ if (process.argv.includes('--version')) {
           }
           await createProvenanceArtifact(context.params.sessionId)
           reply = 'Structured child completed.'
+        } else if (prompt.includes(DELEGATED_RELIABLE_MESSAGING_TASK)) {
+          await delay(250)
+          const upward = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `const sent = await host.send_message("parent", "Child reliable question reached Main", { kind: "question", request_id: "e2e-child-to-main" }); return await host.message_receipt(sent.message_id, { timeout_seconds: 0 })`
+            )
+          )
+          if (upward.status !== 'queued' || upward.direction !== 'to_parent') {
+            throw new Error(`Reliable upward admission failed: ${JSON.stringify(upward)}`)
+          }
+          reply = 'Child sent a reliable question.'
+        } else if (prompt.includes(DELEGATED_RELIABLE_PARK_TASK)) {
+          const upward = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `return await host.send_message("parent", "Parked reliable child question", { kind: "question", request_id: "e2e-child-park" })`
+            )
+          )
+          if (upward.status !== 'queued') {
+            throw new Error(`Reliable parked admission failed: ${JSON.stringify(upward)}`)
+          }
+          reply = 'Child queued a branch-bound reliable question.'
+        } else if (prompt.includes(DELEGATED_RELIABLE_FAILURE_TASK)) {
+          await executeControlCode(
+            context.params.sessionId,
+            `return await host.send_message("parent", "Trigger reliable post-fence persistence failure", { kind: "info", request_id: "e2e-child-post-fence" })`
+          )
+          reply = 'Child queued a post-fence reliable message.'
+        } else if (
+          prompt.includes(DELEGATED_RELIABLE_FAIRNESS_TASK_A) ||
+          prompt.includes(DELEGATED_RELIABLE_FAIRNESS_TASK_B)
+        ) {
+          const suffix = prompt.includes(DELEGATED_RELIABLE_FAIRNESS_TASK_B) ? 'B' : 'A'
+          await executeControlCode(
+            context.params.sessionId,
+            `return await host.send_message("parent", "Reliable fairness child ${suffix}", { request_id: "e2e-fairness-${suffix.toLowerCase()}" })`
+          )
+          reply = `Child ${suffix} queued its reliable fairness message.`
+        } else if (prompt.includes(RELIABLE_CHILD_DIRECTIVE)) {
+          reply = 'Child received the reliable Main directive.'
+        } else if (prompt.includes('Child reliable question reached Main')) {
+          reply = 'Main rendered the reliable child question.'
+        } else if (prompt.includes('Parked reliable child question')) {
+          reply = 'Main rendered the parked child question after branch restoration.'
+        } else if (prompt.includes('Trigger reliable post-fence persistence failure')) {
+          const restoreWrites = await suspendSessionWrites()
+          try {
+            await context.client.notify(acp.methods.client.session.update, {
+              sessionId: context.params.sessionId,
+              update: {
+                sessionUpdate: 'agent_message_chunk',
+                messageId: `e2e-message-${nextMessageId++}`,
+                content: { type: 'text', text: 'Provider acceptance crossed the durable fence.' }
+              }
+            })
+            await delay(1_000)
+          } finally {
+            await restoreWrites()
+          }
+          reply = 'Persistence sabotage released.'
+        } else if (prompt.includes('Reliable fairness child A')) {
+          reply = 'Main rendered reliable fairness child A.'
+        } else if (prompt.includes('Reliable fairness child B')) {
+          reply = 'Main rendered reliable fairness child B.'
+        } else if (prompt.includes(RELIABLE_FAIRNESS_USER_PROMPT)) {
+          reply = 'Concurrent real user prompt completed.'
         } else if (prompt.includes(DELEGATED_BOUNDED_SLOW_TASK)) {
           await new Promise((resolve) => setTimeout(resolve, 3_000))
           reply = 'Delayed bounded child completed.'

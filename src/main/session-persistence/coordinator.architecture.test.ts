@@ -54,6 +54,7 @@ const productionFiles = [
   'coordinator.ts',
   'deletion-owner.ts',
   'legacy-upload.ts',
+  'message-delivery-owner.ts',
   'reconciliation-owner.ts',
   'side-chat-owner.ts',
   'state-owner.ts'
@@ -183,9 +184,13 @@ const calledOwnerMethods = (method: MethodDeclaration): string[] =>
       isPropertyAccessExpression(node.expression) &&
       isPropertyAccessExpression(node.expression.expression) &&
       node.expression.expression.expression.kind === SyntaxKind.ThisKeyword &&
-      ['stateOwner', 'deletionOwner', 'reconciliationOwner', 'sideChatOwner'].includes(
-        node.expression.expression.name.text
-      )
+      [
+        'stateOwner',
+        'deletionOwner',
+        'reconciliationOwner',
+        'sideChatOwner',
+        'messageDeliveryOwner'
+      ].includes(node.expression.expression.name.text)
   )
     .map((node) => {
       const call = node
@@ -379,6 +384,10 @@ describe('Session persistence coordinator architecture', () => {
     'reconciliation-owner.ts',
     'SessionPersistenceReconciliationOwner'
   )
+  const messageDeliveryOwner = classFrom(
+    'message-delivery-owner.ts',
+    'SessionMessageDeliveryPersistenceOwner'
+  )
 
   it('keeps the facade and every deep owner within their completion gates', () => {
     for (const [file, source] of sources) {
@@ -390,7 +399,8 @@ describe('Session persistence coordinator architecture', () => {
   it('keeps the established facade, constructor, and module exports', () => {
     expect(methods(facade, 'public')).toEqual(
       [
-        'appendPendingMessage',
+        'acknowledgeUncertainMessage',
+        'admitMessageCommand',
         'appendSideChatRelay',
         'appendUserMessageToInteraction',
         'applyAgentEvent',
@@ -412,7 +422,6 @@ describe('Session persistence coordinator architecture', () => {
         'loadSessionForPermissionReplay',
         'loadPersistedSideChats',
         'markCommittedProjectSessionsPrepared',
-        'markMessageDelivered',
         'patchSessionRuntimeContext',
         'readChildren',
         'readSessionRuntimeContext',
@@ -426,8 +435,10 @@ describe('Session persistence coordinator architecture', () => {
         'sessionMetadataSnapshot',
         'sessionProjectId',
         'setSessionDeletionHandlers',
+        'settleMessage',
         'startAttemptRuntime',
         'startContinuationAttempt',
+        'startMessageDispatch',
         'startPendingMessageTurn',
         'submitStructuredOutput',
         'transitionAttempt',
@@ -490,6 +501,7 @@ describe('Session persistence coordinator architecture', () => {
         'destructiveStartupWindowOpen',
         'fileIndex',
         'log',
+        'messageDeliveryOwner',
         'onFilesChanged',
         'queue',
         'reconciliationOwner',
@@ -508,10 +520,12 @@ describe('Session persistence coordinator architecture', () => {
     expect(mutableFields(deletionOwner)).toEqual([])
     expect(mutableFields(reconciliationOwner)).toEqual([])
     expect(mutableFields(sideChatOwner)).toEqual([])
+    expect(mutableFields(messageDeliveryOwner)).toEqual([])
     expect(publicNonMethodMembers(stateOwner)).toEqual([])
     expect(publicNonMethodMembers(deletionOwner)).toEqual([])
     expect(publicNonMethodMembers(reconciliationOwner)).toEqual([])
     expect(publicNonMethodMembers(sideChatOwner)).toEqual([])
+    expect(publicNonMethodMembers(messageDeliveryOwner)).toEqual([])
     expect(fields(stateOwner)).toEqual(
       [
         'isSessionMetadataComplete',
@@ -563,6 +577,9 @@ describe('Session persistence coordinator architecture', () => {
     expect(constructionSites('SessionSideChatPersistenceOwner')).toEqual([
       'src/main/session-persistence/coordinator.ts:constructor'
     ])
+    expect(constructionSites('SessionMessageDeliveryPersistenceOwner')).toEqual([
+      'src/main/session-persistence/coordinator.ts:module'
+    ])
   })
 
   it('keeps one coordinator queue around every asynchronous public operation', () => {
@@ -592,7 +609,13 @@ describe('Session persistence coordinator architecture', () => {
       ).toBe(true)
     }
 
-    for (const owner of [stateOwner, deletionOwner, reconciliationOwner, sideChatOwner]) {
+    for (const owner of [
+      stateOwner,
+      deletionOwner,
+      reconciliationOwner,
+      sideChatOwner,
+      messageDeliveryOwner
+    ]) {
       expect(fields(owner)).not.toContain('queue')
       expect(methods(owner, 'public')).not.toContain('enqueue')
       expect(methods(owner, 'private')).not.toContain('enqueue')
@@ -714,7 +737,9 @@ describe('Session persistence coordinator architecture', () => {
     for (const file of [
       'state-owner.ts',
       'deletion-owner.ts',
+      'message-delivery-owner.ts',
       'reconciliation-owner.ts',
+      'message-delivery-owner.ts',
       'side-chat-owner.ts'
     ] as const) {
       expect(sources.get(file), file).not.toMatch(/deletedProjects|deletedSessions/)
@@ -770,8 +795,21 @@ describe('Session persistence coordinator architecture', () => {
     expect(methods(sideChatOwner, 'private')).toEqual(
       ['loadMutable', 'requireSideChat', 'save'].sort()
     )
+    expect(methods(messageDeliveryOwner, 'public')).toEqual(
+      [
+        'acknowledge',
+        'admit',
+        'completeChildTurn',
+        'settle',
+        'startChildTurn',
+        'startDispatch'
+      ].sort()
+    )
+    expect(methods(messageDeliveryOwner, 'private')).toEqual(['assertWritable'])
 
     const expectedCalls: Record<string, string[]> = {
+      acknowledgeUncertainMessage: ['messageDeliveryOwner.acknowledge'],
+      admitMessageCommand: ['messageDeliveryOwner.admit'],
       appendSideChatRelay: ['sideChatOwner.appendRelay'],
       appendUserMessageToInteraction: ['stateOwner.appendUserMessage'],
       assertProjectArchivable: ['deletionOwner.assertProjectArchivable'],
@@ -779,6 +817,7 @@ describe('Session persistence coordinator architecture', () => {
       clearSideChat: ['sideChatOwner.clear'],
       commitSideChatRelays: ['sideChatOwner.commitRelays'],
       completeProjectSessionDeletion: ['deletionOwner.completeProjectSessionDeletion'],
+      completeChildTurn: ['messageDeliveryOwner.completeChildTurn'],
       containsMessageOnActiveBranch: ['stateOwner.containsMessageOnActiveBranch'],
       deleteProjectSessions: [
         'deletionOwner.deleteProjectSessions',
@@ -796,6 +835,9 @@ describe('Session persistence coordinator architecture', () => {
       saveSideChatProjection: ['sideChatOwner.saveProjection'],
       sessionMetadataSnapshot: ['stateOwner.metadataSnapshot'],
       sessionProjectId: ['stateOwner.sessionProjectId'],
+      settleMessage: ['messageDeliveryOwner.settle'],
+      startMessageDispatch: ['messageDeliveryOwner.startDispatch'],
+      startPendingMessageTurn: ['messageDeliveryOwner.startChildTurn'],
       updateArchive: ['deletionOwner.updateArchive']
     }
     for (const [method, calls] of Object.entries(expectedCalls)) {
@@ -810,6 +852,7 @@ describe('Session persistence coordinator architecture', () => {
     expect(sessionDependencies('coordinator.ts')).toEqual(
       [
         'deletion-owner.ts',
+        'message-delivery-owner.ts',
         'reconciliation-owner.ts',
         'side-chat-owner.ts',
         'state-owner.ts'
@@ -821,9 +864,11 @@ describe('Session persistence coordinator architecture', () => {
     )
     expect(sessionDependencies('reconciliation-owner.ts')).toEqual(['legacy-upload.ts'])
     expect(sessionDependencies('side-chat-owner.ts')).toEqual([])
+    expect(sessionDependencies('message-delivery-owner.ts')).toEqual([])
     for (const file of [
       'state-owner.ts',
       'deletion-owner.ts',
+      'message-delivery-owner.ts',
       'reconciliation-owner.ts',
       'side-chat-owner.ts'
     ] as const) {

@@ -1,7 +1,12 @@
 import { expect } from '@playwright/test'
 import type { Page } from 'playwright'
 
-import { createProject, sendPrompt } from './certification/helpers'
+import {
+  createProject,
+  openProjectSession,
+  openRecentSession,
+  sendPrompt
+} from './certification/helpers'
 import { test } from './fixtures/electron-app'
 
 const ROOT_PROMPT = 'Coordinate the release-gate delegates.'
@@ -16,6 +21,12 @@ const BRANCH_B_PROMPT = 'Start the active-branch partial Stop certification jour
 const UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
 const INHERITED_SPECIALIST_PROMPT = 'Run the production inherited Specialist delegation journey.'
 const STRUCTURED_OUTPUT_PROMPT = 'Run the production structured output journey.'
+const RELIABLE_MESSAGING_PROMPT = 'Run the production reliable messaging journey.'
+const RELIABLE_BRANCH_PARK_PROMPT = 'Start the reliable messaging branch park journey.'
+const RELIABLE_FAILURE_PROMPT = 'Start the reliable messaging post-fence failure journey.'
+const RELIABLE_FAILURE_OBSERVE_PROMPT = 'Observe the reliable messaging post-fence failure.'
+const RELIABLE_FAIRNESS_PROMPT = 'Start the reliable messaging fairness journey.'
+const RELIABLE_FAIRNESS_USER_PROMPT = 'Run the concurrent real user prompt.'
 const STRUCTURED_OUTPUT_CHILD = 'Create certified structured evidence.'
 const TERMINAL_CHILD = 'Complete the certified delegated terminal fixture.'
 const PERMISSION_CHILD = 'Request the delegated fixture permission.'
@@ -204,8 +215,7 @@ const seedDelegatedWork = async (page: Page, projectId: string): Promise<void> =
                 ? { error: { code: 'fixture_failure', message: 'Deterministic child failure' } }
                 : {})
             }
-          ],
-          pendingMessages: []
+          ]
         }
       })
       const session = {
@@ -381,6 +391,328 @@ test('persists production-composed structured output submitted by the child capa
     return prompt?.structuredOutputEvidence?.accepted?.value
   }, STRUCTURED_OUTPUT_CHILD)
   expect(afterRestart).toEqual({ count: 3 })
+})
+
+test('routes reliable Main and child messages through production Host RPC and the root scheduler', async ({
+  app
+}) => {
+  test.setTimeout(180_000)
+  let page = await app.completeOnboarding()
+  page = await app.configureFakeAgent()
+  const projectId = await createProject(page, 'Reliable messaging release gate')
+
+  await sendPrompt(
+    page,
+    RELIABLE_MESSAGING_PROMPT,
+    'Production reliable downward message was accepted.',
+    120_000
+  )
+  await expect(page.getByText('Main rendered the reliable child question.')).toBeVisible({
+    timeout: 120_000
+  })
+  const evidence = await page.evaluate(async (projectId) => {
+    const loaded = await window.api.sessions.loadAll()
+    const session = loaded.sessions.find((candidate) => candidate.projectId === projectId)
+    return {
+      commands: session?.runtimeContext?.delegatedWork?.messageCommands,
+      rendered: session?.conversationGraph?.messages.some((message) =>
+        message.content.includes('Main rendered the reliable child question.')
+      )
+    }
+  }, projectId)
+  expect(evidence.rendered).toBe(true)
+  expect(evidence.commands).toEqual(
+    expect.arrayContaining([
+      expect.objectContaining({
+        direction: 'to_child',
+        receipt: expect.objectContaining({ status: 'accepted' })
+      }),
+      expect.objectContaining({
+        direction: 'to_parent',
+        receipt: expect.objectContaining({ status: 'accepted' })
+      })
+    ])
+  )
+})
+
+test('parks an upward message on branch switch and resumes it after restart and restoration', async ({
+  app
+}) => {
+  test.setTimeout(180_000)
+  let page = await app.completeOnboarding()
+  page = await app.configureFakeAgent()
+  const projectId = await createProject(page, 'Reliable branch park release gate')
+
+  const composer = page.getByRole('textbox', { name: 'Ask anything' })
+  await composer.fill(RELIABLE_BRANCH_PARK_PROMPT)
+  await page.getByRole('button', { name: 'Send message' }).click()
+  await expect(page.getByText('Branch park upward message queued.')).toBeVisible({
+    timeout: 120_000
+  })
+  let sessionId: string | undefined
+  await expect
+    .poll(async () => {
+      const identity = await page.evaluate(async (projectId) => {
+        const loaded = await window.api.sessions.loadAll()
+        const session = loaded.sessions.find((candidate) => candidate.projectId === projectId)
+        const command = session?.runtimeContext?.delegatedWork?.messageCommands?.find(
+          ({ requestId }) => requestId === 'e2e-child-park'
+        )
+        return { sessionId: session?.id, status: command?.receipt.status }
+      }, projectId)
+      sessionId = identity.sessionId
+      return identity.status
+    })
+    .toBe('queued')
+  expect(sessionId).toEqual(expect.any(String))
+
+  await page.evaluate(
+    async ({ projectId, sessionId }) => {
+      const loaded = await window.api.sessions.loadAll()
+      const session = loaded.sessions.find(
+        (candidate) => candidate.projectId === projectId && candidate.id === sessionId
+      )!
+      const graph = session.conversationGraph!
+      const root = graph.frames.find(({ id }) => id === graph.rootFrameId)!
+      const parentBranch = graph.branches.find(({ id }) => id === root.activeBranchId)!
+      const forkTarget = graph.messages
+        .filter(
+          (message) =>
+            message.agentFrameId === root.id &&
+            message.introducedOnBranchId === parentBranch.id &&
+            message.role === 'user'
+        )
+        .sort((left, right) => right.createdAt - left.createdAt)[0]!
+      const now = Date.now()
+      graph.branches.push({
+        id: 'e2e-park-other-branch',
+        agentFrameId: root.id,
+        parentBranchId: parentBranch.id,
+        forkMessageId: forkTarget.parentMessageId,
+        supersededMessageId: forkTarget.id,
+        headMessageId: forkTarget.parentMessageId,
+        createdAt: now,
+        updatedAt: now
+      })
+      root.activeBranchId = 'e2e-park-other-branch'
+      graph.activeFrameId = root.id
+      await window.api.sessions.saveSession({
+        ...session,
+        conversationGraph: graph,
+        messages: [],
+        activities: [],
+        activityGroups: [],
+        updatedAt: now
+      })
+    },
+    { projectId, sessionId: sessionId! }
+  )
+  await page.reload({ waitUntil: 'domcontentloaded' })
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async ({ projectId, sessionId }) => {
+          const loaded = await window.api.sessions.loadAll()
+          const session = loaded.sessions.find(
+            (candidate) => candidate.projectId === projectId && candidate.id === sessionId
+          )
+          const command = session?.runtimeContext?.delegatedWork?.messageCommands?.find(
+            ({ requestId }) => requestId === 'e2e-child-park'
+          )
+          return { sessionStatus: session?.status, receiptStatus: command?.receipt.status }
+        },
+        { projectId, sessionId: sessionId! }
+      )
+    )
+    .toEqual({ sessionStatus: 'idle', receiptStatus: 'queued' })
+  page = await app.restart()
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async ({ projectId, sessionId }) => {
+          const loaded = await window.api.sessions.loadAll()
+          return loaded.sessions
+            .find((candidate) => candidate.projectId === projectId && candidate.id === sessionId)
+            ?.runtimeContext?.delegatedWork?.messageCommands?.find(
+              ({ requestId }) => requestId === 'e2e-child-park'
+            )?.receipt.status
+        },
+        { projectId, sessionId: sessionId! }
+      )
+    )
+    .toBe('queued')
+
+  await page.evaluate(
+    async ({ projectId, sessionId }) => {
+      const loaded = await window.api.sessions.loadAll()
+      const session = loaded.sessions.find(
+        (candidate) => candidate.projectId === projectId && candidate.id === sessionId
+      )!
+      const graph = session.conversationGraph!
+      const root = graph.frames.find(({ id }) => id === graph.rootFrameId)!
+      const command = session.runtimeContext?.delegatedWork?.messageCommands?.find(
+        ({ requestId }) => requestId === 'e2e-child-park'
+      )
+      if (!command) throw new Error('Parked message command is unavailable.')
+      root.activeBranchId = command.rootBranchId
+      graph.activeFrameId = root.id
+      const restoredBranch = graph.branches.find(({ id }) => id === command.rootBranchId)!
+      const messagesById = new Map(graph.messages.map((message) => [message.id, message]))
+      const restoredMessages: typeof graph.messages = []
+      let cursor = restoredBranch.headMessageId
+      while (cursor) {
+        const message = messagesById.get(cursor)
+        if (!message) break
+        restoredMessages.unshift(message)
+        cursor = message.parentMessageId
+      }
+      const restoredMessageIds = new Set<string>(restoredMessages.map(({ id }) => id))
+      await window.api.sessions.saveSession({
+        ...session,
+        conversationGraph: graph,
+        messages: restoredMessages,
+        activities: graph.activities.filter((activity) =>
+          restoredMessageIds.has(activity.promptMessageId)
+        ),
+        activityGroups: graph.activityGroups.filter((group) =>
+          restoredMessageIds.has(group.promptMessageId)
+        ),
+        updatedAt: Date.now()
+      })
+    },
+    { projectId, sessionId: sessionId! }
+  )
+  await openRecentSession(page, RELIABLE_BRANCH_PARK_PROMPT)
+  await expect(
+    page.getByText('Main rendered the parked child question after branch restoration.')
+  ).toBeVisible({ timeout: 120_000 })
+  await expect
+    .poll(async () =>
+      page.evaluate(
+        async ({ projectId, sessionId }) => {
+          const loaded = await window.api.sessions.loadAll()
+          return loaded.sessions
+            .find((candidate) => candidate.projectId === projectId && candidate.id === sessionId)
+            ?.runtimeContext?.delegatedWork?.messageCommands?.find(
+              ({ requestId }) => requestId === 'e2e-child-park'
+            )?.receipt.status
+        },
+        { projectId, sessionId: sessionId! }
+      )
+    )
+    .toBe('accepted')
+})
+
+test('recovers a post-fence receipt persistence failure as uncertain after restart', async ({
+  app
+}) => {
+  test.setTimeout(180_000)
+  let page = await app.completeOnboarding()
+  page = await app.configureFakeAgent()
+  const projectId = await createProject(page, 'Reliable failure window release gate')
+
+  await sendPrompt(
+    page,
+    RELIABLE_FAILURE_PROMPT,
+    'Reliable post-fence source turn completed.',
+    120_000
+  )
+  await expect(page.getByText('Persistence sabotage released.')).toBeVisible({ timeout: 120_000 })
+  let sessionId: string | undefined
+  await expect
+    .poll(async () => {
+      const durable = await page.evaluate(async (projectId) => {
+        const loaded = await window.api.sessions.loadAll()
+        const session = loaded.sessions.find((candidate) => candidate.projectId === projectId)
+        const command = session?.runtimeContext?.delegatedWork?.messageCommands?.find(
+          ({ requestId }) => requestId === 'e2e-child-post-fence'
+        )
+        return {
+          sessionId: session?.id,
+          sessionStatus: session?.status,
+          dispatchStartedAt:
+            command?.receipt.status === 'queued' ? command.receipt.dispatchStartedAt : undefined
+        }
+      }, projectId)
+      sessionId = durable.sessionId
+      return {
+        sessionStatus: durable.sessionStatus,
+        dispatchStarted: typeof durable.dispatchStartedAt === 'number'
+      }
+    })
+    .toEqual({ sessionStatus: 'idle', dispatchStarted: true })
+  expect(sessionId).toEqual(expect.any(String))
+  page = await app.restart()
+  await openProjectSession(page, 'Reliable failure window release gate', RELIABLE_FAILURE_PROMPT)
+  await sendPrompt(
+    page,
+    RELIABLE_FAILURE_OBSERVE_PROMPT,
+    'Reliable post-fence uncertainty recovered.',
+    120_000
+  )
+  const receipt = await page.evaluate(
+    async ({ projectId, sessionId }) => {
+      const loaded = await window.api.sessions.loadAll()
+      return loaded.sessions
+        .find((candidate) => candidate.projectId === projectId && candidate.id === sessionId)
+        ?.runtimeContext?.delegatedWork?.messageCommands?.find(
+          ({ requestId }) => requestId === 'e2e-child-post-fence'
+        )?.receipt
+    },
+    { projectId, sessionId: sessionId! }
+  )
+  expect(receipt).toMatchObject({ status: 'uncertain', resolution: 'pending' })
+})
+
+test('fairly schedules two upward lanes with a concurrent real user prompt', async ({ app }) => {
+  test.setTimeout(180_000)
+  let page = await app.completeOnboarding()
+  page = await app.configureFakeAgent()
+  const projectId = await createProject(page, 'Reliable fairness release gate')
+
+  const composer = page.getByRole('textbox', { name: 'Ask anything' })
+  await composer.fill(RELIABLE_FAIRNESS_PROMPT)
+  await page.getByRole('button', { name: 'Send message' }).click()
+  await expect(page.getByText('Two upward lanes are queued.')).toBeVisible({ timeout: 120_000 })
+  await page.evaluate(
+    ({ projectId, text }) => {
+      const run = async (): Promise<void> => {
+        const loaded = await window.api.sessions.loadAll()
+        const session = loaded.sessions.find((candidate) => candidate.projectId === projectId)!
+        await window.api.acp.sendPrompt({ sessionId: session.id, text })
+      }
+      ;(
+        globalThis as typeof globalThis & { fairnessUserPrompt?: Promise<void> }
+      ).fairnessUserPrompt = run()
+    },
+    { projectId, text: RELIABLE_FAIRNESS_USER_PROMPT }
+  )
+
+  await expect(page.getByText('Main rendered reliable fairness child A.')).toBeVisible({
+    timeout: 120_000
+  })
+  await expect(page.getByText('Main rendered reliable fairness child B.')).toBeVisible({
+    timeout: 120_000
+  })
+  await expect(page.getByText('Concurrent real user prompt completed.')).toBeVisible({
+    timeout: 120_000
+  })
+  const evidence = await page.evaluate(async (projectId) => {
+    await (globalThis as typeof globalThis & { fairnessUserPrompt?: Promise<void> })
+      .fairnessUserPrompt
+    const loaded = await window.api.sessions.loadAll()
+    const commands =
+      loaded.sessions.find((candidate) => candidate.projectId === projectId)?.runtimeContext
+        ?.delegatedWork?.messageCommands ?? []
+    return commands
+      .filter(({ requestId }) => requestId.startsWith('e2e-fairness-'))
+      .map(({ requestId, receipt }) => ({ requestId, status: receipt.status }))
+      .sort((left, right) => left.requestId.localeCompare(right.requestId))
+  }, projectId)
+  expect(evidence).toEqual([
+    { requestId: 'e2e-fairness-a', status: 'accepted' },
+    { requestId: 'e2e-fairness-b', status: 'accepted' }
+  ])
 })
 
 test('stops only the active branch and exposes a retryable partial failure', async ({ app }) => {

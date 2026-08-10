@@ -547,7 +547,9 @@ describe('ACP delegate execution production adapter', () => {
     })
 
     await cancelled
-    await expect(running.accepted).resolves.toBeUndefined()
+    await expect(running.accepted).rejects.toMatchObject({
+      name: 'DelegateMessagePreAcceptanceError'
+    })
     await expect(running.completion).resolves.toEqual({ status: 'cancelled' })
     expect(createRuntime).not.toHaveBeenCalled()
     await expect(execution.reserve(1)).resolves.toHaveProperty('slotIds')
@@ -998,7 +1000,7 @@ describe('ACP delegate execution production adapter', () => {
     const sibling = execution.run(makeInput('good-startup'), reservation.slotIds[1])
 
     await expect(failed.completion).rejects.toThrow('provider startup failed')
-    await expect(sibling.accepted).resolves.toBeUndefined()
+    await expect(sibling.accepted).resolves.toBe('provider_prompt_accepted')
     controls.get('good-startup')!.complete()
     await expect(sibling.completion).resolves.toMatchObject({ status: 'completed' })
   })

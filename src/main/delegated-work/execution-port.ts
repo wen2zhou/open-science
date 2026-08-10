@@ -16,6 +16,24 @@ class DelegateExecutionError extends Error {
   }
 }
 
+class DelegateMessagePreAcceptanceError extends Error {
+  constructor(message: string, readonly cause?: unknown) {
+    super(message)
+    this.name = 'DelegateMessagePreAcceptanceError'
+  }
+}
+
+class DelegateMessageParkedError extends Error {
+  constructor(message: string) {
+    super(message)
+    this.name = 'DelegateMessageParkedError'
+  }
+}
+
+type DelegateMessageAcceptanceEvidence =
+  | 'provider_prompt_accepted'
+  | 'provider_prompt_completed'
+
 type DelegateExecutionEvent =
   | Readonly<{ kind: 'message'; text: string }>
   | Readonly<{ kind: 'runtime'; update: AcpAgentRuntimeUpdate }>
@@ -96,10 +114,13 @@ type DelegateChildTurnIdentity = Readonly<{
 }>
 
 type RunningDelegateExecution = Readonly<{
-  accepted: Promise<void>
+  accepted: Promise<DelegateMessageAcceptanceEvidence>
   completion: Promise<DelegateExecutionOutcome>
   subscribe(listener: (event: DelegateExecutionEvent) => void): () => void
-  sendMessage(message: string, turn?: DelegateChildTurnIdentity): Promise<void>
+  sendMessage(
+    message: string,
+    turn?: DelegateChildTurnIdentity
+  ): Promise<DelegateMessageAcceptanceEvidence>
   setPermissionProfile(profile: PermissionProfileId): Promise<void>
   respondToPermission(response: DelegatePermissionResponse): Promise<void>
   cancel(): Promise<void>
@@ -116,7 +137,11 @@ type DelegateExecution = Readonly<{
   run(input: DelegateExecutionInput, slotId: string): RunningDelegateExecution
 }>
 
-export { DelegateExecutionError }
+export {
+  DelegateExecutionError,
+  DelegateMessageParkedError,
+  DelegateMessagePreAcceptanceError
+}
 export type {
   DelegateCapacityReservation,
   DelegateExecutionBackendClaim,
@@ -125,6 +150,7 @@ export type {
   DelegateExecutionErrorCode,
   DelegateExecutionEvent,
   DelegateExecutionInput,
+  DelegateMessageAcceptanceEvidence,
   DelegateChildTurnIdentity,
   DelegateExecutionOutcome,
   DelegatedExecutionModelAdmission,

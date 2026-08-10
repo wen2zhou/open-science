@@ -118,9 +118,11 @@ describe('notebook MCP server config', () => {
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('before the first delegation')
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('registered/documented topics')
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Nested delegation is unsupported')
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Delegate agents must not call')
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain("host.send_message('parent', message, kind?)")
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain("`'info'` or `'question'`")
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Delegate agents may call')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain(
+      "host.send_message('parent', message, options?)"
+    )
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('host.message_receipt')
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).not.toContain('{task')
 
     expect(REPL_EXECUTE_DOC).toContain("await host.help('delegate')")
@@ -374,8 +376,8 @@ describe('repl_execute tool', () => {
     expect(tool?.description).toContain('registered/documented topics')
     expect(tool?.description).toContain('host.send_message')
     expect(tool?.description).toContain('Nested delegation is unsupported')
-    expect(tool?.description).toContain('Delegate agents must not call')
-    expect(tool?.description).toContain("host.send_message('parent', message, kind?)")
+    expect(tool?.description).toContain('Delegate agents may call')
+    expect(tool?.description).toContain("host.send_message('parent', message, options?)")
   })
 
   it('forwards repl_execute input to the executeControl RPC method', async () => {

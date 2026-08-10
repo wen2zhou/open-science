@@ -188,24 +188,21 @@ describe('Session delegated-work adapter', () => {
       { ...caller, toolInvocationId: 'message-call' },
       'child-frame',
       'Additional evidence',
-      'info'
+      { kind: 'info' }
     )
 
     await expect
-      .poll(
-        async () => (await readSession()).runtimeContext?.delegatedWork?.records[0].pendingMessages
-      )
-      .toEqual([
+      .poll(async () => (await readSession()).runtimeContext?.delegatedWork?.messageCommands)
+      .toMatchObject([
         {
-          id: 'pending-1',
           sourceFrameId: rootFrameId,
           targetFrameId: 'child-frame',
           targetAttemptId: 'attempt-1',
           text: 'Additional evidence',
           kind: 'info',
-          callerSource: { rootMessageId: 'root-prompt', toolInvocationId: 'message-call' },
-          createdAt: 50,
-          deliveredAt: 50
+          requestId: 'message-call',
+          queuedAt: 50,
+          receipt: { status: 'accepted' }
         }
       ])
     expect(execution.control('attempt-1').deliveredMessages()).toEqual(['Additional evidence'])
@@ -1115,17 +1112,14 @@ describe('Session delegated-work adapter', () => {
       )
     ])
 
-    expect(outcomes.map(({ status }) => status).sort()).toEqual(['fulfilled', 'rejected'])
-    expect(outcomes.find(({ status }) => status === 'rejected')).toMatchObject({
-      reason: { code: 'conflict' }
-    })
+    expect(outcomes.map(({ status }) => status).sort()).toEqual(['fulfilled', 'fulfilled'])
     expect((await records.snapshot()).records[0].attempts).toHaveLength(2)
     expect(
       (await records.snapshot()).messages.filter(
         ({ frameId, role }) => frameId === 'child-frame' && role === 'user'
       )
     ).toHaveLength(2)
-    expect(execution.reservationCounts()).toEqual([1, 1, 1])
+    expect(execution.reservationCounts()).toEqual([1, 1])
   })
 
   it('publishes no running continuation when its atomic admission save fails', async () => {

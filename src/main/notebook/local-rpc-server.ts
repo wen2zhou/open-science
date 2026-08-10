@@ -153,7 +153,13 @@ type NotebookLocalRpcServerOptions = {
     Partial<
       Pick<
         DurableDelegatedWork,
-        'children' | 'collect' | 'stopChildren' | 'sendMessage' | 'submitOutput'
+        | 'children'
+        | 'collect'
+        | 'stopChildren'
+        | 'sendMessage'
+        | 'messageReceipt'
+        | 'resolveMessage'
+        | 'submitOutput'
       >
     >
   skillsService?: {
@@ -1534,14 +1540,61 @@ class NotebookLocalRpcServer {
         }
         const target = typeof params.target === 'string' ? params.target : ''
         const message = typeof params.message === 'string' ? params.message : ''
-        if (params.kind !== undefined && params.kind !== 'info' && params.kind !== 'question') {
-          throw new Error('host.send_message kind must be info or question.')
+        const rawOptions = params.options === undefined ? {} : params.options
+        if (!rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions)) {
+          throw new Error('host.send_message options must be an object.')
         }
-        const kind = params.kind === 'question' ? 'question' : 'info'
+        const messageOptions = rawOptions as Record<string, unknown>
+        if (
+          messageOptions.kind !== undefined &&
+          messageOptions.kind !== 'info' &&
+          messageOptions.kind !== 'question'
+        )
+          throw new Error('host.send_message kind must be info or question.')
+        if (
+          messageOptions.request_id !== undefined &&
+          typeof messageOptions.request_id !== 'string'
+        )
+          throw new Error('host.send_message request_id must be a string.')
+        if (
+          messageOptions.reply_to_message_id !== undefined &&
+          typeof messageOptions.reply_to_message_id !== 'string'
+        )
+          throw new Error('host.send_message reply_to_message_id must be a string.')
         if (!target || !message.trim()) {
           throw new Error('host.send_message requires a target Frame and non-empty message.')
         }
-        return this.delegatedWorkService.sendMessage(caller, target, message, kind)
+        return this.delegatedWorkService.sendMessage(caller, target, message, {
+          ...(messageOptions.kind ? { kind: messageOptions.kind as 'info' | 'question' } : {}),
+          ...(messageOptions.request_id ? { requestId: messageOptions.request_id as string } : {}),
+          ...(messageOptions.reply_to_message_id
+            ? { replyToMessageId: messageOptions.reply_to_message_id as string }
+            : {})
+        })
+      }
+      if (op === 'message_receipt') {
+        if (!this.delegatedWorkService.messageReceipt)
+          throw new Error('host.message_receipt is unavailable.')
+        const selector = typeof params.selector === 'string' ? params.selector : ''
+        const rawOptions = params.options === undefined ? {} : params.options
+        if (!selector || !rawOptions || typeof rawOptions !== 'object' || Array.isArray(rawOptions))
+          throw new Error('host.message_receipt requires a selector and options object.')
+        const timeout = (rawOptions as Record<string, unknown>).timeout_seconds
+        return this.delegatedWorkService.messageReceipt(
+          caller,
+          selector,
+          timeout === undefined ? {} : { timeoutSeconds: timeout as number }
+        )
+      }
+      if (op === 'resolve_message') {
+        if (!this.delegatedWorkService.resolveMessage)
+          throw new Error('host.resolve_message is unavailable.')
+        const messageId = typeof params.message_id === 'string' ? params.message_id : ''
+        if (!messageId || params.action !== 'acknowledge_uncertain')
+          throw new Error('host.resolve_message requires message_id and acknowledge_uncertain.')
+        return this.delegatedWorkService.resolveMessage(caller, messageId, {
+          action: 'acknowledge_uncertain'
+        })
       }
       if (op === 'children' || op === 'collect') {
         if (op === 'collect') {

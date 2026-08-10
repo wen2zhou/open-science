@@ -106,7 +106,8 @@ const createSessionDelegatedWorkRecords = (
           ...(input.executionModel ? { executionModel: input.executionModel } : {}),
           startedAt: input.startedAt,
           callerSource: input.callerSource,
-          initiatingTurnMessageId: input.initiatingTurnMessageId
+          initiatingTurnMessageId: input.initiatingTurnMessageId,
+          messageCommand: input.messageCommand
         })
       )
     },
@@ -276,25 +277,37 @@ const createSessionDelegatedWorkRecords = (
         })
       )
     },
-    async appendPendingMessage(frameId, attemptId, message) {
-      await mutate((expectedRevision) =>
-        options.commands.appendPendingMessage(key, {
+    async admitMessage(command) {
+      return mutate((expectedRevision) =>
+        options.commands.admitMessageCommand(key, { expectedRevision, command })
+      )
+    },
+    async markMessageDispatchStarted(
+      messageId,
+      dispatchStartedAt,
+      dispatchEpoch,
+      rootBranchId,
+      rootBranchRevision
+    ) {
+      return mutate((expectedRevision) =>
+        options.commands.startMessageDispatch(key, {
           expectedRevision,
-          frameId,
-          attemptId,
-          message
+          messageId,
+          dispatchStartedAt,
+          dispatchEpoch,
+          rootBranchId,
+          rootBranchRevision
         })
       )
     },
-    async markMessageDelivered(frameId, attemptId, messageId, deliveredAt) {
-      await mutate((expectedRevision) =>
-        options.commands.markMessageDelivered(key, {
-          expectedRevision,
-          frameId,
-          attemptId,
-          messageId,
-          deliveredAt
-        })
+    async settleMessage(messageId, receipt) {
+      return mutate((expectedRevision) =>
+        options.commands.settleMessage(key, { expectedRevision, messageId, receipt })
+      )
+    },
+    async acknowledgeUncertain(messageId) {
+      return mutate((expectedRevision) =>
+        options.commands.acknowledgeUncertainMessage(key, { expectedRevision, messageId })
       )
     },
     async startPendingTurn(
@@ -304,9 +317,9 @@ const createSessionDelegatedWorkRecords = (
       promptMessageId,
       runtimeSegmentId
     ) {
-      const pending = (await load()).runtimeContext?.delegatedWork?.records
-        .find((record) => record.agentFrameId === frameId)
-        ?.pendingMessages.find(({ id }) => id === pendingMessageId)
+      const pending = (await load()).runtimeContext?.delegatedWork?.messageCommands?.find(
+        ({ messageId }) => messageId === pendingMessageId
+      )
       await mutate((expectedRevision) =>
         options.commands.startPendingMessageTurn(key, {
           expectedRevision,
@@ -316,7 +329,7 @@ const createSessionDelegatedWorkRecords = (
           promptMessageId,
           runtimeSegmentId,
           frameworkId: options.frameworkId,
-          startedAt: pending?.createdAt ?? Date.now()
+          startedAt: pending?.queuedAt ?? Date.now()
         })
       )
       const session = await load()
@@ -363,9 +376,14 @@ const createSessionDelegatedWorkRecords = (
         ...graph,
         activeFrameId: graph.rootFrameId
       })
+      const rootFrame = graph.frames.find(({ id }) => id === graph.rootFrameId)
+      const rootBranch = graph.branches.find(({ id }) => id === rootFrame?.activeBranchId)
+      if (!rootBranch) throw new Error('Delegated Work Session has no active root Branch.')
       return {
         session: key,
         rootFrameId: graph.rootFrameId,
+        rootBranchId: rootBranch.id,
+        rootBranchRevision: `${rootBranch.id}:${rootBranch.createdAt}`,
         originMessageIds: rootMessages.map((message) => message.id),
         records: records.flatMap((record) => {
           const frame = graph.frames.find((candidate) => candidate.id === record.agentFrameId)
@@ -394,8 +412,7 @@ const createSessionDelegatedWorkRecords = (
                   ? { executionModel: structuredClone(attempt.executionModel) }
                   : {}),
                 runtimeSegmentIds: [...attempt.runtimeSegmentIds]
-              })),
-              pendingMessages: record.pendingMessages.map((message) => ({ ...message }))
+              }))
             }
           ]
         }),
@@ -419,7 +436,13 @@ const createSessionDelegatedWorkRecords = (
             ...(message.structuredOutputEvidenceInvalid
               ? { structuredOutputEvidenceInvalid: true as const }
               : {})
-          }))
+          })),
+        messageCommands: structuredClone(
+          session.runtimeContext?.delegatedWork?.messageCommands ?? []
+        ),
+        ...(session.runtimeContext?.delegatedWork?.messageCommandsQuarantine !== undefined
+          ? { messageCommandsQuarantined: true as const }
+          : {})
       }
     }
   }

@@ -22,10 +22,10 @@ import type {
   SessionLoadFailure,
   SessionLoadWarning,
   DelegatedWorkRecord,
-  DelegatedWorkAttemptRecord
+  DelegatedWorkAttemptRecord,
+  DelegatedMessageCommand
 } from '../../shared/session-persistence'
 import type {
-  AppendPendingMessageInput,
   AttachDelegatedMessageArtifactsInput,
   AttemptAgentEventInput,
   ChildRecord,
@@ -33,7 +33,9 @@ import type {
   CreateChildrenInput,
   CreatedChild,
   DelegatedWorkRecordCommands,
-  MarkMessageDeliveredInput,
+  AdmitMessageCommandInput,
+  SettleMessageInput,
+  StartMessageDispatchInput,
   SessionKey,
   StartContinuationAttemptInput,
   StartAttemptRuntimeInput,
@@ -71,6 +73,10 @@ import {
   type SessionPermissionGrantReconciliation,
   type SessionUploadPersistence
 } from './reconciliation-owner'
+import {
+  DelegatedWorkAttemptConflictError,
+  SessionMessageDeliveryPersistenceOwner
+} from './message-delivery-owner'
 
 type SessionMutationRepository = {
   loadAllWithDiagnostics(options?: { mode?: 'repair' | 'read-only' }): Promise<{
@@ -208,15 +214,6 @@ const recoverInterruptedDelegatedWorkSession = (
   }
 }
 
-class DelegatedWorkAttemptConflictError extends Error {
-  readonly code = 'attempt-conflict' as const
-
-  constructor() {
-    super('Attempt write rejected because its capability is no longer current and running.')
-    this.name = 'DelegatedWorkAttemptConflictError'
-  }
-}
-
 const persistedArtifactsEqual = (left: PersistedArtifact, right: PersistedArtifact): boolean =>
   Object.entries(right).every(([field, value]) => left[field as keyof PersistedArtifact] === value)
 
@@ -246,6 +243,7 @@ const emitRecoverableDiagnostic = (
 // Serializes authoritative session JSON and derived file-index mutations through one queue. This is
 // the consistency boundary that prevents a late save from racing or reviving a durable deletion.
 class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
+  private readonly messageDeliveryOwner = new SessionMessageDeliveryPersistenceOwner()
   private queue: Promise<unknown> = Promise.resolve()
   private readonly deletedSessions = new Set<string>()
   private readonly deletedProjects = new Set<string>()
@@ -588,7 +586,9 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
     mutate: (
       graph: PersistedConversationGraph,
       records: DelegatedWorkRecord[],
-      session: PersistedChatSession
+      session: PersistedChatSession,
+      messageCommands: DelegatedMessageCommand[],
+      messageCommandsQuarantined: boolean
     ) => Result
   ): Promise<Result> {
     return this.enqueue(async () => {
@@ -610,11 +610,27 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       const graph = structuredClone(materialized.conversationGraph)
       if (!graph) throw new Error('Session Conversation Graph could not be materialized.')
       const records = delegatedRecords(current)
-      const result = mutate(graph, records, materialized)
+      const messageCommands = Array.from(
+        structuredClone(current.delegatedWork?.messageCommands ?? [])
+      )
+      const messageCommandsQuarantined =
+        current.delegatedWork?.messageCommandsQuarantine !== undefined
+      const result = mutate(
+        graph,
+        records,
+        materialized,
+        messageCommands,
+        messageCommandsQuarantined
+      )
       const runtimeContext = sanitizeSessionRuntimeContext({
         ...current,
         revision: current.revision + 1,
-        delegatedWork: { records }
+        delegatedWork: messageCommandsQuarantined
+          ? {
+              records,
+              messageCommandsQuarantine: current.delegatedWork?.messageCommandsQuarantine
+            }
+          : { records, messageCommands }
       })
       if (!runtimeContext) throw new Error('Delegated Work mutation produced invalid state.')
       const updatedAt = Math.max(session.updatedAt + 1, Date.now())
@@ -716,7 +732,6 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
               startedAt: child.startedAt
             }
           ],
-          pendingMessages: []
         })
       }
       return input.children.map((child) => ({
@@ -731,62 +746,70 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
     key: SessionKey,
     input: StartContinuationAttemptInput
   ): Promise<CreatedChild> {
-    return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) => {
-      const record = records.find((candidate) => candidate.agentFrameId === input.frameId)
-      if (!record) throw new Error(`Delegate Frame not found: ${input.frameId}`)
-      const previous = currentAttempt(record)
-      if (previous.id !== input.previousAttemptId || previous.status === 'running') {
-        throw new DelegatedWorkAttemptConflictError()
+    return this.mutateDelegatedWork(
+      key,
+      input.expectedRevision,
+      (graph, records, _session, commands, quarantined) => {
+        if (quarantined) throw new Error('Reliable message owner is quarantined.')
+        const record = records.find((candidate) => candidate.agentFrameId === input.frameId)
+        if (!record) throw new Error(`Delegate Frame not found: ${input.frameId}`)
+        const previous = currentAttempt(record)
+        if (previous.id !== input.previousAttemptId || previous.status === 'running') {
+          throw new DelegatedWorkAttemptConflictError()
+        }
+        if (
+          records.some((candidate) =>
+            candidate.attempts.some(({ id }) => id === input.attemptId)
+          ) ||
+          graph.messages.some(({ id }) => id === input.messageId)
+        ) {
+          throw new Error('Continuation contains a duplicate durable identity.')
+        }
+        const frame = graph.frames.find((candidate) => candidate.id === input.frameId)
+        if (!frame) throw new Error(`Delegate Frame not found: ${input.frameId}`)
+        const rootPath = resolveActiveConversationMessages({
+          ...graph,
+          activeFrameId: graph.rootFrameId
+        })
+        if (
+          input.initiatingTurnMessageId !== input.callerSource.rootMessageId ||
+          !rootPath.some((message) => message.id === input.initiatingTurnMessageId)
+        ) {
+          throw new Error('Continuation Attempt initiating Turn is outside the active root Branch.')
+        }
+        const branch = graph.branches.find((candidate) => candidate.id === frame.activeBranchId)
+        if (!branch) throw new Error(`Delegate Branch not found: ${frame.activeBranchId}`)
+        graph.messages.push({
+          id: input.messageId,
+          role: 'user',
+          content: input.message,
+          status: 'complete',
+          eventIds: [],
+          agentFrameId: input.frameId,
+          introducedOnBranchId: branch.id,
+          ...(branch.headMessageId ? { parentMessageId: branch.headMessageId } : {}),
+          revisionRootMessageId: input.messageId,
+          delegatedCallerSource: input.callerSource,
+          createdAt: input.startedAt,
+          updatedAt: input.startedAt
+        })
+        branch.headMessageId = input.messageId
+        branch.updatedAt = input.startedAt
+        ;(record.attempts as DelegatedWorkAttemptRecord[]).push({
+          id: input.attemptId,
+          initiatingTurnMessageId: input.initiatingTurnMessageId,
+          status: 'running',
+          resolvedAgent: input.resolvedAgent,
+          ...(input.executionModel ? { executionModel: input.executionModel } : {}),
+          runtimeSegmentIds: [],
+          startedAt: input.startedAt
+        })
+        frame.status = 'running'
+        delete frame.completedAt
+        commands.push(structuredClone(input.messageCommand))
+        return { frameId: input.frameId, attemptId: input.attemptId, status: 'running' }
       }
-      if (
-        records.some((candidate) => candidate.attempts.some(({ id }) => id === input.attemptId)) ||
-        graph.messages.some(({ id }) => id === input.messageId)
-      ) {
-        throw new Error('Continuation contains a duplicate durable identity.')
-      }
-      const frame = graph.frames.find((candidate) => candidate.id === input.frameId)
-      if (!frame) throw new Error(`Delegate Frame not found: ${input.frameId}`)
-      const rootPath = resolveActiveConversationMessages({
-        ...graph,
-        activeFrameId: graph.rootFrameId
-      })
-      if (
-        input.initiatingTurnMessageId !== input.callerSource.rootMessageId ||
-        !rootPath.some((message) => message.id === input.initiatingTurnMessageId)
-      ) {
-        throw new Error('Continuation Attempt initiating Turn is outside the active root Branch.')
-      }
-      const branch = graph.branches.find((candidate) => candidate.id === frame.activeBranchId)
-      if (!branch) throw new Error(`Delegate Branch not found: ${frame.activeBranchId}`)
-      graph.messages.push({
-        id: input.messageId,
-        role: 'user',
-        content: input.message,
-        status: 'complete',
-        eventIds: [],
-        agentFrameId: input.frameId,
-        introducedOnBranchId: branch.id,
-        ...(branch.headMessageId ? { parentMessageId: branch.headMessageId } : {}),
-        revisionRootMessageId: input.messageId,
-        delegatedCallerSource: input.callerSource,
-        createdAt: input.startedAt,
-        updatedAt: input.startedAt
-      })
-      branch.headMessageId = input.messageId
-      branch.updatedAt = input.startedAt
-      ;(record.attempts as DelegatedWorkAttemptRecord[]).push({
-        id: input.attemptId,
-        initiatingTurnMessageId: input.initiatingTurnMessageId,
-        status: 'running',
-        resolvedAgent: input.resolvedAgent,
-        ...(input.executionModel ? { executionModel: input.executionModel } : {}),
-        runtimeSegmentIds: [],
-        startedAt: input.startedAt
-      })
-      frame.status = 'running'
-      delete frame.completedAt
-      return { frameId: input.frameId, attemptId: input.attemptId, status: 'running' }
-    })
+    )
   }
 
   startAttemptRuntime(key: SessionKey, input: StartAttemptRuntimeInput): Promise<void> {
@@ -985,137 +1008,64 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
     })
   }
 
-  appendPendingMessage(key: SessionKey, input: AppendPendingMessageInput): Promise<void> {
-    return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) => {
-      const { record } = assertCurrentRunningAttempt(records, input.frameId, input.attemptId)
-      const frame = graph.frames.find((candidate) => candidate.id === input.frameId)
-      if (!frame?.parentFrameId) throw new Error('Pending Message requires a delegate Frame.')
-      const downward =
-        input.message.sourceFrameId === frame.parentFrameId &&
-        input.message.sourceAttemptId === undefined &&
-        input.message.targetFrameId === frame.id &&
-        input.message.targetAttemptId === input.attemptId
-      const upward =
-        input.message.sourceFrameId === frame.id &&
-        input.message.sourceAttemptId === input.attemptId &&
-        input.message.targetFrameId === frame.parentFrameId &&
-        input.message.targetAttemptId === undefined
-      if (!downward && !upward) {
-        throw new Error('Pending Message does not match the authenticated parent relationship.')
-      }
-      if (
-        !input.message.id.trim() ||
-        !input.message.text.trim() ||
-        (input.message.kind !== 'info' && input.message.kind !== 'question') ||
-        !Number.isFinite(input.message.createdAt) ||
-        input.message.deliveredAt !== undefined
-      ) {
-        throw new Error('Pending Message is invalid at admission.')
-      }
-      if (
-        records.some((candidate) =>
-          candidate.pendingMessages.some(({ id }) => id === input.message.id)
-        )
-      ) {
-        throw new Error(`Pending Message already exists: ${input.message.id}`)
-      }
-      ;(record.pendingMessages as (typeof input.message)[]).push(structuredClone(input.message))
-    })
+  admitMessageCommand(
+    key: SessionKey,
+    input: AdmitMessageCommandInput
+  ): Promise<'admitted' | 'idempotent'> {
+    return this.mutateDelegatedWork(
+      key,
+      input.expectedRevision,
+      (_graph, _records, _session, commands, quarantined) =>
+        this.messageDeliveryOwner.admit(commands, quarantined, input)
+    )
   }
 
-  markMessageDelivered(key: SessionKey, input: MarkMessageDeliveredInput): Promise<void> {
-    return this.mutateDelegatedWork(key, input.expectedRevision, (_graph, records) => {
-      const { record } = assertCurrentRunningAttempt(records, input.frameId, input.attemptId)
-      const index = record.pendingMessages.findIndex((message) => message.id === input.messageId)
-      const message = record.pendingMessages[index]
-      if (!message) throw new Error(`Pending Message not found: ${input.messageId}`)
-      if (message.deliveredAt !== undefined) {
-        if (message.deliveredAt === input.deliveredAt) return
-        throw new Error('Pending Message delivery is immutable.')
-      }
-      if (input.deliveredAt < message.createdAt)
-        throw new Error('Message delivery precedes creation.')
-      ;(record.pendingMessages as (typeof message)[])[index] = {
-        ...message,
-        deliveredAt: input.deliveredAt
-      }
-    })
+  startMessageDispatch(
+    key: SessionKey,
+    input: StartMessageDispatchInput
+  ): Promise<'started' | 'terminal' | 'blocked'> {
+    return this.mutateDelegatedWork(
+      key,
+      input.expectedRevision,
+      (graph, _records, _session, commands, quarantined) =>
+        this.messageDeliveryOwner.startDispatch(graph, commands, quarantined, input)
+    )
+  }
+
+  settleMessage(key: SessionKey, input: SettleMessageInput): Promise<'settled' | 'terminal'> {
+    return this.mutateDelegatedWork(
+      key,
+      input.expectedRevision,
+      (_graph, _records, _session, commands, quarantined) =>
+        this.messageDeliveryOwner.settle(commands, quarantined, input)
+    )
+  }
+
+  acknowledgeUncertainMessage(
+    key: SessionKey,
+    input: Readonly<{ expectedRevision: number; messageId: string }>
+  ): Promise<'acknowledged' | 'terminal'> {
+    return this.mutateDelegatedWork(
+      key,
+      input.expectedRevision,
+      (_graph, _records, _session, commands, quarantined) =>
+        this.messageDeliveryOwner.acknowledge(commands, quarantined, input.messageId)
+    )
   }
 
   startPendingMessageTurn(key: SessionKey, input: StartPendingMessageTurnInput): Promise<void> {
-    return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) => {
-      const { record, attempt } = assertCurrentRunningAttempt(
-        records,
-        input.frameId,
-        input.attemptId
-      )
-      const pending = record.pendingMessages.find(({ id }) => id === input.pendingMessageId)
-      if (
-        !pending ||
-        pending.sourceFrameId === input.frameId ||
-        pending.targetFrameId !== input.frameId ||
-        pending.targetAttemptId !== input.attemptId ||
-        !pending.callerSource
-      ) {
-        throw new Error('Pending child Turn has no authenticated Main caller source.')
-      }
-      if (
-        graph.messages.some(({ id }) => id === input.promptMessageId) ||
-        graph.runtimeSegments.some(({ id }) => id === input.runtimeSegmentId)
-      ) {
-        throw new Error('Pending child Turn contains a duplicate durable identity.')
-      }
-      const frame = graph.frames.find(({ id }) => id === input.frameId)
-      const branch = graph.branches.find(({ id }) => id === frame?.activeBranchId)
-      if (!frame || !branch) throw new Error('Pending child Turn has no active Branch.')
-      graph.runtimeSegments.push({
-        id: input.runtimeSegmentId,
-        agentFrameId: input.frameId,
-        frameworkId: input.frameworkId,
-        startedAt: input.startedAt
-      })
-      graph.messages.push({
-        id: input.promptMessageId,
-        role: 'user',
-        content: pending.text,
-        status: 'complete',
-        eventIds: [],
-        delegatedCallerSource: pending.callerSource,
-        agentFrameId: input.frameId,
-        introducedOnBranchId: branch.id,
-        ...(branch.headMessageId ? { parentMessageId: branch.headMessageId } : {}),
-        revisionRootMessageId: input.promptMessageId,
-        runtimeSegmentId: input.runtimeSegmentId,
-        createdAt: input.startedAt,
-        updatedAt: input.startedAt
-      })
-      branch.headMessageId = input.promptMessageId
-      branch.updatedAt = input.startedAt
-      const attempts = record.attempts as DelegatedWorkAttemptRecord[]
-      attempts[attempts.length - 1] = {
-        ...attempt,
-        runtimeSegmentIds: [...attempt.runtimeSegmentIds, input.runtimeSegmentId]
-      }
-    })
+    return this.mutateDelegatedWork(
+      key,
+      input.expectedRevision,
+      (graph, records, _session, commands) =>
+        this.messageDeliveryOwner.startChildTurn(graph, records, commands, input)
+    )
   }
 
   completeChildTurn(key: SessionKey, input: CompleteChildTurnInput): Promise<void> {
-    return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) => {
-      const { attempt } = assertCurrentRunningAttempt(records, input.frameId, input.attemptId)
-      if (!attempt.runtimeSegmentIds.includes(input.runtimeSegmentId)) {
-        throw new Error('Child Turn Runtime Segment is outside the Attempt.')
-      }
-      const segment = graph.runtimeSegments.find(
-        ({ id, agentFrameId }) => id === input.runtimeSegmentId && agentFrameId === input.frameId
-      )
-      if (!segment) throw new Error('Child Turn Runtime Segment is missing.')
-      if (segment.endedAt !== undefined) {
-        if (segment.endedAt === input.endedAt) return
-        throw new Error('Child Turn Runtime Segment completion is immutable.')
-      }
-      if (input.endedAt < segment.startedAt) throw new Error('Child Turn ends before it starts.')
-      segment.endedAt = input.endedAt
-    })
+    return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) =>
+      this.messageDeliveryOwner.completeChildTurn(graph, records, input)
+    )
   }
 
   attachDelegatedMessageArtifacts(
