@@ -107,6 +107,10 @@ type PendingSessionDrain = {
   resolve: () => void
 }
 
+type RootAdmissionLease = {
+  release: () => void
+}
+
 // Keeps each framework generation in its own AcpRuntime. Framework changes preserve active turns, then
 // retire their runtime so every later turn resumes through the newly selected framework.
 class AcpRuntimeCoordinator {
@@ -134,6 +138,7 @@ class AcpRuntimeCoordinator {
   private readonly activePromptCounts = new Map<string, number>()
   private readonly interactionReleaseWaiters = new Map<string, Set<() => void>>()
   private readonly rootAdmissionTails = new Map<string, Promise<void>>()
+  private readonly activeRootAdmissions = new Map<string, RootAdmissionLease>()
   private promptAdmissionGuard?: (sessionId: string) => Promise<void>
   private promptAdmissionClosedForQuit = false
   private readonly pendingSessionAdoptions = new Map<string, AcpRuntime>()
@@ -634,12 +639,16 @@ class AcpRuntimeCoordinator {
     acceptance?: PromptAcceptance
   ): ReturnType<AcpRuntime['sendPrompt']> {
     if (this.promptAdmissionClosedForQuit) return this.rejectPromptForQuit()
-    return this.linearizeRootAdmission(request.sessionId, async () => {
-      await this.promptAdmissionGuard?.(request.sessionId)
-      return this.dispatchPrompt(request, acceptance, 'sendPrompt').finally(() =>
-        this.delegatedWork?.wakeMessages?.(request.sessionId)
+    const dispatch = (): ReturnType<AcpRuntime['sendPrompt']> =>
+      this.linearizeRootAdmission(request.sessionId, () =>
+        this.dispatchPrompt(request, acceptance, 'sendPrompt').finally(() =>
+          this.delegatedWork?.wakeMessages?.(request.sessionId)
+        )
       )
-    })
+    const admission = this.promptAdmissionGuard?.(request.sessionId)
+    return admission
+      ? admission.then(dispatch)
+      : dispatch()
   }
 
   sendAppContinuation(request: AcpPromptRequest): ReturnType<AcpRuntime['sendAppContinuation']> {
@@ -653,11 +662,35 @@ class AcpRuntimeCoordinator {
     operation: () => Promise<Result>
   ): Promise<Result> {
     const previous = this.rootAdmissionTails.get(sessionId)
-    const result = previous ? previous.catch(() => undefined).then(operation) : operation()
-    const tail = result.then(
-      () => undefined,
-      () => undefined
-    )
+    let resolveGate!: () => void
+    const gate = new Promise<void>((resolve) => {
+      resolveGate = resolve
+    })
+    let released = false
+    const lease: RootAdmissionLease = {
+      release: () => {
+        if (released) return
+        released = true
+        if (this.activeRootAdmissions.get(sessionId) === lease) {
+          this.activeRootAdmissions.delete(sessionId)
+        }
+        resolveGate()
+      }
+    }
+    const run = (): Promise<Result> => {
+      this.activeRootAdmissions.set(sessionId, lease)
+      let result: Promise<Result>
+      try {
+        result = operation()
+      } catch (error) {
+        result = Promise.reject(error)
+      }
+      void result.then(lease.release, lease.release)
+      return result
+    }
+    const ready = previous?.catch(() => undefined)
+    const result = ready ? ready.then(run) : run()
+    const tail = ready ? ready.then(() => gate) : gate
     this.rootAdmissionTails.set(sessionId, tail)
     void tail
       .finally(() => {
@@ -778,6 +811,7 @@ class AcpRuntimeCoordinator {
     }
     const initiatingTurnMessageId = this.activePromptRequests.get(request.sessionId)?.request
       .provenanceContext?.promptMessageId
+    const cancelledAdmission = this.activeRootAdmissions.get(request.sessionId)
     // Production delegated-work establishes its admission fence synchronously before this call
     // returns a Promise. Keep the pinned child stops in flight so a cleanup failure cannot prevent
     // the root Attempt from being invalidated and cancelled.
@@ -790,6 +824,7 @@ class AcpRuntimeCoordinator {
       Promise.resolve().then(() => this.runtimeForSession(request.sessionId).cancelPrompt(request)),
       delegatedCancellation
     ])
+    cancelledAdmission?.release()
     if (rootCancellation.status === 'rejected') throw rootCancellation.reason
     if (childCancellation.status === 'rejected') throw childCancellation.reason
     return this.getSnapshot()
@@ -798,8 +833,10 @@ class AcpRuntimeCoordinator {
   async stopPromptForHandoff(sessionId: string): Promise<void> {
     // Supersede the old turn exactly like user cancellation, but do not emit the user-generation
     // cancellation callback: that callback marks the approved handoff itself cancelled.
+    const cancelledAdmission = this.activeRootAdmissions.get(sessionId)
     this.invalidateSessionTurn(sessionId, false)
     await this.runtimeForSession(sessionId).cancelPrompt({ sessionId })
+    cancelledAdmission?.release()
   }
 
   // Resolves only when the coordinator no longer owns either a pending prompt start or an attached
@@ -1083,6 +1120,12 @@ class AcpRuntimeCoordinator {
       sessionId,
       (this.sessionCancellationGenerations.get(sessionId) ?? 0) + 1
     )
+    this.pendingPromptStarts.delete(sessionId)
+    const activePrompt = this.activePromptRequests.get(sessionId)
+    if (activePrompt && activePrompt.turnToken === undefined) {
+      this.activePromptRequests.delete(sessionId)
+    }
+    this.notifyInteractionRelease(sessionId)
     if (notifyCancellation) this.teardownCallbacks.onSessionCancellationRequested?.(sessionId)
   }
 

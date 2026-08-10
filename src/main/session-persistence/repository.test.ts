@@ -166,6 +166,93 @@ describe('session persistence repository (per-session files)', () => {
     })
   })
 
+  it('keeps the Session catalog readable after a post-fence receipt save fails', async () => {
+    const receiptCommitFailure = new Error('injected receipt commit failure')
+    let rejectReplacement = false
+    const renameFile = vi.fn((source: string, destination: string) =>
+      rejectReplacement ? Promise.reject(receiptCommitFailure) : rename(source, destination)
+    )
+    const repository = new SessionRepository(await createStorageRoot(), { renameFile })
+    const queued = createSession({
+      runtimeContext: {
+        version: 1,
+        revision: 3,
+        delegatedWork: {
+          records: [],
+          messageCommands: [
+            {
+              messageId: 'message-post-fence',
+              requestId: 'e2e-child-post-fence',
+              sourcePrincipal: 'child-frame\u0000child-attempt',
+              canonicalDigest: 'a'.repeat(64),
+              sourceFrameId: 'child-frame',
+              sourceAttemptId: 'child-attempt',
+              targetFrameId: 'root-frame-session-1',
+              rootOriginMessageId: 'message-1',
+              callerRootMessageId: 'message-1',
+              rootPromptMessageId: 'root-prompt-post-fence',
+              rootBranchId: 'root-branch-session-1',
+              rootBranchRevision: 'root-branch-session-1:1710000000000',
+              direction: 'to_parent',
+              disposition: 'message',
+              text: 'Trigger reliable post-fence persistence failure',
+              kind: 'info',
+              laneSequence: 1,
+              queuedAt: 1710000000101,
+              receipt: {
+                status: 'queued',
+                dispatchStartedAt: 1710000000102,
+                dispatchEpoch: 'message-post-fence-dispatch'
+              }
+            }
+          ]
+        }
+      }
+    })
+    await repository.saveSession(queued)
+    rejectReplacement = true
+    await expect(
+      repository.saveSession({
+        ...queued,
+        runtimeContext: {
+          ...queued.runtimeContext!,
+          revision: 4,
+          delegatedWork: {
+            ...queued.runtimeContext!.delegatedWork!,
+            messageCommands: queued.runtimeContext!.delegatedWork!.messageCommands!.map(
+              (command) => ({
+                ...command,
+                receipt: {
+                  status: 'accepted' as const,
+                  acceptedAt: 1710000000103,
+                  evidence: 'provider_prompt_accepted' as const
+                }
+              })
+            )
+          }
+        }
+      })
+    ).rejects.toBe(receiptCommitFailure)
+
+    await expect(repository.loadAllWithDiagnostics()).resolves.toMatchObject({
+      isComplete: true,
+      result: {
+        sessions: [
+          {
+            id: queued.id,
+            runtimeContext: {
+              delegatedWork: {
+                messageCommands: [
+                  { receipt: { status: 'queued', dispatchStartedAt: 1710000000102 } }
+                ]
+              }
+            }
+          }
+        ]
+      }
+    })
+  })
+
   it('retries a transient Windows file-replacement denial without losing the Session save', async () => {
     const renameFile = vi
       .fn<(source: string, destination: string) => Promise<void>>()

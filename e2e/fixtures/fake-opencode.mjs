@@ -598,10 +598,12 @@ if (process.argv.includes('--version')) {
           await delay(500)
           reply = 'Reliable post-fence source turn completed.'
         } else if (prompt.includes(RELIABLE_FAILURE_OBSERVE_PROMPT)) {
+          const messageId = prompt.match(/Message ID (message-[a-f0-9]+)/u)?.[1]
+          if (!messageId) throw new Error('Reliable post-fence Message identity is unavailable.')
           const receipt = controlResultValue(
             await executeControlCode(
               context.params.sessionId,
-              `return await host.message_receipt("e2e-child-post-fence", { timeout_seconds: 0 })`
+              `return await host.message_receipt(${JSON.stringify(messageId)}, { timeout_seconds: 0 })`
             )
           )
           if (receipt.status !== 'uncertain') {

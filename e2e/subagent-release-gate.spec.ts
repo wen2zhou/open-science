@@ -644,9 +644,21 @@ test('recovers a post-fence receipt persistence failure as uncertain after resta
   expect(sessionId).toEqual(expect.any(String))
   page = await app.restart()
   await openProjectSession(page, 'Reliable failure window release gate', RELIABLE_FAILURE_PROMPT)
+  const messageId = await page.evaluate(
+    async ({ projectId, sessionId }) => {
+      const loaded = await window.api.sessions.loadAll()
+      return loaded.sessions
+        .find((candidate) => candidate.projectId === projectId && candidate.id === sessionId)
+        ?.runtimeContext?.delegatedWork?.messageCommands?.find(
+          ({ requestId }) => requestId === 'e2e-child-post-fence'
+        )?.messageId
+    },
+    { projectId, sessionId: sessionId! }
+  )
+  expect(messageId).toEqual(expect.any(String))
   await sendPrompt(
     page,
-    RELIABLE_FAILURE_OBSERVE_PROMPT,
+    `${RELIABLE_FAILURE_OBSERVE_PROMPT} Message ID ${messageId}`,
     'Reliable post-fence uncertainty recovered.',
     120_000
   )

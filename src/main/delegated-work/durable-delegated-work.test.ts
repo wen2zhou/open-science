@@ -792,6 +792,72 @@ describe('durable delegated work', () => {
     ).rejects.toMatchObject({ code: 'authorization' })
   })
 
+  it('never redispatches a fenced upward message when receipt settlement is temporarily unavailable', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const durableRecords = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    let settlementAvailable = false
+    let settlementAttempts = 0
+    const records: typeof durableRecords = {
+      ...durableRecords,
+      async settleMessage(messageId, receipt) {
+        settlementAttempts += 1
+        if (!settlementAvailable) throw new Error('receipt commit unavailable')
+        return durableRecords.settleMessage(messageId, receipt)
+      }
+    }
+    let deliveries = 0
+    const work = createDurableDelegatedWork({
+      execution,
+      records,
+      deliverToParent: async (delivery) => {
+        expect(await delivery.startDispatch()).toBe('started')
+        deliveries += 1
+        return 'provider_prompt_accepted'
+      }
+    })
+    const delegated = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+    const child = delegated.children[0]
+
+    await work.sendMessage(
+      {
+        session: caller.session,
+        frameId: child.frameId,
+        attemptId: child.attemptId,
+        role: 'delegate',
+        originMessageId: caller.originMessageId,
+        toolInvocationId: 'post-fence-settlement-failure'
+      },
+      'parent',
+      'Provider accepted this once.'
+    )
+    await expect.poll(() => settlementAttempts).toBe(2)
+    expect(deliveries).toBe(1)
+
+    await work.wakeMessages()
+    await Promise.resolve()
+    expect(settlementAttempts).toBe(2)
+    expect(deliveries).toBe(1)
+
+    settlementAvailable = true
+    await work.wakeMessages()
+    await expect
+      .poll(async () => (await records.snapshot()).messageCommands[0].receipt.status)
+      .toBe('queued')
+    expect(deliveries).toBe(1)
+
+    await work.recoverInterrupted()
+    await expect
+      .poll(async () => (await records.snapshot()).messageCommands[0].receipt.status)
+      .toBe('uncertain')
+    expect(deliveries).toBe(1)
+  })
+
   it('deduplicates one successful message invocation by identity, not by text', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({

@@ -487,6 +487,14 @@ export class ReliableMessageDeliveryOwner {
     const prepared = this.preparedContinuations.get(command.messageId)
     let dispatchStarted = false
     try {
+      // A durable dispatch marker means the side effect may already have happened. Only restart
+      // recovery may convert that fenced command to uncertain; ordinary wakeups must never replay it.
+      if (
+        command.receipt.status === 'queued' &&
+        command.receipt.dispatchStartedAt !== undefined
+      ) {
+        return false
+      }
       if (command.direction === 'to_parent') {
         if (!this.options.deliverToParent || !command.sourceAttemptId) {
           await this.fail(command.messageId, 'root_runtime_unavailable', 'parent app-owned message delivery is unavailable')

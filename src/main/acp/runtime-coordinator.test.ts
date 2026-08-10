@@ -1338,6 +1338,89 @@ describe('AcpRuntimeCoordinator', () => {
     expect(onSessionTurnStarted).toHaveBeenCalledOnce()
   })
 
+  it('preserves an already-queued upward continuation when cancelling its active predecessor', async () => {
+    const cancelledPromptStart = createDeferred<void>()
+    let promptAttempt = 0
+    let created!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      created = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1'],
+        callbacks,
+        beforePromptStart: () =>
+          promptAttempt++ === 0 ? cancelledPromptStart.promise : Promise.resolve()
+      })
+      return created.runtime
+    })
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    const cancelled = coordinator.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'active predecessor'
+    })
+    const upward = coordinator.startContinuationWhen(
+      { sessionId: session.sessionId, text: 'queued child message' },
+      async () => undefined
+    )
+
+    await coordinator.cancelPrompt({ sessionId: session.sessionId })
+    await coordinator.sendPrompt({ sessionId: session.sessionId, text: 'later user prompt' })
+
+    expect(created.sendAppContinuation).toHaveBeenCalledOnce()
+    expect(created.sendAppContinuation.mock.invocationCallOrder[0]).toBeLessThan(
+      created.sendPrompt.mock.invocationCallOrder[1]
+    )
+    cancelledPromptStart.resolve()
+    await cancelled
+    await upward
+  })
+
+  it('does not release a queued continuation that becomes active while cancellation settles', async () => {
+    const activePrompt = createDeferred<{ stopReason: string }>()
+    const upwardContinuation = createDeferred<{ stopReason: string }>()
+    let promptRun = 0
+    let created!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      created = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: ['session-1'],
+        callbacks,
+        prompt: () =>
+          promptRun++ === 0
+            ? activePrompt.promise
+            : promptRun === 2
+              ? upwardContinuation.promise
+              : Promise.resolve({ stopReason: 'end_turn' })
+      })
+      return created.runtime
+    })
+    const session = await coordinator.createSession({ cwd: '/workspace' })
+    const active = coordinator.sendPrompt({ sessionId: session.sessionId, text: 'active prompt' })
+    const upward = coordinator.startContinuationWhen(
+      { sessionId: session.sessionId, text: 'queued child message' },
+      async () => undefined
+    )
+    created.cancelPrompt.mockImplementationOnce(async () => {
+      activePrompt.resolve({ stopReason: 'cancelled' })
+      await vi.waitFor(() => expect(created.sendAppContinuation).toHaveBeenCalledOnce())
+      return created.runtime.getSnapshot()
+    })
+
+    await coordinator.cancelPrompt({ sessionId: session.sessionId })
+    await vi.waitFor(() => expect(created.sendAppContinuation).toHaveBeenCalledOnce())
+    const laterUser = coordinator.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'later user prompt'
+    })
+    await Promise.resolve()
+    expect(created.sendPrompt).toHaveBeenCalledOnce()
+
+    upwardContinuation.resolve({ stopReason: 'end_turn' })
+    await active
+    await upward
+    await laterUser
+    expect(created.sendPrompt).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps detached conversation grants visible and revocable during framework rotation', async () => {
     const created: ReturnType<typeof createFakeRuntime>[] = []
     let store: ConversationPermissionGrantStore | undefined
