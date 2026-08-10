@@ -179,6 +179,7 @@ import type {
 import type {
   DeleteSessionRequest,
   LoadAllSessionsResult,
+  LoadSessionRequest,
   PersistedChatSession,
   SaveSessionOptions,
   SaveSessionManifestRequest,
@@ -398,6 +399,7 @@ export interface OpenScienceAPI {
   }
   sessions: {
     loadAll(): Promise<LoadAllSessionsResult>
+    loadOne(request: LoadSessionRequest): Promise<PersistedChatSession | undefined>
     saveSession(
       session: PersistedChatSession,
       options?: SaveSessionOptions

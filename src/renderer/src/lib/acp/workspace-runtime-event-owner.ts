@@ -355,10 +355,16 @@ const refreshDelegatedWorkSessions = async (
   isCancelled: () => boolean = () => false
 ): Promise<void> => {
   const liveSessionIds = new Set(sessionIds)
-  const { sessions } = await window.api.sessions.loadAll()
+  const requests = useSessionStore
+    .getState()
+    .sessions.filter((session) => liveSessionIds.has(session.id))
+    .map(({ id: sessionId, projectId }) => ({ projectId, sessionId }))
+  const sessions = await Promise.all(
+    requests.map((request) => window.api.sessions.loadOne(request))
+  )
   if (isCancelled()) return
   for (const session of sessions) {
-    if (liveSessionIds.has(session.id) && session.runtimeContext?.delegatedWork) {
+    if (session?.runtimeContext?.delegatedWork) {
       useSessionStore.getState().upsertPersistedSession(session)
     }
   }

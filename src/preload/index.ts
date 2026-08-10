@@ -160,6 +160,8 @@ const api: OpenScienceAPI = {
   sessions: {
     // Loads every per-session file plus the last-open manifest from the main process.
     loadAll: () => electronRendererContracts.invoke('sessions.loadAll'),
+    // Loads one durable Session without scanning unrelated Project/Session files.
+    loadOne: (request) => electronRendererContracts.invoke('sessions.loadOne', request),
     // Persists a single sanitized session file.
     saveSession: (session, options) =>
       electronRendererContracts.invoke('sessions.saveSession', session, options),

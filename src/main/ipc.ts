@@ -640,6 +640,10 @@ const createApplicationModules = async (
   const sessionPersistenceBackend: SessionPersistenceBackend = {
     loadAll: () =>
       loadSessionsAfterProjectRecovery(projectDeletionCoordinator, sessionPersistenceCoordinator),
+    loadOne: async ({ projectId, sessionId }) => {
+      await projectDeletionCoordinator.recoverPendingDeletions()
+      return sessionRepository.loadSession(projectId, sessionId)
+    },
     saveSession: async (session, options) => {
       await projectDeletionCoordinator.recoverPendingDeletions()
       const created =

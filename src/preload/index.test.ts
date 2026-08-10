@@ -49,6 +49,7 @@ type PreloadApi = {
   }
   sessions: {
     loadAll: () => unknown
+    loadOne: (request: unknown) => unknown
     saveSession: (session: unknown, options?: unknown) => unknown
     deleteSession: (request: unknown) => unknown
     saveManifest: (request: unknown) => unknown
@@ -396,6 +397,7 @@ describe('preload bridge — public surface inventory', () => {
       'sessions.deleteSession',
       'sessions.exportConversation',
       'sessions.loadAll',
+      'sessions.loadOne',
       'sessions.onCreated',
       'sessions.onDeleted',
       'sessions.onFlushRequest',
@@ -675,7 +677,7 @@ describe('preload bridge — core renderer contract catalog', () => {
       'uploads',
       'window'
     ])
-    expect(coreContracts).toHaveLength(147)
+    expect(coreContracts).toHaveLength(148)
     expect({
       requests: coreContracts.filter(
         ({ dispatchPolicy }) => dispatchPolicy.electron === 'electron-ipc-request'
@@ -687,16 +689,16 @@ describe('preload bridge — core renderer contract catalog', () => {
       surfaceNative: coreContracts.filter(
         ({ dispatchPolicy }) => dispatchPolicy.electron === 'surface-native'
       ).length
-    }).toEqual({ requests: 108, events: 28, sends: 10, surfaceNative: 1 })
+    }).toEqual({ requests: 109, events: 28, sends: 10, surfaceNative: 1 })
   })
 
-  it('routes all 108 request methods through their cataloged Electron channels', async () => {
+  it('routes all 109 request methods through their cataloged Electron channels', async () => {
     const requestContracts = coreContracts.filter(
       ({ dispatchPolicy }) => dispatchPolicy.electron === 'electron-ipc-request'
     )
     const localFile = { name: 'catalog.csv' } as File
 
-    expect(requestContracts).toHaveLength(108)
+    expect(requestContracts).toHaveLength(109)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()
@@ -1025,6 +1027,12 @@ const cases: ForwardingCase[] = [
     invoke: (a) => a.sessions.loadAll(),
     channel: 'sessions:load-all',
     args: []
+  },
+  {
+    name: 'sessions.loadOne → sessions:load-one',
+    invoke: (a) => a.sessions.loadOne(sampleDeleteSession),
+    channel: 'sessions:load-one',
+    args: [sampleDeleteSession]
   },
   {
     name: 'sessions.saveSession → sessions:save-session',

@@ -3,6 +3,7 @@ import { ipcMainHandle } from '../ipc-handler-registry'
 import type {
   DeleteSessionRequest,
   LoadAllSessionsResult,
+  LoadSessionRequest,
   PersistedChatSession,
   SaveSessionOptions,
   SaveSessionManifestRequest,
@@ -20,6 +21,7 @@ import type { SessionMetadataSnapshot } from './coordinator'
 
 type SessionPersistenceBackend = {
   loadAll: () => Promise<LoadAllSessionsResult>
+  loadOne: (request: LoadSessionRequest) => Promise<PersistedChatSession | undefined>
   saveSession: (
     session: PersistedChatSession,
     options?: SaveSessionOptions
@@ -31,6 +33,7 @@ type SessionPersistenceBackend = {
 
 type SessionPersistenceHandlers = {
   loadAll: () => Promise<LoadAllSessionsResult>
+  loadOne: (request: LoadSessionRequest) => Promise<PersistedChatSession | undefined>
   saveSession: (
     session: PersistedChatSession,
     options?: SaveSessionOptions
@@ -113,6 +116,7 @@ const createSessionPersistenceHandlers = (
   void reviewRepository
   return {
     loadAll: () => repository.loadAll(),
+    loadOne: (request) => repository.loadOne(request),
     saveSession: (session, options) =>
       options ? repository.saveSession(session, options) : repository.saveSession(session),
     updateArchive: (request) => {
@@ -148,6 +152,9 @@ const registerSessionPersistenceIpcHandlers = (
   // loadAll can replay pending deletions and every mutation can materialize provenance/upload bytes.
   // Hold the shared data-root lease at the IPC boundary so migration drains the complete operation.
   ipcMainHandle('sessions:load-all', () => withDataRootWrite(() => handlers.loadAll()))
+  ipcMainHandle('sessions:load-one', (_event, request: LoadSessionRequest) =>
+    withDataRootWrite(() => handlers.loadOne(request))
+  )
   ipcMainHandle(
     'sessions:save-session',
     async (event, session: PersistedChatSession, options?: SaveSessionOptions) => {

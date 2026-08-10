@@ -3090,6 +3090,11 @@ export type LoadAllSessionsResult = {
   diagnostics?: SessionLoadDiagnostics
 }
 
+export type LoadSessionRequest = {
+  projectId: string
+  sessionId: string
+}
+
 export type DeleteSessionRequest = {
   projectId: string
   sessionId: string
