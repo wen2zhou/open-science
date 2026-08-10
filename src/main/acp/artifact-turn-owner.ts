@@ -22,6 +22,7 @@ type ArtifactTurnProvenanceContext = {
   messageAncestry?: string[]
   runtimeSegmentId?: string
   promptMessageId?: string
+  originMessageId?: string
 }
 
 type OpenExecutionArtifactTurnRequest = {
@@ -124,6 +125,7 @@ type ArtifactTurnOwnerOptions = {
             messageBranchId: string
             runtimeSegmentId: string
             promptMessageId: string
+            originMessageId?: string
           }
         | undefined
     ) => void
@@ -145,6 +147,7 @@ type ArtifactTurn = {
   messageAncestry: string[]
   runtimeSegmentId: string
   promptMessageId: string
+  originMessageId?: string
   agentName: string
   rpcCapabilityToken?: string
   notebookArtifactSourceScope?: NotebookArtifactSourceScope
@@ -230,7 +233,8 @@ class ArtifactTurnOwner {
             agentFrameId: turn.agentFrameId,
             messageBranchId: turn.messageBranchId,
             runtimeSegmentId: turn.runtimeSegmentId,
-            promptMessageId: turn.promptMessageId
+            promptMessageId: turn.promptMessageId,
+            ...(turn.originMessageId ? { originMessageId: turn.originMessageId } : {})
           })
         }
       } catch (error) {
@@ -431,6 +435,9 @@ class ArtifactTurnOwner {
       runtimeSegmentId:
         request.provenanceContext?.runtimeSegmentId ?? `runtime-segment-${this.runtimeInstanceId}`,
       promptMessageId,
+      ...(request.provenanceContext?.originMessageId
+        ? { originMessageId: request.provenanceContext.originMessageId }
+        : {}),
       agentName: request.agentName,
       phase: 'open',
       inFlightAppWrites: new Set(),

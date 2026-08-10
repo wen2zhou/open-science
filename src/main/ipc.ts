@@ -1280,6 +1280,7 @@ const createApplicationModules = async (
             suppressUserMessage: true,
             provenanceContext: {
               promptMessageId: delivery.rootPromptMessageId,
+              originMessageId: delivery.originMessageId,
               rootFrameId: graph.rootFrameId,
               agentFrameId: graph.rootFrameId,
               messageBranchId: delivery.rootBranchId,

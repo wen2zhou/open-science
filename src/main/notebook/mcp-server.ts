@@ -16,6 +16,9 @@ import { fetchLocalRpc, type LocalRpcTransport } from '../local-rpc-transport'
 const NOTEBOOK_MCP_SERVER_NAME = 'open-science-notebook'
 const MAX_RUNTIME_RESULTS = 40
 const MAX_ENVIRONMENT_RESULTS = 30
+// Host SDK bounded observations allow 30 minutes. Keep the outer control REPL alive slightly longer
+// so its default deadline cannot destroy the kernel while collect/message_receipt is still valid.
+const REPL_EXECUTE_DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000 + 15_000
 
 const HOST_SDK_DISCOVERY_GUIDANCE =
   "Host SDK discovery (use from `repl_execute`): `await host.help()` lists registered/documented topics; query an exact operation instead of guessing its arguments or results. Main/root agents must call `await host.help('delegate')` before the first delegation and follow that returned contract. Nested delegation is unsupported: Delegate agents may call `await host.send_message('parent', message, options?)`; use `host.message_receipt` to observe delivery."
@@ -66,7 +69,7 @@ const executeToolSchema = {
 
 const replExecuteToolSchema = {
   code: z.string(),
-  timeoutMs: z.number().int().positive().optional()
+  timeoutMs: z.number().int().positive().default(REPL_EXECUTE_DEFAULT_TIMEOUT_MS)
 }
 
 const bashExecuteToolSchema = {
@@ -174,7 +177,7 @@ const REPL_EXECUTE_DOC = [
   'Only this kernel can call connectors (`await host.mcp(server, method, args)`) and remote compute (`host.compute`; load its skill for the API).',
   HOST_SDK_DISCOVERY_GUIDANCE,
   'Only this kernel can call connectors (`await host.mcp(server, method, args)`), remote compute (`host.compute`; load its skill for the API), Specialist management (`host.agents`), and Skill authoring (`host.skills`).',
-  'Globals persist and a trailing expression is returned. Return results directly when they are for Agent inspection. To hand off large data from the REPL to Python/R, write it under process.env.OPEN_SCIENCE_HANDOFF_DIR; Python/R reads the same OPEN_SCIENCE_HANDOFF_DIR path. Use notebook_execute for analysis code.'
+  'Globals persist and a trailing expression is returned. Return results directly when they are for Agent inspection. The default execution deadline covers the Host SDK maximum 30-minute bounded wait; an explicit timeoutMs still overrides it. To hand off large data from the REPL to Python/R, write it under process.env.OPEN_SCIENCE_HANDOFF_DIR; Python/R reads the same OPEN_SCIENCE_HANDOFF_DIR path. Use notebook_execute for analysis code.'
 ].join('\n')
 
 // Stateless shell contract, embedded as the bash_execute description so the agent always sees it.

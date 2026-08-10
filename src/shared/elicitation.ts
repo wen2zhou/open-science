@@ -35,6 +35,9 @@ export type ElicitationAnswer = {
 
 export type AgentTurnProvenanceContext = {
   promptMessageId: string
+  // A suppressed application continuation may use a synthetic prompt identity while retaining a
+  // durable conversation message as the authorization origin for control-plane calls.
+  originMessageId?: string
   rootFrameId?: string
   agentFrameId?: string
   messageBranchId?: string

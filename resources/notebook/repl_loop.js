@@ -1502,27 +1502,35 @@ function wrapForRun(code) {
   const plain = '(async () => {\n' + code + '\n})()'
   const trimmed = code.replace(/[\s;]+$/, '')
   if (!trimmed) return plain
-  // Split at the rightmost top-level statement boundary (newline or ';'); the tail is the candidate
-  // trailing expression. A ';' inside a string/for-header just yields a tail that won't compile below.
-  const split = Math.max(trimmed.lastIndexOf('\n'), trimmed.lastIndexOf(';'))
-  const head = split >= 0 ? trimmed.slice(0, split + 1) : ''
-  const tail = trimmed.slice(split + 1).trim()
-  // Only echo something that can start an expression — never a declaration/control statement.
-  if (
-    !tail ||
-    /^(const|let|var|if|for|while|function|class|switch|try|throw|return|do|else|import|export)\b/.test(
-      tail
-    )
-  ) {
-    return plain
+  // Try candidate statement boundaries from right to left. A newline or semicolon may be nested
+  // inside a multiline call, string, or for-header; compile-checking progressively wider tails finds
+  // the complete final expression without needing a second JavaScript parser in the runtime bundle.
+  const boundaries = []
+  for (let index = trimmed.length - 1; index >= 0; index -= 1) {
+    if (trimmed[index] === '\n' || trimmed[index] === ';') boundaries.push(index)
   }
-  const echo = '(async () => {\n' + head + '\nreturn (\n' + tail + '\n)\n})()'
-  try {
-    new vm.Script(echo, { filename: '<repl>' })
-    return echo
-  } catch {
-    return plain
+  boundaries.push(-1)
+  for (const split of boundaries) {
+    const head = split >= 0 ? trimmed.slice(0, split + 1) : ''
+    const tail = trimmed.slice(split + 1).trim()
+    // Only echo something that can start an expression — never a declaration/control statement.
+    if (
+      !tail ||
+      /^(const|let|var|if|for|while|function|class|switch|try|throw|return|do|else|import|export)\b/.test(
+        tail
+      )
+    ) {
+      continue
+    }
+    const echo = '(async () => {\n' + head + '\nreturn (\n' + tail + '\n)\n})()'
+    try {
+      new vm.Script(echo, { filename: '<repl>' })
+      return echo
+    } catch {
+      // This boundary was inside the final expression; retry with a wider candidate.
+    }
   }
+  return plain
 }
 
 // Runs one request against the persistent context. console is redirected into strings and restored in

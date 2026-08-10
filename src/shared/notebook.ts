@@ -22,6 +22,7 @@ export type NotebookRunProvenanceContext = {
   messageBranchId: string
   runtimeSegmentId: string
   promptMessageId: string
+  originMessageId?: string
 }
 
 // Languages a notebook kernel can run in this phase; each runs as a persistent exec-loop process

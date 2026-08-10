@@ -105,6 +105,24 @@ describe('authenticated delegatedWorkCall route', () => {
         }
       }
     })
+    await expect(
+      fetch(child.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${child.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'hostSdkHelp',
+          params: { query: 'send_message', caller_role: 'main' }
+        })
+      }).then((response) => response.json())
+    ).resolves.toMatchObject({
+      result: {
+        id: 'host.send_message',
+        availability: { status: 'available' }
+      }
+    })
 
     main.release()
     child.release()

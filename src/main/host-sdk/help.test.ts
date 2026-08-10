@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { hostSdkHelp } from './help'
 
 const mainContext = { callerRole: 'main', capabilities: { delegation: true } } as const
+const delegateContext = { callerRole: 'delegate', capabilities: { delegation: true } } as const
 
 describe('Host SDK help', () => {
   it('lists only registered operation topics in a compact deterministic catalog', () => {
@@ -221,6 +222,21 @@ describe('Host SDK help', () => {
       availability: {
         status: 'unavailable',
         reason: 'Delegated Work is not provisioned for this Session.'
+      }
+    })
+  })
+
+  it('advertises reliable parent messaging to an authenticated Delegate', () => {
+    expect(hostSdkHelp.query('send_message', delegateContext)).toMatchObject({
+      availability: { status: 'available' }
+    })
+    expect(hostSdkHelp.query('message_receipt', delegateContext)).toMatchObject({
+      availability: { status: 'available' }
+    })
+    expect(hostSdkHelp.query('resolve_message', delegateContext)).toMatchObject({
+      availability: {
+        status: 'unavailable',
+        reason: 'Only root Main can resolve uncertain delivery.'
       }
     })
   })

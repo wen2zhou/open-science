@@ -308,7 +308,9 @@ class NotebookExecutionOwner {
         ...(request.provenanceContext
           ? {
               originatingTurnId: request.provenanceContext.promptMessageId,
-              originatingUserMessageId: request.provenanceContext.promptMessageId
+              originatingUserMessageId:
+                request.provenanceContext.originMessageId ??
+                request.provenanceContext.promptMessageId
             }
           : {}),
         attachmentIds:
@@ -386,7 +388,9 @@ class NotebookExecutionOwner {
                 ...(request.provenanceContext
                   ? {
                       originatingTurnId: request.provenanceContext.promptMessageId,
-                      originatingUserMessageId: request.provenanceContext.promptMessageId
+                      originatingUserMessageId:
+                        request.provenanceContext.originMessageId ??
+                        request.provenanceContext.promptMessageId
                     }
                   : {}),
                 attachmentIds:

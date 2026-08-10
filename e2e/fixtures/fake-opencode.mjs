@@ -56,6 +56,7 @@ const CONTEXT_COMPACTION_PROMPT = 'Preview context compaction.'
 
 const sessionRoutes = new Map()
 const sessionCancellationResolvers = new Map()
+const reliableMessagingChildren = new Map()
 
 const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
@@ -551,6 +552,7 @@ if (process.argv.includes('--version')) {
           if (!child?.frame_id || !child?.attempt_id) {
             throw new Error(`Reliable child admission failed: ${JSON.stringify(dispatched)}`)
           }
+          reliableMessagingChildren.set(context.params.sessionId, child.frame_id)
           const downward = controlResultValue(
             await executeControlCode(
               context.params.sessionId,
@@ -776,7 +778,20 @@ if (process.argv.includes('--version')) {
         } else if (prompt.includes(RELIABLE_CHILD_DIRECTIVE)) {
           reply = 'Child received the reliable Main directive.'
         } else if (prompt.includes('Child reliable question reached Main')) {
-          reply = 'Main rendered the reliable child question.'
+          const childFrameId = reliableMessagingChildren.get(context.params.sessionId)
+          if (!childFrameId) throw new Error('Reliable messaging child Frame was not retained.')
+          const answered = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `const sent = await host.send_message(${JSON.stringify(childFrameId)}, "Main answered the reliable child question", { kind: "info", request_id: "e2e-main-reply-to-child" }); return await host.message_receipt(sent.message_id, { timeout_seconds: 30 })`
+            )
+          )
+          if (answered.status !== 'accepted' || answered.direction !== 'to_child') {
+            throw new Error(`Reliable root continuation reply failed: ${JSON.stringify(answered)}`)
+          }
+          reply = 'Main replied to the reliable child question from the root continuation.'
+        } else if (prompt.includes('Main answered the reliable child question')) {
+          reply = 'Child received the reliable root continuation reply.'
         } else if (prompt.includes('Parked reliable child question')) {
           reply = 'Main rendered the parked child question after branch restoration.'
         } else if (prompt.includes('Trigger reliable post-fence persistence failure')) {

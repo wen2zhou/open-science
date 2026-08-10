@@ -57,6 +57,22 @@ const startLoop = (
 }
 
 describe('repl_loop local RPC transport', () => {
+  it('echoes a trailing expression when the call spans multiple lines', async () => {
+    const { child, send } = startLoop({})
+
+    try {
+      const oneLine = await send("await Promise.resolve({ kind: 'ok' })")
+      const multiLine = await send(['await Promise.resolve(', "  { kind: 'ok' }", ')'].join('\n'))
+
+      expect(oneLine.error).toBeNull()
+      expect(multiLine.error).toBeNull()
+      expect(JSON.parse(oneLine.result ?? '{}')).toEqual({ kind: 'ok' })
+      expect(JSON.parse(multiLine.result ?? '{}')).toEqual({ kind: 'ok' })
+    } finally {
+      child.kill()
+    }
+  })
+
   it('exposes host.help as a thin Host SDK help RPC adapter', async () => {
     let received: { method?: string; params?: Record<string, unknown> } = {}
     const server = createServer((request, response) => {

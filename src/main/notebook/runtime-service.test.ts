@@ -1408,6 +1408,55 @@ describe('notebook runtime service', () => {
     expect(release).toHaveBeenCalledOnce()
   })
 
+  it('binds a suppressed continuation to its durable authorization origin', async () => {
+    const root = await createStorageRoot()
+    const beginControlInvocation = vi.fn(() => vi.fn())
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectName: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    service.setMcpRpcConnectionResolver(async () => ({
+      endpoint: 'http://127.0.0.1:1/x',
+      token: 'session-token',
+      beginControlInvocation
+    }))
+
+    await service.executeControl({
+      projectName: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      code: 'return 1',
+      provenanceContext: {
+        rootFrameId: 'root-frame-session-1',
+        agentFrameId: 'root-frame-session-1',
+        messageBranchId: 'root-branch',
+        runtimeSegmentId: 'delegated-message-1',
+        promptMessageId: 'synthetic-message-prompt',
+        originMessageId: 'durable-root-message'
+      }
+    })
+
+    expect(beginControlInvocation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        originatingTurnId: 'synthetic-message-prompt',
+        originatingUserMessageId: 'durable-root-message'
+      })
+    )
+  })
+
   it('binds a delegated control connection to the current Attempt and rotates it on restart', async () => {
     const root = await createStorageRoot()
     const releaseFirst = vi.fn()

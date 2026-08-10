@@ -407,7 +407,9 @@ test('routes reliable Main and child messages through production Host RPC and th
     'Production reliable downward message was accepted.',
     120_000
   )
-  await expect(page.getByText('Main rendered the reliable child question.')).toBeVisible({
+  await expect(
+    page.getByText('Main replied to the reliable child question from the root continuation.')
+  ).toBeVisible({
     timeout: 120_000
   })
   const evidence = await page.evaluate(async (projectId) => {
@@ -416,7 +418,9 @@ test('routes reliable Main and child messages through production Host RPC and th
     return {
       commands: session?.runtimeContext?.delegatedWork?.messageCommands,
       rendered: session?.conversationGraph?.messages.some((message) =>
-        message.content.includes('Main rendered the reliable child question.')
+        message.content.includes(
+          'Main replied to the reliable child question from the root continuation.'
+        )
       )
     }
   }, projectId)
@@ -429,6 +433,11 @@ test('routes reliable Main and child messages through production Host RPC and th
       }),
       expect.objectContaining({
         direction: 'to_parent',
+        receipt: expect.objectContaining({ status: 'accepted' })
+      }),
+      expect.objectContaining({
+        requestId: 'e2e-main-reply-to-child',
+        direction: 'to_child',
         receipt: expect.objectContaining({ status: 'accepted' })
       })
     ])

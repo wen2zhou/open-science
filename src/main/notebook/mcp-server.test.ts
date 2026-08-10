@@ -346,7 +346,10 @@ describe('repl_execute tool', () => {
     expect(tool?.method).toBe('executeControl')
 
     const schema = z.object(tool?.inputSchema ?? {})
-    expect(schema.parse({ code: 'return 1' })).toEqual({ code: 'return 1' })
+    expect(schema.parse({ code: 'return 1' })).toEqual({
+      code: 'return 1',
+      timeoutMs: 1_815_000
+    })
     expect(schema.parse({ code: 'return 1', timeoutMs: 5000 })).toEqual({
       code: 'return 1',
       timeoutMs: 5000

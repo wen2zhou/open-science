@@ -188,7 +188,13 @@ const SUBMIT_OUTPUT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
       : { status: 'unavailable', reason: 'Only a delegated child Attempt can submit output.' }
 }
 
-const MESSAGE_AVAILABILITY = DELEGATE_DESCRIPTOR.resolveAvailability
+const MESSAGE_AVAILABILITY = ({ capabilities }: HostSdkHelpContext): HostSdkAvailability =>
+  capabilities.delegation
+    ? { status: 'available' }
+    : {
+        status: 'unavailable',
+        reason: 'Delegated Work is not provisioned for this Session.'
+      }
 const SEND_MESSAGE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   kind: 'operation',
   id: 'host.send_message',
@@ -222,6 +228,10 @@ const SEND_MESSAGE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
     {
       title: 'Ask a child',
       code: "await host.send_message(child.frame_id, 'Which source supports this?', { kind: 'question', request_id: 'source-question-1' })"
+    },
+    {
+      title: 'Ask the root parent from a Delegate',
+      code: "await host.send_message('parent', 'Which cohort should I use?', { kind: 'question', request_id: 'cohort-question-1' })"
     }
   ],
   errors: { thrown_type: 'Error', domain_error_code_exposed: false },
