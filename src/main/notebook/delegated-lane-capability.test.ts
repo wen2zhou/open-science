@@ -34,6 +34,167 @@ afterEach(async () => {
 })
 
 describe('delegated Notebook lane capability', () => {
+  it('binds child Help and parent messaging to the issued production capability identity', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'delegated-discovery-capability-'))
+    const sendMessage = vi.fn(async () => ({
+      request_id: 'request-1',
+      message_id: 'message-1',
+      source_frame_id: 'child-frame',
+      target_frame_id: 'root-frame',
+      queued_at: 1,
+      same_request_safe: true as const,
+      direction: 'to_parent' as const,
+      disposition: 'message' as const,
+      source_attempt_id: 'child-attempt',
+      root_prompt_message_id: 'root-prompt',
+      status: 'queued' as const,
+      new_request_retry_safe: false as const
+    }))
+    const messageReceipt = vi.fn(async () => ({
+      request_id: 'request-1',
+      message_id: 'message-1',
+      source_frame_id: 'child-frame',
+      target_frame_id: 'root-frame',
+      queued_at: 1,
+      same_request_safe: true as const,
+      direction: 'to_parent' as const,
+      disposition: 'message' as const,
+      source_attempt_id: 'child-attempt',
+      root_prompt_message_id: 'root-prompt',
+      status: 'queued' as const,
+      new_request_retry_safe: false as const
+    }))
+    const children = vi.fn(async (caller: { role: string }) => {
+      if (caller.role === 'delegate') throw new Error('authorization: root Main only')
+      return []
+    })
+    const service = new NotebookRuntimeService({
+      configRoot: storageRoot,
+      dataRoot: storageRoot,
+      projectName: 'project-1',
+      repository: new NotebookRunRepository(storageRoot),
+      executorFactory: () => ({
+        execute: async (input) => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: input.cwd,
+          outputs: [],
+          workingFiles: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const server = new NotebookLocalRpcServer(service, {
+      delegatedWorkService: {
+        delegate: vi.fn(),
+        children,
+        stopChildren: vi.fn(),
+        sendMessage,
+        messageReceipt
+      }
+    })
+    const child = await server.issueDelegatedNotebookConnection({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      rootFrameId: 'root-frame',
+      agentFrameId: 'child-frame',
+      attemptId: 'child-attempt',
+      messageBranchId: 'child-branch',
+      runtimeSegmentId: 'child-runtime',
+      promptMessageId: 'child-prompt',
+      workspaceCwd: '/workspace/child',
+      isAttemptWritable: () => true
+    })
+    try {
+      const catalog = await request(child, 'hostSdkHelp', { caller_role: 'main' })
+      expect(catalog.status).toBe(200)
+      await expect(catalog.json()).resolves.toMatchObject({
+        result: {
+          kind: 'catalog',
+          topics: expect.arrayContaining([
+            expect.objectContaining({ id: 'host.children' }),
+            expect.objectContaining({ id: 'host.stop_child' }),
+            expect.objectContaining({
+              id: 'host.send_message',
+              availability: { status: 'available' }
+            }),
+            expect.objectContaining({
+              id: 'host.message_receipt',
+              availability: { status: 'available' }
+            })
+          ])
+        }
+      })
+      for (const topic of ['children', 'stop_child']) {
+        const help = await request(child, 'hostSdkHelp', { query: topic, caller_role: 'main' })
+        expect(help.status).toBe(200)
+        await expect(help.json()).resolves.toMatchObject({
+          result: {
+            id: `host.${topic}`,
+            availability: { status: 'unavailable' }
+          }
+        })
+      }
+
+      const sent = await request(child, 'delegatedWorkCall', {
+        op: 'send_message',
+        target: 'parent',
+        message: 'Need the cohort definition',
+        options: { request_id: 'request-1' },
+        project_id: 'forged',
+        session_id: 'forged',
+        frame_id: 'forged',
+        attempt_id: 'forged',
+        origin_message_id: 'forged',
+        tool_invocation_id: 'forged'
+      })
+      expect(sent.status).toBe(200)
+      expect(sendMessage).toHaveBeenCalledWith(
+        expect.objectContaining({
+          session: { projectId: 'project-1', sessionId: 'session-1' },
+          frameId: 'child-frame',
+          attemptId: 'child-attempt',
+          role: 'delegate',
+          originMessageId: 'child-prompt',
+          toolInvocationId: expect.stringMatching(/^delegated-notebook-capability:/)
+        }),
+        'parent',
+        'Need the cohort definition',
+        { requestId: 'request-1' }
+      )
+
+      const receipt = await request(child, 'delegatedWorkCall', {
+        op: 'message_receipt',
+        selector: 'message-1',
+        options: { timeout_seconds: 0 }
+      })
+      expect(receipt.status).toBe(200)
+      expect(messageReceipt).toHaveBeenCalledWith(
+        expect.objectContaining({
+          frameId: 'child-frame',
+          attemptId: 'child-attempt',
+          role: 'delegate'
+        }),
+        'message-1',
+        { timeoutSeconds: 0 }
+      )
+
+      const rootOnly = await request(child, 'delegatedWorkCall', { op: 'children' })
+      expect(rootOnly.status).toBe(500)
+      await expect(rootOnly.json()).resolves.toMatchObject({
+        error: expect.stringContaining('authorization: root Main only')
+      })
+      expect(children).toHaveBeenCalledWith(
+        expect.objectContaining({ role: 'delegate', frameId: 'child-frame' }),
+        undefined
+      )
+    } finally {
+      await server.close()
+    }
+  })
+
   it('binds submit_output ownership to the child capability and fences revoked writes', async () => {
     storageRoot = await mkdtemp(join(tmpdir(), 'delegated-output-capability-'))
     const submitOutput = vi.fn(async () => ({ accepted: true as const }))

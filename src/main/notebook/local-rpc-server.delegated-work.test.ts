@@ -77,7 +77,12 @@ describe('authenticated delegatedWorkCall route', () => {
       attemptId: 'attempt-1'
     })
 
-    const ask = async (endpoint: string, token: string, callerRole: string): Promise<unknown> => {
+    const ask = async (
+      endpoint: string,
+      token: string,
+      callerRole: string,
+      query?: string
+    ): Promise<unknown> => {
       const response = await fetch(endpoint, {
         method: 'POST',
         headers: {
@@ -86,17 +91,17 @@ describe('authenticated delegatedWorkCall route', () => {
         },
         body: JSON.stringify({
           method: 'hostSdkHelp',
-          params: { query: 'delegate', caller_role: callerRole }
+          params: { query, caller_role: callerRole }
         })
       })
       expect(response.status).toBe(200)
       return response.json()
     }
 
-    await expect(ask(main.endpoint, main.token, 'delegate')).resolves.toMatchObject({
+    await expect(ask(main.endpoint, main.token, 'delegate', 'delegate')).resolves.toMatchObject({
       result: { kind: 'operation', availability: { status: 'available' } }
     })
-    await expect(ask(child.endpoint, child.token, 'main')).resolves.toMatchObject({
+    await expect(ask(child.endpoint, child.token, 'main', 'delegate')).resolves.toMatchObject({
       result: {
         kind: 'operation',
         availability: {
@@ -104,6 +109,23 @@ describe('authenticated delegatedWorkCall route', () => {
           reason: 'Nested delegation is unsupported for Delegate agents.'
         }
       }
+    })
+    const partialCatalog = (await ask(main.endpoint, main.token, 'main', undefined)) as {
+      result: { topics: Array<{ id: string; availability: { status: string } }> }
+    }
+    expect(
+      Object.fromEntries(
+        partialCatalog.result.topics.map(({ id, availability }) => [id, availability.status])
+      )
+    ).toEqual({
+      'host.children': 'unavailable',
+      'host.collect': 'unavailable',
+      'host.delegate': 'available',
+      'host.message_receipt': 'unavailable',
+      'host.resolve_message': 'unavailable',
+      'host.send_message': 'unavailable',
+      'host.stop_child': 'unavailable',
+      'host.submit_output': 'unavailable'
     })
     await expect(
       fetch(child.endpoint, {
@@ -120,7 +142,10 @@ describe('authenticated delegatedWorkCall route', () => {
     ).resolves.toMatchObject({
       result: {
         id: 'host.send_message',
-        availability: { status: 'available' }
+        availability: {
+          status: 'unavailable',
+          reason: 'host.send_message is not provisioned for this Session.'
+        }
       }
     })
 
