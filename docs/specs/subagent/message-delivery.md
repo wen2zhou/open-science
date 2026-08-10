@@ -6,7 +6,7 @@ implementation_status: conformant
 compatibility: persistence-impact
 owner_module: DurableDelegatedWork
 supersedes: []
-last_verified_sha: 0cd24ab233c5e129ee15801f7fa136e2e70e058f
+last_verified_sha: b340587ed35ee1a8aa4749805355b74ee6277e5a
 ---
 
 # Main Agent 与 direct Subagent 的可靠双向通信
