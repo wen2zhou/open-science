@@ -5,6 +5,61 @@ import type {
   DurableDelegatedWork
 } from '../delegated-work/durable-delegated-work'
 
+const RUNNING_OBSERVATION_SCHEMA = {
+  type: 'object',
+  required: ['frame_id', 'attempt_id', 'name', 'agent_name', 'status'],
+  optional: [],
+  properties: {
+    frame_id: { type: 'string' },
+    attempt_id: { type: 'string' },
+    name: { type: 'string' },
+    agent_name: { type: 'string' },
+    status: { type: 'string', enum: ['running'] }
+  }
+} as const
+
+const TERMINAL_RESULT_SCHEMA = {
+  type: 'object',
+  required: ['frame_id', 'attempt_id', 'name', 'agent_name', 'status', 'artifacts_created'],
+  optional: [
+    'terminal_message_id',
+    'response',
+    'cancellation_reason',
+    'error',
+    'structured_output',
+    'structured_output_unsatisfied'
+  ],
+  properties: {
+    frame_id: { type: 'string' },
+    attempt_id: { type: 'string' },
+    name: { type: 'string', description: 'Child delegation name.' },
+    agent_name: { type: 'string', description: 'Resolved Attempt agent display name.' },
+    status: { type: 'string', enum: ['completed', 'cancelled', 'error'] },
+    terminal_message_id: { type: 'string' },
+    response: { type: 'string' },
+    artifacts_created: {
+      type: 'array',
+      items: { type: 'object', description: 'Finalized Artifact Version metadata.' }
+    },
+    cancellation_reason: {
+      type: 'string',
+      enum: ['main_agent_stop', 'session_stop', 'runtime_interrupted']
+    },
+    error: {
+      type: 'object',
+      required: ['code', 'message'],
+      properties: { code: { type: 'string' }, message: { type: 'string' } }
+    },
+    structured_output: { description: 'Accepted JSON value for the exact Attempt.' },
+    structured_output_unsatisfied: { type: 'boolean' }
+  }
+} as const
+
+const DELEGATE_OBSERVATION_SCHEMA = {
+  discriminator: { propertyName: 'status' },
+  oneOf: [RUNNING_OBSERVATION_SCHEMA, TERMINAL_RESULT_SCHEMA]
+} as const
+
 const COLLECT_AGENT_CONTRACT = {
   selectors: {
     type: 'array',
@@ -26,7 +81,7 @@ const COLLECT_AGENT_CONTRACT = {
       timeout_seconds: { type: 'number', minimum: 0, maximum: 1800, default: 30 }
     }
   },
-  returns: { type: 'array', items: { oneOf: ['terminal_result', 'running_observation'] } },
+  returns: { type: 'array', items: DELEGATE_OBSERVATION_SCHEMA },
   errors: {
     thrown_type: 'Error',
     message_prefix: 'host.collect: ',
@@ -134,7 +189,7 @@ const DELEGATE_AGENT_CONTRACT = {
         optional: [],
         properties: {
           kind: { type: 'string', enum: ['observations'] },
-          children: { type: 'array', items: { oneOf: ['terminal_result', 'running_observation'] } }
+          children: { type: 'array', items: DELEGATE_OBSERVATION_SCHEMA }
         }
       },
       {
@@ -146,55 +201,7 @@ const DELEGATE_AGENT_CONTRACT = {
           kind: { type: 'string', enum: ['results'] },
           children: {
             type: 'array',
-            items: {
-              type: 'object',
-              required: [
-                'frame_id',
-                'attempt_id',
-                'name',
-                'agent_name',
-                'status',
-                'artifacts_created'
-              ],
-              optional: [
-                'terminal_message_id',
-                'response',
-                'cancellation_reason',
-                'error',
-                'structured_output',
-                'structured_output_unsatisfied'
-              ],
-              properties: {
-                frame_id: { type: 'string' },
-                attempt_id: { type: 'string' },
-                name: { type: 'string', description: 'Child delegation name.' },
-                agent_name: { type: 'string', description: 'Resolved Attempt agent display name.' },
-                status: { type: 'string', enum: ['completed', 'cancelled', 'error'] },
-                terminal_message_id: { type: 'string' },
-                response: { type: 'string' },
-                artifacts_created: {
-                  type: 'array',
-                  items: {
-                    type: 'object',
-                    description: 'Finalized Artifact Version metadata.'
-                  }
-                },
-                cancellation_reason: {
-                  type: 'string',
-                  enum: ['main_agent_stop', 'session_stop', 'runtime_interrupted']
-                },
-                error: {
-                  type: 'object',
-                  required: ['code', 'message'],
-                  properties: {
-                    code: { type: 'string' },
-                    message: { type: 'string' }
-                  }
-                },
-                structured_output: { description: 'Accepted JSON value for the exact Attempt.' },
-                structured_output_unsatisfied: { type: 'boolean' }
-              }
-            }
+            items: TERMINAL_RESULT_SCHEMA
           }
         }
       }
@@ -311,6 +318,7 @@ const parseCollectRpcCall = (params: Readonly<Record<string, unknown>>): Collect
 
 export {
   COLLECT_AGENT_CONTRACT,
+  DELEGATE_OBSERVATION_SCHEMA,
   DELEGATE_AGENT_CONTRACT,
   parseCollectRpcCall,
   parseDelegateRpcCall

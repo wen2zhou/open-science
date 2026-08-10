@@ -1466,6 +1466,19 @@ const hostCompute = {
   }
 }
 
+// Keep this explicit object in sync with HostSdkHelpRegistry. Its keys are the published Subagent
+// Host SDK surface and are checked by src/main/host-sdk/help.test.ts.
+const subagentHostOperations = Object.freeze({
+  delegate: hostDelegate,
+  children: hostChildren,
+  collect: hostCollect,
+  stop_child: hostStopChild,
+  send_message: hostSendMessage,
+  message_receipt: hostMessageReceipt,
+  resolve_message: hostResolveMessage,
+  submit_output: hostSubmitOutput
+})
+
 // Persistent sandbox: user-declared globals persist across requests (assign to `globalThis`/bare).
 const sandbox = {
   host: {
@@ -1474,14 +1487,7 @@ const sandbox = {
     compute: hostCompute,
     agents: hostAgents,
     skills: hostSkills,
-    delegate: hostDelegate,
-    children: hostChildren,
-    collect: hostCollect,
-    stop_child: hostStopChild,
-    send_message: hostSendMessage,
-    message_receipt: hostMessageReceipt,
-    resolve_message: hostResolveMessage,
-    submit_output: hostSubmitOutput
+    ...subagentHostOperations
   },
   console,
   process,

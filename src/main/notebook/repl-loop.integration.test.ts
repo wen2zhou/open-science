@@ -133,7 +133,16 @@ describe('repl_loop local RPC transport', () => {
         if (call.method === 'hostSdkHelp') {
           result = hostSdkHelp.query(call.params?.query, {
             callerRole: 'main',
-            capabilities: { delegation: true }
+            capabilities: {
+              delegate: true,
+              children: true,
+              collect: true,
+              stop_child: true,
+              send_message: true,
+              message_receipt: true,
+              resolve_message: true,
+              submit_output: true
+            }
           })
         } else if (call.params?.op === 'children') {
           result = [

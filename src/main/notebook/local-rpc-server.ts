@@ -605,7 +605,12 @@ class NotebookLocalRpcServer {
       sessionId: scope.sessionId,
       projectId: scope.projectId,
       agentFrameId: scope.agentFrameId,
-      allowedMethods: new Set([...NOTEBOOK_LOCAL_RPC_METHODS, 'delegatedOutputCall']),
+      allowedMethods: new Set([
+        ...NOTEBOOK_LOCAL_RPC_METHODS,
+        'hostSdkHelp',
+        'delegatedWorkCall',
+        'delegatedOutputCall'
+      ]),
       delegatedWorkRole: 'delegate',
       delegatedWorkAttemptId: scope.attemptId,
       delegatedNotebook
@@ -909,6 +914,7 @@ class NotebookLocalRpcServer {
           }
           if (
             method === 'delegatedWorkCall' &&
+            !sessionBinding.delegatedNotebook &&
             (!sessionBinding.projectId ||
               !sessionBinding.agentFrameId ||
               !sessionBinding.activeControlInvocation?.toolInvocationId ||
@@ -922,7 +928,10 @@ class NotebookLocalRpcServer {
           const delegatedNotebook = sessionBinding.delegatedNotebook
           if (
             delegatedNotebook &&
-            (isNotebookLocalRpcMethod(method) || method === 'delegatedOutputCall')
+            (isNotebookLocalRpcMethod(method) ||
+              method === 'hostSdkHelp' ||
+              method === 'delegatedWorkCall' ||
+              method === 'delegatedOutputCall')
           ) {
             if (delegatedNotebook.revoked || !(await delegatedNotebook.isAttemptWritable())) {
               throw new RpcHttpError(
@@ -967,8 +976,11 @@ class NotebookLocalRpcServer {
                   caller_role: sessionBinding.delegatedWorkRole,
                   attempt_id: sessionBinding.delegatedWorkAttemptId,
                   origin_message_id:
+                    sessionBinding.delegatedNotebook?.provenanceContext.promptMessageId ??
                     sessionBinding.activeControlInvocation?.originatingUserMessageId,
-                  tool_invocation_id: sessionBinding.activeControlInvocation?.toolInvocationId
+                  tool_invocation_id: sessionBinding.delegatedNotebook
+                    ? `delegated-notebook-capability:${randomUUID()}`
+                    : sessionBinding.activeControlInvocation?.toolInvocationId
                 }
               : method === 'delegatedOutputCall'
                 ? {
@@ -1459,7 +1471,16 @@ class NotebookLocalRpcServer {
     if (method === 'hostSdkHelp') {
       return hostSdkHelp.query(params.query, {
         callerRole: params.caller_role === 'delegate' ? 'delegate' : 'main',
-        capabilities: { delegation: Boolean(this.delegatedWorkService) }
+        capabilities: {
+          delegate: Boolean(this.delegatedWorkService?.delegate),
+          children: Boolean(this.delegatedWorkService?.children),
+          collect: Boolean(this.delegatedWorkService?.collect),
+          stop_child: Boolean(this.delegatedWorkService?.stopChildren),
+          send_message: Boolean(this.delegatedWorkService?.sendMessage),
+          message_receipt: Boolean(this.delegatedWorkService?.messageReceipt),
+          resolve_message: Boolean(this.delegatedWorkService?.resolveMessage),
+          submit_output: Boolean(this.delegatedWorkService?.submitOutput)
+        }
       })
     }
 

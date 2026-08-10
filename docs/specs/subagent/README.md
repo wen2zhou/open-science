@@ -79,6 +79,7 @@ S1、S2与S5均已通过各自production-composed release gate并达到`certifie
 | S6  | Structured output                  | child 可返回经过 schema 校验、可被程序直接消费的结果，同时保留文本和 Artifact        | `accepted`    | `conformant`  | 现有 `DurableDelegatedWork`；内部 Structured Output Module                      | S1、`SUB-DEC-0006..0007`                   | `structured-output.md`                                                  |
 | S7  | Durable Scheduler                  | 大批 child 可先可靠接纳再按容量执行；排队任务在重启后仍可观察、取消和调度            | `exploratory` | `not-started` | 候选 Scheduler Module                                                           | S3 lifecycle 语义                          | `scheduler.md`                                                          |
 | S8  | Per-task model routing             | Main Agent 可为每个子任务选择模型，实际解析结果随 Attempt 稳定记录                   | `exploratory` | `not-started` | Admission Policy 与 runtime Adapter                                             | identity/model snapshot 决策               | `model-routing.md`                                                      |
+| S9  | Role-aware Host SDK discovery      | Main与child都能发现完整Subagent操作目录、准确权限与调用合同，且child正式能力可达     | `accepted`    | `conformant`  | 现有 `HostSdkHelpRegistry`；Notebook capability/REPL Adapters                    | S1、S2、S5、S6 已接受合同                  | `host-sdk-discovery.md`                                                 |
 
 Host SDK、local RPC、持久化和 Renderer 是每个纵向阶段的 Adapter 或 consumer。它们应随对应能力接线和验收，不作为等待所有 Module 完成后的统一集成 wave。
 

@@ -116,13 +116,11 @@ describe('notebook MCP server config', () => {
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Main/root agents')
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain("await host.help('delegate')")
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('before the first delegation')
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('registered/documented topics')
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Nested delegation is unsupported')
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Delegate agents may call')
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain(
-      "host.send_message('parent', message, options?)"
-    )
-    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('host.message_receipt')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('role-aware catalog')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('query exact topics')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('Delegate agents should use the same catalog')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).toContain('unavailable root-only topics remain visible')
+    expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).not.toContain('host.send_message(')
     expect(NOTEBOOK_SYSTEM_PROMPT_APPEND).not.toContain('{task')
 
     expect(REPL_EXECUTE_DOC).toContain("await host.help('delegate')")
@@ -376,11 +374,10 @@ describe('repl_execute tool', () => {
     expect(tool?.description).toContain('Main/root agents')
     expect(tool?.description).toContain('host.help')
     expect(tool?.description).toContain("host.help('delegate')")
-    expect(tool?.description).toContain('registered/documented topics')
-    expect(tool?.description).toContain('host.send_message')
-    expect(tool?.description).toContain('Nested delegation is unsupported')
-    expect(tool?.description).toContain('Delegate agents may call')
-    expect(tool?.description).toContain("host.send_message('parent', message, options?)")
+    expect(tool?.description).toContain('role-aware catalog')
+    expect(tool?.description).toContain('query exact topics')
+    expect(tool?.description).toContain('Delegate agents should use the same catalog')
+    expect(tool?.description).not.toContain('host.send_message(')
   })
 
   it('forwards repl_execute input to the executeControl RPC method', async () => {

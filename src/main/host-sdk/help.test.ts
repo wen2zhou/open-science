@@ -1,9 +1,17 @@
+import { readFileSync } from 'node:fs'
+import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
-import { hostSdkHelp } from './help'
+import { HOST_SDK_SUBAGENT_OPERATION_IDS, hostSdkHelp } from './help'
 
-const mainContext = { callerRole: 'main', capabilities: { delegation: true } } as const
-const delegateContext = { callerRole: 'delegate', capabilities: { delegation: true } } as const
+const provisioned = Object.fromEntries(
+  HOST_SDK_SUBAGENT_OPERATION_IDS.map((id) => [id.slice('host.'.length), true])
+) as Record<
+  (typeof HOST_SDK_SUBAGENT_OPERATION_IDS)[number] extends `host.${infer Op}` ? Op : never,
+  boolean
+>
+const mainContext = { callerRole: 'main', capabilities: provisioned } as const
+const delegateContext = { callerRole: 'delegate', capabilities: provisioned } as const
 
 describe('Host SDK help', () => {
   it('lists only registered operation topics in a compact deterministic catalog', () => {
@@ -11,6 +19,14 @@ describe('Host SDK help', () => {
       kind: 'catalog',
       coverage: 'registered_topics_only',
       topics: [
+        {
+          id: 'host.children',
+          kind: 'operation',
+          path: 'host.children',
+          aliases: ['children'],
+          summary: 'List current direct-child Attempts on the active Message Branch.',
+          availability: { status: 'available' }
+        },
         {
           id: 'host.collect',
           kind: 'operation',
@@ -54,6 +70,14 @@ describe('Host SDK help', () => {
           availability: { status: 'available' }
         },
         {
+          id: 'host.stop_child',
+          kind: 'operation',
+          path: 'host.stop_child',
+          aliases: ['stop_child'],
+          summary: 'Stop one or more direct-child Frames without changing terminal children.',
+          availability: { status: 'available' }
+        },
+        {
           id: 'host.submit_output',
           kind: 'operation',
           path: 'host.submit_output',
@@ -66,6 +90,46 @@ describe('Host SDK help', () => {
         }
       ],
       hint: "Query an exact topic, for example await host.help('delegate')."
+    })
+  })
+
+  it('keeps the published REPL subagent surface and Help registry in lockstep', () => {
+    const source = readFileSync(resolve(process.cwd(), 'resources/notebook/repl_loop.js'), 'utf8')
+    const match = source.match(/const subagentHostOperations = Object\.freeze\(\{([\s\S]*?)\n\}\)/)
+    expect(match).not.toBeNull()
+    const published = [...(match?.[1].matchAll(/^\s{2}([a-z_]+):/gm) ?? [])]
+      .map((entry) => `host.${entry[1]}`)
+      .sort()
+    expect(published).toEqual([...HOST_SDK_SUBAGENT_OPERATION_IDS])
+  })
+
+  it('documents exact children and stop_child contracts', () => {
+    expect(hostSdkHelp.query('children', mainContext)).toMatchObject({
+      id: 'host.children',
+      request: {
+        type: 'array',
+        description: expect.stringContaining('optional')
+      },
+      returns: {
+        type: 'array',
+        items: {
+          required: ['frame_id', 'attempt_id', 'name', 'agent_name', 'status'],
+          properties: { status: { enum: ['running', 'completed', 'cancelled', 'error'] } }
+        }
+      },
+      availability: { status: 'available' }
+    })
+    expect(hostSdkHelp.query('stop_child', mainContext)).toMatchObject({
+      id: 'host.stop_child',
+      request: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
+      returns: {
+        type: 'array',
+        items: {
+          required: ['frame_id', 'status'],
+          properties: { status: { enum: ['cancelled', 'already_terminal'] } }
+        }
+      },
+      availability: { status: 'available' }
     })
   })
 
@@ -123,14 +187,7 @@ describe('Host SDK help', () => {
               }
             }
           },
-          {
-            properties: {
-              kind: { type: 'string', enum: ['observations'] },
-              children: {
-                items: { oneOf: ['terminal_result', 'running_observation'] }
-              }
-            }
-          },
+          expect.any(Object),
           {
             properties: {
               kind: { type: 'string', enum: ['results'] },
@@ -175,24 +232,92 @@ describe('Host SDK help', () => {
       availability: { status: 'available' }
     })
     if (canonical.kind !== 'operation') throw new Error('expected delegate operation help')
+    const returns = canonical.returns as {
+      oneOf: Array<{ properties: { children: { items: unknown } } }>
+    }
+    const observations = returns.oneOf[1].properties.children.items as {
+      discriminator: { propertyName: string }
+      oneOf: Array<{ required: string[]; properties: { status: { enum: string[] } } }>
+    }
+    expect(observations.discriminator).toEqual({ propertyName: 'status' })
+    expect(observations.oneOf[0]).toMatchObject({
+      required: ['frame_id', 'attempt_id', 'name', 'agent_name', 'status'],
+      properties: { status: { enum: ['running'] } }
+    })
+    expect(observations.oneOf[1]).toMatchObject({
+      required: expect.arrayContaining(['artifacts_created']),
+      properties: { status: { enum: ['completed', 'cancelled', 'error'] } }
+    })
     expect(canonical.constraints).toContain(
       'Omitting profile inherits the authenticated parent Specialist; a Main Agent parent still selects Main Agent.'
     )
+  })
+
+  it('uses exhaustive route unions and exact per-operation receipt states', () => {
+    for (const topic of ['send_message', 'message_receipt', 'resolve_message']) {
+      const help = hostSdkHelp.query(topic, mainContext)
+      if (help.kind !== 'operation') throw new Error(`expected operation help for ${topic}`)
+      const receipt = help.returns as {
+        type: string
+        allOf: Array<{
+          required?: string[]
+          oneOf?: Array<{ properties: Record<string, unknown> }>
+        }>
+      }
+      expect(receipt.type).toBe('delivery_receipt')
+      expect(receipt.allOf[0].required).toEqual(
+        expect.arrayContaining(['message_id', 'request_id'])
+      )
+      expect(
+        receipt.allOf[1].oneOf?.map(({ properties }) => [
+          properties.direction,
+          properties.disposition
+        ])
+      ).toEqual([
+        [{ enum: ['to_child'] }, { enum: ['message'] }],
+        [{ enum: ['to_child'] }, { enum: ['continued'] }],
+        [{ enum: ['to_parent'] }, { enum: ['message'] }]
+      ])
+      const states = receipt.allOf[2].oneOf?.map(({ properties }) => properties.status)
+      if (topic === 'resolve_message') {
+        expect(states).toEqual([{ enum: ['uncertain'] }])
+        expect(receipt.allOf[2].oneOf?.[0].properties.resolution).toEqual({
+          enum: ['acknowledged']
+        })
+        expect(JSON.stringify(help.returns)).not.toMatch(
+          /"status":\{"enum":\["(?:queued|accepted|failed)"\]/
+        )
+      } else {
+        expect(states).toEqual([
+          { enum: ['queued'] },
+          { enum: ['accepted'] },
+          { enum: ['failed'] },
+          { enum: ['uncertain'] }
+        ])
+      }
+      expect(JSON.stringify(help.returns)).not.toContain('direction":["')
+    }
   })
 
   it('returns structured suggestions for unknown topics', () => {
     expect(hostSdkHelp.query('delegte', mainContext)).toEqual({
       kind: 'not_found',
       query: 'delegte',
-      suggestions: ['host.delegate', 'host.collect', 'host.send_message']
+      suggestions: ['host.delegate', 'host.collect', 'host.children']
     })
+    for (const unpublished of ['continue_child', 'acknowledge_message', 'stop_children']) {
+      expect(hostSdkHelp.query(unpublished, mainContext)).toMatchObject({
+        kind: 'not_found',
+        query: unpublished
+      })
+    }
   })
 
   it('documents child-only structured output submission', () => {
     expect(
       hostSdkHelp.query('submit_output', {
         callerRole: 'delegate',
-        capabilities: { delegation: true }
+        capabilities: provisioned
       })
     ).toMatchObject({
       id: 'host.submit_output',
@@ -205,7 +330,7 @@ describe('Host SDK help', () => {
     expect(
       hostSdkHelp.query('delegate', {
         callerRole: 'delegate',
-        capabilities: { delegation: true }
+        capabilities: provisioned
       })
     ).toMatchObject({
       availability: {
@@ -216,14 +341,25 @@ describe('Host SDK help', () => {
     expect(
       hostSdkHelp.query('delegate', {
         callerRole: 'main',
-        capabilities: { delegation: false }
+        capabilities: { ...provisioned, delegate: false }
       })
     ).toMatchObject({
       availability: {
         status: 'unavailable',
-        reason: 'Delegated Work is not provisioned for this Session.'
+        reason: 'host.delegate is not provisioned for this Session.'
       }
     })
+  })
+
+  it('projects provisioning independently for every operation', () => {
+    for (const id of HOST_SDK_SUBAGENT_OPERATION_IDS) {
+      const operation = id.slice('host.'.length) as keyof typeof provisioned
+      const result = hostSdkHelp.query(id, {
+        callerRole: operation === 'submit_output' ? 'delegate' : 'main',
+        capabilities: { ...provisioned, [operation]: false }
+      })
+      expect(result).toMatchObject({ availability: { status: 'unavailable' } })
+    }
   })
 
   it('advertises reliable parent messaging to an authenticated Delegate', () => {
@@ -241,12 +377,28 @@ describe('Host SDK help', () => {
     })
   })
 
+  it('keeps root-only lifecycle topics discoverable but unavailable to a Delegate', () => {
+    const rootCatalog = hostSdkHelp.query(undefined, mainContext)
+    const childCatalog = hostSdkHelp.query(undefined, delegateContext)
+    if (rootCatalog.kind !== 'catalog' || childCatalog.kind !== 'catalog') {
+      throw new Error('expected catalogs')
+    }
+    expect(childCatalog.topics.map(({ id }) => id)).toEqual(rootCatalog.topics.map(({ id }) => id))
+    for (const topic of ['delegate', 'children', 'collect', 'stop_child', 'resolve_message']) {
+      expect(hostSdkHelp.query(topic, delegateContext)).toMatchObject({
+        availability: { status: 'unavailable' }
+      })
+    }
+  })
+
   it('rejects invalid or oversized queries and returns bounded JSON', () => {
     expect(() => hostSdkHelp.query(42, mainContext)).toThrow('host.help query must be a string')
     expect(() => hostSdkHelp.query('x'.repeat(129), mainContext)).toThrow(
       'host.help query must be at most 128 characters'
     )
-    const serialized = JSON.stringify(hostSdkHelp.query('delegate', mainContext))
-    expect(serialized.length).toBeLessThanOrEqual(16_000)
+    for (const topic of [undefined, ...HOST_SDK_SUBAGENT_OPERATION_IDS]) {
+      const serialized = JSON.stringify(hostSdkHelp.query(topic, mainContext))
+      expect(serialized.length).toBeLessThanOrEqual(16_000)
+    }
   })
 })
