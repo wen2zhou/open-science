@@ -28,6 +28,11 @@ import type {
   ReplayArtifactVersionRequest
 } from '../../shared/artifact-provenance'
 import {
+  sanitizeAgentUserChoiceRequest,
+  type AgentUserChoiceRequest,
+  type AgentUserChoiceResult
+} from '../../shared/elicitation'
+import {
   stripAgentsReservedParams,
   type TrustedCallingSession,
   type TrustedControlInvocationIdentity
@@ -128,6 +133,7 @@ type NotebookLocalRpcServerOptions = {
       input?: unknown
     }): Promise<unknown>
   }
+  requestUserInput?: (request: AgentUserChoiceRequest) => Promise<AgentUserChoiceResult>
   artifactProvenance?: {
     createVersion(request: CreateArtifactVersionRequest): Promise<ArtifactVersionFile>
     replayVersion?(request: ReplayArtifactVersionRequest): Promise<ArtifactVersionFile | undefined>
@@ -150,6 +156,9 @@ type NotebookLocalRpcServerOptions = {
         'children' | 'collect' | 'stopChildren' | 'sendMessage' | 'submitOutput'
       >
     >
+  skillsService?: {
+    dispatch(op: unknown, context: TrustedCallingSession): Promise<unknown>
+  }
 }
 
 type NotebookRpcPayload = {
@@ -222,7 +231,9 @@ const CONTROL_RPC_METHODS = new Set([
   'computeCall',
   'agentsCall',
   'hostSdkHelp',
-  'delegatedWorkCall'
+  'delegatedWorkCall',
+  'skillsCall',
+  'requestUserInput'
 ])
 const DELEGATED_CONTROL_RPC_METHODS = new Set([...CONTROL_RPC_METHODS, 'delegatedOutputCall'])
 const SKILL_IMPORT_RPC_METHODS = new Set(['skillImport'])
@@ -264,10 +275,12 @@ class NotebookLocalRpcServer {
   private readonly computeService: NotebookLocalRpcServerOptions['computeService']
   private readonly skillImporter: NotebookLocalRpcServerOptions['skillImporter']
   private readonly planService: NotebookLocalRpcServerOptions['planService']
+  private readonly requestUserInput: NotebookLocalRpcServerOptions['requestUserInput']
   private readonly artifactProvenance: NotebookLocalRpcServerOptions['artifactProvenance']
   private readonly inputRegistry: NotebookLocalRpcServerOptions['inputRegistry']
   private readonly agentsService: NotebookLocalRpcServerOptions['agentsService']
   private readonly delegatedWorkService: NotebookLocalRpcServerOptions['delegatedWorkService']
+  private readonly skillsService: NotebookLocalRpcServerOptions['skillsService']
   private server: Server | undefined
   private startPromise: Promise<NotebookRpcConnection> | undefined
   private readonly sessionAliases = new Map<string, string>()
@@ -299,10 +312,12 @@ class NotebookLocalRpcServer {
     this.computeService = options.computeService
     this.skillImporter = options.skillImporter
     this.planService = options.planService
+    this.requestUserInput = options.requestUserInput
     this.artifactProvenance = options.artifactProvenance
     this.inputRegistry = options.inputRegistry
     this.agentsService = options.agentsService
     this.delegatedWorkService = options.delegatedWorkService
+    this.skillsService = options.skillsService
   }
 
   issueArtifactRunCapability(
@@ -927,7 +942,7 @@ class NotebookLocalRpcServer {
             ...params,
             sessionId: sessionBinding.sessionId,
             ...(sessionBinding.projectId ? { projectId: sessionBinding.projectId } : {}),
-            ...(method === 'agentsCall'
+            ...(method === 'agentsCall' || method === 'skillsCall'
               ? {
                   session_id: sessionBinding.sessionId,
                   caller_role:
@@ -1122,6 +1137,13 @@ class NotebookLocalRpcServer {
         operation: params.operation as 'generate' | 'approve' | 'reject' | 'updateStepStatus',
         input: params.input
       })
+    }
+
+    if (method === 'requestUserInput') {
+      if (!this.requestUserInput) throw new Error('User input is not configured.')
+      const request = sanitizeAgentUserChoiceRequest(params)
+      if (!request) throw new Error('Invalid user choice request.')
+      return this.requestUserInput(request)
     }
 
     if (method === 'resolveNotebookInput') {
@@ -1550,6 +1572,19 @@ class NotebookLocalRpcServer {
       if (op !== 'delegate') throw new Error('Delegated Work operation is invalid.')
       const call = parseDelegateRpcCall(params)
       return this.delegatedWorkService.delegate(caller, call.request, call.options)
+    }
+
+    // skillsCall: native host.skills lifecycle. Authentication and session ownership are identical
+    // to host.agents, but operation semantics live entirely in HostSkillsService. Reserved routing
+    // fields are stripped before dispatch so delete approval can only target the server-bound Session.
+    if (method === 'skillsCall') {
+      if (!this.skillsService) throw new Error('Skills service is not configured.')
+      const sessionId = typeof params.sessionId === 'string' ? params.sessionId : undefined
+      const op = typeof params.op === 'string' ? params.op : ''
+      return this.skillsService.dispatch(
+        { op, params: stripAgentsReservedParams(params) },
+        { sessionId }
+      )
     }
 
     const handler = resolveNotebookLocalRpcHandler(this.service, method, params)

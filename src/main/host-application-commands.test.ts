@@ -75,6 +75,15 @@ const createDependencies = (): HostApplicationCommandDependencies => ({
     revealInFolder: vi.fn(() => ({ revealed: true }))
   },
   notifications: {
+    getSnapshot: vi.fn(async () => ({
+      revision: 1,
+      unreadCount: 0,
+      latestSequence: 0,
+      items: []
+    })),
+    markAllRead: vi.fn(async () => undefined),
+    markRead: vi.fn(async () => undefined),
+    markSessionCompletionsRead: vi.fn(async () => undefined),
     peekPendingOpenSession: vi.fn(() => ({ sessionId: 'session-1', token: 7 })),
     takePendingOpenSession: vi.fn(() => ({ sessionId: 'session-1', token: 7 }))
   },
@@ -152,7 +161,7 @@ const commandByName = (name: string): ApplicationCommand<string, readonly unknow
 }
 
 describe('Host application commands', () => {
-  it('defines the exact 42 request channels in their existing capability groups', () => {
+  it('defines the exact 46 request channels in their existing capability groups', () => {
     const expected = RENDERER_CONTRACT_GROUPS.filter(({ capability }) =>
       HOST_CAPABILITIES.includes(capability as (typeof HOST_CAPABILITIES)[number])
     ).map(({ capability, contracts }) => ({
@@ -166,7 +175,7 @@ describe('Host application commands', () => {
         .filter((channel): channel is string => channel !== null)
     }))
 
-    expect(expected.flatMap(({ channels }) => channels)).toHaveLength(42)
+    expect(expected.flatMap(({ channels }) => channels)).toHaveLength(46)
     expect(
       hostApplicationCommandGroups.map(({ name, commands }) => ({
         capability: name,
@@ -182,7 +191,7 @@ describe('Host application commands', () => {
       {} as HostApplicationCommandDependencies
     )
 
-    expect(router.dispatcher.commandNames()).toHaveLength(42)
+    expect(router.dispatcher.commandNames()).toHaveLength(46)
     installation.uninstall()
     expect(router.dispatcher.commandNames()).toEqual([])
   })
@@ -201,6 +210,9 @@ describe('Host application commands', () => {
     const reviewSession = { projectId: 'project-1', appSessionId: 'session-1' }
     const parent = { parent: '/target' }
     const root = { parent: '/target', markOnboarding: true }
+    const markReadRequest = { ids: ['message-1'] }
+    const markAllReadRequest = { throughSequence: 7 }
+    const markSessionCompletionsReadRequest = { sessionIds: ['session-1'] }
 
     await router.dispatcher.invoke(hostApplicationCommands.cli.getStatus, invocation([]))
     await router.dispatcher.invoke(hostApplicationCommands.cli.install, invocation([]))
@@ -220,6 +232,22 @@ describe('Host application commands', () => {
     await router.dispatcher.invoke(hostApplicationCommands.logs.getPath, invocation([]))
     await router.dispatcher.invoke(hostApplicationCommands.logs.openFile, invocation([]))
     await router.dispatcher.invoke(hostApplicationCommands.logs.revealInFolder, invocation([]))
+    await router.dispatcher.invoke(
+      hostApplicationCommands.notifications.getSnapshot,
+      invocation([])
+    )
+    await router.dispatcher.invoke(
+      hostApplicationCommands.notifications.markAllRead,
+      invocation([markAllReadRequest])
+    )
+    await router.dispatcher.invoke(
+      hostApplicationCommands.notifications.markRead,
+      invocation([markReadRequest])
+    )
+    await router.dispatcher.invoke(
+      hostApplicationCommands.notifications.markSessionCompletionsRead,
+      invocation([markSessionCompletionsReadRequest])
+    )
     await router.dispatcher.invoke(
       hostApplicationCommands.notifications.peekPendingOpenSession,
       invocation([])
@@ -296,6 +324,11 @@ describe('Host application commands', () => {
     expect(dependencies.localFs.listDir).toHaveBeenCalledWith('/data')
     expect(dependencies.localFs.readPreview).toHaveBeenCalledWith(previewRequest)
     expect(dependencies.notifications.takePendingOpenSession).toHaveBeenCalledWith(7)
+    expect(dependencies.notifications.markAllRead).toHaveBeenCalledWith(markAllReadRequest)
+    expect(dependencies.notifications.markRead).toHaveBeenCalledWith(markReadRequest)
+    expect(dependencies.notifications.markSessionCompletionsRead).toHaveBeenCalledWith(
+      markSessionCompletionsReadRequest
+    )
     expect(dependencies.remoteAccess.approve).toHaveBeenCalledWith(
       { requestId: 'pair-1', decision: 'once' },
       true,
@@ -446,5 +479,52 @@ describe('Host application commands', () => {
       )
     ).resolves.toEqual({ sessionId: 'session-1', token: 7 })
     expect(dependencies.notifications.takePendingOpenSession).toHaveBeenCalledWith(7)
+  })
+
+  it('rejects malformed message read requests ahead of owner mutation', async () => {
+    const dependencies = createDependencies()
+    const router = createApplicationCommandRouter()
+    registerHostApplicationCommands(router.registrar, dependencies)
+
+    for (const invalidRequest of [undefined, null, {}, { ids: 'message-1' }, { ids: [1] }]) {
+      await expect(
+        router.dispatcher.invoke(
+          commandByName('notifications:mark-read'),
+          invocation([invalidRequest])
+        )
+      ).rejects.toThrow('Invalid notifications:mark-read request.')
+    }
+    for (const invalidRequest of [
+      undefined,
+      null,
+      {},
+      { throughSequence: '7' },
+      { throughSequence: -1 }
+    ]) {
+      await expect(
+        router.dispatcher.invoke(
+          commandByName('notifications:mark-all-read'),
+          invocation([invalidRequest])
+        )
+      ).rejects.toThrow('Invalid notifications:mark-all-read request.')
+    }
+    for (const invalidRequest of [
+      undefined,
+      null,
+      {},
+      { sessionIds: 'session-1' },
+      { sessionIds: [1] }
+    ]) {
+      await expect(
+        router.dispatcher.invoke(
+          commandByName('notifications:mark-session-completions-read'),
+          invocation([invalidRequest])
+        )
+      ).rejects.toThrow('Invalid notifications:mark-session-completions-read request.')
+    }
+
+    expect(dependencies.notifications.markRead).not.toHaveBeenCalled()
+    expect(dependencies.notifications.markAllRead).not.toHaveBeenCalled()
+    expect(dependencies.notifications.markSessionCompletionsRead).not.toHaveBeenCalled()
   })
 })

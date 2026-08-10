@@ -32,14 +32,14 @@ import { encodeRemoteFsError } from '../../shared/remote-fs'
 import { getProjectDbClient } from '../projects/prisma-client'
 import { createLogger, errorLogFields } from '../logger'
 import { resolveDataRoot, resolveStorageRoot } from '../storage-root'
-import { SettingsRepository } from '../settings/repository'
 import { getAppClaudeConfigDir } from '../settings/provider-env'
+import { createSettingsComputeGrantPort } from '../settings/compute-grant-port'
 import { codexStorageDir, codexSubscriptionStorageDir } from '../agent-framework/codex'
 import { opencodeConfigDir } from '../agent-framework/opencode'
 import { broadcastToRenderers } from '../renderer-broadcast'
 import type { TaskNotificationService } from '../notifications/task-notifications'
 import { buildComputeApprovalBroadcast } from '../notifications/electron-wiring'
-import { ComputeApprovalBroker } from './compute-approval-broker'
+import { ComputeApprovalBroker, type ComputeApprovalContext } from './compute-approval-broker'
 import { ComputeService, type ArtifactResolver } from './compute-service'
 import { ConcurrencyManager } from './concurrency-manager'
 import { ComputeHostRepository } from './repository'
@@ -52,7 +52,10 @@ import { EnabledComputeHostsRegistry, enabledComputeHostsRegistry } from './enab
 import { getJobHarvestDir } from './harvest-engine'
 import { workspaceRelativePath } from './workspace-path'
 import type { PermissionGrantRegistry } from '../permission-grants/registry'
-import { createComputePermissionGrantAdapter } from './permission-grant-adapter'
+import {
+  createComputePermissionGrantAdapter,
+  type LegacyComputeGrantPort
+} from './permission-grant-adapter'
 import { hasCanonicalComputeSkillDoc, syncComputeSkillDoc } from './skill-doc'
 
 // IPC channel names for the renderer job feed (Phase 3d, issue 05).
@@ -183,6 +186,9 @@ type ComputeHandlers = {
   // Responds to a pending approval request from the renderer. Decision now includes
   // 'conversation' and 'project' scopes in addition to 'once' and 'deny' (issue 05).
   approvalRespond: (id: string, decision: ComputeApprovalDecision) => void
+  approvalReplay: (id: string) => ComputeApprovalRequest | null
+  approvalPauseSession: (sessionId: string) => void
+  approvalResumeSession: (sessionId: string) => void
   // Returns JobSummary[] for a session, optionally filtered by status (renderer feed, issue 05).
   jobsList: (filter: { sessionId: string; status?: string[] }) => Promise<JobSummary[]>
   // Returns jobs with notifiedAt set and notificationConsumedAt null (issue 05 restart recovery).
@@ -197,17 +203,20 @@ const createComputeHandlers = (
   listSshAliases: () => Promise<string[]> = readSshConfigHostAliases,
   injectedService?: ComputeService,
   injectedBroker?: ComputeApprovalBroker,
-  settingsRepository?: SettingsRepository,
+  legacyComputeGrants?: LegacyComputeGrantPort,
   jobRepository?: ComputeJobRepository,
   onJobUpdated?: (job: ComputeJob) => void,
   artifactResolver?: ArtifactResolver,
   storageRoot?: string,
-  taskNotifications?: Pick<TaskNotificationService, 'handleComputeApproval'>,
+  taskNotifications?: Pick<
+    TaskNotificationService,
+    'handleComputeApproval' | 'settleAuthorization'
+  >,
   permissionGrantRegistry?: PermissionGrantRegistry,
   syncComputeSkillDocument?: () => Promise<void>
 ): ComputeHandlers => {
   const permissionGrants = permissionGrantRegistry
-    ? createComputePermissionGrantAdapter(permissionGrantRegistry, settingsRepository)
+    ? createComputePermissionGrantAdapter(permissionGrantRegistry, legacyComputeGrants)
     : undefined
   if (permissionGrants) {
     void permissionGrants
@@ -228,20 +237,26 @@ const createComputeHandlers = (
             onNotificationError: (error) =>
               log.warn('compute approval notification failed', errorLogFields(error))
           })
-        : (request: ComputeApprovalRequest) => {
+        : (request: ComputeApprovalRequest, context?: ComputeApprovalContext) => {
             // Tests and isolated registrations without the notification service still receive cards.
             for (const win of BrowserWindow.getAllWindows()) {
-              win.webContents.send('compute:approval-request', request)
+              win.webContents.send('compute:approval-request', {
+                ...request,
+                ...(context?.sessionId ? { session_id: context.sessionId } : {})
+              })
             }
           },
-      // Isolated legacy callers retain their old hooks. Production uses only the Registry adapter.
+      onSettled: taskNotifications
+        ? (id, state) => void taskNotifications.settleAuthorization('compute', id, state)
+        : undefined,
+      // Isolated/no-Registry callers retain the former settings-backed Project grant behavior.
       checkProjectGrant:
-        settingsRepository && !permissionGrantRegistry
-          ? (grant) => settingsRepository.hasComputeGrant(grant)
+        legacyComputeGrants && !permissionGrantRegistry
+          ? (grant) => legacyComputeGrants.hasComputeGrant(grant)
           : undefined,
       saveProjectGrant:
-        settingsRepository && !permissionGrantRegistry
-          ? (grant) => settingsRepository.addComputeGrant(grant).then(() => undefined)
+        legacyComputeGrants && !permissionGrantRegistry
+          ? (grant) => legacyComputeGrants.addComputeGrant(grant).then(() => undefined)
           : undefined,
       isProviderCurrent: async ({ providerId, ownerId }) => {
         const current = await repository.get(providerId)
@@ -365,6 +380,9 @@ const createComputeHandlers = (
     },
     computeService: service,
     approvalRespond: (id, decision) => broker.respond(id, decision),
+    approvalReplay: (id) => broker.getPending(id),
+    approvalPauseSession: (sessionId) => broker.pauseSession(sessionId),
+    approvalResumeSession: (sessionId) => broker.resumeSession(sessionId),
     jobsList: async (filter) => {
       if (!jobRepository || !storageRoot) return []
       const hosts = await repository.list()
@@ -470,15 +488,17 @@ const createComputeIpcModule = (
   // one constructed by createComputeHandlers. Lets the renderer-callable error wrapper around
   // `compute:list-dir` / `compute:download` be exercised end-to-end against a fake service.
   injectedService?: ComputeService,
-  taskNotifications?: Pick<TaskNotificationService, 'handleComputeApproval'>,
-  permissionGrantRegistry?: PermissionGrantRegistry
+  taskNotifications?: Pick<
+    TaskNotificationService,
+    'handleComputeApproval' | 'settleAuthorization'
+  >,
+  permissionGrantRegistry?: PermissionGrantRegistry,
+  legacyComputeGrants?: LegacyComputeGrantPort
 ): ComputeIpcModule => {
   const storageRoot = resolveStorageRoot()
   const dataRoot = resolveDataRoot()
-
-  // Read the legacy settings repository only for lazy one-way Project grant import. New remembered
-  // approvals are written exclusively through the SQLite PermissionGrant Registry.
-  const settingsRepo = new SettingsRepository(storageRoot)
+  const effectiveLegacyComputeGrants =
+    legacyComputeGrants ?? createSettingsComputeGrantPort(storageRoot)
 
   // Broadcast dispatcher status transitions to the renderer, same hook shape as the JobPoller uses.
   const onJobUpdated = createJobUpdatedBroadcaster(repository, dataRoot)
@@ -488,7 +508,7 @@ const createComputeIpcModule = (
     undefined,
     injectedService,
     undefined,
-    settingsRepo,
+    effectiveLegacyComputeGrants,
     jobRepository,
     onJobUpdated,
     artifactResolver,
@@ -584,6 +604,9 @@ const registerComputeIpcHandlerSet = ({
     (_event, request: { id: string; decision: ComputeApprovalDecision }) => {
       handlers.approvalRespond(request.id, request.decision)
     }
+  )
+  ipcMainHandle('compute:approval-replay', (_event, id: unknown) =>
+    typeof id === 'string' ? handlers.approvalReplay(id) : null
   )
   // Returns all jobs for a session as JobSummary[], optionally filtered by status (Phase 3d).
   ipcMainHandle(

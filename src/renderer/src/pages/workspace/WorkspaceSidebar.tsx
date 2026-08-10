@@ -12,9 +12,11 @@ import {
   PinOff,
   Plus,
   Settings,
+  Toolbox,
   Trash2,
   X
 } from 'lucide-react'
+import { useEffect, useState } from 'react'
 import {
   DropdownMenu,
   DropdownMenuContent,
@@ -28,9 +30,11 @@ import {
 
 import { cn } from '@/lib/utils'
 import { GitHubStarBadge } from '@/components/GitHubStarBadge'
+import { NetworkStatusIndicator } from '@/components/NetworkStatusIndicator'
 import { UpdateCapsule } from '@/components/UpdateCapsule'
 import type { ChatSession, SessionStatus } from '@/stores/session-store'
 import type { ConversationExportFormat } from '../../../../shared/conversation-export'
+import { NotificationBell } from '@/components/NotificationBell'
 
 type WorkspaceSidebarProps = {
   projectName: string
@@ -59,10 +63,16 @@ type WorkspaceSidebarProps = {
   onMobileClose?: () => void
 }
 
+type WorkspaceSidebarViewProps = WorkspaceSidebarProps & {
+  now: number
+  showSessionShortcuts?: boolean
+}
+
 // Maps each session status to the left-side indicator dot using emitted theme colors.
 const sessionStatusDotClassName: Record<SessionStatus, string> = {
   idle: 'border border-text-100 bg-transparent',
   running: 'bg-session-running ring-2 ring-session-running/20',
+  'waiting-for-user': 'bg-session-waiting ring-2 ring-session-waiting/25',
   'waiting-permission': 'bg-session-waiting ring-2 ring-session-waiting/25',
   'waiting-plan-approval': 'bg-session-waiting ring-2 ring-session-waiting/25',
   error: 'bg-destructive'
@@ -71,9 +81,88 @@ const sessionStatusDotClassName: Record<SessionStatus, string> = {
 const sessionStatusLabel: Record<SessionStatus, string> = {
   idle: 'Idle',
   running: 'Running',
+  'waiting-for-user': 'Waiting for your answer',
   'waiting-permission': 'Waiting for permission',
   'waiting-plan-approval': 'Waiting for plan approval',
   error: 'Error'
+}
+
+const ACTIVE_SESSION_GRACE_MS = 15 * 60_000
+const OPEN_DIALOG_SELECTOR =
+  '[role="dialog"]:not([data-state="closed"]), [role="alertdialog"]:not([data-state="closed"])'
+
+const isLiveSessionStatus = (status: SessionStatus): boolean =>
+  status === 'running' ||
+  status === 'waiting-for-user' ||
+  status === 'waiting-permission' ||
+  status === 'waiting-plan-approval'
+
+type SidebarSessionSection = {
+  label: 'Pinned' | 'Active' | 'Today' | 'Yesterday' | 'This week' | 'Older'
+  items: ChatSession[]
+}
+
+const startOfLocalDay = (timestamp: number): number => {
+  const date = new Date(timestamp)
+  date.setHours(0, 0, 0, 0)
+  return date.getTime()
+}
+
+const getSessionSections = (sessions: ChatSession[], now: number): SidebarSessionSection[] => {
+  const todayStartedAt = startOfLocalDay(now)
+  const yesterday = new Date(todayStartedAt)
+  yesterday.setDate(yesterday.getDate() - 1)
+  const yesterdayStartedAt = yesterday.getTime()
+  const week = new Date(todayStartedAt)
+  week.setDate(week.getDate() - ((week.getDay() + 6) % 7))
+  const weekStartedAt = week.getTime()
+
+  const pinned: ChatSession[] = []
+  const active: ChatSession[] = []
+  const today: ChatSession[] = []
+  const yesterdaySessions: ChatSession[] = []
+  const thisWeek: ChatSession[] = []
+  const older: ChatSession[] = []
+
+  sessions.forEach((session) => {
+    if (session.pinned) {
+      pinned.push(session)
+    } else if (
+      isLiveSessionStatus(session.status) ||
+      (session.status === 'idle' && now - session.updatedAt < ACTIVE_SESSION_GRACE_MS)
+    ) {
+      active.push(session)
+    } else if (session.updatedAt >= todayStartedAt) {
+      today.push(session)
+    } else if (session.updatedAt >= yesterdayStartedAt) {
+      yesterdaySessions.push(session)
+    } else if (session.updatedAt >= weekStartedAt) {
+      thisWeek.push(session)
+    } else {
+      older.push(session)
+    }
+  })
+
+  const sections: SidebarSessionSection[] = [
+    { label: 'Pinned', items: pinned },
+    { label: 'Active', items: active },
+    { label: 'Today', items: today },
+    { label: 'Yesterday', items: yesterdaySessions },
+    { label: 'This week', items: thisWeek },
+    { label: 'Older', items: older }
+  ]
+  return sections.filter((section) => section.items.length > 0)
+}
+
+const getNextSessionSectionRefreshAt = (sessions: ChatSession[], now: number): number => {
+  const tomorrow = new Date(now)
+  tomorrow.setHours(24, 0, 0, 0)
+
+  return sessions.reduce((nextRefreshAt, session) => {
+    if (session.pinned || session.status !== 'idle') return nextRefreshAt
+    const activeUntil = session.updatedAt + ACTIVE_SESSION_GRACE_MS
+    return activeUntil > now ? Math.min(nextRefreshAt, activeUntil) : nextRefreshAt
+  }, tomorrow.getTime())
 }
 
 const sidebarInteractiveTransitionClassName = 'transition-colors duration-200 ease-out'
@@ -90,7 +179,7 @@ const sessionRowActionClassName =
 const sessionMenuIconClassName = 'flex size-4 shrink-0 items-center justify-center'
 
 // Left navigation owns session selection, creation entry, and workspace settings.
-const WorkspaceSidebar = ({
+const WorkspaceSidebarView = ({
   projectName,
   sessions,
   activeSessionId,
@@ -114,17 +203,18 @@ const WorkspaceSidebar = ({
   onOpenSettings,
   mobileMode = false,
   isMobileOpen = false,
-  onMobileClose
-}: WorkspaceSidebarProps): React.JSX.Element => {
-  // Partition sessions into pinned and unpinned groups; each group preserves the incoming order.
-  const pinnedSessions = sessions.filter((s) => s.pinned)
-  const activeSessions = sessions.filter((s) => !s.pinned)
-
-  // Build section descriptors so the list renders with a labelled header per group.
-  const sections: Array<{ label: string; items: typeof sessions }> = []
-
-  if (pinnedSessions.length > 0) sections.push({ label: 'Pinned', items: pinnedSessions })
-  sections.push({ label: 'Active', items: activeSessions })
+  onMobileClose,
+  now,
+  showSessionShortcuts = false
+}: WorkspaceSidebarViewProps): React.JSX.Element => {
+  const sections = getSessionSections(sessions, now)
+  const shortcutNumberBySessionId = new Map(
+    sections
+      .flatMap((section) => section.items)
+      .slice(0, 9)
+      .map((session, index) => [session.id, index + 1])
+  )
+  const isMac = window.api?.platform === 'darwin'
 
   return (
     <aside
@@ -199,6 +289,24 @@ const WorkspaceSidebar = ({
             <button
               type="button"
               className={cn(
+                'flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-text-000 hover:bg-bg-300',
+                sidebarInteractiveTransitionClassName
+              )}
+              onClick={onOpenSettings}
+            >
+              <span
+                className="flex size-3.5 shrink-0 items-center justify-center"
+                aria-hidden="true"
+              >
+                <Toolbox className="size-3.5" strokeWidth={2} />
+              </span>
+              <span>Customize</span>
+            </button>
+          </div>
+          <div className="flex h-9 items-center gap-1 px-2">
+            <button
+              type="button"
+              className={cn(
                 'flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 rounded-md px-2 py-1 text-left text-sm text-text-000 hover:bg-bg-300 disabled:cursor-not-allowed disabled:opacity-50',
                 isFilesOpen && 'bg-bg-300',
                 sidebarInteractiveTransitionClassName
@@ -228,9 +336,11 @@ const WorkspaceSidebar = ({
                 </div>
                 {section.items.map((session) => {
                   const isActive = session.id === activeSessionId
+                  const shortcutNumber = shortcutNumberBySessionId.get(session.id)
                   const isExportDisabled =
                     session.messages.length === 0 ||
                     session.status === 'running' ||
+                    session.status === 'waiting-for-user' ||
                     session.status === 'waiting-permission'
 
                   return (
@@ -244,6 +354,11 @@ const WorkspaceSidebar = ({
                           type="button"
                           className="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left"
                           aria-current={isActive ? 'page' : undefined}
+                          aria-keyshortcuts={
+                            shortcutNumber
+                              ? `${isMac ? 'Meta' : 'Control'}+${shortcutNumber}`
+                              : undefined
+                          }
                           onClick={() => onOpenSession(session.id)}
                         >
                           <span
@@ -261,6 +376,14 @@ const WorkspaceSidebar = ({
                             Session status: {sessionStatusLabel[session.status]}
                           </span>
                           <span className="min-w-0 flex-1 truncate">{session.title}</span>
+                          {showSessionShortcuts && shortcutNumber ? (
+                            <kbd
+                              aria-hidden="true"
+                              className="shrink-0 rounded-full bg-bg-300 px-1.5 py-0.5 font-sans text-[11px] font-medium leading-none tabular-nums text-text-100"
+                            >
+                              {isMac ? `⌘${shortcutNumber}` : `Ctrl+${shortcutNumber}`}
+                            </kbd>
+                          ) : null}
                         </button>
 
                         <DropdownMenu>
@@ -412,7 +535,13 @@ const WorkspaceSidebar = ({
           <div className="relative flex shrink-0 items-center gap-1 p-2">
             <div
               aria-hidden="true"
-              className="pointer-events-none absolute inset-x-0 -top-6 h-6 bg-gradient-to-t from-rail-card-bg to-rail-card-bg/0"
+              className="pointer-events-none absolute inset-x-0 -top-12 h-12 bg-gradient-to-t from-rail-card-bg to-rail-card-bg/0"
+            />
+            <NotificationBell
+              side="top"
+              align="start"
+              className="size-8 rounded-md"
+              onOpen={mobileMode ? onMobileClose : undefined}
             />
             <button
               type="button"
@@ -427,6 +556,7 @@ const WorkspaceSidebar = ({
             </button>
             <UpdateCapsule />
             <GitHubStarBadge />
+            <NetworkStatusIndicator variant="icon" />
           </div>
         </nav>
       </div>
@@ -434,4 +564,76 @@ const WorkspaceSidebar = ({
   )
 }
 
+const WorkspaceSidebar = (props: WorkspaceSidebarProps): React.JSX.Element => {
+  const { onOpenSession, sessions } = props
+  const [now, setNow] = useState(Date.now)
+  const [showSessionShortcuts, setShowSessionShortcuts] = useState(false)
+  const nextSectionRefreshAt = getNextSessionSectionRefreshAt(sessions, now)
+  const isMac = window.api?.platform === 'darwin'
+
+  // Reclassify recent completions at 15 minutes and date groups at local midnight without waiting
+  // for unrelated Session activity to trigger a render.
+  useEffect(() => {
+    const timeoutId = window.setTimeout(
+      () => setNow(Date.now()),
+      Math.max(1, nextSectionRefreshAt - Date.now() + 1)
+    )
+    return () => window.clearTimeout(timeoutId)
+  }, [nextSectionRefreshAt])
+
+  useEffect(() => {
+    const primaryModifierKey = isMac ? 'Meta' : 'Control'
+
+    const handleKeyDown = (event: KeyboardEvent): void => {
+      if (event.key === primaryModifierKey) {
+        if (!event.repeat && document.querySelector(OPEN_DIALOG_SELECTOR) === null) {
+          setShowSessionShortcuts(true)
+        }
+        return
+      }
+
+      if (
+        event.defaultPrevented ||
+        event.isComposing ||
+        event.repeat ||
+        event.altKey ||
+        event.shiftKey ||
+        !(isMac ? event.metaKey : event.ctrlKey) ||
+        document.querySelector(OPEN_DIALOG_SELECTOR) !== null
+      ) {
+        return
+      }
+
+      const shortcutNumber = Number(event.key)
+      if (!Number.isInteger(shortcutNumber) || shortcutNumber < 1 || shortcutNumber > 9) return
+
+      const session = getSessionSections(sessions, now)
+        .flatMap((section) => section.items)
+        .at(shortcutNumber - 1)
+      if (!session) return
+
+      event.preventDefault()
+      onOpenSession(session.id)
+    }
+
+    const handleKeyUp = (event: KeyboardEvent): void => {
+      if (event.key === primaryModifierKey) setShowSessionShortcuts(false)
+    }
+
+    const hideSessionShortcuts = (): void => setShowSessionShortcuts(false)
+
+    window.addEventListener('keydown', handleKeyDown)
+    window.addEventListener('keyup', handleKeyUp)
+    window.addEventListener('blur', hideSessionShortcuts)
+    return () => {
+      window.removeEventListener('keydown', handleKeyDown)
+      window.removeEventListener('keyup', handleKeyUp)
+      window.removeEventListener('blur', hideSessionShortcuts)
+    }
+  }, [isMac, now, onOpenSession, sessions])
+
+  return <WorkspaceSidebarView {...props} now={now} showSessionShortcuts={showSessionShortcuts} />
+}
+
 export { WorkspaceSidebar }
+export { WorkspaceSidebarView }

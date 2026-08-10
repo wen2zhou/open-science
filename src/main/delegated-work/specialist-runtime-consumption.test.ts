@@ -51,7 +51,9 @@ const runtimeFor = (
   }
 }
 
-const openCodeModelConfig = (storageRoot: string) =>
+const openCodeModelConfig = (
+  storageRoot: string
+): ReturnType<typeof opencodeFramework.prepareModelConfig> =>
   opencodeFramework.prepareModelConfig(
     {
       type: 'custom',

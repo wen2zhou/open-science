@@ -4,11 +4,13 @@ import type {
   AcpCompactSessionRequest,
   AcpConnectRequest,
   AcpCreateSessionRequest,
+  AcpContinueInterruptedTurnRequest,
   AcpCreateSessionResponse,
   AcpRuntimeEvent,
   AcpDeleteSessionRequest,
   AcpPermissionRequest,
   AcpPermissionResponse,
+  ElicitationResponse,
   AcpPromptRequest,
   AcpResumeSessionRequest,
   AcpRevokePermissionGrantRequest,
@@ -16,6 +18,16 @@ import type {
   AcpStateSnapshot
 } from '../shared/acp'
 import type { ActivePlanProjection, PlanResponseCommand } from '../shared/session-plan/contract'
+import type {
+  SideChatCloseRequest,
+  SideChatPromptRequest,
+  SideChatRelayDeliveredEvent,
+  SideChatRuntimeEvent,
+  SideChatSessionRequest,
+  SideChatSnapshotList,
+  SideChatStartRequest,
+  SideChatStartResponse
+} from '../shared/side-chat'
 import type {
   ArtifactFile,
   ArtifactPreviewResult,
@@ -72,6 +84,11 @@ import type { LocalDirListing, LocalRoots } from '../shared/local-fs'
 import type { RendererFailureReport } from '../shared/diagnostics'
 import type { OpenLogFileResult, RevealLogFileResult } from '../shared/logs'
 import type {
+  NotificationInboxChanged,
+  NotificationInboxSnapshot,
+  NotificationMarkAllReadRequest,
+  NotificationMarkReadRequest,
+  NotificationMarkSessionCompletionsReadRequest,
   OpenSessionFromNotificationRequest,
   UnreadTaskViewState
 } from '../shared/notifications'
@@ -193,6 +210,7 @@ import type {
   SetConversationSkillImportEnabledRequest,
   SetNotificationsEnabledRequest,
   SetClosePreferenceRequest,
+  SetDefaultPermissionProfileRequest,
   SetAppIconVariantRequest,
   SetReasoningEffortRequest,
   SetSubagentModelRequest,
@@ -204,7 +222,11 @@ import type {
   CreateSkillRequest,
   UpdateSkillRequest,
   DeleteSkillRequest,
+  ExportSkillRequest,
+  ExportSkillResult,
   ImportSkillRequest,
+  GitHubTokenStatus,
+  SaveGitHubTokenRequest,
   ImportSkillResult,
   ImportSkillZipRequest,
   ImportSkillZipBatchRequest,
@@ -244,6 +266,7 @@ import type {
   ValidateProviderResult
 } from '../shared/settings'
 import type { PackageMirror } from '../shared/mirror'
+import type { NetworkInfo } from '../shared/network'
 import type {
   ActiveSessionInfo,
   DataRootInspection,
@@ -340,18 +363,29 @@ export interface OpenScienceAPI {
     disconnect(): Promise<AcpStateSnapshot>
     createSession(request?: AcpCreateSessionRequest): Promise<AcpCreateSessionResponse>
     resumeSession(request: AcpResumeSessionRequest): Promise<AcpCreateSessionResponse>
+    continueInterruptedTurn(request: AcpContinueInterruptedTurnRequest): Promise<AcpStateSnapshot>
     resetSessionContext(request: AcpResumeSessionRequest): Promise<AcpCreateSessionResponse>
     sendPrompt(request: AcpPromptRequest): Promise<AcpStateSnapshot>
     compactSession(request: AcpCompactSessionRequest): Promise<AcpStateSnapshot>
     cancel(request: AcpCancelPromptRequest): Promise<AcpStateSnapshot>
     deleteSession(request: AcpDeleteSessionRequest): Promise<AcpStateSnapshot>
     respondToPermission(response: AcpPermissionResponse): Promise<AcpStateSnapshot>
+    respondToElicitation(response: ElicitationResponse): Promise<AcpStateSnapshot>
     setPermissionProfile(request: AcpSetPermissionProfileRequest): Promise<AcpStateSnapshot>
     revokePermissionGrant(request: AcpRevokePermissionGrantRequest): Promise<AcpStateSnapshot>
     onState(listener: AcpListener<AcpStateSnapshot>): RemoveListener
     onAgentRuntimeUpdate(listener: AcpListener<AcpAgentRuntimeUpdate>): RemoveListener
     onEvent(listener: AcpListener<AcpRuntimeEvent>): RemoveListener
     onPermissionRequest(listener: AcpListener<AcpPermissionRequest>): RemoveListener
+  }
+  sideChat: {
+    list(): Promise<SideChatSnapshotList>
+    start(request: SideChatStartRequest): Promise<SideChatStartResponse>
+    send(request: SideChatPromptRequest): Promise<void>
+    cancel(request: SideChatSessionRequest): Promise<void>
+    close(request: SideChatCloseRequest): Promise<void>
+    onEvent(listener: AcpListener<SideChatRuntimeEvent>): RemoveListener
+    onRelayDelivered(listener: AcpListener<SideChatRelayDeliveredEvent>): RemoveListener
   }
   permissions: {
     list(): Promise<PermissionGrantSnapshot>
@@ -405,6 +439,9 @@ export interface OpenScienceAPI {
       request: SetConversationSkillImportEnabledRequest
     ): Promise<SettingsSnapshot>
     setClosePreference(request: SetClosePreferenceRequest): Promise<SettingsSnapshot>
+    setDefaultPermissionProfile(
+      request: SetDefaultPermissionProfileRequest
+    ): Promise<SettingsSnapshot>
     setAppIconVariant(request: SetAppIconVariantRequest): Promise<SettingsSnapshot>
     listAppIcons(): Promise<AppIconPreview[]>
     validateProvider(request: ValidateProviderRequest): Promise<ValidateProviderResult>
@@ -425,7 +462,11 @@ export interface OpenScienceAPI {
     getPackageMirror(): Promise<PackageMirror>
     setPackageMirror(request: SetPackageMirrorRequest): Promise<PackageMirror>
     listSkills(): Promise<SkillView[]>
+    getGitHubTokenStatus(): Promise<GitHubTokenStatus>
+    saveGitHubToken(request: SaveGitHubTokenRequest): Promise<GitHubTokenStatus>
+    removeGitHubToken(): Promise<GitHubTokenStatus>
     getSkillDetail(id: string): Promise<SkillDetailView>
+    exportSkill(request: ExportSkillRequest): Promise<ExportSkillResult>
     setSkillEnabled(request: SetSkillEnabledRequest): Promise<SkillView[]>
     createSkill(request: CreateSkillRequest): Promise<SkillView[]>
     updateSkill(request: UpdateSkillRequest): Promise<SkillView[]>
@@ -466,6 +507,7 @@ export interface OpenScienceAPI {
     ): RemoveListener
     onSkillImportApprovalSettled(listener: AcpListener<string>): RemoveListener
     replayPendingSkillImportApprovals(): Promise<void>
+    replayConnectorApproval(id: string): Promise<ConnectorApprovalRequest | null>
     respondSkillImportApproval(response: ConversationSkillImportApprovalResponse): Promise<void>
     respondConnectorApproval(request: RespondApprovalRequest): Promise<void>
     onInstallLog(listener: AcpListener<ClaudeInstallEvent>): RemoveListener
@@ -525,6 +567,13 @@ export interface OpenScienceAPI {
     revealInFolder(): Promise<RevealLogFileResult>
   }
   notifications: {
+    getSnapshot(): Promise<NotificationInboxSnapshot>
+    markAllRead(request: NotificationMarkAllReadRequest): Promise<void>
+    markRead(request: NotificationMarkReadRequest): Promise<void>
+    markSessionCompletionsRead(
+      request: NotificationMarkSessionCompletionsReadRequest
+    ): Promise<void>
+    onChanged(listener: AcpListener<NotificationInboxChanged>): RemoveListener
     onOpenSession(listener: () => void): RemoveListener
     peekPendingOpenSession(): Promise<OpenSessionFromNotificationRequest | null>
     takePendingOpenSession(
@@ -536,6 +585,10 @@ export interface OpenScienceAPI {
   }
   github: {
     getStars(): Promise<number | null>
+  }
+  network: {
+    getInfo(): Promise<NetworkInfo>
+    checkConnectivity(): Promise<boolean>
   }
   cli: {
     getStatus(): Promise<CliLauncherStatus>
@@ -597,6 +650,7 @@ export interface OpenScienceAPI {
     onApprovalRequest(listener: (request: ComputeApprovalRequest) => void): () => void
     // Renderer sends back the user's decision (once / conversation / project / deny).
     respondApproval(request: { id: string; decision: ComputeApprovalDecision }): Promise<void>
+    replayApproval(id: string): Promise<ComputeApprovalRequest | null>
     // Lists a remote directory (browse experience).
     listDir(providerId: string, path: string): Promise<DirListing>
     // Downloads a remote file to OS Downloads or project artifact. No approval gate for UI actions.

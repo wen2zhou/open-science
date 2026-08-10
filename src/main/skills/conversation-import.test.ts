@@ -772,10 +772,12 @@ describe('SkillImportApprovalBroker lifecycle', () => {
   it('settles and dismisses a request when its timeout expires', async () => {
     vi.useFakeTimers()
     const onSettled = vi.fn()
+    const onLifecycleSettled = vi.fn()
     const broker = new SkillImportApprovalBroker({
       generateId: () => 'approval-timeout',
       broadcast: vi.fn(),
       onSettled,
+      onLifecycleSettled,
       timeoutMs: 10
     })
     const response = broker.request(approvalInfo('session-1'))
@@ -784,6 +786,25 @@ describe('SkillImportApprovalBroker lifecycle', () => {
 
     await expect(response).resolves.toEqual({ id: 'approval-timeout', cancelled: true })
     expect(onSettled).toHaveBeenCalledWith('approval-timeout')
+    expect(onLifecycleSettled).toHaveBeenCalledWith('approval-timeout', 'expired')
+  })
+
+  it('settles the inbox lifecycle when renderer teardown throws', async () => {
+    const onLifecycleSettled = vi.fn()
+    const broker = new SkillImportApprovalBroker({
+      generateId: () => 'approval-renderer-failure',
+      broadcast: vi.fn(),
+      onSettled: () => {
+        throw new Error('renderer unavailable')
+      },
+      onLifecycleSettled
+    })
+    const response = broker.request(approvalInfo('session-1'))
+
+    broker.respond({ id: 'approval-renderer-failure', items: [] })
+
+    await expect(response).resolves.toEqual({ id: 'approval-renderer-failure', items: [] })
+    expect(onLifecycleSettled).toHaveBeenCalledWith('approval-renderer-failure', 'resolved')
   })
 
   it('cancels only approvals owned by the stopped conversation', async () => {

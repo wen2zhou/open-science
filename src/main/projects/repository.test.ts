@@ -7,6 +7,7 @@ const createRow = (overrides: Record<string, unknown> = {}): Record<string, unkn
   name: 'Research',
   description: 'A project',
   isExample: false,
+  pinned: false,
   createdAt: new Date(1710000000000),
   updatedAt: new Date(1710000000100),
   ...overrides
@@ -19,6 +20,7 @@ const createMockClient = (
   >
 ): {
   client: ProjectClient
+  executeRaw: ReturnType<typeof vi.fn>
   project: Record<string, ReturnType<typeof vi.fn>>
   projectDeletionIntent: Record<string, ReturnType<typeof vi.fn>>
 } => {
@@ -36,9 +38,11 @@ const createMockClient = (
     deleteMany: vi.fn().mockResolvedValue({ count: 1 }),
     findMany: vi.fn().mockResolvedValue([])
   }
+  const executeRaw = vi.fn().mockResolvedValue(1)
 
   return {
-    client: { project, projectDeletionIntent } as unknown as ProjectClient,
+    client: { $executeRaw: executeRaw, project, projectDeletionIntent } as unknown as ProjectClient,
+    executeRaw,
     project,
     projectDeletionIntent
   }
@@ -102,6 +106,31 @@ describe('project repository', () => {
       where: { id: 'project-1' },
       data: { name: 'Renamed' }
     })
+  })
+
+  it('does not roll back concurrent activity time while changing pin placement', async () => {
+    let persisted = createRow()
+    const concurrentUpdatedAt = new Date(1710000000200)
+    const { client, executeRaw, project } = createMockClient({
+      findUnique: () => Promise.resolve(persisted),
+      update: ({ data }: { data: Record<string, unknown> }) => {
+        persisted = { ...persisted, updatedAt: concurrentUpdatedAt, ...data }
+        return Promise.resolve(persisted)
+      }
+    })
+    executeRaw.mockImplementation(() => {
+      persisted = { ...persisted, pinned: true, updatedAt: concurrentUpdatedAt }
+      return Promise.resolve(1)
+    })
+    const repository = new ProjectRepository(() => Promise.resolve(client))
+
+    await expect(repository.update({ id: 'project-1', pinned: true })).resolves.toMatchObject({
+      pinned: true,
+      updatedAt: concurrentUpdatedAt.getTime()
+    })
+
+    expect(executeRaw).toHaveBeenCalledOnce()
+    expect(project.update).not.toHaveBeenCalled()
   })
 
   it('deletes a project by id', async () => {

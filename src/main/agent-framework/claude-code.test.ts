@@ -85,7 +85,7 @@ describe('claudeCodeFramework', () => {
 
     expect(setup.meta).toMatchObject({
       claudeCode: {
-        emitRawSDKMessages: [{ type: 'result' }],
+        emitRawSDKMessages: [{ type: 'assistant' }, { type: 'result' }],
         options: {
           ...sessionOptions,
           settingSources: ['user'],
@@ -154,6 +154,7 @@ describe('claudeCodeFramework', () => {
     })
     const systemPrompt = setup.meta?.systemPrompt as { append: string }
 
+    expect(systemPrompt.append).toContain('`mcp__open-science-notebook__ask_user_question`')
     expect(systemPrompt.append).toContain('`mcp__open-science-notebook__notebook_execute`')
     expect(systemPrompt.append).toContain('`mcp__open-science-notebook__repl_execute`')
     expect(systemPrompt.append).toContain('`mcp__open-science-notebook__inspect_packages`')

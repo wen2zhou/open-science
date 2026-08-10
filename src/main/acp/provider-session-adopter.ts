@@ -9,8 +9,8 @@ import type { EffectiveSpecialistSkills } from '../../shared/specialist'
 import { createLogger, diagnosticErrorFields } from '../logger'
 import type { AcpBackendGenerationView } from './backend-generation-owner'
 import {
-  CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY,
   type AcpSessionCapabilityOwner,
+  type SessionCapabilityPolicy,
   type SessionCapabilityProvision
 } from './session-capability-owner'
 import type { AcpSessionConfigurator } from './session-configurator'
@@ -43,6 +43,7 @@ type AcpProviderSessionAdopterDependencies = Readonly<{
     sessionIds: string[]
   ) => AcpPrimarySessionIdentityReservationResult
   capabilities: Pick<AcpSessionCapabilityOwner, 'provision'>
+  capabilityPolicy: SessionCapabilityPolicy
   configurator: Pick<AcpSessionConfigurator, 'configure'>
   resolveSpecialistIdentity?: (
     specialistId: string,
@@ -67,6 +68,7 @@ export class AcpProviderSessionAdopter {
   ): Promise<AcpCreateSessionResponse> {
     let capability: SessionCapabilityProvision | undefined
     let provisionalSession: ActiveSession | undefined
+    let adoptedProviderSessionId: string | undefined
     let identity = request.identity
     try {
       const startupBackend = this.deps.currentBackend()
@@ -75,7 +77,7 @@ export class AcpProviderSessionAdopter {
         framework: startupBackend.framework,
         nativeMcpEnabled: startupBackend.adapter.nativeMcpEnabled,
         bridgeMcpAliasesEnabled: startupBackend.adapter.bridgeMcpAliasesEnabled,
-        policy: CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY,
+        policy: this.deps.capabilityPolicy,
         sessionCwd: request.cwd,
         projectName: request.projectName
       })
@@ -105,6 +107,7 @@ export class AcpProviderSessionAdopter {
       provisionalSession = await request.connection.agent
         .buildSession({ cwd: request.cwd, mcpServers: capability.mcpServers, ...setup.metaArg })
         .start()
+      adoptedProviderSessionId = provisionalSession.sessionId
 
       const reserved = this.deps.reserveIdentity(identity, [
         stableAppSessionId,
@@ -172,6 +175,10 @@ export class AcpProviderSessionAdopter {
       }
       return {
         sessionId: stableAppSessionId,
+        ...(adoptedProviderSessionId ? { providerSessionId: adoptedProviderSessionId } : {}),
+        ...(backend.providerContinuityToken
+          ? { providerContinuityToken: backend.providerContinuityToken }
+          : {}),
         cwd: request.cwd,
         frameworkId: backend.framework.id,
         ...(backend.backendId ? { backendId: backend.backendId } : {}),

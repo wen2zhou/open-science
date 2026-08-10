@@ -1,3 +1,5 @@
+import { notebookLaneKey, type NotebookLaneIdentity } from './lane-identity'
+
 export type NotebookSessionRegistryMember = {
   readonly sessionId: string
   shutdownExecutor: () => Promise<{ reaped: boolean }>
@@ -285,4 +287,3 @@ export class NotebookSessionRegistry<Session extends NotebookSessionRegistryMemb
     return new Error('Notebook session registry has been disposed.')
   }
 }
-import { notebookLaneKey, type NotebookLaneIdentity } from './lane-identity'

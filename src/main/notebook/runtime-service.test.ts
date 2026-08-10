@@ -2678,6 +2678,7 @@ describe('notebook runtime service', () => {
   it('idle-shutdown reports a terminated kernel status and notifies listeners', async () => {
     const root = await createStorageRoot()
     const changedSessions: string[] = []
+    let lifecycle!: NotebookExecutorLifecycleCallbacks
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
@@ -2686,32 +2687,27 @@ describe('notebook runtime service', () => {
       callbacks: {
         onNotebookChanged: (event) => changedSessions.push(event.sessionId)
       },
-      executorFactory: () => ({
-        execute: async (request): Promise<NotebookExecutionResult> => ({
-          status: 'completed',
-          stdout: '',
-          stderr: '',
-          traceback: '',
-          cwdAfter: request.cwd,
-          outputs: []
-        }),
-        shutdown: async () => ({ reaped: true })
-      })
+      executorFactory: (_sessionId, callbacks) => {
+        lifecycle = callbacks
+        return {
+          execute: async (request): Promise<NotebookExecutionResult> => ({
+            status: 'completed',
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }),
+          shutdown: async () => ({ reaped: true })
+        }
+      }
     })
 
     // Establishes the runtime session (and its persisted run.json) the idle-shutdown hook targets.
     await service.execute({ sessionId: 'session-1', workspaceCwd: root, code: '1' })
 
-    // Simulates NotebookKernelExecutor's onIdleShutdown firing after its idle window elapses. The
-    // executorFactory branch above never wires this callback (only the default real-executor branch
-    // does, see createExecutor); this exercises the persistence+notify logic it calls directly.
-    await (
-      service as unknown as {
-        handleKernelIdleShutdown: (lane: ReturnType<typeof createRootNotebookLane>) => Promise<void>
-      }
-    ).handleKernelIdleShutdown(
-      createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1')
-    )
+    // Simulates NotebookKernelExecutor's onIdleShutdown firing after its idle window elapses.
+    await lifecycle.onIdleShutdown('python', DEFAULT_PY_ENV)
 
     const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
     expect(state.kernelStatus).toBe('terminated')
@@ -2904,22 +2900,26 @@ describe('notebook runtime service', () => {
 
   it('clears a stale terminated status once a run completes on the transparently respawned kernel', async () => {
     const root = await createStorageRoot()
+    let lifecycle!: NotebookExecutorLifecycleCallbacks
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
       projectName: 'default-project',
       repository: new NotebookRunRepository(root),
-      executorFactory: () => ({
-        execute: async (request): Promise<NotebookExecutionResult> => ({
-          status: 'completed',
-          stdout: '',
-          stderr: '',
-          traceback: '',
-          cwdAfter: request.cwd,
-          outputs: []
-        }),
-        shutdown: async () => ({ reaped: true })
-      })
+      executorFactory: (_sessionId, callbacks) => {
+        lifecycle = callbacks
+        return {
+          execute: async (request): Promise<NotebookExecutionResult> => ({
+            status: 'completed',
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }),
+          shutdown: async () => ({ reaped: true })
+        }
+      }
     })
 
     // Establishes the runtime session and persisted run.json the idle-shutdown hook targets.
@@ -2927,13 +2927,7 @@ describe('notebook runtime service', () => {
 
     // Simulates the executor's own idle timer dropping the proc between runs (see the
     // 'idle-shutdown reports a terminated kernel status' test above for the same mechanism).
-    await (
-      service as unknown as {
-        handleKernelIdleShutdown: (lane: ReturnType<typeof createRootNotebookLane>) => Promise<void>
-      }
-    ).handleKernelIdleShutdown(
-      createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1')
-    )
+    await lifecycle.onIdleShutdown('python', DEFAULT_PY_ENV)
 
     const afterShutdown = await service.state({ sessionId: 'session-1', workspaceCwd: root })
     expect(afterShutdown.kernelStatus).toBe('terminated')
@@ -2948,34 +2942,32 @@ describe('notebook runtime service', () => {
 
   it('clears a stale terminated status once a control-plane run completes on the respawned kernel', async () => {
     const root = await createStorageRoot()
+    let lifecycle!: NotebookExecutorLifecycleCallbacks
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
       projectName: 'default-project',
       repository: new NotebookRunRepository(root),
-      executorFactory: () => ({
-        execute: async (request): Promise<NotebookExecutionResult> => ({
-          status: 'completed',
-          stdout: '',
-          stderr: '',
-          traceback: '',
-          cwdAfter: request.cwd,
-          outputs: []
-        }),
-        shutdown: async () => ({ reaped: true })
-      })
+      executorFactory: (_sessionId, callbacks) => {
+        lifecycle = callbacks
+        return {
+          execute: async (request): Promise<NotebookExecutionResult> => ({
+            status: 'completed',
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }),
+          shutdown: async () => ({ reaped: true })
+        }
+      }
     })
 
     // Establishes the runtime session and persisted run.json the idle-shutdown hook targets.
     await service.execute({ sessionId: 'session-1', workspaceCwd: root, code: '1' })
 
-    await (
-      service as unknown as {
-        handleKernelIdleShutdown: (lane: ReturnType<typeof createRootNotebookLane>) => Promise<void>
-      }
-    ).handleKernelIdleShutdown(
-      createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1')
-    )
+    await lifecycle.onIdleShutdown('python', DEFAULT_PY_ENV)
 
     const afterShutdown = await service.state({ sessionId: 'session-1', workspaceCwd: root })
     expect(afterShutdown.kernelStatus).toBe('terminated')
@@ -3388,34 +3380,23 @@ describe('notebook runtime service', () => {
 
     it('leaves a terminated kernel status after a run whose kernel rejected (G3)', async () => {
       const root = await createStorageRoot()
-      // eslint-disable-next-line prefer-const -- forward ref: the executor closure captures svc before `service` exists
-      let svc: NotebookRuntimeService | undefined
+      let lifecycle!: NotebookExecutorLifecycleCallbacks
       const service = new NotebookRuntimeService({
         configRoot: root,
         dataRoot: root,
         projectName: 'default-project',
         repository: new NotebookRunRepository(root),
-        executorFactory: () => ({
+        executorFactory: (_sessionId, callbacks) => ({
           execute: async (): Promise<NotebookExecutionResult> => {
+            lifecycle = callbacks
             // Simulate the executor's onTerminated firing mid-run (crash), then the run rejecting so
             // the runtime service's executor-rejection path sets executedOnLiveKernel false.
-            await (
-              svc as unknown as {
-                handleKernelTerminated: (
-                  lane: ReturnType<typeof createRootNotebookLane>,
-                  k: string
-                ) => Promise<void>
-              }
-            ).handleKernelTerminated(
-              createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
-              'python'
-            )
+            await lifecycle.onTerminated('python', DEFAULT_PY_ENV)
             throw new Error('Notebook kernel process exited.')
           },
           shutdown: async () => ({ reaped: true })
         })
       })
-      svc = service
 
       const summary = await service.execute({
         sessionId: 'session-1',
@@ -3431,28 +3412,18 @@ describe('notebook runtime service', () => {
 
     it('does not overwrite a mid-run termination with idle when the executor resolves (G3)', async () => {
       const root = await createStorageRoot()
-      // eslint-disable-next-line prefer-const -- forward ref: the executor closure captures svc before `service` exists
-      let svc: NotebookRuntimeService | undefined
+      let lifecycle!: NotebookExecutorLifecycleCallbacks
       const service = new NotebookRuntimeService({
         configRoot: root,
         dataRoot: root,
         projectName: 'default-project',
         repository: new NotebookRunRepository(root),
-        executorFactory: () => ({
+        executorFactory: (_sessionId, callbacks) => ({
           execute: async (request): Promise<NotebookExecutionResult> => {
+            lifecycle = callbacks
             // The real executor catches a crash internally and RESOLVES a failed result while its
             // onTerminated callback fires — the terminatedKernels guard must still keep 'terminated'.
-            await (
-              svc as unknown as {
-                handleKernelTerminated: (
-                  lane: ReturnType<typeof createRootNotebookLane>,
-                  k: string
-                ) => Promise<void>
-              }
-            ).handleKernelTerminated(
-              createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
-              'python'
-            )
+            await lifecycle.onTerminated('python', DEFAULT_PY_ENV)
             return {
               status: 'failed',
               stdout: '',
@@ -3465,7 +3436,6 @@ describe('notebook runtime service', () => {
           shutdown: async () => ({ reaped: true })
         })
       })
-      svc = service
 
       await service.execute({
         sessionId: 'session-1',
@@ -3481,27 +3451,17 @@ describe('notebook runtime service', () => {
     it('clears a crash terminated status once a clean run of that kind completes (G3)', async () => {
       const root = await createStorageRoot()
       let mode: 'crash' | 'ok' = 'crash'
-      // eslint-disable-next-line prefer-const -- forward ref: the executor closure captures svc before `service` exists
-      let svc: NotebookRuntimeService | undefined
+      let lifecycle!: NotebookExecutorLifecycleCallbacks
       const service = new NotebookRuntimeService({
         configRoot: root,
         dataRoot: root,
         projectName: 'default-project',
         repository: new NotebookRunRepository(root),
-        executorFactory: () => ({
+        executorFactory: (_sessionId, callbacks) => ({
           execute: async (request): Promise<NotebookExecutionResult> => {
+            lifecycle = callbacks
             if (mode === 'crash') {
-              await (
-                svc as unknown as {
-                  handleKernelTerminated: (
-                    lane: ReturnType<typeof createRootNotebookLane>,
-                    k: string
-                  ) => Promise<void>
-                }
-              ).handleKernelTerminated(
-                createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1'),
-                'python'
-              )
+              await lifecycle.onTerminated('python', DEFAULT_PY_ENV)
               return {
                 status: 'failed',
                 stdout: '',
@@ -3523,7 +3483,6 @@ describe('notebook runtime service', () => {
           shutdown: async () => ({ reaped: true })
         })
       })
-      svc = service
 
       await service.execute({
         sessionId: 'session-1',

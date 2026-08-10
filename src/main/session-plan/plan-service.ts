@@ -52,6 +52,7 @@ type PlanServiceDependencies = Readonly<{
     expectedRevision: number
     plan: SessionPlanRuntimeContext | undefined
     sessionStatus: 'waiting-plan-approval' | 'running' | 'idle'
+    beforePersist?: () => void
   }) => Promise<SessionRuntimeContext>
   isRevisionConflict: (error: unknown) => boolean
   persistUserMessage: (input: {
@@ -59,9 +60,22 @@ type PlanServiceDependencies = Readonly<{
     sessionId: string
     content: string
     interactionId: string
+    beforePersist?: () => void
   }) => Promise<PersistedChatMessage>
   now?: () => number
   createId?: () => string
+  onApprovalRequested?: (request: {
+    projectId: string
+    sessionId: string
+    artifactVersionId: string
+    summary: string
+  }) => void
+  onApprovalSettled?: (request: {
+    projectId: string
+    sessionId: string
+    artifactVersionId: string
+    state: 'resolved' | 'rejected' | 'expired' | 'cancelled'
+  }) => void
 }>
 
 type PlanIdentityCommand = Readonly<{
@@ -69,6 +83,14 @@ type PlanIdentityCommand = Readonly<{
   sessionId: string
   artifactVersionId: string
   expectedRevision: number
+}>
+
+type PlanDecisionCommitPrecondition = Readonly<{
+  beforeDecisionCommit?: () => boolean
+}>
+
+type PlanFeedbackCommitPrecondition = Readonly<{
+  beforeFeedbackPersist?: () => void
 }>
 
 type PlanDecisionResult = { projection: ActivePlanProjection; changed: boolean }
@@ -171,21 +193,46 @@ class PlanService {
       artifactVersionId: plan.artifactVersionId,
       interactionId: input.interactionId
     })
+    if (
+      current.plan?.approval === 'pending' &&
+      current.plan.artifactVersionId !== plan.artifactVersionId
+    ) {
+      this.dependencies.onApprovalSettled?.({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        artifactVersionId: current.plan.artifactVersionId,
+        state: 'cancelled'
+      })
+    }
+    this.dependencies.onApprovalRequested?.({
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      artifactVersionId: plan.artifactVersionId,
+      summary: input.content.task_summary
+    })
     return { projection: this.project(document, plan, next.revision), pauseInteraction: true }
   }
 
   async respond(
     input: PlanIdentityCommand &
-      Readonly<{ decision: 'approved' | 'rejected'; interactionIsLive?: boolean }>
+      Readonly<{ decision: 'approved' | 'rejected'; interactionIsLive?: boolean }> &
+      PlanDecisionCommitPrecondition
   ): Promise<PlanDecisionResult>
   async respond(
-    input: Readonly<{ projectId: string; sessionId: string; feedback: string }>
+    input: Readonly<{ projectId: string; sessionId: string; feedback: string }> &
+      PlanFeedbackCommitPrecondition
   ): Promise<PlanFeedbackResult>
   async respond(
-    input: PlanResponseCommand & Readonly<{ interactionIsLive?: boolean }>
+    input: PlanResponseCommand &
+      Readonly<{ interactionIsLive?: boolean }> &
+      PlanDecisionCommitPrecondition &
+      PlanFeedbackCommitPrecondition
   ): Promise<PlanResponseResult>
   async respond(
-    input: PlanResponseCommand & Readonly<{ interactionIsLive?: boolean }>
+    input: PlanResponseCommand &
+      Readonly<{ interactionIsLive?: boolean }> &
+      PlanDecisionCommitPrecondition &
+      PlanFeedbackCommitPrecondition
   ): Promise<PlanResponseResult> {
     if (input.decision === undefined) {
       const context = await this.dependencies.readRuntimeContext(input.projectId, input.sessionId)
@@ -210,9 +257,16 @@ class PlanService {
         projectId: input.projectId,
         sessionId: input.sessionId,
         content: text,
-        interactionId
+        interactionId,
+        ...(input.beforeFeedbackPersist ? { beforePersist: input.beforeFeedbackPersist } : {})
       })
       this.dependencies.interactions.release(input.sessionId, plan.artifactVersionId)
+      this.dependencies.onApprovalSettled?.({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        artifactVersionId: plan.artifactVersionId,
+        state: 'resolved'
+      })
       return {
         kind: 'feedback',
         routeToInteractionId: interactionId,
@@ -224,6 +278,12 @@ class PlanService {
     const { context, plan, document } = await this.loadActive(input, input.decision)
     if (plan.approval === input.decision) {
       this.dependencies.interactions.release(input.sessionId, plan.artifactVersionId)
+      this.dependencies.onApprovalSettled?.({
+        projectId: input.projectId,
+        sessionId: input.sessionId,
+        artifactVersionId: plan.artifactVersionId,
+        state: input.decision === 'rejected' ? 'rejected' : 'resolved'
+      })
       return {
         projection: this.project(document, plan, context.revision, input.interactionIsLive),
         changed: false
@@ -233,8 +293,29 @@ class PlanService {
       throw new PlanCommandError('approval-already-decided', 'Plan approval is irreversible.')
     }
     const updated = { ...plan, approval: input.decision }
-    const next = await this.patch(input, updated, input.interactionIsLive ? 'running' : 'idle')
+    const beforePersist = input.beforeDecisionCommit
+      ? (): void => {
+          if (!input.beforeDecisionCommit?.()) {
+            throw new PlanCommandError(
+              'interaction-mismatch',
+              'The Session Plan decision authorization was revoked before commit.'
+            )
+          }
+        }
+      : undefined
+    const next = await this.patch(
+      input,
+      updated,
+      input.interactionIsLive ? 'running' : 'idle',
+      beforePersist
+    )
     this.dependencies.interactions.release(input.sessionId, plan.artifactVersionId)
+    this.dependencies.onApprovalSettled?.({
+      projectId: input.projectId,
+      sessionId: input.sessionId,
+      artifactVersionId: plan.artifactVersionId,
+      state: input.decision === 'rejected' ? 'rejected' : 'resolved'
+    })
     return {
       projection: this.project(document, updated, next.revision, input.interactionIsLive),
       changed: true
@@ -365,6 +446,14 @@ class PlanService {
           plan: undefined,
           sessionStatus: 'idle'
         })
+        if (observed.plan?.approval === 'pending') {
+          this.dependencies.onApprovalSettled?.({
+            projectId,
+            sessionId,
+            artifactVersionId: observed.plan.artifactVersionId,
+            state: 'expired'
+          })
+        }
         return
       } catch (error) {
         if (!this.dependencies.isRevisionConflict(error)) throw error
@@ -413,7 +502,8 @@ class PlanService {
   private async patch(
     input: PlanIdentityCommand,
     plan: SessionPlanRuntimeContext,
-    sessionStatus: 'waiting-plan-approval' | 'running' | 'idle'
+    sessionStatus: 'waiting-plan-approval' | 'running' | 'idle',
+    beforePersist?: () => void
   ): Promise<SessionRuntimeContext> {
     try {
       return await this.dependencies.patchRuntimeContext({
@@ -421,7 +511,8 @@ class PlanService {
         sessionId: input.sessionId,
         expectedRevision: input.expectedRevision,
         plan,
-        sessionStatus
+        sessionStatus,
+        ...(beforePersist ? { beforePersist } : {})
       })
     } catch (error) {
       if (this.dependencies.isRevisionConflict(error)) {

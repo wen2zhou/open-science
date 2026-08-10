@@ -48,6 +48,7 @@ type FakeSettingsService = Record<
   | 'setNotificationsEnabled'
   | 'setConversationSkillImportEnabled'
   | 'setClosePreference'
+  | 'setDefaultPermissionProfile'
   | 'setAppIconVariant'
   | 'upsertProvider'
   | 'deleteProvider'
@@ -66,6 +67,7 @@ type FakeSettingsService = Record<
   | 'markOnboardingComplete'
   | 'listSkills'
   | 'getSkillDetail'
+  | 'buildSkillExport'
   | 'setSkillEnabled'
   | 'createSkill'
   | 'updateSkill'
@@ -130,6 +132,9 @@ const createFakeService = (): FakeSettingsService => ({
   setClosePreference: vi
     .fn()
     .mockResolvedValue({ claude: {}, providers: [], closePreference: 'quit' }),
+  setDefaultPermissionProfile: vi
+    .fn()
+    .mockResolvedValue({ claude: {}, providers: [], defaultPermissionProfile: 'auto' }),
   setAppIconVariant: vi
     .fn()
     .mockResolvedValue({ claude: {}, providers: [], appIconVariant: 'dark' }),
@@ -159,6 +164,10 @@ const createFakeService = (): FakeSettingsService => ({
     updatedAt: '',
     enabled: true,
     body: 'b'
+  }),
+  buildSkillExport: vi.fn().mockResolvedValue({
+    fileName: 'my-skill.zip',
+    archiveBytes: new Uint8Array([1, 2, 3])
   }),
   setSkillEnabled: vi.fn().mockResolvedValue([]),
   createSkill: vi.fn().mockResolvedValue([]),
@@ -218,6 +227,7 @@ type TestSettingsIpcOptions = {
   onAppIconVariantChanged?: SettingsWorkflowEffects['appearance']['applyAppIconVariant']
   listAppIconPreviews?: SettingsIpcOptions['listAppIconPreviews']
   connectorTemplateFiles?: SettingsIpcOptions['connectorTemplateFiles']
+  skillExportFiles?: SettingsIpcOptions['skillExportFiles']
 }
 
 // Keeps the adapter tests concise while routing every mutation through the real workflow owner.
@@ -232,7 +242,8 @@ const registerTestSettingsIpcHandlers = ({
   onCustomServerSecurityChanged,
   onAppIconVariantChanged,
   listAppIconPreviews,
-  connectorTemplateFiles
+  connectorTemplateFiles,
+  skillExportFiles
 }: TestSettingsIpcOptions): void => {
   registerSettingsIpcHandlers({
     service,
@@ -263,12 +274,14 @@ const registerTestSettingsIpcHandlers = ({
       }
     }),
     listAppIconPreviews,
-    connectorTemplateFiles
+    connectorTemplateFiles,
+    skillExportFiles
   })
 }
 
+const ipcSender = { id: 42 }
 const invoke = (channel: string, payload?: unknown): unknown =>
-  handlers.get(channel)!(undefined, payload)
+  handlers.get(channel)!({ sender: ipcSender }, payload)
 
 describe('settings IPC handlers', () => {
   it('registers every settings channel', () => {
@@ -300,6 +313,7 @@ describe('settings IPC handlers', () => {
       'settings:cancel-isolated-claude-login',
       'settings:logout-isolated-claude',
       'settings:mark-onboarding-complete',
+      'settings:export-skill',
       'settings:preview-custom-server-template-export',
       'settings:select-custom-server-template',
       'settings:export-custom-server-template'
@@ -354,7 +368,8 @@ describe('settings IPC handlers', () => {
     ).resolves.toEqual({ saved: true })
     expect(connectorTemplateFiles.save).toHaveBeenCalledWith(
       'open-science-connector-example.json',
-      '{"schemaVersion":1}\n'
+      '{"schemaVersion":1}\n',
+      ipcSender
     )
 
     await expect(
@@ -752,6 +767,28 @@ describe('settings IPC handlers', () => {
     await invoke('settings:set-skill-enabled', { id: 'demo', enabled: false })
     expect(service.setSkillEnabled).toHaveBeenCalledWith({ id: 'demo', enabled: false })
     expect(onSkillsChanged).toHaveBeenCalledTimes(1)
+  })
+
+  it('builds and saves an eligible Skill export through the desktop adapter', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    const skillExportFiles = { save: vi.fn().mockResolvedValue({ saved: true }) }
+    registerTestSettingsIpcHandlers({
+      service: asService(service),
+      skillExportFiles
+    })
+
+    await expect(invoke('settings:export-skill', { id: 'personal-my-skill' })).resolves.toEqual({
+      saved: true
+    })
+    expect(service.buildSkillExport).toHaveBeenCalledWith('personal-my-skill')
+    expect(skillExportFiles.save).toHaveBeenCalledWith(
+      {
+        fileName: 'my-skill.zip',
+        archiveBytes: new Uint8Array([1, 2, 3])
+      },
+      ipcSender
+    )
   })
 
   it('routes create/update/delete skill channels and fires onSkillsChanged', async () => {
@@ -1154,6 +1191,21 @@ describe('settings IPC handlers', () => {
     expect(service.setAppIconVariant).toHaveBeenCalledWith('dark')
     expect(onAppIconVariantChanged).toHaveBeenCalledWith('dark')
     expect(result).toBe(snapshot)
+  })
+
+  it('persists valid default permission profiles and rejects unknown values', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    registerTestSettingsIpcHandlers({ service: asService(service) })
+
+    const result = await invoke('settings:set-default-permission-profile', { profile: 'auto' })
+
+    expect(service.setDefaultPermissionProfile).toHaveBeenCalledWith('auto')
+    expect(result).toMatchObject({ defaultPermissionProfile: 'auto' })
+    await expect(
+      invoke('settings:set-default-permission-profile', { profile: 'always' })
+    ).rejects.toThrow('Unknown default permission profile')
+    expect(service.setDefaultPermissionProfile).toHaveBeenCalledTimes(1)
   })
 
   it('rejects an unknown app icon variant without touching the service', async () => {

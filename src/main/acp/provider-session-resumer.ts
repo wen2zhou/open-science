@@ -16,8 +16,8 @@ import { createLogger, diagnosticErrorFields, errorLogFields } from '../logger'
 import type { AcpBackendGenerationView } from './backend-generation-owner'
 import type { AcpProviderSessionAdopter } from './provider-session-adopter'
 import {
-  CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY,
   type AcpSessionCapabilityOwner,
+  type SessionCapabilityPolicy,
   type SessionCapabilityProvision
 } from './session-capability-owner'
 import type { AcpSessionConfigurator } from './session-configurator'
@@ -58,6 +58,7 @@ type AcpProviderSessionResumerDependencies = Readonly<{
   registry: AcpSessionRegistry
   reserveIdentity: (sessionId: string) => AcpPrimarySessionIdentityReservationResult
   capabilities: Pick<AcpSessionCapabilityOwner, 'provision'>
+  capabilityPolicy: SessionCapabilityPolicy
   configurator: Pick<AcpSessionConfigurator, 'configure' | 'configurePermissionProfile'>
   adopter: Pick<AcpProviderSessionAdopter, 'adopt'>
   clearLivePermissionProfile: (sessionId: string) => void
@@ -135,6 +136,10 @@ export class AcpProviderSessionResumer {
     const responseBackend = this.deps.currentBackend()
     return {
       sessionId: request.sessionId,
+      providerSessionId: attachment.providerSessionId,
+      ...(responseBackend.providerContinuityToken
+        ? { providerContinuityToken: responseBackend.providerContinuityToken }
+        : {}),
       cwd,
       frameworkId: responseBackend.framework.id,
       ...(responseBackend.backendId ? { backendId: responseBackend.backendId } : {})
@@ -177,10 +182,15 @@ export class AcpProviderSessionResumer {
     const backend = this.deps.currentBackend()
     const decision = this.policy.decide({
       appSessionId: request.sessionId,
+      providerSessionId:
+        affinity?.providerSessionId ?? request.providerSessionId ?? request.sessionId,
       previousFrameworkId: affinity?.frameworkId ?? request.previousFrameworkId,
       currentFrameworkId: backend.framework.id,
       previousBackendId: affinity?.backendId ?? request.previousBackendId,
       currentBackendId: backend.backendId,
+      currentModelRoute: backend.modelRoute,
+      previousProviderContinuityToken: request.providerContinuityToken,
+      currentProviderContinuityToken: backend.providerContinuityToken,
       resumeCapabilityAdvertised: this.deps.resumeCapabilityAdvertised()
     })
 
@@ -192,9 +202,14 @@ export class AcpProviderSessionResumer {
       })
       return this.adopt(request, connection, cwd, projectName, identity)
     }
-    if (decision.action === 'fail') throw new Error(decision.message)
-
-    return this.resumeCompatible(request, connection, cwd, projectName, identity)
+    return this.resumeCompatible(
+      request,
+      connection,
+      cwd,
+      projectName,
+      identity,
+      decision.providerSessionId
+    )
   }
 
   private async resumeCompatible(
@@ -202,7 +217,8 @@ export class AcpProviderSessionResumer {
     connection: ClientConnection,
     cwd: string,
     projectName: string,
-    identity: AcpPrimarySessionIdentityReservation
+    identity: AcpPrimarySessionIdentityReservation,
+    providerSessionId: string
   ): Promise<AcpCreateSessionResponse> {
     let capability: SessionCapabilityProvision | undefined
     let provisionalSession: ActiveSession | undefined
@@ -213,7 +229,7 @@ export class AcpProviderSessionResumer {
         framework: backend.framework,
         nativeMcpEnabled: backend.adapter.nativeMcpEnabled,
         bridgeMcpAliasesEnabled: backend.adapter.bridgeMcpAliasesEnabled,
-        policy: CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY,
+        policy: this.deps.capabilityPolicy,
         sessionCwd: cwd,
         projectName
       })
@@ -235,7 +251,7 @@ export class AcpProviderSessionResumer {
       let resumeResponse: unknown
       try {
         resumeResponse = await connection.agent.request(acp.methods.agent.session.resume, {
-          sessionId: request.sessionId,
+          sessionId: providerSessionId,
           cwd,
           mcpServers: capability.mcpServers,
           ...setup.metaArg
@@ -260,7 +276,8 @@ export class AcpProviderSessionResumer {
 
       provisionalSession = (
         connection.agent as unknown as ClientContextSessionAttacher
-      ).attachSession({ sessionId: request.sessionId, ...(resumeResponse as object) })
+      ).attachSession({ sessionId: providerSessionId, ...(resumeResponse as object) })
+      const resumedProviderSessionId = provisionalSession.sessionId
       const extended = this.deps.registry.reserve({
         reservation: identity,
         sessionIds: [provisionalSession.sessionId]
@@ -309,6 +326,10 @@ export class AcpProviderSessionResumer {
         this.publish(request.sessionId, cwd)
         return {
           sessionId: request.sessionId,
+          providerSessionId: resumedProviderSessionId,
+          ...(backend.providerContinuityToken
+            ? { providerContinuityToken: backend.providerContinuityToken }
+            : {}),
           cwd,
           frameworkId: backend.framework.id,
           ...(backend.backendId ? { backendId: backend.backendId } : {})

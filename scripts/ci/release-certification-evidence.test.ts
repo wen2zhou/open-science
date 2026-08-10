@@ -41,6 +41,10 @@ describe('release certification evidence', () => {
         root,
         '--output',
         output,
+        '--electron-p0',
+        'not-applicable',
+        '--visual-regression',
+        'not-applicable',
         '--package-smoke',
         'passed',
         '--authenticode',
@@ -58,7 +62,11 @@ describe('release certification evidence', () => {
     await expect(JSON.parse(await readFile(output, 'utf8'))).toMatchObject({
       platform: 'linux-x64',
       source: { sha: 'abc123', runId: '42', runAttempt: '2' },
-      checks: { electronP0: 'passed', packageSmoke: 'passed' }
+      checks: {
+        electronP0: 'not-applicable',
+        visualRegression: 'not-applicable',
+        packageSmoke: 'passed'
+      }
     })
   })
 
@@ -162,6 +170,27 @@ describe('release certification evidence', () => {
         environment
       })
     ).rejects.toThrow(/approved reason/)
+    await expect(
+      writeWindowsUpdateEvidence({
+        argv: [
+          '--output',
+          output,
+          '--current-tag',
+          'v0.11.0',
+          '--previous-tag',
+          'v0.10.0',
+          '--status',
+          'failed',
+          '--reason',
+          'updater=failure,installer=success'
+        ],
+        environment
+      })
+    ).resolves.toMatchObject({
+      status: 'failed',
+      reason: 'updater=failure,installer=success',
+      checks: { authenticode: 'not-required', electronUpdater: 'failed' }
+    })
   })
 
   it('fails closed on missing platforms, mismatched SHA, or incomplete stable evidence', async () => {
@@ -173,8 +202,8 @@ describe('release certification evidence', () => {
       platform,
       source: { sha },
       checks: {
-        electronP0: 'passed',
-        visualRegression: 'passed',
+        electronP0: platform === 'macos-arm64' ? 'passed' : 'not-applicable',
+        visualRegression: platform === 'macos-arm64' ? 'passed' : 'not-applicable',
         packageSmoke: 'passed',
         authenticode: platform === 'windows-x64' ? 'not-required' : 'not-applicable'
       },
@@ -201,6 +230,25 @@ describe('release certification evidence', () => {
     })
 
     await writeFile(
+      join(root, 'certification-windows-x64.json'),
+      JSON.stringify({
+        ...recordFor('windows-x64'),
+        checks: {
+          ...recordFor('windows-x64').checks,
+          electronP0: 'passed',
+          visualRegression: 'passed'
+        }
+      })
+    )
+    await expect(aggregateEvidence({ argv: args })).rejects.toThrow(
+      /Invalid release certification evidence for windows-x64/
+    )
+    await writeFile(
+      join(root, 'certification-windows-x64.json'),
+      JSON.stringify(recordFor('windows-x64'))
+    )
+
+    await writeFile(
       join(root, 'certification-macos-arm64.json'),
       JSON.stringify({
         ...recordFor('macos-arm64'),
@@ -216,8 +264,8 @@ describe('release certification evidence', () => {
     )
 
     await expect(
-      aggregateEvidence({ argv: [...args, '--require-stable-release-checks'] })
-    ).rejects.toThrow(/Windows full suite/)
+      aggregateEvidence({ argv: [...args, '--require-windows-update'] })
+    ).rejects.toThrow(/stable Windows update drill evidence/)
     await writeFile(
       join(root, 'certification-windows-update.json'),
       JSON.stringify({
@@ -255,11 +303,10 @@ describe('release certification evidence', () => {
     )
     await expect(
       aggregateEvidence({
-        argv: [...args, '--require-stable-release-checks', '--windows-full-suite', 'passed']
+        argv: [...args, '--require-windows-update']
       })
     ).resolves.toMatchObject({
       releaseChecks: {
-        windowsFullSuite: 'passed',
         windowsUpdate: { status: 'passed' }
       }
     })

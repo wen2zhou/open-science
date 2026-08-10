@@ -10,7 +10,10 @@
 
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import { RENDERER_CONTRACT_GROUPS } from '../shared/renderer-contract-catalog'
+import {
+  ELECTRON_APPLICATION_COMMAND_CHANNELS,
+  RENDERER_CONTRACT_GROUPS
+} from '../shared/renderer-contract-catalog'
 
 const { invokeMock, sendMock, exposeMock, getPathForFileMock, onMock, removeListenerMock } =
   vi.hoisted(() => ({
@@ -69,6 +72,7 @@ type PreloadApi = {
     setNotificationsEnabled: (request: unknown) => unknown
     setConversationSkillImportEnabled: (request: unknown) => unknown
     setClosePreference: (request: unknown) => unknown
+    setDefaultPermissionProfile: (request: unknown) => unknown
     setAppIconVariant: (request: unknown) => unknown
     listAppIcons: () => unknown
     uninstallClaude: () => unknown
@@ -86,11 +90,13 @@ type PreloadApi = {
     logoutIsolatedClaude: () => unknown
     previewGitHubSkill: (request: unknown) => unknown
     previewAgentHomeSkill: (request: unknown) => unknown
+    exportSkill: (request: unknown) => unknown
     selectCustomServerTemplate: (request?: unknown) => unknown
   }
   acp: {
     connect: (request?: unknown) => unknown
     resumeSession: (request: unknown) => unknown
+    continueInterruptedTurn: (request: unknown) => unknown
     resetSessionContext: (request: unknown) => unknown
     compactSession: (request: unknown) => unknown
   }
@@ -164,7 +170,9 @@ const collectFunctionPaths = (value: unknown, prefix = ''): string[] => {
 beforeAll(async () => {
   // Take the contextBridge branch of the preload's expose logic (production path with context isolation).
   Object.defineProperty(process, 'contextIsolated', { value: true, configurable: true })
-  invokeMock.mockResolvedValue(undefined)
+  invokeMock.mockImplementation(async (channel: string) =>
+    validatedApplicationCommandChannels.has(channel) ? { ok: true, result: undefined } : undefined
+  )
 
   await import('./index')
 
@@ -202,6 +210,7 @@ const coreContractGroups = RENDERER_CONTRACT_GROUPS.filter(
   ({ capability }) => !runtimeContractCapabilities.has(capability)
 )
 const coreContracts = coreContractGroups.flatMap(({ contracts }) => contracts)
+const validatedApplicationCommandChannels = new Set(ELECTRON_APPLICATION_COMMAND_CHANNELS)
 
 const getApiCallable = (publicPath: string): ((...args: unknown[]) => unknown) => {
   const callable = publicPath
@@ -219,6 +228,7 @@ describe('preload bridge — public surface inventory', () => {
       'acp.cancel',
       'acp.compactSession',
       'acp.connect',
+      'acp.continueInterruptedTurn',
       'acp.createSession',
       'acp.deleteSession',
       'acp.disconnect',
@@ -230,6 +240,7 @@ describe('preload bridge — public surface inventory', () => {
       'acp.onState',
       'acp.resetSessionContext',
       'acp.respondPlan',
+      'acp.respondToElicitation',
       'acp.respondToPermission',
       'acp.resumeSession',
       'acp.revokePermissionGrant',
@@ -270,6 +281,7 @@ describe('preload bridge — public surface inventory', () => {
       'compute.onApprovalRequest',
       'compute.onJobUpdated',
       'compute.probe',
+      'compute.replayApproval',
       'compute.respondApproval',
       'compute.revealInFolder',
       'compute.scratchSet',
@@ -289,6 +301,8 @@ describe('preload bridge — public surface inventory', () => {
       'logs.getPath',
       'logs.openFile',
       'logs.revealInFolder',
+      'network.checkConnectivity',
+      'network.getInfo',
       'notebook.appendCodeCell',
       'notebook.beginCodeCell',
       'notebook.execute',
@@ -308,6 +322,11 @@ describe('preload bridge — public surface inventory', () => {
       'notebookEnv.onProgress',
       'notebookEnv.provision',
       'notebookEnv.repair',
+      'notifications.getSnapshot',
+      'notifications.markAllRead',
+      'notifications.markRead',
+      'notifications.markSessionCompletionsRead',
+      'notifications.onChanged',
       'notifications.onOpenSession',
       'notifications.onViewProbe',
       'notifications.peekPendingOpenSession',
@@ -399,7 +418,9 @@ describe('preload bridge — public surface inventory', () => {
       'settings.detectCodex',
       'settings.detectOpencode',
       'settings.exportCustomServerTemplate',
+      'settings.exportSkill',
       'settings.getConnectorDetail',
+      'settings.getGitHubTokenStatus',
       'settings.getPackageMirror',
       'settings.getPreflight',
       'settings.getSettings',
@@ -436,9 +457,12 @@ describe('preload bridge — public surface inventory', () => {
       'settings.previewSkillZip',
       'settings.refreshProviderModels',
       'settings.removeCustomServer',
+      'settings.removeGitHubToken',
+      'settings.replayConnectorApproval',
       'settings.replayPendingSkillImportApprovals',
       'settings.respondConnectorApproval',
       'settings.respondSkillImportApproval',
+      'settings.saveGitHubToken',
       'settings.scanRepoSkills',
       'settings.selectCustomServerTemplate',
       'settings.setActiveProvider',
@@ -449,6 +473,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.setConnectorEnabled',
       'settings.setConversationSkillImportEnabled',
       'settings.setCustomServerEnabled',
+      'settings.setDefaultPermissionProfile',
       'settings.setNcbiCredentials',
       'settings.setNotificationsEnabled',
       'settings.setPackageMirror',
@@ -463,6 +488,13 @@ describe('preload bridge — public surface inventory', () => {
       'settings.updateSkill',
       'settings.upsertProvider',
       'settings.validateProvider',
+      'sideChat.cancel',
+      'sideChat.close',
+      'sideChat.list',
+      'sideChat.onEvent',
+      'sideChat.onRelayDelivered',
+      'sideChat.send',
+      'sideChat.start',
       'specialist.cancelHandoff',
       'specialist.cancelPackage',
       'specialist.create',
@@ -548,10 +580,10 @@ describe('preload bridge — Connector configuration files', () => {
 })
 
 describe('preload bridge — runtime renderer contract catalog', () => {
-  it('routes all 181 owned contracts through their cataloged Electron channels', async () => {
+  it('routes all 187 owned methods through their cataloged Electron channels', async () => {
     const requestContracts = runtimeContracts.filter(({ kind }) => kind === 'method')
 
-    expect(runtimeContracts).toHaveLength(181)
+    expect(runtimeContracts).toHaveLength(190)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()
@@ -617,7 +649,7 @@ describe('preload bridge — runtime renderer contract catalog', () => {
 })
 
 describe('preload bridge — core renderer contract catalog', () => {
-  it('pins the exact 21-group, 133-callable T1d complement', () => {
+  it('pins the exact 23-group, 147-callable T1d complement', () => {
     expect(coreContractGroups.map(({ capability }) => capability)).toEqual([
       'artifacts',
       'cli',
@@ -626,6 +658,7 @@ describe('preload bridge — core renderer contract catalog', () => {
       'lifecycle',
       'local-fs',
       'logs',
+      'network',
       'notifications',
       'office-preview',
       'platform-file-save',
@@ -636,12 +669,13 @@ describe('preload bridge — core renderer contract catalog', () => {
       'remote-access',
       'reviewer',
       'sessions',
+      'side-chat',
       'storage',
       'update',
       'uploads',
       'window'
     ])
-    expect(coreContracts).toHaveLength(133)
+    expect(coreContracts).toHaveLength(147)
     expect({
       requests: coreContracts.filter(
         ({ dispatchPolicy }) => dispatchPolicy.electron === 'electron-ipc-request'
@@ -653,16 +687,16 @@ describe('preload bridge — core renderer contract catalog', () => {
       surfaceNative: coreContracts.filter(
         ({ dispatchPolicy }) => dispatchPolicy.electron === 'surface-native'
       ).length
-    }).toEqual({ requests: 97, events: 25, sends: 10, surfaceNative: 1 })
+    }).toEqual({ requests: 108, events: 28, sends: 10, surfaceNative: 1 })
   })
 
-  it('routes all 97 request methods through their cataloged Electron channels', async () => {
+  it('routes all 108 request methods through their cataloged Electron channels', async () => {
     const requestContracts = coreContracts.filter(
       ({ dispatchPolicy }) => dispatchPolicy.electron === 'electron-ipc-request'
     )
     const localFile = { name: 'catalog.csv' } as File
 
-    expect(requestContracts).toHaveLength(97)
+    expect(requestContracts).toHaveLength(108)
 
     for (const contract of requestContracts) {
       invokeMock.mockClear()
@@ -685,8 +719,8 @@ describe('preload bridge — core renderer contract catalog', () => {
       ({ lifecycleDispatch }) => lifecycleDispatch == null
     )
 
-    expect(eventContracts).toHaveLength(25)
-    expect(genericEventContracts).toHaveLength(24)
+    expect(eventContracts).toHaveLength(28)
+    expect(genericEventContracts).toHaveLength(27)
 
     for (const contract of genericEventContracts) {
       onMock.mockClear()
@@ -901,6 +935,11 @@ const sampleConversationExport = {
 const sampleInstall = { executablePath: '/usr/local/bin/opencode' }
 const sampleFramework = { framework: 'opencode' }
 const sampleResumeRequest = { sessionId: 's-1', cwd: '/workspace/project' }
+const sampleInterruptedTurnRequest = {
+  sessionId: 's-1',
+  projectId: 'project-1',
+  promptMessageId: 'prompt-1'
+}
 const sampleGitHubPreview = { url: 'https://github.com/acme/skills/tree/main/foo' }
 const sampleAgentHomePreview = { source: 'agents', slug: 'foo' }
 const sampleSessionArtifactSelection = {
@@ -910,6 +949,12 @@ const sampleSessionArtifactSelection = {
 }
 
 const cases: ForwardingCase[] = [
+  {
+    name: 'settings.exportSkill → settings:export-skill',
+    invoke: (a) => a.settings.exportSkill({ id: 'personal-my-skill' }),
+    channel: 'settings:export-skill',
+    args: [{ id: 'personal-my-skill' }]
+  },
   {
     name: 'specialist.previewDelete → specialist:delete-preview',
     invoke: (a) => a.specialist.previewDelete({ id: 'research-synth' }),
@@ -1055,6 +1100,12 @@ const cases: ForwardingCase[] = [
     args: [{ preference: 'minimize' }]
   },
   {
+    name: 'settings.setDefaultPermissionProfile → settings:set-default-permission-profile',
+    invoke: (a) => a.settings.setDefaultPermissionProfile({ profile: 'auto' }),
+    channel: 'settings:set-default-permission-profile',
+    args: [{ profile: 'auto' }]
+  },
+  {
     name: 'settings.setAppIconVariant → settings:set-app-icon-variant',
     invoke: (a) => a.settings.setAppIconVariant({ variant: 'dark' }),
     channel: 'settings:set-app-icon-variant',
@@ -1181,6 +1232,12 @@ const cases: ForwardingCase[] = [
     invoke: (a) => a.acp.resumeSession(sampleResumeRequest),
     channel: 'acp:resume-session',
     args: [sampleResumeRequest]
+  },
+  {
+    name: 'acp.continueInterruptedTurn → acp:continue-interrupted-turn',
+    invoke: (a) => a.acp.continueInterruptedTurn(sampleInterruptedTurnRequest),
+    channel: 'acp:continue-interrupted-turn',
+    args: [sampleInterruptedTurnRequest]
   },
   {
     name: 'acp.resetSessionContext → acp:reset-session-context',

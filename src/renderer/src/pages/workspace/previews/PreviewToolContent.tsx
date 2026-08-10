@@ -10,6 +10,7 @@ import { SessionReviewerPanel } from '../SessionReviewerPanel'
 import { SubagentPreview } from '../SubagentReleaseSurfaces'
 import { respondToSessionPlan } from '../session-plan/respond-to-session-plan'
 import { PlanPreviewSurface } from '../session-plan/SessionPlanSurfaces'
+import { useIsSideChatOpenForSession } from '../use-side-chat-controller'
 
 const isNotebookPreviewItem = (item: PreviewToolItem): item is NotebookPreviewItem =>
   item.toolKind === 'notebook' && Boolean(item.notebook)
@@ -47,6 +48,7 @@ export const PreviewToolContent = ({
   item: PreviewToolItem
 }): React.JSX.Element | null => {
   const activeProjectId = useNavigationStore((state) => state.activeProjectId)
+  const isSideChatOpen = useIsSideChatOpenForSession(item.sessionId)
   const planSession = useSessionStore((state) =>
     state.sessions.find((session) => session.id === item.sessionId)
   )
@@ -70,7 +72,9 @@ export const PreviewToolContent = ({
     )
   }
   const canRespondToPlan =
-    planSession?.status === 'waiting-plan-approval' && planSession.activeRun !== undefined
+    planSession?.status === 'waiting-plan-approval' &&
+    planSession.activeRun !== undefined &&
+    !isSideChatOpen
 
   // Remount the Files tool per project so its transient dialog cannot outlive the project it opened.
   if (item.toolKind === 'files') {

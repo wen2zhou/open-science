@@ -122,7 +122,9 @@ const createModuleHarness = (execution: DelegateExecution): ModuleHarness => {
     },
     reviewEvidence: {
       async project(scope) {
-        reviewScopes.push(scope)
+        const existing = reviewScopes.findIndex(({ attemptId }) => attemptId === scope.attemptId)
+        if (existing < 0) reviewScopes.push(scope)
+        else reviewScopes[existing] = scope
         return [
           {
             id: `review-${scope.attemptId}`,

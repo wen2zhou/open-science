@@ -39,9 +39,12 @@ const DELEGATED_STRUCTURED_OUTPUT_TASK = 'Create certified structured evidence.'
 const DELEGATED_BRANCH_A_TASK = `${DELEGATED_WAIT_MARKER} inactive branch child A.`
 const DELEGATED_BRANCH_B_TASK = `${DELEGATED_WAIT_MARKER} active branch child B1.`
 const DELEGATED_BRANCH_B_TASK_TWO = `${DELEGATED_WAIT_MARKER} active branch child B2.`
+const CONTEXT_COMPACTION_PROMPT = 'Preview context compaction.'
 
 const sessionRoutes = new Map()
 const sessionCancellationResolvers = new Map()
+
+const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, milliseconds))
 
 const stringEnvironment = (overrides = []) => {
   const environment = Object.fromEntries(
@@ -292,15 +295,31 @@ const verifyNotebookLifecycle = async (sessionId) =>
   })
 
 const createProvenanceArtifact = async (sessionId) => {
-  const execution = await withMcpClient(sessionId, 'open-science-notebook', async (client) =>
-    toolResult(
-      'notebook_execute',
+  const producerRunId = await withMcpClient(sessionId, 'open-science-notebook', async (client) => {
+    const execution = toolResult(
+      'bash_execute',
       await client.callTool({
-        name: 'notebook_execute',
-        arguments: { code: "print('artifact-provenance-e2e')", language: 'python' }
+        name: 'bash_execute',
+        arguments: { command: 'node -e "console.log(\'artifact-provenance-e2e\')"' }
       })
     )
-  )
+    const state = toolResult(
+      'notebook_state',
+      await client.callTool({ name: 'notebook_state', arguments: {} })
+    )
+    const run = state.recentRuns
+      ?.toReversed()
+      .find(
+        (candidate) =>
+          candidate.kernelKind === 'bash' &&
+          candidate.status === 'completed' &&
+          candidate.outputPreview?.includes('artifact-provenance-e2e')
+      )
+    if (!execution.stdout?.includes('artifact-provenance-e2e') || !run?.runId) {
+      throw new Error('The Notebook did not persist the Bash producer run.')
+    }
+    return run.runId
+  })
   const stored = await withMcpClient(sessionId, 'open-science-artifacts', async (client) =>
     toolResult(
       'write_artifact_file',
@@ -311,12 +330,12 @@ const createProvenanceArtifact = async (sessionId) => {
           mimeType: 'text/plain',
           content: 'artifact provenance e2e',
           encoding: 'utf8',
-          producerRunId: execution.runId
+          producerRunId
         }
       })
     )
   )
-  if (!stored.artifact?.version_id || stored.artifact.producer_run_id !== execution.runId) {
+  if (!stored.artifact?.version_id || stored.artifact.producer_run_id !== producerRunId) {
     throw new Error('The artifact Version did not retain its Notebook producer run.')
   }
   return `Artifact provenance verified for session ${sessionId}, artifact ${stored.artifact.artifact_id}, version ${stored.artifact.version_id}.`
@@ -396,6 +415,30 @@ if (process.argv.includes('--version')) {
           await submitReviewerPass(sessionRoutes.get(context.params.sessionId)?.mcpServers ?? [])
         ) {
           reply = ''
+        } else if (prompt.includes(CONTEXT_COMPACTION_PROMPT)) {
+          await context.client.notify(acp.methods.client.session.update, {
+            sessionId: context.params.sessionId,
+            update: {
+              sessionUpdate: 'tool_call',
+              toolCallId: 'e2e-context-compaction',
+              title: 'Context compacting',
+              kind: 'other',
+              status: 'in_progress',
+              _meta: { contextCompaction: true }
+            }
+          })
+          await delay(1_500)
+          await context.client.notify(acp.methods.client.session.update, {
+            sessionId: context.params.sessionId,
+            update: {
+              sessionUpdate: 'tool_call_update',
+              toolCallId: 'e2e-context-compaction',
+              title: 'Context compacted',
+              status: 'completed',
+              _meta: { contextCompaction: true }
+            }
+          })
+          reply = 'Compaction preview complete.'
         } else if (prompt.includes(PROVIDER_BRIDGE_PROMPT)) {
           reply = verifyProviderBridge()
         } else if (prompt.includes(NOTEBOOK_LIFECYCLE_PROMPT)) {

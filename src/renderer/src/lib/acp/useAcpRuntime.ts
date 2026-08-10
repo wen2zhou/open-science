@@ -1,5 +1,7 @@
 import type {
+  AcpContinueInterruptedTurnRequest,
   AcpCreateSessionResponse,
+  ElicitationResponse,
   AcpPermissionResponse,
   AcpPromptRequest,
   AcpResumeSessionRequest,
@@ -17,6 +19,7 @@ const emptyAcpState: AcpStateSnapshot = {
   sessionIds: [],
   events: [],
   pendingPermissions: [],
+  pendingElicitations: [],
   permissionProfiles: {},
   permissionGrants: {},
   contextUsageBySession: {},
@@ -56,8 +59,11 @@ const useAcpRuntime = (): {
     permissionProfile?: PermissionProfileId,
     previousFrameworkId?: AcpResumeSessionRequest['previousFrameworkId'],
     previousBackendId?: AcpResumeSessionRequest['previousBackendId'],
-    specialistId?: AcpResumeSessionRequest['specialistId']
+    specialistId?: AcpResumeSessionRequest['specialistId'],
+    providerSessionId?: AcpResumeSessionRequest['providerSessionId'],
+    providerContinuityToken?: AcpResumeSessionRequest['providerContinuityToken']
   ) => Promise<AcpCreateSessionResponse>
+  continueInterruptedTurn: (request: AcpContinueInterruptedTurnRequest) => Promise<AcpStateSnapshot>
   resetSessionContext: (
     sessionId: AcpResumeSessionRequest['sessionId'],
     cwd: AcpResumeSessionRequest['cwd'],
@@ -85,7 +91,12 @@ const useAcpRuntime = (): {
     planContinuation?: AcpPromptRequest['planContinuation'],
     turnIntent?: AcpPromptRequest['turnIntent']
   ) => Promise<AcpStateSnapshot>
-  respondToPermission: (requestId: string, optionId?: string) => Promise<AcpStateSnapshot>
+  respondToPermission: (
+    requestId: string,
+    optionId?: string,
+    restored?: AcpPermissionResponse['restored']
+  ) => Promise<AcpStateSnapshot>
+  respondToElicitation: (response: ElicitationResponse) => Promise<AcpStateSnapshot>
   setPermissionProfile: (
     sessionId: string,
     profile: PermissionProfileId
@@ -233,7 +244,9 @@ const useAcpRuntime = (): {
       permissionProfile?: PermissionProfileId,
       previousFrameworkId?: AcpResumeSessionRequest['previousFrameworkId'],
       previousBackendId?: AcpResumeSessionRequest['previousBackendId'],
-      specialistId?: AcpResumeSessionRequest['specialistId']
+      specialistId?: AcpResumeSessionRequest['specialistId'],
+      providerSessionId?: AcpResumeSessionRequest['providerSessionId'],
+      providerContinuityToken?: AcpResumeSessionRequest['providerContinuityToken']
     ) =>
       runValueAction(setIsConnecting, () =>
         window.api.acp.resumeSession({
@@ -243,10 +256,18 @@ const useAcpRuntime = (): {
           permissionProfile,
           previousFrameworkId,
           previousBackendId,
-          specialistId
+          specialistId,
+          providerSessionId,
+          providerContinuityToken
         })
       ),
     [runValueAction]
+  )
+
+  const continueInterruptedTurn = useCallback(
+    (request: AcpContinueInterruptedTurnRequest) =>
+      runSendPromptAction(() => window.api.acp.continueInterruptedTurn(request)),
+    [runSendPromptAction]
   )
 
   // Drops the agent-side context for a session whose accumulated history outgrew the request limit,
@@ -328,15 +349,35 @@ const useAcpRuntime = (): {
 
   // Converts a UI permission click into the response shape expected by IPC.
   const respondToPermission = useCallback(
-    async (requestId: string, optionId?: string): Promise<AcpStateSnapshot> => {
+    async (
+      requestId: string,
+      optionId?: string,
+      restored?: AcpPermissionResponse['restored']
+    ): Promise<AcpStateSnapshot> => {
       const response: AcpPermissionResponse = {
         requestId,
         optionId,
-        cancelled: !optionId
+        cancelled: !optionId,
+        ...(restored ? { restored } : {})
       }
       setActionError(null)
       try {
         const snapshot = await window.api.acp.respondToPermission(response)
+        setState(snapshot)
+        return snapshot
+      } catch (error) {
+        setActionError(getErrorMessage(error))
+        throw error
+      }
+    },
+    []
+  )
+
+  const respondToElicitation = useCallback(
+    async (response: ElicitationResponse): Promise<AcpStateSnapshot> => {
+      setActionError(null)
+      try {
+        const snapshot = await window.api.acp.respondToElicitation(response)
         setState(snapshot)
         return snapshot
       } catch (error) {
@@ -375,12 +416,14 @@ const useAcpRuntime = (): {
     disconnect,
     createSession,
     resumeSession,
+    continueInterruptedTurn,
     resetSessionContext,
     compactSession,
     deleteSession,
     cancel,
     sendPrompt,
     respondToPermission,
+    respondToElicitation,
     setPermissionProfile,
     revokePermissionGrant
   }

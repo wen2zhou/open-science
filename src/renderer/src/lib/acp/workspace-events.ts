@@ -1,7 +1,12 @@
-import type {
-  AcpRuntimeEvent,
-  AcpPermissionRequest,
-  AcpTurnTokenUsage
+import {
+  ACP_CONTEXT_COMPACTION_ACTIVITY_TOOL_NAME,
+  ACP_RESTORED_PERMISSION_CLEAR_FAILED_EVENT_TITLE,
+  ACP_RESTORED_PERMISSION_REARMED_EVENT_TITLE,
+  ACP_RESTORED_PERMISSION_REARM_FAILED_EVENT_TITLE,
+  ACP_RESTORED_PERMISSION_SETTLED_EVENT_TITLE,
+  type AcpContextWindowSample,
+  type AcpRuntimeEvent,
+  type AcpTurnTokenUsage
 } from '../../../../shared/acp'
 import {
   ARTIFACT_OWNERSHIP_PERSISTENCE_RACE,
@@ -9,32 +14,41 @@ import {
   type FinalizeRunArtifactsRequest
 } from '../../../../shared/artifacts'
 import type { ReviewRunNotStartedReason, ReviewRunRequest } from '../../../../shared/reviewer'
-import type { PersistedChatSession } from '../../../../shared/session-persistence'
+import {
+  INTERRUPTED_TURN_ERROR,
+  type PersistedChatSession
+} from '../../../../shared/session-persistence'
 import { createPreviewFileItemFromArtifact } from '../../pages/workspace/preview-file-item'
 import { getPreviewFormatForFile } from '../../pages/workspace/preview-support'
+import { useNavigationStore } from '../../stores/navigation-store'
 import { usePreviewWorkbenchStore } from '../../stores/preview-workbench-store'
 import { isMediaOverflowError } from '../../../../shared/media-overflow'
-import { toPersistedSession, useSessionStore } from '../../stores/session-store'
+import {
+  getActivityGroupTitleFromToolEvent,
+  isActivityGroupToolEvent
+} from '../../../../shared/activity-groups'
+import {
+  toPersistedSession,
+  useSessionStore,
+  type ChatSession,
+  type ToolActivity
+} from '../../stores/session-store'
 import { useSettingsStore } from '../../stores/settings-store'
 import { saveSessionInOrder } from '../session-persistence/session-persistence'
 import {
-  applyRuntimePresentationEvent,
-  createRuntimePresentationContext,
-  isNonActionableCodexDiagnostic
-} from './runtime-event-presentation'
-
-// Remembers which sessions were marked as waiting during the previous permission sync.
-const pendingPermissionSessionIds = new Set<string>()
-// Tracks runtime prompt-ownership entry edges. A first visible chunk clears the store flag without
-// removing this id, so repeated snapshots for the same prompt cannot re-arm the indicator.
-const firstOutputWaitingSessionIds = new Set<string>()
+  createRuntimeStreamId,
+  getAcpRuntimeEventImage,
+  getAcpRuntimeEventText,
+  isAssistantRuntimeChatMessageEvent,
+  isRuntimeChatMessageEvent
+} from './chat-events'
 
 // Sessions whose next triggerAutoReview call should be skipped exactly once.
 // Used to suppress the re-review that would otherwise be triggered by the [Auditor] correction turn:
 // the main process broadcasts reviewer:suppress-next-auto-review before sending the correction prompt;
 // the renderer calls suppressNextAutoReview(sessionId) so the correction turn's stop event is ignored.
 const suppressAutoReviewOnceFor = new Set<string>()
-const rootRuntimePresentationContext = createRuntimePresentationContext()
+const activityGroupToolCallIdsBySession = new Map<string, Set<string>>()
 
 type DeferredArtifactEvent = {
   event: AcpRuntimeEvent
@@ -62,10 +76,63 @@ const AUTO_REVIEW_ARTIFACT_SETTLE_DELAY_MS = 100
 const resetDeferredArtifactEventsForTests = (): void => {
   deferredArtifactEventsBySession.clear()
   pendingArtifactTurnUsageBySession.clear()
-  firstOutputWaitingSessionIds.clear()
   for (const timer of scheduledAutoReviewsBySession.values()) clearTimeout(timer)
   scheduledAutoReviewsBySession.clear()
   autoReviewsSuppressedForQuit = false
+}
+
+const isActivityGroupControlEvent = (event: AcpRuntimeEvent): boolean => {
+  if (!event.sessionId || !event.toolCallId) return false
+
+  if (isActivityGroupToolEvent(event)) {
+    const toolCallIds = activityGroupToolCallIdsBySession.get(event.sessionId) ?? new Set<string>()
+    toolCallIds.add(event.toolCallId)
+    activityGroupToolCallIdsBySession.set(event.sessionId, toolCallIds)
+    return true
+  }
+
+  return activityGroupToolCallIdsBySession.get(event.sessionId)?.has(event.toolCallId) === true
+}
+
+const isTerminalToolActivity = (activity: ToolActivity | undefined): boolean =>
+  activity?.status === 'completed' || activity?.status === 'failed'
+
+const getCurrentPromptMessageId = (session: ChatSession): string | undefined =>
+  session.activeRun?.promptMessageId ??
+  session.messages.findLast((message) => message.role === 'user')?.id
+
+const ownsForegroundPrompt = (session: ChatSession): boolean =>
+  Boolean(
+    session.agentPromptInFlight ||
+    (session.activeRun &&
+      (session.status === 'running' ||
+        session.status === 'waiting-for-user' ||
+        session.status === 'waiting-permission'))
+  )
+
+// Only a newly accepted terminal transition for the current foreground prompt opens a new silent gap.
+const didCurrentToolBecomeTerminal = (
+  before: ChatSession | undefined,
+  after: ChatSession | undefined,
+  toolCallId: string,
+  eventId: string
+): boolean => {
+  if (!after || !ownsForegroundPrompt(after)) return false
+
+  const beforeActivity = before?.activities?.find((activity) => activity.id === toolCallId)
+  const afterActivity = after.activities?.find((activity) => activity.id === toolCallId)
+  if (
+    !afterActivity ||
+    beforeActivity?.eventIds.includes(eventId) ||
+    isTerminalToolActivity(beforeActivity) ||
+    !isTerminalToolActivity(afterActivity) ||
+    !afterActivity.eventIds.includes(eventId)
+  ) {
+    return false
+  }
+
+  const promptMessageId = getCurrentPromptMessageId(after)
+  return Boolean(promptMessageId && afterActivity.promptMessageId === promptMessageId)
 }
 
 // Marks the next triggerAutoReview call for a session as suppressed. Cleared on use (one-shot).
@@ -84,6 +151,17 @@ const clearSuppressNextAutoReview = (sessionId: string): void => {
 const getEventErrorText = (event: AcpRuntimeEvent): string =>
   event.text?.trim() || event.title?.trim() || 'Agent run failed'
 
+const getTerminalContextWindowSample = (
+  event: AcpRuntimeEvent
+): Omit<AcpContextWindowSample, 'runtimeSegmentId'> | undefined =>
+  event.terminalContextWindow
+    ? {
+        id: event.id,
+        timestamp: event.timestamp,
+        ...event.terminalContextWindow
+      }
+    : undefined
+
 // Normalizes IPC/finalization failures into storeable session error text.
 const getErrorText = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
@@ -100,6 +178,19 @@ const isArtifactOwnershipPersistenceRace = (error: unknown): boolean =>
 // back to working HTTPS. codex-acp can repeat or concatenate them, but neither asks the user to act
 // and both otherwise replace the useful waiting status with a large warning block. Suppress only a
 // payload made entirely from these exact diagnostics; any additional stderr text remains visible.
+const isNonActionableCodexDiagnostic = (text: string): boolean => {
+  const withoutSkillBudgetNotice = text.replace(
+    /Warning:\s*Skill descriptions were shortened to fit the 2% skills context budget\.\s*Codex can still see every skill, but some descriptions are shorter\.\s*Disable unused skills or plugins to leave more room for the rest\.\s*/gi,
+    ''
+  )
+  const withoutTransportFallback = withoutSkillBudgetNotice.replace(
+    /Warning:\s*Falling back from WebSockets to HTTPS transport\.\s*request timed out\s*/gi,
+    ''
+  )
+
+  return withoutTransportFallback.trim().length === 0
+}
+
 type WorkspaceRuntimeEventDependencies = {
   finalizeRunArtifacts?: (request: FinalizeRunArtifactsRequest) => Promise<ArtifactFile[]>
   saveSession?: (session: PersistedChatSession) => Promise<PersistedChatSession | void>
@@ -220,22 +311,63 @@ const finalizeArtifactEvent = async (
 // viewer renders them without a manual click. Only molecule-format files auto-open; other artifacts
 // (charts, tables, …) still wait for an explicit click. Fires only on live-run artifact events.
 const openMoleculePreviews = (sessionId: string, artifacts: ArtifactFile[]): void => {
-  const workbench = usePreviewWorkbenchStore.getState()
   const projectId = useSessionStore
     .getState()
     .sessions.find((session) => session.id === sessionId)?.projectId
+  const navigation = useNavigationStore.getState()
+  const items = projectId
+    ? artifacts.flatMap((artifact) => {
+        const format = getPreviewFormatForFile({ name: artifact.name, mimeType: artifact.mimeType })
+        if (format !== 'molecule') return []
 
-  for (const artifact of artifacts) {
-    const format = getPreviewFormatForFile({ name: artifact.name, mimeType: artifact.mimeType })
-    if (format !== 'molecule') continue
+        const item = createPreviewFileItemFromArtifact(artifact, sessionId, projectId)
+        return item ? [item] : []
+      })
+    : []
 
-    const item = createPreviewFileItemFromArtifact(
-      artifact,
-      sessionId,
-      projectId || artifact.projectName
-    )
-    if (item) workbench.upsertAndActivateItem(item)
+  // Background runs keep finalizing artifacts on every route, but only the owning foreground
+  // Workspace may change the visible preview slice or steal preview focus.
+  if (
+    !projectId ||
+    items.length === 0 ||
+    navigation.view !== 'workspace' ||
+    navigation.activeProjectId !== projectId
+  ) {
+    return
   }
+
+  const openItems = (): void => {
+    const workbench = usePreviewWorkbenchStore.getState()
+    for (const item of items) workbench.upsertAndActivateItem(item)
+  }
+
+  if (usePreviewWorkbenchStore.getState().activeProjectId === projectId) {
+    openItems()
+    return
+  }
+
+  // Project navigation commits before the persisted preview slice finishes loading. Wait for that
+  // existing activation instead of initializing the slice early and suppressing its restore.
+  let unsubscribeWorkbench = (): void => undefined
+  let unsubscribeNavigation = (): void => undefined
+  const dispose = (): void => {
+    unsubscribeWorkbench()
+    unsubscribeNavigation()
+  }
+  const tryOpen = (): void => {
+    const currentNavigation = useNavigationStore.getState()
+    if (currentNavigation.view !== 'workspace' || currentNavigation.activeProjectId !== projectId) {
+      dispose()
+      return
+    }
+    if (usePreviewWorkbenchStore.getState().activeProjectId !== projectId) return
+
+    dispose()
+    openItems()
+  }
+
+  unsubscribeWorkbench = usePreviewWorkbenchStore.subscribe(tryOpen)
+  unsubscribeNavigation = useNavigationStore.subscribe(tryOpen)
 }
 
 // Assembles a ReviewRunRequest for the last completed agent turn of a session.
@@ -364,9 +496,110 @@ const applyWorkspaceRuntimeEvent = async (
 ): Promise<boolean> => {
   const store = useSessionStore.getState()
 
-  // Message and tool presentation is shared with the selected delegated-Frame overlay. Root-only
-  // lifecycle work (Artifact finalization, Reviews, Plan, stop/error authority) stays below.
-  if (applyRuntimePresentationEvent(event, useSessionStore, rootRuntimePresentationContext)) {
+  if (event.kind === 'permission' && event.sessionId) {
+    if (event.title === ACP_RESTORED_PERMISSION_REARMED_EVENT_TITLE) {
+      store.setPermissionPending(event.sessionId, { rearmAuthority: true })
+      return true
+    }
+    if (
+      event.title === ACP_RESTORED_PERMISSION_SETTLED_EVENT_TITLE ||
+      event.title === ACP_RESTORED_PERMISSION_CLEAR_FAILED_EVENT_TITLE ||
+      event.title === ACP_RESTORED_PERMISSION_REARM_FAILED_EVENT_TITLE
+    ) {
+      store.clearPermissionPending(event.sessionId, { authority: 'settled' })
+      return true
+    }
+  }
+
+  // A routed user Message is persisted by main before broadcast. Project that same Message locally
+  // without treating it as a fresh prompt or starting another run.
+  if (
+    isRuntimeChatMessageEvent(event) &&
+    event.role === 'user' &&
+    event.sessionId &&
+    event.messageId
+  ) {
+    store.appendRoutedUserMessage({
+      sessionId: event.sessionId,
+      messageId: event.messageId,
+      eventId: event.id,
+      content: getAcpRuntimeEventText(event) ?? '',
+      createdAt: event.timestamp,
+      ...(event.promptMessageId ? { responseToMessageId: event.promptMessageId } : {})
+    })
+    return true
+  }
+
+  // Assistant chat deltas extend the transcript as streamed markdown messages.
+  if (isAssistantRuntimeChatMessageEvent(event)) {
+    const image = getAcpRuntimeEventImage(event)
+    const content = getAcpRuntimeEventText(event)
+    const session = store.sessions.find((candidate) => candidate.id === event.sessionId)
+
+    if (
+      session?.agentFrameworkId === 'codex' &&
+      !image &&
+      typeof content === 'string' &&
+      content.trim().length > 0 &&
+      isNonActionableCodexDiagnostic(content)
+    ) {
+      return true
+    }
+
+    store.completeActivityGroup(event.sessionId, event.promptMessageId)
+    store.appendAgentMessageChunk({
+      sessionId: event.sessionId,
+      streamId: createRuntimeStreamId(event),
+      eventId: event.id,
+      promptMessageId: event.promptMessageId,
+      content,
+      image
+    })
+    return true
+  }
+
+  // Tool calls become visible activity rows, including web-search query/result payloads.
+  if (event.kind === 'tool' && event.sessionId && event.toolCallId) {
+    if (isActivityGroupControlEvent(event)) {
+      const title = getActivityGroupTitleFromToolEvent(event)
+      if (title) {
+        store.beginActivityGroup(event.sessionId, event.toolCallId, title, event.promptMessageId)
+      }
+      return true
+    }
+
+    const sessionBeforeToolEvent = store.sessions.find((session) => session.id === event.sessionId)
+    store.upsertToolActivity({
+      sessionId: event.sessionId,
+      toolCallId: event.toolCallId,
+      eventId: event.id,
+      timestamp: event.timestamp,
+      promptMessageId: event.promptMessageId,
+      title: event.title,
+      status: event.status,
+      providerToolName: event.providerToolName,
+      toolKind: event.toolKind,
+      toolContent: event.toolContent,
+      toolLocations: event.toolLocations,
+      rawInput: event.rawInput,
+      rawOutput: event.rawOutput,
+      terminalOutput: event.terminalOutput,
+      terminalExitCode: event.terminalExitCode,
+      elicitation: event.elicitation
+    })
+    const sessionAfterToolEvent = useSessionStore
+      .getState()
+      .sessions.find((session) => session.id === event.sessionId)
+    if (
+      didCurrentToolBecomeTerminal(
+        sessionBeforeToolEvent,
+        sessionAfterToolEvent,
+        event.toolCallId,
+        event.id
+      )
+    ) {
+      useSessionStore.getState().setAwaitingFirstAgentOutput(event.sessionId, true)
+    }
     return true
   }
 
@@ -376,11 +609,24 @@ const applyWorkspaceRuntimeEvent = async (
   }
 
   if (event.kind === 'stop' && event.sessionId) {
-    rootRuntimePresentationContext.activityGroupToolCallIdsBySession.delete(event.sessionId)
-    const deferredArtifacts = deferredArtifactEventsBySession.get(event.sessionId)
+    activityGroupToolCallIdsBySession.delete(event.sessionId)
     const activeSession = store.sessions.find((session) => session.id === event.sessionId)
     const terminalPromptMessageId =
       event.promptMessageId ?? activeSession?.activeRun?.promptMessageId
+    const contextWindowSample = getTerminalContextWindowSample(event)
+    if (event.text === 'cancelled') {
+      deferredArtifactEventsBySession.delete(event.sessionId)
+      pendingArtifactTurnUsageBySession.delete(event.sessionId)
+      store.interruptRun(
+        event.sessionId,
+        'cancelled',
+        INTERRUPTED_TURN_ERROR,
+        terminalPromptMessageId,
+        contextWindowSample
+      )
+      return true
+    }
+    const deferredArtifacts = deferredArtifactEventsBySession.get(event.sessionId)
     let deferredAttachmentError: unknown
     let deferredAttachmentFailed = false
 
@@ -399,7 +645,7 @@ const applyWorkspaceRuntimeEvent = async (
       }
     }
 
-    store.finishRun(event.sessionId, event.turnUsage, event.promptMessageId)
+    store.finishRun(event.sessionId, event.turnUsage, terminalPromptMessageId, contextWindowSample)
 
     const terminalSession = useSessionStore
       .getState()
@@ -460,19 +706,52 @@ const applyWorkspaceRuntimeEvent = async (
     return true
   }
 
-  // Native compaction is a framework control turn, not a chat turn. Reflect its lifecycle in the
-  // existing neutral compacting state while keeping command/status output out of the transcript.
+  // Native compaction is a framework control turn, not a chat Message. Persist one branch-scoped,
+  // non-interactive activity row while retaining the existing neutral Session compacting state.
   if (event.kind === 'compaction' && event.sessionId) {
+    const sessionBeforeCompaction = store.sessions.find(
+      (candidate) => candidate.id === event.sessionId
+    )
+    const existingActivity = event.toolCallId
+      ? sessionBeforeCompaction?.activities?.find((activity) => activity.id === event.toolCallId)
+      : undefined
+    if (
+      existingActivity?.providerToolName === ACP_CONTEXT_COMPACTION_ACTIVITY_TOOL_NAME &&
+      isTerminalToolActivity(existingActivity)
+    ) {
+      return true
+    }
+
     if (event.status === 'in_progress') {
       store.beginCompaction(event.sessionId)
-    } else if (event.compactionReason === 'overflow-recovery') {
-      // The recovery flow owns the terminal transition: keep the composer gated until its retry
-      // replaces compacting with a new active run, or its fallback reports a concrete failure.
-      return true
-    } else if (event.status === 'completed' || event.status === 'cancelled') {
-      store.finishCompaction(event.sessionId)
-    } else if (event.status === 'failed') {
-      store.failCompaction(event.sessionId, getEventErrorText(event))
+    } else if (event.compactionReason !== 'overflow-recovery') {
+      if (event.status === 'completed' || event.status === 'cancelled') {
+        store.finishCompaction(event.sessionId)
+      } else if (event.status === 'failed') {
+        store.failCompaction(event.sessionId, getEventErrorText(event))
+      }
+    }
+    // For overflow recovery, the recovery flow owns the terminal Session transition: the activity row
+    // still settles below, while the composer stays gated until a retry or fallback takes over.
+
+    const session = useSessionStore
+      .getState()
+      .sessions.find((candidate) => candidate.id === event.sessionId)
+    const promptMessageId =
+      event.promptMessageId ?? (session ? getCurrentPromptMessageId(session) : undefined)
+    if (event.toolCallId && promptMessageId) {
+      store.completeActivityGroup(event.sessionId, promptMessageId)
+      store.upsertToolActivity({
+        sessionId: event.sessionId,
+        toolCallId: event.toolCallId,
+        eventId: event.id,
+        timestamp: event.timestamp,
+        promptMessageId,
+        title: event.title,
+        status: event.status === 'cancelled' ? 'completed' : event.status,
+        providerToolName: ACP_CONTEXT_COMPACTION_ACTIVITY_TOOL_NAME,
+        toolKind: 'other'
+      })
     }
 
     return true
@@ -510,16 +789,15 @@ const applyWorkspaceRuntimeEvent = async (
   }
 
   if (event.kind === 'error' && event.sessionId) {
-    rootRuntimePresentationContext.activityGroupToolCallIdsBySession.delete(event.sessionId)
+    activityGroupToolCallIdsBySession.delete(event.sessionId)
     pendingArtifactTurnUsageBySession.delete(event.sessionId)
     // A recoverable request-size overflow shows the neutral "compacting" note ONLY while a recovery is
     // actually in flight — the workspace runtime flips the session to `compacting` first (its recovery
     // effect runs before this event is applied). If the session is not compacting, no recovery started
     // for this overflow (a repeat overflow inside the cooldown, nothing to replay, or a detached
     // session), so surface a normal error instead of leaving a stuck "Compacting…".
-    const isCompacting = store.sessions.find(
-      (session) => session.id === event.sessionId
-    )?.compacting
+    const activeSession = store.sessions.find((session) => session.id === event.sessionId)
+    const isCompacting = activeSession?.compacting
     // Same overflow detection the recovery effect uses (marker first, message as a fallback), so the two
     // agree on which errors are recoverable.
     const isOverflow =
@@ -539,7 +817,9 @@ const applyWorkspaceRuntimeEvent = async (
     // forcing true here would wrongly show and persist the report button over it. Opaque ACP-layer
     // failures still fall through the text tier to reportable.
     store.failRun(event.sessionId, getEventErrorText(event), {
-      reportable: event.providerError ? false : undefined
+      reportable: event.providerError ? false : undefined,
+      promptMessageId: event.promptMessageId ?? activeSession?.activeRun?.promptMessageId,
+      contextWindowSample: getTerminalContextWindowSample(event)
     })
     const failedSession = useSessionStore
       .getState()
@@ -571,60 +851,9 @@ const applyWorkspaceRuntimeEvent = async (
   return false
 }
 
-// Keeps store permission state aligned with the runtime's current pending request set.
-const syncWorkspacePermissionState = (requests: AcpPermissionRequest[]): void => {
-  const nextSessionIds = new Set(requests.map((request) => request.sessionId))
-  const store = useSessionStore.getState()
-
-  // New pending sessions enter the waiting-permission status.
-  for (const sessionId of nextSessionIds) {
-    if (!pendingPermissionSessionIds.has(sessionId)) {
-      store.setPermissionPending(sessionId)
-    }
-  }
-
-  // Sessions with no pending request return to their prior run-derived status.
-  for (const sessionId of pendingPermissionSessionIds) {
-    if (!nextSessionIds.has(sessionId)) {
-      store.clearPermissionPending(sessionId)
-    }
-  }
-
-  pendingPermissionSessionIds.clear()
-
-  // Remember the current set for the next sync pass.
-  for (const sessionId of nextSessionIds) {
-    pendingPermissionSessionIds.add(sessionId)
-  }
-}
-
-// Projects runtime foreground ownership and its initial silent gap into renderer-only state. Unknown
-// ids belong to background/runtime-only sessions; repeated snapshots must not restart the gap timer.
-const syncWorkspaceAgentFirstOutputState = (sessionIds: string[]): void => {
-  const nextSessionIds = new Set(sessionIds)
-  const store = useSessionStore.getState()
-  const workspaceSessionIds = new Set(store.sessions.map((session) => session.id))
-
-  for (const sessionId of nextSessionIds) {
-    if (!workspaceSessionIds.has(sessionId) || firstOutputWaitingSessionIds.has(sessionId)) continue
-    store.setAgentPromptInFlight(sessionId, true)
-    store.setAwaitingFirstAgentOutput(sessionId, true)
-    firstOutputWaitingSessionIds.add(sessionId)
-  }
-
-  for (const sessionId of firstOutputWaitingSessionIds) {
-    if (nextSessionIds.has(sessionId)) continue
-    store.setAgentPromptInFlight(sessionId, false)
-    store.setAwaitingFirstAgentOutput(sessionId, false)
-    firstOutputWaitingSessionIds.delete(sessionId)
-  }
-}
-
 export {
   applyWorkspaceRuntimeEvent,
   assembleReviewRunRequest,
-  syncWorkspaceAgentFirstOutputState,
-  syncWorkspacePermissionState,
   suppressAutoReviewsForQuit,
   suppressNextAutoReview,
   clearSuppressNextAutoReview,

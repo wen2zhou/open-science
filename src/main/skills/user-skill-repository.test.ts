@@ -171,6 +171,90 @@ describe('frontmatterBlock', () => {
 })
 
 describe('UserSkillRepository', () => {
+  it('publishes a complete personal skill directory and only overwrites explicitly', async () => {
+    const storage = await makeStorage()
+    const repo = new UserSkillRepository(storage)
+    const draft = await mkdtemp(join(tmpdir(), 'skill-draft-'))
+    await mkdir(join(draft, 'scripts'), { recursive: true })
+    await writeFile(
+      join(draft, 'SKILL.md'),
+      '---\nname: analysis-helper\ndescription: Analyze a dataset.\n---\nUse the script.\n'
+    )
+    await writeFile(join(draft, 'scripts', 'run.js'), 'console.log("v1")\n')
+
+    await expect(repo.publishPersonalDirectory('analysis-helper', draft)).resolves.toBe(
+      'personal-analysis-helper'
+    )
+    await expect(
+      readFile(join(storage, 'skills', 'personal', 'analysis-helper', 'scripts', 'run.js'), 'utf8')
+    ).resolves.toBe('console.log("v1")\n')
+
+    await writeFile(join(draft, 'scripts', 'run.js'), 'console.log("v2")\n')
+    await expect(repo.publishPersonalDirectory('analysis-helper', draft)).rejects.toThrow(
+      'already exists'
+    )
+    await expect(repo.publishPersonalDirectory('analysis-helper', draft, true)).resolves.toBe(
+      'personal-analysis-helper'
+    )
+    await expect(
+      readFile(join(storage, 'skills', 'personal', 'analysis-helper', 'scripts', 'run.js'), 'utf8')
+    ).resolves.toBe('console.log("v2")\n')
+  })
+
+  it('rejects unsafe entries before publishing a personal skill directory', async () => {
+    const storage = await makeStorage()
+    const repo = new UserSkillRepository(storage)
+    const draft = await mkdtemp(join(tmpdir(), 'skill-draft-'))
+    await writeFile(
+      join(draft, 'SKILL.md'),
+      '---\nname: unsafe\ndescription: Unsafe test.\n---\nBody.\n'
+    )
+    await symlink(join(storage, 'outside'), join(draft, 'escape'))
+
+    await expect(repo.publishPersonalDirectory('unsafe', draft)).rejects.toThrow('symbolic link')
+    await expect(stat(join(storage, 'skills', 'personal', 'unsafe'))).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+  })
+
+  it('holds the mutation lock throughout a caller-controlled Skill read', async () => {
+    const repo = new UserSkillRepository(await makeStorage())
+    const id = await repo.createPersonal({
+      name: 'Locked',
+      description: 'Original.',
+      body: '# Original'
+    })
+    let releaseRead!: () => void
+    const readReleased = new Promise<void>((resolve) => {
+      releaseRead = resolve
+    })
+    let markReadStarted!: () => void
+    const readStarted = new Promise<void>((resolve) => {
+      markReadStarted = resolve
+    })
+
+    const read = repo.withSkillReadLock(id, async (skill) => {
+      markReadStarted()
+      await readReleased
+      return skill.name
+    })
+    await readStarted
+
+    let updateFinished = false
+    const update = repo
+      .updatePersonal(id, { name: 'Locked', description: 'Updated.', body: '# Updated' })
+      .finally(() => {
+        updateFinished = true
+      })
+    await new Promise<void>((resolve) => setImmediate(resolve))
+    expect(updateFinished).toBe(false)
+
+    releaseRead()
+    await expect(read).resolves.toBe('Locked')
+    await update
+    expect(updateFinished).toBe(true)
+  })
+
   it('creates, lists, reads, updates, and deletes a personal skill', async () => {
     const repo = new UserSkillRepository(await makeStorage())
 

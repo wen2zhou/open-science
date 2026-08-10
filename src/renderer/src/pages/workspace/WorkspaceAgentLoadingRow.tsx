@@ -3,15 +3,18 @@ import { useEffect, useState } from 'react'
 import { OpenScienceThinkingIndicator } from '@/components/OpenScienceThinkingIndicator'
 import { MessageScrollerItem } from '@/components/ui/message-scroller'
 import { cn } from '@/lib/utils'
-import type { AgentLoadingPhase } from './agent-loading-message'
+import { useSessionStore } from '@/stores/session-store'
+import { getAgentThinkingStartedAt, type AgentLoadingPhase } from './agent-loading-message'
 
 type WorkspaceAgentLoadingRowProps = {
   sessionId: string
-  phase: Exclude<AgentLoadingPhase, 'hidden'>
+  phase: Exclude<AgentLoadingPhase, 'hidden'> | 'resuming'
   agentStatus?: string
 }
 
-type AgentLoadingIndicatorProps = Omit<WorkspaceAgentLoadingRowProps, 'sessionId'>
+type AgentLoadingIndicatorProps = Omit<WorkspaceAgentLoadingRowProps, 'sessionId'> & {
+  sessionId?: string
+}
 
 const assistantMessageSurfaceClassName =
   'relative w-full max-w-[56rem] text-sm leading-relaxed text-text-000 md:text-[15px]'
@@ -29,10 +32,17 @@ const formatElapsed = (ms: number): string => {
   return `${minutes}:${seconds.toString().padStart(2, '0')}`
 }
 
-// Thinking owns only silent model waits. Keeping its timer in this phase-specific child resets the
-// elapsed time whenever tool interaction ends and Thinking mounts again.
-const ThinkingLoadingContent = ({ agentStatus }: { agentStatus?: string }): React.JSX.Element => {
-  const [startedAt] = useState(() => Date.now())
+const ThinkingLoadingContent = ({
+  sessionId,
+  agentStatus
+}: {
+  sessionId?: string
+  agentStatus?: string
+}): React.JSX.Element => {
+  const session = useSessionStore((state) =>
+    sessionId ? state.sessions.find((candidate) => candidate.id === sessionId) : undefined
+  )
+  const [mountedAt] = useState(() => Date.now())
   const [now, setNow] = useState(() => Date.now())
 
   // Tick once a second so the elapsed label stays live while the turn runs.
@@ -42,7 +52,7 @@ const ThinkingLoadingContent = ({ agentStatus }: { agentStatus?: string }): Reac
     return () => clearInterval(timer)
   }, [])
 
-  const elapsedMs = now - startedAt
+  const elapsedMs = now - (getAgentThinkingStartedAt(session) ?? mountedAt)
   const slow = elapsedMs >= SLOW_HINT_AFTER_MS
 
   return (
@@ -55,9 +65,12 @@ const ThinkingLoadingContent = ({ agentStatus }: { agentStatus?: string }): Reac
         </span>
         {slow ? <span aria-hidden="true">· taking longer than usual</span> : null}
       </div>
-      {agentStatus ? (
-        <span className="truncate text-[11px] text-text-000/70" title={agentStatus}>
-          {agentStatus}
+      {(agentStatus ?? session?.agentStatus) ? (
+        <span
+          className="truncate text-[11px] text-text-000/70"
+          title={agentStatus ?? session?.agentStatus}
+        >
+          {agentStatus ?? session?.agentStatus}
         </span>
       ) : null}
     </>
@@ -67,17 +80,26 @@ const ThinkingLoadingContent = ({ agentStatus }: { agentStatus?: string }): Reac
 // The row remains present for every non-text phase, with phase-specific detail kept intentionally
 // small so tool cards remain the primary source of execution progress.
 const AgentLoadingIndicator = ({
+  sessionId,
   phase,
   agentStatus
 }: AgentLoadingIndicatorProps): React.JSX.Element => {
   return (
     <div className="flex min-h-5 flex-col gap-1" role="status" aria-live="polite">
       {phase === 'thinking' ? (
-        <ThinkingLoadingContent agentStatus={agentStatus} />
+        <ThinkingLoadingContent sessionId={sessionId} agentStatus={agentStatus} />
       ) : (
         <div className="flex items-center gap-2 text-xs text-text-000/70">
           <OpenScienceThinkingIndicator />
-          <span>Interacting with tools</span>
+          <span>
+            {phase === 'resuming'
+              ? 'Resuming session'
+              : phase === 'waiting-for-approval'
+                ? 'Waiting for your approval'
+                : phase === 'waiting-for-response'
+                  ? 'Waiting for your response'
+                  : 'Interacting with tools'}
+          </span>
         </div>
       )}
     </div>
@@ -97,7 +119,7 @@ const WorkspaceAgentLoadingRow = ({
   >
     <div className="px-4 pb-1 pt-5 md:px-6">
       <div className={cn(assistantMessageSurfaceClassName, 'px-0 py-2')}>
-        <AgentLoadingIndicator phase={phase} agentStatus={agentStatus} />
+        <AgentLoadingIndicator sessionId={sessionId} phase={phase} agentStatus={agentStatus} />
       </div>
     </div>
   </MessageScrollerItem>

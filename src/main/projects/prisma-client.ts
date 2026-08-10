@@ -22,6 +22,7 @@ const PROJECT_TABLE_DDL = `CREATE TABLE IF NOT EXISTS "Project" (
     "name" TEXT NOT NULL,
     "description" TEXT NOT NULL DEFAULT '',
     "isExample" BOOLEAN NOT NULL DEFAULT false,
+    "pinned" BOOLEAN NOT NULL DEFAULT false,
     "archivedAt" DATETIME,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL
@@ -75,6 +76,30 @@ const UNREAD_TASK_SESSION_TABLE_DDL = `CREATE TABLE IF NOT EXISTS "UnreadTaskSes
     "sessionId" TEXT NOT NULL
 );`
 const UNREAD_TASK_SESSION_SESSION_ID_INDEX_DDL = `CREATE UNIQUE INDEX IF NOT EXISTS "UnreadTaskSession_sessionId_key" ON "UnreadTaskSession"("sessionId");`
+
+const NOTIFICATION_INBOX_ITEM_TABLE_DDL = `CREATE TABLE IF NOT EXISTS "NotificationInboxItem" (
+    "sequence" INTEGER NOT NULL PRIMARY KEY AUTOINCREMENT,
+    "id" TEXT NOT NULL,
+    "dedupeKey" TEXT NOT NULL,
+    "kind" TEXT NOT NULL,
+    "source" TEXT,
+    "projectId" TEXT,
+    "sessionId" TEXT,
+    "originId" TEXT NOT NULL,
+    "title" TEXT NOT NULL,
+    "summary" TEXT NOT NULL,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "readAt" DATETIME,
+    "actionState" TEXT,
+    "settledAt" DATETIME
+);`
+const NOTIFICATION_INBOX_ITEM_INDEX_DDLS = [
+  `CREATE UNIQUE INDEX IF NOT EXISTS "NotificationInboxItem_id_key" ON "NotificationInboxItem"("id")`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "NotificationInboxItem_dedupeKey_key" ON "NotificationInboxItem"("dedupeKey")`,
+  `CREATE INDEX IF NOT EXISTS "NotificationInboxItem_readAt_sequence_idx" ON "NotificationInboxItem"("readAt", "sequence")`,
+  `CREATE INDEX IF NOT EXISTS "NotificationInboxItem_sessionId_idx" ON "NotificationInboxItem"("sessionId")`,
+  `CREATE INDEX IF NOT EXISTS "NotificationInboxItem_projectId_idx" ON "NotificationInboxItem"("projectId")`
+]
 
 // Reviewer results: one Review per audited turn, plus its child checks (stored in Finding table).
 // v2 (issue 12): Review no longer has summary/checks JSON columns; all checks are Finding rows.
@@ -140,6 +165,7 @@ const PROJECT_DELETION_INTENT_TABLE_DDL = `CREATE TABLE IF NOT EXISTS "ProjectDe
 // Existing installations create their Project table before Archive existed. Keep the migration
 // additive so no stored Project or its activity ordering is rewritten.
 const PROJECT_ADD_ARCHIVED_AT_DDL = `ALTER TABLE "Project" ADD COLUMN "archivedAt" DATETIME`
+const PROJECT_ADD_PINNED_DDL = `ALTER TABLE "Project" ADD COLUMN "pinned" BOOLEAN NOT NULL DEFAULT false`
 
 // ManagedFile is a metadata projection only: storageKey points back into the existing managed roots,
 // while soft-delete fields keep Files queries reversible during durable session/project deletion.
@@ -586,6 +612,7 @@ const addColumnIfMissing = async (
 const ensureProjectSchema = async (client: PrismaClient): Promise<void> => {
   await client.$executeRawUnsafe(PROJECT_TABLE_DDL)
   await addColumnIfMissing(client, 'Project', 'archivedAt', PROJECT_ADD_ARCHIVED_AT_DDL)
+  await addColumnIfMissing(client, 'Project', 'pinned', PROJECT_ADD_PINNED_DDL)
   await client.$executeRawUnsafe(PERMISSION_GRANT_TABLE_DDL)
   for (const ddl of PERMISSION_GRANT_INDEX_DDLS) {
     await client.$executeRawUnsafe(ddl)
@@ -593,6 +620,10 @@ const ensureProjectSchema = async (client: PrismaClient): Promise<void> => {
   await client.$executeRawUnsafe(PREVIEW_STATE_TABLE_DDL)
   await client.$executeRawUnsafe(UNREAD_TASK_SESSION_TABLE_DDL)
   await client.$executeRawUnsafe(UNREAD_TASK_SESSION_SESSION_ID_INDEX_DDL)
+  await client.$executeRawUnsafe(NOTIFICATION_INBOX_ITEM_TABLE_DDL)
+  for (const ddl of NOTIFICATION_INBOX_ITEM_INDEX_DDLS) {
+    await client.$executeRawUnsafe(ddl)
+  }
   await client.$executeRawUnsafe(REVIEW_TABLE_DDL)
   await client.$executeRawUnsafe(FINDING_TABLE_DDL)
 

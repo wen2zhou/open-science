@@ -12,6 +12,7 @@ import type { AcpRuntimeSessionOwners } from './runtime-session-composition'
 import { AcpSessionDeletionWorkflow } from './session-deletion-workflow'
 import { AcpSessionReplacementWorkflow } from './session-replacement-workflow'
 import type { AcpPrimarySessionIdentityReservation } from './session-registry'
+import { CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY } from './session-capability-owner'
 
 // Composes the five workflows that create, adopt, replace, delete, and resume Provider Sessions.
 // Stable app identity remains Registry-owned; operation admission and timeout teardown derive from
@@ -63,6 +64,8 @@ const composeAcpRuntimeProviderSessionOwners = (
     if (barrier) return barrier.then(() => withOperation(work))
     return base.generationActivity.withOperation(work)
   }
+  const capabilityPolicy =
+    options.sessionCapabilityPolicy ?? CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY
 
   const providerSessionCreator = new AcpProviderSessionCreator({
     defaultCwd: options.defaultCwd,
@@ -75,6 +78,7 @@ const composeAcpRuntimeProviderSessionOwners = (
     reserveIdentity: (sessionId, startupGeneration) =>
       reserveIdentity(undefined, [sessionId], undefined, startupGeneration),
     capabilities: base.sessionCapabilities,
+    capabilityPolicy,
     configurator: base.sessionConfigurator,
     resolveSpecialistIdentity: options.resolveSpecialistIdentity,
     resolveSpecialistSkills: options.resolveSpecialistSkills,
@@ -89,6 +93,7 @@ const composeAcpRuntimeProviderSessionOwners = (
     registry: session.sessionRegistry,
     reserveIdentity: (reservation, sessionIds) => reserveIdentity(reservation, sessionIds),
     capabilities: base.sessionCapabilities,
+    capabilityPolicy,
     configurator: base.sessionConfigurator,
     resolveSpecialistIdentity: options.resolveSpecialistIdentity,
     resolveSpecialistSkills: options.resolveSpecialistSkills,
@@ -110,6 +115,8 @@ const composeAcpRuntimeProviderSessionOwners = (
       reserveIdentity(undefined, [sessionId], publishedAppSessionId),
     adopter: providerSessionAdopter,
     permission: session.permissionContext,
+    elicitation: session.elicitationOwner,
+    appContinuations: session.appContinuations,
     promptContent: base.promptContentOwner,
     contextUsage: base.contextUsageTracker,
     interactions: base.sessionInteractions,
@@ -123,6 +130,8 @@ const composeAcpRuntimeProviderSessionOwners = (
     supportsSessionDelete: () => base.connectionResources.capabilities.delete,
     supportsSessionClose: () => base.connectionResources.capabilities.close,
     permission: session.permissionContext,
+    elicitation: session.elicitationOwner,
+    appContinuations: session.appContinuations,
     interactions: base.sessionInteractions,
     capabilities: base.sessionCapabilities,
     promptContent: base.promptContentOwner,
@@ -148,6 +157,7 @@ const composeAcpRuntimeProviderSessionOwners = (
     registry: session.sessionRegistry,
     reserveIdentity: (sessionId) => reserveIdentity(undefined, [sessionId]),
     capabilities: base.sessionCapabilities,
+    capabilityPolicy,
     configurator: base.sessionConfigurator,
     adopter: providerSessionAdopter,
     clearLivePermissionProfile: (sessionId) =>

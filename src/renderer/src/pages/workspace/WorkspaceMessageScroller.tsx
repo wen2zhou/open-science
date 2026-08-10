@@ -37,6 +37,7 @@ import { extractJobIdFromActivity } from '@/components/job-binding-utils'
 import { MessageScrollerItem } from '@/components/ui/message-scroller'
 import { ReviewerCard } from '@/components/ReviewerCard'
 import { WorkspaceActivityGroup } from './WorkspaceActivityGroup'
+import { WorkspaceContextCompactionActivityRow } from './WorkspaceContextCompactionActivityRow'
 import { WorkspacePlanActivityRecord } from './WorkspacePlanActivityRecord'
 import { WorkspaceAgentLoadingRow } from './WorkspaceAgentLoadingRow'
 import { WorkspaceMessageItem } from './WorkspaceMessageItem'
@@ -56,13 +57,20 @@ import type {
   HandoffLifecycleEventSource,
   HandoffRetryRequest
 } from '../../../../shared/handoff-lifecycle'
+import type { PendingElicitationRequest } from '../../../../shared/acp'
 import { HandoffLifecycleStatus } from './HandoffLifecycleStatus'
 import { useHandoffLifecycleEvents } from './useHandoffLifecycleEvents'
+import type { NotebookSessionReference } from '../../../../shared/notebook'
+import { useNotebookRunsById } from './use-notebook-runs-by-id'
+import { WorkspaceElicitationCard } from './WorkspaceElicitationCard'
 
 type WorkspaceMessageScrollerProps = {
   activeSession: ChatSession | undefined
+  isResumingSession?: boolean
+  notebookReference?: NotebookSessionReference
   onSendEditedMessage: (messageId: string, doc: ComposerDoc) => void
   trailingContent?: ReactNode
+  pendingElicitations?: PendingElicitationRequest[]
   // Events are read-only projections; retry sends an intent that main validates against its state.
   handoffLifecycleSource?: HandoffLifecycleEventSource
   onRetryHandoff?: (request: HandoffRetryRequest) => Promise<void>
@@ -174,14 +182,18 @@ const EditableWorkspaceMessageItem = (
 // Owns transcript scrolling and session-scoped expansion state for activity groups.
 const WorkspaceMessageScrollerImpl = ({
   activeSession,
+  isResumingSession = false,
+  notebookReference,
   onSendEditedMessage,
   trailingContent,
+  pendingElicitations = [],
   handoffLifecycleSource,
   onRetryHandoff
 }: WorkspaceMessageScrollerProps): React.JSX.Element => {
   const currentSessionId = activeSession?.id
   const currentProjectId = activeSession?.projectId
   const artifactVisibility = useWorkspaceArtifactVisibility(activeSession)
+  const notebookRunsById = useNotebookRunsById(notebookReference)
   const handoffEvents = useHandoffLifecycleEvents(handoffLifecycleSource, currentSessionId)
   // The whole-window find bar is an Electron overlay owned by main; the Workspace only needs to tell
   // main it is mounted and searchable so Cmd/Ctrl+F is intercepted (and re-arm UNREADY on unmount).
@@ -667,18 +679,63 @@ const WorkspaceMessageScrollerImpl = ({
                     return <WorkspacePlanActivityRecord key={item.id} activity={item.activity} />
                   }
 
-                  return (
-                    <div key={item.id}>
-                      <WorkspaceActivityGroup
-                        group={item}
-                        isExpanded={!collapsedActivityGroups.has(item.id)}
-                        onToggleGroup={toggleActivityGroup}
-                        expansionOverrides={activityExpansionOverrides}
-                        onToggleRow={toggleActivityRow}
-                        jobsByActivityId={jobsByActivityId}
-                        onOpenJobDetail={handleOpenJobDetail}
+                  if (item.type === 'compaction-activity') {
+                    return (
+                      <WorkspaceContextCompactionActivityRow
+                        key={item.id}
+                        activity={item.activity}
                       />
-                    </div>
+                    )
+                  }
+
+                  if (item.type === 'activity') {
+                    if (!item.activity.elicitation) return null
+                    const elicitationRequest =
+                      pendingElicitations.find(
+                        (request) => request.toolCallId === item.activity.id
+                      ) ??
+                      (activeSession && item.activity.elicitation.durable
+                        ? {
+                            requestId: item.activity.elicitation.durable.requestId,
+                            sessionId: activeSession.id,
+                            toolCallId: item.activity.id,
+                            message: item.activity.elicitation.message,
+                            fields: item.activity.elicitation.fields,
+                            durable: item.activity.elicitation.durable
+                          }
+                        : undefined)
+                    return (
+                      <MessageScrollerItem key={item.id} messageId={item.id} className="min-w-0">
+                        <div className="px-4 pb-1 pt-3 md:px-6">
+                          <div className="mx-auto w-full max-w-4xl">
+                            <WorkspaceElicitationCard
+                              key={elicitationRequest?.requestId ?? item.activity.id}
+                              elicitation={item.activity.elicitation}
+                              request={elicitationRequest}
+                              variant={
+                                item.activity.elicitation.state === 'pending'
+                                  ? 'pending-placeholder'
+                                  : 'default'
+                              }
+                            />
+                          </div>
+                        </div>
+                      </MessageScrollerItem>
+                    )
+                  }
+
+                  return (
+                    <WorkspaceActivityGroup
+                      key={item.id}
+                      group={item}
+                      isExpanded={!collapsedActivityGroups.has(item.id)}
+                      onToggleGroup={toggleActivityGroup}
+                      expansionOverrides={activityExpansionOverrides}
+                      onToggleRow={toggleActivityRow}
+                      notebookRunsById={notebookRunsById}
+                      jobsByActivityId={jobsByActivityId}
+                      onOpenJobDetail={handleOpenJobDetail}
+                    />
                   )
                 })}
 
@@ -699,7 +756,9 @@ const WorkspaceMessageScrollerImpl = ({
 
                 {trailingContent}
 
-                {agentLoadingPhase !== 'hidden' && activeSession ? (
+                {isResumingSession && activeSession ? (
+                  <WorkspaceAgentLoadingRow sessionId={activeSession.id} phase="resuming" />
+                ) : agentLoadingPhase !== 'hidden' && activeSession ? (
                   <WorkspaceAgentLoadingRow
                     sessionId={activeSession.id}
                     phase={agentLoadingPhase}
@@ -769,6 +828,10 @@ const areWorkspaceMessageScrollerPropsEqual = (
 ): boolean =>
   previous.onSendEditedMessage === next.onSendEditedMessage &&
   previous.trailingContent === next.trailingContent &&
+  previous.isResumingSession === next.isResumingSession &&
+  previous.notebookReference?.sessionId === next.notebookReference?.sessionId &&
+  previous.notebookReference?.projectName === next.notebookReference?.projectName &&
+  previous.notebookReference?.workspaceCwd === next.notebookReference?.workspaceCwd &&
   areSessionsEqualForTranscript(previous.activeSession, next.activeSession)
 
 const WorkspaceMessageScroller = memo(

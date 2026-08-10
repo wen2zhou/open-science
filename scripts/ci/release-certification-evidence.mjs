@@ -7,6 +7,7 @@ import { pathToFileURL } from 'node:url'
 
 const PLATFORMS = ['linux-x64', 'macos-arm64', 'macos-x64', 'windows-x64']
 const DISTRIBUTABLE = /\.(?:AppImage|deb|dmg|exe|zip)$/
+const CHECK_STATES = ['passed', 'not-applicable']
 
 const argumentValue = (argv, name) => {
   const index = argv.indexOf(name)
@@ -30,17 +31,23 @@ const writePlatformEvidence = async ({ argv, environment = process.env }) => {
   const platform = argumentValue(argv, '--platform')
   const artifactDirectoryArgument = argumentValue(argv, '--artifact-dir')
   const outputArgument = argumentValue(argv, '--output')
+  const electronP0 = argumentValue(argv, '--electron-p0')
+  const visualRegression = argumentValue(argv, '--visual-regression')
   const packageSmoke = argumentValue(argv, '--package-smoke')
   const authenticode = argumentValue(argv, '--authenticode')
   if (
     !PLATFORMS.includes(platform) ||
     !artifactDirectoryArgument ||
     !outputArgument ||
+    !CHECK_STATES.includes(electronP0) ||
+    !CHECK_STATES.includes(visualRegression) ||
     !['passed', 'not-applicable'].includes(packageSmoke) ||
     !['passed', 'not-required', 'not-applicable'].includes(authenticode)
   ) {
     throw new Error(
       'Usage: --platform <platform> --artifact-dir <path> --output <path> ' +
+        '--electron-p0 <passed|not-applicable> ' +
+        '--visual-regression <passed|not-applicable> ' +
         '--package-smoke <passed|not-applicable> ' +
         '--authenticode <passed|not-required|not-applicable>'
     )
@@ -62,8 +69,8 @@ const writePlatformEvidence = async ({ argv, environment = process.env }) => {
       runAttempt: environment.GITHUB_RUN_ATTEMPT
     },
     checks: {
-      electronP0: 'passed',
-      visualRegression: 'passed',
+      electronP0,
+      visualRegression,
       packageSmoke,
       authenticode
     },
@@ -80,10 +87,10 @@ const writeWindowsUpdateEvidence = async ({ argv, environment = process.env }) =
   const status = argumentValue(argv, '--status')
   const reason = argumentValue(argv, '--reason')
   const updaterObservationPath = argumentValue(argv, '--updater-observation')
-  if (!outputArgument || !currentTag || !['passed', 'not-applicable'].includes(status)) {
+  if (!outputArgument || !currentTag || !['passed', 'failed', 'not-applicable'].includes(status)) {
     throw new Error(
       'Usage: --output <path> --current-tag <tag> [--previous-tag <tag>] ' +
-        '--status <passed|not-applicable> [--updater-observation <path>]'
+        '--status <passed|failed|not-applicable> [--updater-observation <path>]'
     )
   }
   if (status === 'passed' && !previousTag) {
@@ -95,11 +102,14 @@ const writeWindowsUpdateEvidence = async ({ argv, environment = process.env }) =
   if (status === 'not-applicable' && reason !== 'no-previous-stable-release') {
     throw new Error('A non-applicable Windows update drill requires an approved reason.')
   }
+  if (status === 'failed' && (!previousTag || !reason)) {
+    throw new Error('A failed Windows update drill requires the previous tag and failure reason.')
+  }
   if (!environment.GITHUB_SHA || !environment.GITHUB_RUN_ID || !environment.GITHUB_RUN_ATTEMPT) {
     throw new Error('Windows update evidence requires GitHub run identity variables.')
   }
 
-  const check = status === 'passed' ? 'passed' : 'not-applicable'
+  const check = status === 'passed' ? 'passed' : status === 'failed' ? 'failed' : 'not-applicable'
   let updater
   if (updaterObservationPath) {
     updater = JSON.parse(await readFile(resolve(updaterObservationPath), 'utf8'))
@@ -149,7 +159,7 @@ const writeWindowsUpdateEvidence = async ({ argv, environment = process.env }) =
       restart: check
     },
     ...(updater ? { updater } : {}),
-    ...(status === 'not-applicable' ? { reason } : {})
+    ...(status !== 'passed' ? { reason } : {})
   }
   await writeFile(resolve(outputArgument), `${JSON.stringify(evidence, null, 2)}\n`, 'utf8')
   return evidence
@@ -159,12 +169,11 @@ const aggregateEvidence = async ({ argv }) => {
   const directoryArgument = argumentValue(argv, '--directory')
   const outputArgument = argumentValue(argv, '--output')
   const expectedSha = argumentValue(argv, '--expected-sha')
-  const requireStableReleaseChecks = argv.includes('--require-stable-release-checks')
-  const windowsFullSuite = argumentValue(argv, '--windows-full-suite')
+  const requireWindowsUpdate = argv.includes('--require-windows-update')
   if (!directoryArgument || !outputArgument || !expectedSha) {
     throw new Error(
       'Usage: --directory <path> --output <path> --expected-sha <sha> ' +
-        '[--require-stable-release-checks] [--windows-full-suite passed]'
+        '[--require-windows-update]'
     )
   }
   const directory = resolve(directoryArgument)
@@ -188,11 +197,12 @@ const aggregateEvidence = async ({ argv }) => {
 
   for (const platform of PLATFORMS) {
     const record = byPlatform.get(platform)
+    const expectedPortableCheck = platform === 'macos-arm64' ? 'passed' : 'not-applicable'
     if (
       record.schemaVersion !== 1 ||
       record.source?.sha !== expectedSha ||
-      record.checks?.electronP0 !== 'passed' ||
-      record.checks?.visualRegression !== 'passed' ||
+      record.checks?.electronP0 !== expectedPortableCheck ||
+      record.checks?.visualRegression !== expectedPortableCheck ||
       !Array.isArray(record.artifacts) ||
       record.artifacts.length === 0
     ) {
@@ -209,10 +219,7 @@ const aggregateEvidence = async ({ argv }) => {
     }
   }
   let windowsUpdate
-  if (requireStableReleaseChecks) {
-    if (windowsFullSuite !== 'passed') {
-      throw new Error('Stable release evidence requires the blocking Windows full suite.')
-    }
+  if (requireWindowsUpdate) {
     const updatePath = join(directory, 'certification-windows-update.json')
     windowsUpdate = JSON.parse(await readFile(updatePath, 'utf8').catch(() => 'null'))
     const passedChecks =
@@ -258,9 +265,7 @@ const aggregateEvidence = async ({ argv }) => {
     schemaVersion: 1,
     sourceSha: expectedSha,
     platforms: PLATFORMS.map((platform) => byPlatform.get(platform)),
-    ...(requireStableReleaseChecks
-      ? { releaseChecks: { windowsFullSuite: 'passed', windowsUpdate } }
-      : {})
+    ...(requireWindowsUpdate ? { releaseChecks: { windowsUpdate } } : {})
   }
   await writeFile(output, `${JSON.stringify(report, null, 2)}\n`, 'utf8')
   return report

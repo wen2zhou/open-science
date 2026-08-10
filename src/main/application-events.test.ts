@@ -2,6 +2,7 @@ import { describe, expect, expectTypeOf, it, vi } from 'vitest'
 
 import type { AcpAgentRuntimeUpdate, AcpRuntimeEvent } from '../shared/acp'
 import { AGENT_RUNTIME_UPDATE_FIXTURE } from '../../test/fixtures/renderer-contract-certification'
+import type { SideChatRuntimeEvent } from '../shared/side-chat'
 import {
   ApplicationEventHub,
   type ApplicationEvent,
@@ -16,6 +17,7 @@ describe('ApplicationEventHub', () => {
     >().toEqualTypeOf<AcpAgentRuntimeUpdate>()
     expectTypeOf<AcpAgentRuntimeUpdate['event']['sessionId']>().toEqualTypeOf<undefined>()
     expectTypeOf<AcpAgentRuntimeUpdate['event']['promptMessageId']>().toEqualTypeOf<undefined>()
+    expectTypeOf<ApplicationEventMap['side-chat:event']>().toEqualTypeOf<SideChatRuntimeEvent>()
     expectTypeOf<ApplicationEvent<'specialist:catalog-changed'>>().toEqualTypeOf<
       Readonly<{ channel: 'specialist:catalog-changed'; payload: undefined }>
     >()

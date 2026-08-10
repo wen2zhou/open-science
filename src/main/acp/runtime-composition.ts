@@ -5,6 +5,7 @@ import { app } from 'electron'
 
 import type { AcpPermissionRequest, AcpRuntimeEvent, AcpStateSnapshot } from '../../shared/acp'
 import { DEFAULT_ARTIFACT_PROJECT_NAME } from '../../shared/artifacts'
+import { MAIN_PERMISSION_WAIT_LIFECYCLE_CLIENT_ID } from '../../shared/lifecycle-events'
 import {
   filterSpecialistConnectorSkills,
   resolveEffectiveSpecialistSkills
@@ -19,6 +20,7 @@ import {
   runTaskNotificationInBackground,
   type TaskNotificationService
 } from '../notifications/task-notifications'
+import type { NotificationInboxController } from '../notifications/notification-inbox-controller'
 import type { PermissionGrantRegistry } from '../permission-grants/registry'
 import { broadcastToRenderers } from '../renderer-broadcast'
 import type { AcpSettingsCapabilities } from '../settings/service-capabilities'
@@ -67,6 +69,10 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
   permissionGrantContext?: Readonly<{ projectId: string; sessionId: string }>
   initializationBarrier?: Promise<unknown>
   taskNotifications?: TaskNotificationService
+  notificationInbox?: Pick<
+    NotificationInboxController,
+    'record' | 'settleAction' | 'settleAuthorization'
+  >
   onSessionTurnStarted?: (sessionId: string, turnToken: string) => void
   onSessionTurnEnded?: (sessionId: string, turnToken: string) => void
   onSkillImportAttachmentEligible?: (
@@ -86,6 +92,8 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
     | 'patchSessionRuntimeContext'
     | 'appendUserMessageToInteraction'
     | 'containsMessageOnActiveBranch'
+    | 'loadSessionForPermissionReplay'
+    | 'sessionProjectId'
   >
   delegatedWork?: RootDelegatedWorkControl
   fixedBackend?: ResolvedAgentBackend
@@ -93,6 +101,7 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
   delegatedNotebookConnection?: NotebookRpcConnection
   delegatedArtifactCurrentRunFile?: string
   spawnAgent?: () => ChildProcessWithoutNullStreams
+  sideChatRelays?: AcpRuntimeOptions['sideChatRelays']
 }
 
 // Composes the compatibility façade while the coordinator remains the cross-generation Session owner.
@@ -110,6 +119,7 @@ const createAcpRuntime = ({
   permissionGrantContext,
   initializationBarrier,
   taskNotifications,
+  notificationInbox,
   onSessionTurnStarted,
   onSessionTurnEnded,
   onSkillImportAttachmentEligible,
@@ -125,7 +135,8 @@ const createAcpRuntime = ({
   runtimeCallbacks,
   delegatedNotebookConnection,
   delegatedArtifactCurrentRunFile,
-  spawnAgent
+  spawnAgent,
+  sideChatRelays
 }: AcpRuntimeCompositionOptions): AcpRuntimeCoordinator => {
   const configRoot = resolveConfigRoot()
   const dataRoot = resolveDataRoot()
@@ -151,6 +162,13 @@ const createAcpRuntime = ({
           (error) => log.warn('permission notification failed', errorLogFields(error))
         )
       }
+    },
+    onPermissionSettled: (requestId, state) => {
+      if (!notificationInbox) return
+      runTaskNotificationInBackground(
+        () => notificationInbox.settleAuthorization('agent-tool', requestId, state),
+        (error) => log.warn('permission inbox settlement failed', errorLogFields(error))
+      )
     }
   }
 
@@ -240,17 +258,76 @@ const createAcpRuntime = ({
             }),
         ...(!delegatedNotebookConnection && sessionPersistenceCoordinator
           ? {
+              permissionWait: {
+                sessions: sessionPersistenceCoordinator,
+                onSessionUpdated: (session) => {
+                  try {
+                    broadcastToRenderers('session:updated', {
+                      session,
+                      originClientId: MAIN_PERMISSION_WAIT_LIFECYCLE_CLIENT_ID
+                    })
+                  } catch (error) {
+                    // The durable commit remains authoritative when a renderer projection is gone.
+                    log.warn('permission wait Session publication failed', errorLogFields(error))
+                  }
+                }
+              }
+            }
+          : {}),
+        ...(sessionPersistenceCoordinator
+          ? {
               plan: {
                 mcpEntryPath,
                 getRpcConnection: ({ sessionId, projectId }) =>
                   notebookRpcServer.issuePlanConnection(sessionId, projectId),
                 registerSessionAlias: (aliasSessionId, sessionId) =>
                   notebookRpcServer.registerSessionAlias(aliasSessionId, sessionId),
-                sessions: sessionPersistenceCoordinator
+                sessions: sessionPersistenceCoordinator,
+                onApprovalRequested: (request) => {
+                  if (taskNotifications) {
+                    runTaskNotificationInBackground(
+                      () => taskNotifications.handlePlanApproval(request),
+                      (error) =>
+                        log.warn('plan approval notification failed', errorLogFields(error))
+                    )
+                    return
+                  }
+                  if (notificationInbox) {
+                    runTaskNotificationInBackground(
+                      () =>
+                        notificationInbox.record({
+                          dedupeKey: `authorization:session-plan:${request.artifactVersionId}`,
+                          kind: 'authorization.required',
+                          source: 'session-plan',
+                          projectId: request.projectId,
+                          sessionId: request.sessionId,
+                          originId: request.artifactVersionId,
+                          title: 'Plan approval needed',
+                          summary: 'A plan needs your approval.',
+                          actionState: 'pending'
+                        }),
+                      (error) =>
+                        log.warn('plan approval inbox record failed', errorLogFields(error))
+                    )
+                  }
+                },
+                onApprovalSettled: (request) => {
+                  if (!notificationInbox) return
+                  runTaskNotificationInBackground(
+                    () =>
+                      notificationInbox.settleAuthorization(
+                        'session-plan',
+                        request.artifactVersionId,
+                        request.state
+                      ),
+                    (error) => log.warn('plan approval inbox settle failed', errorLogFields(error))
+                  )
+                }
               }
             }
           : {}),
         callbacks: runtimeCallbacks,
+        sideChatRelays,
         permissionGrantStore,
         permissionGrantRegistry,
         permissionGrantContext,

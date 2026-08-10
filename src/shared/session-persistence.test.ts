@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import { MAX_ACP_SESSION_IMAGE_BYTES } from './acp'
 
 import {
+  SESSION_FILE_VERSION,
   createSessionFile,
   ConversationGraphMaterializationError,
   materializeSessionConversationGraph,
@@ -11,9 +12,17 @@ import {
   sanitizeMessageImages,
   sanitizeToolActivity,
   type PersistedChatSession,
+  type PersistedSideChat,
+  type SessionPermissionRuntimeContext,
   type SessionPlanRuntimeContext
 } from './session-persistence'
-import { createLinearConversationGraph } from './conversation-graph'
+import {
+  activateConversationBranch,
+  createLinearConversationGraph,
+  forkConversationAfterActivity,
+  resolveActiveConversationActivities,
+  synchronizeActiveConversationActivities
+} from './conversation-graph'
 import type { ActivePlanProjection } from './session-plan/contract'
 
 const createSessionWithActivity = (activity: unknown): Record<string, unknown> => ({
@@ -201,6 +210,91 @@ describe('message part persistence', () => {
         rootId: 'root-1',
         relativePath: 'data/study.csv'
       }
+    ])
+  })
+})
+
+describe('interrupted turn intent persistence', () => {
+  it('preserves only the closed Plan-first intent on user messages', () => {
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      messages: [
+        {
+          id: 'user-plan',
+          role: 'user',
+          content: 'Plan the analysis',
+          turnIntent: 'plan-first',
+          createdAt: 1,
+          updatedAt: 1
+        },
+        {
+          id: 'user-unknown',
+          role: 'user',
+          content: 'Do not restore arbitrary intent',
+          turnIntent: 'hidden-injection',
+          createdAt: 2,
+          updatedAt: 2
+        },
+        {
+          id: 'agent-plan',
+          role: 'agent',
+          content: 'No user intent here',
+          turnIntent: 'plan-first',
+          createdAt: 3,
+          updatedAt: 3
+        }
+      ]
+    })
+
+    expect(restored?.messages).toEqual([
+      expect.objectContaining({ id: 'user-plan', turnIntent: 'plan-first' }),
+      expect.not.objectContaining({ turnIntent: expect.anything() }),
+      expect.not.objectContaining({ turnIntent: expect.anything() })
+    ])
+  })
+})
+
+describe('side chat relay persistence', () => {
+  it('preserves only the closed side-chat advisory marker on user messages', () => {
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      messages: [
+        {
+          id: 'side-chat-advisory',
+          role: 'user',
+          content: 'Please use a black line.',
+          relayedFrom: { kind: 'side-chat', direction: 'to-main' },
+          createdAt: 1,
+          updatedAt: 1
+        },
+        {
+          id: 'unknown-relay',
+          role: 'user',
+          content: 'Do not restore arbitrary routing metadata.',
+          relayedFrom: { kind: 'external-agent', direction: 'to-main' },
+          createdAt: 2,
+          updatedAt: 2
+        },
+        {
+          id: 'agent-relay',
+          role: 'agent',
+          content: 'No relay marker on agent messages.',
+          relayedFrom: { kind: 'side-chat', direction: 'to-main' },
+          createdAt: 3,
+          updatedAt: 3
+        }
+      ]
+    })
+
+    expect(restored?.messages).toEqual([
+      expect.objectContaining({
+        id: 'side-chat-advisory',
+        relayedFrom: { kind: 'side-chat', direction: 'to-main' }
+      }),
+      expect.not.objectContaining({ relayedFrom: expect.anything() }),
+      expect.not.objectContaining({ relayedFrom: expect.anything() })
     ])
   })
 })
@@ -499,6 +593,119 @@ describe('message image persistence', () => {
   })
 })
 
+describe('conversation Activity fork persistence', () => {
+  it('round-trips the Activity cutoff that separates revised answer Branches', () => {
+    const messages = [
+      {
+        id: 'user-1',
+        role: 'user' as const,
+        content: 'Build something',
+        status: 'complete' as const,
+        eventIds: [],
+        createdAt: 1,
+        updatedAt: 1
+      },
+      {
+        id: 'agent-1',
+        role: 'agent' as const,
+        content: 'Choose one',
+        status: 'complete' as const,
+        eventIds: [],
+        createdAt: 2,
+        updatedAt: 2
+      },
+      {
+        id: 'agent-2',
+        role: 'agent' as const,
+        content: 'Old answer path',
+        status: 'complete' as const,
+        eventIds: [],
+        createdAt: 4,
+        updatedAt: 4
+      }
+    ]
+    const graph = synchronizeActiveConversationActivities(
+      createLinearConversationGraph({
+        sessionId: 'session-1',
+        messages,
+        createdAt: 1,
+        updatedAt: 4
+      }),
+      [
+        {
+          id: 'before-choice',
+          kind: 'tool',
+          title: 'Inspect context',
+          status: 'completed',
+          sortIndex: 0,
+          eventIds: [],
+          promptMessageId: 'user-1',
+          createdAt: 2,
+          updatedAt: 2
+        },
+        {
+          id: 'choice-1',
+          kind: 'tool',
+          title: 'Choose one',
+          status: 'completed',
+          sortIndex: 1,
+          eventIds: [],
+          promptMessageId: 'user-1',
+          createdAt: 3,
+          updatedAt: 3
+        }
+      ],
+      []
+    )
+    const forked = forkConversationAfterActivity(graph, 'agent-1', 'choice-1', 'revised-choice', 5)
+    const restored = normalizeSessionFile(
+      createSessionFile({
+        id: 'session-1',
+        projectId: 'project-a',
+        title: 'Choice revision',
+        cwd: '/workspace',
+        status: 'idle',
+        messages: messages.slice(0, 2),
+        activities: [
+          {
+            id: 'before-choice',
+            kind: 'tool',
+            title: 'Inspect context',
+            status: 'completed',
+            sortIndex: 0,
+            eventIds: [],
+            createdAt: 2,
+            updatedAt: 5
+          }
+        ],
+        conversationGraph: forked,
+        createdAt: 1,
+        updatedAt: 5
+      })
+    )
+
+    expect(
+      restored?.conversationGraph?.branches.find((branch) => branch.id === 'revised-choice')
+        ?.forkActivityId
+    ).toBe('choice-1')
+    expect(
+      restored?.conversationGraph?.activities.find((item) => item.id === 'before-choice')
+    ).toMatchObject({
+      messageBranchId: graph.branches[0].id
+    })
+    expect(
+      resolveActiveConversationActivities(restored!.conversationGraph!).activities.map(
+        (item) => item.id
+      )
+    ).toEqual(['before-choice'])
+    expect(
+      resolveActiveConversationActivities(
+        activateConversationBranch(restored!.conversationGraph!, graph.branches[0].id)
+      ).activities.map((item) => item.id)
+    ).toEqual(['before-choice', 'choice-1'])
+  })
+})
+
 describe('turn token usage persistence', () => {
   it('round-trips valid totals and drops invalid usage fields', () => {
     const restored = normalizeSessionFile({
@@ -613,9 +820,138 @@ describe('context usage persistence', () => {
     expect(malformed?.contextUsage).toBeUndefined()
     expect(unsafeBreakdown?.contextUsage).toEqual({ used: 100 })
   })
+
+  it('round-trips valid context-window samples and drops malformed or agent-owned samples', () => {
+    const stopReasons = [
+      'end_turn',
+      'max_tokens',
+      'max_turn_requests',
+      'refusal',
+      'cancelled'
+    ] as const
+    const validSamples = [
+      ...stopReasons.map((stopReason, index) => ({
+        id: `event-${index}`,
+        timestamp: index + 1,
+        termination: { kind: 'stop', stopReason },
+        runtimeSegmentId: 'segment-1',
+        contextWindow: { used: 30_000 + index, size: 168_000 },
+        modelStepUsage: {
+          inputTokens: 20_000,
+          cacheTokens: 10_000,
+          cachedReadTokens: 10_000,
+          cachedWriteTokens: 0,
+          outputTokens: 100
+        },
+        source: 'provider-response'
+      })),
+      {
+        id: 'event-error',
+        timestamp: 10,
+        termination: { kind: 'error' },
+        contextWindow: { used: 31_000 },
+        source: 'local-estimate'
+      }
+    ]
+    const restored = normalizeSessionFile({
+      ...createSessionWithActivity(undefined),
+      activities: undefined,
+      messages: [
+        {
+          id: 'prompt-1',
+          role: 'user',
+          content: 'Prompt',
+          status: 'complete',
+          eventIds: [],
+          contextWindowSamples: [
+            ...validSamples,
+            {
+              id: 'bad-reason',
+              timestamp: 11,
+              termination: { kind: 'stop', stopReason: 'unknown' },
+              contextWindow: { used: 1 },
+              source: 'provider-response'
+            },
+            {
+              id: 'bad-context',
+              timestamp: 12,
+              termination: { kind: 'error' },
+              contextWindow: { used: -1 },
+              source: 'local-estimate'
+            }
+          ],
+          createdAt: 1,
+          updatedAt: 1
+        },
+        {
+          id: 'agent-1',
+          role: 'agent',
+          content: 'Done',
+          status: 'complete',
+          eventIds: [],
+          contextWindowSamples: validSamples,
+          createdAt: 2,
+          updatedAt: 2
+        }
+      ]
+    })
+
+    expect(restored?.messages[0].contextWindowSamples).toEqual(validSamples)
+    expect(restored?.messages[1].contextWindowSamples).toBeUndefined()
+  })
 })
 
 describe('sanitizeToolActivity', () => {
+  it('keeps a valid structured-input projection on the tool activity', () => {
+    const activity = sanitizeToolActivity({
+      id: 'tool-ask-1',
+      status: 'in_progress',
+      elicitation: {
+        message: 'Which approach should I use?',
+        fields: [
+          {
+            id: 'question_0',
+            label: 'Approach',
+            kind: 'single-select',
+            required: true,
+            options: [
+              {
+                value: 'minimal',
+                label: 'Minimal change',
+                description: 'Reuse the existing activity model.'
+              }
+            ]
+          }
+        ],
+        state: 'answered',
+        answers: [{ fieldId: 'question_0', value: 'minimal' }],
+        respondedAt: 42
+      }
+    })
+
+    expect(activity?.elicitation).toEqual({
+      message: 'Which approach should I use?',
+      fields: [
+        {
+          id: 'question_0',
+          label: 'Approach',
+          kind: 'single-select',
+          required: true,
+          options: [
+            {
+              value: 'minimal',
+              label: 'Minimal change',
+              description: 'Reuse the existing activity model.'
+            }
+          ]
+        }
+      ],
+      state: 'answered',
+      answers: [{ fieldId: 'question_0', value: 'minimal' }],
+      respondedAt: 42
+    })
+  })
+
   it('keeps identity fields and known text/diff content', () => {
     const activity = sanitizeToolActivity({
       id: 'tool-1',
@@ -900,6 +1236,258 @@ describe('normalizeSessionFile with activities', () => {
     expect(restored?.error).toBeUndefined()
   })
 
+  it('normalizes legacy permission authority to pending and accepts only known lifecycle states', () => {
+    const permission = {
+      request: {
+        requestId: 'permission-1',
+        sessionId: 'session-1',
+        toolCallId: 'tool-1',
+        title: 'Run npm test',
+        options: [{ optionId: 'deny', name: 'Deny', kind: 'reject_once' }]
+      },
+      originatingPromptMessageId: 'prompt-1',
+      fingerprint: 'a'.repeat(64),
+      createdAt: 1
+    }
+    const normalizePermission = (
+      candidate: Record<string, unknown>
+    ): SessionPermissionRuntimeContext | undefined =>
+      normalizeSessionFile(
+        {
+          ...createSessionWithActivity(undefined),
+          activities: undefined,
+          runtimeContext: { version: 1, revision: 1, permission: candidate }
+        },
+        { preserveRuntimeState: true }
+      )?.runtimeContext?.permission
+
+    expect(normalizePermission(permission)?.state).toBe('pending')
+    expect(normalizePermission({ ...permission, state: 'continuing' })?.state).toBe('continuing')
+    expect(normalizePermission({ ...permission, state: 'unknown' })).toBeUndefined()
+  })
+
+  it('rearms a prompt-bound continuing permission after restart', () => {
+    const restored = normalizeSessionFile(
+      createSessionFile({
+        ...(createSessionWithActivity(undefined) as PersistedChatSession),
+        activities: undefined,
+        status: 'running',
+        activeRun: { promptMessageId: 'prompt-1', startedAt: 2 },
+        messages: [
+          {
+            id: 'prompt-1',
+            role: 'user',
+            content: 'Run the tests',
+            status: 'complete',
+            eventIds: [],
+            createdAt: 1,
+            updatedAt: 1
+          }
+        ],
+        runtimeContext: {
+          version: 1,
+          revision: 4,
+          permission: {
+            state: 'continuing',
+            request: {
+              requestId: 'permission-1',
+              sessionId: 'session-1',
+              toolCallId: 'tool-1',
+              title: 'Run npm test',
+              options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+            },
+            originatingPromptMessageId: 'prompt-1',
+            fingerprint: 'a'.repeat(64),
+            createdAt: 2
+          }
+        }
+      })
+    )
+
+    expect(restored).toMatchObject({
+      status: 'waiting-permission',
+      runtimeContext: {
+        version: 1,
+        revision: 4,
+        permission: {
+          state: 'pending',
+          originatingPromptMessageId: 'prompt-1'
+        }
+      }
+    })
+    expect(restored?.activeRun).toBeUndefined()
+    expect(restored?.resumeRecovery).toBeUndefined()
+    expect(restored?.error).toBeUndefined()
+    expect(restored?.messages[0]?.interrupted).toBeUndefined()
+  })
+
+  it('releases an invalid continuing permission before generic restart recovery', () => {
+    const restored = normalizeSessionFile(
+      createSessionFile({
+        ...(createSessionWithActivity(undefined) as PersistedChatSession),
+        activities: undefined,
+        status: 'running',
+        activeRun: { promptMessageId: 'prompt-1', startedAt: 2 },
+        messages: [
+          {
+            id: 'prompt-1',
+            role: 'user',
+            content: 'Run the tests',
+            status: 'complete',
+            eventIds: [],
+            createdAt: 1,
+            updatedAt: 1
+          }
+        ],
+        runtimeContext: {
+          version: 1,
+          revision: 4,
+          permission: {
+            state: 'continuing',
+            request: {
+              requestId: 'permission-1',
+              sessionId: 'session-1',
+              toolCallId: 'tool-1',
+              title: 'Run npm test',
+              options: [{ optionId: 'allow', name: 'Allow', kind: 'allow_once' }]
+            },
+            originatingPromptMessageId: 'missing-prompt',
+            fingerprint: 'a'.repeat(64),
+            createdAt: 2
+          }
+        }
+      })
+    )
+
+    expect(restored?.status).toBe('error')
+    expect(restored?.runtimeContext?.permission).toBeUndefined()
+    expect(restored?.resumeRecovery).toEqual({
+      kind: 'resume-required',
+      cause: 'app-restart',
+      promptMessageId: 'prompt-1'
+    })
+  })
+
+  it('hoists legacy Side chat relays without changing the Session envelope version', () => {
+    const persisted = createSessionFile({
+      ...(createSessionWithActivity(undefined) as PersistedChatSession),
+      activities: undefined,
+      runtimeContext: {
+        version: 1,
+        revision: 7,
+        sideChat: {
+          version: 1,
+          id: 'side-chat-123',
+          lifecycle: 'interrupted',
+          frameworkId: 'codex',
+          backendId: 'codex-responses',
+          providerSessionId: 'provider-session-1',
+          providerContinuityToken: 'bridge-token-1',
+          model: 'gpt-5.6-sol',
+          historyPreamble: 'Main context',
+          entries: [
+            { id: 'user-1', kind: 'message', role: 'user', text: 'Question' },
+            { id: 'assistant-1', kind: 'message', role: 'assistant', text: 'Answer' },
+            { id: 'tool-1', kind: 'tool', title: 'send_message', status: 'completed' }
+          ],
+          pendingRelays: [{ id: 'side-chat-message-1', text: 'Tell Main', createdAt: 10 }],
+          createdAt: 1,
+          updatedAt: 10
+        } as unknown as PersistedSideChat
+      }
+    })
+
+    expect(persisted.version).toBe(SESSION_FILE_VERSION)
+    expect(normalizeSessionFile(persisted)?.runtimeContext).toEqual({
+      version: 1,
+      revision: 7,
+      sideChat: {
+        version: 1,
+        id: 'side-chat-123',
+        lifecycle: 'interrupted',
+        frameworkId: 'codex',
+        backendId: 'codex-responses',
+        providerSessionId: 'provider-session-1',
+        providerContinuityToken: 'bridge-token-1',
+        model: 'gpt-5.6-sol',
+        historyPreamble: 'Main context',
+        entries: [
+          { id: 'user-1', kind: 'message', role: 'user', text: 'Question' },
+          { id: 'assistant-1', kind: 'message', role: 'assistant', text: 'Answer' },
+          { id: 'tool-1', kind: 'tool', title: 'send_message', status: 'completed' }
+        ],
+        createdAt: 1,
+        updatedAt: 10
+      },
+      sideChatRelays: [
+        {
+          id: 'side-chat-message-1',
+          sideChatId: 'side-chat-123',
+          text: 'Tell Main',
+          createdAt: 10
+        }
+      ]
+    })
+  })
+
+  it('round-trips parent-owned Side chat relays without an open Side chat', () => {
+    const persisted = createSessionFile({
+      ...(createSessionWithActivity(undefined) as PersistedChatSession),
+      activities: undefined,
+      runtimeContext: {
+        version: 1,
+        revision: 8,
+        sideChatRelays: [
+          {
+            id: 'side-chat-message-closed',
+            sideChatId: 'side-chat-closed',
+            text: 'Still deliver this',
+            createdAt: 11
+          }
+        ]
+      }
+    })
+
+    expect(normalizeSessionFile(persisted)?.runtimeContext).toEqual({
+      version: 1,
+      revision: 8,
+      sideChatRelays: [
+        {
+          id: 'side-chat-message-closed',
+          sideChatId: 'side-chat-closed',
+          text: 'Still deliver this',
+          createdAt: 11
+        }
+      ]
+    })
+  })
+
+  it('drops a malformed Side chat while retaining valid Plan authority', () => {
+    const plan = createRuntimePlan()
+    const restored = normalizeSessionFile({
+      ...(createSessionWithActivity(undefined) as PersistedChatSession),
+      activities: undefined,
+      runtimeContext: {
+        version: 1,
+        revision: 8,
+        plan,
+        sideChat: {
+          version: 1,
+          id: '../unsafe-profile',
+          lifecycle: 'open',
+          frameworkId: 'codex',
+          historyPreamble: '',
+          entries: [],
+          pendingRelays: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      }
+    })
+
+    expect(restored?.runtimeContext).toEqual({ version: 1, revision: 8, plan })
+  })
+
   it('round-trips special Plan step titles without changing object prototypes', () => {
     const specialStatuses = JSON.parse(
       '{"toString":{"status":"completed","updatedAt":1},"constructor":{"status":"skipped","updatedAt":2},"__proto__":{"status":"blocked","updatedAt":3}}'
@@ -1029,6 +1617,102 @@ describe('normalizeSessionFile with activities', () => {
     expect(activities?.[0]?.status).toBe('failed')
   })
 
+  it('restores a durable pending agent choice as actionable', () => {
+    const activities = getRestoredActivities(
+      createSessionWithActivity({
+        id: 'activity-1',
+        kind: 'tool',
+        title: 'Waiting for an answer',
+        status: 'in_progress',
+        sortIndex: 1,
+        eventIds: [],
+        elicitation: {
+          message: 'Choose one',
+          fields: [{ id: 'choice', label: 'Choice', kind: 'text' }],
+          state: 'pending',
+          durable: {
+            kind: 'agent-user-choice',
+            requestId: 'choice-1'
+          },
+          draftAnswers: [{ fieldId: 'choice', value: 'First step' }]
+        },
+        createdAt: 1,
+        updatedAt: 1
+      })
+    )
+
+    expect(activities?.[0]).toMatchObject({
+      status: 'in_progress',
+      elicitation: {
+        state: 'pending',
+        durable: { kind: 'agent-user-choice', requestId: 'choice-1' },
+        draftAnswers: [{ fieldId: 'choice', value: 'First step' }]
+      }
+    })
+  })
+
+  it('restores waiting-for-user only with a durable pending question', () => {
+    const durableQuestion = createSessionWithActivity({
+      id: 'activity-1',
+      kind: 'tool',
+      title: 'Waiting for an answer',
+      status: 'in_progress',
+      sortIndex: 1,
+      eventIds: [],
+      elicitation: {
+        message: 'Choose one',
+        fields: [{ id: 'choice', label: 'Choice', kind: 'text' }],
+        state: 'pending',
+        durable: { kind: 'agent-user-choice', requestId: 'choice-1' }
+      },
+      createdAt: 1,
+      updatedAt: 1
+    })
+
+    expect(
+      normalizeSessionFile(
+        createSessionFile({
+          ...(durableQuestion as PersistedChatSession),
+          status: 'waiting-for-user'
+        })
+      )?.status
+    ).toBe('waiting-for-user')
+    expect(
+      normalizeSessionFile(
+        createSessionFile({
+          ...(createSessionWithActivity(undefined) as PersistedChatSession),
+          activities: undefined,
+          status: 'waiting-for-user'
+        })
+      )?.status
+    ).toBe('idle')
+  })
+
+  it('still cancels a non-durable pending protocol elicitation on restore', () => {
+    const activities = getRestoredActivities(
+      createSessionWithActivity({
+        id: 'activity-1',
+        kind: 'tool',
+        title: 'Waiting for an answer',
+        status: 'in_progress',
+        sortIndex: 1,
+        eventIds: [],
+        elicitation: {
+          message: 'Choose one',
+          fields: [{ id: 'choice', label: 'Choice', kind: 'text' }],
+          state: 'pending'
+        },
+        createdAt: 1,
+        updatedAt: 1
+      })
+    )
+
+    expect(activities?.[0]).toMatchObject({
+      status: 'failed',
+      elicitation: { state: 'cancelled' }
+    })
+  })
+
   it('restores open conversation graph activities as failed', () => {
     const persisted = createSessionFile({
       ...(createSessionWithActivity({
@@ -1086,6 +1770,117 @@ describe('normalizeSessionFile with activities', () => {
     expect(restored?.conversationGraph?.messages[0]?.failedAt).toBe(7)
   })
 
+  it('restores an active user turn as one durable interrupted message', () => {
+    const restored = normalizeSessionFile({
+      id: 'session-1',
+      projectId: 'project-a',
+      title: 'Interrupted session',
+      cwd: '/workspace',
+      status: 'running',
+      activeRun: { promptMessageId: 'prompt-1', startedAt: 5 },
+      messages: [
+        {
+          id: 'prompt-1',
+          role: 'user',
+          content: 'Continue the analysis',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 5,
+          updatedAt: 5
+        }
+      ],
+      createdAt: 1,
+      updatedAt: 5
+    })
+
+    expect(restored?.messages).toEqual([
+      expect.objectContaining({ id: 'prompt-1', interrupted: true })
+    ])
+    expect(restored?.conversationGraph?.messages).toEqual([
+      expect.objectContaining({ id: 'prompt-1', interrupted: true })
+    ])
+    expect(restored?.resumeRecovery).toEqual({
+      kind: 'resume-required',
+      cause: 'app-restart',
+      promptMessageId: 'prompt-1'
+    })
+  })
+
+  it('preserves a cancelled turn as resumable state', () => {
+    const restored = normalizeSessionFile({
+      id: 'session-1',
+      projectId: 'project-a',
+      title: 'Cancelled session',
+      cwd: '/workspace',
+      status: 'error',
+      interrupted: true,
+      resumeRecovery: {
+        kind: 'resume-required',
+        cause: 'cancelled',
+        promptMessageId: 'prompt-1'
+      },
+      messages: [
+        {
+          id: 'prompt-1',
+          role: 'user',
+          content: 'Continue the analysis',
+          status: 'complete',
+          interrupted: true,
+          eventIds: [],
+          createdAt: 5,
+          updatedAt: 5
+        }
+      ],
+      createdAt: 1,
+      updatedAt: 5
+    })
+
+    expect(restored?.resumeRecovery).toEqual({
+      kind: 'resume-required',
+      cause: 'cancelled',
+      promptMessageId: 'prompt-1'
+    })
+  })
+
+  it('restores explicit full and cutoff history replay scopes', () => {
+    const base = {
+      id: 'session-1',
+      projectId: 'project-a',
+      title: 'Replay state',
+      cwd: '/workspace',
+      status: 'idle',
+      messages: [
+        {
+          id: 'prompt-1',
+          role: 'user',
+          content: 'Earlier prompt',
+          status: 'complete',
+          eventIds: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ],
+      createdAt: 1,
+      updatedAt: 2
+    }
+
+    expect(
+      normalizeSessionFile({ ...base, pendingHistoryReplay: { kind: 'all' } })?.pendingHistoryReplay
+    ).toEqual({ kind: 'all' })
+    expect(
+      normalizeSessionFile({
+        ...base,
+        pendingHistoryReplay: { kind: 'before-message', messageId: 'prompt-1' }
+      })?.pendingHistoryReplay
+    ).toEqual({ kind: 'before-message', messageId: 'prompt-1' })
+    expect(
+      normalizeSessionFile({
+        ...base,
+        pendingHistoryReplayBeforeMessageId: 'prompt-1'
+      })?.pendingHistoryReplay
+    ).toEqual({ kind: 'before-message', messageId: 'prompt-1' })
+  })
+
   it('loads sessions that predate persisted activities', () => {
     const session = normalizeSessionFile({
       id: 'session-1',
@@ -1118,17 +1913,21 @@ describe('normalizeSessionFile with activities', () => {
     expect(malformed?.filesRevision).toBeUndefined()
   })
 
-  it('round-trips the agent backend identity and run model used for diagnostics', () => {
+  it('round-trips agent, provider, backend, and model identity', () => {
     const session = normalizeSessionFile({
       ...createSessionWithActivity(undefined),
       activities: undefined,
       agentFrameworkId: 'codex',
       agentBackendId: 'codex:codex-isolated',
+      providerSessionId: '019fb8c8-6c66-7f22-9653-17b5b287dbbb',
+      providerContinuityToken: 'bridge-generation-1',
       agentModel: 'gpt-5.6-sol'
     })
 
     expect(session?.agentFrameworkId).toBe('codex')
     expect(session?.agentBackendId).toBe('codex:codex-isolated')
+    expect(session?.providerSessionId).toBe('019fb8c8-6c66-7f22-9653-17b5b287dbbb')
+    expect(session?.providerContinuityToken).toBe('bridge-generation-1')
     expect(session?.agentModel).toBe('gpt-5.6-sol')
   })
 

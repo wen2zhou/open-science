@@ -1,3 +1,5 @@
+/* Hallmark · pre-emit critique: P5 H5 E5 S5 R5 V4 */
+
 import { Check, ChevronDown, ChevronRight, Info } from 'lucide-react'
 import { useCallback, useEffect, useRef, useState } from 'react'
 
@@ -7,6 +9,7 @@ import { isEnvEnabled } from '../../../../shared/notebook-runtime'
 import { Badge } from '@/components/ui/badge'
 import { Button } from '@/components/ui/button'
 import { dialogTitleClassName } from '@/components/ui/dialog-chrome'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Tooltip, TooltipContent, TooltipProvider, TooltipTrigger } from '@/components/ui/tooltip'
 import { cn } from '@/lib/utils'
 import { resolveNotebookLanguage, resolveNotebookRunToolName } from './notebook-tool-names'
@@ -32,6 +35,7 @@ type PermissionApprovalControlsProps = {
   requests: AcpPermissionRequest[]
   onRespond: (requestId: string, optionId?: string) => void | Promise<void>
   disabled?: boolean
+  embedded?: boolean
   // Session locator for the notebook env badge; optional so the controls render standalone
   // (isolation tests, sessions without notebook context).
   notebookLookup?: NotebookSessionRequest
@@ -53,9 +57,9 @@ type ScopeOption = { scope: PermissionScope; label: string; subtitle: string }
 
 const SCOPE_OPTIONS: ScopeOption[] = [
   { scope: 'once', label: 'Once', subtitle: 'This call only' },
-  { scope: 'session', label: 'This session', subtitle: 'Across restarts for this session' },
-  { scope: 'project', label: 'This project', subtitle: 'Across sessions in this project' },
-  { scope: 'global', label: 'Global', subtitle: 'Across all projects' }
+  { scope: 'session', label: 'This conversation', subtitle: 'Remembered for this conversation' },
+  { scope: 'project', label: 'This project', subtitle: 'Remembered for this project' },
+  { scope: 'global', label: 'Global', subtitle: 'Remembered across all projects' }
 ]
 const PERMISSION_SCOPES = SCOPE_OPTIONS.map(({ scope }) => scope)
 
@@ -451,12 +455,14 @@ const ScopeDropdown = ({
   selected,
   available,
   onSelect,
-  onClose
+  onClose,
+  portaled
 }: {
   selected: PermissionScope
   available: Set<PermissionScope>
   onSelect: (scope: PermissionScope) => void
   onClose: (restoreTriggerFocus?: boolean) => void
+  portaled: boolean
 }): React.JSX.Element => {
   const ref = useRef<HTMLDivElement>(null)
   const itemRefs = useRef<Array<HTMLButtonElement | null>>([])
@@ -468,6 +474,8 @@ const ScopeDropdown = ({
   }, [selectedIndex])
 
   useEffect(() => {
+    if (portaled) return
+
     // Listen on `click` (not `mousedown`) so it pairs with the chevron's onClick toggle: the
     // chevron stops propagation, so its own click never reaches here and re-opens the menu.
     const onDocClick = (e: MouseEvent): void => {
@@ -486,15 +494,10 @@ const ScopeDropdown = ({
       document.removeEventListener('click', onDocClick)
       document.removeEventListener('keydown', onKeyDown)
     }
-  }, [onClose])
+  }, [onClose, portaled])
 
-  return (
-    <div
-      ref={ref}
-      role="menu"
-      aria-label="Authorization scope"
-      className="absolute bottom-full right-0 z-10 mb-1.5 min-w-44 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-menu outline-none"
-    >
+  const items = (
+    <>
       {options.map(({ scope, label, subtitle }, index) => (
         <button
           key={scope}
@@ -510,7 +513,7 @@ const ScopeDropdown = ({
           )}
           onClick={() => {
             onSelect(scope)
-            onClose()
+            onClose(true)
           }}
           onKeyDown={(event) => {
             const lastIndex = options.length - 1
@@ -519,7 +522,7 @@ const ScopeDropdown = ({
             if (event.key === 'Enter' || event.key === ' ') {
               event.preventDefault()
               onSelect(scope)
-              onClose()
+              onClose(true)
               return
             }
             if (event.key === 'ArrowDown') nextIndex = index === lastIndex ? 0 : index + 1
@@ -544,6 +547,32 @@ const ScopeDropdown = ({
           </span>
         </button>
       ))}
+    </>
+  )
+
+  return portaled ? (
+    <PopoverContent
+      ref={ref}
+      role="menu"
+      aria-label="Authorization scope"
+      side="top"
+      align="end"
+      sideOffset={6}
+      onOpenAutoFocus={(event) => event.preventDefault()}
+      onCloseAutoFocus={(event) => event.preventDefault()}
+      onEscapeKeyDown={() => onClose(true)}
+      className="min-w-44 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-menu"
+    >
+      {items}
+    </PopoverContent>
+  ) : (
+    <div
+      ref={ref}
+      role="menu"
+      aria-label="Authorization scope"
+      className="absolute bottom-full right-0 z-10 mb-1.5 min-w-44 rounded-lg border border-border bg-popover p-1.5 text-popover-foreground shadow-menu outline-none"
+    >
+      {items}
     </div>
   )
 }
@@ -551,6 +580,7 @@ const ScopeDropdown = ({
 const PermissionApprovalCard = ({
   request,
   onRespond,
+  embedded = false,
   notebookLookup,
   disabled = false,
   onSubmitted
@@ -592,7 +622,7 @@ const PermissionApprovalCard = ({
   const denyOptionId = getDenyOptionId(request.options)
   const scopeLabel: Record<PermissionScope, string> = {
     once: 'once',
-    session: 'for this session',
+    session: 'for this conversation',
     project: 'for this project',
     global: 'globally'
   }
@@ -611,8 +641,8 @@ const PermissionApprovalCard = ({
         : effectiveScope === 'global'
           ? 'Approval applies to matching calls in every project.'
           : presentation.notebookRuntime
-            ? `Approval covers later ${notebookRuntimeLabel[presentation.notebookRuntime]} calls in this session.`
-            : 'Approval remains attached to this session across restarts.'
+            ? `Approval covers later ${notebookRuntimeLabel[presentation.notebookRuntime]} calls in this conversation, including across restarts.`
+            : 'Approval remains attached to this conversation across restarts.'
   const hasScopePicker = availableScopes.size > 1
   const isSubmitting = submittingRequestId === request.requestId
   const respondOnce = (optionId?: string, broadScopeConfirmed = false): void => {
@@ -714,7 +744,11 @@ const PermissionApprovalCard = ({
           ? `${request.delegated.childTitle} permission request: ${presentation.actionTitle}`
           : `Permission request: ${presentation.actionTitle}`
       }
-      className="mb-2 flex w-full max-w-full flex-col gap-3 rounded-xl border border-border bg-card p-5 text-xs leading-5 text-card-foreground shadow-dialog outline-none motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200"
+      className={cn(
+        'flex w-full max-w-full flex-col gap-3 bg-card p-4 text-xs leading-5 text-card-foreground outline-none sm:p-5',
+        !embedded &&
+          'mb-2 rounded-xl border border-border shadow-dialog motion-safe:animate-in motion-safe:fade-in-0 motion-safe:slide-in-from-bottom-1 motion-safe:duration-200'
+      )}
     >
       {request.delegated ? (
         <div className="flex flex-col gap-1 text-xs">
@@ -726,7 +760,14 @@ const PermissionApprovalCard = ({
         </div>
       ) : null}
       {/* Header: plain-language action plus its classification and notebook context. */}
-      <div className="flex min-w-0 items-center gap-2">
+      <div
+        data-testid="permission-header"
+        className={cn(
+          'flex min-w-0 items-center gap-2',
+          embedded &&
+            'sticky top-0 z-10 -mx-4 -mt-4 -mb-3 bg-card px-4 pb-3 pt-4 sm:-mx-5 sm:-mt-5 sm:px-5 sm:pt-5'
+        )}
+      >
         <div className="flex min-w-0 items-center gap-1.5">
           <span className={cn(dialogTitleClassName, 'min-w-0 truncate')}>
             {presentation.actionTitle}
@@ -784,81 +825,100 @@ const PermissionApprovalCard = ({
 
       {/* Allow / Deny button row; wraps so long provider-supplied option labels can never
           push the primary Allow/Deny controls out of view. */}
-      <div className="flex flex-wrap items-center justify-end gap-2">
+      <div
+        data-testid="permission-actions"
+        className={cn(
+          'flex flex-wrap items-center justify-end gap-2',
+          embedded &&
+            'sticky bottom-0 z-10 -mx-4 -mb-4 bg-card px-4 pb-4 pt-3 sm:-mx-5 sm:-mb-5 sm:px-5 sm:pb-5'
+        )}
+      >
         {/* Split Allow button: main action + scope chevron; the menu anchors to this group's right edge.
             Styled like the shared Button (default size, including flex centering so the label baseline
             matches the neighboring Button primitives) but kept as two segments so the chevron
             stays a separate tab stop with its own aria-haspopup semantics. */}
-        <div className="relative flex items-stretch overflow-visible rounded-lg">
-          {hasScopePicker && scopeOpen && (
-            <ScopeDropdown
-              selected={effectiveScope}
-              available={availableScopes}
-              onSelect={setScope}
-              onClose={closeScopeMenu}
-            />
-          )}
-          <div className="flex items-stretch overflow-hidden rounded-lg">
-            <button
-              ref={allowPrimaryRef}
-              type="button"
-              data-testid="allow-primary"
-              className={cn(
-                'inline-flex h-8 select-none items-center justify-center gap-1 whitespace-nowrap px-3 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50',
-                isDeleteRequest
-                  ? 'bg-destructive text-destructive-foreground hover:bg-destructive/80'
-                  : 'bg-primary text-primary-foreground hover:bg-primary/80'
-              )}
-              disabled={disabled || !allowOptionId || isSubmitting}
-              onClick={() => {
-                if (!allowOptionId) return
-                respondOnce(allowOptionId)
-              }}
-            >
-              {isDeleteRequest ? (
-                <span className="font-semibold">Delete</span>
-              ) : (
-                <>
-                  <span className="font-semibold">Allow</span>{' '}
-                  <span className="font-normal">{scopeLabel[effectiveScope]}</span>
-                </>
-              )}
-            </button>
-            {hasScopePicker ? (
-              <>
-                <div
-                  className={cn(
-                    'w-px',
-                    isDeleteRequest ? 'bg-destructive-foreground/25' : 'bg-primary-foreground/25'
-                  )}
-                />
+        <Popover
+          open={embedded && scopeOpen}
+          onOpenChange={(open) => {
+            if (!open) closeScopeMenu()
+          }}
+        >
+          <div className="relative flex items-stretch overflow-visible rounded-lg">
+            {hasScopePicker && scopeOpen && (
+              <ScopeDropdown
+                selected={effectiveScope}
+                available={availableScopes}
+                onSelect={setScope}
+                onClose={closeScopeMenu}
+                portaled={embedded}
+              />
+            )}
+            <PopoverAnchor asChild>
+              <div className="flex items-stretch overflow-hidden rounded-lg">
                 <button
-                  ref={scopeTriggerRef}
+                  ref={allowPrimaryRef}
                   type="button"
-                  data-testid="scope-chevron"
-                  aria-label="Choose authorization scope"
-                  aria-expanded={scopeOpen}
-                  aria-haspopup="menu"
+                  data-testid="allow-primary"
                   className={cn(
-                    'inline-flex h-8 select-none items-center justify-center px-2 outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50',
+                    'inline-flex h-8 select-none items-center justify-center gap-1 whitespace-nowrap px-3 text-sm outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50 disabled:opacity-50',
                     isDeleteRequest
                       ? 'bg-destructive text-destructive-foreground hover:bg-destructive/80'
                       : 'bg-primary text-primary-foreground hover:bg-primary/80'
                   )}
-                  disabled={disabled || isSubmitting}
-                  onClick={(e) => {
-                    // Stop propagation so this click doesn't reach the dropdown's document
-                    // click-listener and immediately re-close the menu it just opened.
-                    e.stopPropagation()
-                    setScopeOpen((o) => !o)
+                  disabled={disabled || !allowOptionId || isSubmitting}
+                  onClick={() => {
+                    if (!allowOptionId) return
+                    respondOnce(allowOptionId)
                   }}
                 >
-                  <ChevronDown className="size-4" />
+                  {isDeleteRequest ? (
+                    <span className="font-semibold">Delete</span>
+                  ) : (
+                    <>
+                      <span className="font-semibold">Allow</span>{' '}
+                      <span className="font-normal">{scopeLabel[effectiveScope]}</span>
+                    </>
+                  )}
                 </button>
-              </>
-            ) : null}
+                {hasScopePicker ? (
+                  <>
+                    <div
+                      className={cn(
+                        'w-px',
+                        isDeleteRequest
+                          ? 'bg-destructive-foreground/25'
+                          : 'bg-primary-foreground/25'
+                      )}
+                    />
+                    <button
+                      ref={scopeTriggerRef}
+                      type="button"
+                      data-testid="scope-chevron"
+                      aria-label="Choose authorization scope"
+                      aria-expanded={scopeOpen}
+                      aria-haspopup="menu"
+                      className={cn(
+                        'inline-flex h-8 select-none items-center justify-center px-2 outline-none transition-colors focus-visible:ring-3 focus-visible:ring-ring/50',
+                        isDeleteRequest
+                          ? 'bg-destructive text-destructive-foreground hover:bg-destructive/80'
+                          : 'bg-primary text-primary-foreground hover:bg-primary/80'
+                      )}
+                      disabled={isSubmitting}
+                      onClick={(e) => {
+                        // Stop propagation so this click doesn't reach the dropdown's document
+                        // click-listener and immediately re-close the menu it just opened.
+                        e.stopPropagation()
+                        setScopeOpen((o) => !o)
+                      }}
+                    >
+                      <ChevronDown className="size-4" />
+                    </button>
+                  </>
+                ) : null}
+              </div>
+            </PopoverAnchor>
           </div>
-        </div>
+        </Popover>
         {/* Fallback buttons for any protocol option the Allow/Deny controls can't reach, so an
             unrecognized or ambiguous same-kind option stays selectable rather than disappearing.
             Provider-controlled labels can be long: override the Button's shrink-0/whitespace-nowrap
@@ -899,6 +959,7 @@ const PermissionApprovalCard = ({
 const PermissionApprovalControls = ({
   requests,
   onRespond,
+  embedded = false,
   notebookLookup,
   disabled = false
 }: PermissionApprovalControlsProps): React.JSX.Element | null => {
@@ -920,7 +981,7 @@ const PermissionApprovalControls = ({
     (request) => request.delegated || request === firstRootRequest
   )
   return (
-    <div ref={surfaceRef}>
+    <div ref={surfaceRef} data-testid="permission-approval-controls">
       <span className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         {visibleRequests.filter((request) => request.delegated).length} subagent permission requests
         pending
@@ -930,6 +991,7 @@ const PermissionApprovalControls = ({
           key={request.requestId}
           request={request}
           onRespond={onRespond}
+          embedded={embedded}
           notebookLookup={notebookLookup}
           disabled={disabled}
           onSubmitted={(requestId) => {

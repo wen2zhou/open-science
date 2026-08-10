@@ -1,4 +1,4 @@
-import { basename, join } from 'node:path'
+import { basename, dirname, join } from 'node:path'
 import { randomUUID } from 'node:crypto'
 import { readFile, stat, writeFile } from 'node:fs/promises'
 import { customConnectorSlug } from '../shared/custom-connector'
@@ -26,10 +26,12 @@ import {
   type ApplicationCommandComposition,
   type ApplicationCommandCompositionDependencies
 } from './application-command-composition'
+import { registerApplicationCommandElectronAdapter } from './application-command-electron-adapter'
 import type { ApplicationInvocation } from './application-command-router'
 import { createApplicationEventModule, type ApplicationEventSource } from './application-events'
 
 import { createAcpRuntime } from './acp/runtime-composition'
+import { SideChatRelayOwner } from './acp/side-chat-relay-owner'
 import { createAcpCreateSessionWorkflow } from './acp/create-session-workflow'
 import { createAcpHandlerWorkflows } from './acp/handler-workflows'
 import { createAcpTaskAgentPort } from './acp/task-agent-port'
@@ -58,6 +60,7 @@ import { ALL_CONNECTOR_IDS } from './connectors/registry'
 import { ConnectorRuntimeSettingsProjection } from './connectors/runtime-settings-projection'
 import { ConnectorService } from './connectors/service'
 import { registerFileSaveHandlers } from './file-save'
+import { ImmutableInputAuthority } from './immutable-input-authority'
 import { createSessionArtifactFileResolver } from './session-artifact-file-resolver'
 import { createCliCommandOwner, registerCliInstallIpcHandlers } from './cli-install/ipc'
 import { createGithubCommandOwner, registerGithubIpcHandlers } from './github-ipc'
@@ -70,9 +73,14 @@ import {
 } from './lifecycle-shutdown'
 import { registerLifecycleIpcHandlers } from './lifecycle-broadcast'
 import { createLogsCommandOwner, registerLogsIpcHandlers } from './logs-ipc'
+import { registerNetworkIpcHandlers } from './network-ipc'
 import { registerWindowIpcHandlers } from './window-ipc'
 import { registerWindowFindIpcHandlers } from './window-find-ipc'
 import { TaskNotificationService } from './notifications/task-notifications'
+import { createNotificationInboxController } from './notifications/notification-inbox-controller'
+import { registerNotificationInboxIpcAdapter } from './notifications/notification-inbox-ipc'
+import { NotificationInboxDbRepository } from './notifications/notification-inbox-repository'
+import { bindNotificationInboxDeletionRuntime } from './notifications/notification-inbox-runtime'
 import {
   buildSkillImportApprovalBroadcast,
   buildConnectorApprovalBroadcast,
@@ -112,6 +120,7 @@ import { createNotebookArtifactSourceScopeProvider } from './notebook/artifact-s
 import { NotebookInputRegistry } from './notebook/input-registry'
 import { effectiveMirrorAsync } from './notebook/mirror-probe'
 import { createProductionProvisioner, type RuntimeProvisioner } from './notebook/provisioner'
+import { createProductionMicromambaRunner } from './notebook/windows-micromamba-runner'
 import { createRuntimeSelectionWorkflows } from './notebook/runtime-selection-workflows'
 import { runtimeRoot } from './notebook/runtime-paths'
 import type { NotebookEnvironmentManager } from './notebook/runtime-service'
@@ -125,7 +134,7 @@ import {
   createDefaultPreviewStateRepository,
   createDefaultProjectRepository,
   createProjectHandlers,
-  registerProjectIpcHandlers
+  registerPreviewStateIpcHandlers
 } from './projects/ipc'
 import {
   createReviewerCommandOwner,
@@ -148,25 +157,31 @@ import { createProjectFilesHandlers, registerProjectFilesIpcHandlers } from './p
 import { createManagedFileIndexRepository } from './project-files/repository'
 import { ProjectDeletionCoordinator } from './projects/deletion-coordinator'
 import { getProjectDbClient } from './projects/prisma-client'
+import { seedDefaultPermissionGrants } from './permission-grants/defaults'
 import { createPermissionGrantRegistry } from './permission-grants/registry'
 import { isPermissionGrantScopeLive } from './permission-grants/scope-liveness'
 import { registerPermissionGrantIpcAdapter } from './permission-grants/ipc'
 import { createPermissionGrantProjectionController } from './permission-grants/projection-controller'
 import { reconcilePermissionGrantOwners } from './permission-grants/reconciliation'
 import { SessionPersistenceCoordinator } from './session-persistence/coordinator'
+import { createMainPromptSideChatRelay } from './side-chat/main-prompt-relay'
+import { registerSideChatIpcHandlers } from './side-chat/ipc'
+import { SideChatRuntimeOwner } from './side-chat/runtime-owner'
 import { type SessionPersistenceBackend } from './session-persistence/ipc'
 import { tryDecryptKey } from './settings/crypto'
 import { SETTINGS_INSTALL_LOG_CHANNEL, registerSettingsIpcHandlers } from './settings/ipc'
 import { registerLocalFsIpcHandlers } from './local-fs/ipc'
 import { LocalFsService } from './local-fs/service'
 import { getAppClaudeConfigDir } from './settings/provider-env'
-import { createDefaultSettingsService } from './settings/service'
+import { SettingsService } from './settings/service'
+import { SettingsRepository } from './settings/repository'
 import type { NotebookRuntimeSettings } from './settings/capabilities'
 import type { WindowSettingsCapabilities } from './settings/service-capabilities'
 import { createProductionDelegatedWorkComposition } from './delegated-work/production-composition'
 import { createProductionDelegatedFrameworkRuntime } from './delegated-work/production-framework-runtime'
 import { finalizeDelegatedArtifactPublication } from './delegated-work/delegated-artifact-publication'
 import { createSettingsWorkflows } from './settings/workflows'
+import { showSettingsSaveDialog } from './settings/save-dialog'
 import { ProfileService } from './specialist/service'
 import { SpecialistRepository } from './specialist/repository'
 import { BuiltinSpecialistRegistry } from './specialist/builtin-registry'
@@ -179,6 +194,7 @@ import {
 } from './specialist/package/electron-adapter'
 import { UserSkillSpecialistPackageAdapter } from './skills/specialist-package-adapter'
 import { BundledSkillSpecialistPackageAdapter } from './skills/builtin-specialist-package-adapter'
+import { saveSkillExport } from './skills/export'
 import { AgentsService } from './agents/agents-service'
 import {
   CompletionGateCoordinator,
@@ -242,6 +258,7 @@ import {
   type NamedElectronSurfaceAdapter
 } from './runtime-electron-wiring'
 import { ConversationSkillImporter, SkillImportApprovalBroker } from './skills/conversation-import'
+import { HostSkillsService, type HostSkillsCatalog } from './skills/host-skills-service'
 import type { ConversationSkillImportApprovalResponse } from '../shared/settings'
 import type { TaskAgentPort } from './tasks/task-runner'
 
@@ -267,7 +284,11 @@ export type ApplicationRuntimeInterfaces = {
   bindRemoteAccess: ApplicationCommandComposition['bindRemoteAccess']
   taskNotifications: Pick<
     TaskNotificationService,
-    'setActivationHandler' | 'setAttentionHandlers' | 'setPendingOpenSession' | 'setUnreadHandler'
+    'setActivationHandler' | 'setAttentionHandlers' | 'setPendingOpenSession'
+  >
+  notificationInbox: Pick<
+    import('./notifications/notification-inbox-controller').NotificationInboxController,
+    'configureDesktop' | 'syncViewState' | 'handleAppFocus' | 'handleWindowCreated' | 'refreshBadge'
   >
   settingsService: WindowSettingsCapabilities
   taskAgent: TaskAgentPort
@@ -331,14 +352,23 @@ const createApplicationModules = async (
     createApplicationEventModule
   )
   // One settings service backs both the settings IPC and the ACP spawn config (single source of truth).
+  const settingsRepository = new SettingsRepository(resolveStorageRoot())
   const settingsService = await modules.add(undefined, () => ({
-    capability: createDefaultSettingsService()
+    capability: new SettingsService({ repository: settingsRepository })
   }))
   const storedSettings = await settingsService.getStoredSettings()
   const storageLog = createLogger('storage')
   // Prime the data-root cache from settings before any data repository is constructed below. A change
   // to this value only takes effect after a restart, so reading it once here is sufficient.
   initDataRoot(storedSettings.dataRoot)
+  const notificationInbox = createNotificationInboxController({
+    headless,
+    repository: new NotificationInboxDbRepository(() => getProjectDbClient(resolveStorageRoot())),
+    onChanged: (event) => applicationEvents.publish('notifications:changed', event),
+    onError: (error) =>
+      createLogger('notifications').warn('message center operation failed', errorLogFields(error))
+  })
+  await notificationInbox.restore()
   // Record only the location class. Absolute paths (including reversible code-point renderings) can
   // expose usernames and folder names in a support bundle.
   storageLog.info('data root resolved', {
@@ -358,7 +388,19 @@ const createApplicationModules = async (
       diagnosticErrorFields(error)
     )
   }
-  const sessionRepository = createDefaultSessionRepository()
+  // Session reads and permission scope validation both need a late-bound view of ACP ownership:
+  // startup runs before the runtime exists, while later reads must preserve live prompt state.
+  const runtimeRef: { current: ReturnType<typeof createAcpRuntime> | undefined } = {
+    current: undefined
+  }
+  const sideChatOwnerRef: { current: SideChatRuntimeOwner | undefined } = {
+    current: undefined
+  }
+  const sessionRepository = createDefaultSessionRepository((projectId, sessionId) =>
+    (runtimeRef.current?.getActivePromptSessions() ?? []).some(
+      (session) => session.projectName === projectId && session.sessionId === sessionId
+    )
+  )
   const projectRepository = createDefaultProjectRepository()
   const previewStateRepository = createDefaultPreviewStateRepository()
 
@@ -390,9 +432,14 @@ const createApplicationModules = async (
 
   // Share one repository and registry so runtime artifact claims and renderer finalization meet.
   const artifactRepository = createDefaultArtifactRepository()
+  const immutableInputAuthority = new ImmutableInputAuthority({
+    storageRoot: resolveDataRoot(),
+    getClient: () => getProjectDbClient(resolveStorageRoot())
+  })
   const artifactProvenanceRepository = new ArtifactProvenanceRepository({
     storageRoot: resolveDataRoot(),
     getClient: () => getProjectDbClient(resolveStorageRoot()),
+    inputAuthority: immutableInputAuthority,
     compatibilityRepository: artifactRepository,
     loadSession: (projectId, appSessionId) => sessionRepository.loadSession(projectId, appSessionId)
   })
@@ -404,8 +451,7 @@ const createApplicationModules = async (
   // The upload repository above is shared so staging recovery, Session upgrade, prompt finalization,
   // and previews all observe one durable Version authority.
   const notebookInputRegistry = new NotebookInputRegistry({
-    storageRoot: resolveDataRoot(),
-    getClient: () => getProjectDbClient(resolveStorageRoot())
+    inputAuthority: immutableInputAuthority
   })
   // Shared local-fs service backs both the "This computer" browser IPC and the managed-preview
   // resolver below, so path validation stays identical across both entry points.
@@ -457,9 +503,6 @@ const createApplicationModules = async (
   // Permission scope validation starts before the ACP coordinator is constructed. Keep the late-bound
   // reference here so a first-turn Session grant can recognize its live owner before the renderer's
   // asynchronous session persistence finishes.
-  const runtimeRef: { current: ReturnType<typeof createAcpRuntime> | undefined } = {
-    current: undefined
-  }
   const artifactHandlersRef: { current: ArtifactHandlers | undefined } = { current: undefined }
   const reviewerCommandOwnerRef: { current: ReviewerCommandOwner | undefined } = {
     current: undefined
@@ -483,6 +526,7 @@ const createApplicationModules = async (
           runtimeRef.current?.hasLiveSession(projectId, sessionId) ?? false
       })
   })
+  await seedDefaultPermissionGrants(permissionGrantRegistry, await getProjectDbClient(configRoot))
   const projectFilesRepository = createManagedFileIndexRepository(
     getProjectDbClient,
     configRoot,
@@ -500,6 +544,33 @@ const createApplicationModules = async (
         reconcilePermissionGrantOwners(permissionGrantRegistry, { sessions })
     }
   )
+  const sideChatRelay = new SideChatRelayOwner({
+    targetState: (parentSessionId) => {
+      const runtime = runtimeRef.current
+      if (!runtime) return 'completed'
+      const snapshot = runtime.getSnapshot()
+      if (snapshot.promptInFlightSessionIds.includes(parentSessionId)) {
+        return snapshot.pendingPermissions.some(
+          (permission) => permission.sessionId === parentSessionId
+        )
+          ? 'waiting'
+          : 'running'
+      }
+      return runtime.liveSessionProjectId(parentSessionId) ? 'idle' : 'completed'
+    },
+    appendRelay: ({ projectId, parentSessionId, sideChatId, relay }) =>
+      sessionPersistenceCoordinator.appendSideChatRelay({
+        projectId,
+        sessionId: parentSessionId,
+        sideChatId,
+        relay
+      })
+  })
+  const mainPromptSideChatRelay = createMainPromptSideChatRelay({
+    relay: sideChatRelay,
+    commitSideChatRelays: (command) => sessionPersistenceCoordinator.commitSideChatRelays(command),
+    onDelivered: (event) => broadcastToRenderers('side-chat:relay-delivered', event)
+  })
   const uploadCommandOwner = createUploadCommandOwner(uploadRepository, {
     withSessionMutation: (projectId, sessionId, mutation) =>
       sessionPersistenceCoordinator.runSessionMutation(projectId, sessionId, mutation)
@@ -511,7 +582,11 @@ const createApplicationModules = async (
     previewStateRepository,
     reviewRepository,
     artifactProvenanceRepository,
-    permissionGrantRegistry
+    permissionGrantRegistry,
+    {
+      beforeProjectDelete: (projectId) =>
+        sideChatOwnerRef.current?.invalidateProject(projectId) ?? Promise.resolve()
+    }
   )
   const detectArchiveBlockingSessions = (): ReturnType<typeof detectActiveSessions> =>
     detectActiveSessions({
@@ -528,6 +603,7 @@ const createApplicationModules = async (
     sessionPersistenceCoordinator,
     {
       isSessionBusy: (projectId, sessionId) =>
+        sideChatOwnerRef.current?.hasForParent(sessionId) === true ||
         detectArchiveBlockingSessions().some(
           (session) => session.projectId === projectId && session.sessionId === sessionId
         ),
@@ -536,6 +612,18 @@ const createApplicationModules = async (
       liveSessionProjectId: (sessionId) => runtimeRef.current?.liveSessionProjectId(sessionId)
     }
   )
+  notificationInbox.setSessionAvailability((sessionId) =>
+    archiveCoordinator.isSessionAvailableById(sessionId)
+  )
+  archiveCoordinator.setMarkReadSessions((sessionIds) =>
+    notificationInbox.markSessionsRead(sessionIds)
+  )
+  bindNotificationInboxDeletionRuntime({
+    inbox: notificationInbox,
+    sessionPersistenceCoordinator,
+    onSessionsDeleted: (sessionIds) =>
+      sideChatOwnerRef.current?.invalidateParents(sessionIds) ?? Promise.resolve()
+  })
   const projectHandlers = createProjectHandlers(projectRepository, projectDeletionCoordinator, {
     updateArchive: (request) => archiveCoordinator.updateProjectArchive(request)
   })
@@ -584,6 +672,13 @@ const createApplicationModules = async (
     }
   }
   let backendTeardownOwnedByCoordinator = false
+  const provisioningRoot = runtimeRoot(resolveDataRoot())
+  // One runner owns Windows integrity/preflight/fallback state for every production micromamba
+  // consumer in this main-process generation. Each consumer receives only its narrow resolve seam.
+  const micromambaRunner = createProductionMicromambaRunner({
+    home: dirname(dirname(provisioningRoot)),
+    resourcesPath: process.resourcesPath
+  })
   const notebookRuntimeSettings: Pick<NotebookRuntimeSettings, 'getSnapshot'> = {
     getSnapshot: async (language) => {
       const [runtimeSelection, runtimeEnablement, manualInterpreters, packageMirror] =
@@ -610,14 +705,9 @@ const createApplicationModules = async (
       repository: new NotebookRunRepository(resolveDataRoot()),
       getPackageMirror: () => settingsService.getPackageMirror(),
       notebookRuntimeSettings,
+      micromambaRunner,
       locale: app.getLocale(),
       appVersion: app.getVersion(),
-      resolveArtifactPath: (request: { projectName: string; sessionId: string; path: string }) =>
-        artifactRepository.resolveSessionArtifactFilePath(
-          request.projectName,
-          request.sessionId,
-          request.path
-        ),
       events: applicationEvents,
       disposeTimeoutMs: QUIT_SHUTDOWN_BUDGET_MS,
       isBackendTeardownOwned: () => backendTeardownOwnedByCoordinator
@@ -795,13 +885,15 @@ const createApplicationModules = async (
       notificationsLog.warn('task notification delivery failed', errorLogFields(error)),
     onAttentionError: (error) =>
       notificationsLog.warn('desktop attention handler failed', errorLogFields(error)),
-    onUnreadError: (error) =>
-      notificationsLog.warn('unread task handler failed', errorLogFields(error))
+    inbox: notificationInbox,
+    onInboxError: (error) =>
+      notificationsLog.warn('message center recording failed', errorLogFields(error))
   })
   // The renderer peeks once sessions are hydrated, then conditionally consumes the same target.
   // This lets partial recovery open an already-loaded conversation while retaining an omitted one
   // for retry, without an older IPC round trip clearing a newer click target.
   declareElectronAdapter('task-notifications', () => {
+    registerNotificationInboxIpcAdapter(notificationInbox)
     ipcMainHandle('notifications:peek-pending-open-session', () =>
       taskNotifications.peekPendingOpenSession()
     )
@@ -831,6 +923,9 @@ const createApplicationModules = async (
     skillsDir: join(getAppClaudeConfigDir(resolveStorageRoot()), 'skills'),
     mcpClientManager
   })
+  settingsService.setMaterializedCustomSkillNamesProvider(() =>
+    connectorRuntimeSettings.materializedCustomSkillNames()
+  )
   settingsService.setCustomServerAuthenticator(
     async (serverId) => {
       const server = (await settingsService.getConnectors())?.customMcpServers?.find(
@@ -845,6 +940,7 @@ const createApplicationModules = async (
   // pre-allowed or skip-approved is held here until the user decides (or it auto-denies on timeout).
   const approvalBroker = new ApprovalBroker({
     generateId: () => randomUUID(),
+    onSettled: (id, state) => void taskNotifications.settleAuthorization('connector', id, state),
     broadcast: buildConnectorApprovalBroadcast({
       broadcastToRenderers,
       taskNotifications,
@@ -862,7 +958,9 @@ const createApplicationModules = async (
       onNotificationError: (error) =>
         notificationsLog.warn('skill import approval notification failed', errorLogFields(error))
     }),
-    onSettled: (id) => broadcastToRenderers('skills:conversation-import-settled', id)
+    onSettled: (id) => broadcastToRenderers('skills:conversation-import-settled', id),
+    onLifecycleSettled: (id, state) =>
+      void taskNotifications.settleAuthorization('skill-import', id, state)
   })
   const conversationSkillImporter = new ConversationSkillImporter({
     uploads: uploadRepository,
@@ -923,7 +1021,8 @@ const createApplicationModules = async (
     computeArtifactResolver,
     undefined,
     taskNotifications,
-    permissionGrantRegistry
+    permissionGrantRegistry,
+    settingsRepository
   )
   surfaceAdapters = beforeAcpAdapters
   const {
@@ -1190,6 +1289,30 @@ const createApplicationModules = async (
       }
     }
   })
+
+  const hostSkillsCatalog: HostSkillsCatalog = {
+    list: () => settingsService.listHostSkills(),
+    withSkillRead: (id, read) => settingsService.withHostSkillRead(id, read),
+    publishPersonalDirectory: (slug, sourcePath, overwrite) =>
+      settingsService.publishHostSkill(slug, sourcePath, overwrite),
+    deletePublished: async (id) => {
+      await settingsService.deleteSkill({ id })
+    }
+  }
+  const hostSkillsService = new HostSkillsService({
+    storageRoot: configRoot,
+    catalog: hostSkillsCatalog,
+    approveDelete: async (payload, session) => {
+      const runtime = runtimeRef.current
+      if (!session.sessionId || !runtime) return false
+      return runtime.requestAppApproval({
+        sessionId: session.sessionId,
+        title: `Delete ${payload.name}?`,
+        rawInput: { skillApproval: { kind: 'delete', ...payload } }
+      })
+    },
+    onPublishedSkillsChanged: () => void runtimeRef.current?.requestSkillsReload()
+  })
   const notebookRpcServer = await modules.add(
     new NotebookLocalRpcServer(notebookLocalRpc, {
       onSessionReleased: (sessionId) => completionGateCoordinator.releaseSession(sessionId),
@@ -1202,6 +1325,11 @@ const createApplicationModules = async (
           if (!runtime) return Promise.reject(new Error('ACP runtime is not available.'))
           return runtime.callSessionPlan(input)
         }
+      },
+      requestUserInput: (request) => {
+        const runtime = runtimeRef.current
+        if (!runtime) throw new Error('ACP runtime is not initialized.')
+        return runtime.requestUserInput(request)
       },
       artifactProvenance: {
         createVersion: (request) =>
@@ -1219,7 +1347,8 @@ const createApplicationModules = async (
       },
       inputRegistry: notebookInputRegistry,
       agentsService,
-      delegatedWorkService: delegatedWork.host
+      delegatedWorkService: delegatedWork.host,
+      skillsService: hostSkillsService
     }),
     createNotebookLocalRpcModule
   )
@@ -1243,6 +1372,9 @@ const createApplicationModules = async (
     ipcMainHandle('connectors:approval-respond', (_event, request: RespondApprovalRequest) => {
       approvalBroker.respond(request.id, request.decision)
     })
+    ipcMainHandle('connectors:approval-replay', (_event, id: unknown) =>
+      typeof id === 'string' ? approvalBroker.getPending(id) : null
+    )
     ipcMainHandle(
       'skills:conversation-import-respond',
       (_event, response: ConversationSkillImportApprovalResponse) => {
@@ -1295,6 +1427,7 @@ const createApplicationModules = async (
     registerFileSaveHandlers({ resolveManagedFilePath, resolveSessionArtifactFilePath })
     registerLogsIpcHandlers(logsCommandOwner)
     registerGithubIpcHandlers({}, githubCommandOwner)
+    registerNetworkIpcHandlers()
     registerCliInstallIpcHandlers(cliCommandOwner)
     registerWindowIpcHandlers()
     registerWindowFindIpcHandlers()
@@ -1315,6 +1448,7 @@ const createApplicationModules = async (
       settingsService,
       permissionGrantRegistry,
       taskNotifications,
+      notificationInbox,
       onSessionTurnStarted: (sessionId, turnToken) =>
         skillImportApprovalBroker.beginSessionTurn(sessionId, turnToken),
       onSessionTurnEnded: (sessionId, turnToken) =>
@@ -1325,12 +1459,15 @@ const createApplicationModules = async (
         skillImportApprovalBroker.cancelSession(sessionId),
       onSessionUnavailable: (sessionId) => skillImportApprovalBroker.cancelSession(sessionId),
       onAllSessionsCancellationRequested: () => skillImportApprovalBroker.cancelAll(),
-      beforeSessionDelete: (sessionId) =>
-        notebookService.shutdownSession(sessionId).then(() => undefined),
+      beforeSessionDelete: async (sessionId) => {
+        await sideChatOwnerRef.current?.invalidateParents([sessionId])
+        await notebookService.shutdownSession(sessionId)
+      },
       initializationBarrier: initialConnectorSkillsReady,
       profileService,
       sessionPersistenceCoordinator,
-      delegatedWork: delegatedWork.root
+      delegatedWork: delegatedWork.root,
+      sideChatRelays: mainPromptSideChatRelay
     },
     (options) => {
       const runtime = createAcpRuntime(options)
@@ -1347,11 +1484,78 @@ const createApplicationModules = async (
   )
   surfaceAdapters = afterAcpAdapters
   runtimeRef.current = runtime
+  const sideChatLog = createLogger('side-chat')
+  const sideChatRuntime = await modules.add(
+    {
+      appVersion: app.getVersion(),
+      configRoot,
+      captureTarget: () => settingsService.captureActiveExplicitAgentBackendTarget(),
+      resolveTarget: (target, context) =>
+        settingsService.resolveExplicitAgentBackend(target, context),
+      relay: sideChatRelay,
+      persistence: {
+        save: ({ projectId, parentSessionId, sideChat }) =>
+          sessionPersistenceCoordinator.saveSideChatProjection({
+            projectId,
+            sessionId: parentSessionId,
+            sideChat
+          }),
+        clear: ({ projectId, parentSessionId, sideChatId }) =>
+          sessionPersistenceCoordinator.clearSideChat({
+            projectId,
+            sessionId: parentSessionId,
+            sideChatId
+          })
+      },
+      onEvent: (event) => broadcastToRenderers('side-chat:event', event),
+      setParentInteractionsPaused: (sessionId, paused) => {
+        if (paused) {
+          approvalBroker.pauseSession(sessionId)
+          computeIpcModule.handlers.approvalPauseSession(sessionId)
+          return
+        }
+        approvalBroker.resumeSession(sessionId)
+        computeIpcModule.handlers.approvalResumeSession(sessionId)
+      }
+    },
+    (options) => {
+      const owner = new SideChatRuntimeOwner(options)
+      return {
+        name: 'side-chat-runtime',
+        capability: owner,
+        dispose: () => owner.shutdown()
+      }
+    }
+  )
+  sideChatOwnerRef.current = sideChatRuntime
+  try {
+    const persistedSideChats = await sessionPersistenceCoordinator.loadPersistedSideChats()
+    sideChatRuntime.hydrate(persistedSideChats.sideChats)
+    sideChatRelay.hydrate(persistedSideChats.relays)
+    await sideChatRuntime.sweepStaleProfiles(
+      new Set(persistedSideChats.sideChats.map(({ sideChat }) => sideChat.id)),
+      persistedSideChats.isComplete
+    )
+  } catch (error) {
+    sideChatLog.error('durable Side chat hydration failed', diagnosticErrorFields(error))
+  }
+  declareElectronAdapter('side-chat', () =>
+    registerSideChatIpcHandlers(sideChatRuntime, {
+      loadParentSession: (projectId, sessionId) =>
+        sessionRepository.loadSession(projectId, sessionId),
+      hasLiveParentSession: (projectId, sessionId) => runtime.hasLiveSession(projectId, sessionId),
+      withParentAvailable: (sessionId, operation) =>
+        archiveCoordinator.withSessionAvailableById(sessionId, operation)
+    })
+  )
   // Archive availability is checked at the final admission point, rather than trusting renderer
   // visibility, so an archived Project/Session cannot restart work through another surface.
-  runtime.setPromptAdmissionGuard((sessionId) =>
-    archiveCoordinator.assertSessionAvailableById(sessionId)
-  )
+  runtime.setPromptAdmissionGuard(async (sessionId) => {
+    await archiveCoordinator.assertSessionAvailableById(sessionId)
+    if (sideChatRuntime.hasForParent(sessionId)) {
+      throw new Error('Close Side chat before sending a message to Main.')
+    }
+  })
   const codeReconstructionLog = createLogger('artifacts:code-reconstruction')
   const codeReconstructionRunner = await modules.add(
     {
@@ -1389,7 +1593,8 @@ const createApplicationModules = async (
     runtime,
     createSessionWorkflow,
     taskNotifications,
-    archiveCoordinator
+    archiveCoordinator,
+    sessionRepository
   )
   const taskAgent = createAcpTaskAgentPort(
     runtime,
@@ -1533,10 +1738,28 @@ const createApplicationModules = async (
   // their owning runtime, so a framework/provider switch cannot interrupt an in-flight turn.
   const settingsWorkflows = createSettingsWorkflows(settingsService, {
     runtime: {
-      requestProviderReconnect: () => void runtime.requestProviderReconnect(),
-      requestAgentFrameworkSwitch: () => void runtime.requestAgentFrameworkSwitch(),
-      applyReasoningEffort: (effort) => runtime.applyReasoningEffortChange(effort),
-      applyModelChange: (target) => runtime.applyModelChange(target)
+      requestProviderReconnect: () => {
+        void runtime.requestProviderReconnect()
+        void sideChatRuntime.requestProviderReconnect()
+      },
+      requestAgentFrameworkSwitch: () => {
+        void runtime.requestAgentFrameworkSwitch()
+        void sideChatRuntime.requestProviderReconnect()
+      },
+      applyReasoningEffort: async (effort) => {
+        const [mainApplied, sideChatApplied] = await Promise.all([
+          runtime.applyReasoningEffortChange(effort),
+          sideChatRuntime.applyReasoningEffortChange(effort)
+        ])
+        return mainApplied && sideChatApplied
+      },
+      applyModelChange: async (target) => {
+        const [mainApplied, sideChatApplied] = await Promise.all([
+          runtime.applyModelChange(target),
+          sideChatRuntime.applyModelChange(target)
+        ])
+        return mainApplied && sideChatApplied
+      }
     },
     skills: { requestSkillsReload: () => void runtime.requestSkillsReload() },
     connectors: {
@@ -1574,8 +1797,8 @@ const createApplicationModules = async (
             contents: await readFile(filePath, 'utf8')
           }
         },
-        save: async (suggestedFileName, contents) => {
-          const selected = await dialog.showSaveDialog({
+        save: async (suggestedFileName, contents, sender) => {
+          const selected = await showSettingsSaveDialog(sender, {
             title: 'Export Connector configuration',
             defaultPath: suggestedFileName,
             filters: [{ name: 'Connector configuration', extensions: ['json'] }]
@@ -1584,6 +1807,16 @@ const createApplicationModules = async (
           await writeFile(selected.filePath, contents, 'utf8')
           return true
         }
+      },
+      skillExportFiles: {
+        save: (archive, sender) =>
+          saveSkillExport(
+            {
+              showSaveDialog: (options) => showSettingsSaveDialog(sender, options),
+              writeFile: (filePath, bytes) => writeFile(filePath, bytes)
+            },
+            archive
+          )
       }
     })
   )
@@ -1676,6 +1909,7 @@ const createApplicationModules = async (
   const runtimeSelectionWorkflows = createRuntimeSelectionWorkflows({
     settingsService,
     runtimeRoot: () => getRuntimeRoot(resolveDataRoot()),
+    micromambaRunner,
     // WS10: revoke a disabled runtime from any live session bound to it (mark binding unavailable).
     onRuntimeDisabled: (language, envId, force) =>
       notebookService.revokeRuntime(language, envId, { force }),
@@ -1736,7 +1970,6 @@ const createApplicationModules = async (
   // lives) and start the env readiness gate. The conda channel comes from the effective package mirror
   // (configured override, else the region default from locale). Runtime packs use the official CDN base
   // with OPEN_SCIENCE_ENV_CDN_BASE available for private/self-hosted deployments.
-  const provisioningRoot = runtimeRoot(resolveDataRoot())
   // Build the provisioner separately from registering the IPC surface: if construction fails (e.g.
   // micromamba missing in dev), `provisioner` stays undefined but the notebook-env handlers are STILL
   // registered below (as unavailable stubs), so the renderer gets an actionable "runtime unavailable"
@@ -1746,35 +1979,38 @@ const createApplicationModules = async (
   try {
     const configuredMirror = await settingsService.getPackageMirror()
     const mirror = await effectiveMirrorAsync(configuredMirror, app.getLocale())
-    provisioner = createProductionProvisioner({
-      root: provisioningRoot,
-      channel: mirror.condaChannel ?? process.env.OPEN_SCIENCE_CONDA_CHANNEL ?? 'conda-forge',
-      caBundle: mirror.caBundle,
-      micromamba: { resourcesPath: process.resourcesPath },
-      // Self-guard the provisioner's prefix writes (startup restore/upgrade/repair, named create, lazy
-      // materialize) against a prefix crash-recovery could not confirm free of a live orphan — closes
-      // the startup-gate path the UI-only assertProvisionAllowed guard did not cover. Reads the live
-      // blocked set at call time (recovery is awaited before the gate touches any prefix).
-      isPrefixBlocked: (prefix) => notebookService.isPrefixRecoveryBlocked(prefix),
-      // An explicit user Reset (repair with force) clears the in-memory block; the provisioner also
-      // clears the retained journal record + sidecar so the quarantine doesn't re-arm next startup.
-      clearPrefixBlock: (prefix) => notebookService.clearRecoveryBlock(prefix),
-      // Reset also clears an interrupted install's runtime-ID block, or bound sessions would still be
-      // rejected after the env rebuilds until the next restart.
-      clearRuntimeBlock: (runtimeId) => notebookService.clearRuntimeRecoveryBlock(runtimeId),
-      // A force Reset that finds the journal itself corrupt moves it aside and releases just THAT prefix
-      // from the global corrupt-journal barrier — other envs stay blocked until their own Reset/restart.
-      clearCorruptBlock: (prefix) => notebookService.clearCorruptRecoveryBlock(prefix),
-      // On an unconfirmed-child prefix-write failure, block the prefix in-process immediately so an
-      // in-session retry can't begin() a second op that races the first's possibly-live orphan.
-      blockPrefix: (prefix) => notebookService.blockPrefixRecovery(prefix),
-      // Lets a force Reset refuse a prefix an interrupted install (or prefix write) this session left with
-      // a possibly-live orphan — the provisioner can't see install failures in its own set.
-      isPrefixLiveUnconfirmed: (prefix) => notebookService.isPrefixLiveUnconfirmed(prefix),
-      // Share the service's per-env install lock so a default-env create/repair/upgrade serializes with
-      // a package install into the same env prefix instead of racing it on a separate lock.
-      withPrefixLock: (envName, fn) => notebookService.withEnvLock(envName, fn)
-    })
+    provisioner = createProductionProvisioner(
+      {
+        root: provisioningRoot,
+        channel: mirror.condaChannel ?? process.env.OPEN_SCIENCE_CONDA_CHANNEL ?? 'conda-forge',
+        caBundle: mirror.caBundle,
+        micromamba: { resourcesPath: process.resourcesPath },
+        // Self-guard the provisioner's prefix writes (startup restore/upgrade/repair, named create, lazy
+        // materialize) against a prefix crash-recovery could not confirm free of a live orphan — closes
+        // the startup-gate path the UI-only assertProvisionAllowed guard did not cover. Reads the live
+        // blocked set at call time (recovery is awaited before the gate touches any prefix).
+        isPrefixBlocked: (prefix) => notebookService.isPrefixRecoveryBlocked(prefix),
+        // An explicit user Reset (repair with force) clears the in-memory block; the provisioner also
+        // clears the retained journal record + sidecar so the quarantine doesn't re-arm next startup.
+        clearPrefixBlock: (prefix) => notebookService.clearRecoveryBlock(prefix),
+        // Reset also clears an interrupted install's runtime-ID block, or bound sessions would still be
+        // rejected after the env rebuilds until the next restart.
+        clearRuntimeBlock: (runtimeId) => notebookService.clearRuntimeRecoveryBlock(runtimeId),
+        // A force Reset that finds the journal itself corrupt moves it aside and releases just THAT prefix
+        // from the global corrupt-journal barrier — other envs stay blocked until their own Reset/restart.
+        clearCorruptBlock: (prefix) => notebookService.clearCorruptRecoveryBlock(prefix),
+        // On an unconfirmed-child prefix-write failure, block the prefix in-process immediately so an
+        // in-session retry can't begin() a second op that races the first's possibly-live orphan.
+        blockPrefix: (prefix) => notebookService.blockPrefixRecovery(prefix),
+        // Lets a force Reset refuse a prefix an interrupted install (or prefix write) this session left with
+        // a possibly-live orphan — the provisioner can't see install failures in its own set.
+        isPrefixLiveUnconfirmed: (prefix) => notebookService.isPrefixLiveUnconfirmed(prefix),
+        // Share the service's per-env install lock so a default-env create/repair/upgrade serializes with
+        // a package install into the same env prefix instead of racing it on a separate lock.
+        withPrefixLock: (envName, fn) => notebookService.withEnvLock(envName, fn)
+      },
+      { runner: micromambaRunner }
+    )
     // One serialized wrapper shared by the startup gate and the notebook service's on-demand default
     // provisioning, so a concurrent build of the same default env (UI R-tab + an agent R run) can't
     // race the provisioner's shared in-flight flag; materialize is also idempotent as a backstop.
@@ -1836,7 +2072,8 @@ const createApplicationModules = async (
     runtime,
     notebook: notebookService,
     getActivePromptSessions: () => runtime.getActivePromptSessions(),
-    settingsService
+    settingsService,
+    micromambaRunner
   })
   declareElectronAdapter('storage', () =>
     registerStorageIpcHandlers(
@@ -1920,13 +2157,8 @@ const createApplicationModules = async (
   )
   // Backs the "This computer" browser; shares localFsService with the managed-preview resolver.
   declareElectronAdapter('local-fs', () => registerLocalFsIpcHandlers(localFsService))
-  declareElectronAdapter('projects', () =>
-    registerProjectIpcHandlers(
-      projectRepository,
-      previewStateRepository,
-      projectDeletionCoordinator,
-      projectHandlers
-    )
+  declareElectronAdapter('preview-state', () =>
+    registerPreviewStateIpcHandlers(previewStateRepository)
   )
   declareElectronAdapter('lifecycle', () => registerLifecycleIpcHandlers())
   // Compute IPC handlers are registered earlier (before the notebook RPC server) so computeService
@@ -1963,7 +2195,11 @@ const createApplicationModules = async (
     return sender
   }
   const applicationCommandDependencies: ApplicationCommandCompositionDependencies = {
-    acp: { runtime, workflows: acpHandlerWorkflows, archiveAvailability: archiveCoordinator },
+    acp: {
+      runtime,
+      workflows: acpHandlerWorkflows,
+      archiveAvailability: archiveCoordinator
+    },
     notebook: {
       workflows: notebookCommands,
       readInputPreview: (request) => notebookInputRegistry.readPreview(request)
@@ -2034,6 +2270,11 @@ const createApplicationModules = async (
       localFs: localFsService,
       logs: logsCommandOwner,
       notifications: {
+        getSnapshot: () => notificationInbox.getSnapshot(),
+        markRead: (request) => notificationInbox.markRead(request.ids),
+        markAllRead: (request) => notificationInbox.markAllRead(request.throughSequence),
+        markSessionCompletionsRead: (request) =>
+          notificationInbox.markSessionCompletionsRead(request.sessionIds),
         peekPendingOpenSession: () => taskNotifications.peekPendingOpenSession(),
         takePendingOpenSession: (expectedToken) =>
           taskNotifications.takePendingOpenSession(expectedToken)
@@ -2064,6 +2305,9 @@ const createApplicationModules = async (
       }
     }
   )
+  declareElectronAdapter('application-projects', () =>
+    registerApplicationCommandElectronAdapter(applicationCommandComposition.electron)
+  )
 
   return {
     applicationCommands: {
@@ -2074,11 +2318,16 @@ const createApplicationModules = async (
     applicationEvents,
     bindRemoteAccess: applicationCommandComposition.bindRemoteAccess,
     taskNotifications,
+    notificationInbox,
     settingsService,
     taskAgent,
     sessionDeletionCapability: sessionPersistenceCoordinator,
     archiveCapability: archiveCoordinator,
-    detectActiveSessions: () => detectActiveSessions({ runtime, notebook: notebookService }),
+    detectActiveSessions: () =>
+      detectActiveSessions({
+        runtime: { getActivePromptSessions: () => runtime.getQuitBlockingPromptSessions() },
+        notebook: notebookService
+      }),
     prepareForQuit: () => runtime.prepareForQuit(),
     electronAdapters: {
       beforeCompute: beforeComputeAdapters,
