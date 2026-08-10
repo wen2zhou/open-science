@@ -478,6 +478,7 @@ class AcpPromptTurnWorkflow {
       sessionId: request.sessionId,
       kind: 'prompt',
       promptMessageId: request.provenanceContext?.promptMessageId,
+      provenanceContext: request.provenanceContext,
       turnToken: request.continuation?.originatingTurnToken
     })
   }

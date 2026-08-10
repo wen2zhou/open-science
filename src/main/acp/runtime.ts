@@ -1417,6 +1417,9 @@ class AcpRuntime {
         requestId,
         ...(promptInteraction?.kind === 'prompt' && promptInteraction.promptMessageId
           ? { promptMessageId: promptInteraction.promptMessageId }
+          : {}),
+        ...(promptInteraction?.kind === 'prompt' && promptInteraction.provenanceContext
+          ? { provenanceContext: promptInteraction.provenanceContext }
           : {})
       }
     )
@@ -1469,9 +1472,11 @@ class AcpRuntime {
       sessionId: request.sessionId,
       text,
       suppressUserMessage: true,
-      ...(request.durable?.promptMessageId
-        ? { provenanceContext: { promptMessageId: request.durable.promptMessageId } }
-        : {}),
+      ...(request.durable?.provenanceContext
+        ? { provenanceContext: request.durable.provenanceContext }
+        : request.durable?.promptMessageId
+          ? { provenanceContext: { promptMessageId: request.durable.promptMessageId } }
+          : {}),
       ...(historyReplay?.historyPreamble ? { historyPreamble: historyReplay.historyPreamble } : {}),
       ...(historyReplay?.historyAttachments?.length
         ? { historyAttachments: historyReplay.historyAttachments }

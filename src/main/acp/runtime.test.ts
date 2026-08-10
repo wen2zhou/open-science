@@ -54,6 +54,7 @@ import { writeArtifactFileForCurrentRun } from '../artifacts/mcp-server'
 import { createArtifactVersionLocator } from '../../shared/artifact-provenance'
 import { BEGIN_ACTIVITY_GROUP_TOOL_NAME } from '../../shared/activity-groups'
 import type { UploadedAttachment } from '../../shared/uploads'
+import type { NotebookRunProvenanceContext } from '../../shared/notebook'
 import { projectConversationMessage } from '../../shared/conversation-graph'
 import type { PersistedChatSession, SessionRuntimeContext } from '../../shared/session-persistence'
 import type { ActivePlanProjection } from '../../shared/session-plan/contract'
@@ -4337,6 +4338,75 @@ describe('ACP runtime session management', () => {
     )
   })
 
+  it('preserves the originating Agent Frame when an app-owned choice continues the turn', async () => {
+    const root = await createTemporaryRoot()
+    const contexts: Array<NotebookRunProvenanceContext | undefined> = []
+    const process = new FakeAgentProcess()
+    const fakeAgent = startFakeAgent(process, ['user-choice-frame-session'], {
+      onPrompt: async ({ sessionId, text }) => {
+        if (text !== 'begin framed work') return
+        await runtime.requestUserInput({
+          sessionId,
+          questions: [
+            {
+              question: 'Which implementation should I use?',
+              options: [{ label: 'Minimal' }, { label: 'Expanded' }]
+            }
+          ]
+        })
+      }
+    })
+    const runtime = new AcpRuntime({
+      appVersion: '0.1.0',
+      defaultCwd: '/workspace',
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        repository: new ArtifactRepository(root)
+      },
+      notebook: {
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:1/notebook', token: 'nb' }),
+        setArtifactProvenanceContext: (_sessionId, context) => contexts.push(context)
+      }
+    })
+
+    const session = await runtime.createSession({ cwd: '/workspace' })
+    const provenanceContext = {
+      rootFrameId: 'durable-root-frame',
+      agentFrameId: 'durable-root-frame',
+      messageBranchId: 'durable-root-branch',
+      runtimeSegmentId: 'durable-runtime-segment',
+      promptMessageId: 'originating-user-message'
+    }
+    await runtime.sendPrompt({
+      sessionId: session.sessionId,
+      text: 'begin framed work',
+      provenanceContext
+    })
+
+    const request = runtime.getSnapshot().pendingElicitations?.[0]
+    expect(request).toBeDefined()
+    runtime.respondToElicitation({
+      requestId: request!.requestId,
+      action: 'accept',
+      answers: [{ fieldId: 'question_0', value: 'Minimal' }]
+    })
+
+    await vi.waitFor(() => expect(fakeAgent.prompts).toHaveLength(2))
+    await vi.waitFor(() =>
+      expect(runtime.getSnapshot().promptInFlightSessionIds).not.toContain(session.sessionId)
+    )
+    expect(contexts.filter((context) => context !== undefined)).toEqual([
+      provenanceContext,
+      provenanceContext
+    ])
+  })
+
   it('waits for every queued app-owned choice before continuing with all answers', async () => {
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['queued-user-choice-session'])
@@ -4621,12 +4691,27 @@ describe('ACP runtime session management', () => {
   })
 
   it('rehydrates a persisted app-owned choice before silently continuing', async () => {
+    const root = await createTemporaryRoot()
+    const contexts: Array<NotebookRunProvenanceContext | undefined> = []
     const process = new FakeAgentProcess()
     const fakeAgent = startFakeAgent(process, ['restored-choice-session'])
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
       defaultCwd: '/workspace',
-      spawnAgent: () => asAgentProcess(process)
+      spawnAgent: () => asAgentProcess(process),
+      artifacts: {
+        configRoot: root,
+        dataRoot: root,
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        repository: new ArtifactRepository(root)
+      },
+      notebook: {
+        projectName: 'default-project',
+        mcpEntryPath: '/app/out/main/index.js',
+        getRpcConnection: async () => ({ endpoint: 'http://127.0.0.1:1/notebook', token: 'nb' }),
+        setArtifactProvenanceContext: (_sessionId, context) => contexts.push(context)
+      }
     })
     const session = await runtime.createSession({ cwd: '/workspace' })
     const request = {
@@ -4649,7 +4734,14 @@ describe('ACP runtime session management', () => {
       durable: {
         kind: 'agent-user-choice' as const,
         requestId: 'choice-restored-1',
-        promptMessageId: 'prompt-restored-1'
+        promptMessageId: 'prompt-restored-1',
+        provenanceContext: {
+          rootFrameId: 'durable-root-frame',
+          agentFrameId: 'durable-root-frame',
+          messageBranchId: 'durable-root-branch',
+          runtimeSegmentId: 'durable-runtime-segment',
+          promptMessageId: 'prompt-restored-1'
+        }
       }
     }
 
@@ -4662,6 +4754,9 @@ describe('ACP runtime session management', () => {
 
     await vi.waitFor(() => expect(fakeAgent.prompts).toHaveLength(1))
     expect(fakeAgent.prompts[0].text).toContain('Expanded')
+    expect(contexts.filter((context) => context !== undefined)).toEqual([
+      request.durable.provenanceContext
+    ])
     expect(runtime.getSnapshot().events).toEqual(
       expect.arrayContaining([
         expect.objectContaining({
@@ -4669,11 +4764,11 @@ describe('ACP runtime session management', () => {
           promptMessageId: 'prompt-restored-1',
           elicitation: expect.objectContaining({
             state: 'answered',
-            durable: {
+            durable: expect.objectContaining({
               kind: 'agent-user-choice',
               requestId: 'choice-restored-1',
               promptMessageId: 'prompt-restored-1'
-            }
+            })
           })
         })
       ])

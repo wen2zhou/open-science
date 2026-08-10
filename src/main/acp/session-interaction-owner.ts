@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 
-import type { AcpTurnTokenUsage } from '../../shared/acp'
+import type { AcpPromptRequest, AcpTurnTokenUsage } from '../../shared/acp'
 
 export type AcpSessionInteractionKind = 'prompt' | 'compaction'
 
@@ -8,6 +8,7 @@ export interface AcpPromptSessionInteractionRequest {
   readonly sessionId: string
   readonly kind: 'prompt'
   readonly promptMessageId?: string
+  readonly provenanceContext?: AcpPromptRequest['provenanceContext']
   readonly turnToken?: string
 }
 
@@ -28,6 +29,7 @@ interface AcpSessionInteractionScopeBase {
 export interface AcpPromptSessionInteractionScope extends AcpSessionInteractionScopeBase {
   readonly kind: 'prompt'
   readonly promptMessageId?: string
+  readonly provenanceContext?: AcpPromptRequest['provenanceContext']
   readonly turnToken: string
 }
 
@@ -312,6 +314,7 @@ export class AcpSessionInteractionOwner {
       sessionId: request.sessionId,
       kind: 'prompt',
       promptMessageId: request.promptMessageId,
+      provenanceContext: request.provenanceContext,
       turnToken: request.turnToken ?? randomUUID(),
       sequence: ++this.sequence,
       signal: abortController.signal
@@ -359,6 +362,7 @@ export class AcpSessionInteractionOwner {
             ...base,
             kind: request.kind,
             promptMessageId: request.promptMessageId,
+            provenanceContext: request.provenanceContext,
             turnToken: request.turnToken ?? randomUUID()
           }
         : { ...base, kind: request.kind }

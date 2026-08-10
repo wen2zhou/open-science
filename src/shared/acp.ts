@@ -10,6 +10,7 @@ import type { UploadedAttachment } from './uploads'
 import type { PermissionProfileId, SessionPermissionProfileState } from './permission-profiles'
 import type { AgentFrameworkId } from './settings'
 import type {
+  AgentTurnProvenanceContext,
   ElicitationProjection,
   ElicitationResponse as BaseElicitationResponse,
   PendingElicitationRequest
@@ -22,6 +23,7 @@ export {
 } from './elicitation'
 export type {
   AgentUserChoiceQuestion,
+  AgentTurnProvenanceContext,
   ElicitationAnswer,
   ElicitationField,
   ElicitationProjection,
@@ -743,15 +745,7 @@ export type AcpPromptRequest = {
   // Immutable conversation-graph binding for Artifact Provenance. Older callers may omit it; the
   // runtime supplies a root-frame/root-branch compatibility binding during the Session JSON v2
   // rollout.
-  provenanceContext?: {
-    promptMessageId: string
-    rootFrameId?: string
-    agentFrameId?: string
-    messageBranchId?: string
-    messageBranchAncestry?: string[]
-    messageAncestry?: string[]
-    runtimeSegmentId?: string
-  }
+  provenanceContext?: AgentTurnProvenanceContext
   attachments?: UploadedAttachment[]
   // Skills the user explicitly picked in the composer; the runtime force-loads and nudges them.
   forcedSkillIds?: string[]
