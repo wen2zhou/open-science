@@ -1,4 +1,5 @@
 import { access, mkdir, mkdtemp, readFile, rm, stat, writeFile } from 'node:fs/promises'
+import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -11,6 +12,7 @@ import {
 } from '../../shared/conversation-graph'
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import { NotebookLocalRpcServer } from '../notebook/local-rpc-server'
+import { fetchLocalRpc } from '../local-rpc-transport'
 import { ArtifactTurnOwner } from '../acp/artifact-turn-owner'
 import { createNotebookArtifactSourceScopeProvider } from '../notebook/artifact-source-scope'
 import { ArtifactProvenanceRepository } from '../artifacts/provenance-repository'
@@ -21,6 +23,7 @@ import { createArtifactHandlers } from '../artifacts/ipc'
 import { createProjectDbClient, ensureProjectSchema } from '../projects/prisma-client'
 import { createFrameNotebookLane } from '../notebook/lane-identity'
 import { NotebookRunRepository } from '../notebook/repository'
+import { NotebookRuntimeService } from '../notebook/runtime-service'
 import {
   SessionPersistenceCoordinator,
   type SessionFileIndex,
@@ -39,6 +42,12 @@ import type { DelegatedWorkRecordCommands } from './session-records'
 import { projectRootArtifactVisibility } from '../../shared/artifact-visibility'
 import { normalizeSessionFile } from '../../shared/session-persistence'
 import { finalizeDelegatedArtifactPublication } from './delegated-artifact-publication'
+import { createProductionDelegatedFrameworks } from './production-frameworks'
+import type { AcpDelegateExecutionCallbacks, AcpDelegateRuntime } from './acp-execution'
+import type { DelegateExecutionInput } from './execution-port'
+import { claudeCodeFramework } from '../agent-framework'
+import { CODEX_ACP_VERSION, CODEX_VERSION } from '../settings/managed-codex'
+import { preS6ReaderSave } from '../../shared/pre-s6-session-reader.fixture'
 
 let root: string | undefined
 let server: NotebookLocalRpcServer | undefined
@@ -80,6 +89,7 @@ type CompositionHarness = Readonly<{
   replaceDurable(session: PersistedChatSession): void
   caller: AuthenticatedDelegateCaller
   commands: DelegatedWorkRecordCommands
+  reopen(): ReturnType<typeof createProductionDelegatedWorkComposition>
 }>
 
 const createCompositionHarness = async (
@@ -96,7 +106,8 @@ const createCompositionHarness = async (
     toolInvocationId: string
     createdAt: number
   }>[] = [],
-  resolveExecutionModel?: ProductionDelegatedWorkOptions['resolveExecutionModel']
+  resolveExecutionModel?: ProductionDelegatedWorkOptions['resolveExecutionModel'],
+  frameworksOverride?: ProductionDelegatedWorkOptions['frameworks']
 ): Promise<CompositionHarness> => {
   const rootMessage = {
     id: `root-message-${frameworkId}`,
@@ -202,7 +213,7 @@ const createCompositionHarness = async (
   }
   const coordinator = new SessionPersistenceCoordinator(repository, fileIndex)
   const selected: AgentFrameworkId[] = []
-  const composition = createProductionDelegatedWorkComposition({
+  const compositionOptions: ProductionDelegatedWorkOptions = {
     dataRoot,
     sessions: {
       commands: coordinator,
@@ -211,7 +222,7 @@ const createCompositionHarness = async (
     resolveInput: async () => {
       throw new Error('no inputs')
     },
-    frameworks: {
+    frameworks: frameworksOverride ?? {
       async forSession(current) {
         selected.push(current.agentFrameworkId!)
         return {
@@ -225,7 +236,8 @@ const createCompositionHarness = async (
     },
     resolveExecutionModel: resolveExecutionModel ?? (async () => testExecutionModel(frameworkId)),
     ...owners
-  })
+  }
+  const composition = createProductionDelegatedWorkComposition(compositionOptions)
   return {
     composition,
     execution,
@@ -242,8 +254,251 @@ const createCompositionHarness = async (
       originMessageId: rootMessage.id,
       toolInvocationId: `call-${frameworkId}`
     },
-    commands: coordinator
+    commands: coordinator,
+    reopen: () => createProductionDelegatedWorkComposition(compositionOptions)
   }
+}
+
+type FrameworkRuntimeControl = Readonly<{
+  input: DelegateExecutionInput
+  submitInvalid(): Promise<void>
+  submitValid(): Promise<void>
+  complete(options?: Readonly<{ submit?: boolean; text?: string }>): Promise<void>
+}>
+
+const createFrameworkCompositionHarness = async (
+  dataRoot: string,
+  frameworkId: AgentFrameworkId
+): Promise<CompositionHarness & { controls: Map<string, FrameworkRuntimeControl> }> => {
+  const service = new NotebookRuntimeService({
+    configRoot: dataRoot,
+    dataRoot,
+    projectName: 'project-1',
+    repository: new NotebookRunRepository(dataRoot),
+    executorFactory: () => ({
+      execute: async (request) => ({
+        status: 'completed',
+        stdout: '',
+        stderr: '',
+        traceback: '',
+        cwdAfter: request.cwd,
+        outputs: [],
+        workingFiles: []
+      }),
+      shutdown: async () => ({ reaped: true })
+    })
+  })
+  const context: {
+    composition?: ReturnType<typeof createProductionDelegatedWorkComposition>
+    harness?: CompositionHarness
+  } = {}
+  server = new NotebookLocalRpcServer(service, {
+    transport: 'tcp',
+    delegatedWorkService: {
+      delegate: vi.fn(),
+      submitOutput: (caller, value) => context.composition!.host.submitOutput(caller, value)
+    }
+  })
+  const controls = new Map<string, FrameworkRuntimeControl>()
+  const inputs = new Map<string, DelegateExecutionInput>()
+  const opencodeConfig = {
+    permission: { task: 'deny' },
+    agent: {
+      general: { disable: true },
+      explore: { disable: true },
+      scout: { disable: true }
+    }
+  }
+  const capabilities = new Map<
+    string,
+    Awaited<ReturnType<NotebookLocalRpcServer['issueDelegatedNotebookConnection']>>
+  >()
+  const frameworks = createProductionDelegatedFrameworks({
+    capacity: 2,
+    async certify() {
+      return {
+        frameworkId,
+        assertProviderAvailable: async () => undefined,
+        ...(frameworkId === 'codex'
+          ? {
+              codexRuntime: {
+                nativeVersion: CODEX_VERSION,
+                adapterVersion: CODEX_ACP_VERSION
+              },
+              codexFramework: {
+                spawn: () => ({ kill: vi.fn() }) as unknown as ChildProcessWithoutNullStreams
+              }
+            }
+          : {}),
+        prepare: async (input: DelegateExecutionInput) => {
+          inputs.set(input.attemptId, input)
+          const durable = context.harness!.durable()
+          const graph = durable.conversationGraph!
+          const childFrame = graph.frames.find(({ id }) => id === input.frameId)!
+          const branch = graph.branches.find(({ id }) => id === childFrame.activeBranchId)!
+          const prompt = graph.messages.find(({ id }) => id === branch.headMessageId)!
+          const capability = await server!.issueDelegatedNotebookConnection({
+            projectId: input.session.projectId,
+            sessionId: input.session.sessionId,
+            rootFrameId: graph.rootFrameId,
+            agentFrameId: input.frameId,
+            attemptId: input.attemptId,
+            messageBranchId: branch.id,
+            runtimeSegmentId: input.runtimeSegmentId,
+            promptMessageId: prompt.id,
+            workspaceCwd: input.workspaceCwd!,
+            isAttemptWritable: () => true
+          })
+          capabilities.set(input.attemptId, capability)
+          const base = {
+            executionId: input.attemptId,
+            provenance: {
+              projectId: input.session.projectId,
+              sessionId: input.session.sessionId,
+              agentFrameId: input.frameId,
+              messageBranchId: branch.id,
+              runtimeSegmentId: input.runtimeSegmentId,
+              promptMessageId: prompt.id
+            },
+            workspace: { cwd: input.workspaceCwd! },
+            runtimeHome: join(dataRoot, 'runtime', input.attemptId),
+            frameworkId,
+            capability
+          }
+          return frameworkId === 'claude-code'
+            ? {
+                ...base,
+                sessionSetup: claudeCodeFramework.buildSessionSetup({ systemPromptAppends: [] })
+              }
+            : frameworkId === 'opencode'
+              ? {
+                  ...base,
+                  modelConfig: {
+                    env: {
+                      OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
+                      OPENCODE_CONFIG_CONTENT: JSON.stringify(opencodeConfig)
+                    },
+                    configFiles: [
+                      {
+                        path: join(base.runtimeHome, 'opencode.json'),
+                        content: JSON.stringify(opencodeConfig)
+                      }
+                    ]
+                  }
+                }
+              : {
+                  ...base,
+                  spawn: {
+                    executablePath: '/fake-codex-acp',
+                    args: [],
+                    env: {
+                      HOME: base.runtimeHome,
+                      CODEX_HOME: base.runtimeHome,
+                      CODEX_CONFIG: JSON.stringify({
+                        features: { multi_agent: false, multi_agent_v2: false }
+                      })
+                    }
+                  }
+                }
+        },
+        createRuntime: (
+          scope,
+          callbacks: AcpDelegateExecutionCallbacks,
+          agentProcess?: ChildProcessWithoutNullStreams
+        ): AcpDelegateRuntime => {
+          if (frameworkId === 'claude-code') {
+            expect(scope).toHaveProperty('sessionSetup')
+            expect(agentProcess).toBeUndefined()
+          } else if (frameworkId === 'opencode') {
+            expect(scope).toHaveProperty('modelConfig')
+            expect(agentProcess).toBeUndefined()
+          } else {
+            expect(scope).toHaveProperty('spawn')
+            expect(agentProcess).toBeDefined()
+          }
+          let resolvePrompt!: (value: { stopReason: 'end_turn' }) => void
+          const prompt = new Promise<{ stopReason: 'end_turn' }>((resolve) => {
+            resolvePrompt = resolve
+          })
+          const input = inputs.get(scope.executionId)!
+          const capability = capabilities.get(scope.executionId)!
+          const submit = (value: unknown): Promise<Response> =>
+            fetchLocalRpc(
+              capability,
+              {
+                method: 'POST',
+                headers: {
+                  authorization: `Bearer ${capability.token}`,
+                  'content-type': 'application/json'
+                },
+                body: JSON.stringify({ method: 'delegatedOutputCall', params: { value } })
+              },
+              `${frameworkId} structured output contract`
+            )
+          controls.set(scope.executionId, {
+            input,
+            async submitInvalid() {
+              expect((await submit({ count: 'three' })).ok).toBe(false)
+            },
+            async submitValid() {
+              const accepted = await submit({ count: 3 })
+              expect(accepted.status).toBe(200)
+              await expect(accepted.json()).resolves.toEqual({ result: { accepted: true } })
+            },
+            async complete(options = {}) {
+              if (options.submit !== false) {
+                expect((await submit({ count: 'three' })).ok).toBe(false)
+                const accepted = await submit({ count: 3 })
+                expect(accepted.status).toBe(200)
+                await expect(accepted.json()).resolves.toEqual({ result: { accepted: true } })
+              }
+              callbacks.onEvent({
+                id: `event-${scope.executionId}`,
+                timestamp: 1,
+                kind: 'message',
+                level: 'info',
+                sessionId: `provider-${scope.executionId}`,
+                role: 'assistant',
+                text: options.text ?? 'Structured framework child completed.'
+              })
+              resolvePrompt({ stopReason: 'end_turn' })
+            }
+          })
+          return {
+            createSession: async () => ({ sessionId: `provider-${scope.executionId}` }),
+            sendAppContinuation: async () => {
+              callbacks.onProviderPromptAccepted(`provider-${scope.executionId}`)
+              return prompt
+            },
+            cancelPrompt: async () => undefined,
+            setPermissionProfile: async () => undefined,
+            respondToPermission: async () => undefined,
+            deleteSession: async () => undefined,
+            shutdownForQuit: async () => ({ reaped: true })
+          }
+        }
+      }
+    }
+  })
+  const harness = await createCompositionHarness(
+    dataRoot,
+    frameworkId,
+    undefined,
+    undefined,
+    {},
+    [
+      {
+        rootMessageId: 'root-message-framework-continuation',
+        toolInvocationId: 'call-framework-continuation',
+        createdAt: 3
+      }
+    ],
+    undefined,
+    frameworks
+  )
+  context.harness = harness
+  context.composition = harness.composition
+  return Object.assign(harness, { controls })
 }
 
 afterEach(async () => {
@@ -429,6 +684,274 @@ describe('production delegated-work composition', () => {
     expect(harness.durable().runtimeContext?.delegatedWork?.records ?? []).toEqual([])
     await expect(access(join(root, 'delegated-work', 'project-1'))).rejects.toThrow()
   })
+
+  it.each(['codex', 'claude-code', 'opencode'] as const)(
+    'runs %s structured output through its production execution adapter and child RPC capability',
+    async (frameworkId) => {
+      root = await mkdtemp(join(tmpdir(), `delegated-framework-structured-${frameworkId}-`))
+      const harness = await createFrameworkCompositionHarness(root, frameworkId)
+      const pending = harness.composition.host.delegate(harness.caller, {
+        task: 'Return a structured count',
+        outputSchema: {
+          type: 'object',
+          required: ['count'],
+          properties: { count: { type: 'number' } },
+          additionalProperties: false
+        }
+      })
+      await expect.poll(() => harness.controls.size).toBe(1)
+      const control = [...harness.controls.values()][0]
+      await control.complete()
+      const result = await pending
+      expect(result).toMatchObject({
+        kind: 'results',
+        children: [
+          {
+            status: 'completed',
+            response: 'Structured framework child completed.',
+            structuredOutput: { count: 3 },
+            structuredOutputUnsatisfied: false
+          }
+        ]
+      })
+      if (result.kind !== 'results') throw new Error('Blocking framework journey did not finish.')
+      const child = result.children[0]
+      await expect(
+        harness
+          .reopen()
+          .host.collect(harness.caller, [{ frameId: child.frameId, attemptId: child.attemptId }])
+      ).resolves.toMatchObject([
+        {
+          status: 'completed',
+          response: 'Structured framework child completed.',
+          structuredOutput: { count: 3 }
+        }
+      ])
+    }
+  )
+
+  it('keeps a pinned structured result historical across continuation, missing output, reopen, and rollback', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-framework-structured-reopen-'))
+    const harness = await createFrameworkCompositionHarness(root, 'opencode')
+    const initialTask = 'Return a structured count asynchronously'
+    const receipt = await harness.composition.host.delegate(
+      harness.caller,
+      {
+        task: initialTask,
+        outputSchema: {
+          type: 'object',
+          required: ['count'],
+          properties: { count: { type: 'number' } },
+          additionalProperties: false
+        }
+      },
+      { wait: false }
+    )
+    const child = receipt.children[0]
+    const minimalRunning = {
+      frameId: child.frameId,
+      attemptId: child.attemptId,
+      name: initialTask,
+      agentName: 'Main Agent',
+      status: 'running' as const
+    }
+    expect(receipt).toEqual({ kind: 'receipts', children: [minimalRunning] })
+    const running = await harness.composition.host.collect(harness.caller, [child.frameId], {
+      timeoutSeconds: 0
+    })
+    expect(running).toEqual([minimalRunning])
+    await expect(
+      harness.composition.host.children(harness.caller, [child.frameId])
+    ).resolves.toEqual([{ ...minimalRunning, title: initialTask }])
+    await expect.poll(() => harness.controls.has(child.attemptId)).toBe(true)
+    const initialControl = harness.controls.get(child.attemptId)!
+    await initialControl.submitInvalid()
+    const afterInvalid = await harness.composition.host.collect(harness.caller, [child.frameId], {
+      timeoutSeconds: 0
+    })
+    expect(afterInvalid).toEqual([minimalRunning])
+    const childrenAfterInvalid = await harness.composition.host.children(harness.caller, [
+      child.frameId
+    ])
+    expect(childrenAfterInvalid).toEqual([{ ...minimalRunning, title: initialTask }])
+
+    await initialControl.submitValid()
+    const afterAccepted = await harness.composition.host.collect(harness.caller, [child.frameId], {
+      timeoutSeconds: 0
+    })
+    expect(afterAccepted).toEqual([minimalRunning])
+    const childrenAfterAccepted = await harness.composition.host.children(harness.caller, [
+      child.frameId
+    ])
+    expect(childrenAfterAccepted).toEqual([{ ...minimalRunning, title: initialTask }])
+    await initialControl.complete({ submit: false, text: 'Initial value' })
+    await expect(
+      harness.composition.host.collect(harness.caller, [
+        { frameId: child.frameId, attemptId: child.attemptId }
+      ])
+    ).resolves.toMatchObject([
+      { status: 'completed', response: 'Initial value', structuredOutput: { count: 3 } }
+    ])
+
+    const continued = await harness.composition.host.sendMessage(
+      {
+        ...harness.caller,
+        originMessageId: 'root-message-framework-continuation',
+        toolInvocationId: 'call-framework-continuation'
+      },
+      child.frameId,
+      'Continue without inheriting the schema',
+      'info'
+    )
+    expect(continued.kind).toBe('continued')
+    if (continued.kind !== 'continued') throw new Error('Expected a continued Attempt.')
+    await expect.poll(() => harness.controls.has(continued.child.attemptId)).toBe(true)
+    const continuationRunning = await harness.composition.host.collect(
+      harness.caller,
+      [continued.child.frameId],
+      { timeoutSeconds: 0 }
+    )
+    expect(continuationRunning[0]).not.toHaveProperty('structuredOutput')
+    expect(continuationRunning[0]).not.toHaveProperty('structuredOutputUnsatisfied')
+    await harness.controls
+      .get(continued.child.attemptId)!
+      .complete({ submit: false, text: 'Continuation without schema' })
+    const continuationTerminal = await harness.composition.host.collect(harness.caller, [
+      continued.child.frameId
+    ])
+    expect(continuationTerminal[0]).toMatchObject({
+      status: 'completed',
+      response: 'Continuation without schema'
+    })
+    expect(continuationTerminal[0]).not.toHaveProperty('structuredOutput')
+    expect(continuationTerminal[0]).not.toHaveProperty('structuredOutputUnsatisfied')
+
+    await expect(
+      harness
+        .reopen()
+        .host.collect(harness.caller, [{ frameId: child.frameId, attemptId: child.attemptId }])
+    ).resolves.toMatchObject([
+      { status: 'completed', response: 'Initial value', structuredOutput: { count: 3 } }
+    ])
+
+    const missing = await harness.composition.host.delegate(
+      { ...harness.caller, toolInvocationId: 'missing-output-call' },
+      { task: 'Omit a structured number', outputSchema: { type: 'number' } },
+      { wait: false }
+    )
+    await expect.poll(() => harness.controls.has(missing.children[0].attemptId)).toBe(true)
+    await harness.controls
+      .get(missing.children[0].attemptId)!
+      .complete({ submit: false, text: 'No value' })
+    await expect(
+      harness.composition.host.collect(harness.caller, [missing.children[0].frameId])
+    ).resolves.toMatchObject([
+      { status: 'completed', response: 'No value', structuredOutputUnsatisfied: true }
+    ])
+
+    harness.replaceDurable(preS6ReaderSave(harness.durable()))
+    const rolledBack = await harness
+      .reopen()
+      .host.collect(harness.caller, [{ frameId: child.frameId, attemptId: child.attemptId }])
+    expect(rolledBack).toEqual([
+      expect.objectContaining({ status: 'completed', response: 'Initial value' })
+    ])
+    expect(rolledBack[0]).not.toHaveProperty('structuredOutput')
+    expect(rolledBack[0]).not.toHaveProperty('structuredOutputUnsatisfied')
+  })
+
+  it.each(['codex', 'claude-code', 'opencode'] as const)(
+    'projects submitted structured output through the %s production-composed Owner',
+    async (frameworkId) => {
+      root = await mkdtemp(join(tmpdir(), `delegated-structured-${frameworkId}-`))
+      const harness = await createCompositionHarness(root, frameworkId)
+      const pending = harness.composition.host.delegate(harness.caller, {
+        task: 'Extract a count',
+        outputSchema: {
+          type: 'object',
+          required: ['count'],
+          properties: { count: { type: 'number' } },
+          additionalProperties: false
+        }
+      })
+      await expect.poll(() => harness.execution.controls()).toHaveLength(1)
+      const control = harness.execution.controls()[0]
+      await expect(
+        harness.composition.host.submitOutput(
+          {
+            ...harness.caller,
+            role: 'delegate',
+            frameId: control.input.frameId,
+            attemptId: control.input.attemptId,
+            toolInvocationId: 'child-invalid-submit'
+          },
+          { count: 'three' }
+        )
+      ).rejects.toMatchObject({ code: 'structured_output_validation_failed' })
+      await expect(
+        harness.composition.host.submitOutput(
+          {
+            ...harness.caller,
+            role: 'delegate',
+            frameId: control.input.frameId,
+            attemptId: control.input.attemptId,
+            toolInvocationId: 'child-submit'
+          },
+          { count: 3 }
+        )
+      ).resolves.toEqual({ accepted: true })
+      control.complete('Found three records')
+      await expect(pending).resolves.toMatchObject({
+        kind: 'results',
+        children: [
+          {
+            status: 'completed',
+            response: 'Found three records',
+            artifactsCreated: [],
+            structuredOutput: { count: 3 },
+            structuredOutputUnsatisfied: false
+          }
+        ]
+      })
+      const persistedPrompt = harness
+        .durable()
+        .conversationGraph?.messages.find(
+          (message) => message.structuredOutputEvidence?.attemptId === control.input.attemptId
+        )
+      expect(persistedPrompt?.structuredOutputEvidence).toMatchObject({
+        dialect: '2020-12',
+        profile: 'ajv-8-draft-2020-12-v1',
+        accepted: { value: { count: 3 } }
+      })
+
+      const dispatched = await harness.composition.host.delegate(
+        { ...harness.caller, toolInvocationId: 'missing-output-dispatch' },
+        { task: 'May omit', outputSchema: { type: 'number' } },
+        { wait: false }
+      )
+      await expect(
+        harness.composition.host.collect(harness.caller, [dispatched.children[0].frameId], {
+          timeoutSeconds: 0
+        })
+      ).resolves.toEqual([expect.not.objectContaining({ structuredOutputUnsatisfied: true })])
+      await expect.poll(() => harness.execution.controls()).toHaveLength(2)
+      harness.execution.control(dispatched.children[0].attemptId).complete('No structured value')
+      await expect(
+        harness.composition.host.collect(harness.caller, [
+          {
+            frameId: dispatched.children[0].frameId,
+            attemptId: dispatched.children[0].attemptId
+          }
+        ])
+      ).resolves.toMatchObject([
+        {
+          status: 'completed',
+          response: 'No structured value',
+          structuredOutputUnsatisfied: true
+        }
+      ])
+    }
+  )
 
   it('fails an in-flight collect closed after a production Session branch switch without stopping the child', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-branch-race-'))

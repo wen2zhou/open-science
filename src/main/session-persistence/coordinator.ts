@@ -39,6 +39,7 @@ import type {
   StartPendingMessageTurnInput,
   TransitionAttemptInput
 } from '../delegated-work/session-records'
+import { canonicalStructuredOutputEqual } from '../delegated-work/structured-output'
 import type { ManagedFileSoftDeleteToken } from '../project-files/repository'
 import type { ProjectSessionDeletionState } from './repository'
 import {
@@ -1065,6 +1066,9 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
           ...(child.context ? { delegatedContext: child.context } : {}),
           ...(child.inputs?.length ? { delegatedInputVersionIds: [...child.inputs] } : {}),
           delegatedCallerSource: child.callerSource,
+          ...(child.structuredOutputEvidence
+            ? { structuredOutputEvidence: structuredClone(child.structuredOutputEvidence) }
+            : {}),
           status: 'complete',
           eventIds: [],
           agentFrameId: child.frameId,
@@ -1319,6 +1323,39 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
         const segment = graph.runtimeSegments.find((candidate) => candidate.id === segmentId)
         if (segment && segment.endedAt === undefined) segment.endedAt = input.endedAt
       }
+    })
+  }
+
+  submitStructuredOutput(
+    key: SessionKey,
+    input: import('../delegated-work/session-records').SubmitStructuredOutputInput
+  ): Promise<'accepted' | 'idempotent'> {
+    return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) => {
+      assertCurrentRunningAttempt(records, input.frameId, input.attemptId)
+      const message = graph.messages.find(
+        (candidate) =>
+          candidate.agentFrameId === input.frameId &&
+          candidate.structuredOutputEvidence?.attemptId === input.attemptId
+      )
+      const evidence = message?.structuredOutputEvidence
+      if (!message || !evidence || evidence.schemaDigest !== input.schemaDigest) {
+        throw new Error('Structured output contract is unavailable.')
+      }
+      if (evidence.accepted) {
+        if (
+          canonicalStructuredOutputEqual(
+            evidence.accepted.value as import('../delegated-work/structured-output').JsonValue,
+            input.value
+          )
+        )
+          return 'idempotent'
+        throw new Error('A different structured output was already accepted.')
+      }
+      message.structuredOutputEvidence = {
+        ...evidence,
+        accepted: { value: structuredClone(input.value), acceptedAt: input.acceptedAt }
+      }
+      return 'accepted'
     })
   }
 

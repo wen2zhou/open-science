@@ -46,6 +46,7 @@ import type {
 import { hostSdkHelp } from '../host-sdk/help'
 import { parseCollectRpcCall, parseDelegateRpcCall } from '../host-sdk/delegate-contract'
 import { createNestedDelegateInvocationId } from '../../shared/delegated-caller-source'
+import { StructuredOutputError } from '../delegated-work/structured-output'
 
 const log = createLogger('notebook:local-rpc')
 
@@ -143,7 +144,12 @@ type NotebookLocalRpcServerOptions = {
     dispatch?(op: unknown, context: TrustedCallingSession): Promise<unknown>
   }
   delegatedWorkService?: Pick<DurableDelegatedWork, 'delegate'> &
-    Partial<Pick<DurableDelegatedWork, 'children' | 'collect' | 'stopChildren' | 'sendMessage'>>
+    Partial<
+      Pick<
+        DurableDelegatedWork,
+        'children' | 'collect' | 'stopChildren' | 'sendMessage' | 'submitOutput'
+      >
+    >
 }
 
 type NotebookRpcPayload = {
@@ -218,6 +224,7 @@ const CONTROL_RPC_METHODS = new Set([
   'hostSdkHelp',
   'delegatedWorkCall'
 ])
+const DELEGATED_CONTROL_RPC_METHODS = new Set([...CONTROL_RPC_METHODS, 'delegatedOutputCall'])
 const SKILL_IMPORT_RPC_METHODS = new Set(['skillImport'])
 const PLAN_RPC_METHODS = new Set(['planCall'])
 
@@ -577,7 +584,9 @@ class NotebookLocalRpcServer {
       sessionId: scope.sessionId,
       projectId: scope.projectId,
       agentFrameId: scope.agentFrameId,
-      allowedMethods: new Set(NOTEBOOK_LOCAL_RPC_METHODS),
+      allowedMethods: new Set([...NOTEBOOK_LOCAL_RPC_METHODS, 'delegatedOutputCall']),
+      delegatedWorkRole: 'delegate',
+      delegatedWorkAttemptId: scope.attemptId,
       delegatedNotebook
     })
     let revokePromise: Promise<void> | undefined
@@ -690,7 +699,10 @@ class NotebookLocalRpcServer {
       ...(delegatedWorkIdentity.attemptId
         ? { delegatedWorkAttemptId: delegatedWorkIdentity.attemptId }
         : {}),
-      allowedMethods: CONTROL_RPC_METHODS
+      allowedMethods:
+        delegatedWorkIdentity.role === 'delegate'
+          ? DELEGATED_CONTROL_RPC_METHODS
+          : CONTROL_RPC_METHODS
     }
     this.sessionRpcCapabilities.set(token, binding)
 
@@ -887,7 +899,10 @@ class NotebookLocalRpcServer {
             )
           }
           const delegatedNotebook = sessionBinding.delegatedNotebook
-          if (delegatedNotebook && isNotebookLocalRpcMethod(method)) {
+          if (
+            delegatedNotebook &&
+            (isNotebookLocalRpcMethod(method) || method === 'delegatedOutputCall')
+          ) {
             if (delegatedNotebook.revoked || !(await delegatedNotebook.isAttemptWritable())) {
               throw new RpcHttpError(
                 403,
@@ -934,9 +949,19 @@ class NotebookLocalRpcServer {
                     sessionBinding.activeControlInvocation?.originatingUserMessageId,
                   tool_invocation_id: sessionBinding.activeControlInvocation?.toolInvocationId
                 }
-              : method === 'hostSdkHelp'
-                ? { caller_role: sessionBinding.delegatedWorkRole }
-                : {})
+              : method === 'delegatedOutputCall'
+                ? {
+                    project_id: sessionBinding.projectId,
+                    session_id: sessionBinding.sessionId,
+                    frame_id: sessionBinding.agentFrameId,
+                    attempt_id: sessionBinding.delegatedWorkAttemptId,
+                    origin_message_id:
+                      sessionBinding.delegatedNotebook?.provenanceContext.promptMessageId ??
+                      sessionBinding.activeControlInvocation?.originatingUserMessageId
+                  }
+                : method === 'hostSdkHelp'
+                  ? { caller_role: sessionBinding.delegatedWorkRole }
+                  : {})
           }
         } else {
           if (authorization !== `Bearer ${this.token}`) {
@@ -945,7 +970,8 @@ class NotebookLocalRpcServer {
           if (
             CONTROL_RPC_METHODS.has(method) ||
             SKILL_IMPORT_RPC_METHODS.has(method) ||
-            PLAN_RPC_METHODS.has(method)
+            PLAN_RPC_METHODS.has(method) ||
+            method === 'delegatedOutputCall'
           ) {
             throw new RpcHttpError(401, 'A session-bound notebook RPC token is required.')
           }
@@ -1009,7 +1035,16 @@ class NotebookLocalRpcServer {
       }
       const message = error instanceof Error ? error.message : String(error)
       const serializedError =
-        error instanceof PlanCommandError ? { code: error.code, message } : message
+        error instanceof PlanCommandError
+          ? { code: error.code, message }
+          : error instanceof StructuredOutputError
+            ? {
+                code: error.code,
+                ...(error.keyword ? { keyword: error.keyword } : {}),
+                ...(error.instancePath !== undefined ? { instance_path: error.instancePath } : {}),
+                ...(error.property ? { property: error.property } : {})
+              }
+            : message
 
       writeJson(response, error instanceof RpcHttpError ? error.statusCode : 500, {
         error: serializedError
@@ -1398,6 +1433,32 @@ class NotebookLocalRpcServer {
         callerRole: params.caller_role === 'delegate' ? 'delegate' : 'main',
         capabilities: { delegation: Boolean(this.delegatedWorkService) }
       })
+    }
+
+    if (method === 'delegatedOutputCall') {
+      if (!this.delegatedWorkService?.submitOutput) {
+        throw new Error('host.submit_output is not configured.')
+      }
+      const projectId = typeof params.project_id === 'string' ? params.project_id : ''
+      const sessionId = typeof params.session_id === 'string' ? params.session_id : ''
+      const frameId = typeof params.frame_id === 'string' ? params.frame_id : ''
+      const attemptId = typeof params.attempt_id === 'string' ? params.attempt_id : ''
+      const originMessageId =
+        typeof params.origin_message_id === 'string' ? params.origin_message_id : ''
+      if (!projectId || !sessionId || !frameId || !attemptId || !originMessageId) {
+        throw new RpcHttpError(403, 'host.submit_output capability identity is incomplete.')
+      }
+      return this.delegatedWorkService.submitOutput(
+        {
+          session: { projectId, sessionId },
+          frameId,
+          attemptId,
+          role: 'delegate',
+          originMessageId,
+          toolInvocationId: 'delegated-output-capability'
+        },
+        params.value
+      )
     }
 
     if (method === 'delegatedWorkCall') {

@@ -22,7 +22,8 @@ describe('Agent-facing delegate contract', () => {
         inputs: {
           type: 'array',
           items: { type: 'string', minLength: 1, identity: 'immutable_upload_or_artifact_version' }
-        }
+        },
+        output_schema: expect.objectContaining({ description: expect.stringContaining('2020-12') })
       }
     })
     expect(requestArray).toEqual({ type: 'array', minItems: 1, items: singleRequest })
@@ -50,6 +51,12 @@ describe('Agent-facing delegate contract', () => {
     ).toEqual({ request: { task: 'Observe' }, options: { timeoutSeconds: 0 } })
     expect(parseDelegateRpcCall({ request: { task: '' } })).toEqual({
       request: { task: '' },
+      options: {}
+    })
+    expect(
+      parseDelegateRpcCall({ request: { task: 'Extract', output_schema: { type: 'number' } } })
+    ).toEqual({
+      request: { task: 'Extract', outputSchema: { type: 'number' } },
       options: {}
     })
     expect(() => parseDelegateRpcCall({ request: 'Audit' })).toThrow(

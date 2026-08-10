@@ -232,6 +232,15 @@ export type PersistedChatMessage = {
   turnUsage?: AcpTurnTokenUsage
   // Marks the final Agent message for a turn whose provider did not report usable totals.
   turnUsageUnavailable?: true
+  structuredOutputEvidence?: Readonly<{
+    attemptId: string
+    dialect: '2020-12'
+    profile: 'ajv-8-draft-2020-12-v1'
+    schemaDigest: string
+    schema: unknown
+    accepted?: Readonly<{ value: unknown; acceptedAt: number }>
+  }>
+  structuredOutputEvidenceInvalid?: true
   createdAt: number
   // Stable terminal timestamps survive later artifact/upload reconciliation that advances updatedAt.
   completedAt?: number
@@ -1510,6 +1519,96 @@ export const sanitizeSessionUploadedAttachments = (
   }
 }
 
+const sanitizeStructuredJson = (
+  value: unknown,
+  limits: { bytes: number; nodes: number; depth: number; properties: number; items: number }
+): unknown | undefined => {
+  try {
+    let nodes = 0
+    const inspect = (candidate: unknown, depth: number): boolean => {
+      nodes += 1
+      if (nodes > limits.nodes || depth > limits.depth) return false
+      if (candidate === null || typeof candidate === 'string' || typeof candidate === 'boolean')
+        return true
+      if (typeof candidate === 'number')
+        return Number.isFinite(candidate) && !Object.is(candidate, -0)
+      if (Array.isArray(candidate)) {
+        return (
+          candidate.length <= limits.items &&
+          Object.keys(candidate).length === candidate.length &&
+          candidate.every((item) => inspect(item, depth + 1))
+        )
+      }
+      if (!isRecord(candidate) || Object.getPrototypeOf(candidate) !== Object.prototype)
+        return false
+      const keys = Object.keys(candidate)
+      return (
+        keys.length <= limits.properties &&
+        !keys.some((key) => key === '__proto__' || key === 'prototype' || key === 'constructor') &&
+        keys.every((key) => inspect(candidate[key], depth + 1))
+      )
+    }
+    if (!inspect(value, 0)) return undefined
+    const serialized = JSON.stringify(value)
+    if (serialized === undefined || Buffer.byteLength(serialized, 'utf8') > limits.bytes)
+      return undefined
+    return JSON.parse(serialized) as unknown
+  } catch {
+    return undefined
+  }
+}
+
+const sanitizeStructuredOutputEvidence = (
+  value: unknown
+): PersistedChatMessage['structuredOutputEvidence'] | undefined => {
+  if (
+    !isRecord(value) ||
+    !hasOnlyFields(value, ['attemptId', 'dialect', 'profile', 'schemaDigest', 'schema', 'accepted'])
+  )
+    return undefined
+  const attemptId = asString(value.attemptId)
+  const schemaDigest = asString(value.schemaDigest)
+  if (
+    !attemptId ||
+    value.dialect !== '2020-12' ||
+    value.profile !== 'ajv-8-draft-2020-12-v1' ||
+    !schemaDigest ||
+    !/^[a-f0-9]{64}$/.test(schemaDigest)
+  )
+    return undefined
+  const schema = sanitizeStructuredJson(value.schema, {
+    bytes: 64 * 1024,
+    nodes: 1_000,
+    depth: 32,
+    properties: 128,
+    items: 128
+  })
+  if (schema === undefined || (typeof schema !== 'boolean' && !isRecord(schema))) return undefined
+  let accepted: { value: unknown; acceptedAt: number } | undefined
+  if (value.accepted !== undefined) {
+    if (!isRecord(value.accepted) || !hasOnlyFields(value.accepted, ['value', 'acceptedAt']))
+      return undefined
+    const acceptedAt = asNumber(value.accepted.acceptedAt)
+    const acceptedValue = sanitizeStructuredJson(value.accepted.value, {
+      bytes: 256 * 1024,
+      nodes: 5_000,
+      depth: 32,
+      properties: 256,
+      items: 1_000
+    })
+    if (acceptedAt === undefined || acceptedAt < 0 || acceptedValue === undefined) return undefined
+    accepted = { value: acceptedValue, acceptedAt }
+  }
+  return {
+    attemptId,
+    dialect: '2020-12',
+    profile: 'ajv-8-draft-2020-12-v1',
+    schemaDigest,
+    schema,
+    ...(accepted ? { accepted } : {})
+  }
+}
+
 // Rebuilds a message from durable UI fields and strips unknown renderer payload.
 const sanitizeMessage = (
   message: unknown,
@@ -1564,6 +1663,9 @@ const sanitizeMessage = (
     role === 'agent' && !turnUsage && message.turnUsageUnavailable === true
   const completedAt = asNumber(message.completedAt)
   const failedAt = asNumber(message.failedAt)
+  const structuredOutputEvidence = sanitizeStructuredOutputEvidence(
+    message.structuredOutputEvidence
+  )
 
   if (streamId) sanitized.streamId = streamId
   if (responseToMessageId) sanitized.responseToMessageId = responseToMessageId
@@ -1579,6 +1681,13 @@ const sanitizeMessage = (
   if (images) sanitized.images = images
   if (turnUsage) sanitized.turnUsage = turnUsage
   if (turnUsageUnavailable) sanitized.turnUsageUnavailable = true
+  if (structuredOutputEvidence) sanitized.structuredOutputEvidence = structuredOutputEvidence
+  if (
+    message.structuredOutputEvidenceInvalid === true ||
+    (message.structuredOutputEvidence !== undefined && !structuredOutputEvidence)
+  ) {
+    sanitized.structuredOutputEvidenceInvalid = true
+  }
   if (role === 'agent' && sanitized.status === 'complete') {
     sanitized.completedAt = completedAt ?? sanitized.updatedAt
   }

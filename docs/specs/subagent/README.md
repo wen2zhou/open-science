@@ -53,7 +53,7 @@ Subagent 功能的目标，是让 Main Agent 能把可独立执行的工作可�
 
 ## 当前建议
 
-S1与S2均已通过production-composed release gate并达到`certified`；S2真实desktop journey覆盖inactive-branch Stop、partial failure、Send gate恢复与失败项重试。S4的production-composed release gate已通过，accepted Interface与Adapter行为达到`conformant`；required完整lint仍有未修改基线blocker，因此暂不标记`certified`。不得把S3及后续行为并入S2或S4。
+S1与S2均已通过production-composed release gate并达到`certified`；S2真实desktop journey覆盖inactive-branch Stop、partial failure、Send gate恢复与失败项重试。S4的production-composed release gate已通过，accepted Interface与Adapter行为达到`conformant`；required完整lint仍有未修改基线blocker，因此暂不标记`certified`。S6的JSON Schema/submission语义与Message evidence rollback decisions已`accepted + conformant`；Codex、Claude Code、OpenCode production adapters与issued child capability使用同一Owner，desktop production-composed S6 journey已覆盖真实child经REPL提交、文本、Artifact、structured result及重启读取。完整release gate仍被既有Renderer focus restoration阻塞，所以不标`certified`。不得把S3及后续行为并入S2、S4或S6。
 
 当前 decisions：
 
@@ -62,19 +62,21 @@ S1与S2均已通过production-composed release gate并达到`certified`；S2真�
 - `decisions/0003-cross-turn-child-control.md`（`accepted`）：active Message Branch 上的跨 Turn control；
 - `decisions/0004-turn-scoped-cancellation.md`（`accepted`）：并发 Turn 下的 Cancel 与 Stop topology。
 - `decisions/0005-attempt-turn-link-rollback.md`（`accepted`）：initiating Turn durable association采用version-gated rollback。
+- `decisions/0006-structured-output-interface.md`（`accepted`）：schema、child submission、result与terminal语义；
+- `decisions/0007-structured-output-persistence.md`（`accepted`）：Attempt归属、old-data与rollback。
 
 ## 任务地图
 
-| ID  | 阶段                               | 本阶段交付给用户的能力                                                           | 决策状态      | 实现状态      | Owner Module / Seam                                                          | 前置依赖                          | 计划文档                                                                |
-| --- | ---------------------------------- | -------------------------------------------------------------------------------- | ------------- | ------------- | ---------------------------------------------------------------------------- | --------------------------------- | ----------------------------------------------------------------------- |
-| S1  | Bounded `collect`                  | Main Agent 在同一 Turn 内有界观察结果、跨 cells 再收集；后台 child 不被取消      | `accepted`    | `certified`   | 现有 `DelegatedWorkReadModel`；外部 `DurableDelegatedWork.collect` Interface | `SUB-DEC-0002..0003`              | `delegated-wait.md`                                                     |
-| S2  | Bounded `delegate` wait            | 有界委派后可结束当前 Turn；后续 Turn 可继续控制 child，Cancel 不误杀旧 Turn 工作 | `accepted`    | `certified`   | 现有 `DurableDelegatedWork` 与 Read Model                                    | S1、`SUB-DEC-0002..0005`          | `delegate-wait.md`                                                      |
-| S3  | Lifecycle observation              | 调用方能可靠区分排队、运行、等待权限、各类终态与重启中断                         | `exploratory` | `not-started` | 现有 Read Model 与 `DelegatedWorkProjectionOwner`                            | S1 的状态投影约定                 | `lifecycle-observation.md`                                              |
-| S4  | 省略 `profile` 时继承父 Specialist | 未显式选择 Specialist 的 child 按 accepted decision 继承父 Specialist            | `accepted`    | `conformant`  | 现有 `DelegatedWorkAdmissionPolicy`                                          | `SUB-DEC-0001`                    | `decisions/0001-default-subagent-identity.md`、`identity-resolution.md` |
-| S5  | 可靠消息递送                       | Main Agent 能确认补充指令处于 queued、runtime accepted 或 failed，并安全重试     | `exploratory` | `not-started` | 现有 `DelegateExecution` seam 与 durable message records                     | 无                                | `message-delivery.md`                                                   |
-| S6  | Structured output                  | child 可返回经过 schema 校验、可被程序直接消费的结果，同时保留文本和 Artifact    | `exploratory` | `not-started` | 候选 Structured Output Module                                                | 先确认 schema 与 persistence 语义 | `structured-output.md`                                                  |
-| S7  | Durable Scheduler                  | 大批 child 可先可靠接纳再按容量执行；排队任务在重启后仍可观察、取消和调度        | `exploratory` | `not-started` | 候选 Scheduler Module                                                        | S3 lifecycle 语义                 | `scheduler.md`                                                          |
-| S8  | Per-task model routing             | Main Agent 可为每个子任务选择模型，实际解析结果随 Attempt 稳定记录               | `exploratory` | `not-started` | Admission Policy 与 runtime Adapter                                          | identity/model snapshot 决策      | `model-routing.md`                                                      |
+| ID  | 阶段                               | 本阶段交付给用户的能力                                                           | 决策状态      | 实现状态      | Owner Module / Seam                                                          | 前置依赖                     | 计划文档                                                                |
+| --- | ---------------------------------- | -------------------------------------------------------------------------------- | ------------- | ------------- | ---------------------------------------------------------------------------- | ---------------------------- | ----------------------------------------------------------------------- |
+| S1  | Bounded `collect`                  | Main Agent 在同一 Turn 内有界观察结果、跨 cells 再收集；后台 child 不被取消      | `accepted`    | `certified`   | 现有 `DelegatedWorkReadModel`；外部 `DurableDelegatedWork.collect` Interface | `SUB-DEC-0002..0003`         | `delegated-wait.md`                                                     |
+| S2  | Bounded `delegate` wait            | 有界委派后可结束当前 Turn；后续 Turn 可继续控制 child，Cancel 不误杀旧 Turn 工作 | `accepted`    | `certified`   | 现有 `DurableDelegatedWork` 与 Read Model                                    | S1、`SUB-DEC-0002..0005`     | `delegate-wait.md`                                                      |
+| S3  | Lifecycle observation              | 调用方能可靠区分排队、运行、等待权限、各类终态与重启中断                         | `exploratory` | `not-started` | 现有 Read Model 与 `DelegatedWorkProjectionOwner`                            | S1 的状态投影约定            | `lifecycle-observation.md`                                              |
+| S4  | 省略 `profile` 时继承父 Specialist | 未显式选择 Specialist 的 child 按 accepted decision 继承父 Specialist            | `accepted`    | `conformant`  | 现有 `DelegatedWorkAdmissionPolicy`                                          | `SUB-DEC-0001`               | `decisions/0001-default-subagent-identity.md`、`identity-resolution.md` |
+| S5  | 可靠消息递送                       | Main Agent 能确认补充指令处于 queued、runtime accepted 或 failed，并安全重试     | `exploratory` | `not-started` | 现有 `DelegateExecution` seam 与 durable message records                     | 无                           | `message-delivery.md`                                                   |
+| S6  | Structured output                  | child 可返回经过 schema 校验、可被程序直接消费的结果，同时保留文本和 Artifact    | `accepted`    | `conformant`  | 现有 `DurableDelegatedWork`；内部 Structured Output Module                   | S1、`SUB-DEC-0006..0007`     | `structured-output.md`                                                  |
+| S7  | Durable Scheduler                  | 大批 child 可先可靠接纳再按容量执行；排队任务在重启后仍可观察、取消和调度        | `exploratory` | `not-started` | 候选 Scheduler Module                                                        | S3 lifecycle 语义            | `scheduler.md`                                                          |
+| S8  | Per-task model routing             | Main Agent 可为每个子任务选择模型，实际解析结果随 Attempt 稳定记录               | `exploratory` | `not-started` | Admission Policy 与 runtime Adapter                                          | identity/model snapshot 决策 | `model-routing.md`                                                      |
 
 Host SDK、local RPC、持久化和 Renderer 是每个纵向阶段的 Adapter 或 consumer。它们应随对应能力接线和验收，不作为等待所有 Module 完成后的统一集成 wave。
 

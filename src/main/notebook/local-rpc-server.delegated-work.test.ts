@@ -13,6 +13,59 @@ afterEach(async () => {
 })
 
 describe('authenticated delegatedWorkCall route', () => {
+  it('lets only a delegated control-kernel capability submit output for its bound Attempt', async () => {
+    const submitOutput = vi.fn(async () => ({ accepted: true as const }))
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: { delegate: vi.fn(), submitOutput }
+    })
+    const main = await server.issueControlConnection('session-1', 'project-1', 'root-frame')
+    const child = await server.issueControlConnection('session-1', 'project-1', 'child-frame', {
+      role: 'delegate',
+      attemptId: 'attempt-1'
+    })
+    const call = (token: string): Promise<Response> =>
+      fetch(child.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'delegatedOutputCall',
+          params: { value: { count: 3 }, frame_id: 'forged-frame' }
+        })
+      })
+
+    expect((await call(main.token)).status).toBe(403)
+    expect((await call(child.token)).status).toBe(403)
+    const endInvocation = child.beginControlInvocation({
+      turnId: 'turn-1',
+      controlInvocationGeneration: 1,
+      toolInvocationId: 'tool-1',
+      originatingTurnId: 'prompt-message-1',
+      originatingUserMessageId: 'prompt-message-1',
+      attachmentIds: [],
+      artifactIds: []
+    })
+    const accepted = await call(child.token)
+    expect(accepted.status).toBe(200)
+    await expect(accepted.json()).resolves.toEqual({ result: { accepted: true } })
+    expect(submitOutput).toHaveBeenCalledWith(
+      expect.objectContaining({
+        session: { projectId: 'project-1', sessionId: 'session-1' },
+        frameId: 'child-frame',
+        attemptId: 'attempt-1',
+        role: 'delegate',
+        originMessageId: 'prompt-message-1'
+      }),
+      { count: 3 }
+    )
+    endInvocation()
+    main.release()
+    child.release()
+  })
+
   it('describes delegate availability from the authenticated control binding without an active invocation', async () => {
     server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
       transport: 'tcp',

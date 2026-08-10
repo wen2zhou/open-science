@@ -12,6 +12,7 @@ import type {
   DelegatedWorkDurableRecords,
   DurableSnapshot
 } from './durable-delegated-work'
+import type { StructuredOutputEvidence } from './structured-output'
 
 type SessionRecordAdapterOptions = Readonly<{
   commands: DelegatedWorkRecordCommands
@@ -84,7 +85,10 @@ const createSessionDelegatedWorkRecords = (
               rootMessageId: input.caller.originMessageId,
               toolInvocationId: input.caller.toolInvocationId
             },
-            initiatingTurnMessageId: input.caller.originMessageId
+            initiatingTurnMessageId: input.caller.originMessageId,
+            ...(child.structuredOutputEvidence
+              ? { structuredOutputEvidence: child.structuredOutputEvidence }
+              : {})
           }))
         })
       )
@@ -338,6 +342,18 @@ const createSessionDelegatedWorkRecords = (
         })
       )
     },
+    async submitOutput(frameId, attemptId, schemaDigest, value, acceptedAt) {
+      return mutate((expectedRevision) =>
+        options.commands.submitStructuredOutput(key, {
+          expectedRevision,
+          frameId,
+          attemptId,
+          schemaDigest,
+          value,
+          acceptedAt
+        })
+      )
+    },
     async snapshot(): Promise<DurableSnapshot> {
       const session = await load()
       const graph = materializeSessionConversationGraph(session).conversationGraph
@@ -367,6 +383,8 @@ const createSessionDelegatedWorkRecords = (
               title: frame.delegateName ?? frame.agentName ?? frame.id,
               task: firstMessage.delegatedTask ?? firstMessage.content,
               context: firstMessage.delegatedContext,
+              outputSchema: firstMessage.structuredOutputEvidence?.schema as
+                import('./structured-output').JsonSchema | undefined,
               inputs: firstMessage.delegatedInputVersionIds ?? [],
               messageBranchId: frame.activeBranchId,
               attempts: record.attempts.map((attempt) => ({
@@ -390,7 +408,17 @@ const createSessionDelegatedWorkRecords = (
             content: message.content,
             responseToMessageId: message.responseToMessageId,
             runtimeSegmentId: message.runtimeSegmentId,
-            createdAt: message.createdAt
+            createdAt: message.createdAt,
+            ...(message.structuredOutputEvidence
+              ? {
+                  structuredOutputEvidence: structuredClone(
+                    message.structuredOutputEvidence
+                  ) as StructuredOutputEvidence
+                }
+              : {}),
+            ...(message.structuredOutputEvidenceInvalid
+              ? { structuredOutputEvidenceInvalid: true as const }
+              : {})
           }))
       }
     }

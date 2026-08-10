@@ -20,6 +20,7 @@ const DELEGATION_STOP_PROMPT = 'Run the production delegation Stop journey.'
 const DELEGATION_BRANCH_A_PROMPT = 'Start the inactive-branch Stop certification journey.'
 const DELEGATION_BRANCH_B_PROMPT = 'Start the active-branch partial Stop certification journey.'
 const DELEGATION_UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
+const DELEGATION_STRUCTURED_OUTPUT_PROMPT = 'Run the production structured output journey.'
 const DELEGATION_INHERITED_SPECIALIST_PROMPT =
   'Run the production inherited Specialist delegation journey.'
 const SUBAGENT_MODEL_BATCH_PROMPT = 'Run the Subagent model batch journey.'
@@ -34,6 +35,7 @@ const DELEGATED_PERMISSION_TASK = 'Request the delegated fixture permission.'
 const DELEGATED_WAIT_MARKER = 'Wait until the Main Agent stops'
 const DELEGATED_WAIT_TASK = `${DELEGATED_WAIT_MARKER} delegated fixture A.`
 const DELEGATED_WAIT_TASK_TWO = `${DELEGATED_WAIT_MARKER} delegated fixture B.`
+const DELEGATED_STRUCTURED_OUTPUT_TASK = 'Create certified structured evidence.'
 const DELEGATED_BRANCH_A_TASK = `${DELEGATED_WAIT_MARKER} inactive branch child A.`
 const DELEGATED_BRANCH_B_TASK = `${DELEGATED_WAIT_MARKER} active branch child B1.`
 const DELEGATED_BRANCH_B_TASK_TWO = `${DELEGATED_WAIT_MARKER} active branch child B2.`
@@ -536,6 +538,47 @@ if (process.argv.includes('--version')) {
           reply = 'Inherited Subagent model completed.'
         } else if (prompt.includes(SUBAGENT_MODEL_HOLDER_PROMPT)) {
           reply = 'Global Active model holder completed.'
+        } else if (prompt.includes(DELEGATION_STRUCTURED_OUTPUT_PROMPT)) {
+          const delegated = controlResultValue(
+            await runProductionDelegationRequest(
+              context.params.sessionId,
+              {
+                task: DELEGATED_STRUCTURED_OUTPUT_TASK,
+                name: DELEGATED_STRUCTURED_OUTPUT_TASK,
+                output_schema: {
+                  type: 'object',
+                  required: ['count'],
+                  properties: { count: { type: 'number' } },
+                  additionalProperties: false
+                }
+              },
+              true
+            )
+          )
+          const child = delegated.children?.[0]
+          if (
+            delegated.kind !== 'results' ||
+            child?.status !== 'completed' ||
+            child.response !== 'Structured child completed.' ||
+            child.structured_output?.count !== 3 ||
+            child.structured_output_unsatisfied !== false ||
+            child.artifacts_created?.length !== 1
+          ) {
+            throw new Error(`Structured delegation failed: ${JSON.stringify(delegated)}`)
+          }
+          reply = 'Production structured output journey completed.'
+        } else if (prompt.includes(DELEGATED_STRUCTURED_OUTPUT_TASK)) {
+          const submission = controlResultValue(
+            await executeControlCode(
+              context.params.sessionId,
+              `let invalid = false; try { await host.submit_output({ count: "three" }) } catch { invalid = true }; const receipt = await host.submit_output({ count: 3 }); return { invalid, receipt }`
+            )
+          )
+          if (!submission.invalid || submission.receipt?.accepted !== true) {
+            throw new Error(`Structured submit contract failed: ${JSON.stringify(submission)}`)
+          }
+          await createProvenanceArtifact(context.params.sessionId)
+          reply = 'Structured child completed.'
         } else if (prompt.includes(DELEGATED_BOUNDED_SLOW_TASK)) {
           await new Promise((resolve) => setTimeout(resolve, 3_000))
           reply = 'Delayed bounded child completed.'

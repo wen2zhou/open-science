@@ -8,6 +8,7 @@ import type {
 } from '../../shared/session-persistence'
 import type { ResolvedSubagentModelSnapshot } from '../../shared/session-persistence'
 import type { AuthenticatedDelegateCaller, DurableDelegateRequest } from './durable-delegated-work'
+import type { JsonSchema, JsonValue, StructuredOutputEvidence } from './structured-output'
 
 type DurableResolvedAgent =
   | Readonly<{ kind: 'main' }>
@@ -52,6 +53,8 @@ type DurableDelegateResult = Readonly<{
   artifactsCreated: readonly ArtifactFile[]
   cancellationReason?: 'main_agent_stop' | 'session_stop' | 'runtime_interrupted'
   error?: Readonly<{ code: string; message: string }>
+  structuredOutput?: JsonValue
+  structuredOutputUnsatisfied?: boolean
 }>
 
 type DurableRunningObservation = Readonly<{
@@ -90,6 +93,7 @@ type DurableChild = {
   title: string
   task: string
   context?: string
+  outputSchema?: JsonSchema
   inputs: readonly string[]
   messageBranchId: string
   attempts: DurableAttempt[]
@@ -124,6 +128,8 @@ type DurableMessage = {
   createdAt: number
   updatedAt?: number
   completedAt?: number
+  structuredOutputEvidence?: StructuredOutputEvidence
+  structuredOutputEvidenceInvalid?: true
 }
 
 type DurableSnapshot = Readonly<{
@@ -144,6 +150,7 @@ type AdmitChildInput = Readonly<{
   resolvedAgent: DurableResolvedAgent
   executionModel?: ResolvedSubagentModelSnapshot
   startedAt: number
+  structuredOutputEvidence?: StructuredOutputEvidence
 }>
 
 type AdmitChildrenInput = Readonly<{
@@ -242,6 +249,13 @@ type DelegatedWorkDurableRecords = Readonly<{
     runtimeSegmentId: string,
     endedAt: number
   ): Promise<void>
+  submitOutput(
+    frameId: string,
+    attemptId: string,
+    schemaDigest: string,
+    value: JsonValue,
+    acceptedAt: number
+  ): Promise<'accepted' | 'idempotent'>
   snapshot(): Promise<DurableSnapshot>
 }>
 

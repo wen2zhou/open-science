@@ -57,6 +57,7 @@ import type {
   SpecialistDelegationProfile,
   StopOutcome
 } from './durable-delegated-work-contract'
+import { submitStructuredOutput } from './structured-output-submission'
 
 const createDurableDelegatedWork = (
   options: CreateDurableDelegatedWorkOptions
@@ -206,6 +207,9 @@ const createDurableDelegatedWork = (
           ...(artifact?.execution
             ? { artifactCurrentRunFile: artifact.execution.currentRunFile }
             : {}),
+          ...(continuation || child.outputSchema === undefined
+            ? {}
+            : { outputSchema: structuredClone(child.outputSchema) }),
           continuation,
           turn: turnLifecycle.create(startedContext, true)
         }
@@ -538,6 +542,19 @@ const createDurableDelegatedWork = (
     )
     const executionModelAdmission = await options.resolveExecutionModel(caller)
     const executionModel = executionModelAdmission.snapshot
+    let admissions: ReturnType<typeof admissionPolicy.buildChildren>
+    try {
+      admissions = admissionPolicy.buildChildren(
+        requests,
+        resolvedAgents,
+        executionModel,
+        createId,
+        now
+      )
+    } catch (error) {
+      await executionModelAdmission.backendLease?.release().catch(() => undefined)
+      throw error
+    }
     let reservation: DelegateCapacityReservation
     try {
       reservation = await options.execution.reserve(requests.length)
@@ -551,28 +568,6 @@ const createDurableDelegatedWork = (
         error instanceof Error ? error.message : String(error)
       )
     }
-    const usedTitles = new Set(
-      requests.flatMap((request) => (request.name === undefined ? [] : [request.name.trim()]))
-    )
-    const admissions = requests.map((request, index) => {
-      const task = request.task.trim()
-      let title = request.name?.trim()
-      if (!title) {
-        title = task
-        for (let suffix = 2; usedTitles.has(title); suffix += 1) title = `${task} (${suffix})`
-        usedTitles.add(title)
-      }
-      return {
-        frameId: createId('frame'),
-        attemptId: createId('attempt'),
-        userMessageId: createId('message'),
-        title,
-        request: { ...request, task },
-        resolvedAgent: resolvedAgents[index],
-        executionModel,
-        startedAt: now()
-      }
-    })
     try {
       await withAdmissionLock(async () => {
         await assertTurnOpen(caller.session, caller.originMessageId)
@@ -594,6 +589,7 @@ const createDurableDelegatedWork = (
       title: admission.title,
       task: admission.request.task,
       context: admission.request.context,
+      outputSchema: admission.request.outputSchema,
       inputs: [...(admission.request.inputs ?? [])],
       messageBranchId: `branch-${admission.frameId}`,
       attempts: [
@@ -684,6 +680,9 @@ const createDurableDelegatedWork = (
       collectOptions?: DurableCollectOptions
     ): Promise<readonly DurableDelegateObservation[]> {
       return readModel.collect(caller, selectors, collectOptions)
+    },
+    async submitOutput(caller, submittedValue) {
+      return submitStructuredOutput(options.records, caller, submittedValue, now())
     },
     sendMessage(
       caller: AuthenticatedDelegateCaller,

@@ -881,10 +881,34 @@ describe('Session delegated-work adapter', () => {
 
     const receipt = await dispatchingWork.delegate(
       caller,
-      { task: 'Detached trace', name: 'Stable trace' },
+      {
+        task: 'Detached trace',
+        name: 'Stable trace',
+        outputSchema: {
+          type: 'object',
+          required: ['answer'],
+          properties: { answer: { type: 'number' } },
+          additionalProperties: false
+        }
+      },
       { wait: false }
     )
+    await expect(
+      dispatchingWork.collect(caller, [receipt.children[0].frameId], { timeoutSeconds: 0 })
+    ).resolves.toEqual([
+      expect.not.objectContaining({ structuredOutputUnsatisfied: expect.anything() })
+    ])
     await expect.poll(() => execution.controls()).toHaveLength(1)
+    await dispatchingWork.submitOutput(
+      {
+        ...caller,
+        frameId: receipt.children[0].frameId,
+        attemptId: receipt.children[0].attemptId,
+        role: 'delegate',
+        toolInvocationId: 'submit-output'
+      },
+      { answer: 42 }
+    )
     execution.controls()[0].accept()
     execution.controls()[0].complete('Persisted answer')
     await expect
@@ -910,7 +934,18 @@ describe('Session delegated-work adapter', () => {
         status: 'completed'
       }
     ])
-    await expect(reopenedWork.collect(caller, [receipt.children[0].frameId])).resolves.toEqual([
+    await expect(
+      reopenedWork.collect(caller, [
+        {
+          frameId: receipt.children[0].frameId,
+          attemptId: receipt.children[0].attemptId
+        },
+        {
+          frameId: receipt.children[0].frameId,
+          attemptId: receipt.children[0].attemptId
+        }
+      ])
+    ).resolves.toEqual([
       {
         frameId: receipt.children[0].frameId,
         attemptId: receipt.children[0].attemptId,
@@ -919,8 +954,15 @@ describe('Session delegated-work adapter', () => {
         status: 'completed',
         terminalMessageId: expect.any(String),
         response: 'Persisted answer',
-        artifactsCreated: []
-      }
+        artifactsCreated: [],
+        structuredOutput: { answer: 42 },
+        structuredOutputUnsatisfied: false
+      },
+      expect.objectContaining({
+        attemptId: receipt.children[0].attemptId,
+        structuredOutput: { answer: 42 },
+        structuredOutputUnsatisfied: false
+      })
     ])
   })
 

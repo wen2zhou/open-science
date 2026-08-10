@@ -4,6 +4,7 @@ import type { PermissionProfileId } from '../../shared/permission-profiles'
 import type { ReviewWithChecks } from '../../shared/reviewer'
 import type { SpecialistProfileView } from '../../shared/specialist'
 import type { AuthenticatedDelegateCaller } from './authenticated-delegate-caller'
+import type { JsonSchema } from './structured-output'
 import type { DelegatedArtifactEvidence } from './delegated-turn-lifecycle'
 import type {
   DelegateExecution,
@@ -29,6 +30,7 @@ type DurableDelegateRequest = Readonly<{
   profile?: string
   context?: string
   inputs?: readonly string[]
+  outputSchema?: JsonSchema
 }>
 
 type SpecialistDelegationProfile = Readonly<
@@ -141,6 +143,10 @@ type DurableDelegatedWork = Readonly<{
     selectors: readonly DurableCollectSelector[],
     options?: DurableCollectOptions
   ): Promise<readonly DurableDelegateObservation[]>
+  submitOutput(
+    caller: AuthenticatedDelegateCaller,
+    value: unknown
+  ): Promise<Readonly<{ accepted: true }>>
   sendMessage(
     caller: AuthenticatedDelegateCaller,
     targetFrameId: string | 'parent',

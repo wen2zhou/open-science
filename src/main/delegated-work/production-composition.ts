@@ -82,7 +82,13 @@ type RootDelegatedWorkControl = Readonly<{
 type ProductionDelegatedWorkComposition = Readonly<{
   host: Pick<
     DurableDelegatedWork,
-    'delegate' | 'children' | 'collect' | 'stopChildren' | 'sendMessage' | 'readAgentFrame'
+    | 'delegate'
+    | 'children'
+    | 'collect'
+    | 'stopChildren'
+    | 'sendMessage'
+    | 'submitOutput'
+    | 'readAgentFrame'
   >
   root: RootDelegatedWorkControl
 }>
@@ -258,6 +264,9 @@ const createProductionDelegatedWorkComposition = (
     },
     async collect(caller, selectors, collectOptions) {
       return (await workFor(caller.session)).work.collect(caller, selectors, collectOptions)
+    },
+    async submitOutput(caller, value) {
+      return (await workFor(caller.session)).work.submitOutput(caller, value)
     },
     async stopChildren(caller, frameIds) {
       return (await workFor(caller.session)).work.stopChildren(caller, frameIds)

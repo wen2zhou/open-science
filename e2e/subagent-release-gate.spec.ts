@@ -15,6 +15,8 @@ const BRANCH_A_PROMPT = 'Start the inactive-branch Stop certification journey.'
 const BRANCH_B_PROMPT = 'Start the active-branch partial Stop certification journey.'
 const UNAVAILABLE_PROMPT = 'Verify unsupported delegation admission.'
 const INHERITED_SPECIALIST_PROMPT = 'Run the production inherited Specialist delegation journey.'
+const STRUCTURED_OUTPUT_PROMPT = 'Run the production structured output journey.'
+const STRUCTURED_OUTPUT_CHILD = 'Create certified structured evidence.'
 const TERMINAL_CHILD = 'Complete the certified delegated terminal fixture.'
 const PERMISSION_CHILD = 'Request the delegated fixture permission.'
 const STOP_CHILD = 'Wait until the Main Agent stops delegated fixture A.'
@@ -323,6 +325,62 @@ test('rejects an unsupported Specialist configuration before child admission', a
     }
   })
   expect(admittedChildren).toEqual({ records: 0, frames: 0 })
+})
+
+test('persists production-composed structured output submitted by the child capability', async ({
+  app
+}) => {
+  test.setTimeout(180_000)
+  let page = await app.completeOnboarding()
+  page = await app.configureFakeAgent()
+  await createProject(page, 'Structured output release gate')
+
+  await sendPrompt(
+    page,
+    STRUCTURED_OUTPUT_PROMPT,
+    'Production structured output journey completed.',
+    120_000
+  )
+  await expectDurableChildStatus(page, STRUCTURED_OUTPUT_CHILD, 'completed')
+  const beforeRestart = await page.evaluate(async (childName) => {
+    const loaded = await window.api.sessions.loadAll()
+    const session = loaded.sessions[0]
+    const frame = session?.conversationGraph?.frames.find(
+      (candidate) => candidate.delegateName === childName
+    )
+    const prompt = session?.conversationGraph?.messages.find(
+      (message) =>
+        message.agentFrameId === frame?.id && message.structuredOutputEvidence !== undefined
+    )
+    const terminal = session?.conversationGraph?.messages.find(
+      (message) => message.agentFrameId === frame?.id && message.role === 'agent'
+    )
+    return {
+      accepted: prompt?.structuredOutputEvidence?.accepted?.value,
+      artifactIds: terminal?.artifactIds ?? [],
+      text: terminal?.content
+    }
+  }, STRUCTURED_OUTPUT_CHILD)
+  expect(beforeRestart).toMatchObject({
+    accepted: { count: 3 },
+    text: 'Structured child completed.'
+  })
+  expect(beforeRestart.artifactIds).toHaveLength(1)
+
+  page = await app.restart()
+  const afterRestart = await page.evaluate(async (childName) => {
+    const loaded = await window.api.sessions.loadAll()
+    const session = loaded.sessions[0]
+    const frame = session?.conversationGraph?.frames.find(
+      (candidate) => candidate.delegateName === childName
+    )
+    const prompt = session?.conversationGraph?.messages.find(
+      (message) =>
+        message.agentFrameId === frame?.id && message.structuredOutputEvidence !== undefined
+    )
+    return prompt?.structuredOutputEvidence?.accepted?.value
+  }, STRUCTURED_OUTPUT_CHILD)
+  expect(afterRestart).toEqual({ count: 3 })
 })
 
 test('stops only the active branch and exposes a retryable partial failure', async ({ app }) => {

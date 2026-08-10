@@ -1,7 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { createLinearConversationGraph } from '../../shared/conversation-graph'
-import type { PersistedChatMessage, PersistedChatSession } from '../../shared/session-persistence'
+import {
+  normalizeSessionFile,
+  type PersistedChatMessage,
+  type PersistedChatSession
+} from '../../shared/session-persistence'
+import { preS6ReaderSave } from '../../shared/pre-s6-session-reader.fixture'
 import type { CreateChildRecordInput } from '../delegated-work/session-records'
 import {
   SessionPersistenceCoordinator,
@@ -112,6 +117,107 @@ const child = (
 })
 
 describe('delegated-work Session records', () => {
+  it('stores Attempt-owned structured evidence atomically on the prompt Message and CASes one value', async () => {
+    const initial = createRootSession()
+    const { coordinator, durable } = createHarness(initial)
+    const structuredChild = {
+      ...child(1),
+      structuredOutputEvidence: {
+        attemptId: 'attempt-1',
+        dialect: '2020-12' as const,
+        profile: 'ajv-8-draft-2020-12-v1' as const,
+        schemaDigest: 'a'.repeat(64),
+        schema: { type: 'object' as const }
+      }
+    }
+    await coordinator.createChildren(key, {
+      expectedRevision: 0,
+      parentFrameId: initial.conversationGraph!.rootFrameId,
+      originMessageId: rootPrompt.id,
+      children: [structuredChild]
+    })
+    expect(
+      durable().conversationGraph?.messages.find(({ id }) => id === 'child-prompt-1')
+    ).toMatchObject({
+      structuredOutputEvidence: {
+        attemptId: 'attempt-1',
+        schemaDigest: 'a'.repeat(64),
+        schema: { type: 'object' }
+      }
+    })
+    await expect(
+      coordinator.submitStructuredOutput(key, {
+        expectedRevision: 1,
+        frameId: 'child-frame-1',
+        attemptId: 'attempt-1',
+        schemaDigest: 'a'.repeat(64),
+        value: { answer: 42 },
+        acceptedAt: 20
+      })
+    ).resolves.toBe('accepted')
+    expect(
+      durable().conversationGraph?.messages.find(({ id }) => id === 'child-prompt-1')
+    ).toMatchObject({
+      structuredOutputEvidence: { accepted: { value: { answer: 42 }, acceptedAt: 20 } }
+    })
+    await expect(
+      coordinator.submitStructuredOutput(key, {
+        expectedRevision: 2,
+        frameId: 'child-frame-1',
+        attemptId: 'attempt-1',
+        schemaDigest: 'a'.repeat(64),
+        value: { answer: 42 },
+        acceptedAt: 21
+      })
+    ).resolves.toBe('idempotent')
+
+    const backup = normalizeSessionFile(durable())!
+    const reopenedAfterLegacySave = preS6ReaderSave(durable())
+    expect(reopenedAfterLegacySave.runtimeContext?.delegatedWork).toEqual(
+      backup.runtimeContext?.delegatedWork
+    )
+    expect(reopenedAfterLegacySave.conversationGraph).toMatchObject({
+      schemaVersion: backup.conversationGraph?.schemaVersion,
+      rootFrameId: backup.conversationGraph?.rootFrameId,
+      activeFrameId: backup.conversationGraph?.activeFrameId,
+      frames: backup.conversationGraph?.frames,
+      branches: backup.conversationGraph?.branches,
+      runtimeSegments: backup.conversationGraph?.runtimeSegments,
+      activities: backup.conversationGraph?.activities,
+      activityGroups: backup.conversationGraph?.activityGroups
+    })
+    expect(
+      reopenedAfterLegacySave.conversationGraph?.messages.find(({ id }) => id === 'child-prompt-1')
+    ).toMatchObject({
+      id: 'child-prompt-1',
+      delegatedTask: 'Research part 1',
+      agentFrameId: 'child-frame-1'
+    })
+    expect(
+      reopenedAfterLegacySave.conversationGraph?.messages.some(
+        (message) => message.structuredOutputEvidence !== undefined
+      )
+    ).toBe(false)
+    expect(
+      backup.conversationGraph?.messages.find(({ id }) => id === 'child-prompt-1')
+        ?.structuredOutputEvidence?.accepted
+    ).toEqual({ value: { answer: 42 }, acceptedAt: 20 })
+
+    const corrupted = structuredClone(backup)
+    const corruptedPrompt = corrupted.conversationGraph!.messages.find(
+      ({ id }) => id === 'child-prompt-1'
+    )!
+    corruptedPrompt.structuredOutputEvidence = {
+      ...corruptedPrompt.structuredOutputEvidence!,
+      schemaDigest: 'invalid'
+    }
+    expect(
+      normalizeSessionFile(corrupted)?.conversationGraph?.messages.find(
+        ({ id }) => id === 'child-prompt-1'
+      )
+    ).toMatchObject({ structuredOutputEvidenceInvalid: true })
+  })
+
   it('atomically owns the complete delegate subtree across stale Renderer saves', async () => {
     const initial = createRootSession()
     const { coordinator, durable } = createHarness(initial)

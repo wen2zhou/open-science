@@ -167,6 +167,7 @@ const openMainWindow = async (
   const page = await application.firstWindow()
   await rendererFailures.observe(page)
   await page.waitForLoadState('domcontentloaded')
+  await page.getByText('Loading settings...').waitFor({ state: 'hidden', timeout: 60_000 })
   return page
 }
 

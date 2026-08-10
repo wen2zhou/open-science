@@ -1,5 +1,6 @@
 import type { AgentFrameworkId } from '../../shared/settings'
 import type { ArtifactFile } from '../../shared/artifacts'
+import type { JsonValue, StructuredOutputEvidence } from './structured-output'
 import type {
   DelegatedWorkAttemptRecord,
   DelegatedWorkCancellationReason,
@@ -29,6 +30,7 @@ type CreateChildRecordInput = Readonly<{
   startedAt: number
   callerSource: DelegatedCallerSource
   initiatingTurnMessageId: string
+  structuredOutputEvidence?: StructuredOutputEvidence
 }>
 
 type CreateChildrenInput = Readonly<{
@@ -147,6 +149,15 @@ type AttachDelegatedMessageArtifactsInput = Readonly<{
   artifacts: readonly ArtifactFile[]
 }>
 
+type SubmitStructuredOutputInput = Readonly<{
+  expectedRevision: number
+  frameId: string
+  attemptId: string
+  schemaDigest: string
+  value: JsonValue
+  acceptedAt: number
+}>
+
 type ChildRecord = Readonly<{
   frameId: string
   parentFrameId: string
@@ -169,6 +180,10 @@ type DelegatedWorkRecordCommands = Readonly<{
   markMessageDelivered(key: SessionKey, input: MarkMessageDeliveredInput): Promise<void>
   startPendingMessageTurn(key: SessionKey, input: StartPendingMessageTurnInput): Promise<void>
   completeChildTurn(key: SessionKey, input: CompleteChildTurnInput): Promise<void>
+  submitStructuredOutput(
+    key: SessionKey,
+    input: SubmitStructuredOutputInput
+  ): Promise<'accepted' | 'idempotent'>
   attachDelegatedMessageArtifacts(
     key: SessionKey,
     input: AttachDelegatedMessageArtifactsInput
@@ -193,5 +208,6 @@ export type {
   StartContinuationAttemptInput,
   StartAttemptRuntimeInput,
   StartPendingMessageTurnInput,
+  SubmitStructuredOutputInput,
   TransitionAttemptInput
 }

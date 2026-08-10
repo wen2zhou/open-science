@@ -155,10 +155,44 @@ const COLLECT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   resolveAvailability: DELEGATE_DESCRIPTOR.resolveAvailability
 }
 
+const SUBMIT_OUTPUT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
+  kind: 'operation',
+  id: 'host.submit_output',
+  path: 'host.submit_output',
+  aliases: ['submit_output'],
+  summary: 'Submit the authenticated child Attempt structured JSON value.',
+  call_forms: [{ signature: 'await host.submit_output(value)', accepts: 'json_value' }],
+  request: { description: 'A JSON value validated against the schema admitted for this Attempt.' },
+  options: {},
+  returns: {
+    type: 'object',
+    required: ['accepted'],
+    properties: { accepted: { type: 'boolean', enum: [true] } }
+  },
+  constraints: [
+    'Available only to a running child Attempt that was delegated with output_schema.',
+    'The first valid value is durable; an equal retry is idempotent and a different retry is rejected.',
+    'Submission does not end the Attempt and does not replace text or Artifact output.'
+  ],
+  examples: [
+    { title: 'Submit a validated result', code: 'await host.submit_output({ answer: 42 })' }
+  ],
+  errors: {
+    thrown_type: 'Error',
+    message_prefix: 'host.submit_output: ',
+    domain_error_code_exposed: false
+  },
+  resolveAvailability: ({ callerRole, capabilities }) =>
+    callerRole === 'delegate' && capabilities.delegation
+      ? { status: 'available' }
+      : { status: 'unavailable', reason: 'Only a delegated child Attempt can submit output.' }
+}
+
 // Adding another documented Host SDK operation only requires registering its descriptor here.
 const OPERATION_DESCRIPTORS: readonly HostSdkHelpOperationDescriptor[] = [
   COLLECT_DESCRIPTOR,
-  DELEGATE_DESCRIPTOR
+  DELEGATE_DESCRIPTOR,
+  SUBMIT_OUTPUT_DESCRIPTOR
 ]
 const MAX_HELP_QUERY_CHARS = 128
 const MAX_HELP_RESULT_CHARS = 16_000

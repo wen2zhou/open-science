@@ -1061,7 +1061,11 @@ async function delegateRpc(request, options = {}) {
       ...(child.response !== undefined ? { response: child.response } : {}),
       ...(child.status !== 'running' ? { artifacts_created: child.artifactsCreated || [] } : {}),
       ...(child.cancellationReason ? { cancellation_reason: child.cancellationReason } : {}),
-      ...(child.error ? { error: child.error } : {})
+      ...(child.error ? { error: child.error } : {}),
+      ...(child.structuredOutputUnsatisfied !== undefined
+        ? { structured_output_unsatisfied: child.structuredOutputUnsatisfied }
+        : {}),
+      ...(child.structuredOutput !== undefined ? { structured_output: child.structuredOutput } : {})
     }))
   }
 }
@@ -1142,8 +1146,31 @@ async function delegatedObservationRpc(op, selectors = undefined, options = unde
       ? { artifacts_created: child.artifactsCreated || [] }
       : {}),
     ...(child.cancellationReason ? { cancellation_reason: child.cancellationReason } : {}),
-    ...(child.error ? { error: child.error } : {})
+    ...(child.error ? { error: child.error } : {}),
+    ...(child.structuredOutputUnsatisfied !== undefined
+      ? { structured_output_unsatisfied: child.structuredOutputUnsatisfied }
+      : {}),
+    ...(child.structuredOutput !== undefined ? { structured_output: child.structuredOutput } : {})
   }))
+}
+
+async function hostSubmitOutput(value) {
+  if (!RPC_ENDPOINT)
+    throw new Error('host.submit_output is unavailable: control RPC endpoint not set')
+  const res = await capturedRpcFetch(RPC_ENDPOINT, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', authorization: 'Bearer ' + (RPC_TOKEN || '') },
+    body: JSON.stringify({ method: 'delegatedOutputCall', params: { value } })
+  })
+  const body = await res.json().catch(() => ({}))
+  if (!res.ok || body.error) {
+    const detail =
+      body.error && typeof body.error === 'object'
+        ? JSON.stringify(body.error)
+        : body.error || 'HTTP ' + res.status
+    throw new Error(`host.submit_output: ${detail}`)
+  }
+  return body.result
 }
 
 async function hostChildren(frameIds = undefined) {
@@ -1391,7 +1418,8 @@ const sandbox = {
     children: hostChildren,
     collect: hostCollect,
     stop_child: hostStopChild,
-    send_message: hostSendMessage
+    send_message: hostSendMessage,
+    submit_output: hostSubmitOutput
   },
   console,
   process,

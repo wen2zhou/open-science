@@ -10,6 +10,7 @@ import type {
   ReadOnlyAgentFrameDetail
 } from './durable-delegated-work'
 import { currentAttempt, sameSession } from './delegated-work-record-invariants'
+import { associateStructuredOutputEvidence } from './structured-output'
 
 type DurableChild = DurableSnapshot['records'][number]
 type DurableAttempt = DurableChild['attempts'][number]
@@ -91,6 +92,11 @@ class DelegatedWorkProjectionOwner {
     const terminalMessage = attempt.terminalMessageId
       ? snapshot.messages.find((message) => message.id === attempt.terminalMessageId)
       : undefined
+    const structuredEvidence = associateStructuredOutputEvidence(
+      snapshot.messages,
+      child.frameId,
+      attempt.id
+    )
     return {
       frameId: child.frameId,
       attemptId: attempt.id,
@@ -104,7 +110,15 @@ class DelegatedWorkProjectionOwner {
       ...(terminalMessage ? { response: terminalMessage.content } : {}),
       artifactsCreated: await this.projectArtifacts(snapshot, child, attempt),
       ...(attempt.cancellationReason ? { cancellationReason: attempt.cancellationReason } : {}),
-      ...(attempt.error ? { error: attempt.error } : {})
+      ...(attempt.error ? { error: attempt.error } : {}),
+      ...(structuredEvidence
+        ? structuredEvidence.accepted
+          ? {
+              structuredOutput: structuredClone(structuredEvidence.accepted.value),
+              structuredOutputUnsatisfied: false
+            }
+          : { structuredOutputUnsatisfied: true }
+        : {})
     }
   }
 

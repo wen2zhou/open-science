@@ -2,6 +2,7 @@ import type { AcpAgentRuntimeUpdate, AcpPermissionScope, AcpTurnTokenUsage } fro
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import type { ResolvedSubagentModelSnapshot } from '../../shared/session-persistence'
 import type { ResolvedAgentBackend } from '../agent-framework'
+import type { JsonSchema } from './structured-output'
 
 type DelegateExecutionErrorCode = 'capacity' | 'unsupported_framework'
 
@@ -63,6 +64,7 @@ type DelegateExecutionInput = Readonly<{
   profile?: string
   continuation: boolean
   artifactCurrentRunFile?: string
+  outputSchema?: JsonSchema
   turn?: DelegateChildTurnIdentity
 }>
 

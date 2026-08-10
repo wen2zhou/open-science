@@ -1,4 +1,6 @@
 import { DurableDelegatedWorkError } from './durable-delegated-work-error'
+import type { DelegatedWorkDurableRecords } from './delegated-work-record-types'
+import { prepareStructuredOutputSchema } from './structured-output'
 import type {
   DurableDelegateRequest,
   DurableSnapshot,
@@ -125,6 +127,60 @@ class DelegatedWorkAdmissionPolicy {
       }
     }
     return { requests, resolvedAgents }
+  }
+
+  buildChildren(
+    requests: readonly DurableDelegateRequest[],
+    resolvedAgents: readonly DurableResolvedAgent[],
+    executionModel: NonNullable<
+      Parameters<
+        DelegatedWorkDurableRecords['admitChildren']
+      >[0]['children'][number]['executionModel']
+    >,
+    createId: (prefix: 'frame' | 'message' | 'runtime' | 'attempt') => string,
+    now: () => number
+  ): Parameters<DelegatedWorkDurableRecords['admitChildren']>[0]['children'] {
+    const contracts = requests.map((request) =>
+      request.outputSchema === undefined
+        ? undefined
+        : prepareStructuredOutputSchema(request.outputSchema)
+    )
+    const usedTitles = new Set(
+      requests.flatMap((request) => (request.name === undefined ? [] : [request.name.trim()]))
+    )
+    return requests.map((request, index) => {
+      const task = request.task.trim()
+      const frameId = createId('frame')
+      const attemptId = createId('attempt')
+      let title = request.name?.trim()
+      if (!title) {
+        title = task
+        for (let suffix = 2; usedTitles.has(title); suffix += 1) title = `${task} (${suffix})`
+        usedTitles.add(title)
+      }
+      const contract = contracts[index]
+      return {
+        frameId,
+        attemptId,
+        userMessageId: createId('message'),
+        title,
+        request: { ...request, task },
+        resolvedAgent: resolvedAgents[index],
+        executionModel,
+        startedAt: now(),
+        ...(contract
+          ? {
+              structuredOutputEvidence: {
+                attemptId,
+                dialect: contract.dialect,
+                profile: contract.profile,
+                schemaDigest: contract.schemaDigest,
+                schema: structuredClone(contract.schema)
+              }
+            }
+          : {})
+      }
+    })
   }
 
   async resolveAgent(profileId: string | undefined): Promise<DurableResolvedAgent> {

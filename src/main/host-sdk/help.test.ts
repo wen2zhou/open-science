@@ -27,6 +27,17 @@ describe('Host SDK help', () => {
           summary:
             'Dispatch one Subagent or an atomic fan-out and optionally observe for a bounded time.',
           availability: { status: 'available' }
+        },
+        {
+          id: 'host.submit_output',
+          kind: 'operation',
+          path: 'host.submit_output',
+          aliases: ['submit_output'],
+          summary: 'Submit the authenticated child Attempt structured JSON value.',
+          availability: {
+            status: 'unavailable',
+            reason: 'Only a delegated child Attempt can submit output.'
+          }
         }
       ],
       hint: "Query an exact topic, for example await host.help('delegate')."
@@ -108,7 +119,14 @@ describe('Host SDK help', () => {
                     'status',
                     'artifacts_created'
                   ],
-                  optional: ['terminal_message_id', 'response', 'cancellation_reason', 'error'],
+                  optional: [
+                    'terminal_message_id',
+                    'response',
+                    'cancellation_reason',
+                    'error',
+                    'structured_output',
+                    'structured_output_unsatisfied'
+                  ],
                   properties: {
                     status: { type: 'string', enum: ['completed', 'cancelled', 'error'] },
                     terminal_message_id: { type: 'string' },
@@ -141,7 +159,20 @@ describe('Host SDK help', () => {
     expect(hostSdkHelp.query('delegte', mainContext)).toEqual({
       kind: 'not_found',
       query: 'delegte',
-      suggestions: ['host.delegate', 'host.collect']
+      suggestions: ['host.delegate', 'host.collect', 'host.submit_output']
+    })
+  })
+
+  it('documents child-only structured output submission', () => {
+    expect(
+      hostSdkHelp.query('submit_output', {
+        callerRole: 'delegate',
+        capabilities: { delegation: true }
+      })
+    ).toMatchObject({
+      id: 'host.submit_output',
+      returns: { required: ['accepted'] },
+      availability: { status: 'available' }
     })
   })
 

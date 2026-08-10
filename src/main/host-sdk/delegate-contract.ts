@@ -63,6 +63,10 @@ const DELEGATE_REQUEST_OBJECT_SCHEMA = {
         identity: 'immutable_upload_or_artifact_version'
       },
       description: 'Immutable Upload Version or Artifact Version identities only.'
+    },
+    output_schema: {
+      description:
+        'Optional JSON Schema Draft 2020-12 contract for child host.submit_output(value).'
     }
   }
 } as const
@@ -152,7 +156,14 @@ const DELEGATE_AGENT_CONTRACT = {
                 'status',
                 'artifacts_created'
               ],
-              optional: ['terminal_message_id', 'response', 'cancellation_reason', 'error'],
+              optional: [
+                'terminal_message_id',
+                'response',
+                'cancellation_reason',
+                'error',
+                'structured_output',
+                'structured_output_unsatisfied'
+              ],
               properties: {
                 frame_id: { type: 'string' },
                 attempt_id: { type: 'string' },
@@ -179,7 +190,9 @@ const DELEGATE_AGENT_CONTRACT = {
                     code: { type: 'string' },
                     message: { type: 'string' }
                   }
-                }
+                },
+                structured_output: { description: 'Accepted JSON value for the exact Attempt.' },
+                structured_output_unsatisfied: { type: 'boolean' }
               }
             }
           }
@@ -237,10 +250,21 @@ const parseDelegateRpcCall = (params: Readonly<Record<string, unknown>>): Delega
   if (requestedOptions.wait === false && timeoutSeconds !== undefined) {
     throw new Error('host.delegate wait:false cannot be combined with timeout_seconds.')
   }
+  const mapRequest = (candidate: Record<string, unknown>): DurableDelegateRequest => {
+    const { output_schema, ...rest } = candidate
+    return {
+      ...(rest as DurableDelegateRequest),
+      ...(output_schema !== undefined
+        ? { outputSchema: output_schema as DurableDelegateRequest['outputSchema'] }
+        : {})
+    }
+  }
   return {
     // Semantic request validation remains in DelegatedWorkAdmissionPolicy so RPC callers retain
     // the existing domain errors for empty arrays, tasks, profiles, contexts, and input identities.
-    request: request as DurableDelegateRequest | readonly DurableDelegateRequest[],
+    request: Array.isArray(request)
+      ? request.map((candidate) => mapRequest(candidate as Record<string, unknown>))
+      : mapRequest(request),
     options: {
       ...(typeof requestedOptions.wait === 'boolean' ? { wait: requestedOptions.wait } : {}),
       ...(typeof timeoutSeconds === 'number' ? { timeoutSeconds } : {})

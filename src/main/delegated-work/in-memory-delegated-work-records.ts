@@ -6,6 +6,7 @@ import type {
   DurablePendingMessage,
   DurableSnapshot
 } from './durable-delegated-work'
+import { canonicalStructuredOutputEqual } from './structured-output'
 
 type SessionKey = DurableSnapshot['session']
 type DurableChild = DurableSnapshot['records'][number]
@@ -80,6 +81,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
           title: child.title,
           task: child.request.task,
           context: child.request.context,
+          outputSchema: child.request.outputSchema,
           inputs: [...(child.request.inputs ?? [])],
           messageBranchId: `branch-${child.frameId}`,
           attempts: [
@@ -106,7 +108,10 @@ const createInMemoryDelegatedWorkRecords = (input: {
           content: child.request.context
             ? `${child.request.task}\n\nContext:\n${child.request.context}`
             : child.request.task,
-          createdAt: child.startedAt
+          createdAt: child.startedAt,
+          ...(child.structuredOutputEvidence
+            ? { structuredOutputEvidence: structuredClone(child.structuredOutputEvidence) }
+            : {})
         }))
       )
     },
@@ -253,6 +258,28 @@ const createInMemoryDelegatedWorkRecords = (input: {
       if (!attempt.runtimeSegmentIds.includes(runtimeSegmentId)) {
         throw new Error('Child Turn Runtime Segment is outside the Attempt.')
       }
+    },
+    async submitOutput(frameId, attemptId, schemaDigest, value, acceptedAt) {
+      findRunning(frameId, attemptId)
+      const message = state.messages.find(
+        (candidate) => candidate.structuredOutputEvidence?.attemptId === attemptId
+      )
+      const evidence = message?.structuredOutputEvidence
+      if (!message || !evidence || evidence.schemaDigest !== schemaDigest) {
+        throw new DurableDelegatedWorkError('conflict', 'structured output contract is unavailable')
+      }
+      if (evidence.accepted) {
+        if (canonicalStructuredOutputEqual(evidence.accepted.value, value)) return 'idempotent'
+        throw new DurableDelegatedWorkError(
+          'conflict',
+          'a different structured output was already accepted'
+        )
+      }
+      message.structuredOutputEvidence = {
+        ...evidence,
+        accepted: { value: structuredClone(value), acceptedAt }
+      }
+      return 'accepted'
     },
     snapshot: async () => structuredClone(state)
   }

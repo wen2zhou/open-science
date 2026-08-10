@@ -34,6 +34,83 @@ afterEach(async () => {
 })
 
 describe('delegated Notebook lane capability', () => {
+  it('binds submit_output ownership to the child capability and fences revoked writes', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'delegated-output-capability-'))
+    const submitOutput = vi.fn(async () => ({ accepted: true as const }))
+    const service = new NotebookRuntimeService({
+      configRoot: storageRoot,
+      dataRoot: storageRoot,
+      projectName: 'project-1',
+      repository: new NotebookRunRepository(storageRoot),
+      executorFactory: () => ({
+        execute: async (input) => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: input.cwd,
+          outputs: [],
+          workingFiles: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const server = new NotebookLocalRpcServer(service, {
+      token: 'global-token',
+      delegatedWorkService: { delegate: vi.fn(), submitOutput }
+    })
+    const child = await server.issueDelegatedNotebookConnection({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      rootFrameId: 'root-frame',
+      agentFrameId: 'child-frame',
+      attemptId: 'child-attempt',
+      messageBranchId: 'child-branch',
+      runtimeSegmentId: 'child-runtime',
+      promptMessageId: 'child-prompt',
+      workspaceCwd: '/workspace/child',
+      isAttemptWritable: () => true
+    })
+    try {
+      const globalForgery = await request(
+        { endpoint: child.endpoint, socketPath: child.socketPath, token: 'global-token' },
+        'delegatedOutputCall',
+        {
+          value: { answer: 0 },
+          project_id: 'project-1',
+          session_id: 'session-1',
+          frame_id: 'child-frame',
+          attempt_id: 'child-attempt',
+          origin_message_id: 'child-prompt'
+        }
+      )
+      expect(globalForgery.status).toBe(401)
+      expect(submitOutput).not.toHaveBeenCalled()
+      const response = await request(child, 'delegatedOutputCall', {
+        value: { answer: 42 },
+        project_id: 'forged',
+        session_id: 'forged',
+        frame_id: 'forged',
+        attempt_id: 'forged'
+      })
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toEqual({ result: { accepted: true } })
+      expect(submitOutput).toHaveBeenCalledWith(
+        expect.objectContaining({
+          session: { projectId: 'project-1', sessionId: 'session-1' },
+          frameId: 'child-frame',
+          attemptId: 'child-attempt',
+          role: 'delegate'
+        }),
+        { answer: 42 }
+      )
+      await child.revoke()
+      expect((await request(child, 'delegatedOutputCall', { value: null })).status).toBe(401)
+    } finally {
+      await server.close()
+    }
+  })
+
   it('binds sibling tokens to isolated Frame lanes and actual Run provenance', async () => {
     storageRoot = await mkdtemp(join(tmpdir(), 'delegated-notebook-'))
     const invocationCounts = new WeakMap<object, number>()

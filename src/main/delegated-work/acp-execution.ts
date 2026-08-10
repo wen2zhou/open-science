@@ -490,7 +490,11 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
           return
         }
 
-        let nextPrompt = options.buildPrompt?.(input) ?? input.task
+        let nextPrompt =
+          options.buildPrompt?.(input) ??
+          (input.outputSchema === undefined
+            ? input.task
+            : `${input.task}\n\nReturn ordinary text and any Artifacts as usual. Before finishing, submit the structured result with host.submit_output(value) using this JSON Schema:\n${JSON.stringify(input.outputSchema)}`)
         activeTurn =
           input.turn ??
           (scope.provenance.promptMessageId
