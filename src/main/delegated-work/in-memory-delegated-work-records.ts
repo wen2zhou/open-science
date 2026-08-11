@@ -97,7 +97,6 @@ const createInMemoryDelegatedWorkRecords = (input: {
           originBindingState: 'validated' as const,
           title: finalNames[index],
           task: child.request.task,
-          context: child.request.context,
           outputSchema: child.request.outputSchema,
           inputs: [...(child.request.inputs ?? [])],
           messageBranchId: `branch-${child.frameId}`,
@@ -121,9 +120,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
           id: child.userMessageId,
           frameId: child.frameId,
           role: 'user' as const,
-          content: child.request.context
-            ? `${child.request.task}\n\nContext:\n${child.request.context}`
-            : child.request.task,
+          content: child.request.task,
           createdAt: child.startedAt,
           ...(child.structuredOutputEvidence
             ? { structuredOutputEvidence: structuredClone(child.structuredOutputEvidence) }

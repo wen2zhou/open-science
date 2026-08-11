@@ -114,7 +114,6 @@ const createClaudeCodeDelegateExecution = (
   createAcpDelegateExecution({
     capacity: options.capacity,
     prepare: options.prepare,
-    buildPrompt: options.buildPrompt,
     assertFrameworkNativeDelegationDisabled: (scope) => {
       if (scope.frameworkId !== 'claude-code') {
         throw new Error('Claude Code delegated execution received a different framework scope.')

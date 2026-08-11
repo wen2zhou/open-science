@@ -57,7 +57,7 @@ last_verified_sha: fc3f415103e2634be48495db057bac8d32eb3507
 
 ```ts
 host.delegate(
-  request: { task: string; name: string; profile?: string; context?: string; inputs?: string[] }
+  request: { task: string; name: string; profile?: string; inputs?: string[] }
     | readonly request[],
   options?: { wait?: boolean }
 )

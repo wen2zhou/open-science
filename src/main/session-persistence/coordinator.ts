@@ -697,7 +697,6 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
           throw new Error('Initial delegated Attempt must belong to its admitting root Turn.')
         }
         const finalName = finalNames[index]
-        const content = child.context ? `${child.task}\n\nContext:\n${child.context}` : child.task
         graph.frames.push({
           id: child.frameId,
           parentFrameId: input.parentFrameId,
@@ -722,9 +721,8 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
         graph.messages.push({
           id: child.messageId,
           role: 'user',
-          content,
+          content: child.task,
           delegatedTask: child.task,
-          ...(child.context ? { delegatedContext: child.context } : {}),
           ...(child.inputs?.length ? { delegatedInputVersionIds: [...child.inputs] } : {}),
           delegatedCallerSource: child.callerSource,
           ...(child.structuredOutputEvidence

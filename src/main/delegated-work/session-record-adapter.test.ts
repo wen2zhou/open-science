@@ -451,16 +451,14 @@ describe('Session delegated-work adapter', () => {
     }
 
     const pending = work.delegate(caller, {
-      task: 'Trace the source',
+      task: 'Trace the source. Prefer primary evidence.',
       name: 'Trace source',
-      context: 'Prefer primary evidence.',
       inputs: ['upload-version:one']
     })
 
     await expect.poll(() => execution.controls()).toHaveLength(1)
     expect(execution.controls()[0].input).toMatchObject({
-      task: 'Trace the source',
-      context: 'Prefer primary evidence.',
+      task: 'Trace the source. Prefer primary evidence.',
       inputs: ['upload-version:one']
     })
     expect((await records.snapshot()).records[0].attempts[0].resolvedAgent).toEqual({
@@ -477,7 +475,7 @@ describe('Session delegated-work adapter', () => {
     await expect(work.readAgentFrame(key, 'child-frame')).resolves.toMatchObject({
       status: 'completed',
       messages: [
-        { role: 'user', content: 'Trace the source\n\nContext:\nPrefer primary evidence.' },
+        { role: 'user', content: 'Trace the source. Prefer primary evidence.' },
         { role: 'assistant', content: 'Durable answer' }
       ]
     })
@@ -487,10 +485,14 @@ describe('Session delegated-work adapter', () => {
         (message) => message.agentFrameId === 'child-frame' && message.role === 'user'
       )
     ).toMatchObject({
-      delegatedTask: 'Trace the source',
-      delegatedContext: 'Prefer primary evidence.',
+      delegatedTask: 'Trace the source. Prefer primary evidence.',
       delegatedInputVersionIds: ['upload-version:one']
     })
+    expect(
+      restored?.conversationGraph?.messages.find(
+        (message) => message.agentFrameId === 'child-frame' && message.role === 'user'
+      )
+    ).not.toHaveProperty('delegatedContext')
   })
 
   it('persists rich terminal transcript evidence without writing each runtime chunk', async () => {

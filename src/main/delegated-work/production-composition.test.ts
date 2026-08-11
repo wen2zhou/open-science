@@ -108,7 +108,8 @@ const createCompositionHarness = async (
     createdAt: number
   }>[] = [],
   resolveExecutionModel?: ProductionDelegatedWorkOptions['resolveExecutionModel'],
-  frameworksOverride?: ProductionDelegatedWorkOptions['frameworks']
+  frameworksOverride?: ProductionDelegatedWorkOptions['frameworks'],
+  resolveInputOverride?: ProductionDelegatedWorkOptions['resolveInput']
 ): Promise<CompositionHarness> => {
   const rootMessage = {
     id: `root-message-${frameworkId}`,
@@ -222,9 +223,11 @@ const createCompositionHarness = async (
       findSessions: async (sessionId) =>
         durable.id === sessionId ? [structuredClone(durable)] : []
     },
-    resolveInput: async () => {
-      throw new Error('no inputs')
-    },
+    resolveInput:
+      resolveInputOverride ??
+      (async () => {
+        throw new Error('no inputs')
+      }),
     frameworks: frameworksOverride ?? {
       async forSession(current) {
         selected.push(current.agentFrameworkId!)
@@ -264,6 +267,7 @@ const createCompositionHarness = async (
 
 type FrameworkRuntimeControl = Readonly<{
   input: DelegateExecutionInput
+  prompts: string[]
   submitInvalid(): Promise<void>
   submitValid(): Promise<void>
   complete(options?: Readonly<{ submit?: boolean; text?: string }>): Promise<void>
@@ -273,6 +277,8 @@ const createFrameworkCompositionHarness = async (
   dataRoot: string,
   frameworkId: AgentFrameworkId
 ): Promise<CompositionHarness & { controls: Map<string, FrameworkRuntimeControl> }> => {
+  const immutableInputPath = join(dataRoot, 'framework-input.txt')
+  await writeFile(immutableInputPath, 'framework evidence\n', 'utf8')
   const service = new NotebookRuntimeService({
     configRoot: dataRoot,
     dataRoot,
@@ -424,6 +430,7 @@ const createFrameworkCompositionHarness = async (
             resolvePrompt = resolve
           })
           const input = inputs.get(scope.executionId)!
+          const prompts: string[] = []
           const capability = capabilities.get(scope.executionId)!
           const submit = (value: unknown): Promise<Response> =>
             fetchLocalRpc(
@@ -440,6 +447,7 @@ const createFrameworkCompositionHarness = async (
             )
           controls.set(scope.executionId, {
             input,
+            prompts,
             async submitInvalid() {
               expect((await submit({ count: 'three' })).ok).toBe(false)
             },
@@ -469,7 +477,8 @@ const createFrameworkCompositionHarness = async (
           })
           return {
             createSession: async () => ({ sessionId: `provider-${scope.executionId}` }),
-            sendAppContinuation: async () => {
+            sendAppContinuation: async ({ text }) => {
+              prompts.push(text)
               callbacks.onProviderPromptAccepted(`provider-${scope.executionId}`)
               return prompt
             },
@@ -497,7 +506,11 @@ const createFrameworkCompositionHarness = async (
       }
     ],
     undefined,
-    frameworks
+    frameworks,
+    async (identity) => {
+      if (identity !== 'upload-version:framework-input') throw new Error('unknown input')
+      return { path: immutableInputPath, filename: 'framework-input.txt' }
+    }
   )
   context.harness = harness
   context.composition = harness.composition
@@ -514,6 +527,28 @@ afterEach(async () => {
 })
 
 describe('production delegated-work composition', () => {
+  it('rejects a removed own context field before reservation, workspace, or durable mutation', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-removed-context-'))
+    const harness = await createCompositionHarness(root, 'codex')
+
+    await expect(
+      harness.composition.host.delegate(
+        harness.caller,
+        [
+          { task: 'valid sibling', name: 'valid sibling' },
+          { task: 'legacy child', name: 'legacy child', context: 'legacy detail' } as never
+        ],
+        { wait: false }
+      )
+    ).rejects.toMatchObject({
+      code: 'admission_rejection',
+      message: expect.stringMatching(/context.*removed.*task/i)
+    })
+    expect(harness.execution.reservationCounts()).toEqual([])
+    expect(harness.durable().runtimeContext?.delegatedWork?.records ?? []).toEqual([])
+    await expect(access(join(root, 'delegated-work', 'project-1'))).rejects.toThrow()
+  })
+
   it('requires non-emoji names and persists caller-chosen unique names across production reopen', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-naming-'))
     const harness = await createCompositionHarness(root, 'codex')
@@ -748,6 +783,7 @@ describe('production delegated-work composition', () => {
       const pending = harness.composition.host.delegate(harness.caller, {
         task: 'Return a structured count',
         name: `Structured count ${frameworkId}`,
+        inputs: ['upload-version:framework-input'],
         outputSchema: {
           type: 'object',
           required: ['count'],
@@ -757,6 +793,22 @@ describe('production delegated-work composition', () => {
       })
       await expect.poll(() => harness.controls.size).toBe(1)
       const control = [...harness.controls.values()][0]
+      await expect.poll(() => control.prompts).toHaveLength(1)
+      await expect(
+        readFile(join(control.input.workspaceCwd!, 'inputs', '01-framework-input.txt'), 'utf8')
+      ).resolves.toBe('framework evidence\n')
+      const initialPrompt = control.prompts[0]
+      expect(initialPrompt).toContain('Return a structured count')
+      expect(initialPrompt).toContain('read-only ./inputs/')
+      expect(initialPrompt).toContain('host.submit_output(value)')
+      expect(initialPrompt.indexOf('Return a structured count')).toBeLessThan(
+        initialPrompt.indexOf('read-only ./inputs/')
+      )
+      expect(initialPrompt.indexOf('read-only ./inputs/')).toBeLessThan(
+        initialPrompt.indexOf('host.submit_output(value)')
+      )
+      expect(initialPrompt).not.toContain(control.input.workspaceCwd!)
+      expect(initialPrompt).not.toContain('upload-version:framework-input')
       await control.complete()
       const result = await pending
       expect(result).toMatchObject({
@@ -783,6 +835,7 @@ describe('production delegated-work composition', () => {
           structuredOutput: { count: 3 }
         }
       ])
+      await harness.composition.root.deleteSession(harness.session.id)
     }
   )
 

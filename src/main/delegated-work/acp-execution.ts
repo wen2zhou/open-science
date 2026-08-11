@@ -95,7 +95,6 @@ type AcpDelegateExecutionOptions = Readonly<{
     scope: PreparedDelegateExecution,
     callbacks: AcpDelegateExecutionCallbacks
   ): AcpDelegateRuntime
-  buildPrompt?(input: DelegateExecutionInput): string
 }>
 
 type Deferred<Value> = Readonly<{
@@ -140,6 +139,21 @@ const assertPreparedScope = (
   if (input.workspaceCwd && scope.workspace.cwd !== input.workspaceCwd) {
     throw new Error('prepared execution workspace does not match the staged Frame cwd')
   }
+}
+
+const buildInitialDelegatePrompt = (input: DelegateExecutionInput): string => {
+  const sections = [input.task]
+  if (input.inputs.length > 0) {
+    sections.push(
+      'Immutable input copies are available in the read-only ./inputs/ directory. Inspect that directory and read the relevant files.'
+    )
+  }
+  if (input.outputSchema !== undefined) {
+    sections.push(
+      `Return ordinary text and any Artifacts as usual. Before finishing, submit the structured result with host.submit_output(value) using this JSON Schema:\n${JSON.stringify(input.outputSchema)}`
+    )
+  }
+  return sections.join('\n\n')
 }
 
 const addTurnUsage = (
@@ -502,11 +516,7 @@ const createAcpDelegateExecution = (options: AcpDelegateExecutionOptions): Deleg
           return
         }
 
-        let nextPrompt =
-          options.buildPrompt?.(input) ??
-          (input.outputSchema === undefined
-            ? input.task
-            : `${input.task}\n\nReturn ordinary text and any Artifacts as usual. Before finishing, submit the structured result with host.submit_output(value) using this JSON Schema:\n${JSON.stringify(input.outputSchema)}`)
+        let nextPrompt = buildInitialDelegatePrompt(input)
         activeTurn =
           input.turn ??
           (scope.provenance.promptMessageId

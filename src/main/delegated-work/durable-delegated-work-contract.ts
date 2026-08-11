@@ -29,7 +29,6 @@ type DurableDelegateRequest = Readonly<{
   task: string
   name: string
   profile?: string
-  context?: string
   inputs?: readonly string[]
   outputSchema?: JsonSchema
 }>

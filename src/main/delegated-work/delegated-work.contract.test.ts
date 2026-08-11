@@ -32,6 +32,25 @@ const createHarness = (): Harness => {
 
 const delegatedWorkContract = (create: () => Harness): void => {
   describe('delegated work contract', () => {
+    it('rejects the removed own context field before capacity reservation', async () => {
+      const { work, execution } = create()
+
+      await expect(
+        work.delegate(
+          mainCaller,
+          [
+            named('valid sibling'),
+            { task: 'legacy child', name: 'legacy child', context: undefined } as never
+          ],
+          { wait: false }
+        )
+      ).rejects.toMatchObject({
+        code: 'admission_rejection',
+        message: expect.stringMatching(/context.*removed.*task/i)
+      })
+      expect(execution.reservationCounts()).toEqual([])
+    })
+
     it('shares required, non-emoji, 48-code-point name admission before capacity reservation', async () => {
       const { work, execution } = create()
 

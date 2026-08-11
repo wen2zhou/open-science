@@ -69,6 +69,7 @@ S1、S2与S5均已通过各自production-composed release gate并达到`certifie
 - `decisions/0010-subagent-name-policy.md`（`superseded`）：旧的 optional/automatic name 行为。
 - `decisions/0011-required-non-emoji-subagent-name.md`（`superseded`）：旧的80-code-point与parent-lifetime唯一性。
 - `decisions/0012-branch-scoped-actionable-subagent-names.md`（`accepted`）：name必填、48-code-point、禁止emoji、当前branch唯一与actionable error。
+- `decisions/0013-remove-delegate-context.md`（`accepted`）：删除浅层`context`字段，由完整`task`承载文本说明并保留结构化`inputs`。
 
 ## 任务地图
 
@@ -85,6 +86,7 @@ S1、S2与S5均已通过各自production-composed release gate并达到`certifie
 | S9  | Role-aware Host SDK discovery      | Main与child都能发现完整Subagent操作目录、准确权限与调用合同，且child正式能力可达     | `accepted`    | `conformant`  | 现有 `HostSdkHelpRegistry`；Notebook capability/REPL Adapters                   | S1、S2、S5、S6 已接受合同                  | `host-sdk-discovery.md`                                                 |
 | S10 | 上行消息 inline 展示               | 用户在 Main 对话时间线中看到 direct Subagent 的提问或信息，并可进入来源 Subagent     | `accepted`    | `certified`   | `WorkspaceConversationItems`；Renderer transcript consumer                      | S5 durable message command                 | `inline-parent-messages.md`                                             |
 | S11 | 必填、简短、非 emoji 且branch唯一  | 每个child显式命名；48-code-point、当前branch可区分并给出可修正错误                   | `accepted`    | `conformant`  | `DelegatedWorkAdmissionPolicy`；Session persistence command                     | `SUB-DEC-0012`                             | `subagent-naming.md`                                                    |
+| S12 | 完整task与输入文件可发现性         | 删除重复context；child明确知道不可变输入位于`./inputs/`                              | `accepted`    | `conformant`  | `DurableDelegatedWork`与共享ACP prompt                                           | `SUB-DEC-0013`                             | `delegation-inputs.md`                                                  |
 
 Host SDK、local RPC、持久化和 Renderer 是每个纵向阶段的 Adapter 或 consumer。它们应随对应能力接线和验收，不作为等待所有 Module 完成后的统一集成 wave。
 

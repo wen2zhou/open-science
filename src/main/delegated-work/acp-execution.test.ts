@@ -288,6 +288,82 @@ delegatedWorkCertificationContract((options) => {
 })
 
 describe('ACP delegate execution production adapter', () => {
+  it('composes initial prompts from task, read-only inputs, and structured output without leaking identities', async () => {
+    const cases: Array<
+      Readonly<{
+        attemptId: string
+        input: Partial<DelegateExecutionInput>
+        expected: string
+      }>
+    > = [
+      { attemptId: 'task-only', input: {}, expected: 'Review evidence.' },
+      {
+        attemptId: 'with-inputs',
+        input: { inputs: ['upload-version:secret', 'artifact-version:internal'] },
+        expected:
+          'Review evidence.\n\nImmutable input copies are available in the read-only ./inputs/ directory. Inspect that directory and read the relevant files.'
+      },
+      {
+        attemptId: 'with-schema',
+        input: { outputSchema: { type: 'number' } },
+        expected:
+          'Review evidence.\n\nReturn ordinary text and any Artifacts as usual. Before finishing, submit the structured result with host.submit_output(value) using this JSON Schema:\n{"type":"number"}'
+      },
+      {
+        attemptId: 'with-both',
+        input: {
+          inputs: ['upload-version:secret'],
+          outputSchema: { type: 'object', required: ['answer'] }
+        },
+        expected:
+          'Review evidence.\n\nImmutable input copies are available in the read-only ./inputs/ directory. Inspect that directory and read the relevant files.\n\nReturn ordinary text and any Artifacts as usual. Before finishing, submit the structured result with host.submit_output(value) using this JSON Schema:\n{"type":"object","required":["answer"]}'
+      }
+    ]
+
+    for (const candidate of cases) {
+      const { execution, controls } = makeHarness(1)
+      const reservation = await execution.reserve(1)
+      const running = execution.run(
+        {
+          ...makeInput(candidate.attemptId),
+          task: 'Review evidence.',
+          ...candidate.input
+        },
+        reservation.slotIds[0]
+      )
+      await running.accepted
+      const prompts = controls.get(candidate.attemptId)?.prompts ?? []
+      expect(prompts).toEqual([candidate.expected])
+      expect(prompts.join('\n')).not.toContain('/workspace/')
+      expect(prompts.join('\n')).not.toMatch(/upload-version|artifact-version/)
+      controls.get(candidate.attemptId)?.complete()
+      await running.completion
+    }
+  })
+
+  it('repeats the input hint for a new continuation Attempt but not for messages in one Attempt', async () => {
+    const { execution, controls } = makeHarness(1)
+    const reservation = await execution.reserve(1)
+    const running = execution.run(
+      {
+        ...makeInput('continuation'),
+        task: 'Continue the audit.',
+        inputs: ['upload-version:secret'],
+        continuation: true
+      },
+      reservation.slotIds[0]
+    )
+    await running.accepted
+    const delivery = running.sendMessage('Focus on table 2.')
+    controls.get('continuation')?.complete()
+    await delivery
+    await running.completion
+
+    expect(controls.get('continuation')?.prompts).toEqual([
+      'Continue the audit.\n\nImmutable input copies are available in the read-only ./inputs/ directory. Inspect that directory and read the relevant files.',
+      'Focus on table 2.'
+    ])
+  })
   it('acknowledges a queued continuation and publishes one Attempt stop with aggregate usage', async () => {
     const firstPrompt = deferred<PromptResponse>()
     const secondPrompt = deferred<PromptResponse>()

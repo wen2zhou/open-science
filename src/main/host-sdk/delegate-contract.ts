@@ -112,11 +112,6 @@ const DELEGATE_REQUEST_OBJECT_SCHEMA = {
       description:
         'Stable Specialist id or unique exact public name from await host.agents.list(). Omit to inherit the authenticated parent Specialist; a Main Agent parent uses Main Agent.'
     },
-    context: {
-      type: 'string',
-      minLength: 1,
-      description: 'Non-empty explicit context; the parent transcript is not copied.'
-    },
     inputs: {
       type: 'array',
       items: {
@@ -276,7 +271,7 @@ const parseDelegateRpcCall = (params: Readonly<Record<string, unknown>>): Delega
   }
   return {
     // Semantic request validation remains in DelegatedWorkAdmissionPolicy so RPC callers retain
-    // the existing domain errors for empty arrays, tasks, profiles, contexts, and input identities.
+    // the existing domain errors for empty arrays, tasks, profiles, and input identities.
     request: Array.isArray(request)
       ? request.map((candidate) => mapRequest(candidate as Record<string, unknown>))
       : mapRequest(request),

@@ -12,7 +12,7 @@ supersedes: []
 
 ## 背景与当前行为
 
-当前 `host.delegate` 的每个 request 只有 `task`、`name`、`profile`、`context` 与 `inputs`；child execution 只产生文本 response、Artifact 与 Attempt terminal outcome。blocking `delegate` 和后续 `collect` 都通过同一 `DelegatedWorkProjectionOwner` 从 durable Attempt evidence 投影结果，但没有 schema、structured submission 或 `structured_output` 字段。
+当前 `host.delegate` 的每个 request 提供 `task`、`name`、`profile` 与 `inputs`；child execution 只产生文本 response、Artifact 与 Attempt terminal outcome。blocking `delegate` 和后续 `collect` 都通过同一 `DelegatedWorkProjectionOwner` 从 durable Attempt evidence 投影结果，但没有 schema、structured submission 或 `structured_output` 字段。
 
 参考 Host SDK 把 `output_schema` 放在单个 delegate request 中，并以 child 显式调用 `submit_output` 作为结果来源；未提交时可返回 `structured_output_unsatisfied`。参考文档对 structured output 是否替代文本 response 描述不一致，而本项目 S6 用户场景明确要求 structured output 与文本、Artifact 共存，因此不能直接复制参考 response shape。
 

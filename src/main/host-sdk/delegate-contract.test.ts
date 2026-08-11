@@ -23,7 +23,6 @@ describe('Agent-facing delegate contract', () => {
           description: expect.stringMatching(/required/i)
         },
         profile: { type: 'string', minLength: 1 },
-        context: { type: 'string', minLength: 1 },
         inputs: {
           type: 'array',
           items: { type: 'string', minLength: 1, identity: 'immutable_upload_or_artifact_version' }
@@ -32,6 +31,7 @@ describe('Agent-facing delegate contract', () => {
       }
     })
     expect(requestArray).toEqual({ type: 'array', minItems: 1, items: singleRequest })
+    expect(singleRequest.properties).not.toHaveProperty('context')
     expect(singleRequest.properties.profile.description).toContain(
       'Omit to inherit the authenticated parent Specialist'
     )

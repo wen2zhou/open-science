@@ -76,7 +76,6 @@ type DelegateExecutionInput = Readonly<{
   // Attempt settles, while the production runtime consumes only the lease-free backend view.
   executionBackend?: ResolvedAgentBackend
   task: string
-  context?: string
   inputs: readonly string[]
   workspaceCwd?: string
   profile?: string

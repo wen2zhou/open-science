@@ -3088,17 +3088,61 @@ describe('durable delegated work', () => {
     ).rejects.toMatchObject({ code: 'admission_rejection' })
     for (const [toolInvocationId, request] of [
       ['blank-task-call', { task: '   ', name: '   ' }],
-      ['blank-name-call', { task: 'inspect', name: '   ' }],
-      ['blank-context-call', { task: 'inspect', name: 'inspect', context: '   ' }]
+      ['blank-name-call', { task: 'inspect', name: '   ' }]
     ] as const) {
       await expect(
         work.delegate({ ...caller, toolInvocationId }, request, { wait: false })
       ).rejects.toMatchObject({ code: 'admission_rejection' })
     }
 
+    for (const [toolInvocationId, request] of [
+      [
+        'removed-context-call',
+        { task: 'inspect', name: 'inspect', context: 'legacy detail' } as never
+      ],
+      [
+        'removed-context-batch-call',
+        [
+          { task: 'first', name: 'first' },
+          { task: 'second', name: 'second', context: undefined } as never
+        ]
+      ]
+    ] as const) {
+      await expect(
+        work.delegate({ ...caller, toolInvocationId }, request, { wait: false })
+      ).rejects.toMatchObject({
+        code: 'admission_rejection',
+        message: expect.stringMatching(/context.*removed.*task/i)
+      })
+    }
+
     expect(execution.controls()).toEqual([])
     expect(execution.reservationCounts()).toEqual([])
     expect((await records.snapshot()).records).toEqual([])
+  })
+
+  it('treats only an own context property as the removed request field', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const request = Object.assign(Object.create({ context: 'prototype detail' }), {
+      task: 'inspect',
+      name: 'inspect'
+    })
+
+    const pending = work.delegate(
+      { ...caller, toolInvocationId: 'prototype-context-call' },
+      request,
+      { wait: false }
+    )
+    await expect.poll(() => execution.controls()).toHaveLength(1)
+    execution.controls()[0].accept()
+
+    await expect(pending).resolves.toMatchObject({ kind: 'receipts' })
   })
 
   it('rejects unavailable delegated-work capability or framework before reserving durable work', async () => {

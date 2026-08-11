@@ -23,7 +23,6 @@ type CreateChildRecordInput = Readonly<{
   attemptId: string
   task: string
   name: string
-  context?: string
   inputs?: readonly string[]
   resolvedAgent: DelegatedWorkResolvedAgent
   executionModel?: ResolvedSubagentModelSnapshot

@@ -206,7 +206,6 @@ const createDurableDelegatedWork = (
           executionModel: attempt.executionModel!,
           ...(executionBackendClaim ? { executionBackend: executionBackendClaim.backend } : {}),
           task,
-          ...(continuation ? {} : { context: child.context }),
           inputs: child.inputs,
           ...(workspace ? { workspaceCwd: workspace.cwd } : {}),
           ...(attempt.resolvedAgent.kind === 'specialist'
@@ -726,7 +725,6 @@ const createDurableDelegatedWork = (
       originBindingState: 'validated',
       title: admission.name,
       task: admission.request.task,
-      context: admission.request.context,
       outputSchema: admission.request.outputSchema,
       inputs: [...(admission.request.inputs ?? [])],
       messageBranchId: `branch-${admission.frameId}`,

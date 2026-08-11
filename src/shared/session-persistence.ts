@@ -301,7 +301,6 @@ export type PersistedChatMessage = {
   uploads?: PersistedUploadedAttachment[]
   // Delegate assignment metadata keeps execution inputs reconstructable without parsing display text.
   delegatedTask?: string
-  delegatedContext?: string
   delegatedInputVersionIds?: string[]
   // Durable source of a Main-to-child ACP Turn. Frame origin remains immutable lineage only.
   delegatedCallerSource?: DelegatedCallerSource
@@ -2370,7 +2369,6 @@ const sanitizeMessage = (
   const responseToMessageId = asString(message.responseToMessageId)
   const artifactIds = asStringArray(message.artifactIds)
   const delegatedTask = asString(message.delegatedTask)
-  const delegatedContext = asString(message.delegatedContext)
   const delegatedInputVersionIds = asStringArray(message.delegatedInputVersionIds)
   const explicitDelegatedCallerSource = sanitizeDelegatedCallerSource(message.delegatedCallerSource)
   const legacyCallerMessageId = asString(message.delegatedCallerMessageId)
@@ -2412,7 +2410,6 @@ const sanitizeMessage = (
   if (responseToMessageId) sanitized.responseToMessageId = responseToMessageId
   if (artifactIds.length > 0) sanitized.artifactIds = artifactIds
   if (delegatedTask) sanitized.delegatedTask = delegatedTask
-  if (delegatedContext) sanitized.delegatedContext = delegatedContext
   if (delegatedInputVersionIds.length > 0) {
     sanitized.delegatedInputVersionIds = delegatedInputVersionIds
   }

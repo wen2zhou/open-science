@@ -87,6 +87,23 @@ const createAdmissionGate = (): (<Result>(operation: () => Promise<Result>) => P
   }
 }
 
+const assertNoRemovedDelegateContext = (requests: readonly unknown[]): void => {
+  if (
+    requests.some(
+      (request) =>
+        typeof request === 'object' &&
+        request !== null &&
+        !Array.isArray(request) &&
+        Object.prototype.hasOwnProperty.call(request, 'context')
+    )
+  ) {
+    throw new DurableDelegatedWorkError(
+      'admission_rejection',
+      'delegate context was removed; include all goals, background, constraints, and deliverables in task and retry'
+    )
+  }
+}
+
 class DelegatedWorkAdmissionPolicy {
   constructor(
     private readonly resolveSpecialistById?: (
@@ -110,6 +127,7 @@ class DelegatedWorkAdmissionPolicy {
     const rawRequests: readonly unknown[] = Array.isArray(requestOrRequests)
       ? requestOrRequests
       : [requestOrRequests]
+    assertNoRemovedDelegateContext(rawRequests)
     if (
       rawRequests.length === 0 ||
       rawRequests.some(
@@ -141,18 +159,6 @@ class DelegatedWorkAdmissionPolicy {
       ...request,
       name: normalizeExplicitDelegateName(request.name)
     }))
-    if (
-      requests.some(
-        (request) =>
-          request.context !== undefined &&
-          (typeof request.context !== 'string' || !request.context.trim())
-      )
-    ) {
-      throw new DurableDelegatedWorkError(
-        'admission_rejection',
-        'an explicit delegate context cannot be empty'
-      )
-    }
     const inheritedAgent = requests.some((request) => request.profile === undefined)
       ? parentSpecialistProfileId === undefined
         ? ({ kind: 'main' } as const)
@@ -320,6 +326,7 @@ class DelegatedWorkAdmissionPolicy {
 export {
   MAX_DELEGATE_NAME_CODE_POINTS,
   allocateDelegateNames,
+  assertNoRemovedDelegateContext,
   createAdmissionGate,
   DelegatedWorkAdmissionPolicy
 }

@@ -76,7 +76,6 @@ const createSessionDelegatedWorkRecords = (
             attemptId: child.attemptId,
             task: child.request.task,
             name: child.name,
-            context: child.request.context,
             inputs: child.request.inputs,
             resolvedAgent: child.resolvedAgent,
             ...(child.executionModel ? { executionModel: child.executionModel } : {}),
@@ -400,7 +399,6 @@ const createSessionDelegatedWorkRecords = (
                 frame.originBindingState === 'validated' ? 'validated' : 'legacy-unavailable',
               title: frame.delegateName ?? frame.agentName ?? frame.id,
               task: firstMessage.delegatedTask ?? firstMessage.content,
-              context: firstMessage.delegatedContext,
               outputSchema: firstMessage.structuredOutputEvidence?.schema as
                 import('./structured-output').JsonSchema | undefined,
               inputs: firstMessage.delegatedInputVersionIds ?? [],

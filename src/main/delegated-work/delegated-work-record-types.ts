@@ -92,7 +92,6 @@ type DurableChild = {
   originBindingState: 'validated' | 'legacy-unavailable'
   title: string
   task: string
-  context?: string
   outputSchema?: JsonSchema
   inputs: readonly string[]
   messageBranchId: string

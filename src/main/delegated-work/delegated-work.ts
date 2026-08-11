@@ -5,7 +5,11 @@ import {
   type DelegateExecutionInput,
   type RunningDelegateExecution
 } from './execution-port'
-import { allocateDelegateNames, createAdmissionGate } from './delegated-work-admission'
+import {
+  allocateDelegateNames,
+  assertNoRemovedDelegateContext,
+  createAdmissionGate
+} from './delegated-work-admission'
 import { DurableDelegatedWorkError } from './durable-delegated-work-error'
 
 type SessionKey = Readonly<{ projectId: string; sessionId: string }>
@@ -18,7 +22,6 @@ type DelegateRequest = Readonly<{
   task: string
   name: string
   profile?: string
-  context?: string
   inputs?: readonly string[]
 }>
 type DelegatedWorkErrorCode =
@@ -180,7 +183,6 @@ const createDelegatedWork = (options: {
       attemptId: attempt.id,
       runtimeSegmentId: `runtime-${attempt.id}`,
       task: child.request.task,
-      context: child.request.context,
       inputs: child.request.inputs ?? [],
       profile: child.request.profile,
       continuation
@@ -271,6 +273,14 @@ const createDelegatedWork = (options: {
         throw new DelegatedWorkError('authorization', 'only the Main Agent can delegate work')
       }
       const requests = Array.isArray(requestOrRequests) ? requestOrRequests : [requestOrRequests]
+      try {
+        assertNoRemovedDelegateContext(requests)
+      } catch (error) {
+        if (error instanceof DurableDelegatedWorkError) {
+          throw new DelegatedWorkError(error.code, error.message)
+        }
+        throw error
+      }
       if (requests.length === 0 || requests.some((request) => request.task.trim().length === 0)) {
         throw new DelegatedWorkError('admission_rejection', 'delegation requires one or more tasks')
       }
