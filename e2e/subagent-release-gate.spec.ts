@@ -412,6 +412,10 @@ test('routes reliable Main and child messages through production Host RPC and th
   ).toBeVisible({
     timeout: 120_000
   })
+  const inlineQuestion = page.getByRole('article', {
+    name: /asked a question\./
+  })
+  await expect(inlineQuestion).toContainText('Child reliable question reached Main')
   const evidence = await page.evaluate(async (projectId) => {
     const loaded = await window.api.sessions.loadAll()
     const session = loaded.sessions.find((candidate) => candidate.projectId === projectId)

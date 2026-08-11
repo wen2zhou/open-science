@@ -103,13 +103,25 @@ const createSessionPlanPreviewItem = vi.fn((sessionId: string, projectId: string
   toolKind: 'plan' as const,
   title: 'Plan'
 }))
+const createSessionSubagentsPreviewItem = vi.fn(
+  (sessionId: string, projectId: string | undefined, selectedAgentFrameId: string) => ({
+    id: `tool:${sessionId}:subagents`,
+    sessionId,
+    ...(projectId ? { projectId } : {}),
+    type: 'tool' as const,
+    toolKind: 'subagents' as const,
+    title: 'Subagents',
+    selectedAgentFrameId
+  })
+)
 const announceWindowFindReady = vi.fn(() => () => undefined)
 
 vi.mock('@/stores/preview-workbench-store', () => ({
   usePreviewWorkbenchStore: {
     getState: () => ({ upsertAndActivateItem })
   },
-  createSessionPlanPreviewItem
+  createSessionPlanPreviewItem,
+  createSessionSubagentsPreviewItem
 }))
 
 const createMessage = (overrides: Partial<ChatMessage>): ChatMessage => ({
@@ -214,6 +226,7 @@ describe('WorkspaceMessageScroller artifact click behavior', () => {
 
   beforeEach(() => {
     upsertAndActivateItem.mockClear()
+    createSessionSubagentsPreviewItem.mockClear()
     announceWindowFindReady.mockClear()
     flushSessionPersistenceMock.mockReset().mockResolvedValue(undefined)
     useReviewStore.setState(createInitialReviewState())
@@ -259,6 +272,98 @@ describe('WorkspaceMessageScroller artifact click behavior', () => {
       root.unmount()
     })
     container.remove()
+  })
+
+  it('opens the exact durable source Frame from an inline upward message', async () => {
+    const { WorkspaceMessageScroller } = await import('./WorkspaceMessageScroller')
+    const rootPrompt = createMessage({
+      id: 'root-prompt',
+      content: 'Gather evidence',
+      createdAt: 100,
+      updatedAt: 100
+    })
+    const session = createSession({
+      id: 'session-inline',
+      projectId: 'project-inline',
+      messages: [rootPrompt]
+    })
+    session.conversationGraph = createLinearConversationGraph({
+      sessionId: session.id,
+      messages: session.messages,
+      frameworkId: 'codex',
+      createdAt: 100,
+      updatedAt: 100
+    })
+    const graph = session.conversationGraph
+    const rootFrame = graph.frames.find(({ id }) => id === graph.rootFrameId)!
+    graph.frames.push({
+      id: 'source-child-frame',
+      parentFrameId: graph.rootFrameId,
+      originMessageId: rootPrompt.id,
+      originBindingState: 'validated',
+      kind: 'delegate',
+      delegateName: 'Evidence mapper',
+      status: 'running',
+      activeBranchId: 'source-child-branch',
+      createdAt: 110
+    })
+    session.runtimeContext = {
+      version: 1,
+      revision: 1,
+      delegatedWork: {
+        records: [],
+        messageCommands: [
+          {
+            messageId: 'upward-message',
+            requestId: 'request-upward',
+            sourcePrincipal: 'child',
+            canonicalDigest: 'digest-upward',
+            sourceFrameId: 'source-child-frame',
+            targetFrameId: graph.rootFrameId,
+            rootOriginMessageId: rootPrompt.id,
+            callerRootMessageId: rootPrompt.id,
+            rootBranchId: rootFrame.activeBranchId,
+            rootBranchRevision: 'revision-1',
+            direction: 'to_parent',
+            disposition: 'message',
+            text: 'Should I include the preprint evidence?',
+            kind: 'question',
+            laneSequence: 1,
+            queuedAt: 120,
+            receipt: {
+              status: 'accepted',
+              acceptedAt: 130,
+              evidence: 'provider_prompt_accepted'
+            }
+          }
+        ]
+      }
+    }
+
+    root = createRoot(container)
+    await act(async () => {
+      root.render(
+        <WorkspaceMessageScroller activeSession={session} onSendEditedMessage={vi.fn()} />
+      )
+    })
+
+    const source = container.querySelector<HTMLButtonElement>(
+      'button[aria-label="Open Subagent preview for Evidence mapper"]'
+    )
+    expect(source).not.toBeNull()
+    await act(async () => source?.click())
+
+    expect(createSessionSubagentsPreviewItem).toHaveBeenCalledWith(
+      'session-inline',
+      'project-inline',
+      'source-child-frame'
+    )
+    expect(upsertAndActivateItem).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'tool:session-inline:subagents',
+        selectedAgentFrameId: 'source-child-frame'
+      })
+    )
   })
 
   it('reserves a read-only transcript card while structured input waits below', async () => {

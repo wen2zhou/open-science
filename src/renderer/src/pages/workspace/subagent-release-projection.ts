@@ -5,6 +5,7 @@ import {
   type PersistedAgentFrame
 } from '../../../../shared/conversation-graph'
 import type {
+  DelegatedMessageCommand,
   DelegatedWorkAttemptRecord,
   PersistedChatMessage,
   PersistedChatSession
@@ -35,6 +36,15 @@ type SubagentFrameProjection = Readonly<{
   messages: readonly PersistedChatMessage[]
 }>
 
+type InlineParentMessageProjection = Readonly<{
+  messageId: string
+  sourceFrameId: string
+  sourceName: string
+  kind: DelegatedMessageCommand['kind']
+  text: string
+  queuedAt: number
+}>
+
 type DelegatedWorkAvailability =
   Readonly<{ available: true }> | Readonly<{ available: false; title: string; description: string }>
 
@@ -58,8 +68,13 @@ const latestAttempt = (
     .find((record) => record.agentFrameId === frameId)
     ?.attempts.at(-1)
 
+const readableNameForFrame = (frame: PersistedAgentFrame): string | undefined =>
+  frame.delegateName?.trim() || frame.agentName?.trim() || undefined
+
 const titleForFrame = (frame: PersistedAgentFrame): string =>
-  frame.delegateName?.trim() || frame.agentName?.trim() || `Subagent ${frame.id}`
+  readableNameForFrame(frame) ?? `Subagent ${frame.id}`
+const inlineSourceNameForFrame = (frame: PersistedAgentFrame): string =>
+  readableNameForFrame(frame) ?? 'Subagent'
 
 const agentLabelForFrame = (session: PersistedChatSession, frame: PersistedAgentFrame): string => {
   const resolved = latestAttempt(session, frame.id)?.resolvedAgent
@@ -110,6 +125,53 @@ const projectSessionSubagents = (
   }
 }
 
+const projectInlineParentMessages = (
+  session: PersistedChatSession | undefined
+): readonly InlineParentMessageProjection[] => {
+  const graph = session?.conversationGraph
+  const commands = session?.runtimeContext?.delegatedWork?.messageCommands
+  if (!graph || !commands) return []
+  if (graph.activeFrameId !== graph.rootFrameId) return []
+  const root = graph.frames.find((frame) => frame.id === graph.rootFrameId && frame.kind === 'root')
+  if (!root) return []
+  const activeRootMessageIds = resolveActiveRootMessageIds(graph)
+  if (!activeRootMessageIds) return []
+
+  const projectedByMessageId = new Map<string, InlineParentMessageProjection>()
+  for (const command of commands) {
+    if (
+      command.direction !== 'to_parent' ||
+      command.disposition !== 'message' ||
+      command.rootBranchId !== root.activeBranchId ||
+      command.targetFrameId !== root.id
+    ) {
+      continue
+    }
+    const source = graph.frames.find(
+      (frame) =>
+        frame.id === command.sourceFrameId &&
+        frame.kind === 'delegate' &&
+        frame.parentFrameId === root.id &&
+        frame.originBindingState === 'validated' &&
+        Boolean(frame.originMessageId && activeRootMessageIds.has(frame.originMessageId))
+    )
+    if (!source) continue
+
+    projectedByMessageId.set(command.messageId, {
+      messageId: command.messageId,
+      sourceFrameId: source.id,
+      sourceName: inlineSourceNameForFrame(source),
+      kind: command.kind,
+      text: command.text,
+      queuedAt: command.queuedAt
+    })
+  }
+
+  return [...projectedByMessageId.values()].sort(
+    (left, right) => left.queuedAt - right.queuedAt || left.messageId.localeCompare(right.messageId)
+  )
+}
+
 const selectSubagentFrame = (
   session: PersistedChatSession | undefined,
   frameId: string
@@ -157,6 +219,7 @@ const resolveDelegatedWorkAvailability = (
 }
 
 export {
+  projectInlineParentMessages,
   projectSessionSubagents,
   resolveActiveRootMessageIds,
   resolveDelegatedWorkAvailability,
@@ -164,6 +227,7 @@ export {
 }
 export type {
   DelegatedWorkAvailability,
+  InlineParentMessageProjection,
   SessionSubagentChild,
   SessionSubagentProjection,
   SubagentFrameProjection,

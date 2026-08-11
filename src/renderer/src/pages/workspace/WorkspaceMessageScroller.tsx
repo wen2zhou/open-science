@@ -7,7 +7,8 @@ import {
 } from '@/components/ui/message-scroller'
 import {
   usePreviewWorkbenchStore,
-  createSessionReviewerPreviewItem
+  createSessionReviewerPreviewItem,
+  createSessionSubagentsPreviewItem
 } from '@/stores/preview-workbench-store'
 import { selectProjectSessionReviews, useReviewStore } from '@/stores/review-store'
 import { useSettingsStore } from '@/stores/settings-store'
@@ -63,6 +64,7 @@ import { useHandoffLifecycleEvents } from './useHandoffLifecycleEvents'
 import type { NotebookSessionReference } from '../../../../shared/notebook'
 import { useNotebookRunsById } from './use-notebook-runs-by-id'
 import { WorkspaceElicitationCard } from './WorkspaceElicitationCard'
+import { WorkspaceSubagentMessageRow } from './WorkspaceSubagentMessageRow'
 
 type WorkspaceMessageScrollerProps = {
   activeSession: ChatSession | undefined
@@ -649,6 +651,32 @@ const WorkspaceMessageScrollerImpl = ({
                           />
                         ) : null}
                       </div>
+                    )
+                  }
+
+                  if (item.type === 'subagent-message') {
+                    return (
+                      <MessageScrollerItem key={item.id} messageId={item.id} className="min-w-0">
+                        <div className="px-4 pb-1 pt-3 md:px-6">
+                          <div className="mx-auto w-full max-w-[56rem]">
+                            <WorkspaceSubagentMessageRow
+                              message={item.message}
+                              onOpenSource={() => {
+                                if (!currentSessionId) return
+                                usePreviewWorkbenchStore
+                                  .getState()
+                                  .upsertAndActivateItem(
+                                    createSessionSubagentsPreviewItem(
+                                      currentSessionId,
+                                      currentProjectId,
+                                      item.message.sourceFrameId
+                                    )
+                                  )
+                              }}
+                            />
+                          </div>
+                        </div>
+                      </MessageScrollerItem>
                     )
                   }
 

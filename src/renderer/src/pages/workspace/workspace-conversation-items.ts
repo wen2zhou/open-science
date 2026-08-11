@@ -7,6 +7,10 @@ import {
   type HandoffTranscriptProjection
 } from './handoff-lifecycle-projection'
 import { getLoadedSkillName, isSkillActivity } from './workspace-tool-activity-details'
+import {
+  projectInlineParentMessages,
+  type InlineParentMessageProjection
+} from './subagent-release-projection'
 
 type ConversationMessageItem = {
   id: string
@@ -38,12 +42,21 @@ type ConversationHandoffItem = HandoffTranscriptProjection & {
   sortIndex: number
 }
 
+type ConversationSubagentMessageItem = {
+  id: string
+  type: 'subagent-message'
+  createdAt: number
+  sortIndex: number
+  message: InlineParentMessageProjection
+}
+
 type ConversationItem =
   | ConversationMessageItem
   | ConversationActivityItem
   | ConversationPlanActivityItem
   | ConversationCompactionActivityItem
   | ConversationHandoffItem
+  | ConversationSubagentMessageItem
 
 const KNOWN_TITLE_TOOL_NAMES = new Set(['ToolSearch'])
 
@@ -212,9 +225,20 @@ const createConversationItems = (
     // authoritative across the two streams; this only makes exact ties deterministic.
     sortIndex: Number.MAX_SAFE_INTEGER
   }))
+  const subagentMessages: ConversationItem[] = projectInlineParentMessages(session).map(
+    (message) => ({
+      id: `subagent-message-${message.messageId}`,
+      type: 'subagent-message',
+      createdAt: message.queuedAt,
+      // Durable commands have their own lane sequence. Timestamp plus stable identity orders them
+      // against the independent runtime message/activity sequence without inventing shared state.
+      sortIndex: Number.MAX_SAFE_INTEGER,
+      message
+    })
+  )
 
   // Runtime events and chat chunks use separate sequences, so sorting uses timestamps first.
-  return [...messages, ...activities, ...handoffs].sort((left, right) => {
+  return [...messages, ...activities, ...handoffs, ...subagentMessages].sort((left, right) => {
     if (left.createdAt !== right.createdAt) return left.createdAt - right.createdAt
     if (left.sortIndex !== right.sortIndex) return left.sortIndex - right.sortIndex
     return left.id.localeCompare(right.id)
