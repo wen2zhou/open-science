@@ -49,7 +49,7 @@ last_verified_sha: fc3f415103e2634be48495db057bac8d32eb3507
 - **IDENT-006 — atomic fail-closed（stable）**：全部inherited与explicit identity MUST 在capacity reservation、workspace准备和durable mutation前完成校验；任一不可用 MUST 保持整批无child且不得回退Main Agent。
 - **IDENT-007 — durable child snapshot（stable）**：admitted Attempt MUST 持久化最终child `resolvedAgent`snapshot；runtime input、Host projection、Frame/Runtime Segment label与重启读取 MUST 使用该snapshot。后续Session switch或catalog rename MUST NOT 改写历史Attempt。
 - **IDENT-008 — continuation稳定（stable）**：terminal continuation MUST 保持previous Attempt identity规则，MUST NOT 因当前父runtime不同而重新应用initial inheritance。
-- **IDENT-009 — Interface兼容（stable）**：Host `profile?` request field、single/batch shape、response shape、authorization和direct-child topology MUST 保持不变；S4 MUST NOT 引入Main Agent sentinel。
+- **IDENT-009 — Interface兼容（stable）**：Host `profile?` request field、single/batch shape、response shape、authorization和direct-child topology MUST 保持不变；S4 MUST NOT 引入Main Agent sentinel。本条款只约束S4的`profile`语义；组合当前`SUB-DEC-0011`后，每个request仍 MUST 显式提供required、non-emoji `name`。
 
 ## Interface 与语义
 
@@ -57,13 +57,13 @@ last_verified_sha: fc3f415103e2634be48495db057bac8d32eb3507
 
 ```ts
 host.delegate(
-  request: { task: string; profile?: string; name?: string; context?: string; inputs?: string[] }
+  request: { task: string; name: string; profile?: string; context?: string; inputs?: string[] }
     | readonly request[],
   options?: { wait?: boolean }
 )
 ```
 
-`profile`省略只表示采用受信任parent default，不是Agent提交一个空identity。空字符串仍按现有invalid explicit profile拒绝。
+`name`遵循`SUB-DEC-0011`：每项必须显式提供、不得包含emoji且必须满足80-code-point与durable sibling唯一性规则。`profile`省略只表示采用受信任parent default，不是Agent提交一个空identity。空字符串仍按现有invalid explicit profile拒绝。
 
 父identity在一次Host invocation进入delegated-work owner前固定；batch每项不重复读取可变Session binding。Specialist继承等价于对父stable ID进行一次child admission resolution，因此child snapshot可以反映admission时比父runtime更新的revision/displayName，但identity stable ID相同。
 
@@ -77,15 +77,15 @@ host.delegate(
 
 ## Conformance 场景
 
-| 条款 | 场景 | 证据层 |
-| --- | --- | --- |
-| `IDENT-001..003` | Main default、Specialist inherited、explicit override | Owner Module Interface tests |
-| `IDENT-004` | Agent伪造parent identity被忽略；runtime注册identity被注入caller | local RPC contract/integration |
-| `IDENT-005..006` | mixed batch固定一次父identity；inherited不可用整批无副作用 | Admission/records tests |
-| `IDENT-007` | inherited snapshot进入execution input、Session JSON、Host result、Frame/Runtime Segment与reopen projection | Adapter/persistence/consumer tests |
-| `IDENT-008` | 父identity切换后continuation仍沿用previous Attempt | Durable orchestration regression |
-| `IDENT-009` | Host contract/help与RPC parser shape不变 | Host SDK tests |
-| `IDENT-001..009` | Specialist root省略profile真实委派并在app重启后保持label | production-composed E2E |
+| 条款             | 场景                                                                                                       | 证据层                             |
+| ---------------- | ---------------------------------------------------------------------------------------------------------- | ---------------------------------- |
+| `IDENT-001..003` | Main default、Specialist inherited、explicit override                                                      | Owner Module Interface tests       |
+| `IDENT-004`      | Agent伪造parent identity被忽略；runtime注册identity被注入caller                                            | local RPC contract/integration     |
+| `IDENT-005..006` | mixed batch固定一次父identity；inherited不可用整批无副作用                                                 | Admission/records tests            |
+| `IDENT-007`      | inherited snapshot进入execution input、Session JSON、Host result、Frame/Runtime Segment与reopen projection | Adapter/persistence/consumer tests |
+| `IDENT-008`      | 父identity切换后continuation仍沿用previous Attempt                                                         | Durable orchestration regression   |
+| `IDENT-009`      | Host contract/help与RPC parser shape不变                                                                   | Host SDK tests                     |
+| `IDENT-001..009` | Specialist root省略profile真实委派并在app重启后保持label                                                   | production-composed E2E            |
 
 ## 开放决策
 
@@ -101,7 +101,7 @@ S4 candidate位于`codex/s4-specialist-inheritance`；最终commit SHA由本次�
 - `IDENT-004..006`：`NotebookLocalRpcServer`只从app-owned `sessionSpecialists`把固定parent ID注入`AuthenticatedDelegateCaller`；Agent body伪造无效；全部identity resolution仍位于reservation、workspace与durable admission之前。
 - `IDENT-007`：复用既有`resolvedAgent` representation；Session record Adapter、Frame/Runtime Segment、Host projection、execution input和restart Renderer均读取child admission snapshot。
 - `IDENT-008`：continuation regression证明当前parent identity改变后仍按previous Attempt stable ID重解析，不重新应用initial inheritance。
-- `IDENT-009`：Host request/result shape与RPC parser保持不变；help只更新省略语义，没有Main sentinel或topology变化。
+- `IDENT-009`：S4保持Host `profile?`、result shape与RPC parser语义；当前组合Interface同时遵循后续`SUB-DEC-0011`的required explicit non-emoji name，没有Main sentinel或topology变化。
 
 最后一次material edit后的Test Impact Set：
 

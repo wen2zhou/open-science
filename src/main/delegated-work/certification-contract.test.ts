@@ -229,7 +229,11 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
       const { work } = createModuleHarness(execution)
       const receipt = await work.delegate(
         caller,
-        [{ task: 'complete' }, { task: 'fail' }, { task: 'cancel' }],
+        [
+          { task: 'complete', name: 'complete' },
+          { task: 'fail', name: 'fail' },
+          { task: 'cancel', name: 'cancel' }
+        ],
         { wait: false }
       )
       expect(receipt).toMatchObject({ kind: 'receipts' })
@@ -260,7 +264,11 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
       await expect(
         rejectedModule.work.delegate(
           caller,
-          [{ task: 'one' }, { task: 'two' }, { task: 'three' }],
+          [
+            { task: 'one', name: 'one' },
+            { task: 'two', name: 'two' },
+            { task: 'three', name: 'three' }
+          ],
           {
             wait: false
           }
@@ -271,9 +279,16 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
 
       const accepted = createAdapter({ capacity: 2 })
       const acceptedModule = createModuleHarness(accepted.execution)
-      await acceptedModule.work.delegate(caller, [{ task: 'one' }, { task: 'two' }], {
-        wait: false
-      })
+      await acceptedModule.work.delegate(
+        caller,
+        [
+          { task: 'one', name: 'one' },
+          { task: 'two', name: 'two' }
+        ],
+        {
+          wait: false
+        }
+      )
       await Promise.all(['attempt-1', 'attempt-2'].map(accepted.driver.waitForStart))
       expect(accepted.driver.startedInputs().map(({ task }) => task)).toEqual(['one', 'two'])
       await accepted.driver.accept('attempt-1')
@@ -291,9 +306,16 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
     it('correlates approve/deny cards by Frame and Attempt and fences permission-stop races', async () => {
       const { execution, driver } = createAdapter({ capacity: 2 })
       const { work } = createModuleHarness(execution)
-      await work.delegate(caller, [{ task: 'permission one' }, { task: 'permission two' }], {
-        wait: false
-      })
+      await work.delegate(
+        caller,
+        [
+          { task: 'permission one', name: 'permission one' },
+          { task: 'permission two', name: 'permission two' }
+        ],
+        {
+          wait: false
+        }
+      )
       await Promise.all(['attempt-1', 'attempt-2'].map(driver.waitForStart))
       await driver.accept('attempt-1')
       await driver.accept('attempt-2')
@@ -359,9 +381,16 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
     it('revokes stopped Attempts, fences late events, and recovers without automatic replay', async () => {
       const { execution, driver } = createAdapter({ capacity: 2 })
       const harness = createModuleHarness(execution)
-      await harness.work.delegate(caller, [{ task: 'stop me' }, { task: 'interrupt me' }], {
-        wait: false
-      })
+      await harness.work.delegate(
+        caller,
+        [
+          { task: 'stop me', name: 'stop me' },
+          { task: 'interrupt me', name: 'interrupt me' }
+        ],
+        {
+          wait: false
+        }
+      )
       await Promise.all(['attempt-1', 'attempt-2'].map(driver.waitForStart))
       await driver.accept('attempt-1')
       await driver.accept('attempt-2')
@@ -391,9 +420,16 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
 
       const cascadeAdapter = createAdapter({ capacity: 2 })
       const cascade = createModuleHarness(cascadeAdapter.execution)
-      await cascade.work.delegate(caller, [{ task: 'terminal sibling' }, { task: 'cascade' }], {
-        wait: false
-      })
+      await cascade.work.delegate(
+        caller,
+        [
+          { task: 'terminal sibling', name: 'terminal sibling' },
+          { task: 'cascade', name: 'cascade' }
+        ],
+        {
+          wait: false
+        }
+      )
       await Promise.all(['attempt-1', 'attempt-2'].map(cascadeAdapter.driver.waitForStart))
       await cascadeAdapter.driver.accept('attempt-1')
       await cascadeAdapter.driver.accept('attempt-2')
@@ -411,9 +447,16 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
     it('delivers running and upward messages, continues terminal children, and denies siblings', async () => {
       const { execution, driver } = createAdapter({ capacity: 2 })
       const harness = createModuleHarness(execution)
-      await harness.work.delegate(caller, [{ task: 'first' }, { task: 'sibling' }], {
-        wait: false
-      })
+      await harness.work.delegate(
+        caller,
+        [
+          { task: 'first', name: 'first' },
+          { task: 'sibling', name: 'sibling' }
+        ],
+        {
+          wait: false
+        }
+      )
       await Promise.all(['attempt-1', 'attempt-2'].map(driver.waitForStart))
       await driver.accept('attempt-1')
       await driver.accept('attempt-2')
@@ -459,9 +502,16 @@ const delegatedWorkCertificationContract = (createAdapter: CertificationAdapterF
     it('attributes parallel Artifact, Notebook-lane, and Review evidence to exact execution scopes', async () => {
       const { execution, driver } = createAdapter({ capacity: 2 })
       const harness = createModuleHarness(execution)
-      await harness.work.delegate(caller, [{ task: 'evidence one' }, { task: 'evidence two' }], {
-        wait: false
-      })
+      await harness.work.delegate(
+        caller,
+        [
+          { task: 'evidence one', name: 'evidence one' },
+          { task: 'evidence two', name: 'evidence two' }
+        ],
+        {
+          wait: false
+        }
+      )
       await Promise.all(['attempt-1', 'attempt-2'].map(driver.waitForStart))
       await driver.accept('attempt-1')
       await driver.accept('attempt-2')

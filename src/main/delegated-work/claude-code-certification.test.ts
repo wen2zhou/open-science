@@ -227,7 +227,7 @@ describe('Claude Code delegated-work admission', () => {
     })
 
     await expect(
-      work.delegate(caller, { task: 'must not start' }, { wait: false })
+      work.delegate(caller, { task: 'must not start', name: 'must not start' }, { wait: false })
     ).rejects.toMatchObject({
       code: 'unsupported_framework',
       message: 'Claude Code native Task/Agent/multi-agent delegation is not completely disabled.'

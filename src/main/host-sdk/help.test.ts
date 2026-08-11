@@ -3,6 +3,7 @@ import { resolve } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { HOST_SDK_SUBAGENT_OPERATION_IDS, hostSdkHelp } from './help'
+import { DELEGATE_AGENT_CONTRACT } from './delegate-contract'
 
 const provisioned = Object.fromEntries(
   HOST_SDK_SUBAGENT_OPERATION_IDS.map((id) => [id.slice('host.'.length), true])
@@ -161,8 +162,8 @@ describe('Host SDK help', () => {
       id: 'host.delegate',
       request: {
         oneOf: [
-          { type: 'object', required: ['task'] },
-          { type: 'array', minItems: 1, items: { type: 'object', required: ['task'] } }
+          { type: 'object', required: ['task', 'name'] },
+          { type: 'array', minItems: 1, items: { type: 'object', required: ['task', 'name'] } }
         ]
       },
       options: {
@@ -232,6 +233,21 @@ describe('Host SDK help', () => {
       availability: { status: 'available' }
     })
     if (canonical.kind !== 'operation') throw new Error('expected delegate operation help')
+    const name = (canonical.request as typeof DELEGATE_AGENT_CONTRACT.request).oneOf[0].properties
+      .name
+    expect(name).toMatchObject({ type: 'string', minLength: 1, maxCodePoints: 48 })
+    expect(name.description).toMatch(/required.*emoji.*not allowed/i)
+    expect(name.description).toMatch(/current active root Message Branch/i)
+    expect(name.description).toMatch(/NFC-equivalent.*whitespace-collapsed.*lowercase-equivalent/i)
+    expect(name.description).toMatch(/never derived.*suffixed.*renamed/i)
+    expect(canonical.constraints).toContainEqual(
+      expect.stringMatching(/1–48.*current active root Message Branch.*NFC.*never derived/i)
+    )
+    expect(canonical.examples).not.toHaveLength(0)
+    for (const example of canonical.examples) {
+      expect(example.code).toContain('host.delegate')
+      expect(example.code).toMatch(/name:\s*['"]/u)
+    }
     const returns = canonical.returns as {
       oneOf: Array<{ properties: { children: { items: unknown } } }>
     }

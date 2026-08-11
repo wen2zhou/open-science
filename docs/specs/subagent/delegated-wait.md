@@ -116,6 +116,10 @@ Canonical跨cell流程：
 
 ```js
 // cell 1
+const requests = [
+  { name: 'Registry search', task: 'Search trial registries' },
+  { name: 'Analysis audit', task: 'Audit the analysis' }
+]
 globalThis.pendingDelegation = await host.delegate(requests, { wait: false })
 
 // cell 2

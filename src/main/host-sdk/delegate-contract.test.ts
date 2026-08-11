@@ -13,10 +13,15 @@ describe('Agent-facing delegate contract', () => {
 
     expect(singleRequest).toMatchObject({
       type: 'object',
-      required: ['task'],
+      required: ['task', 'name'],
       properties: {
         task: { type: 'string', minLength: 1 },
-        name: { type: 'string', minLength: 1 },
+        name: {
+          type: 'string',
+          minLength: 1,
+          maxCodePoints: 48,
+          description: expect.stringMatching(/required/i)
+        },
         profile: { type: 'string', minLength: 1 },
         context: { type: 'string', minLength: 1 },
         inputs: {
@@ -29,6 +34,15 @@ describe('Agent-facing delegate contract', () => {
     expect(requestArray).toEqual({ type: 'array', minItems: 1, items: singleRequest })
     expect(singleRequest.properties.profile.description).toContain(
       'Omit to inherit the authenticated parent Specialist'
+    )
+    expect(singleRequest.properties.name.description).toMatch(/emoji.*not allowed/i)
+    expect(singleRequest.properties.name.description).toMatch(/current active root Message Branch/i)
+    expect(singleRequest.properties.name.description).toMatch(
+      /NFC-equivalent.*whitespace-collapsed.*lowercase-equivalent/i
+    )
+    expect(singleRequest.properties.name.description).toMatch(/never derived.*suffixed.*renamed/i)
+    expect(DELEGATE_AGENT_CONTRACT.errors.conditions).toContainEqual(
+      expect.stringMatching(/missing.*empty.*newline.*emoji.*48.*current-branch.*retry/i)
     )
   })
 

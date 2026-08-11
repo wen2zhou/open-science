@@ -32,6 +32,7 @@ import type {
   CompleteChildTurnInput,
   CreateChildrenInput,
   CreatedChild,
+  CreatedNamedChild,
   DelegatedWorkRecordCommands,
   AdmitMessageCommandInput,
   SettleMessageInput,
@@ -43,6 +44,7 @@ import type {
   TransitionAttemptInput
 } from '../delegated-work/session-records'
 import { canonicalStructuredOutputEqual } from '../delegated-work/structured-output'
+import { allocateDelegateNames } from '../delegated-work/delegated-work-admission'
 import type { SessionDeletionReceipt } from '../artifacts/provenance-message-snapshot'
 import type { ManagedFileSoftDeleteToken } from '../project-files/repository'
 import type { ProjectSessionDeletionState } from './repository'
@@ -644,7 +646,10 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
     })
   }
 
-  createChildren(key: SessionKey, input: CreateChildrenInput): Promise<readonly CreatedChild[]> {
+  createChildren(
+    key: SessionKey,
+    input: CreateChildrenInput
+  ): Promise<readonly CreatedNamedChild[]> {
     return this.mutateDelegatedWork(key, input.expectedRevision, (graph, records) => {
       if (input.children.length === 0)
         throw new Error('Child creation requires at least one child.')
@@ -656,6 +661,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       if (!parentPath.some((message) => message.id === input.originMessageId)) {
         throw new Error('Delegate origin Message is not on the parent current Branch.')
       }
+      const parentPathMessageIds = new Set(parentPath.map((message) => message.id))
       const existingIds = new Set([
         ...graph.frames.map(({ id }) => id),
         ...graph.branches.map(({ id }) => id),
@@ -674,10 +680,23 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       ) {
         throw new Error('Delegate child creation contains a duplicate durable identity.')
       }
-      for (const child of input.children) {
+      const finalNames = allocateDelegateNames(
+        input.children.map((child) => child.name),
+        graph.frames
+          .filter(
+            (frame) =>
+              frame.kind === 'delegate' &&
+              frame.parentFrameId === input.parentFrameId &&
+              frame.originMessageId !== undefined &&
+              parentPathMessageIds.has(frame.originMessageId)
+          )
+          .map((frame) => frame.delegateName ?? frame.agentName ?? frame.id)
+      )
+      for (const [index, child] of input.children.entries()) {
         if (child.initiatingTurnMessageId !== input.originMessageId) {
           throw new Error('Initial delegated Attempt must belong to its admitting root Turn.')
         }
+        const finalName = finalNames[index]
         const content = child.context ? `${child.task}\n\nContext:\n${child.context}` : child.task
         graph.frames.push({
           id: child.frameId,
@@ -688,7 +707,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
           ...(child.resolvedAgent.kind === 'specialist'
             ? { agentName: child.resolvedAgent.displayName }
             : {}),
-          ...(child.name ? { delegateName: child.name } : {}),
+          delegateName: finalName,
           status: 'running',
           activeBranchId: child.branchId,
           createdAt: child.startedAt
@@ -731,12 +750,13 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
               runtimeSegmentIds: [],
               startedAt: child.startedAt
             }
-          ],
+          ]
         })
       }
-      return input.children.map((child) => ({
+      return input.children.map((child, index) => ({
         frameId: child.frameId,
         attemptId: child.attemptId,
+        name: finalNames[index],
         status: 'running' as const
       }))
     })

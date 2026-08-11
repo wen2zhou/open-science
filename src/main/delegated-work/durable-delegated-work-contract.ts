@@ -27,7 +27,7 @@ type SessionKey = Readonly<{ projectId: string; sessionId: string }>
 
 type DurableDelegateRequest = Readonly<{
   task: string
-  name?: string
+  name: string
   profile?: string
   context?: string
   inputs?: readonly string[]
@@ -275,9 +275,7 @@ type CreateDurableDelegatedWorkOptions = Readonly<{
     frameId: string
     attemptId: string
   }) => Promise<void> | void
-  deliverToParent?: (
-    delivery: ParentMessageDelivery
-  ) => Promise<DelegateMessageAcceptanceEvidence>
+  deliverToParent?: (delivery: ParentMessageDelivery) => Promise<DelegateMessageAcceptanceEvidence>
   artifactEvidence?: DelegatedArtifactEvidence
   reviewEvidence?: DelegatedReviewEvidence
   onRootPermissionEvent?(event: RootDelegatePermissionEvent): void

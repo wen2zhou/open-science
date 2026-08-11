@@ -23,8 +23,13 @@ supersedes: []
 
    ```js
    await host.collect(selectors, { timeout_seconds: 30 })
-   await host.delegate(request, { timeout_seconds: 30 })
+   await host.delegate(
+     { name: 'Source audit', task: 'Trace the primary sources' },
+     { timeout_seconds: 30 }
+   )
    ```
+
+   这里的delegate request组合当前`SUB-DEC-0011`后仍 MUST 显式提供required、non-emoji `name`；本决策只定义等待options。
 
 2. `timeout_seconds` MUST 是 finite number，范围为 `0..1800` 秒。非法类型、`NaN`、Infinity、负数或超过上限 MUST 在产生可观察副作用前拒绝，不得截断。
 3. `host.collect` 省略 `timeout_seconds` 时 MUST 使用 30 秒默认值。这是对当前无限等待默认的行为变更。

@@ -7,6 +7,7 @@ import type {
   DurableSnapshot
 } from './durable-delegated-work'
 import { canonicalStructuredOutputEqual } from './structured-output'
+import { allocateDelegateNames } from './delegated-work-admission'
 
 type SessionKey = DurableSnapshot['session']
 type DurableChild = DurableSnapshot['records'][number]
@@ -78,13 +79,23 @@ const createInMemoryDelegatedWorkRecords = (input: {
       ) {
         throw new Error('Duplicate delegated-work identity.')
       }
+      const finalNames = allocateDelegateNames(
+        admission.children.map((child) => child.name),
+        state.records
+          .filter(
+            (child) =>
+              child.parentFrameId === admission.caller.frameId &&
+              state.originMessageIds.includes(child.originMessageId)
+          )
+          .map((child) => child.title)
+      )
       state.records.push(
-        ...admission.children.map((child) => ({
+        ...admission.children.map((child, index) => ({
           frameId: child.frameId,
           parentFrameId: admission.caller.frameId,
           originMessageId: admission.caller.originMessageId,
           originBindingState: 'validated' as const,
-          title: child.title,
+          title: finalNames[index],
           task: child.request.task,
           context: child.request.context,
           outputSchema: child.request.outputSchema,
@@ -102,7 +113,7 @@ const createInMemoryDelegatedWorkRecords = (input: {
               runtimeSegmentIds: [],
               startedAt: child.startedAt
             }
-          ],
+          ]
         }))
       )
       state.messages.push(
@@ -119,6 +130,11 @@ const createInMemoryDelegatedWorkRecords = (input: {
             : {})
         }))
       )
+      return admission.children.map((child, index) => ({
+        frameId: child.frameId,
+        attemptId: child.attemptId,
+        name: finalNames[index]
+      }))
     },
     async continueChild(input) {
       const child = state.records.find((candidate) => candidate.frameId === input.frameId)
@@ -291,10 +307,8 @@ const createInMemoryDelegatedWorkRecords = (input: {
       const command = state.messageCommands[index]
       if (!command) throw new Error(`Message command not found: ${messageId}`)
       if (command.receipt.status !== 'queued') return 'terminal'
-      if (
-        state.rootBranchId !== rootBranchId ||
-        state.rootBranchRevision !== rootBranchRevision
-      ) return 'blocked'
+      if (state.rootBranchId !== rootBranchId || state.rootBranchRevision !== rootBranchRevision)
+        return 'blocked'
       const blocked = state.messageCommands.some(
         (candidate) =>
           candidate.sourceFrameId === command.sourceFrameId &&

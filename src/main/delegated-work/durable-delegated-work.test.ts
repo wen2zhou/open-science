@@ -44,6 +44,163 @@ const specialist = (overrides: Partial<SpecialistFixture> = {}): SpecialistFixtu
 })
 
 describe('durable delegated work', () => {
+  it('requires an explicit name for every request before model resolution, reservation, or persistence', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const resolveExecutionModel = vi.fn()
+    const work = createDurableDelegatedWork({ execution, records, resolveExecutionModel })
+
+    await expect(
+      work.delegate(caller, { task: 'Missing name' } as never, { wait: false })
+    ).rejects.toMatchObject({
+      code: 'admission_rejection',
+      message: expect.stringMatching(/provide a 1–48-code-point non-emoji name and retry/i)
+    })
+    await expect(
+      work.delegate(
+        { ...caller, toolInvocationId: 'missing-name-batch' },
+        [{ task: 'Named child', name: 'Named child' }, { task: 'Missing name in batch' } as never],
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    expect(resolveExecutionModel).not.toHaveBeenCalled()
+    expect(execution.reservationCounts()).toEqual([])
+    await expect(records.snapshot()).resolves.toMatchObject({ records: [], messages: [] })
+  })
+
+  it('normalizes broad Unicode explicit names and atomically rejects invalid names', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+
+    const accepted = await work.delegate(
+      caller,
+      { task: 'accepted', name: '  Café\u2003证据 — ∑ №  ' },
+      { wait: false }
+    )
+    expect(accepted.children[0].name).toBe('Café 证据 — ∑ №')
+
+    const invalidNames: ReadonlyArray<readonly [string, RegExp]> = [
+      ['\u2003 ', /empty.*1–48-code-point non-emoji name.*retry/i],
+      ['line\nbreak', /newline or control.*remove.*retry/i],
+      ['control\u0000name', /newline or control.*remove.*retry/i],
+      ['control\u0085name', /newline or control.*remove.*retry/i],
+      ['界'.repeat(49), /48 Unicode code points.*shorten.*retry/i],
+      ['single 🧪', /emoji.*non-emoji name.*retry/i],
+      ['family 👨‍👩‍👧‍👦', /emoji.*non-emoji name.*retry/i],
+      ['modifier 👍🏽', /emoji.*non-emoji name.*retry/i],
+      ['flag 🇨🇳', /emoji.*non-emoji name.*retry/i],
+      ['keycap 1️⃣', /emoji.*non-emoji name.*retry/i],
+      ['variation ☀️', /emoji.*non-emoji name.*retry/i]
+    ]
+    for (const [index, [name, message]] of invalidNames.entries()) {
+      await expect(
+        work.delegate(
+          { ...caller, toolInvocationId: `invalid-name-${index}` },
+          [
+            { task: 'must not persist', name },
+            { task: 'valid sibling', name: 'Valid sibling' }
+          ],
+          { wait: false }
+        )
+      ).rejects.toMatchObject({
+        code: 'admission_rejection',
+        message: expect.stringMatching(message)
+      })
+    }
+    expect(execution.reservationCounts()).toEqual([1])
+    expect((await records.snapshot()).records).toHaveLength(1)
+  })
+
+  it('accepts exactly 48 code points and gives actionable conflict guidance without renaming', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    const base = '界'.repeat(48)
+
+    const outcome = await work.delegate(
+      caller,
+      { task: 'exactly forty-eight', name: base },
+      { wait: false }
+    )
+    expect(outcome.children[0].name).toBe(base)
+    await expect(
+      work.delegate(
+        { ...caller, toolInvocationId: 'bounded-conflict' },
+        { task: 'duplicate forty-eight', name: base },
+        { wait: false }
+      )
+    ).rejects.toMatchObject({
+      code: 'admission_rejection',
+      message: expect.stringMatching(/occupied on the current branch.*different name.*retry/i)
+    })
+    expect((await records.snapshot()).records).toHaveLength(1)
+  })
+
+  it('rejects an entire explicit-name-conflict batch using NFC, whitespace, and lowercase keys', async () => {
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+
+    await expect(
+      work.delegate(
+        caller,
+        [
+          { task: 'one', name: 'CAFÉ\u2003Evidence' },
+          { task: 'two', name: 'cafe\u0301 evidence' }
+        ],
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    expect(execution.reservationCounts()).toEqual([])
+    await expect(records.snapshot()).resolves.toMatchObject({ records: [] })
+  })
+
+  it('keeps terminal sibling names occupied across calls and releases a rejected reservation', async () => {
+    const execution = createDeterministicDelegateExecution(2)
+    const records = createInMemoryDelegatedWorkRecords({
+      session: caller.session,
+      rootFrameId: caller.frameId,
+      originMessageId: caller.originMessageId
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    execution.plan({ status: 'completed', response: 'done' })
+    await work.delegate(caller, { task: 'Trace sources', name: 'Trace sources' })
+
+    await expect(
+      work.delegate(
+        { ...caller, toolInvocationId: 'explicit-conflict' },
+        { task: 'Must not persist', name: 'trace sources' },
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+
+    const redispatched = await work.delegate(
+      { ...caller, toolInvocationId: 'distinct-redispatch' },
+      { task: 'Trace sources', name: 'Trace sources 2' },
+      { wait: false }
+    )
+    expect(redispatched.children[0].name).toBe('Trace sources 2')
+    expect(execution.reservationCounts()).toEqual([1, 1, 1])
+    expect((await records.snapshot()).records).toHaveLength(2)
+  })
+
   it('resolves one model snapshot before reservation and gives it to every child in the batch', async () => {
     const execution = createDeterministicDelegateExecution()
     const records = createInMemoryDelegatedWorkRecords({
@@ -73,7 +230,14 @@ describe('durable delegated work', () => {
     const resolveExecutionModel = vi.fn(async () => ({ snapshot, backendLease }))
     const work = createDurableDelegatedWork({ execution, records, resolveExecutionModel })
 
-    await work.delegate(caller, [{ task: 'one' }, { task: 'two' }], { wait: false })
+    await work.delegate(
+      caller,
+      [
+        { task: 'one', name: 'one' },
+        { task: 'two', name: 'two' }
+      ],
+      { wait: false }
+    )
 
     expect(resolveExecutionModel).toHaveBeenCalledOnce()
     await expect.poll(() => execution.controls()).toHaveLength(2)
@@ -139,7 +303,12 @@ describe('durable delegated work', () => {
       })
     })
 
-    await expect(work.delegate(caller, [{ task: 'one' }, { task: 'two' }])).rejects.toMatchObject({
+    await expect(
+      work.delegate(caller, [
+        { task: 'one', name: 'one' },
+        { task: 'two', name: 'two' }
+      ])
+    ).rejects.toMatchObject({
       code: 'capacity'
     })
     expect(release).toHaveBeenCalledOnce()
@@ -162,9 +331,9 @@ describe('durable delegated work', () => {
       }
     })
 
-    await expect(work.delegate(caller, { task: 'must not start' })).rejects.toThrow(
-      'configured model unavailable'
-    )
+    await expect(
+      work.delegate(caller, { task: 'must not start', name: 'must not start' })
+    ).rejects.toThrow('configured model unavailable')
     expect(execution.reservationCounts()).toEqual([])
     await expect(records.snapshot()).resolves.toMatchObject({ records: [] })
   })
@@ -179,9 +348,16 @@ describe('durable delegated work', () => {
     const work = createDurableDelegatedWork({ execution, records })
 
     await expect(
-      work.delegate(caller, [{ task: 'finish during startup' }, { task: 'keep running' }], {
-        timeoutSeconds: 0
-      })
+      work.delegate(
+        caller,
+        [
+          { task: 'finish during startup', name: 'finish during startup' },
+          { task: 'keep running', name: 'keep running' }
+        ],
+        {
+          timeoutSeconds: 0
+        }
+      )
     ).resolves.toMatchObject({
       kind: 'observations',
       children: [{ status: 'running' }, { status: 'running' }]
@@ -211,7 +387,11 @@ describe('durable delegated work', () => {
       }
     })
 
-    const observing = work.delegate(caller, { task: 'cancel before launch' }, { timeoutSeconds: 0 })
+    const observing = work.delegate(
+      caller,
+      { task: 'cancel before launch', name: 'cancel before launch' },
+      { timeoutSeconds: 0 }
+    )
     await expect.poll(async () => (await records.snapshot()).records).toHaveLength(1)
     const cancelling = work.cancelTurn(caller.session, caller.originMessageId)
     releaseWorkspace()
@@ -234,12 +414,16 @@ describe('durable delegated work', () => {
     const work = createDurableDelegatedWork({ execution, records })
 
     await expect(
-      work.delegate(caller, { task: 'never admitted' }, { wait: false, timeoutSeconds: 1 })
+      work.delegate(
+        caller,
+        { task: 'never admitted', name: 'never admitted' },
+        { wait: false, timeoutSeconds: 1 }
+      )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
     await expect(
       work.delegate(
         { ...caller, toolInvocationId: 'invalid-timeout' },
-        { task: 'never admitted either' },
+        { task: 'never admitted either', name: 'never admitted either' },
         { timeoutSeconds: Number.NaN }
       )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
@@ -258,8 +442,8 @@ describe('durable delegated work', () => {
     const work = createDurableDelegatedWork({ execution, records })
     const turnA = { ...caller, originMessageId: 'turn-a', toolInvocationId: 'delegate-a' }
     const turnB = { ...caller, originMessageId: 'turn-b', toolInvocationId: 'delegate-b' }
-    const childA = await work.delegate(turnA, { task: 'A child' }, { wait: false })
-    const childB = await work.delegate(turnB, { task: 'B child' }, { wait: false })
+    const childA = await work.delegate(turnA, { task: 'A child', name: 'A child' }, { wait: false })
+    const childB = await work.delegate(turnB, { task: 'B child', name: 'B child' }, { wait: false })
 
     await work.cancelTurn(caller.session, 'turn-b')
     await expect(work.children(turnA)).resolves.toEqual([
@@ -269,7 +453,7 @@ describe('durable delegated work', () => {
     await expect(
       work.delegate(
         { ...turnB, toolInvocationId: 'late-b' },
-        { task: 'late B child' },
+        { task: 'late B child', name: 'late B child' },
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'conflict' })
@@ -294,7 +478,14 @@ describe('durable delegated work', () => {
         }
       }
     })
-    await work.delegate(caller, [{ task: 'first' }, { task: 'second' }], { wait: false })
+    await work.delegate(
+      caller,
+      [
+        { task: 'first', name: 'first' },
+        { task: 'second', name: 'second' }
+      ],
+      { wait: false }
+    )
 
     await expect(work.cancelTurn(caller.session, caller.originMessageId)).rejects.toThrow(
       'could not be stopped'
@@ -327,7 +518,11 @@ describe('durable delegated work', () => {
       },
       records
     })
-    const pending = work.delegate(caller, { task: 'racing admission' }, { wait: false })
+    const pending = work.delegate(
+      caller,
+      { task: 'racing admission', name: 'racing admission' },
+      { wait: false }
+    )
     await expect.poll(() => execution.reservationCounts()).toEqual([1])
 
     await work.cancelTurn(caller.session, caller.originMessageId)
@@ -357,7 +552,11 @@ describe('durable delegated work', () => {
       onAgentRuntimeUpdate: (update) => updates.push(update)
     })
 
-    await work.delegate(caller, { task: 'Stream evidence' }, { wait: false })
+    await work.delegate(
+      caller,
+      { task: 'Stream evidence', name: 'Stream evidence' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     const control = execution.controls()[0]
     control.emit({
@@ -505,7 +704,11 @@ describe('durable delegated work', () => {
       }
     }
     const work = createDurableDelegatedWork({ execution, records })
-    const dispatched = await work.delegate(caller, { task: 'permission work' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'permission work', name: 'permission work' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].emit({
       kind: 'permission',
@@ -538,7 +741,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const dispatched = await work.delegate(caller, { task: 'Risky child' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Risky child', name: 'Risky child' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     const control = execution.controls()[0]
     control.emit({
@@ -605,7 +812,11 @@ describe('durable delegated work', () => {
         throw new Error('stop transport unavailable')
       }
     })
-    await work.delegate(caller, { task: 'Permission child' }, { wait: false })
+    await work.delegate(
+      caller,
+      { task: 'Permission child', name: 'Permission child' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].emit({
       kind: 'permission',
@@ -638,7 +849,11 @@ describe('durable delegated work', () => {
       now: () => 100 + nextId,
       createId: (kind) => `${kind}-${++nextId}`
     })
-    const dispatched = await work.delegate(caller, { task: 'Long investigation' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Long investigation', name: 'Long investigation' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
 
@@ -704,7 +919,11 @@ describe('durable delegated work', () => {
         return 'provider_prompt_completed'
       }
     })
-    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Investigate', name: 'Investigate' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
     const child = dispatched.children[0]
@@ -819,7 +1038,11 @@ describe('durable delegated work', () => {
         return 'provider_prompt_accepted'
       }
     })
-    const delegated = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    const delegated = await work.delegate(
+      caller,
+      { task: 'Investigate', name: 'Investigate' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
     const child = delegated.children[0]
@@ -866,7 +1089,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Investigate', name: 'Investigate' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
     const messageCaller = { ...caller, toolInvocationId: 'stable-message-call' }
@@ -899,7 +1126,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Investigate', name: 'Investigate' },
+      { wait: false }
+    )
     await expect.poll(() => baseExecution.controls()).toHaveLength(1)
     baseExecution.controls()[0].accept()
 
@@ -953,7 +1184,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const delegated = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    const delegated = await work.delegate(
+      caller,
+      { task: 'Investigate', name: 'Investigate' },
+      { wait: false }
+    )
     await expect.poll(() => baseExecution.controls()).toHaveLength(1)
     baseExecution.controls()[0].accept()
 
@@ -1019,7 +1254,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const delegated = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    const delegated = await work.delegate(
+      caller,
+      { task: 'Investigate', name: 'Investigate' },
+      { wait: false }
+    )
     await expect.poll(() => baseExecution.controls()).toHaveLength(1)
     baseExecution.controls()[0].accept()
 
@@ -1038,11 +1277,9 @@ describe('durable delegated work', () => {
       .toBe('uncertain')
     expect(deliveryCount).toBe(1)
 
-    await work.resolveMessage(
-      { ...caller, toolInvocationId: 'lane-ack' },
-      first.message_id,
-      { action: 'acknowledge_uncertain' }
-    )
+    await work.resolveMessage({ ...caller, toolInvocationId: 'lane-ack' }, first.message_id, {
+      action: 'acknowledge_uncertain'
+    })
     await expect.poll(() => deliveryCount).toBe(2)
     await expect
       .poll(async () => (await records.snapshot()).messageCommands[1].receipt.status)
@@ -1076,7 +1313,11 @@ describe('durable delegated work', () => {
       }
     }
     const work = createDurableDelegatedWork({ execution, records })
-    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Investigate', name: 'Investigate' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
 
@@ -1111,7 +1352,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Investigate', name: 'Investigate' },
+      { wait: false }
+    )
     await expect.poll(() => baseExecution.controls()).toHaveLength(1)
     baseExecution.controls()[0].accept()
 
@@ -1150,7 +1395,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const dispatched = await work.delegate(caller, { task: 'Investigate' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Investigate', name: 'Investigate' },
+      { wait: false }
+    )
     await expect.poll(() => baseExecution.controls()).toHaveLength(1)
     baseExecution.controls()[0].accept()
     const delivery = work.sendMessage(
@@ -1208,7 +1457,7 @@ describe('durable delegated work', () => {
       createId: (kind) => `${kind}-${++counts[kind]}`
     })
 
-    const pending = work.delegate(caller, { task: 'Create evidence' })
+    const pending = work.delegate(caller, { task: 'Create evidence', name: 'Create evidence' })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     expect(open).toHaveBeenCalledWith({
       session: caller.session,
@@ -1300,7 +1549,10 @@ describe('durable delegated work', () => {
       createId: (kind) => `${kind}-${++counts[kind]}`
     })
 
-    const pending = first.delegate(caller, { task: 'Review this child turn' })
+    const pending = first.delegate(caller, {
+      task: 'Review this child turn',
+      name: 'Review this child turn'
+    })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
     execution.controls()[0].complete('Child answer')
@@ -1339,7 +1591,10 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const pending = work.delegate(caller, { task: 'Immutable child lifecycle' })
+    const pending = work.delegate(caller, {
+      task: 'Immutable child lifecycle',
+      name: 'Immutable child lifecycle'
+    })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
     execution.controls()[0].complete('Done')
@@ -1352,7 +1607,9 @@ describe('durable delegated work', () => {
     }
     const before = await records.snapshot()
 
-    await expect(work.delegate(reviewer, { task: 'forged dispatch' })).rejects.toMatchObject({
+    await expect(
+      work.delegate(reviewer, { task: 'forged dispatch', name: 'forged dispatch' })
+    ).rejects.toMatchObject({
       code: 'authorization'
     })
     await expect(work.sendMessage(reviewer, frameId, 'forged resume')).rejects.toMatchObject({
@@ -1394,7 +1651,10 @@ describe('durable delegated work', () => {
     })
     const dispatched = await work.delegate(
       caller,
-      [{ task: 'cancel me' }, { task: 'keep writing' }],
+      [
+        { task: 'cancel me', name: 'cancel me' },
+        { task: 'keep writing', name: 'keep writing' }
+      ],
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(2)
@@ -1459,9 +1719,16 @@ describe('durable delegated work', () => {
         return (kind) => `${kind}-${++counts[kind]}`
       })()
     })
-    const dispatched = await work.delegate(caller, [{ task: 'first' }, { task: 'second' }], {
-      wait: false
-    })
+    const dispatched = await work.delegate(
+      caller,
+      [
+        { task: 'first', name: 'first' },
+        { task: 'second', name: 'second' }
+      ],
+      {
+        wait: false
+      }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(2)
     for (const control of execution.controls()) control.accept()
     execution.control('attempt-2').complete('second done')
@@ -1509,7 +1776,7 @@ describe('durable delegated work', () => {
         project: async () => [existing]
       }
     })
-    const pending = work.delegate(caller, { task: 'fragile Artifact' })
+    const pending = work.delegate(caller, { task: 'fragile Artifact', name: 'fragile Artifact' })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
     execution.controls()[0].complete('response written before finalize')
@@ -1542,7 +1809,11 @@ describe('durable delegated work', () => {
         project: async () => []
       }
     })
-    await opened.delegate(caller, { task: 'interrupted Artifact' }, { wait: false })
+    await opened.delegate(
+      caller,
+      { task: 'interrupted Artifact', name: 'interrupted Artifact' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
 
     const revoke = vi.fn(async () => undefined)
@@ -1613,7 +1884,7 @@ describe('durable delegated work', () => {
     })
     const dispatched = await work.delegate(
       caller,
-      { task: 'cancel while opening' },
+      { task: 'cancel while opening', name: 'cancel while opening' },
       { wait: false }
     )
     await expect
@@ -1639,7 +1910,11 @@ describe('durable delegated work', () => {
     const resolveSpecialist = vi.fn(async () => specialist())
     const work = createDurableDelegatedWork({ execution, records, resolveSpecialist })
 
-    const outcome = await work.delegate(caller, { task: 'Use the default agent' }, { wait: false })
+    const outcome = await work.delegate(
+      caller,
+      { task: 'Use the default agent', name: 'Use the default agent' },
+      { wait: false }
+    )
 
     expect(resolveSpecialist).not.toHaveBeenCalled()
     expect((await records.snapshot()).records[0].attempts[0].resolvedAgent).toEqual({
@@ -1670,9 +1945,9 @@ describe('durable delegated work', () => {
     const outcome = await work.delegate(
       { ...caller, parentSpecialistProfileId: 'parent-specialist' },
       [
-        { task: 'Inherited first' },
-        { task: 'Explicit second', profile: 'explicit-specialist' },
-        { task: 'Inherited third' }
+        { task: 'Inherited first', name: 'Inherited first' },
+        { task: 'Explicit second', name: 'Explicit second', profile: 'explicit-specialist' },
+        { task: 'Inherited third', name: 'Inherited third' }
       ],
       { wait: false }
     )
@@ -1733,7 +2008,10 @@ describe('durable delegated work', () => {
     await expect(
       work.delegate(
         { ...caller, parentSpecialistProfileId: 'deleted-parent-specialist' },
-        [{ task: 'Inherited child' }, { task: 'Explicit child', profile: 'explicit-specialist' }],
+        [
+          { task: 'Inherited child', name: 'Inherited child' },
+          { task: 'Explicit child', name: 'Explicit child', profile: 'explicit-specialist' }
+        ],
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
@@ -1768,9 +2046,9 @@ describe('durable delegated work', () => {
       await work.delegate(
         caller,
         [
-          { task: 'Select by stable id', profile: selected.id },
-          { task: 'Select by public name', profile: selected.name },
-          { task: 'Use Main Agent' }
+          { task: 'Select by stable id', name: 'Select by stable id', profile: selected.id },
+          { task: 'Select by public name', name: 'Select by public name', profile: selected.name },
+          { task: 'Use Main Agent', name: 'Use Main Agent' }
         ],
         { wait: false }
       )
@@ -1816,7 +2094,7 @@ describe('durable delegated work', () => {
 
     const outcome = await work.delegate(
       caller,
-      { task: 'Audit the evidence', profile: 'specialist-stable-id' },
+      { task: 'Audit the evidence', name: 'Audit the evidence', profile: 'specialist-stable-id' },
       { wait: false }
     )
 
@@ -1865,7 +2143,7 @@ describe('durable delegated work', () => {
       await expect(
         work.delegate(
           { ...caller, toolInvocationId: `tool-call-${profileId}` },
-          { task: 'Must not run', profile: profileId },
+          { task: 'Must not run', name: 'Must not run', profile: profileId },
           { wait: false }
         )
       ).rejects.toMatchObject({ code: 'admission_rejection' })
@@ -1889,7 +2167,11 @@ describe('durable delegated work', () => {
     })
     const first = await work.delegate(
       caller,
-      { task: 'Preserve this history', profile: 'specialist-stable-id' },
+      {
+        task: 'Preserve this history',
+        name: 'Preserve this history',
+        profile: 'specialist-stable-id'
+      },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -1902,7 +2184,11 @@ describe('durable delegated work', () => {
     liveProfile = specialist({ displayName: 'Renamed Specialist', revision: 8 })
     const afterRename = await work.delegate(
       { ...caller, toolInvocationId: 'renamed-redispatch' },
-      { task: 'Resolve the renamed profile', profile: 'specialist-stable-id' },
+      {
+        task: 'Resolve the renamed profile',
+        name: 'Resolve the renamed profile',
+        profile: 'specialist-stable-id'
+      },
       { wait: false }
     )
     expect((await records.snapshot()).records[1].attempts[0].resolvedAgent).toEqual({
@@ -1922,7 +2208,11 @@ describe('durable delegated work', () => {
     await expect(
       work.delegate(
         { ...caller, toolInvocationId: 'disabled-redispatch' },
-        { task: 'Rejected after disable', profile: 'specialist-stable-id' },
+        {
+          task: 'Rejected after disable',
+          name: 'Rejected after disable',
+          profile: 'specialist-stable-id'
+        },
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
@@ -1930,7 +2220,11 @@ describe('durable delegated work', () => {
     await expect(
       work.delegate(
         { ...caller, toolInvocationId: 'deleted-redispatch' },
-        { task: 'Rejected after delete', profile: 'specialist-stable-id' },
+        {
+          task: 'Rejected after delete',
+          name: 'Rejected after delete',
+          profile: 'specialist-stable-id'
+        },
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
@@ -1977,8 +2271,8 @@ describe('durable delegated work', () => {
       caller,
       [
         { task: 'First investigation', name: 'Explicit title' },
-        { task: 'Second investigation' },
-        { task: 'Second investigation' }
+        { task: 'Second investigation', name: 'Second investigation' },
+        { task: 'Third investigation', name: 'Third investigation' }
       ],
       { wait: false }
     )
@@ -2004,7 +2298,7 @@ describe('durable delegated work', () => {
         {
           frameId: 'frame-3',
           attemptId: 'attempt-3',
-          name: 'Second investigation (2)',
+          name: 'Third investigation',
           agentName: 'Main Agent',
           status: 'running'
         }
@@ -2016,7 +2310,7 @@ describe('durable delegated work', () => {
       children: [
         { frameId: 'frame-1', title: 'Explicit title', status: 'running' },
         { frameId: 'frame-2', title: 'Second investigation', status: 'running' },
-        { frameId: 'frame-3', title: 'Second investigation (2)', status: 'running' }
+        { frameId: 'frame-3', title: 'Third investigation', status: 'running' }
       ]
     })
   })
@@ -2037,7 +2331,10 @@ describe('durable delegated work', () => {
     await expect(
       rejectedWork.delegate(
         caller,
-        [{ task: 'Main child' }, { task: 'Unavailable child', profile: 'missing-profile' }],
+        [
+          { task: 'Main child', name: 'Main child' },
+          { task: 'Unavailable child', name: 'Unavailable child', profile: 'missing-profile' }
+        ],
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
@@ -2055,7 +2352,10 @@ describe('durable delegated work', () => {
 
     await work.delegate(
       { ...caller, toolInvocationId: 'mixed-agent-batch' },
-      [{ task: 'Default Main child' }, { task: 'Specialist child', profile: 'specialist-id' }],
+      [
+        { task: 'Default Main child', name: 'Default Main child' },
+        { task: 'Specialist child', name: 'Specialist child', profile: 'specialist-id' }
+      ],
       { wait: false }
     )
 
@@ -2096,7 +2396,10 @@ describe('durable delegated work', () => {
     await expect(
       work.delegate(
         caller,
-        [{ task: 'valid' }, { task: 'invalid', inputs: ['mutable/path.csv'] }],
+        [
+          { task: 'valid', name: 'valid' },
+          { task: 'invalid', name: 'invalid', inputs: ['mutable/path.csv'] }
+        ],
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
@@ -2110,7 +2413,10 @@ describe('durable delegated work', () => {
     await expect(
       work.delegate(
         { ...caller, toolInvocationId: 'capacity-array' },
-        [{ task: 'one' }, { task: 'two' }],
+        [
+          { task: 'one', name: 'one' },
+          { task: 'two', name: 'two' }
+        ],
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'capacity', message: 'batch capacity unavailable' })
@@ -2130,7 +2436,7 @@ describe('durable delegated work', () => {
     await expect(
       unvalidated.delegate(
         caller,
-        { task: 'inspect', inputs: ['upload-version:one'] },
+        { task: 'inspect', name: 'inspect', inputs: ['upload-version:one'] },
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
@@ -2154,7 +2460,7 @@ describe('durable delegated work', () => {
     })
     const result = prepared.delegate(
       { ...caller, toolInvocationId: 'validated-cwd' },
-      { task: 'inspect', inputs: ['upload-version:one'] }
+      { task: 'inspect', name: 'inspect', inputs: ['upload-version:one'] }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     expect(execution.controls()[0].input).toMatchObject({
@@ -2172,18 +2478,50 @@ describe('durable delegated work', () => {
       rootFrameId: caller.frameId,
       originMessageId: caller.originMessageId
     })
+    const backendRelease = vi.fn(async () => undefined)
+    const backendClaim = vi.fn()
+    const failingReservationRelease = vi.fn(async () => {
+      throw new Error('injected reservation cleanup failure')
+    })
     const work = createDurableDelegatedWork({
-      execution,
+      execution: {
+        ...execution,
+        async reserve(count) {
+          const reservation = await execution.reserve(count)
+          return { ...reservation, releaseAll: failingReservationRelease }
+        }
+      },
       records,
-      createId: (kind) => `duplicate-${kind}`
+      createId: (kind) => `duplicate-${kind}`,
+      resolveExecutionModel: async () => ({
+        snapshot: {
+          frameworkId: 'codex',
+          providerId: 'test-provider',
+          backendId: 'codex:test-provider',
+          modelRoute: 'codex-responses',
+          model: 'test-model',
+          reasoningEffort: 'default'
+        },
+        backendLease: { claim: backendClaim, release: backendRelease }
+      })
     })
 
     await expect(
-      work.delegate(caller, [{ task: 'one' }, { task: 'two' }], { wait: false })
+      work.delegate(
+        caller,
+        [
+          { task: 'one', name: 'one' },
+          { task: 'two', name: 'two' }
+        ],
+        { wait: false }
+      )
     ).rejects.toThrow('Duplicate delegated-work identity')
     expect(execution.reservationCounts()).toEqual([2])
     expect(execution.controls()).toEqual([])
     expect(await records.snapshot()).toMatchObject({ records: [], messages: [] })
+    expect(failingReservationRelease).toHaveBeenCalledOnce()
+    expect(backendClaim).not.toHaveBeenCalled()
+    expect(backendRelease).toHaveBeenCalledOnce()
   })
 
   it('isolates sibling terminal outcomes and returns wait results in request order', async () => {
@@ -2196,9 +2534,9 @@ describe('durable delegated work', () => {
     const work = createDurableDelegatedWork({ execution, records })
 
     const pending = work.delegate(caller, [
-      { task: 'complete last' },
-      { task: 'fail first' },
-      { task: 'cancel second' }
+      { task: 'complete last', name: 'complete last' },
+      { task: 'fail first', name: 'fail first' },
+      { task: 'cancel second', name: 'cancel second' }
     ])
     await expect.poll(() => execution.controls()).toHaveLength(3)
     for (const control of execution.controls()) control.accept()
@@ -2273,7 +2611,10 @@ describe('durable delegated work', () => {
       createId: (kind) => `${kind}-${++counts[kind]}`
     })
 
-    const pending = work.delegate(caller, [{ task: 'fragile finalization' }, { task: 'sibling' }])
+    const pending = work.delegate(caller, [
+      { task: 'fragile finalization', name: 'fragile finalization' },
+      { task: 'sibling', name: 'sibling' }
+    ])
     await expect.poll(() => execution.controls()).toHaveLength(2)
     for (const control of execution.controls()) control.accept()
     execution.controls()[0].complete('lost response')
@@ -2309,9 +2650,16 @@ describe('durable delegated work', () => {
       createId: (kind) => `${kind}-${nextId++}`
     })
 
-    const dispatched = await work.delegate(caller, [{ task: 'alpha' }, { task: 'beta' }], {
-      wait: false
-    })
+    const dispatched = await work.delegate(
+      caller,
+      [
+        { task: 'alpha', name: 'alpha' },
+        { task: 'beta', name: 'beta' }
+      ],
+      {
+        wait: false
+      }
+    )
     const [alpha, beta] = dispatched.children
     await expect.poll(() => execution.controls()).toHaveLength(2)
     execution.control(alpha.attemptId).accept()
@@ -2343,7 +2691,10 @@ describe('durable delegated work', () => {
     const work = createDurableDelegatedWork({ execution, records })
     const dispatched = await work.delegate(
       caller,
-      [{ task: 'finished' }, { task: 'still running' }],
+      [
+        { task: 'finished', name: 'finished' },
+        { task: 'still running', name: 'still running' }
+      ],
       {
         wait: false
       }
@@ -2399,7 +2750,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const dispatched = await work.delegate(caller, { task: 'historical' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'historical', name: 'historical' },
+      { wait: false }
+    )
     const handle = dispatched.children[0]
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
@@ -2460,7 +2815,11 @@ describe('durable delegated work', () => {
       records,
       collectMonotonicNow: () => readings.shift() ?? 1_800_000
     })
-    const dispatched = await work.delegate(caller, { task: 'bounded' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'bounded', name: 'bounded' },
+      { wait: false }
+    )
     await expect(work.collect(caller, [dispatched.children[0].frameId])).resolves.toMatchObject([
       { status: 'running' }
     ])
@@ -2484,7 +2843,7 @@ describe('durable delegated work', () => {
     const dispatched = await createDurableDelegatedWork({
       execution,
       records: durableRecords
-    }).delegate(caller, { task: 'deadline race' }, { wait: false })
+    }).delegate(caller, { task: 'deadline race', name: 'deadline race' }, { wait: false })
     let snapshots = 0
     const readings = [0, 1000]
     const observing = createDurableDelegatedWork({
@@ -2532,7 +2891,7 @@ describe('durable delegated work', () => {
     const dispatched = await createDurableDelegatedWork({
       execution,
       records: durableRecords
-    }).delegate(caller, { task: 'keep running' }, { wait: false })
+    }).delegate(caller, { task: 'keep running', name: 'keep running' }, { wait: false })
     let snapshots = 0
     const observing = createDurableDelegatedWork({
       execution: createDeterministicDelegateExecution(),
@@ -2565,7 +2924,7 @@ describe('durable delegated work', () => {
     const dispatched = await createDurableDelegatedWork({
       execution,
       records: durableRecords
-    }).delegate(caller, { task: 'legacy child' }, { wait: false })
+    }).delegate(caller, { task: 'legacy child', name: 'legacy child' }, { wait: false })
     const legacyRecords = {
       ...durableRecords,
       async snapshot() {
@@ -2645,7 +3004,10 @@ describe('durable delegated work', () => {
       execution: cancelledExecution,
       records: cancelledRecords
     })
-    const cancelledPending = cancelledWork.delegate(caller, { task: 'Cancelable work' })
+    const cancelledPending = cancelledWork.delegate(caller, {
+      task: 'Cancelable work',
+      name: 'Cancelable work'
+    })
     await expect.poll(() => cancelledExecution.controls()).toHaveLength(1)
     cancelledExecution.controls()[0].accept()
     cancelledExecution.controls()[0].cancel()
@@ -2676,7 +3038,7 @@ describe('durable delegated work', () => {
     await expect(
       failedWork.delegate(
         { ...caller, toolInvocationId: 'failed-tool-call' },
-        { task: 'Fragile work' }
+        { task: 'Fragile work', name: 'Fragile work' }
       )
     ).resolves.toMatchObject({
       kind: 'results',
@@ -2706,28 +3068,28 @@ describe('durable delegated work', () => {
     await expect(
       work.delegate(
         { ...caller, originMessageId: 'forged-origin', toolInvocationId: 'forged-call' },
-        { task: 'private' },
+        { task: 'private', name: 'private' },
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'authorization' })
     await expect(
       work.delegate(
         { ...caller, toolInvocationId: 'bad-input-call' },
-        { task: 'inspect', inputs: ['workspace/current.csv'] },
+        { task: 'inspect', name: 'inspect', inputs: ['workspace/current.csv'] },
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
     await expect(
       work.delegate(
         { ...caller, toolInvocationId: 'profile-call' },
-        { task: 'inspect', profile: '' },
+        { task: 'inspect', name: 'inspect', profile: '' },
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'admission_rejection' })
     for (const [toolInvocationId, request] of [
-      ['blank-task-call', { task: '   ' }],
+      ['blank-task-call', { task: '   ', name: '   ' }],
       ['blank-name-call', { task: 'inspect', name: '   ' }],
-      ['blank-context-call', { task: 'inspect', context: '   ' }]
+      ['blank-context-call', { task: 'inspect', name: 'inspect', context: '   ' }]
     ] as const) {
       await expect(
         work.delegate({ ...caller, toolInvocationId }, request, { wait: false })
@@ -2759,7 +3121,11 @@ describe('durable delegated work', () => {
       })
 
       await expect(
-        work.delegate(caller, { task: 'Must not be admitted' }, { wait: false })
+        work.delegate(
+          caller,
+          { task: 'Must not be admitted', name: 'Must not be admitted' },
+          { wait: false }
+        )
       ).rejects.toMatchObject({ code: 'unsupported_framework', message: availabilityError.message })
       expect(execution.reservationCounts()).toEqual([])
       expect((await records.snapshot()).records).toEqual([])
@@ -2775,8 +3141,16 @@ describe('durable delegated work', () => {
     })
     const work = createDurableDelegatedWork({ execution, records })
 
-    const first = await work.delegate(caller, { task: 'One child' }, { wait: false })
-    const duplicate = await work.delegate(caller, { task: 'Ignored duplicate' }, { wait: false })
+    const first = await work.delegate(
+      caller,
+      { task: 'One child', name: 'One child' },
+      { wait: false }
+    )
+    const duplicate = await work.delegate(
+      caller,
+      { task: 'Ignored duplicate', name: 'Ignored duplicate' },
+      { wait: false }
+    )
 
     expect(duplicate).toEqual(first)
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -2818,7 +3192,10 @@ describe('durable delegated work', () => {
 
     const receipt = await work.delegate(
       caller,
-      [{ task: 'Prepare inputs' }, { task: 'Fragile staging' }],
+      [
+        { task: 'Prepare inputs', name: 'Prepare inputs' },
+        { task: 'Fragile staging', name: 'Fragile staging' }
+      ],
       { wait: false }
     )
     expect(receipt).toMatchObject({
@@ -2868,12 +3245,12 @@ describe('durable delegated work', () => {
     })
     const first = await work.delegate(
       caller,
-      { task: 'Stop me', profile: 'specialist-stable-id' },
+      { task: 'Stop me', name: 'Stop me', profile: 'specialist-stable-id' },
       { wait: false }
     )
     const second = await work.delegate(
       { ...caller, toolInvocationId: 'tool-call-2' },
-      { task: 'Keep running' },
+      { task: 'Keep running', name: 'Keep running' },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(2)
@@ -2923,15 +3300,15 @@ describe('durable delegated work', () => {
       settleAttemptCleanup: async () => cleanup,
       createId: (kind) => `${kind}-${nextId++}`
     })
-    const completed = await work.delegate(caller, { task: 'Already done' })
+    const completed = await work.delegate(caller, { task: 'Already done', name: 'Already done' })
     const first = await work.delegate(
       { ...caller, toolInvocationId: 'running-1' },
-      { task: 'Running one' },
+      { task: 'Running one', name: 'Running one' },
       { wait: false }
     )
     const second = await work.delegate(
       { ...caller, toolInvocationId: 'running-2' },
-      { task: 'Running two' },
+      { task: 'Running two', name: 'Running two' },
       { wait: false }
     )
 
@@ -2939,7 +3316,7 @@ describe('durable delegated work', () => {
     await expect(
       work.delegate(
         { ...caller, toolInvocationId: 'rejected-during-stop' },
-        { task: 'Too late' },
+        { task: 'Too late', name: 'Too late' },
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'conflict' })
@@ -2975,7 +3352,7 @@ describe('durable delegated work', () => {
     })
     const receipt = await beforeRestart.delegate(
       caller,
-      { task: 'Interrupted', profile: 'specialist-stable-id' },
+      { task: 'Interrupted', name: 'Interrupted', profile: 'specialist-stable-id' },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -3038,7 +3415,7 @@ describe('durable delegated work', () => {
         }
       }
     })
-    await work.delegate(caller, { task: 'Delete safely' }, { wait: false })
+    await work.delegate(caller, { task: 'Delete safely', name: 'Delete safely' }, { wait: false })
     await expect.poll(() => execution.controls()).toHaveLength(1)
 
     await work.deleteSession(caller.session)
@@ -3099,10 +3476,10 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const first = await work.delegate(caller, { task: 'First' }, { wait: false })
+    const first = await work.delegate(caller, { task: 'First', name: 'First' }, { wait: false })
     const second = await work.delegate(
       { ...caller, toolInvocationId: 'tool-call-2' },
-      { task: 'Second' },
+      { task: 'Second', name: 'Second' },
       { wait: false }
     )
     const firstId = first.children[0].frameId
@@ -3162,10 +3539,14 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const dispatchingWork = createDurableDelegatedWork({ execution, records })
-    const first = await dispatchingWork.delegate(caller, { task: 'First' }, { wait: false })
+    const first = await dispatchingWork.delegate(
+      caller,
+      { task: 'First', name: 'First' },
+      { wait: false }
+    )
     const second = await dispatchingWork.delegate(
       { ...caller, toolInvocationId: 'tool-call-2' },
-      { task: 'Second' },
+      { task: 'Second', name: 'Second' },
       { wait: false }
     )
     const firstId = first.children[0].frameId
@@ -3240,10 +3621,14 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const failed = await work.delegate(caller, { task: 'Failure' }, { wait: false })
+    const failed = await work.delegate(
+      caller,
+      { task: 'Failure', name: 'Failure' },
+      { wait: false }
+    )
     const cancelled = await work.delegate(
       { ...caller, toolInvocationId: 'tool-call-2' },
-      { task: 'Cancellation' },
+      { task: 'Cancellation', name: 'Cancellation' },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(2)
@@ -3293,7 +3678,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const lifecycleWork = createDurableDelegatedWork({ execution, records })
-    const receipt = await lifecycleWork.delegate(caller, { task: 'Keep running' }, { wait: false })
+    const receipt = await lifecycleWork.delegate(
+      caller,
+      { task: 'Keep running', name: 'Keep running' },
+      { wait: false }
+    )
     let failNextRead = true
     const observingWork = createDurableDelegatedWork({
       execution: createDeterministicDelegateExecution(),
@@ -3348,7 +3737,7 @@ describe('durable delegated work', () => {
     })
     const dispatched = await work.delegate(
       caller,
-      { task: 'Inspect the evidence' },
+      { task: 'Inspect the evidence', name: 'Inspect the evidence' },
       { wait: false }
     )
     const frameId = dispatched.children[0].frameId
@@ -3429,7 +3818,7 @@ describe('durable delegated work', () => {
     const work = createDurableDelegatedWork({ execution, records, resolveSpecialist })
     const dispatched = await work.delegate(
       { ...caller, parentSpecialistProfileId: liveProfile.id },
-      { task: 'Specialist analysis' },
+      { task: 'Specialist analysis', name: 'Specialist analysis' },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -3483,7 +3872,11 @@ describe('durable delegated work', () => {
     })
     const dispatched = await work.delegate(
       caller,
-      { task: 'Preserve terminal evidence', profile: 'specialist-stable-id' },
+      {
+        task: 'Preserve terminal evidence',
+        name: 'Preserve terminal evidence',
+        profile: 'specialist-stable-id'
+      },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -3517,7 +3910,11 @@ describe('durable delegated work', () => {
       originMessageId: caller.originMessageId
     })
     const work = createDurableDelegatedWork({ execution, records })
-    const dispatched = await work.delegate(caller, { task: 'Still running' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Still running', name: 'Still running' },
+      { wait: false }
+    )
 
     await expect(
       work.sendMessage(
@@ -3554,7 +3951,11 @@ describe('durable delegated work', () => {
         }
       }
     })
-    const dispatched = await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Initial task', name: 'Initial task' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.controls()[0].accept()
     execution.controls()[0].complete('Preserved answer')

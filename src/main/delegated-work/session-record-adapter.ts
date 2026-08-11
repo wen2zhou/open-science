@@ -64,7 +64,7 @@ const createSessionDelegatedWorkRecords = (
 
   return {
     async admitChildren(input) {
-      await mutate((expectedRevision) =>
+      return mutate((expectedRevision) =>
         options.commands.createChildren(key, {
           expectedRevision,
           parentFrameId: input.caller.frameId,
@@ -75,7 +75,7 @@ const createSessionDelegatedWorkRecords = (
             messageId: child.userMessageId,
             attemptId: child.attemptId,
             task: child.request.task,
-            name: child.title,
+            name: child.name,
             context: child.request.context,
             inputs: child.request.inputs,
             resolvedAgent: child.resolvedAgent,

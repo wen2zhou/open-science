@@ -53,7 +53,7 @@ Subagent 功能的目标，是让 Main Agent 能把可独立执行的工作可�
 
 ## 当前建议
 
-S1、S2与S5均已通过各自production-composed release gate并达到`certified`；S2真实desktop journey覆盖inactive-branch Stop、partial failure、Send gate恢复与失败项重试。S5同一次组合gate覆盖Main→child→Main、branch park/restart、post-fence receipt commit failure/restart recovery，以及两child upward lane与真实user prompt公平仲裁，并贯通真实Host RPC、durable Owner、root scheduler和Renderer-visible Main continuation。S10已在同一可靠消息production journey上证明child question durable command可投影为active-branch inline行，达到`certified`。S4的production-composed release gate已通过，accepted Interface与Adapter行为达到`conformant`；required完整lint仍有未修改基线blocker，因此暂不标记`certified`。S6的JSON Schema/submission语义与Message evidence rollback decisions已`accepted + conformant`；Codex、Claude Code、OpenCode production adapters与issued child capability使用同一Owner，desktop production-composed S6 journey已覆盖真实child经REPL提交、文本、Artifact、structured result及重启读取。完整release gate仍被既有Renderer focus restoration阻塞，所以不标`certified`。不得把S3及后续行为并入S2、S4、S5或S6。
+S1、S2与S5均已通过各自production-composed release gate并达到`certified`；S2真实desktop journey覆盖inactive-branch Stop、partial failure、Send gate恢复与失败项重试。S5同一次组合gate覆盖Main→child→Main、branch park/restart、post-fence receipt commit failure/restart recovery，以及两child upward lane与真实user prompt公平仲裁，并贯通真实Host RPC、durable Owner、root scheduler和Renderer-visible Main continuation。S10已在同一可靠消息production journey上证明child question durable command可投影为active-branch inline行，达到`certified`。S4的production-composed release gate已通过，accepted Interface与Adapter行为达到`conformant`；required完整lint仍有未修改基线blocker，因此暂不标记`certified`。S6的JSON Schema/submission语义与Message evidence rollback decisions已`accepted + conformant`。S11已实现48-code-point、current-branch uniqueness与actionable error合同，达到`conformant`。不得把S3及后续行为并入S2、S4、S5、S6或S11。
 
 当前 decisions：
 
@@ -66,6 +66,9 @@ S1、S2与S5均已通过各自production-composed release gate并达到`certifie
 - `decisions/0007-structured-output-persistence.md`（`accepted`）：Attempt归属、old-data与rollback。
 - `decisions/0008-reliable-bidirectional-messaging.md`（`accepted`）：父子双向消息、receipt、root scheduler与failure evidence。
 - `decisions/0009-message-delivery-persistence.md`（`accepted`）：durable command、dispatch fence、restart与owner quarantine。
+- `decisions/0010-subagent-name-policy.md`（`superseded`）：旧的 optional/automatic name 行为。
+- `decisions/0011-required-non-emoji-subagent-name.md`（`superseded`）：旧的80-code-point与parent-lifetime唯一性。
+- `decisions/0012-branch-scoped-actionable-subagent-names.md`（`accepted`）：name必填、48-code-point、禁止emoji、当前branch唯一与actionable error。
 
 ## 任务地图
 
@@ -81,6 +84,7 @@ S1、S2与S5均已通过各自production-composed release gate并达到`certifie
 | S8  | Per-task model routing             | Main Agent 可为每个子任务选择模型，实际解析结果随 Attempt 稳定记录                   | `exploratory` | `not-started` | Admission Policy 与 runtime Adapter                                             | identity/model snapshot 决策               | `model-routing.md`                                                      |
 | S9  | Role-aware Host SDK discovery      | Main与child都能发现完整Subagent操作目录、准确权限与调用合同，且child正式能力可达     | `accepted`    | `conformant`  | 现有 `HostSdkHelpRegistry`；Notebook capability/REPL Adapters                   | S1、S2、S5、S6 已接受合同                  | `host-sdk-discovery.md`                                                 |
 | S10 | 上行消息 inline 展示               | 用户在 Main 对话时间线中看到 direct Subagent 的提问或信息，并可进入来源 Subagent     | `accepted`    | `certified`   | `WorkspaceConversationItems`；Renderer transcript consumer                      | S5 durable message command                 | `inline-parent-messages.md`                                             |
+| S11 | 必填、简短、非 emoji 且branch唯一  | 每个child显式命名；48-code-point、当前branch可区分并给出可修正错误                   | `accepted`    | `conformant`  | `DelegatedWorkAdmissionPolicy`；Session persistence command                     | `SUB-DEC-0012`                             | `subagent-naming.md`                                                    |
 
 Host SDK、local RPC、持久化和 Renderer 是每个纵向阶段的 Adapter 或 consumer。它们应随对应能力接线和验收，不作为等待所有 Module 完成后的统一集成 wave。
 

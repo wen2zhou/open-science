@@ -15,6 +15,11 @@ const mainCaller: AgentCaller = {
   role: 'main'
 }
 
+const named = (task: string, name = task): Readonly<{ task: string; name: string }> => ({
+  task,
+  name
+})
+
 type Harness = Readonly<{
   work: DelegatedWork
   execution: ReturnType<typeof createDeterministicDelegateExecution>
@@ -27,14 +32,58 @@ const createHarness = (): Harness => {
 
 const delegatedWorkContract = (create: () => Harness): void => {
   describe('delegated work contract', () => {
+    it('shares required, non-emoji, 48-code-point name admission before capacity reservation', async () => {
+      const { work, execution } = create()
+
+      await expect(
+        work.delegate(mainCaller, { task: 'Missing name' } as never, { wait: false })
+      ).rejects.toMatchObject({
+        code: 'admission_rejection',
+        message: expect.stringMatching(/1–48-code-point non-emoji name.*retry/i)
+      })
+      await expect(
+        work.delegate(mainCaller, named('Emoji name', 'Evidence 🧪'), { wait: false })
+      ).rejects.toMatchObject({ code: 'admission_rejection' })
+      await expect(
+        work.delegate(mainCaller, named('Too long', '界'.repeat(49)), { wait: false })
+      ).rejects.toMatchObject({
+        code: 'admission_rejection',
+        message: expect.stringMatching(/48 Unicode code points.*shorten.*retry/i)
+      })
+      expect(execution.reservationCounts()).toEqual([])
+
+      await expect(
+        work.delegate(mainCaller, named('At boundary', '界'.repeat(48)), { wait: false })
+      ).resolves.toMatchObject({ children: [{ name: '界'.repeat(48) }] })
+
+      const outcomes = await Promise.allSettled([
+        work.delegate(mainCaller, named('First task', 'Source audit'), { wait: false }),
+        work.delegate(mainCaller, named('Second task', 'source audit'), { wait: false })
+      ])
+      expect(outcomes.filter(({ status }) => status === 'fulfilled')).toHaveLength(1)
+      expect(outcomes.filter(({ status }) => status === 'rejected')).toHaveLength(1)
+      expect(outcomes.find(({ status }) => status === 'rejected')).toMatchObject({
+        reason: { code: 'admission_rejection' }
+      })
+      expect(execution.reservationCounts()).toEqual([1, 1])
+      await expect(work.children(mainCaller)).resolves.toHaveLength(2)
+    })
+
     it('returns a durable running receipt without waiting when wait is false', async () => {
       const { work } = create()
 
-      const outcome = await work.delegate(mainCaller, { task: 'trace the source' }, { wait: false })
+      const outcome = await work.delegate(mainCaller, named('trace the source'), { wait: false })
 
       expect(outcome).toEqual({
         kind: 'receipts',
-        children: [{ frameId: 'frame-1', attemptId: 'attempt-1', status: 'running' }]
+        children: [
+          {
+            frameId: 'frame-1',
+            attemptId: 'attempt-1',
+            name: 'trace the source',
+            status: 'running'
+          }
+        ]
       })
     })
 
@@ -43,7 +92,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
       execution.plan({ status: 'completed', response: 'first answer' })
       execution.plan({ status: 'completed', response: 'second answer' })
 
-      const outcome = await work.delegate(mainCaller, [{ task: 'first' }, { task: 'second' }])
+      const outcome = await work.delegate(mainCaller, [named('first'), named('second')])
 
       expect(outcome).toEqual({
         kind: 'results',
@@ -51,6 +100,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
           {
             frameId: 'frame-1',
             attemptId: 'attempt-1',
+            name: 'first',
             status: 'completed',
             terminalMessageId: 'message-1',
             response: 'first answer'
@@ -58,6 +108,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
           {
             frameId: 'frame-2',
             attemptId: 'attempt-2',
+            name: 'second',
             status: 'completed',
             terminalMessageId: 'message-2',
             response: 'second answer'
@@ -92,7 +143,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
 
     it('projects permission waiting state without exposing execution attachments', async () => {
       const { work, execution } = create()
-      await work.delegate(mainCaller, { task: 'permission task' }, { wait: false })
+      await work.delegate(mainCaller, named('permission task'), { wait: false })
       const control = execution.control('attempt-1')
       control.accept()
       control.emit({
@@ -118,7 +169,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
 
     it('atomically chooses delivery for a running child and continuation for a terminal child', async () => {
       const { work, execution } = create()
-      await work.delegate(mainCaller, { task: 'initial' }, { wait: false })
+      await work.delegate(mainCaller, named('initial'), { wait: false })
       const first = execution.control('attempt-1')
       first.accept()
 
@@ -133,7 +184,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
 
       await expect(work.sendMessage(mainCaller, 'frame-1', 'continue now')).resolves.toEqual({
         kind: 'continued',
-        child: { frameId: 'frame-1', attemptId: 'attempt-2', status: 'running' }
+        child: { frameId: 'frame-1', attemptId: 'attempt-2', name: 'initial', status: 'running' }
       })
       expect(execution.control('attempt-2').input).toMatchObject({
         frameId: 'frame-1',
@@ -144,7 +195,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
 
     it('stops children independently and preserves sibling execution', async () => {
       const { work, execution } = create()
-      await work.delegate(mainCaller, [{ task: 'one' }, { task: 'two' }], { wait: false })
+      await work.delegate(mainCaller, [named('one'), named('two')], { wait: false })
       execution.control('attempt-1').accept()
       execution.control('attempt-2').accept()
 
@@ -160,8 +211,8 @@ const delegatedWorkContract = (create: () => Harness): void => {
     it('cascades Session stop across running children without changing terminal siblings', async () => {
       const { work, execution } = create()
       execution.plan({ status: 'completed', response: 'already done' })
-      await work.delegate(mainCaller, { task: 'done' })
-      await work.delegate(mainCaller, [{ task: 'running one' }, { task: 'running two' }], {
+      await work.delegate(mainCaller, named('done'))
+      await work.delegate(mainCaller, [named('running one'), named('running two')], {
         wait: false
       })
 
@@ -182,7 +233,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
       const execution = createDeterministicDelegateExecution()
       const state = createDelegatedWorkMemoryState()
       const beforeRestart = createDelegatedWork({ execution, state })
-      await beforeRestart.delegate(mainCaller, { task: 'unfinished' }, { wait: false })
+      await beforeRestart.delegate(mainCaller, named('unfinished'), { wait: false })
       const afterRestart = createDelegatedWork({ execution, state })
 
       await expect(afterRestart.recoverInterrupted()).resolves.toEqual({
@@ -190,6 +241,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
           {
             frameId: 'frame-1',
             attemptId: 'attempt-1',
+            name: 'unfinished',
             status: 'cancelled',
             cancellationReason: 'runtime_interrupted'
           }
@@ -203,7 +255,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
       execution.rejectNextReservation('capacity', 'two slots unavailable')
 
       await expect(
-        work.delegate(mainCaller, [{ task: 'one' }, { task: 'two' }], { wait: false })
+        work.delegate(mainCaller, [named('one'), named('two')], { wait: false })
       ).rejects.toMatchObject({ code: 'capacity', message: 'two slots unavailable' })
       await expect(work.children(mainCaller)).resolves.toEqual([])
       expect(execution.controls()).toEqual([])
@@ -214,7 +266,7 @@ const delegatedWorkContract = (create: () => Harness): void => {
       execution.rejectNextReservation('unsupported_framework', 'native delegation is enabled')
 
       await expect(
-        work.delegate(mainCaller, { task: 'unsafe' }, { wait: false })
+        work.delegate(mainCaller, named('unsafe'), { wait: false })
       ).rejects.toMatchObject({
         code: 'unsupported_framework',
         message: 'native delegation is enabled'
@@ -225,12 +277,13 @@ const delegatedWorkContract = (create: () => Harness): void => {
     it('terminalizes post-admission execution failure as a collectable result', async () => {
       const { work, execution } = create()
       execution.plan({ status: 'failed', error: new Error('provider exited') })
-      await work.delegate(mainCaller, { task: 'fragile' }, { wait: false })
+      await work.delegate(mainCaller, named('fragile'), { wait: false })
 
       await expect(work.collect(mainCaller, ['frame-1'])).resolves.toEqual([
         {
           frameId: 'frame-1',
           attemptId: 'attempt-1',
+          name: 'fragile',
           status: 'error',
           error: { code: 'execution_failure', message: 'provider exited' }
         }
@@ -239,14 +292,14 @@ const delegatedWorkContract = (create: () => Harness): void => {
 
     it('enforces parent authority without leaking whether another child exists', async () => {
       const { work } = create()
-      await work.delegate(mainCaller, { task: 'private' }, { wait: false })
+      await work.delegate(mainCaller, named('private'), { wait: false })
       const otherMain: AgentCaller = { ...mainCaller, frameId: 'other-main' }
 
       await expect(work.children(otherMain, ['frame-1'])).rejects.toMatchObject({
         code: 'authorization'
       })
       await expect(
-        work.delegate({ ...mainCaller, role: 'delegate' }, { task: 'nested' }, { wait: false })
+        work.delegate({ ...mainCaller, role: 'delegate' }, named('nested'), { wait: false })
       ).rejects.toMatchObject({ code: 'authorization' })
     })
 

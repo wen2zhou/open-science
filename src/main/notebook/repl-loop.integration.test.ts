@@ -313,7 +313,7 @@ describe('repl_loop local RPC transport', () => {
 
     try {
       const workflow =
-        "const specialists = await host.agents.list(); const selected = specialists[0]; const byId = await host.delegate({ task: 'By stable id', profile: selected.id }, { wait: false }); const byName = await host.delegate({ task: 'By exact name', profile: selected.name }, { wait: false }); const main = await host.delegate({ task: 'Default Main' }, { wait: false }); return JSON.stringify({ selected: { id: selected.id, name: selected.name }, byId, byName, main })"
+        "const specialists = await host.agents.list(); const selected = specialists[0]; const byId = await host.delegate({ name: 'Stable id lookup', task: 'By stable id', profile: selected.id }, { wait: false }); const byName = await host.delegate({ name: 'Exact name lookup', task: 'By exact name', profile: selected.name }, { wait: false }); const main = await host.delegate({ name: 'Default Main lookup', task: 'Default Main' }, { wait: false }); return JSON.stringify({ selected: { id: selected.id, name: selected.name }, byId, byName, main })"
       const response = await send(workflow)
       expect(response.error).toBeNull()
       const result = JSON.parse(response.result ?? '{}')

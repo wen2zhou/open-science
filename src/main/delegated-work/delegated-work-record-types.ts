@@ -188,7 +188,7 @@ type AdmitChildInput = Readonly<{
   frameId: string
   attemptId: string
   userMessageId: string
-  title: string
+  name: string
   request: DurableDelegateRequest
   resolvedAgent: DurableResolvedAgent
   executionModel?: ResolvedSubagentModelSnapshot
@@ -239,7 +239,9 @@ type ContinueChildInput = Readonly<{
 }>
 
 type DelegatedWorkDurableRecords = Readonly<{
-  admitChildren(input: AdmitChildrenInput): Promise<void>
+  admitChildren(
+    input: AdmitChildrenInput
+  ): Promise<readonly Readonly<{ frameId: string; attemptId: string; name: string }>[]>
   continueChild(input: ContinueChildInput): Promise<void>
   startRuntime(
     frameId: string,

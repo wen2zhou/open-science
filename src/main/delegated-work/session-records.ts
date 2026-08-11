@@ -22,7 +22,7 @@ type CreateChildRecordInput = Readonly<{
   messageId: string
   attemptId: string
   task: string
-  name?: string
+  name: string
   context?: string
   inputs?: readonly string[]
   resolvedAgent: DelegatedWorkResolvedAgent
@@ -45,6 +45,8 @@ type CreatedChild = Readonly<{
   attemptId: string
   status: 'running'
 }>
+
+type CreatedNamedChild = CreatedChild & Readonly<{ name: string }>
 
 type StartAttemptRuntimeInput = Readonly<{
   expectedRevision: number
@@ -172,7 +174,7 @@ type ChildRecord = Readonly<{
 
 /** Internal persistence port. It is intentionally absent from Host, IPC, and Renderer contracts. */
 type DelegatedWorkRecordCommands = Readonly<{
-  createChildren(key: SessionKey, input: CreateChildrenInput): Promise<readonly CreatedChild[]>
+  createChildren(key: SessionKey, input: CreateChildrenInput): Promise<readonly CreatedNamedChild[]>
   startContinuationAttempt(
     key: SessionKey,
     input: StartContinuationAttemptInput
@@ -216,6 +218,7 @@ export type {
   CreateChildRecordInput,
   CreateChildrenInput,
   CreatedChild,
+  CreatedNamedChild,
   DelegatedWorkAttemptRecord,
   DelegatedWorkRecordCommands,
   SettleMessageInput,

@@ -194,7 +194,10 @@ describe('authenticated delegatedWorkCall route', () => {
       body: JSON.stringify({
         method: 'delegatedWorkCall',
         params: {
-          request: [{ task: 'First' }, { task: 'Second' }],
+          request: [
+            { task: 'First', name: 'First' },
+            { task: 'Second', name: 'Second' }
+          ],
           options: { wait: false }
         }
       })
@@ -227,7 +230,10 @@ describe('authenticated delegatedWorkCall route', () => {
         session: { projectId: 'project-1', sessionId: 'session-1' },
         frameId: 'root-frame'
       }),
-      [{ task: 'First' }, { task: 'Second' }],
+      [
+        { task: 'First', name: 'First' },
+        { task: 'Second', name: 'Second' }
+      ],
       { wait: false }
     )
     endInvocation()
@@ -273,7 +279,7 @@ describe('authenticated delegatedWorkCall route', () => {
           frame_id: 'forged-frame',
           origin_message_id: 'forged-origin',
           tool_invocation_id: 'forged-tool',
-          request: { task: 'Trace the source' }
+          request: { task: 'Trace the source', name: 'Trace the source' }
         }
       })
     })
@@ -336,7 +342,7 @@ describe('authenticated delegatedWorkCall route', () => {
       body: JSON.stringify({
         method: 'delegatedWorkCall',
         params: {
-          request: { task: 'Inherit trusted identity' },
+          request: { task: 'Inherit trusted identity', name: 'Inherit trusted identity' },
           parent_specialist_profile_id: 'forged-specialist'
         }
       })
@@ -345,7 +351,7 @@ describe('authenticated delegatedWorkCall route', () => {
     expect(response.status).toBe(200)
     expect(delegate).toHaveBeenCalledWith(
       expect.objectContaining({ parentSpecialistProfileId: 'trusted-specialist' }),
-      { task: 'Inherit trusted identity' },
+      { task: 'Inherit trusted identity', name: 'Inherit trusted identity' },
       {}
     )
     endInvocation()
@@ -372,7 +378,7 @@ describe('authenticated delegatedWorkCall route', () => {
       },
       body: JSON.stringify({
         method: 'delegatedWorkCall',
-        params: { request: { task: 'Unauthorized' } }
+        params: { request: { task: 'Unauthorized', name: 'Unauthorized' } }
       })
     })
 
@@ -413,7 +419,7 @@ describe('authenticated delegatedWorkCall route', () => {
         originMessageId: 'trusted-origin-message',
         toolInvocationId: 'direct-admission'
       },
-      { task: 'Stop through host' },
+      { task: 'Stop through host', name: 'Stop through host' },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -482,7 +488,7 @@ describe('authenticated delegatedWorkCall route', () => {
       },
       body: JSON.stringify({
         method: 'delegatedWorkCall',
-        params: { request: { task: 'Must remain unavailable' } }
+        params: { request: { task: 'Must remain unavailable', name: 'Must remain unavailable' } }
       })
     })
 
@@ -591,7 +597,7 @@ describe('authenticated delegatedWorkCall route', () => {
         originMessageId: 'origin-message-1',
         toolInvocationId: 'dispatch-call'
       },
-      { task: 'Initial task' },
+      { task: 'Initial task', name: 'Initial task' },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -674,7 +680,7 @@ describe('authenticated delegatedWorkCall route', () => {
         originMessageId: 'origin-message-1',
         toolInvocationId: 'dispatch-call'
       },
-      { task: 'Initial task' },
+      { task: 'Initial task', name: 'Initial task' },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)

@@ -109,6 +109,7 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
     'Set profile to a stable id or unique exact public name returned by host.agents.list().',
     'Omitting profile inherits the authenticated parent Specialist; a Main Agent parent still selects Main Agent.',
     'A request array is admitted atomically and must be non-empty.',
+    'Every request must provide a 1–48-code-point non-emoji name without newlines or control characters. On the current active root Message Branch, running and terminal child names must be unique after NFC normalization, Unicode whitespace collapse, and lowercase comparison; names are never derived or automatically renamed.',
     'Dispatch can be rejected before execution when capacity, framework, Specialist, or input admission is unavailable.',
     'Each child receives only its task, explicit context, and declared immutable inputs.',
     'An explicit timeout_seconds starts after every admitted child establishes launch and returns observations without stopping running children.',
@@ -121,19 +122,19 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   examples: [
     {
       title: 'Wait for one Subagent',
-      code: "const outcome = await host.delegate({ task: 'Verify the statistical assumptions' })"
+      code: "const outcome = await host.delegate({ name: 'Statistical audit', task: 'Verify the statistical assumptions' })"
     },
     {
       title: 'Select a Specialist discovered from the public catalog',
-      code: "const [specialist] = await host.agents.list()\nconst outcome = await host.delegate({ task: 'Verify the statistical assumptions', profile: specialist.id })"
+      code: "const [specialist] = await host.agents.list()\nconst outcome = await host.delegate({ name: 'Statistical audit', task: 'Verify the statistical assumptions', profile: specialist.id })"
     },
     {
       title: 'Observe an atomic fan-out for a bounded time',
-      code: "globalThis.delegation = await host.delegate([{ task: 'Search trial registries' }, { task: 'Audit the analysis' }], { timeout_seconds: 30 })"
+      code: "globalThis.delegation = await host.delegate([{ name: 'Registry search', task: 'Search trial registries' }, { name: 'Analysis audit', task: 'Audit the analysis' }], { timeout_seconds: 30 })"
     },
     {
       title: 'Dispatch in parallel, continue, then collect',
-      code: "const dispatched = await host.delegate([{ task: 'Search trial registries' }, { task: 'Audit the analysis' }], { wait: false })\nconst results = await host.collect(dispatched.children.map(child => child.frame_id))"
+      code: "const dispatched = await host.delegate([{ name: 'Registry search', task: 'Search trial registries' }, { name: 'Analysis audit', task: 'Audit the analysis' }], { wait: false })\nconst results = await host.collect(dispatched.children.map(child => child.frame_id))"
     }
   ],
   errors: DELEGATE_AGENT_CONTRACT.errors,
@@ -231,7 +232,7 @@ const COLLECT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   examples: [
     {
       title: 'Cell 1 — preserve handles',
-      code: "globalThis.pendingDelegation = await host.delegate({ task: 'Trace sources' }, { wait: false })"
+      code: "globalThis.pendingDelegation = await host.delegate({ name: 'Source trace', task: 'Trace sources' }, { wait: false })"
     },
     {
       title: 'Cell 2 — collect pinned Attempts',

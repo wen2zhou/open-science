@@ -132,17 +132,165 @@ describe('Session delegated-work adapter', () => {
             frameId: 'notifier-frame',
             attemptId: 'notifier-attempt',
             userMessageId: 'notifier-message',
-            title: 'Persist despite notifier failure',
-            request: { task: 'Persist despite notifier failure', inputs: [] },
+            name: 'Persist despite notifier failure',
+            request: {
+              task: 'Persist despite notifier failure',
+              name: 'Persist despite notifier failure',
+              inputs: []
+            },
             resolvedAgent: { kind: 'main' },
             startedAt: 10
           }
         ]
       })
-    ).resolves.toBeUndefined()
+    ).resolves.toEqual([
+      expect.objectContaining({
+        frameId: 'notifier-frame',
+        name: 'Persist despite notifier failure'
+      })
+    ])
     await expect(records.snapshot()).resolves.toMatchObject({
       records: [{ frameId: 'notifier-frame' }]
     })
+  })
+
+  it('allows only one concurrent explicit sibling name across adapter instances and CAS retries', async () => {
+    const { coordinator, readSession } = createHarness()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const firstExecution = createDeterministicDelegateExecution()
+    const secondExecution = createDeterministicDelegateExecution()
+    const firstRecords = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => 'concurrent-branch-1'
+      },
+      key
+    )
+    const secondRecords = createSessionDelegatedWorkRecords(
+      {
+        commands: coordinator,
+        readSession,
+        frameworkId: 'codex',
+        createId: () => 'concurrent-branch-2'
+      },
+      key
+    )
+    const rootCaller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'concurrent-1'
+    }
+
+    const outcomes = await Promise.allSettled([
+      createDurableDelegatedWork({ execution: firstExecution, records: firstRecords }).delegate(
+        rootCaller,
+        { task: 'Trace sources', name: 'Trace sources' },
+        { wait: false }
+      ),
+      createDurableDelegatedWork({ execution: secondExecution, records: secondRecords }).delegate(
+        { ...rootCaller, toolInvocationId: 'concurrent-2' },
+        { task: 'Trace sources', name: 'Trace sources' },
+        { wait: false }
+      )
+    ])
+
+    expect(outcomes.map(({ status }) => status).sort()).toEqual(['fulfilled', 'rejected'])
+    expect(outcomes.find(({ status }) => status === 'rejected')).toMatchObject({
+      reason: { code: 'admission_rejection' }
+    })
+    expect(
+      (await readSession()).conversationGraph?.frames
+        .filter(({ kind }) => kind === 'delegate')
+        .map(({ delegateName }) => delegateName)
+        .sort()
+    ).toEqual(['Trace sources'])
+  })
+
+  it('revalidates the latest active branch after a CAS retry and releases rejected capacity', async () => {
+    const { coordinator, repository, readSession } = createHarness()
+    const rootFrameId = createSession().conversationGraph!.rootFrameId
+    const alternatePrompt: PersistedChatMessage = {
+      ...rootPrompt,
+      id: 'alternate-prompt',
+      content: 'Coordinate the alternate branch.',
+      createdAt: 20,
+      updatedAt: 20
+    }
+    let switchBeforeFirstCommit = true
+    const commands = new Proxy(coordinator, {
+      get(target, property, receiver) {
+        if (property === 'createChildren') {
+          return async (...args: Parameters<typeof coordinator.createChildren>) => {
+            if (switchBeforeFirstCommit) {
+              switchBeforeFirstCommit = false
+              const switched = await readSession()
+              const graph = switched.conversationGraph!
+              const activeBranchId = 'alternate-root-branch'
+              graph.frames.find(({ id }) => id === rootFrameId)!.activeBranchId = activeBranchId
+              graph.branches.push({
+                id: activeBranchId,
+                agentFrameId: rootFrameId,
+                headMessageId: alternatePrompt.id,
+                createdAt: 20,
+                updatedAt: 20
+              })
+              graph.messages.push({
+                ...alternatePrompt,
+                agentFrameId: rootFrameId,
+                introducedOnBranchId: activeBranchId,
+                revisionRootMessageId: alternatePrompt.id
+              })
+              switched.messages = [alternatePrompt]
+              switched.runtimeContext = {
+                version: 1,
+                ...switched.runtimeContext,
+                revision: (switched.runtimeContext?.revision ?? 0) + 1
+              }
+              await repository.saveSession(switched)
+            }
+            return target.createChildren(...args)
+          }
+        }
+        const value = Reflect.get(target, property, receiver)
+        return typeof value === 'function' ? value.bind(target) : value
+      }
+    })
+    const records = createSessionDelegatedWorkRecords(
+      { commands, readSession, frameworkId: 'codex', createId: () => 'cas-branch' },
+      key
+    )
+    const execution = createDeterministicDelegateExecution(1)
+    const work = createDurableDelegatedWork({ execution, records })
+    const staleCaller: AuthenticatedDelegateCaller = {
+      session: key,
+      frameId: rootFrameId,
+      role: 'main',
+      originMessageId: rootPrompt.id,
+      toolInvocationId: 'stale-branch-delegate'
+    }
+
+    await expect(
+      work.delegate(staleCaller, { task: 'Trace sources', name: 'Trace sources' }, { wait: false })
+    ).rejects.toThrow(/current Branch|active root conversation/i)
+    await expect(
+      work.delegate(
+        {
+          ...staleCaller,
+          originMessageId: alternatePrompt.id,
+          toolInvocationId: 'current-branch-delegate'
+        },
+        { task: 'Trace sources', name: 'Trace sources' },
+        { wait: false }
+      )
+    ).resolves.toMatchObject({ children: [{ name: 'Trace sources' }] })
+    expect(execution.reservationCounts()).toEqual([1, 1])
+    expect(
+      (await readSession()).conversationGraph?.frames.filter(({ kind }) => kind === 'delegate')
+    ).toHaveLength(1)
   })
 
   it('persists successful running-child delivery against the addressed Attempt', async () => {
@@ -172,7 +320,7 @@ describe('Session delegated-work adapter', () => {
       originMessageId: rootPrompt.id,
       toolInvocationId: 'dispatch'
     }
-    await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    await work.delegate(caller, { task: 'Initial task', name: 'Initial task' }, { wait: false })
     await expect
       .poll(async () => {
         const prompt = (await readSession()).conversationGraph?.messages.find(
@@ -249,7 +397,10 @@ describe('Session delegated-work adapter', () => {
 
     const outcome = await work.delegate(
       batchCaller,
-      [{ task: 'First durable child' }, { task: 'Second durable child' }],
+      [
+        { task: 'First durable child', name: 'First durable child' },
+        { task: 'Second durable child', name: 'Second durable child' }
+      ],
       { wait: false }
     )
 
@@ -301,6 +452,7 @@ describe('Session delegated-work adapter', () => {
 
     const pending = work.delegate(caller, {
       task: 'Trace the source',
+      name: 'Trace source',
       context: 'Prefer primary evidence.',
       inputs: ['upload-version:one']
     })
@@ -374,7 +526,7 @@ describe('Session delegated-work adapter', () => {
       toolInvocationId: 'rich-transcript'
     }
 
-    const pending = work.delegate(caller, { task: 'Inspect the paper' })
+    const pending = work.delegate(caller, { task: 'Inspect the paper', name: 'Inspect the paper' })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     const control = execution.controls()[0]
     control.accept()
@@ -514,7 +666,10 @@ describe('Session delegated-work adapter', () => {
       originMessageId: rootPrompt.id,
       toolInvocationId: 'provider-reject'
     }
-    const pending = work.delegate(caller, { task: 'Read until failure' })
+    const pending = work.delegate(caller, {
+      task: 'Read until failure',
+      name: 'Read until failure'
+    })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     const control = execution.controls()[0]
     control.accept()
@@ -609,7 +764,11 @@ describe('Session delegated-work adapter', () => {
       originMessageId: rootPrompt.id,
       toolInvocationId: 'cancel-runtime'
     }
-    const dispatched = await work.delegate(caller, { task: 'Read until stopped' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Read until stopped', name: 'Read until stopped' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     const control = execution.controls()[0]
     control.accept()
@@ -698,7 +857,7 @@ describe('Session delegated-work adapter', () => {
       toolInvocationId: 'specialist-tool-call'
     }
 
-    await work.delegate(caller, { task: 'Audit sources' }, { wait: false })
+    await work.delegate(caller, { task: 'Audit sources', name: 'Audit sources' }, { wait: false })
 
     const expected = {
       kind: 'specialist',
@@ -813,7 +972,7 @@ describe('Session delegated-work adapter', () => {
         const error = await work
           .delegate(
             { ...caller, toolInvocationId: `unavailable-profile-${index}` },
-            { task: 'Must not persist', profile: reference },
+            { task: 'Must not persist', name: 'Must not persist', profile: reference },
             { wait: false }
           )
           .then(
@@ -834,7 +993,10 @@ describe('Session delegated-work adapter', () => {
       await expect(
         work.delegate(
           { ...caller, toolInvocationId: 'mixed-unavailable-profile' },
-          [{ task: 'Valid Main child' }, { task: 'Invalid child', profile: 'UNKNOWN_PROFILE' }],
+          [
+            { task: 'Valid Main child', name: 'Valid Main child' },
+            { task: 'Invalid child', name: 'Invalid child', profile: 'UNKNOWN_PROFILE' }
+          ],
           { wait: false }
         )
       ).rejects.toMatchObject({ code: 'admission_rejection' })
@@ -995,7 +1157,11 @@ describe('Session delegated-work adapter', () => {
       originMessageId: rootPrompt.id,
       toolInvocationId: 'dispatch-call'
     }
-    const dispatched = await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    const dispatched = await work.delegate(
+      caller,
+      { task: 'Initial task', name: 'Initial task' },
+      { wait: false }
+    )
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.control('attempt-1').accept()
     execution.control('attempt-1').complete('Initial answer')
@@ -1093,7 +1259,7 @@ describe('Session delegated-work adapter', () => {
       originMessageId: rootPrompt.id,
       toolInvocationId: 'dispatch-call'
     }
-    await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    await work.delegate(caller, { task: 'Initial task', name: 'Initial task' }, { wait: false })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.control('attempt-1').accept()
     execution.control('attempt-1').complete('Initial answer')
@@ -1148,7 +1314,7 @@ describe('Session delegated-work adapter', () => {
       originMessageId: rootPrompt.id,
       toolInvocationId: 'dispatch-call'
     }
-    await work.delegate(caller, { task: 'Initial task' }, { wait: false })
+    await work.delegate(caller, { task: 'Initial task', name: 'Initial task' }, { wait: false })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     execution.control('attempt-1').accept()
     execution.control('attempt-1').complete('Stable evidence')

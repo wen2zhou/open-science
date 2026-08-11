@@ -4,6 +4,7 @@ import type {
   DurableDelegateRequest,
   DurableDelegatedWork
 } from '../delegated-work/durable-delegated-work'
+import { MAX_DELEGATE_NAME_CODE_POINTS } from '../delegated-work/delegated-work-admission'
 
 const RUNNING_OBSERVATION_SCHEMA = {
   type: 'object',
@@ -91,14 +92,20 @@ const COLLECT_AGENT_CONTRACT = {
 
 const DELEGATE_REQUEST_OBJECT_SCHEMA = {
   type: 'object',
-  required: ['task'],
+  required: ['task', 'name'],
   properties: {
     task: {
       type: 'string',
       minLength: 1,
       description: 'Non-empty assignment for the Subagent.'
     },
-    name: { type: 'string', minLength: 1, description: 'Non-empty display title.' },
+    name: {
+      type: 'string',
+      minLength: 1,
+      maxCodePoints: MAX_DELEGATE_NAME_CODE_POINTS,
+      description:
+        'Required Subagent display name of 1–48 Unicode code points. Emoji sequences, newlines, and control characters are not allowed. The normalized name must be unique among running and terminal children on the current active root Message Branch; NFC-equivalent, whitespace-collapsed, and lowercase-equivalent names conflict. Names are never derived, truncated, suffixed, or otherwise automatically renamed.'
+    },
     profile: {
       type: 'string',
       minLength: 1,
@@ -213,6 +220,7 @@ const DELEGATE_AGENT_CONTRACT = {
     domain_error_code_exposed: false,
     conditions: [
       'Invalid requests or unavailable input/Specialist selections reject the call before dispatch.',
+      'A missing, empty, newline/control-containing, emoji-containing, over-48-code-point, or current-branch-conflicting name rejects the entire atomic call with corrective retry guidance before dispatch.',
       'Insufficient capacity or an unavailable execution framework rejects the call before dispatch.',
       'Terminal execution failures are returned as result children with status "error" and an error object.'
     ]

@@ -37,21 +37,30 @@ const SUBAGENT_MODEL_UNAVAILABLE_PROMPT = 'Verify the Subagent model unavailable
 const SUBAGENT_MODEL_INHERITED_PROMPT = 'Run the inherited Subagent model journey.'
 const SUBAGENT_MODEL_HOLDER_PROMPT = 'Create the global Active model holder.'
 const DELEGATED_TERMINAL_TASK = 'Complete the certified delegated terminal fixture.'
+const DELEGATED_TERMINAL_NAME = 'Certified delegated terminal'
+const DELEGATED_MODEL_CONTINUATION_NAME = 'Model continuation child'
+const DELEGATED_INHERITED_SPECIALIST_NAME = 'Inherited specialist terminal'
 const DELEGATED_BOUNDED_SLOW_TASK = 'Complete the bounded fixture after a delay.'
 const DELEGATED_PERMISSION_TASK = 'Request the delegated fixture permission.'
 const DELEGATED_WAIT_MARKER = 'Wait until the Main Agent stops'
 const DELEGATED_WAIT_TASK = `${DELEGATED_WAIT_MARKER} delegated fixture A.`
 const DELEGATED_WAIT_TASK_TWO = `${DELEGATED_WAIT_MARKER} delegated fixture B.`
+const DELEGATED_WAIT_NAME = 'Delegated fixture A'
+const DELEGATED_WAIT_NAME_TWO = 'Delegated fixture B'
 const DELEGATED_STRUCTURED_OUTPUT_TASK = 'Create certified structured evidence.'
 const DELEGATED_RELIABLE_MESSAGING_TASK = 'Send a reliable question to Main.'
 const DELEGATED_RELIABLE_PARK_TASK = 'Queue a reliable question for branch parking.'
 const DELEGATED_RELIABLE_FAILURE_TASK = 'Queue a reliable question for post-fence failure.'
+const DELEGATED_RELIABLE_FAILURE_NAME = 'Post-fence reliable question'
 const DELEGATED_RELIABLE_FAIRNESS_TASK_A = 'Queue reliable fairness question A.'
 const DELEGATED_RELIABLE_FAIRNESS_TASK_B = 'Queue reliable fairness question B.'
 const RELIABLE_CHILD_DIRECTIVE = 'Use the renderer-visible reliable evidence.'
 const DELEGATED_BRANCH_A_TASK = `${DELEGATED_WAIT_MARKER} inactive branch child A.`
 const DELEGATED_BRANCH_B_TASK = `${DELEGATED_WAIT_MARKER} active branch child B1.`
 const DELEGATED_BRANCH_B_TASK_TWO = `${DELEGATED_WAIT_MARKER} active branch child B2.`
+const DELEGATED_BRANCH_A_NAME = 'Inactive branch child A'
+const DELEGATED_BRANCH_B_NAME = 'Active branch child B1'
+const DELEGATED_BRANCH_B_NAME_TWO = 'Active branch child B2'
 const CONTEXT_COMPACTION_PROMPT = 'Preview context compaction.'
 
 const sessionRoutes = new Map()
@@ -63,7 +72,9 @@ const delay = (milliseconds) => new Promise((resolve) => setTimeout(resolve, mil
 const suspendSessionWrites = async () => {
   const sessionsRoot = join(process.env.OPEN_SCIENCE_STORAGE_ROOT ?? '', 'sessions')
   const projects = await readdir(sessionsRoot, { withFileTypes: true })
-  const directories = projects.filter((entry) => entry.isDirectory()).map((entry) => join(sessionsRoot, entry.name))
+  const directories = projects
+    .filter((entry) => entry.isDirectory())
+    .map((entry) => join(sessionsRoot, entry.name))
   await Promise.all(directories.map((directory) => chmod(directory, 0o500)))
   return async () => Promise.all(directories.map((directory) => chmod(directory, 0o700)))
 }
@@ -231,8 +242,8 @@ const runProductionDelegationRequest = async (sessionId, request, wait) =>
     `return await host.delegate(${JSON.stringify(request)}, { wait: ${String(wait)} })`
   )
 
-const runProductionDelegation = async (sessionId, task, wait) =>
-  runProductionDelegationRequest(sessionId, { task }, wait)
+const runProductionDelegation = async (sessionId, task, name, wait) =>
+  runProductionDelegationRequest(sessionId, { task, name }, wait)
 
 const runProductionTimedDelegationRequest = async (sessionId, request) =>
   executeControlCode(
@@ -253,7 +264,18 @@ const captureDelegatedHandoff = async (sessionId, task) => {
   if (!currentRunFile)
     throw new Error('The delegated Artifact handoff was not routed to the Agent.')
   await mkdir(captureRoot, { recursive: true })
-  const captureKey = Buffer.from(task).toString('base64url')
+  const delegateName = task.includes(DELEGATED_BRANCH_B_TASK_TWO)
+    ? DELEGATED_BRANCH_B_NAME_TWO
+    : task.includes(DELEGATED_BRANCH_B_TASK)
+      ? DELEGATED_BRANCH_B_NAME
+      : task.includes(DELEGATED_BRANCH_A_TASK)
+        ? DELEGATED_BRANCH_A_NAME
+        : task.includes(DELEGATED_WAIT_TASK_TWO)
+          ? DELEGATED_WAIT_NAME_TWO
+          : task.includes(DELEGATED_WAIT_TASK)
+            ? DELEGATED_WAIT_NAME
+            : task
+  const captureKey = Buffer.from(delegateName).toString('base64url')
   const sabotagePlan = join(captureRoot, `${captureKey}.sabotage`)
   const shouldSabotage = await readFile(sabotagePlan, 'utf8')
     .then(() => true)
@@ -416,7 +438,10 @@ if (process.argv.includes('--version')) {
       if (prompt.includes(DELEGATION_STOP_PROMPT)) {
         await runProductionDelegationRequest(
           context.params.sessionId,
-          [{ task: DELEGATED_WAIT_TASK }, { task: DELEGATED_WAIT_TASK_TWO }],
+          [
+            { task: DELEGATED_WAIT_TASK, name: DELEGATED_WAIT_NAME },
+            { task: DELEGATED_WAIT_TASK_TWO, name: DELEGATED_WAIT_NAME_TWO }
+          ],
           false
         )
         await context.client.notify(acp.methods.client.session.update, {
@@ -471,6 +496,7 @@ if (process.argv.includes('--version')) {
           const delegated = await runProductionDelegation(
             context.params.sessionId,
             DELEGATED_TERMINAL_TASK,
+            DELEGATED_TERMINAL_NAME,
             true
           )
           if (delegated.status !== 'completed') {
@@ -481,7 +507,7 @@ if (process.argv.includes('--version')) {
           const dispatched = controlResultValue(
             await executeControlCode(
               context.params.sessionId,
-              `globalThis.s2Pending = await host.delegate([{ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)} }, { task: ${JSON.stringify(DELEGATED_BOUNDED_SLOW_TASK)} }], { timeout_seconds: 1 }); return globalThis.s2Pending`
+              `globalThis.s2Pending = await host.delegate([{ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)}, name: "Bounded terminal child" }, { task: ${JSON.stringify(DELEGATED_BOUNDED_SLOW_TASK)}, name: ${JSON.stringify(DELEGATED_BOUNDED_SLOW_TASK)} }], { timeout_seconds: 1 }); return globalThis.s2Pending`
             )
           )
           if (
@@ -506,23 +532,29 @@ if (process.argv.includes('--version')) {
           }
           reply = 'Production bounded collect journey completed.'
         } else if (prompt.includes(DELEGATION_PERMISSION_PROMPT)) {
-          await runProductionDelegation(context.params.sessionId, DELEGATED_PERMISSION_TASK, true)
+          await runProductionDelegation(
+            context.params.sessionId,
+            DELEGATED_PERMISSION_TASK,
+            DELEGATED_PERMISSION_TASK,
+            true
+          )
           reply = 'Production delegated permission journey completed.'
         } else if (prompt.includes(DELEGATION_BRANCH_A_PROMPT)) {
           await runProductionTimedDelegationRequest(context.params.sessionId, {
-            task: DELEGATED_BRANCH_A_TASK
+            task: DELEGATED_BRANCH_A_TASK,
+            name: DELEGATED_BRANCH_A_NAME
           })
           reply = 'Inactive branch child A is running.'
         } else if (prompt.includes(DELEGATION_BRANCH_B_PROMPT)) {
           await runProductionTimedDelegationRequest(context.params.sessionId, [
-            { task: DELEGATED_BRANCH_B_TASK },
-            { task: DELEGATED_BRANCH_B_TASK_TWO }
+            { task: DELEGATED_BRANCH_B_TASK, name: DELEGATED_BRANCH_B_NAME },
+            { task: DELEGATED_BRANCH_B_TASK_TWO, name: DELEGATED_BRANCH_B_NAME_TWO }
           ])
           reply = 'Active branch children B1 and B2 are running.'
         } else if (prompt.includes(DELEGATION_UNAVAILABLE_PROMPT)) {
           const delegated = await executeControlCode(
             context.params.sessionId,
-            `return await host.delegate({ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)}, profile: "missing-e2e-specialist" }, { wait: true })`
+            `return await host.delegate({ task: ${JSON.stringify(DELEGATED_TERMINAL_TASK)}, name: ${JSON.stringify(DELEGATED_TERMINAL_NAME)}, profile: "missing-e2e-specialist" }, { wait: true })`
           )
           if (delegated.status !== 'failed') {
             throw new Error(`Unsupported delegation was admitted: ${JSON.stringify(delegated)}`)
@@ -530,7 +562,12 @@ if (process.argv.includes('--version')) {
           reply = 'Subagents are unavailable for this session configuration.'
         } else if (prompt.includes(DELEGATION_INHERITED_SPECIALIST_PROMPT)) {
           const delegated = controlResultValue(
-            await runProductionDelegation(context.params.sessionId, DELEGATED_TERMINAL_TASK, true)
+            await runProductionDelegation(
+              context.params.sessionId,
+              DELEGATED_TERMINAL_TASK,
+              DELEGATED_INHERITED_SPECIALIST_NAME,
+              true
+            )
           )
           if (
             delegated.kind !== 'results' ||
@@ -588,13 +625,15 @@ if (process.argv.includes('--version')) {
             )
           )
           if (receipt.status !== 'queued') {
-            throw new Error(`Reliable parked receipt changed before wake: ${JSON.stringify(receipt)}`)
+            throw new Error(
+              `Reliable parked receipt changed before wake: ${JSON.stringify(receipt)}`
+            )
           }
           reply = 'Reliable branch wake admitted.'
         } else if (prompt.includes(RELIABLE_FAILURE_PROMPT)) {
           await runProductionDelegationRequest(
             context.params.sessionId,
-            { task: DELEGATED_RELIABLE_FAILURE_TASK, name: DELEGATED_RELIABLE_FAILURE_TASK },
+            { task: DELEGATED_RELIABLE_FAILURE_TASK, name: DELEGATED_RELIABLE_FAILURE_NAME },
             false
           )
           await delay(500)
@@ -616,7 +655,10 @@ if (process.argv.includes('--version')) {
           await runProductionDelegationRequest(
             context.params.sessionId,
             [
-              { task: DELEGATED_RELIABLE_FAIRNESS_TASK_A, name: DELEGATED_RELIABLE_FAIRNESS_TASK_A },
+              {
+                task: DELEGATED_RELIABLE_FAIRNESS_TASK_A,
+                name: DELEGATED_RELIABLE_FAIRNESS_TASK_A
+              },
               { task: DELEGATED_RELIABLE_FAIRNESS_TASK_B, name: DELEGATED_RELIABLE_FAIRNESS_TASK_B }
             ],
             false
@@ -637,8 +679,14 @@ if (process.argv.includes('--version')) {
             await runProductionDelegationRequest(
               context.params.sessionId,
               [
-                { task: `${DELEGATED_TERMINAL_TASK} batch A` },
-                { task: `${DELEGATED_TERMINAL_TASK} batch B` }
+                {
+                  task: `${DELEGATED_TERMINAL_TASK} batch A`,
+                  name: 'Certified terminal batch A'
+                },
+                {
+                  task: `${DELEGATED_TERMINAL_TASK} batch B`,
+                  name: 'Certified terminal batch B'
+                }
               ],
               true
             )
@@ -653,7 +701,12 @@ if (process.argv.includes('--version')) {
           reply = 'Subagent model batch completed.'
         } else if (prompt.includes(SUBAGENT_MODEL_CONTINUATION_START_PROMPT)) {
           const delegated = controlResultValue(
-            await runProductionDelegation(context.params.sessionId, DELEGATED_TERMINAL_TASK, true)
+            await runProductionDelegation(
+              context.params.sessionId,
+              DELEGATED_TERMINAL_TASK,
+              DELEGATED_MODEL_CONTINUATION_NAME,
+              true
+            )
           )
           const child = delegated.children?.[0]
           if (delegated.kind !== 'results' || child?.status !== 'completed') {
@@ -677,7 +730,7 @@ if (process.argv.includes('--version')) {
         } else if (prompt.includes(SUBAGENT_MODEL_UNAVAILABLE_PROMPT)) {
           const delegated = await executeControlCode(
             context.params.sessionId,
-            `return await host.delegate([{ task: "Unavailable batch A" }, { task: "Unavailable batch B" }], { wait: false })`
+            'return await host.delegate([{ task: "Unavailable batch A", name: "Unavailable batch A" }, { task: "Unavailable batch B", name: "Unavailable batch B" }], { wait: false })'
           )
           if (delegated.status !== 'failed') {
             throw new Error(`Unavailable Subagent model was admitted: ${JSON.stringify(delegated)}`)
@@ -687,6 +740,7 @@ if (process.argv.includes('--version')) {
           const delegated = await runProductionDelegation(
             context.params.sessionId,
             'Complete the inherited Subagent model fixture.',
+            'Inherited Subagent model fixture',
             true
           )
           if (delegated.status !== 'completed') {

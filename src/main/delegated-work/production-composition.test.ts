@@ -305,7 +305,7 @@ const createFrameworkCompositionHarness = async (
   const controls = new Map<string, FrameworkRuntimeControl>()
   const inputs = new Map<string, DelegateExecutionInput>()
   const opencodeConfig = {
-    permission: { task: 'deny' },
+    permission: { task: 'deny', name: 'deny' },
     agent: {
       general: { disable: true },
       explore: { disable: true },
@@ -514,6 +514,49 @@ afterEach(async () => {
 })
 
 describe('production delegated-work composition', () => {
+  it('requires non-emoji names and persists caller-chosen unique names across production reopen', async () => {
+    root = await mkdtemp(join(tmpdir(), 'delegated-production-naming-'))
+    const harness = await createCompositionHarness(root, 'codex')
+    const task = `Trace sources\n${'full prompt detail '.repeat(20)}`
+
+    await expect(
+      harness.composition.host.delegate(harness.caller, { task } as never, { wait: false })
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    await expect(
+      harness.composition.host.delegate(
+        { ...harness.caller, toolInvocationId: 'call-codex-emoji' },
+        { task, name: 'Trace sources 🧪' },
+        { wait: false }
+      )
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    expect(harness.execution.reservationCounts()).toEqual([])
+    const first = await harness.composition.host.delegate(
+      { ...harness.caller, toolInvocationId: 'call-codex-named' },
+      { task, name: 'Source audit' },
+      { wait: false }
+    )
+    const second = await harness
+      .reopen()
+      .host.delegate(
+        { ...harness.caller, toolInvocationId: 'call-codex-reopened' },
+        { task, name: 'Source audit 2' },
+        { wait: false }
+      )
+
+    expect(first).toMatchObject({ kind: 'receipts', children: [{ name: 'Source audit' }] })
+    expect(second).toMatchObject({ kind: 'receipts', children: [{ name: 'Source audit 2' }] })
+    await expect(harness.reopen().host.children(harness.caller)).resolves.toMatchObject([
+      { name: 'Source audit' },
+      { name: 'Source audit 2' }
+    ])
+    expect(
+      harness
+        .durable()
+        .conversationGraph?.frames.filter(({ kind }) => kind === 'delegate')
+        .map(({ delegateName }) => delegateName)
+    ).toEqual(['Source audit', 'Source audit 2'])
+  })
+
   it('records the admitted cross-provider model on every child Runtime Segment', async () => {
     root = await mkdtemp(join(tmpdir(), 'delegated-production-model-snapshot-'))
     const execution = createDeterministicDelegateExecution()
@@ -539,7 +582,10 @@ describe('production delegated-work composition', () => {
 
     await harness.composition.host.delegate(
       harness.caller,
-      [{ task: 'first' }, { task: 'second' }],
+      [
+        { task: 'first', name: 'first' },
+        { task: 'second', name: 'second' }
+      ],
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(2)
@@ -581,7 +627,7 @@ describe('production delegated-work composition', () => {
     )
     const receipt = await harness.composition.host.delegate(
       harness.caller,
-      { task: 'Preserve admitted route' },
+      { task: 'Preserve admitted route', name: 'Preserve admitted route' },
       { wait: false }
     )
     if (receipt.kind !== 'receipts') throw new Error('expected a running receipt')
@@ -652,7 +698,10 @@ describe('production delegated-work composition', () => {
     )
 
     await expect(
-      harness.composition.host.delegate(harness.caller, { task: 'must not exist' })
+      harness.composition.host.delegate(harness.caller, {
+        task: 'must not exist',
+        name: 'must not exist'
+      })
     ).rejects.toMatchObject({
       code: 'admission_rejection',
       userFacingUnavailableReason: expect.stringContaining('Settings → Model → Subagent model')
@@ -678,7 +727,10 @@ describe('production delegated-work composition', () => {
     )
 
     await expect(
-      harness.composition.host.delegate(harness.caller, { task: 'must not exist' })
+      harness.composition.host.delegate(harness.caller, {
+        task: 'must not exist',
+        name: 'must not exist'
+      })
     ).rejects.toMatchObject({
       code: 'admission_rejection',
       userFacingUnavailableReason: expect.stringContaining('Settings → Model → Subagent model')
@@ -695,6 +747,7 @@ describe('production delegated-work composition', () => {
       const harness = await createFrameworkCompositionHarness(root, frameworkId)
       const pending = harness.composition.host.delegate(harness.caller, {
         task: 'Return a structured count',
+        name: `Structured count ${frameworkId}`,
         outputSchema: {
           type: 'object',
           required: ['count'],
@@ -741,6 +794,7 @@ describe('production delegated-work composition', () => {
       harness.caller,
       {
         task: initialTask,
+        name: initialTask,
         outputSchema: {
           type: 'object',
           required: ['count'],
@@ -839,7 +893,11 @@ describe('production delegated-work composition', () => {
 
     const missing = await harness.composition.host.delegate(
       { ...harness.caller, toolInvocationId: 'missing-output-call' },
-      { task: 'Omit a structured number', outputSchema: { type: 'number' } },
+      {
+        task: 'Omit a structured number',
+        name: 'Omit a structured number',
+        outputSchema: { type: 'number' }
+      },
       { wait: false }
     )
     await expect.poll(() => harness.controls.has(missing.children[0].attemptId)).toBe(true)
@@ -870,6 +928,7 @@ describe('production delegated-work composition', () => {
       const harness = await createCompositionHarness(root, frameworkId)
       const pending = harness.composition.host.delegate(harness.caller, {
         task: 'Extract a count',
+        name: `Extract count ${frameworkId}`,
         outputSchema: {
           type: 'object',
           required: ['count'],
@@ -929,7 +988,7 @@ describe('production delegated-work composition', () => {
 
       const dispatched = await harness.composition.host.delegate(
         { ...harness.caller, toolInvocationId: 'missing-output-dispatch' },
-        { task: 'May omit', outputSchema: { type: 'number' } },
+        { task: 'May omit', name: 'May omit', outputSchema: { type: 'number' } },
         { wait: false }
       )
       await expect(
@@ -961,7 +1020,10 @@ describe('production delegated-work composition', () => {
     const harness = await createCompositionHarness(root, 'codex')
     const receipt = await harness.composition.host.delegate(
       harness.caller,
-      { task: 'Keep running across observation expiry' },
+      {
+        task: 'Keep running across observation expiry',
+        name: 'Keep running across observation expiry'
+      },
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(1)
@@ -1156,7 +1218,11 @@ describe('production delegated-work composition', () => {
         method: 'delegatedWorkCall',
         params: {
           delegation_call_id: '1',
-          request: { task: 'Inspect staged evidence', inputs: ['upload-version:version-1'] }
+          request: {
+            task: 'Inspect staged evidence',
+            name: 'Inspect staged evidence',
+            inputs: ['upload-version:version-1']
+          }
         }
       })
     })
@@ -1200,7 +1266,7 @@ describe('production delegated-work composition', () => {
     const harness = await createCompositionHarness(root, 'codex')
     const receipt = await harness.composition.host.delegate(
       harness.caller,
-      { task: 'Wait for permission' },
+      { task: 'Wait for permission', name: 'Wait for permission' },
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(1)
@@ -1270,7 +1336,10 @@ describe('production delegated-work composition', () => {
     const harness = await createCompositionHarness(root, 'codex')
     await harness.composition.host.delegate(
       harness.caller,
-      [{ task: 'First child' }, { task: 'Second child' }],
+      [
+        { task: 'First child', name: 'First child' },
+        { task: 'Second child', name: 'Second child' }
+      ],
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(2)
@@ -1290,7 +1359,10 @@ describe('production delegated-work composition', () => {
     const harness = await createCompositionHarness(root, 'codex')
     await harness.composition.host.delegate(
       harness.caller,
-      [{ task: 'Healthy child' }, { task: 'Stale full-access child' }],
+      [
+        { task: 'Healthy child', name: 'Healthy child' },
+        { task: 'Stale full-access child', name: 'Stale full-access child' }
+      ],
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(2)
@@ -1334,7 +1406,7 @@ describe('production delegated-work composition', () => {
 
     const pendingReceipt = harness.composition.host.delegate(
       harness.caller,
-      { task: 'Finish after detached receipt' },
+      { task: 'Finish after detached receipt', name: 'Finish after detached receipt' },
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(1)
@@ -1362,7 +1434,10 @@ describe('production delegated-work composition', () => {
         execution
       )
       await expect(
-        harness.composition.host.delegate(harness.caller, { task: 'Run certified factory' })
+        harness.composition.host.delegate(harness.caller, {
+          task: 'Run certified factory',
+          name: 'Run certified factory'
+        })
       ).resolves.toMatchObject({
         kind: 'results',
         children: [{ status: 'completed', response: `${frameworkId} complete` }]
@@ -1383,7 +1458,10 @@ describe('production delegated-work composition', () => {
     )
 
     await expect(
-      harness.composition.host.delegate(harness.caller, { task: 'Must not start' })
+      harness.composition.host.delegate(harness.caller, {
+        task: 'Must not start',
+        name: 'Must not start'
+      })
     ).rejects.toThrow('native delegation remains enabled')
     expect(harness.selected).toEqual(['opencode'])
     expect(execution.controls()).toEqual([])
@@ -1400,7 +1478,10 @@ describe('production delegated-work composition', () => {
     const unauthorized = { ...harness.caller, frameId: 'frame-outside-root' }
 
     await expect(
-      harness.composition.host.delegate(unauthorized, { task: 'Must not start' })
+      harness.composition.host.delegate(unauthorized, {
+        task: 'Must not start',
+        name: 'Must not start'
+      })
     ).rejects.toMatchObject({ code: 'authorization' })
     expect(harness.composition.root.unavailableReasons?.()).toEqual({})
   })
@@ -1632,7 +1713,8 @@ describe('production delegated-work composition', () => {
     harnessRef.current = harness
 
     const pending = harness.composition.host.delegate(harness.caller, {
-      task: 'Create Notebook evidence'
+      task: 'Create Notebook evidence',
+      name: 'Notebook evidence'
     })
     await expect.poll(() => harness.execution.controls()).toHaveLength(1)
     const control = harness.execution.controls()[0]
@@ -1873,7 +1955,10 @@ describe('production delegated-work composition', () => {
       ({ agentFrameId }) => agentFrameId === rootGraph.rootFrameId
     )!
 
-    const pending = harness.composition.host.delegate(harness.caller, { task: 'Create evidence' })
+    const pending = harness.composition.host.delegate(harness.caller, {
+      task: 'Create evidence',
+      name: 'Create evidence'
+    })
     await expect.poll(() => execution.controls()).toHaveLength(1)
     const control = execution.controls()[0]
     expect(control.input.artifactCurrentRunFile).toMatch(
@@ -2049,7 +2134,10 @@ describe('production delegated-work composition', () => {
       }
     })
     reviewState.harness = harness
-    const pending = harness.composition.host.delegate(harness.caller, { task: 'Review this' })
+    const pending = harness.composition.host.delegate(harness.caller, {
+      task: 'Review this',
+      name: 'Review this'
+    })
     await expect.poll(() => harness.execution.controls()).toHaveLength(1)
     const control = harness.execution.controls()[0]
     control.accept()
@@ -2104,7 +2192,7 @@ describe('production delegated-work composition', () => {
     })
     const receipt = await harness.composition.host.delegate(
       harness.caller,
-      { task: 'Ask the parent' },
+      { task: 'Ask the parent', name: 'Ask the parent' },
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(1)
@@ -2157,7 +2245,7 @@ describe('production delegated-work composition', () => {
     })
     const delegated = await harness.composition.host.delegate(
       harness.caller,
-      { task: 'Ask after restart' },
+      { task: 'Ask after restart', name: 'Ask after restart' },
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(1)
@@ -2198,7 +2286,7 @@ describe('production delegated-work composition', () => {
     const harness = await createCompositionHarness(root, 'codex')
     const receipt = await harness.composition.host.delegate(
       harness.caller,
-      { task: 'Create a stable Frame workspace' },
+      { task: 'Create a stable Frame workspace', name: 'Create a stable Frame workspace' },
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(1)
@@ -2253,7 +2341,7 @@ describe('production delegated-work composition', () => {
     await expect(
       harness.composition.host.delegate(
         harness.caller,
-        { task: 'must not cross the fence' },
+        { task: 'must not cross the fence', name: 'must not cross the fence' },
         { wait: false }
       )
     ).rejects.toMatchObject({ code: 'conflict' })
@@ -2303,7 +2391,10 @@ describe('production delegated-work composition', () => {
     })
     const receipt = await harness.composition.host.delegate(
       harness.caller,
-      [{ task: 'first Stop target' }, { task: 'second Stop target' }],
+      [
+        { task: 'first Stop target', name: 'first Stop target' },
+        { task: 'second Stop target', name: 'second Stop target' }
+      ],
       { wait: false }
     )
     await expect.poll(() => harness.execution.controls()).toHaveLength(2)

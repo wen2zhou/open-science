@@ -92,6 +92,7 @@ Main Agent可以在`wait:false`后先观察running child，再用stable `{frame_
 
 ```js
 const outcome = await host.delegate({
+  name: 'Potency extraction',
   task: 'Extract compound potencies',
   output_schema: {
     type: 'object',
@@ -121,7 +122,7 @@ const outcome = await host.delegate({
 {
   frame_id: 'frame-a',
   attempt_id: 'attempt-a',
-  name: 'Extract compound potencies',
+  name: 'Potency extraction',
   agent_name: 'Main Agent',
   status: 'completed',
   response: 'I extracted two compounds and attached the source table.',

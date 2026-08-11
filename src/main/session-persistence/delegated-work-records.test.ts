@@ -109,7 +109,7 @@ const child = (
   messageId: `child-prompt-${index}`,
   attemptId: `attempt-${index}`,
   task: overrides.task ?? `Research part ${index}`,
-  ...(overrides.name ? { name: overrides.name } : {}),
+  name: overrides.name ?? `Child ${index}`,
   resolvedAgent: { kind: 'main' as const },
   startedAt: 10 + index,
   callerSource: { rootMessageId: 'root-prompt', toolInvocationId: `delegate-${index}` },
@@ -117,6 +117,200 @@ const child = (
 })
 
 describe('delegated-work Session records', () => {
+  it('atomically validates required non-emoji names and rejects durable sibling conflicts', async () => {
+    const { coordinator, durable } = createHarness()
+    const rootFrameId = durable().conversationGraph!.rootFrameId
+
+    await expect(
+      coordinator.createChildren(key, {
+        expectedRevision: 0,
+        parentFrameId: rootFrameId,
+        originMessageId: rootPrompt.id,
+        children: [child(0, { name: 'Emoji 🧪' })]
+      })
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    await expect(
+      coordinator.createChildren(key, {
+        expectedRevision: 0,
+        parentFrameId: rootFrameId,
+        originMessageId: rootPrompt.id,
+        children: [
+          child(1, { task: 'Trace sources', name: 'Trace sources' }),
+          child(2, { task: 'Trace sources', name: 'Independent trace' })
+        ]
+      })
+    ).resolves.toEqual([
+      expect.objectContaining({ frameId: 'child-frame-1', name: 'Trace sources' }),
+      expect.objectContaining({ frameId: 'child-frame-2', name: 'Independent trace' })
+    ])
+
+    await expect(
+      coordinator.createChildren(key, {
+        expectedRevision: 1,
+        parentFrameId: rootFrameId,
+        originMessageId: rootPrompt.id,
+        children: [
+          child(3, {
+            task: 'Must not persist',
+            name: '  TRACE\u2003SOURCES  '
+          }),
+          child(4, { task: 'Nor this child', name: 'Nor this child' })
+        ]
+      })
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    expect(
+      durable().conversationGraph!.frames.filter(({ kind }) => kind === 'delegate')
+    ).toHaveLength(2)
+  })
+
+  it('keeps terminal names occupied on the active branch and releases names from an inactive branch', async () => {
+    const initial = createHarness()
+    const rootFrameId = initial.durable().conversationGraph!.rootFrameId
+    await initial.coordinator.createChildren(key, {
+      expectedRevision: 0,
+      parentFrameId: rootFrameId,
+      originMessageId: rootPrompt.id,
+      children: [child(1, { name: 'Evidence review' })]
+    })
+    const switched = initial.durable()
+    const originalBranchId = switched.conversationGraph!.frames.find(
+      ({ id }) => id === rootFrameId
+    )!.activeBranchId
+    switched.conversationGraph!.frames.find(({ id }) => id === 'child-frame-1')!.status =
+      'completed'
+
+    const activeBranchId = 'message-branch-alternate'
+    const activePrompt: PersistedChatMessage = {
+      ...rootPrompt,
+      id: 'alternate-prompt',
+      content: 'Coordinate the alternate branch.',
+      createdAt: 20,
+      updatedAt: 20
+    }
+    switched.conversationGraph!.frames.find(({ id }) => id === rootFrameId)!.activeBranchId =
+      activeBranchId
+    switched.conversationGraph!.branches.push({
+      id: activeBranchId,
+      agentFrameId: rootFrameId,
+      headMessageId: activePrompt.id,
+      createdAt: 20,
+      updatedAt: 20
+    })
+    switched.conversationGraph!.messages.push({
+      ...activePrompt,
+      agentFrameId: rootFrameId,
+      introducedOnBranchId: activeBranchId,
+      revisionRootMessageId: activePrompt.id
+    })
+    switched.messages = [activePrompt]
+    const alternate = createHarness(switched)
+
+    await expect(
+      alternate.coordinator.createChildren(key, {
+        expectedRevision: 1,
+        parentFrameId: rootFrameId,
+        originMessageId: activePrompt.id,
+        children: [
+          {
+            ...child(2, { name: '  EVIDENCE\u2003REVIEW  ' }),
+            callerSource: { rootMessageId: activePrompt.id, toolInvocationId: 'delegate-2' },
+            initiatingTurnMessageId: activePrompt.id
+          }
+        ]
+      })
+    ).resolves.toEqual([expect.objectContaining({ name: 'EVIDENCE REVIEW' })])
+
+    const switchedBack = alternate.durable()
+    switchedBack.conversationGraph!.frames.find(({ id }) => id === rootFrameId)!.activeBranchId =
+      originalBranchId
+    switchedBack.messages = [rootPrompt]
+    const original = createHarness(switchedBack)
+    await expect(
+      original.coordinator.createChildren(key, {
+        expectedRevision: 2,
+        parentFrameId: rootFrameId,
+        originMessageId: rootPrompt.id,
+        children: [child(3, { name: 'evidence review' })]
+      })
+    ).rejects.toMatchObject({
+      code: 'admission_rejection',
+      message: expect.stringMatching(/occupied on the current branch.*retry/i)
+    })
+  })
+
+  it('allows the same normalized name in a different Session', async () => {
+    const first = createHarness()
+    const firstRootFrameId = first.durable().conversationGraph!.rootFrameId
+    await first.coordinator.createChildren(key, {
+      expectedRevision: 0,
+      parentFrameId: firstRootFrameId,
+      originMessageId: rootPrompt.id,
+      children: [child(1, { name: 'Evidence review' })]
+    })
+
+    const secondKey = { projectId: 'project-1', sessionId: 'session-2' } as const
+    const secondSeed = createRootSession()
+    secondSeed.id = secondKey.sessionId
+    secondSeed.conversationGraph = createLinearConversationGraph({
+      sessionId: secondKey.sessionId,
+      messages: [rootPrompt],
+      frameworkId: 'codex',
+      createdAt: 1,
+      updatedAt: 1
+    })
+    const second = createHarness(secondSeed)
+    await expect(
+      second.coordinator.createChildren(secondKey, {
+        expectedRevision: 0,
+        parentFrameId: second.durable().conversationGraph!.rootFrameId,
+        originMessageId: rootPrompt.id,
+        children: [child(1, { name: '  EVIDENCE\u2003REVIEW  ' })]
+      })
+    ).resolves.toEqual([expect.objectContaining({ name: 'EVIDENCE REVIEW' })])
+  })
+
+  it('reads legacy duplicate, missing, and overlong names unchanged while treating readable names as occupied', async () => {
+    const initial = createHarness()
+    const rootFrameId = initial.durable().conversationGraph!.rootFrameId
+    await initial.coordinator.createChildren(key, {
+      expectedRevision: 0,
+      parentFrameId: rootFrameId,
+      originMessageId: rootPrompt.id,
+      children: [child(1), child(2), child(3), child(4)]
+    })
+    const legacy = initial.durable()
+    const legacyFrames = legacy.conversationGraph!.frames.filter(({ kind }) => kind === 'delegate')
+    legacyFrames[0].delegateName = 'Duplicate legacy'
+    legacyFrames[1].delegateName = 'duplicate legacy'
+    delete legacyFrames[2].delegateName
+    legacyFrames[2].agentName = 'Legacy\u0085name'
+    legacyFrames[3].delegateName = '界'.repeat(100)
+    const reopened = createHarness(legacy)
+
+    await expect(reopened.coordinator.readChildren(key, rootFrameId)).resolves.toHaveLength(4)
+    expect(reopened.durable()).toEqual(legacy)
+
+    await expect(
+      reopened.coordinator.createChildren(key, {
+        expectedRevision: 1,
+        parentFrameId: rootFrameId,
+        originMessageId: rootPrompt.id,
+        children: [child(5, { task: 'Legacy name', name: 'Legacy name' })]
+      })
+    ).rejects.toMatchObject({ code: 'admission_rejection' })
+    await reopened.coordinator.createChildren(key, {
+      expectedRevision: 1,
+      parentFrameId: rootFrameId,
+      originMessageId: rootPrompt.id,
+      children: [child(6, { task: 'Fresh task', name: 'Fresh name' })]
+    })
+    const savedLegacyFrames = reopened
+      .durable()
+      .conversationGraph!.frames.filter(({ kind }) => kind === 'delegate')
+      .slice(0, 4)
+    expect(savedLegacyFrames).toEqual(legacyFrames)
+  })
+
   it('stores Attempt-owned structured evidence atomically on the prompt Message and CASes one value', async () => {
     const initial = createRootSession()
     const { coordinator, durable } = createHarness(initial)
@@ -231,8 +425,18 @@ describe('delegated-work Session records', () => {
         children: [child(1, { name: 'Evidence' }), child(2, { name: 'Risks' })]
       })
     ).resolves.toEqual([
-      { frameId: 'child-frame-1', attemptId: 'attempt-1', status: 'running' },
-      { frameId: 'child-frame-2', attemptId: 'attempt-2', status: 'running' }
+      {
+        frameId: 'child-frame-1',
+        attemptId: 'attempt-1',
+        name: 'Evidence',
+        status: 'running'
+      },
+      {
+        frameId: 'child-frame-2',
+        attemptId: 'attempt-2',
+        name: 'Risks',
+        status: 'running'
+      }
     ])
     await coordinator.startAttemptRuntime(key, {
       expectedRevision: 1,

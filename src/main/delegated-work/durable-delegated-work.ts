@@ -329,9 +329,7 @@ const createDurableDelegatedWork = (
           runtimeSegmentId: createId('runtime')
         }
         const lifecycle = turnLifecycle.create(pendingContext, false)
-        return (
-          await deliveryHandle
-        ).sendMessage(message.text, {
+        return (await deliveryHandle).sendMessage(message.text, {
           ...lifecycle,
           async begin() {
             context = await options.records.startPendingTurn(
@@ -695,14 +693,30 @@ const createDurableDelegatedWork = (
     try {
       await withAdmissionLock(async () => {
         await assertTurnOpen(caller.session, caller.originMessageId)
-        await options.records.admitChildren({
+        const committed = await options.records.admitChildren({
           caller,
           children: admissions
         })
+        if (
+          committed.length !== admissions.length ||
+          committed.some(
+            (child, index) =>
+              child.frameId !== admissions[index].frameId ||
+              child.attemptId !== admissions[index].attemptId
+          )
+        ) {
+          throw new Error('Durable delegated-work admission returned mismatched children.')
+        }
+        admissions = admissions.map((admission, index) => ({
+          ...admission,
+          name: committed[index].name
+        }))
       })
     } catch (error) {
-      await reservation.releaseAll()
-      await executionModelAdmission.backendLease?.release().catch(() => undefined)
+      await Promise.allSettled([
+        reservation.releaseAll(),
+        executionModelAdmission.backendLease?.release() ?? Promise.resolve()
+      ])
       throw error
     }
     const children: DurableChild[] = admissions.map((admission) => ({
@@ -710,7 +724,7 @@ const createDurableDelegatedWork = (
       parentFrameId: caller.frameId,
       originMessageId: caller.originMessageId,
       originBindingState: 'validated',
-      title: admission.title,
+      title: admission.name,
       task: admission.request.task,
       context: admission.request.context,
       outputSchema: admission.request.outputSchema,
@@ -742,10 +756,10 @@ const createDurableDelegatedWork = (
       )
     )
     const completions = launches.map(({ completion }) => completion)
-    const receipts = admissions.map(({ frameId, attemptId, title, resolvedAgent }) => ({
+    const receipts = admissions.map(({ frameId, attemptId, name, resolvedAgent }) => ({
       frameId,
       attemptId,
-      name: title,
+      name,
       agentName: resolvedAgent.kind === 'specialist' ? resolvedAgent.displayName : 'Main Agent',
       status: 'running' as const
     }))

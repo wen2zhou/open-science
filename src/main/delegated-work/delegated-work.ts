@@ -5,6 +5,8 @@ import {
   type DelegateExecutionInput,
   type RunningDelegateExecution
 } from './execution-port'
+import { allocateDelegateNames, createAdmissionGate } from './delegated-work-admission'
+import { DurableDelegatedWorkError } from './durable-delegated-work-error'
 
 type SessionKey = Readonly<{ projectId: string; sessionId: string }>
 type AgentCaller = Readonly<{
@@ -14,7 +16,7 @@ type AgentCaller = Readonly<{
 }>
 type DelegateRequest = Readonly<{
   task: string
-  name?: string
+  name: string
   profile?: string
   context?: string
   inputs?: readonly string[]
@@ -43,11 +45,13 @@ type CancellationReason = 'main_agent_stop' | 'session_stop' | 'runtime_interrup
 type DelegateReceipt = Readonly<{
   frameId: string
   attemptId: string
+  name: string
   status: 'running'
 }>
 type DelegateResult = Readonly<{
   frameId: string
   attemptId: string
+  name: string
   status: 'completed' | 'cancelled' | 'error'
   terminalMessageId?: string
   response?: string
@@ -114,12 +118,19 @@ type MemoryData = {
   nextFrame: number
   nextAttempt: number
   nextMessage: number
+  admit: <Result>(operation: () => Promise<Result>) => Promise<Result>
 }
 const memoryStates = new WeakMap<DelegatedWorkMemoryState, MemoryData>()
 
 const createDelegatedWorkMemoryState = (): DelegatedWorkMemoryState => {
   const state = Object.freeze({}) as DelegatedWorkMemoryState
-  memoryStates.set(state, { children: [], nextFrame: 1, nextAttempt: 1, nextMessage: 1 })
+  memoryStates.set(state, {
+    children: [],
+    nextFrame: 1,
+    nextAttempt: 1,
+    nextMessage: 1,
+    admit: createAdmissionGate()
+  })
   return state
 }
 
@@ -147,11 +158,11 @@ const createDelegatedWork = (options: {
   const terminalize = (
     child: ChildRecord,
     attempt: AttemptRecord,
-    result: DelegateResult
+    result: Omit<DelegateResult, 'name'>
   ): boolean => {
     if (attempt.status !== 'running') return false
     attempt.status = result.status
-    attempt.result = Object.freeze(result)
+    attempt.result = Object.freeze({ ...result, name: child.title })
     child.awaitingPermission = false
     for (const resolve of attempt.waiters.splice(0)) resolve(attempt.result)
     return true
@@ -263,6 +274,12 @@ const createDelegatedWork = (options: {
       if (requests.length === 0 || requests.some((request) => request.task.trim().length === 0)) {
         throw new DelegatedWorkError('admission_rejection', 'delegation requires one or more tasks')
       }
+      if (requests.some((request) => typeof request.name !== 'string')) {
+        throw new DelegatedWorkError(
+          'admission_rejection',
+          'delegation requires an explicit delegate name; provide a 1–48-code-point non-emoji name and retry'
+        )
+      }
       if (
         requests.some(
           (request) => request.profile !== undefined && request.profile.trim().length === 0
@@ -270,41 +287,62 @@ const createDelegatedWork = (options: {
       ) {
         throw new DelegatedWorkError('admission_rejection', 'an explicit profile cannot be empty')
       }
-      let reservation: DelegateCapacityReservation
-      try {
-        reservation = await options.execution.reserve(requests.length)
-      } catch (error) {
-        if (error instanceof DelegateExecutionError) {
-          throw new DelegatedWorkError(error.code, error.message)
+      const created = await state.admit(async () => {
+        let names: readonly string[]
+        try {
+          names = allocateDelegateNames(
+            requests.map((request) => request.name),
+            state.children
+              .filter(
+                (child) =>
+                  sameSession(child.session, caller.session) &&
+                  child.parentFrameId === caller.frameId
+              )
+              .map((child) => child.title)
+          )
+        } catch (error) {
+          if (error instanceof DurableDelegatedWorkError) {
+            throw new DelegatedWorkError(error.code, error.message)
+          }
+          throw error
         }
-        throw new DelegatedWorkError(
-          'capacity',
-          error instanceof Error ? error.message : String(error)
-        )
-      }
-      const created = requests.map((request, index) => {
-        const frameId = `frame-${state.nextFrame++}`
-        const attempt: AttemptRecord = {
-          id: `attempt-${state.nextAttempt++}`,
-          status: 'running',
-          waiters: []
+        let reservation: DelegateCapacityReservation
+        try {
+          reservation = await options.execution.reserve(requests.length)
+        } catch (error) {
+          if (error instanceof DelegateExecutionError) {
+            throw new DelegatedWorkError(error.code, error.message)
+          }
+          throw new DelegatedWorkError(
+            'capacity',
+            error instanceof Error ? error.message : String(error)
+          )
         }
-        const child: ChildRecord = {
-          session: caller.session,
-          frameId,
-          parentFrameId: caller.frameId,
-          title: request.name ?? request.task,
-          request,
-          attempts: [attempt],
-          awaitingPermission: false
-        }
-        state.children.push(child)
-        run(child, attempt, reservation, reservation.slotIds[index], false)
-        return child
+        return requests.map((request, index) => {
+          const frameId = `frame-${state.nextFrame++}`
+          const attempt: AttemptRecord = {
+            id: `attempt-${state.nextAttempt++}`,
+            status: 'running',
+            waiters: []
+          }
+          const child: ChildRecord = {
+            session: caller.session,
+            frameId,
+            parentFrameId: caller.frameId,
+            title: names[index],
+            request: { ...request, name: names[index] },
+            attempts: [attempt],
+            awaitingPermission: false
+          }
+          state.children.push(child)
+          run(child, attempt, reservation, reservation.slotIds[index], false)
+          return child
+        })
       })
       const receipts = created.map((child): DelegateReceipt => ({
         frameId: child.frameId,
         attemptId: currentAttempt(child).id,
+        name: child.title,
         status: 'running'
       }))
       if (delegateOptions.wait === false) return { kind: 'receipts', children: receipts }
@@ -392,7 +430,12 @@ const createDelegatedWork = (options: {
       run(child, continued, reservation, reservation.slotIds[0], true)
       return {
         kind: 'continued',
-        child: { frameId: child.frameId, attemptId: continued.id, status: 'running' }
+        child: {
+          frameId: child.frameId,
+          attemptId: continued.id,
+          name: child.title,
+          status: 'running'
+        }
       }
     },
     async stop(caller, frameIds) {
@@ -416,13 +459,13 @@ const createDelegatedWork = (options: {
       const interrupted: DelegateResult[] = []
       for (const child of state.children) {
         const attempt = currentAttempt(child)
-        const result: DelegateResult = {
+        const result: Omit<DelegateResult, 'name'> = {
           frameId: child.frameId,
           attemptId: attempt.id,
           status: 'cancelled',
           cancellationReason: 'runtime_interrupted'
         }
-        if (terminalize(child, attempt, result)) interrupted.push(result)
+        if (terminalize(child, attempt, result)) interrupted.push(attempt.result!)
       }
       return { interrupted }
     }

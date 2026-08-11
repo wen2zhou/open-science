@@ -267,7 +267,7 @@ describe('Codex delegated-work isolation evidence', () => {
             originMessageId: 'root-message',
             toolInvocationId: 'delegate-call'
           },
-          { task: 'must not start' },
+          { task: 'must not start', name: 'must not start' },
           { wait: false }
         )
       ).rejects.toMatchObject({ code: 'unsupported_framework' })

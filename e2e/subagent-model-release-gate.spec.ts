@@ -5,7 +5,8 @@ import { test } from './fixtures/electron-app'
 
 const TERMINAL_PROMPT = 'Run the production delegation terminal journey.'
 const TERMINAL_REPLY = 'Production delegation reached a terminal result.'
-const TERMINAL_CHILD = 'Complete the certified delegated terminal fixture.'
+const TERMINAL_CHILD = 'Certified delegated terminal'
+const MODEL_CONTINUATION_CHILD = 'Model continuation child'
 const SUBAGENT_PROVIDER_NAME = 'Subagent E2E provider'
 const SUBAGENT_MODEL = 'cross-provider-e2e-model'
 const MODEL_BATCH_PROMPT = 'Run the Subagent model batch journey.'
@@ -13,7 +14,7 @@ const MODEL_CONTINUATION_START_PROMPT = 'Start the Subagent model continuation j
 const MODEL_CONTINUATION_FINISH_PROMPT = 'Finish the Subagent model continuation journey.'
 const MODEL_UNAVAILABLE_PROMPT = 'Verify the Subagent model unavailable journey.'
 const MODEL_INHERITED_PROMPT = 'Run the inherited Subagent model journey.'
-const MODEL_INHERITED_CHILD = 'Complete the inherited Subagent model fixture.'
+const MODEL_INHERITED_CHILD = 'Inherited Subagent model fixture'
 const INHERITED_SPECIALIST_PROMPT = 'Run the production inherited Specialist delegation journey.'
 
 const closeWorkspacePreviews = async (page: Page): Promise<void> => {
@@ -184,7 +185,7 @@ test('routes a Settings UI fixed model through production Delegation and Usage',
       )
       return candidates.at(-1)?.attempts.map((attempt) => attempt.executionModel)
     },
-    { childName: TERMINAL_CHILD }
+    { childName: MODEL_CONTINUATION_CHILD }
   )
   expect(continuedModels).toHaveLength(2)
   expect(continuedModels).toEqual([

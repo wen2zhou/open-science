@@ -106,6 +106,10 @@ const outcome = await host.delegate(
 
 ```js
 // cell 1
+const requests = [
+  { name: 'Sources', task: 'Trace the primary sources' },
+  { name: 'Audit', task: 'Audit the analysis' }
+]
 globalThis.delegation = await host.delegate(requests, { timeout_seconds: 30 })
 
 // cell 2 or later Turn

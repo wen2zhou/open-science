@@ -47,6 +47,7 @@ describe('DurableDelegatedWork structured output', () => {
       parent,
       {
         task: 'Extract',
+        name: 'Extract structured answer',
         outputSchema: {
           type: 'object',
           required: ['answer'],
@@ -95,7 +96,7 @@ describe('DurableDelegatedWork structured output', () => {
     })
     const dispatch = await work.delegate(
       parent,
-      { task: 'Extract', outputSchema: true },
+      { task: 'Extract', name: 'Extract', outputSchema: true },
       { wait: false }
     )
     const child = dispatch.children[0]
@@ -122,8 +123,8 @@ describe('DurableDelegatedWork structured output', () => {
       work.delegate(
         parent,
         [
-          { task: 'ok', outputSchema: true },
-          { task: 'bad', outputSchema: { format: 'email' } }
+          { task: 'ok', name: 'ok', outputSchema: true },
+          { task: 'bad', name: 'bad', outputSchema: { format: 'email' } }
         ],
         { wait: false }
       )
@@ -132,7 +133,7 @@ describe('DurableDelegatedWork structured output', () => {
 
     const dispatch = await work.delegate(
       { ...parent, toolInvocationId: 'second' },
-      { task: 'done', outputSchema: true },
+      { task: 'done', name: 'done', outputSchema: true },
       { wait: false }
     )
     const child = dispatch.children[0]
@@ -166,7 +167,7 @@ describe('DurableDelegatedWork structured output', () => {
     const work = createStructuredOutputWork({ execution, records })
     const first = await work.delegate(
       parent,
-      { task: 'first', outputSchema: true },
+      { task: 'first', name: 'first', outputSchema: true },
       { wait: false }
     )
     const firstChild = first.children[0]
@@ -189,7 +190,7 @@ describe('DurableDelegatedWork structured output', () => {
 
     const second = await work.delegate(
       { ...parent, toolInvocationId: 'third' },
-      { task: 'second', outputSchema: true },
+      { task: 'second', name: 'second', outputSchema: true },
       { wait: false }
     )
     const secondChild = second.children[0]
@@ -223,7 +224,7 @@ describe('DurableDelegatedWork structured output', () => {
     const work = createStructuredOutputWork({ execution, records })
     const dispatch = await work.delegate(
       parent,
-      { task: 'corrupt', outputSchema: true },
+      { task: 'corrupt', name: 'corrupt', outputSchema: true },
       { wait: false }
     )
     await expect.poll(() => execution.controls()).toHaveLength(1)
@@ -267,8 +268,8 @@ describe('DurableDelegatedWork structured output', () => {
     const dispatch = await work.delegate(
       parent,
       [
-        { task: 'target', outputSchema: true },
-        { task: 'sibling', outputSchema: true }
+        { task: 'target', name: 'target', outputSchema: true },
+        { task: 'sibling', name: 'sibling', outputSchema: true }
       ],
       { wait: false }
     )

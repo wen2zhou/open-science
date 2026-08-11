@@ -82,6 +82,10 @@ Main Agent 需要委派、恢复、观察、通信或停止 Subagent，但不应
 ```js
 const catalog = await host.help()
 const delegateContract = await host.help('delegate')
+const requests = [
+  { name: 'Registry search', task: 'Search trial registries' },
+  { name: 'Analysis audit', task: 'Audit the analysis' }
+]
 const dispatched = await host.delegate(requests, { wait: false })
 
 // handles 丢失时恢复 current inventory

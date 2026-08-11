@@ -28,13 +28,14 @@ const RELIABLE_FAILURE_OBSERVE_PROMPT = 'Observe the reliable messaging post-fen
 const RELIABLE_FAIRNESS_PROMPT = 'Start the reliable messaging fairness journey.'
 const RELIABLE_FAIRNESS_USER_PROMPT = 'Run the concurrent real user prompt.'
 const STRUCTURED_OUTPUT_CHILD = 'Create certified structured evidence.'
-const TERMINAL_CHILD = 'Complete the certified delegated terminal fixture.'
+const TERMINAL_CHILD = 'Certified delegated terminal'
+const INHERITED_SPECIALIST_CHILD = 'Inherited specialist terminal'
 const PERMISSION_CHILD = 'Request the delegated fixture permission.'
-const STOP_CHILD = 'Wait until the Main Agent stops delegated fixture A.'
-const STOP_CHILD_TWO = 'Wait until the Main Agent stops delegated fixture B.'
-const BRANCH_A_CHILD = 'Wait until the Main Agent stops inactive branch child A.'
-const BRANCH_B_CHILD = 'Wait until the Main Agent stops active branch child B1.'
-const BRANCH_B_CHILD_TWO = 'Wait until the Main Agent stops active branch child B2.'
+const STOP_CHILD = 'Delegated fixture A'
+const STOP_CHILD_TWO = 'Delegated fixture B'
+const BRANCH_A_CHILD = 'Inactive branch child A'
+const BRANCH_B_CHILD = 'Active branch child B1'
+const BRANCH_B_CHILD_TWO = 'Active branch child B2'
 
 const expectDurableChildStatus = async (
   page: Page,
@@ -821,8 +822,8 @@ test('inherits a real root Specialist when profile is omitted and preserves its 
     'Production inherited Specialist delegation completed.',
     120_000
   )
-  await expectDurableChildStatus(page, TERMINAL_CHILD, 'completed')
-  const inheritedChildTrigger = page.getByRole('button', { name: TERMINAL_CHILD })
+  await expectDurableChildStatus(page, INHERITED_SPECIALIST_CHILD, 'completed')
+  const inheritedChildTrigger = page.getByRole('button', { name: INHERITED_SPECIALIST_CHILD })
   await inheritedChildTrigger.click()
   const inheritedPreview = page.getByRole('region', { name: 'Subagents' })
   await expect(inheritedPreview).toContainText('Release Specialist')
@@ -834,7 +835,7 @@ test('inherits a real root Specialist when profile is omitted and preserves its 
     .getByRole('region', { name: 'Recent sessions' })
     .getByRole('button', { name: INHERITED_SPECIALIST_PROMPT })
     .click()
-  await page.getByRole('button', { name: TERMINAL_CHILD }).click()
+  await page.getByRole('button', { name: INHERITED_SPECIALIST_CHILD }).click()
   await expect(page.getByRole('region', { name: 'Subagents' })).toContainText('Release Specialist')
 })
 
