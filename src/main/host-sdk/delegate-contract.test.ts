@@ -74,17 +74,17 @@ describe('Agent-facing delegate contract', () => {
       options: {}
     })
     expect(() => parseDelegateRpcCall({ request: 'Audit' })).toThrow(
-      'host.delegate requires one request object or a non-empty request array.'
+      'host.delegate request must be one object or a non-empty object array'
     )
     expect(() =>
       parseDelegateRpcCall({ request: { task: 'Audit' }, options: { wait: 'no' } })
-    ).toThrow('host.delegate wait must be a boolean.')
+    ).toThrow('host.delegate options.wait must be true or false.')
     expect(() =>
       parseDelegateRpcCall({
         request: { task: 'Audit' },
         options: { wait: false, timeout_seconds: 1 }
       })
-    ).toThrow('cannot be combined')
+    ).toThrow('omit timeout_seconds or set wait:true')
   })
 })
 

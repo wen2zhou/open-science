@@ -238,14 +238,16 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const parseDelegateRpcCall = (params: Readonly<Record<string, unknown>>): DelegateRpcCall => {
   const request = params.request
   if (!isRecord(request) && !Array.isArray(request)) {
-    throw new Error('host.delegate requires one request object or a non-empty request array.')
+    throw new Error(
+      'host.delegate request must be one object or a non-empty object array; pass it as the first argument.'
+    )
   }
   if (params.options !== undefined && !isRecord(params.options)) {
-    throw new Error('host.delegate options must be an object.')
+    throw new Error('host.delegate options must be an object; omit it when no options are needed.')
   }
   const requestedOptions = isRecord(params.options) ? params.options : {}
   if (requestedOptions.wait !== undefined && typeof requestedOptions.wait !== 'boolean') {
-    throw new Error('host.delegate wait must be a boolean.')
+    throw new Error('host.delegate options.wait must be true or false.')
   }
   const timeoutSeconds = requestedOptions.timeout_seconds
   if (
@@ -255,10 +257,14 @@ const parseDelegateRpcCall = (params: Readonly<Record<string, unknown>>): Delega
       timeoutSeconds < 0 ||
       timeoutSeconds > 1800)
   ) {
-    throw new Error('host.delegate timeout_seconds must be a finite number from 0 through 1800.')
+    throw new Error(
+      'host.delegate options.timeout_seconds must be a finite number from 0 through 1800; choose a value in that range or omit it.'
+    )
   }
   if (requestedOptions.wait === false && timeoutSeconds !== undefined) {
-    throw new Error('host.delegate wait:false cannot be combined with timeout_seconds.')
+    throw new Error(
+      'host.delegate options wait:false and timeout_seconds conflict; omit timeout_seconds or set wait:true.'
+    )
   }
   const mapRequest = (candidate: Record<string, unknown>): DurableDelegateRequest => {
     const { output_schema, ...rest } = candidate
@@ -284,7 +290,9 @@ const parseDelegateRpcCall = (params: Readonly<Record<string, unknown>>): Delega
 
 const parseCollectRpcCall = (params: Readonly<Record<string, unknown>>): CollectRpcCall => {
   if (!Array.isArray(params.selectors) || params.selectors.length === 0) {
-    throw new Error('host.collect requires a non-empty selectors array.')
+    throw new Error(
+      'host.collect selectors must be a non-empty array; pass Frame ids or {frame_id, attempt_id} handles.'
+    )
   }
   const selectors = params.selectors.map((selector) => {
     if (typeof selector === 'string' && selector.trim()) return selector
@@ -297,10 +305,12 @@ const parseCollectRpcCall = (params: Readonly<Record<string, unknown>>): Collect
     ) {
       return { frameId: selector.frame_id, attemptId: selector.attempt_id }
     }
-    throw new Error('host.collect selectors must be frame ids or Frame/Attempt handles.')
+    throw new Error(
+      'host.collect selector is invalid; use a non-empty Frame id or {frame_id, attempt_id} strings.'
+    )
   })
   if (params.options !== undefined && !isRecord(params.options)) {
-    throw new Error('host.collect options must be an object.')
+    throw new Error('host.collect options must be an object; omit it to use the 30-second default.')
   }
   const requestedOptions = isRecord(params.options) ? params.options : {}
   const timeoutSeconds = requestedOptions.timeout_seconds
@@ -311,7 +321,9 @@ const parseCollectRpcCall = (params: Readonly<Record<string, unknown>>): Collect
       timeoutSeconds < 0 ||
       timeoutSeconds > 1800)
   ) {
-    throw new Error('host.collect timeout_seconds must be a finite number from 0 through 1800.')
+    throw new Error(
+      'host.collect options.timeout_seconds must be a finite number from 0 through 1800; choose a value in that range or omit it.'
+    )
   }
   return {
     selectors,

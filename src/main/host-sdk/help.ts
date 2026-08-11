@@ -1,5 +1,3 @@
-import { COLLECT_AGENT_CONTRACT, DELEGATE_AGENT_CONTRACT } from './delegate-contract'
-
 const HOST_SDK_SUBAGENT_OPERATION_IDS = [
   'host.children',
   'host.collect',
@@ -36,11 +34,13 @@ type HostSdkHelpOperationDescriptor = Readonly<{
   returns: Readonly<Record<string, unknown>>
   constraints: readonly string[]
   examples: readonly Readonly<{ title: string; code: string }>[]
-  errors: Readonly<Record<string, unknown>>
   resolveAvailability(context: HostSdkHelpContext): HostSdkAvailability
 }>
 
-type HostSdkHelpOperation = Omit<HostSdkHelpOperationDescriptor, 'resolveAvailability'> &
+type HostSdkHelpOperation = Omit<
+  HostSdkHelpOperationDescriptor,
+  'resolveAvailability' | 'path' | 'aliases' | 'summary'
+> &
   Readonly<{ availability: HostSdkAvailability }>
 
 type HostSdkHelpCatalog = Readonly<{
@@ -84,61 +84,154 @@ const rootOnlyAvailability =
     return capabilities[operation] ? { status: 'available' } : unavailableProvisioning(operation)
   }
 
+const NO_OPTIONS = { fields: [] } as const
+
+const DELEGATION_CHILD_FIELDS = [
+  { name: 'frame_id', type: 'string', required: true, description: 'Child Frame id.' },
+  {
+    name: 'attempt_id',
+    type: 'string',
+    required: true,
+    description: 'Selected Attempt id.'
+  },
+  { name: 'name', type: 'string', required: true, description: 'Child name.' },
+  { name: 'agent_name', type: 'string', required: true, description: 'Specialist.' },
+  {
+    name: 'status',
+    type: 'string',
+    required: true,
+    description: 'running/completed/cancelled/error.'
+  },
+  {
+    name: 'terminal_message_id',
+    type: 'string',
+    when: 'terminal',
+    description: 'Terminal message id.'
+  },
+  { name: 'response', type: 'string', when: 'completed', description: 'Final text.' },
+  {
+    name: 'artifacts_created',
+    type: 'array',
+    when: 'terminal',
+    description: 'Created Artifacts.'
+  },
+  {
+    name: 'cancellation_reason',
+    type: 'string',
+    when: 'cancelled',
+    description: 'Stop reason.'
+  },
+  { name: 'error', type: 'object', when: 'error', description: 'Failure details.' },
+  {
+    name: 'structured_output',
+    type: 'JSON value',
+    when: 'submitted',
+    description: 'Validated output.'
+  },
+  {
+    name: 'structured_output_unsatisfied',
+    type: 'boolean',
+    when: 'terminal without required submission',
+    description: 'Required output missing.'
+  }
+] as const
+
 const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   kind: 'operation',
   id: 'host.delegate',
   path: 'host.delegate',
   aliases: ['delegate'],
-  summary: 'Dispatch one Subagent or an atomic fan-out and optionally observe for a bounded time.',
+  summary: 'Dispatch one child or an atomic fan-out; optionally observe it.',
   call_forms: [
     {
-      signature: 'await host.delegate(request, options?)',
-      accepts: 'request_object'
-    },
-    {
-      signature: 'await host.delegate(requests, options?)',
-      accepts: 'non_empty_request_array'
+      signature: 'await host.delegate(request | requests, options?)',
+      accepts: 'object_or_non_empty_array'
     }
   ],
-  request: DELEGATE_AGENT_CONTRACT.request,
-  options: DELEGATE_AGENT_CONTRACT.options,
-  returns: DELEGATE_AGENT_CONTRACT.returns,
+  request: {
+    accepts: ['object', 'non_empty_array'],
+    fields: [
+      {
+        name: 'task',
+        type: 'string',
+        required: true,
+        description: 'Complete self-contained assignment.'
+      },
+      {
+        name: 'name',
+        type: 'string',
+        required: true,
+        description:
+          'Unique name: 1–48 code points; no emoji/newlines/control; unique on current branch.'
+      },
+      {
+        name: 'profile',
+        type: 'string',
+        required: false,
+        description: 'Specialist id/name; omit to inherit the parent.'
+      },
+      {
+        name: 'inputs',
+        type: 'string[]',
+        required: false,
+        description: 'Immutable Version ids staged read-only under ./inputs/.'
+      },
+      {
+        name: 'output_schema',
+        type: 'JSON Schema',
+        required: false,
+        description: 'JSON Schema 2020-12 for host.submit_output.'
+      }
+    ]
+  },
+  options: {
+    fields: [
+      {
+        name: 'wait',
+        type: 'boolean',
+        required: false,
+        default: true,
+        description: 'Wait for all children unless false.'
+      },
+      {
+        name: 'timeout_seconds',
+        type: 'number',
+        required: false,
+        range: '0..1800',
+        description: 'Bounded observation; incompatible with wait=false.'
+      }
+    ]
+  },
+  returns: {
+    discriminator: { name: 'kind', values: ['receipts', 'observations', 'results'] },
+    variants: [
+      { value: 'receipts', when: 'wait=false', statuses: ['running'] },
+      {
+        value: 'observations',
+        when: 'timeout_seconds is set',
+        statuses: ['running', 'completed', 'cancelled', 'error']
+      },
+      {
+        value: 'results',
+        when: 'all-settled wait',
+        statuses: ['completed', 'cancelled', 'error']
+      }
+    ],
+    child_fields: DELEGATION_CHILD_FIELDS
+  },
   constraints: [
-    'Only the Main/root Agent can call host.delegate; nested delegation is unsupported.',
-    'Call await host.agents.list() to discover Specialist profile ids and public names.',
-    'Set profile to a stable id or unique exact public name returned by host.agents.list().',
-    'Omitting profile inherits the authenticated parent Specialist; a Main Agent parent still selects Main Agent.',
-    'A request array is admitted atomically and must be non-empty.',
-    'Every request must provide a 1–48-code-point non-emoji name without newlines or control characters. On the current active root Message Branch, running and terminal child names must be unique after NFC normalization, Unicode whitespace collapse, and lowercase comparison; names are never derived or automatically renamed.',
-    'Dispatch can be rejected before execution when capacity, framework, Specialist, or input admission is unavailable.',
-    'Write a complete, self-contained task. Each child receives only that task and its declared immutable inputs.',
-    'Immutable inputs are staged as read-only copies under ./inputs/ and announced in the child’s initial prompt.',
-    'An explicit timeout_seconds starts after every admitted child establishes launch and returns observations without stopping running children.',
-    'wait:false cannot be combined with timeout_seconds; omitting timeout_seconds preserves all-settled waiting.',
-    'After asynchronous dispatch, use host.children for current inventory recovery and host.collect for exact observation contracts.',
-    'Use host.stop_child to stop direct children; use host.send_message and host.message_receipt for delivery and observation.',
-    'When output_schema is admitted, the child uses host.submit_output; a child cannot nested-delegate or manage siblings.',
-    'Query each named exact Help topic for its complete parameters, results, constraints, and errors.'
+    'Main/root only; no nested delegation.',
+    'Non-empty batches are admitted atomically.',
+    'Use host.agents.list() for profiles; omission inherits.',
+    'Timeout observes; it does not stop children.',
+    'Async follow-up: host.children() recovers; host.collect(selectors) observes; host.stop_child(frame_ids) cancels.'
   ],
   examples: [
     {
-      title: 'Wait for one Subagent',
-      code: "const outcome = await host.delegate({ name: 'Statistical audit', task: 'Verify the statistical assumptions' })"
-    },
-    {
-      title: 'Select a Specialist discovered from the public catalog',
-      code: "const [specialist] = await host.agents.list()\nconst outcome = await host.delegate({ name: 'Statistical audit', task: 'Verify the statistical assumptions', profile: specialist.id })"
-    },
-    {
-      title: 'Observe an atomic fan-out for a bounded time',
-      code: "globalThis.delegation = await host.delegate([{ name: 'Registry search', task: 'Search trial registries' }, { name: 'Analysis audit', task: 'Audit the analysis' }], { timeout_seconds: 30 })"
-    },
-    {
-      title: 'Dispatch in parallel, continue, then collect',
-      code: "const dispatched = await host.delegate([{ name: 'Registry search', task: 'Search trial registries' }, { name: 'Analysis audit', task: 'Audit the analysis' }], { wait: false })\nconst results = await host.collect(dispatched.children.map(child => child.frame_id))"
+      title: 'Async dispatch',
+      code: "await host.delegate({name:'Audit',task:'Audit sources.'},{wait:false})"
     }
   ],
-  errors: DELEGATE_AGENT_CONTRACT.errors,
   resolveAvailability: ({ callerRole, capabilities }) => {
     if (callerRole === 'delegate') {
       return {
@@ -146,10 +239,23 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
         reason: 'Nested delegation is unsupported for Delegate agents.'
       }
     }
-    if (!capabilities.delegate) return unavailableProvisioning('delegate')
-    return { status: 'available' }
+    return capabilities.delegate ? { status: 'available' } : unavailableProvisioning('delegate')
   }
 }
+
+const INVENTORY_FIELDS = [
+  { name: 'frame_id', type: 'string', required: true, description: 'Stable child Frame id.' },
+  { name: 'attempt_id', type: 'string', required: true, description: 'Current Attempt id.' },
+  { name: 'title', type: 'string', required: false, description: 'Legacy display title.' },
+  { name: 'name', type: 'string', required: true, description: 'Child name.' },
+  { name: 'agent_name', type: 'string', required: true, description: 'Specialist name.' },
+  {
+    name: 'status',
+    type: 'string',
+    required: true,
+    description: 'running, completed, cancelled, or error.'
+  }
+] as const
 
 const CHILDREN_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   kind: 'operation',
@@ -158,51 +264,25 @@ const CHILDREN_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   aliases: ['children'],
   summary: 'List current direct-child Attempts on the active Message Branch.',
   call_forms: [
-    { signature: 'await host.children()', accepts: 'no_arguments' },
-    { signature: 'await host.children(frame_ids)', accepts: 'frame_id_array' }
+    { signature: 'await host.children(frame_ids?)', accepts: 'optional_frame_id_array' }
   ],
   request: {
-    type: 'array',
-    description:
-      'An optional array of Frame ids. Omit it to list all accessible current direct-child Attempts.',
-    items: { type: 'string', minLength: 1 }
-  },
-  options: {},
-  returns: {
-    type: 'array',
-    order: 'durable_admission_order_active_branch_subsequence',
-    items: {
-      type: 'object',
-      required: ['frame_id', 'attempt_id', 'name', 'agent_name', 'status'],
-      optional: ['title'],
-      properties: {
-        frame_id: { type: 'string' },
-        attempt_id: { type: 'string' },
-        title: { type: 'string' },
-        name: { type: 'string' },
-        agent_name: { type: 'string' },
-        status: { type: 'string', enum: ['running', 'completed', 'cancelled', 'error'] }
+    fields: [
+      {
+        name: 'frame_ids',
+        type: 'string[]',
+        required: false,
+        description: 'Selected Frames; omit to list all accessible direct children.'
       }
-    }
+    ]
   },
+  options: NO_OPTIONS,
+  returns: { type: 'array', item_fields: INVENTORY_FIELDS },
   constraints: [
-    'Root Main only; lists current Attempts for direct children on the active Message Branch.',
-    'The result preserves durable admission order restricted to the active-branch subsequence.',
-    'It does not recover historical Attempt handles or original delegation batch correlation.',
-    'Legacy children whose origin cannot be proven are unavailable.'
+    'Main/root only; results cover current direct-child Attempts on the active branch.',
+    'Results preserve durable admission order; historical Attempt handles are not recovered.'
   ],
-  examples: [
-    { title: 'Recover current handles', code: 'const current = await host.children()' },
-    {
-      title: 'Inspect selected current children',
-      code: 'await host.children(current.map(({ frame_id }) => frame_id))'
-    }
-  ],
-  errors: {
-    thrown_type: 'Error',
-    message_prefix: 'host.children: ',
-    domain_error_code_exposed: false
-  },
+  examples: [{ title: 'List children', code: 'const current = await host.children()' }],
   resolveAvailability: rootOnlyAvailability(
     'children',
     'Delegate agents cannot inspect or manage child inventory.'
@@ -214,37 +294,44 @@ const COLLECT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   id: 'host.collect',
   path: 'host.collect',
   aliases: ['collect'],
-  summary: 'Observe pinned Subagent Attempts until all settle or a bounded deadline expires.',
+  summary: 'Observe pinned child Attempts until all settle or a deadline expires.',
   call_forms: [
-    {
-      signature: 'await host.collect(selectors, options?)',
-      accepts: 'non_empty_selector_array'
-    }
+    { signature: 'await host.collect(selectors, options?)', accepts: 'non_empty_selector_array' }
   ],
-  request: COLLECT_AGENT_CONTRACT.selectors,
-  options: COLLECT_AGENT_CONTRACT.options,
-  returns: COLLECT_AGENT_CONTRACT.returns,
+  request: {
+    fields: [
+      {
+        name: 'selectors',
+        type: 'selector[]',
+        required: true,
+        description: 'Frame ids or {frame_id, attempt_id} handles; array must be non-empty.'
+      }
+    ]
+  },
+  options: {
+    fields: [
+      {
+        name: 'timeout_seconds',
+        type: 'number',
+        required: false,
+        default: 30,
+        range: '0..1800',
+        description: 'Observation deadline.'
+      }
+    ]
+  },
+  returns: { type: 'array', item_fields: DELEGATION_CHILD_FIELDS },
   constraints: [
-    'timeout_seconds defaults to 30 and must be a finite number from 0 through 1800.',
-    'A string pins the current Attempt; a frame_id/attempt_id handle can select history.',
-    'Expiry returns running observations and never stops or cancels a Subagent.',
-    'Only direct children on the active Message Branch are discoverable and collectible.'
+    'Main/root only; only direct children on the active branch are collectible.',
+    'Expiry returns running observations and never stops a child.'
   ],
   examples: [
     {
-      title: 'Cell 1 — preserve handles',
-      code: "globalThis.pendingDelegation = await host.delegate({ name: 'Source trace', task: 'Trace sources' }, { wait: false })"
-    },
-    {
-      title: 'Cell 2 — collect pinned Attempts',
-      code: 'await host.collect(globalThis.pendingDelegation.children.map(({ frame_id, attempt_id }) => ({ frame_id, attempt_id })), { timeout_seconds: 30 })'
+      title: 'Collect pinned Attempts',
+      code: 'await host.collect(sent.children.map(({ frame_id, attempt_id }) => ({ frame_id, attempt_id })))'
     }
   ],
-  errors: COLLECT_AGENT_CONTRACT.errors,
-  resolveAvailability: rootOnlyAvailability(
-    'collect',
-    'Delegate agents cannot collect child Attempts.'
-  )
+  resolveAvailability: rootOnlyAvailability('collect', 'Delegate agents cannot collect children.')
 }
 
 const STOP_CHILD_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
@@ -252,44 +339,43 @@ const STOP_CHILD_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   id: 'host.stop_child',
   path: 'host.stop_child',
   aliases: ['stop_child'],
-  summary: 'Stop one or more direct-child Frames without changing terminal children.',
+  summary: 'Stop one or more direct-child Frames.',
   call_forms: [
-    {
-      signature: 'await host.stop_child(frame_ids)',
-      accepts: 'non_empty_frame_id_array'
-    }
+    { signature: 'await host.stop_child(frame_ids)', accepts: 'non_empty_frame_id_array' }
   ],
-  request: { type: 'array', minItems: 1, items: { type: 'string', minLength: 1 } },
-  options: {},
+  request: {
+    fields: [
+      {
+        name: 'frame_ids',
+        type: 'string[]',
+        required: true,
+        description: 'Non-empty direct-child Frame ids.'
+      }
+    ]
+  },
+  options: NO_OPTIONS,
   returns: {
     type: 'array',
-    items: {
-      type: 'object',
-      required: ['frame_id', 'status'],
-      optional: [],
-      properties: {
-        frame_id: { type: 'string' },
-        status: { type: 'string', enum: ['cancelled', 'already_terminal'] }
+    item_fields: [
+      { name: 'frame_id', type: 'string', required: true, description: 'Requested Frame.' },
+      {
+        name: 'status',
+        type: 'string',
+        required: true,
+        description: 'cancelled or already_terminal.'
       }
-    }
+    ]
   },
   constraints: [
-    'Root Main only; every target must be an authorized direct child on the active Message Branch.',
-    'The array must be non-empty; results correspond to the requested Frame ids.',
-    'A terminal child is preserved and reported as already_terminal.',
-    'Each target can succeed independently; there is no all-or-nothing rollback.'
+    'Main/root only; each target must be a direct child on the active branch.',
+    'Targets settle independently; terminal children are preserved.'
   ],
   examples: [
     {
-      title: 'Stop current children',
+      title: 'Stop children',
       code: 'await host.stop_child(current.map(({ frame_id }) => frame_id))'
     }
   ],
-  errors: {
-    thrown_type: 'Error',
-    message_prefix: 'host.stop_child: ',
-    domain_error_code_exposed: false
-  },
   resolveAvailability: rootOnlyAvailability(
     'stop_child',
     'Delegate agents cannot stop or manage child Frames.'
@@ -303,26 +389,28 @@ const SUBMIT_OUTPUT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   aliases: ['submit_output'],
   summary: 'Submit the authenticated child Attempt structured JSON value.',
   call_forms: [{ signature: 'await host.submit_output(value)', accepts: 'json_value' }],
-  request: { description: 'A JSON value validated against the schema admitted for this Attempt.' },
-  options: {},
+  request: {
+    fields: [
+      {
+        name: 'value',
+        type: 'JSON value',
+        required: true,
+        description: 'Value validated against this Attempt’s admitted output_schema.'
+      }
+    ]
+  },
+  options: NO_OPTIONS,
   returns: {
     type: 'object',
-    required: ['accepted'],
-    properties: { accepted: { type: 'boolean', enum: [true] } }
+    fields: [
+      { name: 'accepted', type: 'boolean', required: true, description: 'Always true on success.' }
+    ]
   },
   constraints: [
-    'Available only to a running child Attempt that was delegated with output_schema.',
-    'The first valid value is durable; an equal retry is idempotent and a different retry is rejected.',
-    'Submission does not end the Attempt and does not replace text or Artifact output.'
+    'Available only to a running child delegated with output_schema.',
+    'The first valid value is durable; equal retry is idempotent and different retry is rejected.'
   ],
-  examples: [
-    { title: 'Submit a validated result', code: 'await host.submit_output({ answer: 42 })' }
-  ],
-  errors: {
-    thrown_type: 'Error',
-    message_prefix: 'host.submit_output: ',
-    domain_error_code_exposed: false
-  },
+  examples: [{ title: 'Submit output', code: 'await host.submit_output({ answer: 42 })' }],
   resolveAvailability: ({ callerRole, capabilities }) => {
     if (callerRole !== 'delegate') {
       return { status: 'unavailable', reason: 'Only a delegated child Attempt can submit output.' }
@@ -340,200 +428,150 @@ const messageAvailability =
   ({ capabilities }) =>
     capabilities[operation] ? { status: 'available' } : unavailableProvisioning(operation)
 
-const DELIVERY_RECEIPT_SCHEMA = {
-  type: 'delivery_receipt',
-  allOf: [
-    {
-      type: 'object',
-      required: [
-        'request_id',
-        'message_id',
-        'source_frame_id',
-        'target_frame_id',
-        'queued_at',
-        'same_request_safe'
-      ],
-      optional: ['reply_to_message_id'],
-      properties: {
-        request_id: { type: 'string' },
-        message_id: { type: 'string' },
-        source_frame_id: { type: 'string' },
-        target_frame_id: { type: 'string' },
-        reply_to_message_id: { type: 'string' },
-        queued_at: { type: 'number' },
-        same_request_safe: { type: 'boolean', enum: [true] }
-      }
-    },
-    {
-      discriminator: { propertyName: 'direction' },
-      oneOf: [
-        {
-          type: 'object',
-          required: ['direction', 'disposition', 'target_attempt_id'],
-          forbidden: ['source_attempt_id', 'continuation_attempt_id', 'root_prompt_message_id'],
-          properties: {
-            direction: { enum: ['to_child'] },
-            disposition: { enum: ['message'] },
-            target_attempt_id: { type: 'string' }
-          }
-        },
-        {
-          type: 'object',
-          required: ['direction', 'disposition', 'continuation_attempt_id'],
-          forbidden: ['source_attempt_id', 'target_attempt_id', 'root_prompt_message_id'],
-          properties: {
-            direction: { enum: ['to_child'] },
-            disposition: { enum: ['continued'] },
-            continuation_attempt_id: { type: 'string' }
-          }
-        },
-        {
-          type: 'object',
-          required: ['direction', 'disposition', 'source_attempt_id', 'root_prompt_message_id'],
-          forbidden: ['target_attempt_id', 'continuation_attempt_id'],
-          properties: {
-            direction: { enum: ['to_parent'] },
-            disposition: { enum: ['message'] },
-            source_attempt_id: { type: 'string' },
-            root_prompt_message_id: { type: 'string' }
-          }
-        }
-      ]
-    },
-    {
-      discriminator: { propertyName: 'status' },
-      oneOf: [
-        {
-          type: 'object',
-          required: ['status', 'new_request_retry_safe'],
-          optional: ['dispatch_started_at'],
-          properties: {
-            status: { enum: ['queued'] },
-            dispatch_started_at: { type: 'number' },
-            new_request_retry_safe: { enum: [false] }
-          }
-        },
-        {
-          type: 'object',
-          required: ['status', 'accepted_at', 'evidence', 'new_request_retry_safe'],
-          properties: {
-            status: { enum: ['accepted'] },
-            accepted_at: { type: 'number' },
-            evidence: { enum: ['provider_prompt_accepted', 'provider_prompt_completed'] },
-            new_request_retry_safe: { enum: [false] }
-          }
-        },
-        {
-          type: 'object',
-          required: ['status', 'failed_at', 'error', 'new_request_retry_safe'],
-          properties: {
-            status: { enum: ['failed'] },
-            failed_at: { type: 'number' },
-            error: {
-              type: 'object',
-              required: ['code', 'message', 'retryable', 'delivery_may_have_occurred'],
-              properties: {
-                code: { type: 'string' },
-                message: { type: 'string' },
-                retryable: { type: 'boolean' },
-                delivery_may_have_occurred: { enum: [false] }
-              }
-            },
-            new_request_retry_safe: {
-              type: 'boolean',
-              description: 'Equals error.retryable.'
-            }
-          }
-        },
-        {
-          type: 'object',
-          required: [
-            'status',
-            'uncertain_at',
-            'delivery_may_have_occurred',
-            'resolution',
-            'new_request_retry_safe'
-          ],
-          properties: {
-            status: { enum: ['uncertain'] },
-            uncertain_at: { type: 'number' },
-            delivery_may_have_occurred: { enum: [true] },
-            resolution: { enum: ['pending', 'acknowledged'] },
-            new_request_retry_safe: { enum: [false] }
-          }
-        }
-      ]
-    }
-  ]
-} as const
+const DELIVERY_RECEIPT_FIELDS = [
+  { name: 'request_id', type: 'string', required: true, description: 'Idempotency key.' },
+  { name: 'message_id', type: 'string', required: true, description: 'Command id.' },
+  { name: 'source_frame_id', type: 'string', required: true, description: 'Sender Frame.' },
+  { name: 'target_frame_id', type: 'string', required: true, description: 'Receiver Frame.' },
+  {
+    name: 'reply_to_message_id',
+    type: 'string',
+    required: false,
+    description: 'Replied-to message.'
+  },
+  { name: 'queued_at', type: 'number', required: true, description: 'Queue time.' },
+  { name: 'direction', type: 'string', required: true, description: 'Route.' },
+  {
+    name: 'disposition',
+    type: 'string',
+    required: true,
+    description: 'Delivery form.'
+  },
+  {
+    name: 'target_attempt_id',
+    type: 'string',
+    when: 'to_child message',
+    description: 'Receiver Attempt.'
+  },
+  {
+    name: 'continuation_attempt_id',
+    type: 'string',
+    when: 'to_child continued',
+    description: 'New Attempt.'
+  },
+  {
+    name: 'source_attempt_id',
+    type: 'string',
+    when: 'to_parent',
+    description: 'Sender Attempt.'
+  },
+  {
+    name: 'root_prompt_message_id',
+    type: 'string',
+    when: 'to_parent',
+    description: 'Root prompt id.'
+  },
+  {
+    name: 'status',
+    type: 'string',
+    required: true,
+    description: 'Delivery state.'
+  },
+  {
+    name: 'dispatch_started_at',
+    type: 'number',
+    when: 'queued',
+    description: 'Dispatch start.'
+  },
+  { name: 'accepted_at', type: 'number', when: 'accepted', description: 'Acceptance time.' },
+  { name: 'evidence', type: 'string', when: 'accepted', description: 'Acceptance proof.' },
+  { name: 'failed_at', type: 'number', when: 'failed', description: 'Failure time.' },
+  { name: 'error', type: 'object', when: 'failed', description: 'Failure/retry details.' },
+  { name: 'uncertain_at', type: 'number', when: 'uncertain', description: 'Uncertainty time.' },
+  {
+    name: 'delivery_may_have_occurred',
+    type: 'boolean',
+    when: 'uncertain',
+    description: 'Delivery is unknown.'
+  },
+  {
+    name: 'resolution',
+    type: 'string',
+    when: 'uncertain',
+    description: 'Risk resolution.'
+  },
+  {
+    name: 'new_request_retry_safe',
+    type: 'boolean',
+    required: true,
+    description: 'New-id retry safety.'
+  },
+  {
+    name: 'same_request_safe',
+    type: 'boolean',
+    required: true,
+    description: 'Same-id recovery safety.'
+  }
+] as const
 
-const RESOLVED_DELIVERY_RECEIPT_SCHEMA = {
-  type: 'delivery_receipt',
-  allOf: [
-    DELIVERY_RECEIPT_SCHEMA.allOf[0],
-    DELIVERY_RECEIPT_SCHEMA.allOf[1],
-    {
-      discriminator: { propertyName: 'status' },
-      oneOf: [
-        {
-          type: 'object',
-          required: [
-            'status',
-            'uncertain_at',
-            'delivery_may_have_occurred',
-            'resolution',
-            'new_request_retry_safe'
-          ],
-          properties: {
-            status: { enum: ['uncertain'] },
-            uncertain_at: { type: 'number' },
-            delivery_may_have_occurred: { enum: [true] },
-            resolution: { enum: ['acknowledged'] },
-            new_request_retry_safe: { enum: [false] }
-          }
-        }
-      ]
-    }
-  ]
-} as const
+const DELIVERY_DISCRIMINATORS = [
+  { name: 'direction', values: ['to_child', 'to_parent'] },
+  { name: 'disposition', values: ['message', 'continued'] },
+  { name: 'status', values: ['queued', 'accepted', 'failed', 'uncertain'] }
+] as const
+
 const SEND_MESSAGE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   kind: 'operation',
   id: 'host.send_message',
   path: 'host.send_message',
   aliases: ['send_message'],
-  summary: 'Durably queue a reliable message to a direct child or its root parent.',
+  summary: 'Durably queue a reliable message to a direct child or root parent.',
   call_forms: [
     {
       signature: 'await host.send_message(target, message, options?)',
-      accepts: 'target_message_options'
+      accepts: 'positional_arguments'
     }
   ],
-  request: { target: { type: 'string' }, message: { type: 'string', minLength: 1 } },
-  options: {
-    kind: { enum: ['info', 'question'], default: 'info' },
-    request_id: { type: 'string' },
-    reply_to_message_id: { type: 'string' }
+  request: {
+    fields: [
+      {
+        name: 'target',
+        type: 'string',
+        required: true,
+        description: 'Child Frame id; Delegate uses parent.'
+      },
+      { name: 'message', type: 'string', required: true, description: 'Non-empty text.' }
+    ]
   },
-  returns: DELIVERY_RECEIPT_SCHEMA,
+  options: {
+    fields: [
+      {
+        name: 'kind',
+        type: 'string',
+        required: false,
+        default: 'info',
+        description: 'info/question.'
+      },
+      { name: 'request_id', type: 'string', required: false, description: 'Idempotency id.' },
+      {
+        name: 'reply_to_message_id',
+        type: 'string',
+        required: false,
+        description: 'Reply target.'
+      }
+    ]
+  },
+  returns: {
+    discriminators: DELIVERY_DISCRIMINATORS,
+    fields: DELIVERY_RECEIPT_FIELDS
+  },
   constraints: [
-    'Main targets one authorized direct-child Frame; a Delegate can target only the literal "parent".',
-    'Receipt is delivery evidence, never a reply.',
-    'Same request_id and payload recover one durable command; a different payload conflicts.',
-    'uncertain is never automatically retried.'
+    'Receipt is delivery evidence, not a reply; same request_id recovers, and uncertain is not auto-retried.'
   ],
-  examples: [
-    {
-      title: 'Ask a child',
-      code: "await host.send_message(child.frame_id, 'Which source supports this?', { kind: 'question', request_id: 'source-question-1' })"
-    },
-    {
-      title: 'Ask the root parent from a Delegate',
-      code: "await host.send_message('parent', 'Which cohort should I use?', { kind: 'question', request_id: 'cohort-question-1' })"
-    }
-  ],
-  errors: { thrown_type: 'Error', domain_error_code_exposed: false },
+  examples: [],
   resolveAvailability: messageAvailability('send_message')
 }
+
 const MESSAGE_RECEIPT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   kind: 'operation',
   id: 'host.message_receipt',
@@ -541,61 +579,98 @@ const MESSAGE_RECEIPT_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   aliases: ['message_receipt'],
   summary: 'Observe an owned delivery receipt for a bounded time.',
   call_forms: [
-    {
-      signature: 'await host.message_receipt(message_id_or_request_id, options?)',
-      accepts: 'selector_options'
-    }
+    { signature: 'await host.message_receipt(selector, options?)', accepts: 'selector_options' }
   ],
-  request: { selector: { type: 'string' } },
-  options: { timeout_seconds: { type: 'number', minimum: 0, maximum: 1800, default: 30 } },
-  returns: DELIVERY_RECEIPT_SCHEMA,
+  request: {
+    fields: [
+      {
+        name: 'selector',
+        type: 'string',
+        required: true,
+        description: 'Owned message_id or request_id.'
+      }
+    ]
+  },
+  options: {
+    fields: [
+      {
+        name: 'timeout_seconds',
+        type: 'number',
+        required: false,
+        default: 30,
+        range: '0..1800',
+        description: 'Observation deadline.'
+      }
+    ]
+  },
+  returns: {
+    type: 'object',
+    discriminators: DELIVERY_DISCRIMINATORS,
+    fields: DELIVERY_RECEIPT_FIELDS
+  },
   constraints: [
-    'The selector is a message_id or caller-owned request_id; a Delegate cannot observe another source principal command.',
-    'Authorization is revalidated for every observation.',
+    'Authorization is revalidated on every observation.',
     'Timeout returns the latest receipt and changes no delivery state.'
   ],
   examples: [
     {
-      title: 'Observe',
+      title: 'Observe delivery',
       code: 'await host.message_receipt(receipt.message_id, { timeout_seconds: 30 })'
     }
   ],
-  errors: { thrown_type: 'Error', domain_error_code_exposed: false },
   resolveAvailability: messageAvailability('message_receipt')
 }
+
 const RESOLVE_MESSAGE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
   kind: 'operation',
   id: 'host.resolve_message',
   path: 'host.resolve_message',
   aliases: ['resolve_message'],
-  summary: 'Acknowledge an uncertain delivery risk and release its lane fence.',
+  summary: 'Acknowledge uncertain delivery risk and release its lane fence.',
   call_forms: [
     {
       signature: "await host.resolve_message(message_id, { action: 'acknowledge_uncertain' })",
       accepts: 'message_resolution'
     }
   ],
-  request: { message_id: { type: 'string' } },
-  options: { action: { enum: ['acknowledge_uncertain'] } },
-  returns: RESOLVED_DELIVERY_RECEIPT_SCHEMA,
-  constraints: [
-    'Root Main only.',
-    'Does not mark accepted or failed and does not retry the payload.'
-  ],
+  request: {
+    fields: [
+      { name: 'message_id', type: 'string', required: true, description: 'Uncertain command id.' }
+    ]
+  },
+  options: {
+    fields: [
+      {
+        name: 'action',
+        type: 'string',
+        required: true,
+        description: 'Must be acknowledge_uncertain.'
+      }
+    ]
+  },
+  returns: {
+    type: 'object',
+    discriminators: [
+      { name: 'direction', values: ['to_child', 'to_parent'] },
+      { name: 'disposition', values: ['message', 'continued'] },
+      { name: 'status', values: ['uncertain'] },
+      { name: 'resolution', values: ['acknowledged'] }
+    ],
+    fields: DELIVERY_RECEIPT_FIELDS
+  },
+  constraints: ['Main/root only; acknowledgement does not retry or change delivery evidence.'],
   examples: [
     {
       title: 'Release fence',
       code: "await host.resolve_message(receipt.message_id, { action: 'acknowledge_uncertain' })"
     }
   ],
-  errors: { thrown_type: 'Error', domain_error_code_exposed: false },
   resolveAvailability: rootOnlyAvailability(
     'resolve_message',
     'Only root Main can resolve uncertain delivery.'
   )
 }
 
-// Adding another documented Host SDK operation only requires registering its descriptor here.
 const OPERATION_DESCRIPTORS: readonly HostSdkHelpOperationDescriptor[] = [
   CHILDREN_DESCRIPTOR,
   COLLECT_DESCRIPTOR,
@@ -613,15 +688,20 @@ const registeredOperationIds = [...OPERATION_DESCRIPTORS]
 if (JSON.stringify(registeredOperationIds) !== JSON.stringify(HOST_SDK_SUBAGENT_OPERATION_IDS)) {
   throw new Error('Host SDK Subagent Help registry does not match its published operation ids.')
 }
+
 const MAX_HELP_QUERY_CHARS = 128
-const MAX_HELP_RESULT_CHARS = 16_000
+const MAX_CATALOG_RESULT_CHARS = 2_500
+const MAX_OPERATION_RESULT_CHARS = 3_600
+const MAX_DELEGATE_RESULT_CHARS = 3_200
 
 const normalizeTopic = (value: string): string => value.trim().toLowerCase()
 
-const toBoundedJsonResult = <T extends HostSdkHelpResult>(result: T): T => {
+const toBoundedJsonResult = <T extends HostSdkHelpResult>(result: T, maxChars: number): T => {
   const serialized = JSON.stringify(result)
-  if (serialized.length > MAX_HELP_RESULT_CHARS) {
-    throw new Error('Host SDK help result exceeds its size limit.')
+  if (serialized.length > maxChars) {
+    throw new Error(
+      `Host SDK help result is ${serialized.length} characters; limit is ${maxChars} characters.`
+    )
   }
   return JSON.parse(serialized) as T
 }
@@ -658,19 +738,22 @@ for (const descriptor of entries) {
 const hostSdkHelp: HostSdkHelpRegistry = Object.freeze({
   query(query, context) {
     if (query === undefined) {
-      return toBoundedJsonResult({
-        kind: 'catalog',
-        coverage: 'registered_topics_only',
-        topics: entries.map((descriptor) => ({
-          id: descriptor.id,
-          kind: descriptor.kind,
-          path: descriptor.path,
-          aliases: descriptor.aliases,
-          summary: descriptor.summary,
-          availability: descriptor.resolveAvailability(context)
-        })),
-        hint: "Query an exact topic, for example await host.help('delegate')."
-      })
+      return toBoundedJsonResult(
+        {
+          kind: 'catalog',
+          coverage: 'registered_topics_only',
+          topics: entries.map((descriptor) => ({
+            id: descriptor.id,
+            kind: descriptor.kind,
+            path: descriptor.path,
+            aliases: descriptor.aliases,
+            summary: descriptor.summary,
+            availability: descriptor.resolveAvailability(context)
+          })),
+          hint: 'Query only the operation you plan to call; each topic gives concise field descriptions.'
+        },
+        MAX_CATALOG_RESULT_CHARS
+      )
     }
     if (typeof query !== 'string') throw new Error('host.help query must be a string.')
     if (query.length > MAX_HELP_QUERY_CHARS) {
@@ -691,13 +774,25 @@ const hostSdkHelp: HostSdkHelpRegistry = Object.freeze({
         .sort((left, right) => left.score - right.score || left.id.localeCompare(right.id))
         .slice(0, 3)
         .map(({ id }) => id)
-      return toBoundedJsonResult({ kind: 'not_found', query, suggestions })
+      return toBoundedJsonResult(
+        { kind: 'not_found', query, suggestions },
+        MAX_CATALOG_RESULT_CHARS
+      )
     }
-    const { resolveAvailability, ...contract } = descriptor
-    return toBoundedJsonResult({
-      ...contract,
-      availability: resolveAvailability(context)
-    })
+    return toBoundedJsonResult(
+      {
+        kind: descriptor.kind,
+        id: descriptor.id,
+        call_forms: descriptor.call_forms,
+        request: descriptor.request,
+        options: descriptor.options,
+        returns: descriptor.returns,
+        constraints: descriptor.constraints,
+        examples: descriptor.examples,
+        availability: descriptor.resolveAvailability(context)
+      },
+      descriptor.id === 'host.delegate' ? MAX_DELEGATE_RESULT_CHARS : MAX_OPERATION_RESULT_CHARS
+    )
   }
 })
 

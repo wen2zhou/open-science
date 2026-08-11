@@ -21,7 +21,7 @@ const MAX_ENVIRONMENT_RESULTS = 30
 const REPL_EXECUTE_DEFAULT_TIMEOUT_MS = 30 * 60 * 1_000 + 15_000
 
 const HOST_SDK_DISCOVERY_GUIDANCE =
-  "Host SDK discovery (use from `repl_execute`): `await host.help()` is the role-aware catalog; query exact topics for authoritative request, result, constraint, and error contracts. Main/root agents must call `await host.help('delegate')` before the first delegation. Delegate agents should use the same catalog to discover their available messaging and structured-output operations; unavailable root-only topics remain visible with a reason."
+  "Host SDK discovery (use from `repl_execute`): `await host.help()` is the role-aware catalog. Query only the operation you plan to call; each topic returns concise parameter and result field descriptions. Main/root agents can use `await host.help('delegate')` when delegation guidance is needed; do not prefetch all Help topics. Delegate agents should use the same catalog for messaging and structured-output operations; unavailable root-only topics remain visible with a reason."
 
 // Scoped prompt addendum that only applies when the agent is given notebook tools.
 const NOTEBOOK_SYSTEM_PROMPT_APPEND = [

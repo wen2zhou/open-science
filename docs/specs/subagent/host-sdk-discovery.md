@@ -21,6 +21,7 @@ Main Agent 需要委派、恢复、观察、通信或停止 Subagent，但不应
 - accepted + certified：S1/S2 的 `children`、`collect`、`stop_child`、active-branch authorization 与跨 Turn control。
 - accepted + certified：S5 的 `send_message`、`message_receipt`、`resolve_message` 及 child→parent route。
 - accepted + conformant：S6 的 child-only `submit_output`。
+- accepted：`SUB-DEC-0014` 与 S13 的低 token、任务导向 Help；其字段描述与查询纪律替代本 spec 原有 exhaustive Help 投影要求，但不改变 S9 的 operation 目录、availability 与 capability 合同。
 - Owner Module 是现有 `HostSdkHelpRegistry`；目标 Interface 是 `host.help(query?)`。
 - `resources/notebook/repl_loop.js` 是公开 Host SDK Adapter；Notebook system prompt、`repl_execute` description、local RPC capability 与 production delegated runtime 是 consumers/Adapters。
 - 本 spec 只提出发现与既有能力接线合同；本 spec 已由用户接受，可进入实现。
@@ -30,7 +31,7 @@ Main Agent 需要委派、恢复、观察、通信或停止 Subagent，但不应
 ### 范围
 
 - 让 `host.help()` 覆盖 REPL 实际发布的全部八个 Subagent operation。
-- `host.children` 与 `host.stop_child` 获得 machine-readable topic、调用形状、结果、错误与 role-aware availability。
+- `host.children` 与 `host.stop_child` 获得 machine-readable topic、扁平调用/结果字段说明与 role-aware availability。
 - Main 与 Delegate 看见同一发布目录；不可用 topic 保留在目录中并给出安全原因。
 - `help('delegate')` 作为生命周期入口，导航到 dispatch 后的发现、收集、停止、消息、receipt 与 structured-output flow。
 - System prompt 和 `repl_execute` description 只保留发现导航，不复制易漂移的完整方法合同。
@@ -65,15 +66,15 @@ Main Agent 需要委派、恢复、观察、通信或停止 Subagent，但不应
 - **HSDK-002 — 不可用项仍可发现（stable）**：catalog MUST 对 Main 与 Delegate 返回同一组已发布 operation ids，不得按角色过滤 topic。每项 MUST 使用受信任 caller role 与真实 provisioning 投影 `availability`；不可用项 MUST 给出不泄漏 Session、Frame、Attempt 或 capability identity 的原因。
 - **HSDK-003 — child 权限边界（stable）**：Delegate 查询 `delegate`、`children`、`collect`、`stop_child` 与 `resolve_message` MUST 得到 `unavailable`。这只改善发现性，MUST NOT 放宽 Owner authorization；实际调用仍须 fail-closed。Delegate 的 `send_message` 只允许 target literal `"parent"`，`message_receipt` 只允许 owned command，`submit_output` 仍受 exact writable Attempt 与 admitted schema 约束。
 - **HSDK-004 — Main 权限边界（stable）**：Main 的 `children`、`collect`、`stop_child`、`send_message`、`message_receipt` 与 `resolve_message` availability MUST 与 production composition 一致；Main 的 `submit_output` MUST 为 `unavailable`。Help 不得暗示 Main 可读取或控制 inactive branch、non-direct child、其他 Session 或 legacy-unavailable child。
-- **HSDK-005 — exact contracts（stable）**：每个 topic MUST 通过现有 `request`、`options`、`returns`、`constraints`、`examples` 与 `errors` 字段表达已接受的调用合同。`children` MUST 描述 current Attempt inventory、admission order、最小字段与 active-branch scope；`stop_child` MUST 保持 non-empty Frame ID array 和逐项 `cancelled | already_terminal` 结果。
-- **HSDK-006 — observation 与 receipt union（stable）**：`collect`、timed `delegate`、`send_message`、`message_receipt` 与 `resolve_message` Help MUST 表达 accepted discriminated unions及条件字段，不得只使用未定义字符串占位符或分别列枚举而允许非法组合。
-- **HSDK-007 — delegate 生命周期导航（stable）**：`help('delegate')` MUST 在既有 descriptor 字段中说明：异步返回 handles 后用 `children` 恢复 current inventory、用 `collect` 观察、用 `stop_child` 停止、用 `send_message`/`message_receipt` 通信；有 `output_schema` 时 child 使用 `submit_output`。它 MUST 同时说明 child 不可 nested delegate、不可管理 sibling，完整参数和结果以对应 exact topic 为准。
-- **HSDK-008 — 静态提示仅导航（stable）**：Notebook system prompt 与 `repl_execute` description MUST 指向 role-aware `host.help()` catalog 和 exact topics，SHOULD NOT 复制完整 request/result/error contracts。任何静态提示 MUST 不宣称 production capability 尚不可调用的操作。
+- **HSDK-005 — Agent-facing 字段合同（stable）**：每个 topic MUST 通过 `request`、`options`、`returns`、`constraints` 与 `examples` 表达可直接调用的扁平字段说明，不得投影 runtime JSON Schema 或 exhaustive errors。`children` MUST 描述 current Attempt inventory、admission order、最小字段与 active-branch scope；`stop_child` MUST 保持 non-empty Frame ID array 和逐项 `cancelled | already_terminal` 结果。
+- **HSDK-006 — observation 与 receipt 摘要（stable）**：exact discriminated unions继续由 shared runtime contract 与 Owner tests拥有。Help MUST发布足以区分 accepted variant 的 discriminator、触发条件、状态集合及条件字段，不得复制 `oneOf` / `allOf` validation tree；调用失败由当次 Host error 提供纠正动作。
+- **HSDK-007 — delegate 生命周期导航（stable）**：`help('delegate')` MUST 在单个 guide 中说明：异步返回 handles 后用 `children` 恢复 current inventory、用 `collect` 观察、用 `stop_child` 停止；有 `output_schema` 时 child 使用 `submit_output`。它 MUST同时说明 child不可nested delegate，并给出这些普通follow-up的最小调用形状，不要求Agent再查询其他Help topic。
+- **HSDK-008 — 静态提示仅导航（stable）**：Notebook system prompt 与 `repl_execute` description MUST 指向 role-aware `host.help()` catalog，告知Agent只查询准备调用的operation且不得预取全部topics，SHOULD NOT复制request/result/error contracts。任何静态提示 MUST不宣称production capability尚不可调用的操作。
 - **HSDK-009 — production child discovery（stable）**：一个仍 writable 的 authenticated production Delegate Attempt MUST 能经 issued delegated Notebook capability 调用 `host.help()`。它 MUST 能查到 `children` 与 `stop_child` 并看到 `unavailable`，不得因 allowed-method gate 或缺失 trusted invocation identity 而失败。
 - **HSDK-010 — S5 child messaging 可达性（stable）**：同一 production Delegate capability MUST 允许 S5 已接受的 `send_message('parent', ...)` 与 owned `message_receipt` flow，并使用不可伪造的 Session、Frame、Attempt、origin 与 invocation identity。允许 RPC 到达 Owner MUST NOT 代替 Owner authorization，也不得开放 root-only operation。
 - **HSDK-011 — provisioning 准确性（stable）**：Help availability MUST 至少按 operation 级 production provisioning 判断。装配任一 optional operation 缺失时，对应 topic MUST 为 `unavailable`；不得只凭 delegated-work service object 存在就宣称全部操作可用。Attempt/schema 等动态 precondition MAY 保留在 `constraints`，但 `availability` 的含义 MUST 不声称单次调用必然成功。
-- **HSDK-012 — 漂移防护（stable）**：project-owned gate MUST 比较公开 Subagent Host operation 与 Help registry，新增、删除或重命名公开 operation 而未同步 Help时 MUST 失败。root 与 child catalogs、canonical path/alias、availability、unknown-topic suggestion 与16,000字符上限必须保持确定性测试。
-- **HSDK-013 — 兼容与持久化（stable）**：本阶段 MUST 不改变八个公开 operation 的调用/结果 shape、authorization topology或 durable data。新增 topics 与更精确 descriptor 内容是 additive；现有 `coverage:"registered_topics_only"` 顶层字段 MAY 保持不变，避免引入新的 published catalog response decision。
+- **HSDK-012 — 漂移与预算防护（stable）**：project-owned gate MUST比较公开Subagent Host operation与Help registry，新增、删除或重命名公开operation而未同步Help时 MUST失败。root/child catalogs、availability与unknown-topic suggestion必须保持确定性测试；按`JSON.stringify`计量，catalog MUST≤2,500字符，delegate MUST≤3,200字符，其他operation topic MUST≤3,600字符。
+- **HSDK-013 — 兼容与持久化（stable）**：本阶段 MUST不改变八个公开operation的调用/结果shape、authorization topology或durable data。`SUB-DEC-0014`授权Help nested shape从exhaustive schema变为flat field descriptions；现有`coverage:"registered_topics_only"`顶层字段保持不变。
 
 ## Interface 与语义
 
@@ -148,11 +149,11 @@ await host.submit_output({ cohort: '...' })
 | `children` exact current inventory合同，child查询为unavailable        | HSDK-003、005、009 | Help + delegated production capability |
 | `stop_child` exact array/response合同，child查询不获得执行权          | HSDK-003、005、009 | Help + Owner authorization             |
 | collect/timed delegate 展开 running/terminal union                    | HSDK-006           | shared Host contract                   |
-| message topics禁止不存在的route/state组合并包含条件字段               | HSDK-006           | shared receipt schema                  |
+| message topics列出route/state discriminator及关键条件字段             | HSDK-006           | Help summary + shared runtime schema   |
 | 只装配delegate时其余optional operations显示unavailable                | HSDK-011           | local RPC partial composition          |
 | 真实 issued child capability 调用 `help()` 成功                       | HSDK-009           | local RPC + REPL integration           |
 | child可向parent发送并观察receipt；伪造root/sibling与root-only调用拒绝 | HSDK-003、010      | production-composed child journey      |
-| system prompt与tool description只导航，和Help topic名称一致           | HSDK-007、008、012 | MCP description contract               |
+| system prompt禁止预取；delegate及其他topic满足独立字符预算            | HSDK-007、008、012 | Help + MCP projection contract         |
 | unknown `continue_child`/`acknowledge_message` 不被宣称为公开方法     | HSDK-001、012      | Help suggestion regression             |
 | 无Session持久化变更                                                   | HSDK-013           | final diff inspection                  |
 
@@ -214,3 +215,7 @@ npx playwright test e2e/subagent-release-gate.spec.ts
 | patch完整性                                                                  | `git diff --check`                                                                                                                                                                                                                          | 通过                                                                   |
 
 完整Playwright gate的两个既有blockers均位于未修改表面：permission journey用strict locator读取同时存在于transcript与composer的两个`permission-card`；Specialist restart journey等待Recent sessions条目超时。相同SHA的clean worktree以完全相同错误复现，因此不归因于S9，也不在本阶段扩展修复。按stage gate规则，S9达到`accepted + conformant`；由于完整desktop release gate未通过，不标记`certified`。
+
+### S13 后续演进（2026-08-11）
+
+`SUB-DEC-0014`已把S9的exhaustive Help投影替换为扁平字段说明。八operation目录、role-aware availability与production child capability保持不变；Help不再发布`errors`与完整validation union。Main `help('delegate')`从10,120字符、约2,043个cl100k tokens降至3,125字符、约681 tokens，并由MCP execution projection确认正文不再被8,000字符inline gate省略。S13证据见`host-sdk-progressive-help.md`。
