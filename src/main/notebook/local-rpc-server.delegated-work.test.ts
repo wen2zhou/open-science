@@ -502,6 +502,59 @@ describe('authenticated delegatedWorkCall route', () => {
     connection.release()
   })
 
+  it('preserves a removed own context field through RPC parsing for actionable atomic rejection', async () => {
+    const session = { projectId: 'project-1', sessionId: 'session-1' }
+    const execution = createDeterministicDelegateExecution()
+    const records = createInMemoryDelegatedWorkRecords({
+      session,
+      rootFrameId: 'root-frame-session-1',
+      originMessageId: 'origin-message-1'
+    })
+    const work = createDurableDelegatedWork({ execution, records })
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      delegatedWorkService: work
+    })
+    const connection = await server.issueControlConnection(
+      'session-1',
+      'project-1',
+      'root-frame-session-1'
+    )
+    const endInvocation = connection.beginControlInvocation({
+      turnId: 'turn-1',
+      controlInvocationGeneration: 1,
+      toolInvocationId: 'tool-call-1',
+      originatingUserMessageId: 'origin-message-1'
+    })
+
+    const response = await fetch(connection.endpoint, {
+      method: 'POST',
+      headers: {
+        authorization: `Bearer ${connection.token}`,
+        'content-type': 'application/json'
+      },
+      body: JSON.stringify({
+        method: 'delegatedWorkCall',
+        params: {
+          request: [
+            { task: 'valid sibling', name: 'valid sibling' },
+            { task: 'legacy child', name: 'legacy child', context: 'legacy detail' }
+          ]
+        }
+      })
+    })
+
+    expect(response.status).toBe(500)
+    await expect(response.json()).resolves.toEqual({
+      error:
+        'delegate context was removed; include all goals, background, constraints, and deliverables in task and retry'
+    })
+    expect(execution.reservationCounts()).toEqual([])
+    expect((await records.snapshot()).records).toEqual([])
+    endInvocation()
+    connection.release()
+  })
+
   it('authenticates detached children and collect operations through the active control capability', async () => {
     const session = { projectId: 'trusted-project', sessionId: 'trusted-session' }
     const execution = createDeterministicDelegateExecution()

@@ -96,7 +96,7 @@ host.delegate(
 
 ## 实现证据
 
-### 已交付实现
+### 已交付实现（candidate：`codex/delegate-inputs`，commit见交付回执）
 
 - Owner/Interface：`DurableDelegatedWork`及公开`host.delegate` request不再声明、保存或传递`context`；Host schema与Help要求调用方提供完整、自包含的`task`。
 - admission：single或batch中任一own `context` property（包括值为`undefined`）在capacity、workspace及durable mutation前整批拒绝；继承自prototype的同名属性不被误判。
@@ -107,8 +107,8 @@ host.delegate(
 ### Final Test Impact Set
 
 ```text
-npm test -- --run src/main/delegated-work/delegated-work.contract.test.ts src/main/delegated-work/durable-delegated-work.test.ts src/main/delegated-work/acp-execution.test.ts src/main/delegated-work/session-record-adapter.test.ts src/main/delegated-work/production-composition.test.ts src/main/host-sdk/delegate-contract.test.ts src/main/host-sdk/help.test.ts
-  -> 7 files / 197 tests passed
+npm test -- --run src/main/delegated-work/delegated-work.contract.test.ts src/main/delegated-work/durable-delegated-work.test.ts src/main/delegated-work/acp-execution.test.ts src/main/delegated-work/session-record-adapter.test.ts src/main/delegated-work/production-composition.test.ts src/main/notebook/local-rpc-server.delegated-work.test.ts src/main/host-sdk/delegate-contract.test.ts src/main/host-sdk/help.test.ts
+  -> 8 files / 209 tests passed
 npm test -- --run src/main/delegated-work/production-composition.test.ts
   -> 1 file / 31 tests passed（含Codex、Claude Code、OpenCode矩阵）
 npm run typecheck

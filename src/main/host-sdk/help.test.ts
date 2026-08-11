@@ -243,6 +243,12 @@ describe('Host SDK help', () => {
     expect(canonical.constraints).toContainEqual(
       expect.stringMatching(/1–48.*current active root Message Branch.*NFC.*never derived/i)
     )
+    expect(canonical.constraints).toContainEqual(
+      expect.stringMatching(/complete, self-contained task/i)
+    )
+    expect(canonical.constraints).toContainEqual(
+      expect.stringMatching(/staged as read-only copies.*\.\/inputs\//i)
+    )
     expect(canonical.examples).not.toHaveLength(0)
     for (const example of canonical.examples) {
       expect(example.code).toContain('host.delegate')

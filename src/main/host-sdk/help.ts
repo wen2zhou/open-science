@@ -112,7 +112,7 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
     'Every request must provide a 1–48-code-point non-emoji name without newlines or control characters. On the current active root Message Branch, running and terminal child names must be unique after NFC normalization, Unicode whitespace collapse, and lowercase comparison; names are never derived or automatically renamed.',
     'Dispatch can be rejected before execution when capacity, framework, Specialist, or input admission is unavailable.',
     'Write a complete, self-contained task. Each child receives only that task and its declared immutable inputs.',
-    'Immutable inputs are mounted as read-only copies under ./inputs/ and announced in the child’s initial prompt.',
+    'Immutable inputs are staged as read-only copies under ./inputs/ and announced in the child’s initial prompt.',
     'An explicit timeout_seconds starts after every admitted child establishes launch and returns observations without stopping running children.',
     'wait:false cannot be combined with timeout_seconds; omitting timeout_seconds preserves all-settled waiting.',
     'After asynchronous dispatch, use host.children for current inventory recovery and host.collect for exact observation contracts.',
