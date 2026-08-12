@@ -1584,6 +1584,27 @@ describe('NotebookKernelExecutor shutdown reaping', () => {
 const REPL_LOOP = join(__dirname, '../../../resources/notebook/repl_loop.js')
 
 describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
+  it('fails closed when protected reads have no native platform sandbox', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-repl-protected-'))
+    const executor = new NotebookKernelExecutor({
+      replLoopPath: REPL_LOOP,
+      platform: 'linux',
+      nativeSandboxPlatform: 'linux'
+    })
+    try {
+      const result = await executor.execute({
+        ...baseRequest(cwdDir),
+        protectedDirs: [join(cwdDir, 'app-claude')],
+        code: 'return 1',
+        kind: 'repl'
+      })
+      expect(result.status).toBe('failed')
+      expect(result.traceback).toContain('control REPL is unavailable on linux')
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
   it('spawns the repl loop via process.execPath and returns the mapped return value', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-repl-'))
     const executor = new NotebookKernelExecutor({ replLoopPath: REPL_LOOP, platform: 'linux' })
@@ -1603,7 +1624,10 @@ describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
         spawnfile: string
         spawnargs: string[]
       }
-      expect(child.spawnfile).toBe(process.execPath)
+      expect(child.spawnfile).toBe(
+        process.platform === 'darwin' ? '/usr/bin/sandbox-exec' : process.execPath
+      )
+      expect(child.spawnargs).toContain(process.execPath)
       expect(child.spawnargs).toContain(REPL_LOOP)
     } finally {
       await executor.shutdown()

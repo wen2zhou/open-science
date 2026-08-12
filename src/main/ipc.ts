@@ -1533,6 +1533,9 @@ const createApplicationModules = async (
   const hostSkillsService = new HostSkillsService({
     storageRoot: configRoot,
     catalog: hostSkillsCatalog,
+    // Broker auxiliary resources only from the app-owned materialized projection. Original bundled
+    // and user catalog sources may be readable by provider shells and are never an authority path.
+    resourceRoot: (skill) => join(getAppClaudeConfigDir(configRoot), 'skills', `os-${skill.id}`),
     approveDelete: async (payload, session) => {
       const runtime = runtimeRef.current
       if (!session.sessionId || !runtime) return false

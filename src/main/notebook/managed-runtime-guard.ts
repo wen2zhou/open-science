@@ -1155,6 +1155,61 @@ export const detectManagedRuntimeMutation = ({
 
 const seatbeltString = (value: string): string => JSON.stringify(value)
 
+const canonicalPolicyRoots = (roots: readonly string[]): string[] => [
+  ...new Set(
+    roots.flatMap((root) => {
+      const resolvedRoot = resolve(root)
+      try {
+        return [resolvedRoot, realpathSync(resolvedRoot)]
+      } catch {
+        return [resolvedRoot]
+      }
+    })
+  )
+]
+
+// The control REPL exposes native Node capabilities, so protected application data requires a
+// process-tree filesystem sandbox rather than an enumerable JavaScript API denylist. Seatbelt is the
+// currently supported read boundary; other platforms fail closed until an equivalent native adapter
+// is available.
+export const protectControlReplFilesystem = (
+  invocation: RuntimeProcessInvocation,
+  runtimeRoot: string,
+  protectedReadWriteRoots: readonly string[],
+  platform: NodeJS.Platform = process.platform
+): RuntimeProcessInvocation => {
+  if (protectedReadWriteRoots.length === 0) {
+    return protectManagedRuntimeWrites(invocation, runtimeRoot, platform)
+  }
+  if (platform !== 'darwin') {
+    throw new Error(
+      `The control REPL is unavailable on ${platform} because protected filesystem reads cannot be sandboxed.`
+    )
+  }
+
+  const runtimeRoots = canonicalPolicyRoots([runtimeRoot])
+  const protectedRoots = canonicalPolicyRoots(protectedReadWriteRoots)
+  const profile = [
+    '(version 1)',
+    '(allow default)',
+    ...runtimeRoots.flatMap((root) => [
+      `(deny file-write* (literal ${seatbeltString(root)}))`,
+      `(deny file-write* (subpath ${seatbeltString(root)}))`
+    ]),
+    ...protectedRoots.flatMap((root) => [
+      `(deny file-read* (literal ${seatbeltString(root)}))`,
+      `(deny file-read* (subpath ${seatbeltString(root)}))`,
+      `(deny file-write* (literal ${seatbeltString(root)}))`,
+      `(deny file-write* (subpath ${seatbeltString(root)}))`
+    ])
+  ].join('\n')
+
+  return {
+    executable: '/usr/bin/sandbox-exec',
+    args: ['-p', profile, invocation.executable, ...invocation.args]
+  }
+}
+
 // macOS Seatbelt is the hard filesystem layer beneath the semantic policy above. It applies to the
 // whole child process tree, so dynamically constructed paths and nested R/Python/subprocess writers
 // cannot modify the app-owned runtime. The trusted main-process package manager is spawned outside
@@ -1167,14 +1222,7 @@ export const protectManagedRuntimeWrites = (
 ): RuntimeProcessInvocation => {
   if (platform !== 'darwin') return invocation
 
-  const resolvedRoot = resolve(runtimeRoot)
-  let physicalRoot = resolvedRoot
-  try {
-    physicalRoot = realpathSync(resolvedRoot)
-  } catch {
-    // A first-use runtime may not exist yet. The resolved target still protects the path once created.
-  }
-  const protectedRoots = [...new Set([resolvedRoot, physicalRoot])]
+  const protectedRoots = canonicalPolicyRoots([runtimeRoot])
   const profile = [
     '(version 1)',
     '(allow default)',

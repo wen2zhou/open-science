@@ -5,7 +5,11 @@ import { performance } from 'node:perf_hooks'
 
 import { describe, expect, it } from 'vitest'
 
-import { detectManagedRuntimeMutation, protectManagedRuntimeWrites } from './managed-runtime-guard'
+import {
+  detectManagedRuntimeMutation,
+  protectControlReplFilesystem,
+  protectManagedRuntimeWrites
+} from './managed-runtime-guard'
 
 describe('detectManagedRuntimeMutation', () => {
   const runtimeRoot = '/tmp/open-science/runtime'
@@ -299,4 +303,31 @@ describe('protectManagedRuntimeWrites', () => {
     expect(protectedInvocation.executable).toBe('/usr/bin/sandbox-exec')
     expect(protectedInvocation.args.slice(-2)).toEqual([executable, '--inspect'])
   })
+})
+
+describe('protectControlReplFilesystem', () => {
+  const invocation = { executable: '/usr/bin/node', args: ['/app/repl_loop.js'] }
+
+  it('denies reads and writes throughout protected roots on macOS', () => {
+    const protectedInvocation = protectControlReplFilesystem(
+      invocation,
+      '/data/runtime',
+      ['/data/app-claude'],
+      'darwin'
+    )
+
+    expect(protectedInvocation.executable).toBe('/usr/bin/sandbox-exec')
+    expect(protectedInvocation.args[1]).toContain('(deny file-read* (subpath "/data/app-claude"))')
+    expect(protectedInvocation.args[1]).toContain('(deny file-write* (subpath "/data/app-claude"))')
+    expect(protectedInvocation.args.slice(-2)).toEqual(['/usr/bin/node', '/app/repl_loop.js'])
+  })
+
+  it.each(['linux', 'win32'] as const)(
+    'fails closed on %s without a native read sandbox',
+    (platform) => {
+      expect(() =>
+        protectControlReplFilesystem(invocation, '/data/runtime', ['/data/app-claude'], platform)
+      ).toThrow('control REPL is unavailable')
+    }
+  )
 })

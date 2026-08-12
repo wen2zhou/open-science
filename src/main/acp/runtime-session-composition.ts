@@ -1,6 +1,8 @@
 import type { SessionPermissionProfileState } from '../../shared/permission-profiles'
 import { SESSION_PLAN_SYSTEM_PROMPT_APPEND } from '../session-plan/guidance'
 import { createLogger } from '../logger'
+import { getAppClaudeConfigDir } from '../settings/provider-env'
+import { join } from 'node:path'
 import { AcpAppContinuationOwner } from './app-continuation-owner'
 import { AcpClientInteractionOwner } from './client-interaction-owner'
 import { AcpContextUsagePolicy } from './context-usage-policy'
@@ -252,7 +254,10 @@ const composeAcpRuntimeSessionOwners = (options: AcpRuntimeOptions, base: AcpRun
         toolCallId: effect.toolCallId,
         sessionId: effect.sessionId,
         reason: effect.reason
-      })
+      }),
+    trustedClaudeSkillsRoot: options.artifacts
+      ? join(getAppClaudeConfigDir(options.artifacts.configRoot), 'skills')
+      : undefined
   })
 
   return Object.freeze({

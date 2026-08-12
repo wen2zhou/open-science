@@ -16,7 +16,7 @@ import {
   type KernelLoopResponse
 } from './kernel-protocol'
 import { mapLoopOutputs, type MappedFigure } from './loop-output-mapper'
-import { protectManagedRuntimeWrites } from './managed-runtime-guard'
+import { protectControlReplFilesystem, protectManagedRuntimeWrites } from './managed-runtime-guard'
 import {
   condaActivatedPath,
   DEFAULT_PY_ENV,
@@ -109,6 +109,9 @@ export type NotebookKernelExecutorOptions = {
   onTerminated?: (kind: KernelProcessKind, env: string) => void
   // Injectable only to exercise the Windows conda activation contract on non-Windows test hosts.
   platform?: NodeJS.Platform
+  // Separate native sandbox seam: `platform` above models path/runtime layout in many tests, but an
+  // actual child must use the host OS sandbox. Tests of fail-closed adapters may override this one.
+  nativeSandboxPlatform?: NodeJS.Platform
 }
 
 // One in-flight request awaiting a matching loop response line.
@@ -245,6 +248,7 @@ class NotebookKernelExecutor implements NotebookExecutor {
   private readonly onIdleShutdown?: (kind: KernelProcessKind, env: string) => void
   private readonly onTerminated?: (kind: KernelProcessKind, env: string) => void
   private readonly platform: NodeJS.Platform
+  private readonly nativeSandboxPlatform: NodeJS.Platform
 
   constructor(options: NotebookKernelExecutorOptions = {}) {
     this.pythonLoopPath = options.pythonLoopPath ?? defaultPythonLoopPath()
@@ -256,6 +260,7 @@ class NotebookKernelExecutor implements NotebookExecutor {
     this.onIdleShutdown = options.onIdleShutdown
     this.onTerminated = options.onTerminated
     this.platform = options.platform ?? process.platform
+    this.nativeSandboxPlatform = options.nativeSandboxPlatform ?? process.platform
   }
 
   // Sends one cell to the kind's loop and resolves with the mapped execution result.
@@ -516,11 +521,19 @@ class NotebookKernelExecutor implements NotebookExecutor {
     // app-owned runtime read-only to the complete persistent-kernel process tree as well, covering
     // dynamically constructed R/Python/REPL calls. manage_packages runs in the main process outside
     // this wrapper and remains the only package writer.
-    const invocation = protectManagedRuntimeWrites(
-      { executable: command, args },
-      request.runtimeRoot,
-      this.platform
-    )
+    const invocation =
+      kind === 'repl'
+        ? protectControlReplFilesystem(
+            { executable: command, args },
+            request.runtimeRoot,
+            request.protectedDirs ?? [],
+            this.nativeSandboxPlatform
+          )
+        : protectManagedRuntimeWrites(
+            { executable: command, args },
+            request.runtimeRoot,
+            this.platform
+          )
     const child = spawn(invocation.executable, invocation.args, { cwd: spawnCwd, env: spawnEnv })
     await new Promise<void>((resolve, reject) => {
       child.once('spawn', resolve)

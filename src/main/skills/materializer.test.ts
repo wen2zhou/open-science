@@ -1,9 +1,11 @@
 import {
   chmod,
+  lstat,
   mkdtemp,
   mkdir,
   readFile,
   readdir,
+  rm,
   stat,
   symlink,
   writeFile
@@ -74,10 +76,14 @@ describe('ClaudeCodeSkillMaterializer', () => {
     await writeFile(join(skill.sourceDir, 'SKILL.md'), '# beta v2', 'utf8')
     await materializer.sync(configDir, [skill])
 
-    expect(await readFile(join(configDir, 'skills', 'os-beta', 'SKILL.md'), 'utf8')).toBe(
+    expect(await readFile(join(configDir, 'skills', 'os-beta', 'SKILL.md'), 'utf8')).toContain(
       '# beta v2'
     )
     expect(await listSkillDirs(configDir)).toEqual(['os-beta'])
+    const materialized = await readFile(join(configDir, 'skills', 'os-beta', 'SKILL.md'), 'utf8')
+    expect(materialized.match(/open-science:skill-resource-capability:start/g)).toHaveLength(1)
+    expect(materialized.match(/open-science:skill-resource-capability:end/g)).toHaveLength(1)
+    expect(materialized.match(/open-science:skill-resource id="beta" name="beta"/g)).toHaveLength(1)
   })
 
   it('re-copies when content compatibility changes even if updatedAt does not', async () => {
@@ -90,21 +96,21 @@ describe('ClaudeCodeSkillMaterializer', () => {
     const materializer = new ClaudeCodeSkillMaterializer()
 
     await materializer.sync(configDir, [skill])
-    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toBe(
+    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toContain(
       '# gamma'
     )
 
     // A source edit with an unchanged fingerprint is skipped.
     await writeFile(join(skill.sourceDir, 'SKILL.md'), '# gamma edited', 'utf8')
     await materializer.sync(configDir, [skill])
-    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toBe(
+    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toContain(
       '# gamma'
     )
 
     // Registry compatibility tracks content, so a new fingerprint refreshes the materialized copy
     // even when human-maintained updatedAt metadata was not bumped.
     await materializer.sync(configDir, [{ ...skill, compatibility: 'sha256:v2' }])
-    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toBe(
+    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toContain(
       '# gamma edited'
     )
   })
@@ -132,7 +138,7 @@ describe('ClaudeCodeSkillMaterializer', () => {
     await writeFile(join(skill.sourceDir, 'SKILL.md'), '# epsilon v2', 'utf8')
     await materializer.sync(configDir, [{ ...skill, updatedAt: 'v2' }])
 
-    expect(await readFile(file, 'utf8')).toBe('# epsilon v2')
+    expect(await readFile(file, 'utf8')).toContain('# epsilon v2')
     expect((await stat(file)).mode & 0o222).toBe(0)
   })
 
@@ -255,6 +261,51 @@ describe('ClaudeCodeSkillMaterializer', () => {
       await new ClaudeCodeSkillMaterializer().sync(configDir, [skill])
 
       expect(await listSkillDirs(configDir)).toEqual([])
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'replaces a symlinked projection root without traversing or modifying its target',
+    async () => {
+      const configDir = await skillsDir()
+      await rm(join(configDir, 'skills'), { recursive: true, force: true })
+      const outsideRoot = await mkdtemp(join(tmpdir(), 'outside-skill-projection-'))
+      const outsideSkill = join(outsideRoot, 'os-external')
+      await mkdir(outsideSkill, { recursive: true })
+      const outsideFile = join(outsideSkill, 'SKILL.md')
+      await writeFile(outsideFile, 'external data')
+      await symlink(outsideRoot, join(configDir, 'skills'))
+
+      await new ClaudeCodeSkillMaterializer().sync(configDir, [])
+
+      expect(await readFile(outsideFile, 'utf8')).toBe('external data')
+      expect((await lstat(join(configDir, 'skills'))).isSymbolicLink()).toBe(false)
+      expect(await listSkillDirs(configDir)).toEqual([])
+    }
+  )
+
+  it.skipIf(process.platform === 'win32')(
+    'replaces an unchanged projection whose SKILL.md became a symlink without touching its target',
+    async () => {
+      const configDir = await skillsDir()
+      const skill = { ...(await makeSkill('linked-document')), updatedAt: 'v1' }
+      const materializer = new ClaudeCodeSkillMaterializer()
+      await materializer.sync(configDir, [skill])
+
+      const target = join(configDir, 'skills', 'os-linked-document')
+      const document = join(target, 'SKILL.md')
+      const outside = join(await mkdtemp(join(tmpdir(), 'outside-skill-document-')), 'secret.md')
+      await writeFile(outside, 'external secret')
+      await chmod(target, 0o755)
+      await chmod(document, 0o644)
+      await rm(document)
+      await symlink(outside, document)
+
+      await materializer.sync(configDir, [skill])
+
+      expect(await readFile(outside, 'utf8')).toBe('external secret')
+      expect((await lstat(document)).isSymbolicLink()).toBe(false)
+      expect(await readFile(document, 'utf8')).toContain('# linked-document')
     }
   )
 

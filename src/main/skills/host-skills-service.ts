@@ -1,5 +1,17 @@
 import { randomUUID } from 'node:crypto'
-import { cp, lstat, mkdir, readFile, readdir, rename, rm, stat, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import {
+  cp,
+  lstat,
+  mkdir,
+  open,
+  readdir,
+  realpath,
+  rename,
+  rm,
+  stat,
+  writeFile
+} from 'node:fs/promises'
 import { dirname, join, resolve, sep } from 'node:path'
 
 import type { TrustedCallingSession } from '../../shared/agents-contract'
@@ -8,6 +20,7 @@ import { frontmatterFieldNames, parseSkillDocument } from './frontmatter'
 import type { BundledSkill } from './registry'
 import { SAFE_SKILL_NAME, assertUsableSkillName, parseUserSkillId } from './user-skill-repository'
 import { isUnsafeSkillArchivePath } from './zip-extract'
+import { isSkillResourceGranted } from './resource-capability'
 
 export type HostSkillsCatalog = {
   list(): Promise<BundledSkill[]>
@@ -24,6 +37,7 @@ type HostSkillsServiceOptions = {
     context: TrustedCallingSession
   ) => Promise<boolean>
   onPublishedSkillsChanged?: () => Promise<void> | void
+  resourceRoot: (skill: BundledSkill) => string
 }
 
 type Params = Record<string, unknown>
@@ -46,26 +60,79 @@ const safeRelativePath = (value: unknown, fallback?: string): string => {
   return path
 }
 
-const readBoundedText = async (path: string): Promise<string> => {
-  const metadata = await lstat(path)
-  if (metadata.isSymbolicLink() || !metadata.isFile()) throw new Error('path is not a regular file')
-  if (metadata.size > SKILL_IMPORT_LIMITS.maxFileBytes) throw new Error('file is too large')
-  return readFile(path, 'utf8')
-}
+type PackageFile = Readonly<{ contents: Buffer; executable: boolean }>
+const MAX_TEXT_RESOURCE_BYTES = 512 * 1024
 
-const readPackageText = async (root: string, relativePath: string): Promise<string> => {
+const isWithin = (root: string, candidate: string): boolean =>
+  candidate === root || candidate.startsWith(`${root}${sep}`)
+
+const sameFile = (
+  left: Readonly<{ dev: number | bigint; ino: number | bigint }>,
+  right: Readonly<{ dev: number | bigint; ino: number | bigint }>
+): boolean => left.dev === right.dev && left.ino === right.ino
+
+const readPackageFile = async (
+  root: string,
+  relativePath: string,
+  maxBytes = SKILL_IMPORT_LIMITS.maxFileBytes
+): Promise<PackageFile> => {
   let current = resolve(root)
+  const rootMetadata = await lstat(current)
+  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) {
+    throw new Error('Skill root is not a regular directory')
+  }
+  const canonicalRoot = await realpath(current)
   const parts = relativePath.split('/')
+  let finalMetadata = rootMetadata
   for (let index = 0; index < parts.length; index += 1) {
     current = join(current, parts[index])
-    const metadata = await lstat(current)
-    if (metadata.isSymbolicLink()) throw new Error('path contains a symbolic link')
-    if (index < parts.length - 1 && !metadata.isDirectory()) {
+    finalMetadata = await lstat(current)
+    if (finalMetadata.isSymbolicLink()) throw new Error('path contains a symbolic link')
+    if (index < parts.length - 1 && !finalMetadata.isDirectory()) {
       throw new Error('path parent is not a directory')
     }
   }
-  return readBoundedText(current)
+  if (!finalMetadata.isFile()) throw new Error('path is not a regular file')
+  const beforeOpen = await realpath(current)
+  if (!isWithin(canonicalRoot, beforeOpen)) throw new Error('path escapes the Skill root')
+
+  const handle = await open(current, constants.O_RDONLY | (constants.O_NOFOLLOW ?? 0))
+  try {
+    const openedMetadata = await handle.stat()
+    if (!openedMetadata.isFile() || !sameFile(finalMetadata, openedMetadata)) {
+      throw new Error('Skill resource changed while opening')
+    }
+    if (openedMetadata.size > maxBytes) throw new Error('file is too large')
+    const afterOpen = await realpath(current)
+    if (!isWithin(canonicalRoot, afterOpen)) throw new Error('path escapes the Skill root')
+    const pathMetadata = await stat(afterOpen)
+    if (!sameFile(openedMetadata, pathMetadata)) {
+      throw new Error('Skill resource changed while opening')
+    }
+
+    const chunks: Buffer[] = []
+    let length = 0
+    while (length <= maxBytes) {
+      const chunk = Buffer.alloc(Math.min(64 * 1024, maxBytes + 1 - length))
+      const { bytesRead } = await handle.read(chunk, 0, chunk.length, length)
+      if (bytesRead === 0) break
+      chunks.push(chunk.subarray(0, bytesRead))
+      length += bytesRead
+    }
+    if (length > maxBytes) throw new Error('file is too large')
+    return {
+      contents: Buffer.concat(chunks, length),
+      executable: (openedMetadata.mode & 0o111) !== 0
+    }
+  } finally {
+    await handle.close()
+  }
 }
+
+const readPackageText = async (root: string, relativePath: string): Promise<string> =>
+  new TextDecoder('utf-8', { fatal: true }).decode(
+    (await readPackageFile(root, relativePath, MAX_TEXT_RESOURCE_BYTES)).contents
+  )
 
 const personalDirectoryName = (skill: BundledSkill): string | undefined =>
   parseUserSkillId(skill.id)?.slug
@@ -124,6 +191,8 @@ export class HostSkillsService {
     try {
       if (op === 'list') return await this.list()
       if (op === 'read') return await this.read(params)
+      if (op === 'resource') return await this.readResource(params, context)
+      if (op === 'stage') return await this.stageResource(params, context)
       if (op === 'validate') return await this.validate(params)
       if (op === 'edit') return await this.mutate(() => this.edit(params))
       if (op === 'publish') return await this.mutate(() => this.publish(params))
@@ -213,6 +282,9 @@ export class HostSkillsService {
 
     const skill = await this.resolvePublished(requestedName)
     if (!skill) throw new Error(`Unknown Skill: ${requestedName}`)
+    if (relativePath !== 'SKILL.md') {
+      throw new Error('installed auxiliary resources require a loaded Skill resource grant')
+    }
     const result = await this.options.catalog.withSkillRead(skill.id, async (lockedSkill) => ({
       name: lockedSkill.name,
       path: relativePath,
@@ -220,6 +292,45 @@ export class HostSkillsService {
       origin: lockedSkill.source
     }))
     if (!result) throw new Error(`Unknown Skill: ${requestedName}`)
+    return result
+  }
+
+  private async readResource(params: Params, context: TrustedCallingSession): Promise<unknown> {
+    const skillId = asString(params.skill_id)
+    if (!skillId) throw new Error('skill_id is required')
+    const relativePath = safeRelativePath(params.path)
+    if (relativePath.toLowerCase() === 'skill.md') {
+      throw new Error('SKILL.md is loaded only by the native Skill tool')
+    }
+    const result = await this.options.catalog.withSkillRead(skillId, async (skill) => {
+      if (!context.sessionId || !isSkillResourceGranted(context.sessionId, skill.id)) {
+        throw new Error('Skill resource is not authorized for this Session; reload the Skill')
+      }
+      return {
+        path: relativePath,
+        content: await readPackageText(this.options.resourceRoot(skill), relativePath)
+      }
+    })
+    if (!result) throw new Error('Skill resource is no longer installed')
+    return result
+  }
+
+  private async stageResource(params: Params, context: TrustedCallingSession): Promise<unknown> {
+    const skillId = asString(params.skill_id)
+    if (!skillId) throw new Error('skill_id is required')
+    const relativePath = safeRelativePath(params.path)
+    const result = await this.options.catalog.withSkillRead(skillId, async (skill) => {
+      if (!context.sessionId || !isSkillResourceGranted(context.sessionId, skill.id)) {
+        throw new Error('Skill resource is not authorized for this Session; reload the Skill')
+      }
+      const resource = await readPackageFile(this.options.resourceRoot(skill), relativePath)
+      return {
+        filename: relativePath.split('/').at(-1),
+        base64: resource.contents.toString('base64'),
+        executable: resource.executable
+      }
+    })
+    if (!result) throw new Error('Skill resource is no longer installed')
     return result
   }
 
@@ -391,7 +502,7 @@ export class HostSkillsService {
     if (hasOldString) {
       const oldString = asString(params.old_string)
       if (!oldString) throw new Error('old_string must be a non-empty string')
-      const current = await readBoundedText(target)
+      const current = (await readPackageFile(root, relativePath)).contents.toString('utf8')
       const first = current.indexOf(oldString)
       const second = first < 0 ? -1 : current.indexOf(oldString, first + oldString.length)
       if (first < 0 || second >= 0) throw new Error('old_string must match exactly once')

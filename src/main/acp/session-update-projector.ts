@@ -1,9 +1,12 @@
 import type { SessionNotification } from '@agentclientprotocol/sdk'
+import { realpathSync } from 'node:fs'
+import { join } from 'node:path'
 
 import type { AcpContextUsage, AcpRuntimeEvent } from '../../shared/acp'
 import type { SessionPermissionProfileState } from '../../shared/permission-profiles'
 import type { AgentFrameworkId } from '../../shared/settings'
 import { resolveCanonicalMcpToolIdentity } from '../agent-framework/app-mcp-names'
+import { clearSkillResourceGrants, registerSkillResourceGrant } from '../skills/resource-capability'
 import { CodexSkillActivityProjector } from './codex-skill-activity'
 import type { AcpContextUsagePolicy } from './context-usage-policy'
 import type { ContextUsageTracker, SessionUpdateObservation } from './context-usage-tracker'
@@ -23,6 +26,60 @@ const AGENT_USER_CHOICE_TOOL = 'open-science-notebook/ask_user_question'
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
+
+const completedNativeSkillResult = (
+  update: SessionNotification['update'],
+  trustedSkillsRoot?: string
+): Readonly<{ id: string }> | undefined => {
+  if (
+    update.sessionUpdate !== 'tool_call_update' ||
+    update.status !== 'completed' ||
+    extractProviderToolName(update)?.toLowerCase() !== 'skill' ||
+    !Array.isArray(update.content)
+  ) {
+    return undefined
+  }
+  const text = update.content
+    .flatMap((block) => {
+      if (!isRecord(block) || block.type !== 'content' || !isRecord(block.content)) return []
+      return block.content.type === 'text' && typeof block.content.text === 'string'
+        ? [block.content.text]
+        : []
+    })
+    .join('\n')
+  const matches = [
+    ...text.matchAll(
+      /<skill_content\b[^>]*\bname=(['"])([a-zA-Z0-9_-]+)\1[^>]*>[\s\S]*?<\/skill_content>/g
+    )
+  ]
+  if (matches.length !== 1) return undefined
+  const wrapper = matches[0][0]
+  const identities = [
+    ...wrapper.matchAll(
+      /<!-- open-science:skill-resource id="([a-z0-9-]+)" name="([a-z0-9-]+)" -->/g
+    )
+  ]
+  if (identities.length !== 1 || identities[0][2] !== matches[0][2] || !trustedSkillsRoot) {
+    return undefined
+  }
+  const baseDirectories = [
+    ...wrapper.matchAll(/^Base directory for this skill:\s*(.+?)\s*$/gm)
+  ].map((match) => match[1])
+  if (baseDirectories.length !== 1) return undefined
+  try {
+    const actual = realpathSync.native(baseDirectories[0])
+    const expected = realpathSync.native(join(trustedSkillsRoot, `os-${identities[0][1]}`))
+    if (
+      (process.platform === 'win32' ? actual.toLowerCase() : actual) !==
+      (process.platform === 'win32' ? expected.toLowerCase() : expected)
+    ) {
+      return undefined
+    }
+  } catch {
+    return undefined
+  }
+  return { id: identities[0][1] }
+}
 
 const isCodexAppOwnedUserChoiceTool = (
   notification: Readonly<SessionNotification>,
@@ -81,6 +138,7 @@ type AcpSessionUpdateProjectorOptions = Readonly<{
   reportToolFailure: (
     effect: Extract<AcpSessionUpdateEffect, { kind: 'tool-failure-diagnostic' }>
   ) => void
+  trustedClaudeSkillsRoot?: string
 }>
 
 type AcpSessionUpdateEffect =
@@ -144,6 +202,7 @@ const toolObservation = (
 // Translates provider Session notifications into immutable effects and applies them once in order;
 // event retention, aggregates, and ContextUsageTracker remain the actual state writers.
 class AcpSessionUpdateProjector {
+  private readonly skillResourceGrantSessionIds = new Set<string>()
   private readonly codexSkillActivity = new CodexSkillActivityProjector()
   private readonly appOwnedUserChoiceToolCallIds = new Map<string, Set<string>>()
 
@@ -156,11 +215,17 @@ class AcpSessionUpdateProjector {
   clearGeneration(): void {
     this.codexSkillActivity.setSkillsRoot(undefined)
     this.appOwnedUserChoiceToolCallIds.clear()
+    for (const sessionId of this.skillResourceGrantSessionIds) {
+      clearSkillResourceGrants(sessionId)
+    }
+    this.skillResourceGrantSessionIds.clear()
   }
 
   clearSession(sessionId: string): void {
     this.codexSkillActivity.clearSession(sessionId)
     this.appOwnedUserChoiceToolCallIds.delete(sessionId)
+    clearSkillResourceGrants(sessionId)
+    this.skillResourceGrantSessionIds.delete(sessionId)
   }
 
   dispose(): void {
@@ -190,6 +255,17 @@ class AcpSessionUpdateProjector {
   ): readonly AcpSessionUpdateEffect[] {
     const routed = structuredClone(notification)
     if (routing.appSessionId) routed.sessionId = routing.appSessionId
+    // Raw input/title and incomplete/failed events are model-controlled and cannot grant authority.
+    // Parse only the successful provider-native result wrapper, then require the app-injected exact
+    // Skill id/name identity to agree with that wrapper.
+    const completedSkill = completedNativeSkillResult(
+      routed.update,
+      this.options.trustedClaudeSkillsRoot
+    )
+    if (routing.framework === 'claude-code' && completedSkill) {
+      registerSkillResourceGrant(routed.sessionId, completedSkill.id)
+      this.skillResourceGrantSessionIds.add(routed.sessionId)
+    }
     deepFreeze(routed)
 
     const projection = this.codexSkillActivity.projectWithContext(

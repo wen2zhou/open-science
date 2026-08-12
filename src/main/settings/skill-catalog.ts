@@ -768,7 +768,9 @@ class SkillCatalogModule {
     forcedIds: ReadonlySet<string> = new Set()
   ): Promise<void> {
     const disabled = new Set(disabledIds.filter((id) => !forcedIds.has(id)))
-    await new ClaudeCodeSkillMaterializer().sync(
+    // Codex/OpenCode can access their normal Skill roots directly and must retain their established
+    // behavior; the resource broker notice is only for Claude's protected app config projection.
+    await new ClaudeCodeSkillMaterializer(false).sync(
       configRoot,
       (await this.catalog()).filter(
         (skill) => skill.exposure === 'internal' || !disabled.has(skill.id)

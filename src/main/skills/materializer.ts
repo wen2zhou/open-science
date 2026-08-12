@@ -1,4 +1,5 @@
-import { chmod, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { constants } from 'node:fs'
+import { chmod, cp, lstat, mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { createLogger } from '../logger'
@@ -33,6 +34,83 @@ const COMPUTE_UNAVAILABLE_NOTICE = [
   '',
   ''
 ].join('\n')
+
+const RESOURCE_NOTICE_START = '<!-- open-science:skill-resource-capability:start -->'
+const RESOURCE_NOTICE_END = '<!-- open-science:skill-resource-capability:end -->'
+const resourceIdentityMarker = (skillId: string, skillName: string): string =>
+  `<!-- open-science:skill-resource id=${JSON.stringify(skillId)} name=${JSON.stringify(skillName)} -->`
+
+const resourceAccessNotice = (skillId: string, skillName: string): string =>
+  [
+    RESOURCE_NOTICE_START,
+    resourceIdentityMarker(skillId, skillName),
+    '> [!IMPORTANT]',
+    '> Auxiliary files in this Skill are protected application resources. Read a relative resource',
+    '> through `repl_execute` with the Skill id below; do not use Read, Bash, Python, or an',
+    '> absolute path. Example:',
+    `> \`await host.skills.resource(${JSON.stringify(skillId)}, "references/example.md")\``,
+    '> To execute a script or copy an asset, first stage that relative path into the workspace with',
+    `> \`await host.skills.stage(${JSON.stringify(skillId)}, "scripts/example.py")\`.`,
+    RESOURCE_NOTICE_END,
+    '',
+    ''
+  ].join('\n')
+
+async function injectResourceAccessNotice(
+  target: string,
+  skillId: string,
+  skillName: string
+): Promise<void> {
+  const file = join(target, 'SKILL.md')
+  const targetMetadata = await lstat(target).catch(() => undefined)
+  const fileMetadata = await lstat(file).catch(() => undefined)
+  if (
+    !targetMetadata?.isDirectory() ||
+    targetMetadata.isSymbolicLink() ||
+    !fileMetadata?.isFile() ||
+    fileMetadata.isSymbolicLink()
+  ) {
+    throw new Error('Refusing to inject into an irregular materialized Skill path')
+  }
+  const handle = await open(file, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0))
+  try {
+    const openedMetadata = await handle.stat()
+    if (
+      !openedMetadata.isFile() ||
+      openedMetadata.dev !== fileMetadata.dev ||
+      openedMetadata.ino !== fileMetadata.ino
+    ) {
+      throw new Error('Materialized SKILL.md changed while opening')
+    }
+    let raw = await handle.readFile('utf8')
+    // The identity marker is app-owned authority metadata. Remove every source-provided/stale copy
+    // before injecting exactly one marker for the catalog entry being materialized.
+    raw = raw.replace(/<!-- open-science:skill-resource id="[^"\n]*" name="[^"\n]*" -->\n?/g, '')
+    const notice = resourceAccessNotice(skillId, skillName)
+    const existingStart = raw.indexOf(RESOURCE_NOTICE_START)
+    const existingEnd = raw.indexOf(RESOURCE_NOTICE_END)
+    const updated =
+      existingStart >= 0 && existingEnd >= existingStart
+        ? `${raw.slice(0, existingStart)}${notice}${raw.slice(
+            existingEnd + RESOURCE_NOTICE_END.length
+          )}`
+        : (() => {
+            const frontmatter = /^---\n[\s\S]*?\n---\n?/.exec(raw)
+            return frontmatter
+              ? `${raw.slice(0, frontmatter[0].length)}\n${notice}${raw.slice(frontmatter[0].length)}`
+              : `${notice}${raw}`
+          })()
+    await handle.truncate(0)
+    const contents = Buffer.from(updated, 'utf8')
+    let written = 0
+    while (written < contents.length) {
+      const result = await handle.write(contents, written, contents.length - written, written)
+      written += result.bytesWritten
+    }
+  } finally {
+    await handle.close()
+  }
+}
 
 // Whether a skill's model tooling needs a compute backend this app does not provide — true for the
 // biomodel category or any skill whose frontmatter requirements mention gpu/compute.
@@ -71,6 +149,18 @@ async function injectComputeNotice(target: string): Promise<void> {
 async function chmodTree(dir: string, mode: 'readonly' | 'writable'): Promise<void> {
   const dirMode = mode === 'readonly' ? 0o555 : 0o755
   const fileMode = mode === 'readonly' ? 0o444 : 0o644
+  let rootMetadata
+  try {
+    rootMetadata = await lstat(dir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return
+    log.warn('failed to inspect skill dir for chmod', { dir, error })
+    return
+  }
+  // Never traverse a root symlink. chmod/readdir would otherwise operate on an arbitrary external
+  // tree before the caller unlinks the app-owned path.
+  if (rootMetadata.isSymbolicLink() || !rootMetadata.isDirectory()) return
+
   let entries
   try {
     entries = await readdir(dir, { withFileTypes: true })
@@ -81,7 +171,9 @@ async function chmodTree(dir: string, mode: 'readonly' | 'writable'): Promise<vo
   }
   for (const entry of entries) {
     const child = join(dir, entry.name)
-    if (entry.isDirectory()) {
+    if (entry.isSymbolicLink()) {
+      continue
+    } else if (entry.isDirectory()) {
       await chmodTree(child, mode)
     } else {
       try {
@@ -107,8 +199,16 @@ interface SkillMaterializer {
 // exactly the enabled set: enabled skills are copied when new or when their version changed, and os-
 // dirs not in the set are removed. Directories without the os- prefix are never touched.
 class ClaudeCodeSkillMaterializer implements SkillMaterializer {
+  constructor(private readonly injectResourceBrokerNotice = true) {}
+
   async sync(configDir: string, enabled: BundledSkill[]): Promise<void> {
     const skillsDir = join(configDir, 'skills')
+    const skillsMetadata = await lstat(skillsDir).catch(() => undefined)
+    if (skillsMetadata && (!skillsMetadata.isDirectory() || skillsMetadata.isSymbolicLink())) {
+      // The complete projection root is app-owned. Replace a link/non-directory itself; never walk
+      // through it, which could mutate or delete an external target during stale-Skill cleanup.
+      await rm(skillsDir, { recursive: true, force: true })
+    }
     await mkdir(skillsDir, { recursive: true })
 
     // Before this Skill became application-managed it was materialized in the bare public-name
@@ -150,13 +250,21 @@ class ClaudeCodeSkillMaterializer implements SkillMaterializer {
     // metadata was not bumped; non-registry callers retain the existing updatedAt fallback.
     for (const [name, skill] of wanted) {
       const version = skill.compatibility || skill.updatedAt || ''
-      const unchanged = version !== '' && existingDirs.has(name) && versions[name] === version
+      const target = join(skillsDir, name)
+      const targetMetadata = await lstat(target).catch(() => undefined)
+      const documentMetadata = await lstat(join(target, 'SKILL.md')).catch(() => undefined)
+      const regularProjection =
+        targetMetadata?.isDirectory() === true &&
+        !targetMetadata.isSymbolicLink() &&
+        documentMetadata?.isFile() === true &&
+        !documentMetadata.isSymbolicLink()
+      const unchanged =
+        regularProjection && version !== '' && existingDirs.has(name) && versions[name] === version
       if (unchanged) continue
 
-      const target = join(skillsDir, name)
       try {
         const priorComputeDocument =
-          skill.id === COMPUTE_SKILL_ID
+          regularProjection && skill.id === COMPUTE_SKILL_ID
             ? await readFile(join(target, 'SKILL.md'), 'utf8').catch(() => undefined)
             : undefined
         // Restore write bits before removal in case a prior sync left the dir read-only.
@@ -198,7 +306,24 @@ class ClaudeCodeSkillMaterializer implements SkillMaterializer {
     // skill materialized as writable by an earlier version would stay writable until its version bumps.
     // chmod is idempotent and cheap, so re-applying it to unchanged dirs is safe.
     for (const name of wanted.keys()) {
-      await chmodTree(join(skillsDir, name), 'readonly')
+      const target = join(skillsDir, name)
+      const metadata = await lstat(target).catch(() => undefined)
+      if (!metadata?.isDirectory() || metadata.isSymbolicLink()) {
+        delete versions[name]
+        continue
+      }
+      try {
+        await chmodTree(target, 'writable')
+        if (this.injectResourceBrokerNotice) {
+          const skill = wanted.get(name)!
+          await injectResourceAccessNotice(target, skill.id, skill.name)
+        }
+        await chmodTree(target, 'readonly')
+      } catch (error) {
+        await rm(target, { recursive: true, force: true }).catch(() => undefined)
+        log.warn('failed to finalize materialized skill', { name, error })
+        delete versions[name]
+      }
     }
 
     await this.writeVersions(skillsDir, versions)
