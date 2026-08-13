@@ -144,6 +144,7 @@ class AcpPromptPreparationOwner {
         promptText: requestText,
         codex: {
           home: input.backend.adapter.codexHome,
+          skills: input.backend.adapter.skillDescriptors,
           bridgeSkillsAvailable: input.bridgeSkillsAvailable,
           selectSkills: async (text, catalog, signal) =>
             (await this.options.selectBridgeSkills(text, catalog, signal)) ?? [],

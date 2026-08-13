@@ -267,6 +267,10 @@ class SettingsService {
     return this.migrateLegacyKeyRefs(await this.repository.getSettings())
   }
 
+  async reconcileSkillRuntime(): Promise<void> {
+    await this.runtimeManager.reconcileSkillRuntime()
+  }
+
   // Returns the renderer-safe (masked) snapshot of settings.
   async getSettingsView(): Promise<SettingsSnapshot> {
     const operation = startDiagnosticOperation(this.log, { operation: 'settings-load' })

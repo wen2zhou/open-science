@@ -1,6 +1,6 @@
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { createHash } from 'node:crypto'
-import { join } from 'node:path'
+import { dirname, join } from 'node:path'
 import type { SessionModeState } from '@agentclientprotocol/sdk'
 
 import {
@@ -329,12 +329,14 @@ const buildOpencodeProviders = (
 const buildAppConfigContent = (
   provider: ResolvedProvider,
   reasoningEffort?: ModelReasoningEffort,
-  catalog: readonly AgentModelCatalogEntry[] = []
+  catalog: readonly AgentModelCatalogEntry[] = [],
+  skillPaths: readonly string[] = []
 ): Record<string, unknown> => {
   const { bareModel, providerId } = resolveOpencodeEndpoint(provider)
 
   return {
     ...(bareModel ? { model: `${providerId}/${bareModel}` } : {}),
+    ...(skillPaths.length > 0 ? { skills: { paths: [...skillPaths] } } : {}),
     permission: { ...OPENCODE_PERMISSION_RULES },
     agent: { ...OPENCODE_DISABLED_NATIVE_AGENTS },
     provider: buildOpencodeProviders(provider, reasoningEffort, catalog)
@@ -351,7 +353,8 @@ const buildOpencodeConfig = (
   baseConfig: Record<string, unknown> = {},
   instructionPaths: string[] = [],
   reasoningEffort?: ModelReasoningEffort,
-  catalog: readonly AgentModelCatalogEntry[] = []
+  catalog: readonly AgentModelCatalogEntry[] = [],
+  skillPaths: readonly string[] = []
 ): string => {
   const { bareModel, providerId } = resolveOpencodeEndpoint(provider)
 
@@ -367,6 +370,7 @@ const buildOpencodeConfig = (
     $schema: 'https://opencode.ai/config.json',
     ...baseConfig,
     ...(bareModel ? { model: `${providerId}/${bareModel}` } : {}),
+    ...(skillPaths.length > 0 ? { skills: { paths: [...skillPaths] } } : {}),
     ...(instructions.length > 0 ? { instructions } : {}),
     // Baseline permission policy written into the app-owned (global) config file. The authoritative
     // copy of these rules — plus the provider/model pin — is passed via the OPENCODE_CONFIG_CONTENT layer
@@ -435,6 +439,9 @@ export const opencodeFramework: AgentFramework = {
     const opencodeDir = join(configHome, 'opencode')
     const configPath = join(opencodeDir, 'opencode.json')
     const configFiles = [{ path: configPath, content: '' }]
+    const skillPaths = [
+      ...new Set(ctx.skillRuntime?.descriptors.map((descriptor) => dirname(descriptor.path)) ?? [])
+    ]
 
     // Stable app guidance belongs in OpenCode's native instructions layer, never ordinary user prompt
     // history. Keep connector conventions separate so their independent lifecycle remains explicit;
@@ -465,11 +472,13 @@ export const opencodeFramework: AgentFramework = {
       {},
       instructionPaths,
       ctx.reasoningEffort,
-      ctx.providerModelCatalog
+      ctx.providerModelCatalog,
+      skillPaths
     )
 
     return {
       env: {
+        ...ctx.skillRuntime?.environment,
         XDG_CONFIG_HOME: configHome,
         XDG_DATA_HOME: dataHome,
         // Redirect opencode's Global.Path.home (= `OPENCODE_TEST_HOME ?? os.homedir()`) to an app-owned,
@@ -498,7 +507,7 @@ export const opencodeFramework: AgentFramework = {
         // active provider's baseURL or swap the model to an attacker provider while inheriting the app's
         // `{env:...}` key ref. The key itself never rides this layer, only its env reference.
         OPENCODE_CONFIG_CONTENT: JSON.stringify(
-          buildAppConfigContent(provider, ctx.reasoningEffort, ctx.providerModelCatalog)
+          buildAppConfigContent(provider, ctx.reasoningEffort, ctx.providerModelCatalog, skillPaths)
         ),
         // Pass credentials only through referenced environment values. Generation-local transport
         // routes use distinct variables so late OpenCode background work cannot inherit a new route.

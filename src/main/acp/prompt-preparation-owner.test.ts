@@ -108,7 +108,15 @@ const setup = (): Fixture => {
         adapter: {
           nativeMcpEnabled: true,
           bridgeMcpAliasesEnabled: false,
-          codexHome: '/codex'
+          codexHome: '/codex',
+          skillDescriptors: [
+            {
+              id: 'research',
+              name: 'Research',
+              description: 'Find research papers.',
+              path: '/projection/skills/research/SKILL.md'
+            }
+          ]
         }
       },
       tooling: { artifacts: true, notebook: true, skillImport: true },
@@ -154,6 +162,14 @@ describe('AcpPromptPreparationOwner', () => {
       promptText: 'Analyze the result.',
       codex: {
         home: '/codex',
+        skills: [
+          {
+            id: 'research',
+            name: 'Research',
+            description: 'Find research papers.',
+            path: '/projection/skills/research/SKILL.md'
+          }
+        ],
         bridgeSkillsAvailable: true,
         selectSkills: expect.any(Function),
         signal: expect.any(AbortSignal)

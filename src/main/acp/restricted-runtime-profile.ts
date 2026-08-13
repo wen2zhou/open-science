@@ -17,11 +17,31 @@ const record = (value: unknown): Record<string, unknown> =>
     ? (value as Record<string, unknown>)
     : {}
 
+const withoutSkillDiscovery = (backend: ResolvedAgentBackend): ResolvedAgentBackend => {
+  const env = { ...backend.env }
+  delete env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT
+  delete env.OPEN_SCIENCE_SKILL_DISCOVERY_ROOT
+  delete env.OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT
+  return {
+    ...backend,
+    env,
+    sessionOptions: {
+      ...backend.sessionOptions,
+      additionalDirectories: [],
+      plugins: [],
+      skills: []
+    },
+    skillRuntime: undefined,
+    skillRuntimeHandoff: undefined
+  }
+}
+
 const prepareOpenCodeBackend = async (
   backend: ResolvedAgentBackend,
   profileRoot: string,
   profile: RestrictedRuntimeProfile
 ): Promise<ResolvedAgentBackend> => {
+  backend = withoutSkillDiscovery(backend)
   const configHome = join(profileRoot, 'opencode', 'config')
   const dataHome = join(profileRoot, 'opencode', 'data')
   const home = join(profileRoot, 'opencode', 'home')
@@ -32,6 +52,7 @@ const prepareOpenCodeBackend = async (
     mkdir(home, { recursive: true })
   ])
   const configured = record(JSON.parse(backend.env.OPENCODE_CONFIG_CONTENT ?? '{}'))
+  delete configured.skills
   const restricted = {
     ...configured,
     default_agent: profile.agentName,
@@ -68,6 +89,7 @@ const prepareCodexBackend = async (
   profileRoot: string,
   profile: RestrictedRuntimeProfile
 ): Promise<ResolvedAgentBackend> => {
+  backend = withoutSkillDiscovery(backend)
   const codexHome = join(profileRoot, 'codex')
   await mkdir(codexHome, { recursive: true })
   await writeFile(join(codexHome, 'config.toml'), 'cli_auth_credentials_store = "ephemeral"\n', {
@@ -89,6 +111,7 @@ const prepareClaudeBackend = async (
   profileRoot: string,
   profile: RestrictedRuntimeProfile
 ): Promise<ResolvedAgentBackend> => {
+  backend = withoutSkillDiscovery(backend)
   const env = { ...backend.env }
   // Token-authenticated Claude backends can move into this runtime's durable profile because the
   // credential is portable. claude-shared cannot: its OAuth state lives in the user's existing
@@ -105,6 +128,7 @@ const prepareClaudeBackend = async (
       tools: [],
       skills: [],
       plugins: [],
+      additionalDirectories: [],
       settings: {},
       settingSources: [],
       persistSession: profile.persistSession ?? false

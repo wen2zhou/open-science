@@ -78,6 +78,10 @@ describe('SkillCatalogModule', () => {
     roots.push(runtimeRoot)
 
     expect((await catalog.listHostSkills()).map((skill) => skill.id)).toContain('skill-creator')
+    expect((await catalog.runtimeProjectionCatalog()).map((skill) => skill.id)).toEqual([
+      'demo',
+      'skill-creator'
+    ])
     expect((await catalog.listSkills()).map((skill) => skill.id)).not.toContain('skill-creator')
     expect((await catalog.listSpecialistSkillCatalog()).map((skill) => skill.id)).not.toContain(
       'skill-creator'

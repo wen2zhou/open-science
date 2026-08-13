@@ -15,6 +15,52 @@ import { CODEX_VERSION } from '../settings/managed-codex'
 const fakeChild = {} as ChildProcessWithoutNullStreams
 
 describe('codexFramework', () => {
+  it('hands authorized projected Skill paths to Codex without making the projection its home', () => {
+    const config = createCodexFramework().prepareModelConfig(
+      { type: 'codex-isolated', model: 'gpt-5.4' },
+      {
+        storageRoot: '/data',
+        executablePath: '/runtime/codex-acp',
+        skillRuntime: {
+          generationRoot: '/runtime/skills/generations/g-1',
+          skillsRoot: '/runtime/skills/generations/g-1/skills',
+          discoveryRoot: '/runtime/skills/discovery/b-1',
+          descriptors: [
+            {
+              id: 'alpha',
+              name: 'Alpha',
+              description: 'Analyze alpha data.',
+              path: '/runtime/skills/generations/g-1/skills/alpha/SKILL.md'
+            }
+          ],
+          environment: { SKILL_CACHE_ROOT: '/runtime/state/cache' }
+        }
+      }
+    )
+    expect(config.env).toMatchObject({
+      HOME: join('/data', 'codex-subscription'),
+      CODEX_HOME: join('/data', 'codex-subscription'),
+      OPEN_SCIENCE_SKILL_RUNTIME_ROOT: '/runtime/skills/generations/g-1/skills',
+      OPEN_SCIENCE_SKILL_DISCOVERY_ROOT: '/runtime/skills/discovery/b-1',
+      OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT: '/runtime/skills/generations/g-1',
+      SKILL_CACHE_ROOT: '/runtime/state/cache'
+    })
+    expect(config.skillRuntimeHandoff).toEqual({
+      kind: 'authorized-skill-paths',
+      descriptors: [
+        {
+          id: 'alpha',
+          name: 'Alpha',
+          description: 'Analyze alpha data.',
+          path: '/runtime/skills/generations/g-1/skills/alpha/SKILL.md'
+        }
+      ],
+      environment: { SKILL_CACHE_ROOT: '/runtime/state/cache' },
+      readOnlyRoots: ['/runtime/skills/generations/g-1']
+    })
+    expect(config.env?.CODEX_HOME).not.toContain('/runtime/skills/generations/g-1')
+  })
+
   it('disables every Codex native multi-agent implementation in every spawned profile', () => {
     const framework = createCodexFramework()
     const configurations = [

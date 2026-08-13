@@ -48,12 +48,40 @@ export type AgentProviderConfiguration = {
   headers: Record<string, string>
 }
 
+export type SkillRuntimeDescriptorView = Readonly<{
+  id: string
+  name: string
+  description: string
+  path: string
+  source?: 'connector'
+}>
+
+export type SkillRuntimeView = Readonly<{
+  generationRoot: string
+  skillsRoot: string
+  discoveryRoot: string
+  descriptors: readonly SkillRuntimeDescriptorView[]
+  environment: Readonly<Record<string, string>>
+}>
+
+export type SkillRuntimeHandoff = Readonly<{
+  kind: 'authorized-skill-paths'
+  descriptors: readonly SkillRuntimeDescriptorView[]
+  environment: Readonly<Record<string, string>>
+  readOnlyRoots: readonly string[]
+}>
+
 // How the app's provider maps onto a framework's native model configuration. Claude reads env
 // (ANTHROPIC_*); opencode reads a generated config file referenced by OPENCODE_CONFIG. Fields are
 // merged over the spawn base, so an empty result just spawns with inherited defaults.
 export type AgentModelConfig = {
   env?: Record<string, string>
   configFiles?: AgentConfigFile[]
+  // Framework-native launch/session options derived alongside model configuration.
+  sessionOptions?: Record<string, unknown>
+  // Explicit authorized paths for a later native-discovery seam when this adapter cannot safely
+  // configure discovery without broadening write access to the immutable projection.
+  skillRuntimeHandoff?: SkillRuntimeHandoff
   args?: string[]
   authentication?: AgentAuthentication
   providerConfiguration?: AgentProviderConfiguration
@@ -113,6 +141,8 @@ export type ModelConfigContext = {
   storageRoot: string
   // Absolute path to the detected framework executable (claude / opencode).
   executablePath: string
+  // Immutable generation and attempt-local environment leased for this backend generation.
+  skillRuntime?: SkillRuntimeView
   // Detected version of the native CLI behind an adapter. Codex uses this to trust bundled model
   // metadata only when the model/version pair is explicitly known.
   nativeVersion?: string
@@ -255,6 +285,13 @@ export type ResolvedAgentBackend = {
   providerContinuityToken?: string
   executablePath: string
   env: Record<string, string>
+  // Pinned immutable Skill generation for this backend. Discovery metadata and readable paths stay
+  // stable until the corresponding lease is released at process teardown.
+  skillRuntime?: SkillRuntimeView
+  skillRuntimeHandoff?: SkillRuntimeHandoff
+  skillRuntimeLease?: {
+    release: () => Promise<void>
+  }
   args?: string[]
   proxyEnvironmentMode?: ProxyEnvironmentMode
   // Framework-native session options retained by the runtime and passed through buildSessionSetup.

@@ -104,7 +104,12 @@ export class AcpProviderSessionCreator {
       })
       log.info('createSession: buildSession', this.deps.diagnosticContext())
       const session = await connection.agent
-        .buildSession({ cwd, mcpServers: capability.mcpServers, ...setup.metaArg })
+        .buildSession({
+          cwd,
+          mcpServers: capability.mcpServers,
+          additionalDirectories: [...(startupBackend.adapter.additionalDirectories ?? [])],
+          ...setup.metaArg
+        })
         .start()
       provisionalSession = session
 

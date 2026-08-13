@@ -3,13 +3,20 @@
 // createProjectAgentContextResolver and covered here against a fake repository.
 
 import { describe, expect, it, vi } from 'vitest'
+import { access, mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 
 vi.mock('electron', () => ({
   app: { getVersion: () => '0.0.0-test' },
   BrowserWindow: { getAllWindows: () => [] }
 }))
 
-const { createProjectAgentContextResolver } = await import('./runtime-composition')
+const {
+  createProjectAgentContextResolver,
+  reconcileScopedRuntimeRootOnce,
+  resolveSpecialistSkillBindingPolicy
+} = await import('./runtime-composition')
 
 describe('createProjectAgentContextResolver', () => {
   it('returns the trimmed Agent Context for a known project', async () => {
@@ -40,5 +47,76 @@ describe('createProjectAgentContextResolver', () => {
     })
 
     await expect(resolver('project-1')).resolves.toBeUndefined()
+  })
+})
+
+describe('scoped runtime reconciliation', () => {
+  it('removes crash leftovers once without deleting a later concurrent runtime', async () => {
+    const parent = await mkdtemp(join(tmpdir(), 'scoped-runtime-reconcile-'))
+    const root = join(parent, 'scoped-agents')
+    const stale = join(root, 'reviewer-stale')
+    const live = join(root, 'reviewer-live')
+    try {
+      await mkdir(stale, { recursive: true })
+      await reconcileScopedRuntimeRootOnce(root)
+      await expect(access(stale)).rejects.toThrow()
+
+      await mkdir(live, { recursive: true })
+      await reconcileScopedRuntimeRootOnce(root)
+      await expect(access(live)).resolves.toBeUndefined()
+    } finally {
+      await rm(parent, { recursive: true, force: true })
+    }
+  })
+})
+
+describe('Specialist process scope', () => {
+  it('derives an exact current package and Connector binding', async () => {
+    await expect(
+      resolveSpecialistSkillBindingPolicy(
+        {
+          resolveRunnableById: async () =>
+            ({
+              enabled: true,
+              capabilityMode: 'selected',
+              fullAccess: {
+                excludedSkillIds: [],
+                excludedConnectorIds: [],
+                connectorTools: []
+              },
+              selectedCapabilities: {
+                skillIds: ['specialist-package'],
+                connectorIds: ['pubmed'],
+                connectorTools: []
+              }
+            }) as never
+        },
+        {
+          listSpecialistSkillCatalog: async () => [
+            {
+              id: 'specialist-package',
+              frameworkName: 'specialist-package',
+              displayName: 'Specialist package',
+              source: 'personal',
+              mainEnabled: false,
+              available: true
+            },
+            {
+              id: 'unrelated-package',
+              frameworkName: 'unrelated-package',
+              displayName: 'Unrelated package',
+              source: 'featured',
+              mainEnabled: true,
+              available: true
+            }
+          ],
+          provisionedConnectorSkillNames: async () => ['mcp-pubmed', 'mcp-zotero']
+        },
+        'specialist-1'
+      )
+    ).resolves.toEqual({
+      kind: 'exact',
+      allowedSkillIds: ['specialist-package', 'mcp-pubmed']
+    })
   })
 })

@@ -1,4 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  lstat,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rm,
+  stat,
+  writeFile
+} from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join, posix } from 'node:path'
 
@@ -11,6 +21,9 @@ import type { CodexDetectDeps } from './codex-detect'
 import type { OpencodeDetectDeps } from './opencode-detect'
 import type { ProviderPreflightAccess } from './agent-runtime-manager'
 import type { SkillCatalogModule } from './skill-catalog'
+import type { BundledSkill } from '../skills/registry'
+import { connectorSkillDocsDir } from '../connectors/runtime-settings-projection'
+import { SkillRuntimeStateOwner } from '../skills/runtime-state'
 
 vi.mock('electron', () => ({
   safeStorage: {
@@ -79,6 +92,15 @@ const createCodexDeps = (
   managedCodexPath
 })
 
+const restoreWrites = async (path: string): Promise<void> => {
+  const metadata = await lstat(path).catch(() => undefined)
+  if (!metadata) return
+  if (metadata.isDirectory()) {
+    await chmod(path, 0o755)
+    for (const name of await readdir(path)) await restoreWrites(join(path, name))
+  } else if (!metadata.isSymbolicLink()) await chmod(path, 0o644)
+}
+
 describe('AgentRuntimeManager', () => {
   let storageRoot: string
   let repository: Repository
@@ -94,6 +116,7 @@ describe('AgentRuntimeManager', () => {
     provisionClaudeConfig = vi.fn().mockResolvedValue(undefined)
     const skills = {
       materializeSkills: vi.fn().mockResolvedValue(undefined),
+      runtimeProjectionCatalog: vi.fn().mockResolvedValue([]),
       provisionClaudeConfig
     } as unknown as SkillCatalogModule
     const connectors = {
@@ -138,7 +161,36 @@ describe('AgentRuntimeManager', () => {
 
   afterEach(async () => {
     vi.restoreAllMocks()
+    await restoreWrites(storageRoot)
     await rm(storageRoot, { recursive: true, force: true })
+  })
+
+  it('reclaims prior-process Skill runtime candidates during explicit app startup reconciliation', async () => {
+    const projectionRoot = join(storageRoot, 'skill-runtime', 'projection')
+    const crashedCandidate = join(projectionRoot, '.candidate-crashed')
+    const crashedDiscovery = join(projectionRoot, 'discovery', 'crashed-binding')
+    await mkdir(crashedCandidate, { recursive: true })
+    await mkdir(crashedDiscovery, { recursive: true })
+    await writeFile(join(crashedCandidate, 'partial'), 'partial')
+
+    await manager.reconcileSkillRuntime()
+    await manager.reconcileSkillRuntime()
+
+    await expect(stat(crashedCandidate)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(crashedDiscovery)).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
+  it('allows startup Skill runtime reconciliation to retry after a transient cleanup failure', async () => {
+    const projectionRoot = join(storageRoot, 'skill-runtime', 'projection')
+    const crashedCandidate = join(projectionRoot, '.candidate-crashed')
+    await mkdir(crashedCandidate, { recursive: true })
+    await chmod(projectionRoot, 0o555)
+
+    await expect(manager.reconcileSkillRuntime()).rejects.toMatchObject({ code: 'EACCES' })
+    await chmod(projectionRoot, 0o755)
+    await manager.reconcileSkillRuntime()
+
+    await expect(stat(crashedCandidate)).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
   it('persists successful detection for all three runtime storage shapes', async () => {
@@ -439,14 +491,549 @@ describe('AgentRuntimeManager', () => {
     await manager.provisionClaudeRuntimeConfig(settings)
 
     expect(syncComputeSkillDocument).toHaveBeenCalledWith(join(agentRoot, 'skills'))
-    expect(syncComputeSkillDocument).toHaveBeenCalledWith(
-      join(getAppClaudeConfigDir(storageRoot), 'skills')
+    expect(syncComputeSkillDocument).toHaveBeenCalledTimes(1)
+  })
+
+  it('acquires one immutable complete projection across package, Connector, and Compute sources', async () => {
+    const packageRoot = join(storageRoot, 'packages')
+    const demoRoot = join(packageRoot, 'demo')
+    const internalRoot = join(packageRoot, 'internal')
+    const computeRoot = join(packageRoot, 'compute')
+    await Promise.all([
+      mkdir(join(demoRoot, 'references'), { recursive: true }),
+      mkdir(join(demoRoot, 'scripts'), { recursive: true }),
+      mkdir(internalRoot, { recursive: true }),
+      mkdir(computeRoot, { recursive: true })
+    ])
+    await Promise.all([
+      writeFile(join(demoRoot, 'SKILL.md'), '---\nname: demo\ndescription: Demo.\n---\n'),
+      writeFile(join(demoRoot, 'references', 'guide.md'), '# Guide\n'),
+      writeFile(join(demoRoot, 'scripts', 'run.py'), 'print("ok")\n'),
+      writeFile(
+        join(internalRoot, 'SKILL.md'),
+        '---\nname: internal-helper\ndescription: Internal.\n---\n'
+      ),
+      writeFile(
+        join(computeRoot, 'SKILL.md'),
+        [
+          '---',
+          'name: remote-compute-ssh',
+          'description: Compute.',
+          '---',
+          '',
+          '## Registered hosts',
+          '',
+          '<!-- open-science:compute-hosts:start -->',
+          'old',
+          '<!-- open-science:compute-hosts:end -->'
+        ].join('\n')
+      )
+    ])
+    await chmod(join(demoRoot, 'scripts', 'run.py'), 0o755)
+
+    const customRoot = join(connectorSkillDocsDir(storageRoot), 'mcp-custom')
+    await mkdir(customRoot, { recursive: true })
+    await writeFile(
+      join(customRoot, 'SKILL.md'),
+      '---\nname: mcp-custom\ndescription: Custom connector.\nsource: connector\n---\n'
     )
+    const skills = {
+      runtimeProjectionCatalog: vi.fn().mockResolvedValue([
+        {
+          id: 'demo',
+          name: 'demo',
+          displayName: 'Demo',
+          description: 'Demo.',
+          source: 'featured',
+          updatedAt: '2026-01-01',
+          compatibility: 'sha256:demo',
+          sourceDir: demoRoot
+        },
+        {
+          id: 'internal-helper',
+          name: 'internal-helper',
+          displayName: 'Internal',
+          description: 'Internal.',
+          source: 'featured',
+          exposure: 'internal',
+          updatedAt: '2026-01-01',
+          compatibility: 'sha256:internal',
+          sourceDir: internalRoot
+        },
+        {
+          id: 'remote-compute-ssh',
+          name: 'remote-compute-ssh',
+          displayName: 'Compute',
+          description: 'Compute.',
+          source: 'featured',
+          updatedAt: '2026-01-01',
+          compatibility: 'sha256:compute',
+          sourceDir: computeRoot
+        }
+      ])
+    } as unknown as SkillCatalogModule
+    const connectors = {
+      enabledConnectorIds: vi.fn().mockReturnValue(['chemistry']),
+      materializedCustomSkillNames: vi.fn().mockReturnValue(['mcp-custom'])
+    } as unknown as ConnectorSettingsModule
+    manager = createManager({
+      skills,
+      connectors,
+      readComputeHosts: vi.fn().mockResolvedValue([
+        {
+          id: 'host-1',
+          providerId: 'ssh:cluster',
+          displayName: 'Cluster',
+          shape: 'scheduler_cluster',
+          probeResult: undefined
+        }
+      ])
+    })
+    await repository.setSkillEnabled('demo', false)
+
+    const ordinary = await manager.acquireSkillRuntimeBinding(
+      await repository.getSettings(),
+      new Set()
+    )
+    if (!ordinary) throw new Error('expected ordinary Skill runtime binding')
+    expect(ordinary.descriptors.map((descriptor) => descriptor.name).sort()).toEqual([
+      'internal-helper',
+      'mcp-chemistry',
+      'mcp-custom',
+      'remote-compute-ssh'
+    ])
+    expect((await readdir(ordinary.discoveryRoot)).sort()).toEqual([
+      'mcp-chemistry',
+      'mcp-custom',
+      'os-internal-helper',
+      'os-remote-compute-ssh'
+    ])
+    await expect(
+      readFile(join(ordinary.skillsRoot, 'os-demo', 'references', 'guide.md'), 'utf8')
+    ).resolves.toBe('# Guide\n')
+    expect(
+      (await stat(join(ordinary.skillsRoot, 'os-demo', 'scripts', 'run.py'))).mode & 0o111
+    ).toBe(0o111)
+    await expect(
+      readFile(join(ordinary.skillsRoot, 'os-remote-compute-ssh', 'SKILL.md'), 'utf8')
+    ).resolves.toContain('ssh:cluster')
+    expect(ordinary.environment).toMatchObject({
+      TMPDIR: expect.stringContaining('attempts'),
+      PYTHONPYCACHEPREFIX: expect.stringContaining('python'),
+      R_LIBS_USER: expect.stringContaining('r')
+    })
+    const temporaryRoot = ordinary.environment.TMPDIR
+    const discoveryRoot = ordinary.discoveryRoot
+    await ordinary.release()
+    await expect(stat(temporaryRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+    await expect(stat(discoveryRoot)).rejects.toMatchObject({ code: 'ENOENT' })
+
+    const forced = await manager.acquireSkillRuntimeBinding(
+      await repository.getSettings(),
+      new Set(['demo'])
+    )
+    if (!forced) throw new Error('expected forced Skill runtime binding')
+    expect(forced.descriptors.map((descriptor) => descriptor.name)).toContain('demo')
+    expect(await readdir(forced.discoveryRoot)).toContain('os-demo')
+    expect(forced.generationRoot).toBe(ordinary.generationRoot)
+    await forced.release()
+
+    const exact = await manager.acquireSkillRuntimeBinding(await repository.getSettings(), {
+      kind: 'exact',
+      allowedSkillIds: ['demo']
+    })
+    if (!exact) throw new Error('expected exact Skill runtime binding')
+    expect(exact.descriptors.map((descriptor) => descriptor.id)).toEqual(['demo'])
+    expect(await readdir(exact.discoveryRoot)).toEqual(['os-demo'])
+    expect(exact.generationRoot).toBe(ordinary.generationRoot)
+    await exact.release()
+  })
+
+  it('keeps unrelated Main Skills available when installed packages share an invocation name', async () => {
+    const packageRoot = join(storageRoot, 'packages', 'invocation-collision')
+    const internalRoot = join(packageRoot, 'internal')
+    const importedRoot = join(packageRoot, 'imported')
+    const unrelatedRoot = join(packageRoot, 'unrelated')
+    await Promise.all(
+      [internalRoot, importedRoot, unrelatedRoot].map((root) => mkdir(root, { recursive: true }))
+    )
+    await Promise.all([
+      writeFile(
+        join(internalRoot, 'SKILL.md'),
+        '---\nname: skill-creator\ndescription: Internal creator.\n---\n'
+      ),
+      writeFile(
+        join(importedRoot, 'SKILL.md'),
+        '---\nname: skill-creator\ndescription: Imported creator.\n---\n'
+      ),
+      writeFile(
+        join(unrelatedRoot, 'SKILL.md'),
+        '---\nname: literature-search\ndescription: Search literature.\n---\n'
+      )
+    ])
+    const skill = (
+      id: string,
+      name: string,
+      sourceDir: string,
+      exposure?: 'internal'
+    ): BundledSkill => ({
+      id,
+      name,
+      displayName: name,
+      description: `${name}.`,
+      source: id === 'skill-creator' ? ('featured' as const) : ('imported' as const),
+      updatedAt: '2026-08-13',
+      sourceDir,
+      ...(exposure ? { exposure } : {})
+    })
+    manager = createManager({
+      skills: {
+        runtimeProjectionCatalog: vi
+          .fn()
+          .mockResolvedValue([
+            skill('skill-creator', 'skill-creator', internalRoot, 'internal'),
+            skill('imported-skill-creator', 'skill-creator', importedRoot),
+            skill('imported-literature-search', 'literature-search', unrelatedRoot)
+          ])
+      } as unknown as SkillCatalogModule
+    })
+
+    const ordinary = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    if (!ordinary) throw new Error('expected a degraded-but-usable Main Skill binding')
+
+    expect(ordinary.descriptors.map(({ id }) => id)).toEqual(['imported-literature-search'])
+    expect((await readdir(ordinary.skillsRoot)).sort()).toEqual([
+      'os-imported-literature-search',
+      'os-imported-skill-creator',
+      'os-skill-creator'
+    ])
+    await ordinary.release()
+
+    const forced = await manager.acquireSkillRuntimeBinding(await repository.getSettings(), {
+      kind: 'main',
+      forcedSkillIds: ['imported-skill-creator']
+    })
+    expect(forced?.descriptors.map(({ id }) => id)).toEqual([
+      'imported-literature-search',
+      'imported-skill-creator'
+    ])
+    await forced?.release()
+
+    const exact = await manager.acquireSkillRuntimeBinding(await repository.getSettings(), {
+      kind: 'exact',
+      allowedSkillIds: ['skill-creator']
+    })
+    expect(exact?.descriptors.map(({ id }) => id)).toEqual(['skill-creator'])
+    await exact?.release()
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings(), {
+        kind: 'exact',
+        allowedSkillIds: ['skill-creator', 'imported-skill-creator']
+      })
+    ).rejects.toThrow(/invocation name collision/i)
+
+    await repository.setSkillEnabled('imported-skill-creator', false)
+    const withoutImported = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    expect(withoutImported?.descriptors.map(({ id }) => id)).toEqual([
+      'imported-literature-search',
+      'skill-creator'
+    ])
+    await withoutImported?.release()
+  })
+
+  it('resolves Main invocation collisions from the last-good manifest', async () => {
+    const firstRoot = join(storageRoot, 'packages', 'last-good-first')
+    const secondRoot = join(storageRoot, 'packages', 'last-good-second')
+    await Promise.all([firstRoot, secondRoot].map((root) => mkdir(root, { recursive: true })))
+    await Promise.all([
+      writeFile(join(firstRoot, 'SKILL.md'), '# First'),
+      writeFile(join(secondRoot, 'SKILL.md'), '# Second')
+    ])
+    const catalog = [
+      {
+        id: 'first',
+        name: 'first',
+        displayName: 'First',
+        description: 'First.',
+        source: 'personal' as const,
+        updatedAt: '2026-08-13',
+        sourceDir: firstRoot
+      },
+      {
+        id: 'second',
+        name: 'second',
+        displayName: 'Second',
+        description: 'Second.',
+        source: 'personal' as const,
+        updatedAt: '2026-08-13',
+        sourceDir: secondRoot
+      }
+    ]
+    manager = createManager({
+      skills: {
+        runtimeProjectionCatalog: vi.fn().mockImplementation(() => Promise.resolve(catalog))
+      } as unknown as SkillCatalogModule
+    })
+    const first = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    if (!first) throw new Error('expected last-good collision fixture')
+    await first.release()
+
+    catalog[0].name = 'catalog-only-collision'
+    catalog[1].name = 'catalog-only-collision'
+    await rm(secondRoot, { recursive: true, force: true })
+    const recovered = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+
+    expect(recovered?.generationId).toBe(first.generationId)
+    expect(recovered?.descriptors.map(({ id }) => id)).toEqual(['first', 'second'])
+    await recovered?.release()
+  })
+
+  it('skips projection and state ownership for a no-Skill binding policy', async () => {
+    const runtimeProjectionCatalog = vi.fn().mockRejectedValue(new Error('must not be read'))
+    manager = createManager({
+      skills: { runtimeProjectionCatalog } as unknown as SkillCatalogModule
+    })
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings(), { kind: 'none' })
+    ).resolves.toBeUndefined()
+    expect(runtimeProjectionCatalog).not.toHaveBeenCalled()
+  })
+
+  it('rejects a stale exact Skill authorization before provider execution', async () => {
+    manager = createManager()
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings(), {
+        kind: 'exact',
+        allowedSkillIds: ['removed-specialist-skill']
+      })
+    ).rejects.toThrow('Authorized Skill is unavailable: removed-specialist-skill')
+  })
+
+  it('rejects an exact binding when publication fails before its Skill reaches last-good', async () => {
+    const existingRoot = join(storageRoot, 'packages', 'existing-exact')
+    const unavailableRoot = join(storageRoot, 'packages', 'unavailable-exact')
+    await mkdir(existingRoot, { recursive: true })
+    await writeFile(join(existingRoot, 'SKILL.md'), '# Existing exact')
+    const catalog = [
+      {
+        id: 'existing-exact',
+        name: 'existing-exact',
+        displayName: 'Existing exact',
+        description: 'Existing exact.',
+        source: 'personal' as const,
+        updatedAt: '2026-01-01',
+        compatibility: 'sha256:existing-exact',
+        sourceDir: existingRoot
+      }
+    ]
+    const skills = {
+      runtimeProjectionCatalog: vi.fn().mockImplementation(() => Promise.resolve(catalog))
+    } as unknown as SkillCatalogModule
+    manager = createManager({ skills })
+    const first = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    if (!first) throw new Error('expected last-good exact Skill fixture')
+    await first.release()
+    catalog.push({
+      id: 'unavailable-exact',
+      name: 'unavailable-exact',
+      displayName: 'Unavailable exact',
+      description: 'Unavailable exact.',
+      source: 'personal',
+      updatedAt: '2026-01-01',
+      compatibility: 'sha256:unavailable-exact',
+      sourceDir: unavailableRoot
+    })
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings(), {
+        kind: 'exact',
+        allowedSkillIds: ['unavailable-exact']
+      })
+    ).rejects.toThrow(
+      'Authorized Skill is unavailable in the current projection: unavailable-exact'
+    )
+  })
+
+  it('degrades to no Skill exposure when first publication has no valid generation', async () => {
+    const incompleteRoot = join(storageRoot, 'packages', 'incomplete')
+    await mkdir(incompleteRoot, { recursive: true })
+    await writeFile(join(incompleteRoot, 'reference.md'), 'missing entrypoint')
+    const skills = {
+      runtimeProjectionCatalog: vi.fn().mockResolvedValue([
+        {
+          id: 'incomplete',
+          name: 'incomplete',
+          displayName: 'Incomplete',
+          description: 'Incomplete.',
+          source: 'personal',
+          updatedAt: '2026-01-01',
+          compatibility: 'sha256:incomplete',
+          sourceDir: incompleteRoot
+        }
+      ])
+    } as unknown as SkillCatalogModule
+    manager = createManager({ skills })
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    ).resolves.toBeUndefined()
+  })
+
+  it('degrades to no Skill exposure when the projection catalog cannot be read', async () => {
+    const skills = {
+      runtimeProjectionCatalog: vi.fn().mockRejectedValue(new Error('catalog unavailable'))
+    } as unknown as SkillCatalogModule
+    manager = createManager({ skills })
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    ).resolves.toBeUndefined()
+  })
+
+  it('rejects an exact binding when the projection catalog cannot be read', async () => {
+    const skills = {
+      runtimeProjectionCatalog: vi.fn().mockRejectedValue(new Error('exact catalog unavailable'))
+    } as unknown as SkillCatalogModule
+    manager = createManager({ skills })
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings(), {
+        kind: 'exact',
+        allowedSkillIds: []
+      })
+    ).rejects.toThrow('exact catalog unavailable')
+  })
+
+  it('does not expose a last-good generation when its authorization catalog cannot be read', async () => {
+    const sourceRoot = join(storageRoot, 'packages', 'catalog-recoverable')
+    await mkdir(sourceRoot, { recursive: true })
+    await writeFile(join(sourceRoot, 'SKILL.md'), '# Catalog recoverable')
+    const skills = {
+      runtimeProjectionCatalog: vi
+        .fn()
+        .mockResolvedValueOnce([
+          {
+            id: 'catalog-recoverable',
+            name: 'catalog-recoverable',
+            displayName: 'Catalog recoverable',
+            description: 'Catalog recoverable.',
+            source: 'personal',
+            updatedAt: '2026-01-01',
+            compatibility: 'sha256:catalog-recoverable',
+            sourceDir: sourceRoot
+          }
+        ])
+        .mockRejectedValue(new Error('catalog unavailable'))
+    } as unknown as SkillCatalogModule
+    manager = createManager({ skills })
+    const first = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    if (!first) throw new Error('expected last-good Skill runtime fixture')
+    await first.release()
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    ).resolves.toBeUndefined()
+  })
+
+  it('uses a last-good generation when a later source cannot be read', async () => {
+    const sourceRoot = join(storageRoot, 'packages', 'recoverable')
+    await mkdir(sourceRoot, { recursive: true })
+    await writeFile(join(sourceRoot, 'SKILL.md'), '# Recoverable')
+    const skills = {
+      runtimeProjectionCatalog: vi.fn().mockResolvedValue([
+        {
+          id: 'recoverable',
+          name: 'recoverable',
+          displayName: 'Recoverable',
+          description: 'Recoverable.',
+          source: 'personal',
+          updatedAt: '2026-01-01',
+          compatibility: 'sha256:recoverable',
+          sourceDir: sourceRoot
+        }
+      ])
+    } as unknown as SkillCatalogModule
+    manager = createManager({ skills })
+    const first = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    if (!first) throw new Error('expected last-good Skill runtime fixture')
+    await first.release()
+    await rm(sourceRoot, { recursive: true, force: true })
+
+    const recovered = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+
+    expect(recovered?.generationId).toBe(first.generationId)
+    expect(recovered?.descriptors.map(({ id }) => id)).toEqual(['recoverable'])
+    await recovered?.release()
+  })
+
+  it('does not infer generated Skill authorization when current projection inputs fail', async () => {
+    const sourceRoot = join(storageRoot, 'packages', 'recoverable-with-connector')
+    await mkdir(sourceRoot, { recursive: true })
+    await writeFile(join(sourceRoot, 'SKILL.md'), '# Recoverable with connector')
+    const skills = {
+      runtimeProjectionCatalog: vi.fn().mockResolvedValue([
+        {
+          id: 'recoverable-with-connector',
+          name: 'recoverable-with-connector',
+          displayName: 'Recoverable with connector',
+          description: 'Recoverable with connector.',
+          source: 'personal',
+          updatedAt: '2026-01-01',
+          compatibility: 'sha256:recoverable-with-connector',
+          sourceDir: sourceRoot
+        }
+      ])
+    } as unknown as SkillCatalogModule
+    const connectors = {
+      enabledConnectorIds: vi.fn().mockReturnValue(['chemistry']),
+      materializedCustomSkillNames: vi.fn().mockReturnValue([])
+    } as unknown as ConnectorSettingsModule
+    manager = createManager({ skills, connectors })
+    const first = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    if (!first) throw new Error('expected last-good generated Skill fixture')
+    expect(first.descriptors.map(({ id }) => id)).toContain('mcp-chemistry')
+    await first.release()
+    await rm(sourceRoot, { recursive: true, force: true })
+
+    const recovered = await manager.acquireSkillRuntimeBinding(await repository.getSettings())
+
+    expect(recovered?.generationId).toBe(first.generationId)
+    expect(recovered?.descriptors.map(({ id }) => id)).toEqual(['recoverable-with-connector'])
+    await recovered?.release()
+  })
+
+  it('degrades to no Skill exposure when writable runtime state cannot be allocated', async () => {
+    const acquireState = vi
+      .spyOn(SkillRuntimeStateOwner.prototype, 'acquire')
+      .mockRejectedValueOnce(new Error('state unavailable'))
+    manager = createManager()
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings())
+    ).resolves.toBeUndefined()
+    expect(acquireState).toHaveBeenCalledOnce()
+  })
+
+  it('rejects an exact binding when writable runtime state cannot be allocated', async () => {
+    vi.spyOn(SkillRuntimeStateOwner.prototype, 'acquire').mockRejectedValueOnce(
+      new Error('exact state unavailable')
+    )
+    manager = createManager()
+
+    await expect(
+      manager.acquireSkillRuntimeBinding(await repository.getSettings(), {
+        kind: 'exact',
+        allowedSkillIds: []
+      })
+    ).rejects.toThrow('exact state unavailable')
   })
 
   it('synchronizes provisioned custom Connector docs into isolated agent Skill roots', async () => {
     const customSkillName = 'mcp-xt'
-    const sourceDir = join(getAppClaudeConfigDir(storageRoot), 'skills', customSkillName)
+    const sourceDir = join(connectorSkillDocsDir(storageRoot), customSkillName)
     await mkdir(sourceDir, { recursive: true })
     await writeFile(
       join(sourceDir, 'SKILL.md'),

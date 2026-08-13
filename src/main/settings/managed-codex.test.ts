@@ -12,7 +12,7 @@ import {
   writeFile
 } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { dirname, join, sep } from 'node:path'
+import { dirname, join, resolve, sep } from 'node:path'
 import { Readable } from 'node:stream'
 import { gzipSync } from 'node:zlib'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -47,6 +47,23 @@ const PINNED_MODEL_CATALOG_STARTUP_FIXTURE = [
   '    codex = spawn(process.execPath, [bundledCodexPath, "app-server"], { env: spawnEnv });',
   '  }',
   '  return codex;',
+  '}'
+].join('\n')
+
+const PINNED_SKILL_EXTRA_ROOTS_FIXTURE = [
+  'async refreshSkills(cwd, additionalRoots) {',
+  '  if (!cwd) {',
+  '    return;',
+  '  }',
+  '  const skillExtraRoots = additionalRoots.map((root) => path4.join(root, ".agents", "skills"));',
+  '  if (!arraysEqual(this.skillExtraRoots, skillExtraRoots)) {',
+  '    await this.codexClient.skillsExtraRootsSet({ extraRoots: skillExtraRoots });',
+  '    this.skillExtraRoots = skillExtraRoots;',
+  '  }',
+  '  await this.codexClient.listSkills({',
+  '    cwds: [cwd, ...additionalRoots],',
+  '    forceReload: true',
+  '  });',
   '}'
 ].join('\n')
 
@@ -184,6 +201,7 @@ import {
   patchCodexAcpContextUsageSource,
   patchCodexAcpModelCatalogStartupSource,
   patchCodexAcpSkillInputSource,
+  patchCodexAcpSkillExtraRootsSource,
   patchCodexAcpTurnUsageSource,
   resolveManagedCodexPlatform,
   sanitizeManagedCodexDiagnostic,
@@ -1802,8 +1820,8 @@ describe('patchCodexAcpModelCatalogStartupSource', () => {
 describe('patchCodexAcpSkillInputSource', () => {
   it('maps a private ACP descriptor to native Skill input before unchanged text', async () => {
     const root = await mkdtemp(join(tmpdir(), 'managed-codex-skill-input-'))
-    const codexHome = join(root, 'codex-home')
-    const skillPath = join(codexHome, 'skills', 'mcp-pubmed', 'SKILL.md')
+    const runtimeRoot = join(root, 'skill-runtime')
+    const skillPath = join(runtimeRoot, 'mcp-pubmed', 'SKILL.md')
     try {
       await mkdir(dirname(skillPath), { recursive: true })
       await writeFile(skillPath, '# PubMed')
@@ -1826,9 +1844,9 @@ describe('patchCodexAcpSkillInputSource', () => {
         'fs4',
         'process',
         `${patched}; return buildPromptItems;`
-      )(await import('node:path'), await import('node:fs'), { env: { CODEX_HOME: codexHome } }) as (
-        prompt: unknown[]
-      ) => unknown[]
+      )(await import('node:path'), await import('node:fs'), {
+        env: { OPEN_SCIENCE_SKILL_RUNTIME_ROOT: runtimeRoot }
+      }) as (prompt: unknown[]) => unknown[]
 
       expect(
         buildPromptItems([
@@ -1853,9 +1871,9 @@ describe('patchCodexAcpSkillInputSource', () => {
     'ignores a descriptor whose apparent Skill path escapes through a symlink',
     async () => {
       const root = await mkdtemp(join(tmpdir(), 'managed-codex-skill-symlink-'))
-      const codexHome = join(root, 'codex-home')
+      const runtimeRoot = join(root, 'skill-runtime')
       const outsidePath = join(root, 'outside-SKILL.md')
-      const skillPath = join(codexHome, 'skills', 'escape', 'SKILL.md')
+      const skillPath = join(runtimeRoot, 'escape', 'SKILL.md')
       try {
         await mkdir(dirname(skillPath), { recursive: true })
         await writeFile(outsidePath, '# Outside')
@@ -1879,7 +1897,7 @@ describe('patchCodexAcpSkillInputSource', () => {
           'process',
           `${patched}; return buildPromptItems;`
         )(await import('node:path'), await import('node:fs'), {
-          env: { CODEX_HOME: codexHome }
+          env: { OPEN_SCIENCE_SKILL_RUNTIME_ROOT: runtimeRoot }
         }) as (prompt: unknown[]) => unknown[]
 
         expect(
@@ -1901,8 +1919,8 @@ describe('patchCodexAcpSkillInputSource', () => {
 
   it('ignores invalid and duplicate descriptors while preserving original text', async () => {
     const root = await mkdtemp(join(tmpdir(), 'managed-codex-skill-validation-'))
-    const codexHome = join(root, 'codex-home')
-    const validPath = join(codexHome, 'skills', 'mcp-pubmed', 'SKILL.md')
+    const runtimeRoot = join(root, 'skill-runtime')
+    const validPath = join(runtimeRoot, 'mcp-pubmed', 'SKILL.md')
     const outsidePath = join(root, 'outside', 'SKILL.md')
     try {
       await mkdir(dirname(validPath), { recursive: true })
@@ -1928,7 +1946,7 @@ describe('patchCodexAcpSkillInputSource', () => {
         'process',
         `${patched}; return buildPromptItems;`
       )(await import('node:path'), await import('node:fs'), {
-        env: { CODEX_HOME: codexHome }
+        env: { OPEN_SCIENCE_SKILL_RUNTIME_ROOT: runtimeRoot }
       }) as (prompt: unknown[]) => unknown[]
 
       expect(
@@ -1943,7 +1961,7 @@ describe('patchCodexAcpSkillInputSource', () => {
                 { name: '', path: validPath },
                 { name: 'relative', path: 'skills/relative/SKILL.md' },
                 { name: 'outside', path: outsidePath },
-                { name: 'missing', path: join(codexHome, 'skills', 'missing', 'SKILL.md') }
+                { name: 'missing', path: join(runtimeRoot, 'missing', 'SKILL.md') }
               ]
             }
           },
@@ -1957,6 +1975,56 @@ describe('patchCodexAcpSkillInputSource', () => {
     } finally {
       await rm(root, { recursive: true, force: true })
     }
+  })
+
+  it.each([undefined, '', '   '])(
+    'rejects explicit Skill inputs when the runtime root is %p',
+    async (runtimeRoot) => {
+      const root = await mkdtemp(join(tmpdir(), 'managed-codex-skill-empty-root-'))
+      const skillPath = join(root, 'skill-runtime', 'alpha', 'SKILL.md')
+      try {
+        await mkdir(dirname(skillPath), { recursive: true })
+        await writeFile(skillPath, '# Alpha')
+        const patched = patchCodexAcpSkillInputSource(PINNED_SKILL_MAPPER_FIXTURE)
+        const buildPromptItems = Function(
+          'path4',
+          'fs4',
+          'process',
+          `${patched}; return buildPromptItems;`
+        )(await import('node:path'), await import('node:fs'), {
+          env: { OPEN_SCIENCE_SKILL_RUNTIME_ROOT: runtimeRoot }
+        }) as (prompt: unknown[]) => unknown[]
+
+        expect(
+          buildPromptItems([
+            {
+              type: 'text',
+              text: 'Keep text',
+              _meta: { 'open-science/skill-inputs': [{ name: 'alpha', path: skillPath }] }
+            }
+          ])
+        ).toEqual([{ type: 'text', text: 'Keep text', text_elements: [] }])
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
+    }
+  )
+
+  it('migrates an installed CODEX_HOME Skill-input replacement and remains idempotent', () => {
+    const current = patchCodexAcpSkillInputSource(PINNED_SKILL_MAPPER_FIXTURE)
+    const legacy = current.replace(
+      '        const skillRoot = typeof process.env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT === "string" ? process.env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT.trim() : "";',
+      [
+        '        const codexHome = typeof process.env.CODEX_HOME === "string" ? process.env.CODEX_HOME : "";',
+        '        const skillRoot = codexHome ? path4.join(codexHome, "skills") : "";'
+      ].join('\n')
+    )
+
+    const migrated = patchCodexAcpSkillInputSource(legacy)
+
+    expect(migrated).toContain('process.env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT')
+    expect(migrated).not.toContain('const codexHome =')
+    expect(patchCodexAcpSkillInputSource(migrated)).toBe(migrated)
   })
 
   it('fails closed when the pinned buildPromptItems source drifts', () => {
@@ -1980,6 +2048,135 @@ describe('patchCodexAcpSkillInputSource', () => {
 
     expect(() => patchCodexAcpSkillInputSource(drifted)).toThrow(
       /Skill-input patch no longer matches/
+    )
+  })
+})
+
+describe('patchCodexAcpSkillExtraRootsSource', () => {
+  const buildClient = (
+    env: Record<string, string | undefined>,
+    skillsExtraRootsSet: (params: unknown) => Promise<void> = async () => undefined
+  ): { refreshSkills(cwd: string, roots: string[]): Promise<void> } => {
+    const patched = patchCodexAcpSkillExtraRootsSource(PINNED_SKILL_EXTRA_ROOTS_FIXTURE)
+    const Client = Function(
+      'path4',
+      'arraysEqual',
+      'process',
+      `return class Client {
+        skillExtraRoots = [];
+        constructor(codexClient) { this.codexClient = codexClient; }
+        ${patched}
+      }`
+    )(
+      { join, resolve },
+      (left: string[], right: string[]) => JSON.stringify(left) === JSON.stringify(right),
+      { env }
+    ) as new (client: unknown) => {
+      refreshSkills(cwd: string, roots: string[]): Promise<void>
+    }
+    return new Client({ skillsExtraRootsSet, listSkills: vi.fn(async () => undefined) })
+  }
+
+  it('sets the projection as an official native extra root after app-server initialization', async () => {
+    const setRoots = vi.fn(async () => undefined)
+    const client = buildClient(
+      {
+        OPEN_SCIENCE_SKILL_DISCOVERY_ROOT: '/runtime/projection/discovery/b-1',
+        OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT: '/runtime/projection/generations/g-1'
+      },
+      setRoots
+    )
+
+    await client.refreshSkills('/project', ['/shared', '/runtime/projection/generations/g-1'])
+
+    expect(setRoots).toHaveBeenCalledWith({
+      extraRoots: [
+        '/runtime/projection/discovery/b-1',
+        join('/shared', '.agents', 'skills'),
+        join('/runtime/projection/generations/g-1', '.agents', 'skills')
+      ]
+    })
+  })
+
+  it('preserves the pinned adapter behavior when no runtime root is configured', async () => {
+    const setRoots = vi.fn(async () => undefined)
+    const client = buildClient({}, setRoots)
+
+    await client.refreshSkills('/project', ['/shared'])
+
+    expect(setRoots).toHaveBeenCalledWith({ extraRoots: [join('/shared', '.agents', 'skills')] })
+  })
+
+  it('does not expose the process discovery root to a session without the generation grant', async () => {
+    const setRoots = vi.fn(async () => undefined)
+    const client = buildClient(
+      {
+        OPEN_SCIENCE_SKILL_DISCOVERY_ROOT: '/runtime/projection/discovery/b-1',
+        OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT: '/runtime/projection/generations/g-1'
+      },
+      setRoots
+    )
+
+    await client.refreshSkills('/main', ['/runtime/projection/generations/g-1'])
+    setRoots.mockClear()
+    await client.refreshSkills('/reviewer', [])
+
+    expect(setRoots).toHaveBeenCalledWith({ extraRoots: [] })
+  })
+
+  it('propagates an extra-root request failure without recording a false successful state', async () => {
+    const failure = new Error('app-server rejected extra roots')
+    const setRoots = vi.fn().mockRejectedValueOnce(failure).mockResolvedValueOnce(undefined)
+    const client = buildClient(
+      {
+        OPEN_SCIENCE_SKILL_DISCOVERY_ROOT: '/runtime/projection/discovery/b-1',
+        OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT: '/runtime/projection/generations/g-1'
+      },
+      setRoots
+    )
+
+    const roots = ['/runtime/projection/generations/g-1']
+    await expect(client.refreshSkills('/project', roots)).rejects.toBe(failure)
+    await client.refreshSkills('/project', roots)
+
+    expect(setRoots).toHaveBeenCalledTimes(2)
+  })
+
+  it('patches a previously installed bundle and is idempotent', () => {
+    const patched = patchCodexAcpSkillExtraRootsSource(PINNED_SKILL_EXTRA_ROOTS_FIXTURE)
+
+    expect(patched).toContain('OPEN_SCIENCE_SKILL_DISCOVERY_ROOT')
+    expect(patchCodexAcpSkillExtraRootsSource(patched)).toBe(patched)
+  })
+
+  it('migrates the previous unscoped runtime-root patch', () => {
+    const legacy = PINNED_SKILL_EXTRA_ROOTS_FIXTURE.replace(
+      '  const skillExtraRoots = additionalRoots.map((root) => path4.join(root, ".agents", "skills"));',
+      [
+        '  const openScienceSkillRoot = typeof process.env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT === "string"',
+        '    ? process.env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT.trim()',
+        '    : "";',
+        '  const skillExtraRoots = Array.from(new Set([',
+        '    ...(openScienceSkillRoot ? [openScienceSkillRoot] : []),',
+        '    ...additionalRoots.map((root) => path4.join(root, ".agents", "skills"))',
+        '  ]));'
+      ].join('\n')
+    )
+
+    const migrated = patchCodexAcpSkillExtraRootsSource(legacy)
+
+    expect(migrated).toContain('OPEN_SCIENCE_SKILL_DISCOVERY_ROOT')
+    expect(migrated).not.toContain('const openScienceSkillRoot =')
+  })
+
+  it('fails closed when the pinned refreshSkills source drifts', () => {
+    const drifted = PINNED_SKILL_EXTRA_ROOTS_FIXTURE.replace(
+      'await this.codexClient.skillsExtraRootsSet',
+      'await this.codexClient.setSkillRoots'
+    )
+
+    expect(() => patchCodexAcpSkillExtraRootsSource(drifted)).toThrow(
+      /Skill extra-roots patch no longer matches/
     )
   })
 })

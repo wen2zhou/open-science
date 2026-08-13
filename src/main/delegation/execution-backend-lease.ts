@@ -1,17 +1,22 @@
 import { releaseResolvedAgentBackendLeases, type ResolvedAgentBackend } from '../agent-framework'
+import type { SkillRuntimeBindingPolicy } from '../skills/runtime-projection'
 import type { DelegateExecutionBackendClaim, DelegateExecutionBackendLease } from './execution-port'
+
+type ForkSkillRuntime = (policy: SkillRuntimeBindingPolicy) => Promise<ResolvedAgentBackend>
 
 // The underlying bridge/transport leases have one owner regardless of batch width. Child runtimes
 // receive a lease-free backend view and keep the owner alive through explicit in-memory claims.
 // Secrets remain in this process-local object and can never enter a durable Attempt record.
 const createDelegateExecutionBackendLease = (
-  backend: ResolvedAgentBackend
+  backend: ResolvedAgentBackend,
+  forkSkillRuntime?: ForkSkillRuntime
 ): DelegateExecutionBackendLease => {
   const runtimeBackend: ResolvedAgentBackend = Object.freeze({
     ...backend,
     responsesBridgeLease: undefined,
     anthropicBridgeLease: undefined,
-    providerTransportLease: undefined
+    providerTransportLease: undefined,
+    skillRuntimeLease: undefined
   })
   let references = 1
   let underlyingRelease: Promise<void> | undefined
@@ -34,6 +39,11 @@ const createDelegateExecutionBackendLease = (
       let released = false
       return Object.freeze({
         backend: runtimeBackend,
+        forkSkillRuntime:
+          forkSkillRuntime ??
+          (async () => {
+            throw new Error('Delegated execution Skill Runtime forking is unavailable.')
+          }),
         async release(): Promise<void> {
           if (released) return
           released = true

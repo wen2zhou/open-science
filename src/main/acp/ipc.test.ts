@@ -58,6 +58,7 @@ const {
     .mockResolvedValue({ sessionId: 's-1', cwd: '/workspace', contextReset: true })
   const resumeSession = vi.fn().mockResolvedValue({ sessionId: 's-1', cwd: '/workspace' })
   const sendPrompt = vi.fn().mockResolvedValue(undefined)
+  const requestRetirement = vi.fn().mockResolvedValue(undefined)
   const AcpRuntimeMock = vi.fn().mockImplementation(function () {
     return {
       createSession,
@@ -68,6 +69,7 @@ const {
       resetSessionContext,
       resumeSession,
       sendPrompt,
+      requestRetirement,
       getSnapshot: vi.fn().mockReturnValue({
         status: 'idle',
         cwd: '/workspace',

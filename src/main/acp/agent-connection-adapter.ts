@@ -26,12 +26,14 @@ import { readWorkspaceTextFile, writeWorkspaceTextFile } from './filesystem'
 type ResponsesBridgeLease = ResolvedAgentBackend['responsesBridgeLease']
 type AnthropicBridgeLease = ResolvedAgentBackend['anthropicBridgeLease']
 type ProviderTransportLease = ResolvedAgentBackend['providerTransportLease']
+type SkillRuntimeLease = ResolvedAgentBackend['skillRuntimeLease']
 type CandidateCleanupStage =
   | 'connection'
   | 'agent-process'
   | 'bridge-lease'
   | 'anthropic-bridge-lease'
   | 'provider-transport-lease'
+  | 'skill-runtime-lease'
 type AcpProcessEventContext = Readonly<{
   process: ChildProcessWithoutNullStreams
   framework: AgentFramework['id']
@@ -68,6 +70,7 @@ type AcpAgentConnectionHooks = Readonly<{
     context: AcpProcessExitContext
   ) => void
   onConnectionClosed: () => void
+  releaseUnattachedSkillRuntimeLease: (lease: NonNullable<SkillRuntimeLease>) => Promise<void>
   reportCleanupFailure: (
     stage: CandidateCleanupStage,
     error: unknown,
@@ -111,6 +114,7 @@ class AcpAgentConnectionAdapter {
     let bridgeLease: ResponsesBridgeLease
     let anthropicBridgeLease: AnthropicBridgeLease
     let providerTransportLease: ProviderTransportLease
+    let skillRuntimeLease: SkillRuntimeLease
     let backendAttempt: AcpBackendGenerationAttempt | undefined
     let framework: AgentFramework['id'] = 'claude-code'
 
@@ -159,6 +163,16 @@ class AcpAgentConnectionAdapter {
           reportCleanupFailure('provider-transport-lease', error)
         }
       }
+      if (skillRuntimeLease) {
+        try {
+          // Before transfer, the connection resource owner still needs to retain a failed Skill
+          // lease so a later teardown can retry it. Never strand app-owned runtime state in this
+          // candidate's one-shot cleanup closure.
+          await hooks.releaseUnattachedSkillRuntimeLease(skillRuntimeLease)
+        } catch (error) {
+          reportCleanupFailure('skill-runtime-lease', error)
+        }
+      }
     }
 
     try {
@@ -167,6 +181,7 @@ class AcpAgentConnectionAdapter {
       bridgeLease = backend.responsesBridgeLease
       anthropicBridgeLease = backend.anthropicBridgeLease
       providerTransportLease = backend.providerTransportLease
+      skillRuntimeLease = backend.skillRuntimeLease
       backendAttempt = input.prepareBackend(backend)
       hooks.onBackendResolved(framework)
       process = input.spawnAgent
@@ -238,7 +253,8 @@ class AcpAgentConnectionAdapter {
           framework,
           bridgeLease,
           anthropicBridgeLease,
-          providerTransportLease
+          providerTransportLease,
+          skillRuntimeLease
         })
         state = 'transferred'
         openedConnection.closed.then(() => {

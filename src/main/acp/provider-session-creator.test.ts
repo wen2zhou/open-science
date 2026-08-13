@@ -52,6 +52,7 @@ const createHarness = (options: {
   framework?: AgentFramework
   nativeMcpEnabled?: boolean
   bridgeMcpAliasesEnabled?: boolean
+  additionalDirectories?: readonly string[]
   backendId?: string
   projectAgentContext?: string
   specialistIdentity?: { append: string; prefix: string }
@@ -93,6 +94,8 @@ const createHarness = (options: {
     prompt: { systemPromptAppends: [] },
     context: { supportsImageInput: false },
     adapter: {
+      additionalDirectories: options.additionalDirectories ?? [],
+      skillDescriptors: [],
       nativeMcpEnabled: options.nativeMcpEnabled ?? true,
       bridgeMcpAliasesEnabled: options.bridgeMcpAliasesEnabled ?? false
     }
@@ -181,6 +184,20 @@ const createHarness = (options: {
 }
 
 describe('AcpProviderSessionCreator', () => {
+  it('authorizes the pinned Skill Runtime generation on the provider Session', async () => {
+    const harness = createHarness({
+      additionalDirectories: ['/runtime/skills/generations/generation-1']
+    })
+
+    await harness.creator.create({ cwd: '/workspace' })
+
+    expect(harness.buildSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additionalDirectories: ['/runtime/skills/generations/generation-1']
+      })
+    )
+  })
+
   it('publishes the provider-returned id as the fresh application Session id', async () => {
     const harness = createHarness({ order: [] })
 

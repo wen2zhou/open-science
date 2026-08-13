@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { isCodexSubscriptionProviderId } from '../../shared/settings'
 import type { AcpRuntimeEvent, AcpTurnTokenUsage } from '../../shared/acp'
 import type { AgentFrameworkId } from '../../shared/settings'
-import type { ResolvedAgentBackend } from '../agent-framework'
+import { releaseResolvedAgentBackendLeases, type ResolvedAgentBackend } from '../agent-framework'
 import type { ExplicitAgentBackendTarget } from '../settings/backend-resolver'
 import { composeAcpRuntimeBaseOwners } from './runtime-base-composition'
 import { composeAcpRuntimeSessionOwners } from './runtime-session-composition'
@@ -78,11 +78,7 @@ const deferred = (): Pick<ActiveRun, 'done' | 'finish'> => {
 }
 
 const releaseUnattachedBackend = async (backend: ResolvedAgentBackend): Promise<void> => {
-  const owned: Array<{ release: () => Promise<void> }> = []
-  if (backend.responsesBridgeLease) owned.push(backend.responsesBridgeLease)
-  if (backend.anthropicBridgeLease) owned.push(backend.anthropicBridgeLease)
-  if (backend.providerTransportLease) owned.push(backend.providerTransportLease)
-  await Promise.all([...new Set(owned)].map((lease) => lease.release().catch(() => undefined)))
+  await releaseResolvedAgentBackendLeases(backend)
 }
 
 const resolveRestrictedInferenceModel = (

@@ -210,9 +210,7 @@ describe('AcpTurnSkillOwner', () => {
 
   it('prepares an explicit Codex Skill as native input without changing prompt text', async () => {
     const namesForIds = vi.fn(async (ids: readonly string[]) => [...ids])
-    const descriptorsForIds = vi.fn(async () => [
-      { name: 'Research', path: '/codex/skills/research/SKILL.md' }
-    ])
+    const descriptorsForIds = vi.fn(async () => [])
     const selectSkills = vi.fn(async () => [
       { name: 'automatic', path: '/codex/skills/automatic/SKILL.md' }
     ])
@@ -232,17 +230,25 @@ describe('AcpTurnSkillOwner', () => {
       promptText: 'find papers',
       codex: {
         home: '/codex',
+        skills: [
+          {
+            id: 'personal-research',
+            name: 'Research',
+            description: 'Find research papers.',
+            path: '/projection/skills/research/SKILL.md'
+          }
+        ],
         bridgeSkillsAvailable: true,
         selectSkills
       }
     })
 
-    expect(descriptorsForIds).toHaveBeenCalledWith(['personal-research'], '/codex')
+    expect(descriptorsForIds).not.toHaveBeenCalled()
     expect(namesForIds).not.toHaveBeenCalled()
     expect(selectSkills).not.toHaveBeenCalled()
     expect(prepared).toMatchObject({
       text: 'find papers',
-      codexSkillInputs: [{ name: 'Research', path: '/codex/skills/research/SKILL.md' }]
+      codexSkillInputs: [{ name: 'Research', path: '/projection/skills/research/SKILL.md' }]
     })
   })
 
@@ -281,6 +287,10 @@ describe('AcpTurnSkillOwner', () => {
       promptText: 'use the current connector',
       codex: {
         home: '/codex',
+        skills: [
+          { id: 'old', ...oldSkill },
+          { id: 'current', ...currentSkill }
+        ],
         bridgeSkillsAvailable: true,
         selectSkills,
         signal

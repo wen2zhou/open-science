@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { lstat, mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -140,7 +140,7 @@ const delegatedSession = (frameworkId: AgentFrameworkId): PersistedChatSession =
 })
 
 describe('production delegated framework runtime bridge', () => {
-  it('prepares an admitted Attempt from its transient backend after the provider was deleted', async () => {
+  it('prepares an admitted Attempt after its provider was deleted', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'delegated-framework-deleted-provider-'))
     const workspaceCwd = await mkdtemp(join(tmpdir(), 'delegated-framework-workspace-'))
     const resolveAdmittedSubagentBackend = vi.fn(async () => {
@@ -154,6 +154,7 @@ describe('production delegated framework runtime bridge', () => {
     }))
     const durable = delegatedSession('opencode')
     const admittedBackend = backend('opencode')
+    const forkExecutionBackendSkillRuntime = vi.fn(async () => admittedBackend)
     const frameworks = createProductionDelegatedFrameworkRuntime({
       capacity: 1,
       dataRoot,
@@ -181,6 +182,7 @@ describe('production delegated framework runtime bridge', () => {
           runtimeSegmentId: 'runtime-1',
           executionModel,
           executionBackend: admittedBackend,
+          forkExecutionBackendSkillRuntime,
           task: 'Investigate',
           inputs: [],
           workspaceCwd,
@@ -190,8 +192,192 @@ describe('production delegated framework runtime bridge', () => {
       )
 
       await expect(running.completion).rejects.not.toThrow('configured provider is unavailable')
+      expect(forkExecutionBackendSkillRuntime).toHaveBeenCalledWith({ kind: 'main' })
       expect(resolveAdmittedSubagentBackend).not.toHaveBeenCalled()
       expect(issueDelegatedNotebookConnection).toHaveBeenCalledOnce()
+    } finally {
+      await Promise.all([
+        rm(dataRoot, { recursive: true, force: true }),
+        rm(workspaceCwd, { recursive: true, force: true })
+      ])
+    }
+  })
+
+  it('resolves sibling ordinary Attempts with distinct Skill Runtime state and leases', async () => {
+    const dataRoot = await mkdtemp(join(tmpdir(), 'delegated-framework-sibling-state-'))
+    const workspaceCwd = await mkdtemp(join(tmpdir(), 'delegated-framework-workspace-'))
+    const resolved: ResolvedAgentBackend[] = []
+    const releases = [vi.fn(async () => undefined), vi.fn(async () => undefined)]
+    const forkExecutionBackendSkillRuntime = vi.fn(async () => {
+      const index = resolved.length
+      const result: ResolvedAgentBackend = {
+        ...backend('opencode'),
+        env: { TMPDIR: `/attempt-${index + 1}/temporary` },
+        skillRuntime: {
+          generationRoot: '/projection/g1',
+          skillsRoot: '/projection/g1/skills',
+          discoveryRoot: `/projection/discovery/attempt-${index + 1}`,
+          descriptors: [],
+          environment: { TMPDIR: `/attempt-${index + 1}/temporary` }
+        },
+        skillRuntimeLease: { release: releases[index] }
+      }
+      resolved.push(result)
+      return result
+    })
+    const durable = delegatedSession('opencode')
+    const frameworks = createProductionDelegatedFrameworkRuntime({
+      capacity: 2,
+      dataRoot,
+      runtime: { settingsService: {} } as never,
+      notebookRpcServer: () =>
+        ({
+          issueDelegatedNotebookConnection: async () => ({
+            endpoint: 'http://127.0.0.1:1',
+            token: 'attempt-token',
+            release: () => undefined,
+            revoke: async () => undefined
+          })
+        }) as never,
+      readSession: async () => durable
+    })
+
+    try {
+      const selected = await frameworks.forSession(durable)
+      const reservation = await selected.execution.reserve(2)
+      const executionModel = {
+        frameworkId: 'opencode' as const,
+        providerId: 'provider-a',
+        backendId: 'opencode:provider-a',
+        modelRoute: 'opencode-openai' as const,
+        model: 'admitted-model',
+        reasoningEffort: 'high' as const
+      }
+      const attempts = reservation.slotIds.map((slotId, index) =>
+        selected.execution.run(
+          {
+            session: { projectId: 'project-1', sessionId: 'session-opencode' },
+            frameId: 'child-frame',
+            attemptId: `attempt-${index + 1}`,
+            runtimeSegmentId: `runtime-${index + 1}`,
+            executionModel,
+            executionBackend: backend('opencode'),
+            forkExecutionBackendSkillRuntime,
+            task: 'Investigate',
+            inputs: [],
+            workspaceCwd,
+            continuation: true
+          },
+          slotId
+        )
+      )
+
+      await vi.waitFor(() => expect(forkExecutionBackendSkillRuntime).toHaveBeenCalledTimes(2))
+      expect(forkExecutionBackendSkillRuntime).toHaveBeenNthCalledWith(1, { kind: 'main' })
+      expect(forkExecutionBackendSkillRuntime).toHaveBeenNthCalledWith(2, { kind: 'main' })
+      expect(resolved.map((item) => item.skillRuntime?.environment.TMPDIR)).toEqual([
+        '/attempt-1/temporary',
+        '/attempt-2/temporary'
+      ])
+      await Promise.all(attempts.map((attempt) => attempt.cancel()))
+      await Promise.all(attempts.map((attempt) => attempt.completion.catch(() => undefined)))
+      expect(releases[0]).toHaveBeenCalledOnce()
+      expect(releases[1]).toHaveBeenCalledOnce()
+    } finally {
+      await Promise.all([
+        rm(dataRoot, { recursive: true, force: true }),
+        rm(workspaceCwd, { recursive: true, force: true })
+      ])
+    }
+  })
+
+  it('forks a Specialist Attempt with its exact current Skill scope', async () => {
+    const dataRoot = await mkdtemp(join(tmpdir(), 'delegated-framework-specialist-scope-'))
+    const workspaceCwd = await mkdtemp(join(tmpdir(), 'delegated-framework-workspace-'))
+    const release = vi.fn(async () => undefined)
+    const forkExecutionBackendSkillRuntime = vi.fn(async () => ({
+      ...backend('opencode'),
+      providerTransportLease: { setTarget: () => true, release }
+    }))
+    const frameworks = createProductionDelegatedFrameworkRuntime({
+      capacity: 1,
+      dataRoot,
+      runtime: {
+        settingsService: {
+          listSpecialistSkillCatalog: async () => [
+            { id: 'specialist-package', frameworkName: 'specialist-package' },
+            { id: 'unrelated-package', frameworkName: 'unrelated-package' }
+          ],
+          provisionedConnectorSkillNames: async () => ['mcp-pubmed', 'mcp-zotero']
+        },
+        profileService: {
+          resolveRunnableById: async () => ({
+            id: 'specialist-1',
+            enabled: true,
+            capabilityMode: 'selected',
+            fullAccess: {
+              excludedSkillIds: [],
+              excludedConnectorIds: [],
+              connectorTools: []
+            },
+            selectedCapabilities: {
+              skillIds: ['specialist-package'],
+              connectorIds: ['pubmed'],
+              connectorTools: []
+            }
+          })
+        }
+      } as never,
+      notebookRpcServer: () =>
+        ({
+          issueDelegatedNotebookConnection: async () => ({
+            endpoint: 'http://127.0.0.1:1',
+            token: 'attempt-token',
+            release: () => undefined,
+            revoke: async () => undefined
+          })
+        }) as never,
+      readSession: async () => delegatedSession('opencode')
+    })
+
+    try {
+      const selected = await frameworks.forSession(delegatedSession('opencode'))
+      const reservation = await selected.execution.reserve(1)
+      const executionModel = {
+        frameworkId: 'opencode' as const,
+        providerId: 'provider-a',
+        backendId: 'opencode:provider-a',
+        modelRoute: 'opencode-openai' as const,
+        model: 'admitted-model',
+        reasoningEffort: 'high' as const
+      }
+      const running = selected.execution.run(
+        {
+          session: { projectId: 'project-1', sessionId: 'session-opencode' },
+          frameId: 'child-frame',
+          attemptId: 'attempt-1',
+          runtimeSegmentId: 'runtime-1',
+          executionModel,
+          executionBackend: backend('opencode'),
+          forkExecutionBackendSkillRuntime,
+          task: 'Investigate',
+          inputs: [],
+          workspaceCwd,
+          profile: 'specialist-1',
+          continuation: true
+        },
+        reservation.slotIds[0]
+      )
+
+      await vi.waitFor(() => {
+        expect(forkExecutionBackendSkillRuntime).toHaveBeenCalledWith({
+          kind: 'exact',
+          allowedSkillIds: ['specialist-package', 'mcp-pubmed']
+        })
+      })
+      await running.cancel()
+      await running.completion.catch(() => undefined)
+      expect(release).toHaveBeenCalledOnce()
     } finally {
       await Promise.all([
         rm(dataRoot, { recursive: true, force: true }),
@@ -267,11 +453,23 @@ describe('production delegated framework runtime bridge', () => {
     expect(JSON.stringify(certified)).not.toContain('attempt-only-secret')
   })
 
-  it('re-resolves changed Settings for a new Attempt and releases the rejected fresh lease', async () => {
+  it('keeps the admitted backend snapshot when Settings change before an Attempt', async () => {
     const dataRoot = await mkdtemp(join(tmpdir(), 'delegated-framework-fresh-attempt-'))
     const workspaceCwd = await mkdtemp(join(tmpdir(), 'delegated-framework-workspace-'))
-    const release = vi.fn(async () => undefined)
+    const release = vi.fn(async () => {
+      throw new Error('temporary Skill cleanup failure')
+    })
     let currentConfig = safeOpenCodeConfig
+    const admittedBackend: ResolvedAgentBackend = {
+      ...backend('opencode'),
+      env: {
+        OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
+        OPENCODE_CONFIG_CONTENT: safeOpenCodeConfig,
+        OPENAI_API_KEY: 'old-secret'
+      },
+      skillRuntimeLease: { release }
+    }
+    const forkExecutionBackendSkillRuntime = vi.fn(async () => admittedBackend)
     const durable: PersistedChatSession = {
       ...session('opencode'),
       conversationGraph: {
@@ -371,27 +569,16 @@ describe('production delegated framework runtime bridge', () => {
       dataRoot,
       runtime: {
         settingsService: {
-          async resolveAdmittedSubagentBackend() {
-            return {
-              ...backend('opencode'),
-              env: {
-                OPENCODE_DISABLE_PROJECT_CONFIG: 'true',
-                OPENCODE_CONFIG_CONTENT: currentConfig,
-                OPENAI_API_KEY: currentConfig === safeOpenCodeConfig ? 'old-secret' : 'new-secret'
-              },
-              providerTransportLease: { setTarget: () => true, release }
-            }
-          }
+          resolveAdmittedSubagentBackend: vi.fn(async () => {
+            throw new Error('current Settings must not be re-resolved')
+          })
         }
       } as never,
       notebookRpcServer: () =>
         ({
-          issueDelegatedNotebookConnection: async () => ({
-            endpoint: 'http://127.0.0.1:1',
-            token: 'attempt-token',
-            release: () => undefined,
-            revoke: async () => undefined
-          })
+          issueDelegatedNotebookConnection: async () => {
+            throw new Error('attempt stopped after backend preparation')
+          }
         }) as never,
       readSession: async () => durable
     })
@@ -415,6 +602,8 @@ describe('production delegated framework runtime bridge', () => {
             model: 'model-a',
             reasoningEffort: 'default'
           },
+          executionBackend: admittedBackend,
+          forkExecutionBackendSkillRuntime,
           task: 'Investigate',
           inputs: [],
           workspaceCwd,
@@ -423,8 +612,14 @@ describe('production delegated framework runtime bridge', () => {
         reservation.slotIds[0]
       )
 
-      await expect(running.completion).rejects.toMatchObject({ code: 'unsupported_framework' })
+      await expect(running.completion).rejects.toThrow('attempt stopped after backend preparation')
+      expect(forkExecutionBackendSkillRuntime).toHaveBeenCalledWith({ kind: 'main' })
+      expect(admittedBackend.env.OPENCODE_CONFIG_CONTENT).toBe(safeOpenCodeConfig)
+      expect(currentConfig).not.toBe(admittedBackend.env.OPENCODE_CONFIG_CONTENT)
       expect(release).toHaveBeenCalledOnce()
+      await expect(
+        lstat(join(dataRoot, 'delegation', durable.projectId, durable.id, 'runtime', 'attempt-1'))
+      ).rejects.toMatchObject({ code: 'ENOENT' })
     } finally {
       await Promise.all([
         rm(dataRoot, { recursive: true, force: true }),

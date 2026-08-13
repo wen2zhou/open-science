@@ -9,6 +9,10 @@ import { ALL_CONNECTOR_IDS } from './registry'
 import { customConnectorSkillName } from '../../shared/custom-connector'
 import type { McpClientManager } from './mcp-client-manager'
 import type { StoredConnectors, StoredCustomMcpServer } from '../settings/types'
+import { join } from 'node:path'
+
+const connectorSkillDocsDir = (storageRoot: string): string =>
+  join(storageRoot, 'skill-runtime', 'generated-connectors')
 
 type ConnectorRuntimeSettingsProjectionOptions = {
   readConnectors: () => Promise<StoredConnectors | undefined>
@@ -185,5 +189,5 @@ class ConnectorRuntimeSettingsProjection {
   }
 }
 
-export { ConnectorRuntimeSettingsProjection }
+export { connectorSkillDocsDir, ConnectorRuntimeSettingsProjection }
 export type { ConnectorRuntimeSettingsProjectionOptions }

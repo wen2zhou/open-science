@@ -59,6 +59,11 @@ const preserveComputeHostProjection = (document: string, priorDocument: string):
   return projection === undefined ? document : withHostProjection(document, projection)
 }
 
+// Pure projection used when building an immutable runtime generation. The installed package remains
+// untouched; only the generation-local SKILL.md override contains live host metadata.
+const projectComputeSkillDoc = (document: string, hosts: readonly ComputeHost[]): string =>
+  withHostProjection(document, renderHostProjection(hosts))
+
 // Updates the application-managed canonical Skill in place. The generic materializer owns creation of
 // the os- directory; a missing document means this framework has not been provisioned yet, so there
 // is intentionally nothing to create or expose.
@@ -75,7 +80,7 @@ const syncComputeSkillDoc = async (
     return
   }
 
-  const updated = withHostProjection(document, renderHostProjection(hosts))
+  const updated = projectComputeSkillDoc(document, hosts)
   if (updated === document) return
 
   // Materialized Skills are normally read-only. Temporarily restore only this application-owned
@@ -107,6 +112,7 @@ export {
   COMPUTE_SKILL_DIRECTORY,
   COMPUTE_SKILL_ID,
   hasCanonicalComputeSkillDoc,
+  projectComputeSkillDoc,
   preserveComputeHostProjection,
   syncComputeSkillDoc
 }

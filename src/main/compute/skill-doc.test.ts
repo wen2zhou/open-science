@@ -5,7 +5,7 @@ import { join } from 'node:path'
 import { afterEach, describe, expect, it } from 'vitest'
 
 import type { ComputeHost } from '../../shared/compute'
-import { COMPUTE_SKILL_DIRECTORY, syncComputeSkillDoc } from './skill-doc'
+import { COMPUTE_SKILL_DIRECTORY, projectComputeSkillDoc, syncComputeSkillDoc } from './skill-doc'
 
 const roots: string[] = []
 
@@ -62,6 +62,22 @@ const writeCanonicalDocument = async (skillsDir: string): Promise<void> => {
 }
 
 describe('syncComputeSkillDoc', () => {
+  it('projects hosts without mutating a canonical source document', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'compute-skill-doc-'))
+    roots.push(root)
+    const skillsDir = join(root, 'skills')
+    await writeCanonicalDocument(skillsDir)
+    const source = await readFile(join(skillsDir, COMPUTE_SKILL_DIRECTORY, 'SKILL.md'), 'utf8')
+
+    const projected = projectComputeSkillDoc(source, [sampleHost()])
+
+    expect(projected).toContain('ssh:biowulf')
+    expect(projected).toContain('connected')
+    await expect(
+      readFile(join(skillsDir, COMPUTE_SKILL_DIRECTORY, 'SKILL.md'), 'utf8')
+    ).resolves.toBe(source)
+  })
+
   it('documents only camelCase compute calls and inputs while preserving return fields', async () => {
     const doc = await readFile(
       join(__dirname, '..', '..', '..', 'resources', 'skills', 'remote-compute-ssh', 'SKILL.md'),

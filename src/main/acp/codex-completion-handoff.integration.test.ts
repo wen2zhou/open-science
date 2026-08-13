@@ -70,50 +70,51 @@ const profile = (
 describe('Codex approved handoff', () => {
   it('continues the original task with the newly approved identity and capability projection', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'codex-handoff-'))
-    const process = new FakeAgentProcess()
     const providerRequests: string[] = []
     let observeContinuationCapabilities = async (): Promise<void> => undefined
     let releaseOldPrompt: (() => void) | undefined
 
-    acp
-      .agent({ name: 'codex-handoff-provider' })
-      .onRequest(acp.methods.agent.initialize, () => ({
-        protocolVersion: acp.PROTOCOL_VERSION,
-        agentCapabilities: {
-          loadSession: false,
-          sessionCapabilities: { close: {}, resume: {} }
-        },
-        authMethods: []
-      }))
-      .onRequest(acp.methods.agent.authenticate, () => ({}))
-      .onRequest(acp.methods.agent.providers.set, () => ({}))
-      .onRequest(acp.methods.agent.session.new, () => ({
-        sessionId: 'codex-session',
-        modes: CODEX_MODES
-      }))
-      .onRequest(acp.methods.agent.session.setMode, () => ({}))
-      .onRequest(acp.methods.agent.session.setConfigOption, () => ({ configOptions: [] }))
-      .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
-        const request = ctx.params.prompt
-          .map((content) => (content.type === 'text' ? content.text : ''))
-          .join('')
-        providerRequests.push(request)
-        if (providerRequests.length === 1) {
-          await new Promise<void>((resolve) => {
-            releaseOldPrompt = resolve
-          })
-          return { stopReason: 'cancelled' }
-        }
-        await observeContinuationCapabilities()
-        return { stopReason: 'end_turn' }
-      })
-      .onNotification(acp.methods.agent.session.cancel, () => releaseOldPrompt?.())
-      .connect(
-        acp.ndJsonStream(
-          Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
-          Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>
+    const attachProvider = (process: FakeAgentProcess): void => {
+      acp
+        .agent({ name: 'codex-handoff-provider' })
+        .onRequest(acp.methods.agent.initialize, () => ({
+          protocolVersion: acp.PROTOCOL_VERSION,
+          agentCapabilities: {
+            loadSession: false,
+            sessionCapabilities: { close: {}, resume: {} }
+          },
+          authMethods: []
+        }))
+        .onRequest(acp.methods.agent.authenticate, () => ({}))
+        .onRequest(acp.methods.agent.providers.set, () => ({}))
+        .onRequest(acp.methods.agent.session.new, () => ({
+          sessionId: 'codex-session',
+          modes: CODEX_MODES
+        }))
+        .onRequest(acp.methods.agent.session.setMode, () => ({}))
+        .onRequest(acp.methods.agent.session.setConfigOption, () => ({ configOptions: [] }))
+        .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+          const request = ctx.params.prompt
+            .map((content) => (content.type === 'text' ? content.text : ''))
+            .join('')
+          providerRequests.push(request)
+          if (providerRequests.length === 1) {
+            await new Promise<void>((resolve) => {
+              releaseOldPrompt = resolve
+            })
+            return { stopReason: 'cancelled' }
+          }
+          await observeContinuationCapabilities()
+          return { stopReason: 'end_turn' }
+        })
+        .onNotification(acp.methods.agent.session.cancel, () => releaseOldPrompt?.())
+        .connect(
+          acp.ndJsonStream(
+            Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
+            Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>
+          )
         )
-      )
+    }
 
     const oldSpecialist = profile('old-specialist', 'Old Specialist', ['old-skill'], ['chemistry'])
     const approvedSpecialist = profile(
@@ -178,17 +179,25 @@ describe('Codex approved handoff', () => {
         deniedConnectorError = error instanceof Error ? error.message : String(error)
       }
     }
+    const framework = {
+      ...codexFramework,
+      spawn: (): ChildProcessWithoutNullStreams => {
+        const process = new FakeAgentProcess()
+        attachProvider(process)
+        return asAgentProcess(process)
+      }
+    }
     const runtime = new AcpRuntimeCoordinator(
       (callbacks) =>
         new AcpRuntime({
           appVersion: 'test',
           defaultCwd: '/workspace',
           resolveBackend: () => ({
-            framework: { ...codexFramework, spawn: () => asAgentProcess(process) },
+            framework,
             executablePath: '/bin/codex-acp',
             env: {}
           }),
-          framework: { ...codexFramework, spawn: () => asAgentProcess(process) },
+          framework,
           artifacts: {
             configRoot: storageRoot,
             dataRoot: storageRoot,

@@ -101,6 +101,7 @@ const composeAcpRuntimeProviderSessionOwners = (
     configurator: base.sessionConfigurator,
     resolveSpecialistIdentity: options.resolveSpecialistIdentity,
     resolveSpecialistSkills: options.resolveSpecialistSkills,
+    registerSessionSpecialist: options.notebook?.registerSessionSpecialist,
     resolveProjectAgentContext: options.resolveProjectAgentContext,
     peekClaudeReplay: (sessionId) => base.handoffContinuity.peekClaudeReplay(sessionId),
     commitClaudeReplay: (sessionId) => base.handoffContinuity.commitClaudeReplay(sessionId),

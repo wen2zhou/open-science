@@ -311,6 +311,27 @@ const createHarness = (options: HarnessOptions = {}): ResumerHarness => {
 }
 
 describe('AcpProviderSessionResumer', () => {
+  it('reauthorizes the pinned Skill Runtime generation on provider Session resume', async () => {
+    const harness = createHarness({
+      initialBackend: {
+        ...backend,
+        adapter: {
+          ...backend.adapter,
+          additionalDirectories: ['/runtime/skills/generations/generation-3']
+        }
+      }
+    })
+
+    await harness.resume()
+
+    expect(harness.request).toHaveBeenCalledWith(
+      expect.anything(),
+      expect.objectContaining({
+        additionalDirectories: ['/runtime/skills/generations/generation-3']
+      })
+    )
+  })
+
   it('preserves the runtime capability policy on compatible provider resume', async () => {
     const harness = createHarness({ capabilityPolicy: SIDE_CHAT_SESSION_CAPABILITY_POLICY })
 

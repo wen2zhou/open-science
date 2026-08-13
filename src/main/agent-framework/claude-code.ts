@@ -75,11 +75,38 @@ export const claudeCodeFramework: AgentFramework = {
 
   prepareModelConfig(provider: ResolvedProvider, ctx: ModelConfigContext): AgentModelConfig {
     // Anthropic-shaped env (ANTHROPIC_* + CLAUDE_CONFIG_DIR/CLAUDE_CODE_EXECUTABLE).
+    const skillRuntime = ctx.skillRuntime
     return {
-      env: buildProviderEnv(provider, {
-        storageRoot: ctx.storageRoot,
-        claudeExecutablePath: ctx.executablePath
-      })
+      env: {
+        ...skillRuntime?.environment,
+        ...buildProviderEnv(provider, {
+          storageRoot: ctx.storageRoot,
+          claudeExecutablePath: ctx.executablePath
+        })
+      },
+      ...(skillRuntime
+        ? {
+            sessionOptions: {
+              additionalDirectories: [skillRuntime.generationRoot],
+              skills: skillRuntime.descriptors.map((descriptor) => descriptor.name),
+              plugins: [
+                {
+                  type: 'local',
+                  path: skillRuntime.generationRoot
+                }
+              ],
+              managedSettings: {
+                permissions: {
+                  allow: [`Read(${skillRuntime.generationRoot}/**)`],
+                  deny: [
+                    `Edit(${skillRuntime.generationRoot}/**)`,
+                    `Write(${skillRuntime.generationRoot}/**)`
+                  ]
+                }
+              }
+            }
+          }
+        : {})
     }
   },
 

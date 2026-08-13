@@ -450,7 +450,11 @@ describe('durable delegated work', () => {
       env: { OPENAI_API_KEY: 'admission-memory-secret' }
     } as never
     const backendLease = {
-      claim: vi.fn(() => ({ backend, release: claimReleases[nextClaim++] })),
+      claim: vi.fn(() => ({
+        backend,
+        forkSkillRuntime: async () => backend,
+        release: claimReleases[nextClaim++]
+      })),
       release: admissionRelease
     }
     const resolveExecutionModel = vi.fn(async () => ({ snapshot, backendLease }))

@@ -463,6 +463,7 @@ describe('Settings backend ownership architecture', () => {
     expect(publicOperationsOf(settingsPaths.backendResolver, 'AgentBackendResolver')).toEqual([
       'captureConfiguredSelection',
       'captureExplicitTarget',
+      'forkAdmittedBackendSkillRuntime',
       'resolveActiveBackend',
       'resolveActiveModelChangeTarget',
       'resolveActiveReasoningEffort',
@@ -506,7 +507,7 @@ describe('Settings backend ownership architecture', () => {
         logoutClaudeShared logoutIsolatedClaude logoutIsolatedCodex markOnboardingComplete
         markPathsNormalized previewAgentHomeSkill previewCustomServerTemplateExport
         previewCustomServerTemplateImport previewGitHubSkill previewSkillArchive previewSkillZip
-        provisionedConnectorSkillNames publishHostSkill refreshProviderModels removeCustomServer removeGitHubToken
+        provisionedConnectorSkillNames publishHostSkill reconcileSkillRuntime refreshProviderModels removeCustomServer removeGitHubToken
         removeManualInterpreter resolveActiveModelChangeTarget resolveActiveReasoningEffort
         resolveAdmittedSubagentBackend resolveAgentBackend resolveExplicitAgentBackend resolveSubagentExecutionModel saveCustomServerOAuthState saveGitHubToken
         scanRepoSkills setActiveProvider setAgentFramework setAppIconVariant setClosePreference

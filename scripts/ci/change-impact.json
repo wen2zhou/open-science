@@ -159,6 +159,8 @@
         "src/main/settings/preferences.ts",
         "src/main/settings/process-tree.ts",
         "src/main/settings/skill-catalog.ts",
+        "src/main/skills/runtime-projection.ts",
+        "src/main/skills/runtime-state.ts",
         "src/main/storage-root.ts",
         "src/main/storage/**",
         "src/main/tray.ts",

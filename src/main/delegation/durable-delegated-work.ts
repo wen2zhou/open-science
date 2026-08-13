@@ -209,7 +209,12 @@ const createDurableDelegatedWork = (
           attemptId: attempt.id,
           runtimeSegmentId,
           executionModel: attempt.executionModel!,
-          ...(executionBackendClaim ? { executionBackend: executionBackendClaim.backend } : {}),
+          ...(executionBackendClaim
+            ? {
+                executionBackend: executionBackendClaim.backend,
+                forkExecutionBackendSkillRuntime: executionBackendClaim.forkSkillRuntime
+              }
+            : {}),
           task,
           inputs: child.inputs,
           ...(workspace ? { workspaceCwd: workspace.cwd } : {}),

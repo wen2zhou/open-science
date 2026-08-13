@@ -162,6 +162,13 @@ class SkillCatalogModule {
     return this.catalog()
   }
 
+  // Runtime projection owns a complete immutable copy of every installed package. Discovery is
+  // narrowed later per backend binding; keeping inventory complete lets disabled Specialist Skills
+  // and internal host Skills be authorized without rebuilding a second source tree.
+  async runtimeProjectionCatalog(): Promise<BundledSkill[]> {
+    return this.catalog()
+  }
+
   async withHostSkillRead<T>(
     id: string,
     read: (skill: BundledSkill) => Promise<T>
@@ -779,9 +786,10 @@ class SkillCatalogModule {
   async provisionClaudeConfig(
     configDir: string,
     disabledSkillIds: string[],
-    modelConfig?: ClaudeRuntimeModelConfig | null
+    modelConfig?: ClaudeRuntimeModelConfig | null,
+    includeSkills = true
   ): Promise<void> {
-    const skills = await this.catalog()
+    const skills = includeSkills ? await this.catalog() : []
     const internalIds = new Set(
       skills.filter((skill) => skill.exposure === 'internal').map((skill) => skill.id)
     )

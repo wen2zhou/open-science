@@ -1,7 +1,10 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import type { StoredConnectors } from '../settings/types'
-import { ConnectorRuntimeSettingsProjection } from './runtime-settings-projection'
+import {
+  connectorSkillDocsDir,
+  ConnectorRuntimeSettingsProjection
+} from './runtime-settings-projection'
 
 const connectors = (overrides: Partial<StoredConnectors> = {}): StoredConnectors => ({
   enabledIds: [],
@@ -10,6 +13,10 @@ const connectors = (overrides: Partial<StoredConnectors> = {}): StoredConnectors
 })
 
 describe('ConnectorRuntimeSettingsProjection', () => {
+  it('keeps generated Connector docs outside protected agent configuration roots', () => {
+    expect(connectorSkillDocsDir('/storage')).toBe('/storage/skill-runtime/generated-connectors')
+  })
+
   it('owns the current snapshot and synchronizes bundled and enabled custom Skill docs', async () => {
     const stored = connectors({
       disabledConnectorIds: ['chemistry'],

@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
+import { createHash, randomUUID } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access } from 'node:fs/promises'
+import { access, lstat, readFile, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createServer } from 'node:net'
 import { promisify } from 'node:util'
@@ -16,6 +17,8 @@ import type {
   Preflight,
   ValidateProviderResult
 } from '../../shared/settings'
+import type { ComputeHost } from '../../shared/compute'
+import { parseFrontmatter } from '../../shared/skill-frontmatter'
 import { isProviderUsableByFramework } from '../../shared/settings'
 import { isModelBridgeSupported } from '../../shared/provider-registry'
 import { CLAUDE_EXECUTABLE_MISSING_MESSAGE } from '../../shared/run-error-classification'
@@ -30,10 +33,30 @@ import {
   syncConnectorSkillDocs,
   syncMaterializedCustomServerSkillDocs
 } from '../connectors/provision'
+import { renderSkillDoc } from '../connectors/skill-doc'
+import { connectorSkillDocsDir } from '../connectors/runtime-settings-projection'
 import { ComputeHostRepository } from '../compute/repository'
 import { createLogger } from '../logger'
 import { getProjectDbClient } from '../projects/prisma-client'
-import { hasCanonicalComputeSkillDoc, syncComputeSkillDoc } from '../compute/skill-doc'
+import {
+  COMPUTE_SKILL_ID,
+  hasCanonicalComputeSkillDoc,
+  projectComputeSkillDoc,
+  syncComputeSkillDoc
+} from '../compute/skill-doc'
+import {
+  SkillRuntimeProjectionOwner,
+  type SkillRuntimeBindingPolicy,
+  type SkillRuntimeProjectionInput
+} from '../skills/runtime-projection'
+import {
+  CompositeLanguageRuntimeAdapter,
+  PythonLanguageRuntimeAdapter,
+  RLanguageRuntimeAdapter,
+  SkillRuntimeStateOwner,
+  type SkillRuntimeRoots
+} from '../skills/runtime-state'
+import type { BundledSkill } from '../skills/registry'
 import { writeAgentConfigFiles } from './agent-config-files'
 import { createDefaultDetectDeps, detectClaude, type ClaudeDetectDeps } from './claude-detect'
 import {
@@ -228,6 +251,61 @@ export type AgentRuntimeManagerOptions = {
   ) => Promise<ManagedCodexInstallOutcome>
   resolveCodexProxyEnvironment?: () => Promise<SystemProxyEnvironment | undefined>
   syncComputeSkillDocument?: (skillsDir: string) => Promise<void>
+  readComputeHosts?: () => Promise<ComputeHost[]>
+}
+
+export type AcquiredSkillRuntimeBinding = Readonly<{
+  generationId: string
+  generationRoot: string
+  skillsRoot: string
+  discoveryRoot: string
+  descriptors: readonly {
+    id: string
+    name: string
+    description: string
+    path: string
+    source?: 'connector'
+  }[]
+  environment: Readonly<Record<string, string>>
+  stateRoots: SkillRuntimeRoots
+  release(): Promise<void>
+}>
+
+const digestBytes = (value: string | Uint8Array): string =>
+  createHash('sha256').update(value).digest('hex')
+
+// Catalog timestamps are presentation metadata and user packages may change an auxiliary file
+// without rewriting SKILL.md. Hash the complete package tree so generation reuse is byte-accurate.
+const packageContentRevision = async (sourceDir: string): Promise<string> => {
+  const hash = createHash('sha256')
+  const visit = async (directory: string, prefix = ''): Promise<void> => {
+    const entries = (await readdir(directory, { withFileTypes: true })).sort((left, right) =>
+      left.name.localeCompare(right.name)
+    )
+    for (const entry of entries) {
+      const path = join(directory, entry.name)
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+      const metadata = await lstat(path)
+      if (metadata.isSymbolicLink()) {
+        throw new Error(`Skill package contains symbolic link: ${relativePath}`)
+      }
+      hash.update(relativePath)
+      hash.update('\0')
+      if (metadata.isDirectory()) {
+        hash.update('directory\0')
+        await visit(path, relativePath)
+      } else if (metadata.isFile()) {
+        if (metadata.nlink > 1) throw new Error(`Skill package contains hard link: ${relativePath}`)
+        hash.update((metadata.mode & 0o111) !== 0 ? 'executable\0' : 'file\0')
+        hash.update(await readFile(path))
+        hash.update('\0')
+      } else {
+        throw new Error(`Skill package contains unsupported entry: ${relativePath}`)
+      }
+    }
+  }
+  await visit(sourceDir)
+  return `sha256:${hash.digest('hex')}`
 }
 
 // Owns host runtime discovery, installation, executable preparation, and runtime-specific filesystem
@@ -256,6 +334,10 @@ export class AgentRuntimeManager {
   ) => Promise<ManagedCodexInstallOutcome>
   private readonly resolveProxyEnvironment: () => Promise<SystemProxyEnvironment | undefined>
   private readonly syncComputeSkillDocument: (skillsDir: string) => Promise<void>
+  private readonly readComputeHosts: () => Promise<ComputeHost[]>
+  private readonly skillProjection: SkillRuntimeProjectionOwner
+  private readonly skillRuntimeState: SkillRuntimeStateOwner
+  private skillRuntimeReconciliation?: Promise<void>
 
   constructor(options: AgentRuntimeManagerOptions) {
     this.repository = options.repository
@@ -300,15 +382,23 @@ export class AgentRuntimeManager {
     this.installManagedCodexImpl = options.installManagedCodexImpl ?? installManagedCodex
     this.resolveProxyEnvironment =
       options.resolveCodexProxyEnvironment ?? resolveSystemProxyEnvironment
+    this.readComputeHosts =
+      options.readComputeHosts ??
+      (() => new ComputeHostRepository(() => getProjectDbClient(this.storageRoot)).list())
     this.syncComputeSkillDocument =
       options.syncComputeSkillDocument ??
       (async (skillsDir) => {
         if (!(await hasCanonicalComputeSkillDoc(skillsDir))) return
-        const hosts = await new ComputeHostRepository(() =>
-          getProjectDbClient(this.storageRoot)
-        ).list()
+        const hosts = await this.readComputeHosts()
         await syncComputeSkillDoc(skillsDir, hosts)
       })
+    const skillRuntimeRoot = join(this.storageRoot, 'skill-runtime')
+    this.skillProjection = new SkillRuntimeProjectionOwner({
+      storageRoot: join(skillRuntimeRoot, 'projection')
+    })
+    this.skillRuntimeState = new SkillRuntimeStateOwner({
+      storageRoot: join(skillRuntimeRoot, 'state')
+    })
   }
 
   async getPreflight(providers: ProviderPreflightAccess): Promise<Preflight> {
@@ -605,6 +695,287 @@ export class AgentRuntimeManager {
     return this.resolveProxyEnvironment()
   }
 
+  async acquireSkillRuntimeBinding(
+    settings: StoredSettings,
+    policyOrForcedSkillIds: SkillRuntimeBindingPolicy | ReadonlySet<string> = {
+      kind: 'main'
+    }
+  ): Promise<AcquiredSkillRuntimeBinding | undefined> {
+    const policy: SkillRuntimeBindingPolicy =
+      'kind' in policyOrForcedSkillIds
+        ? policyOrForcedSkillIds
+        : { kind: 'main', forcedSkillIds: [...policyOrForcedSkillIds] }
+    if (policy.kind === 'none') return undefined
+
+    await this.reconcileSkillRuntimeOnce().catch((error) => {
+      log.warn('Skill Runtime startup reconciliation failed; continuing without cleanup', error)
+    })
+    let packages: BundledSkill[]
+    try {
+      packages = await this.skills.runtimeProjectionCatalog()
+    } catch (error) {
+      if (policy.kind === 'exact') throw error
+      // Without a current catalog there is no trustworthy authorization set for either a new or a
+      // last-good generation. Fail closed to an ordinary backend instead of exposing stale Skills.
+      log.warn('Failed to read the Skill Runtime catalog; disabling Skills for this backend', error)
+      return undefined
+    }
+    let inputs: SkillRuntimeProjectionInput[] | undefined
+    try {
+      inputs = await this.skillRuntimeProjectionInputs(settings, packages)
+      await this.skillProjection.publish({ inputs })
+    } catch (error) {
+      // Input construction and publication are transactional. A damaged or transiently unreadable
+      // source must not evict the last complete generation; use that generation when one exists.
+      log.warn('Failed to publish Skill Runtime Projection; retaining current generation', error)
+    }
+
+    const disabled = new Set(settings.disabledSkillIds ?? [])
+    const forcedSkillIds = new Set(policy.kind === 'main' ? (policy.forcedSkillIds ?? []) : [])
+    // Generated Skills have no independent catalog revision. Only authorize the identities proven
+    // readable while constructing the current inputs; if any package aborts that construction, the
+    // last-good generation remains usable for catalogued packages but generated entries fail closed.
+    const generatedIds = inputs
+      ? inputs.filter((input) => input.kind === 'generated').map((input) => input.id)
+      : []
+    const availableSkillIds = new Set([...packages.map((skill) => skill.id), ...generatedIds])
+    const allowedSkillIds =
+      policy.kind === 'exact'
+        ? [...new Set(policy.allowedSkillIds)]
+        : [
+            ...packages
+              .filter((skill) => !disabled.has(skill.id) || forcedSkillIds.has(skill.id))
+              .map((skill) => skill.id),
+            ...generatedIds
+          ]
+    if (policy.kind === 'exact') {
+      const unavailable = allowedSkillIds.filter((id) => !availableSkillIds.has(id))
+      if (unavailable.length > 0) {
+        throw new Error(`Authorized Skill is unavailable: ${unavailable.join(', ')}`)
+      }
+    } else {
+      // Internal package ids are stable catalog ids, not prefixed identities. Recover the exposure
+      // decision from the catalog rather than encoding it into a framework-visible id.
+      const internalIds = new Set(
+        packages.filter((skill) => skill.exposure === 'internal').map((skill) => skill.id)
+      )
+      for (const id of internalIds) if (!allowedSkillIds.includes(id)) allowedSkillIds.push(id)
+    }
+
+    let projection
+    try {
+      projection = await this.skillProjection.acquire({
+        allowedSkillIds,
+        ...(policy.kind === 'main'
+          ? {
+              invocationNameCollisionPolicy: 'omit-ambiguous' as const,
+              preferredSkillIds: [...forcedSkillIds]
+            }
+          : {})
+      })
+    } catch (error) {
+      // An exact role contract must never silently become an ordinary no-Skill backend. This covers
+      // the catalog-new/projection-last-good window when publication failed before an authorized
+      // Specialist Skill reached the immutable generation.
+      if (policy.kind === 'exact') throw error
+      // First publication can fail before any last-good generation exists. Disable Skill exposure for
+      // this backend instead of falling back to a protected framework home or blocking conversation.
+      log.warn(
+        'No valid Skill Runtime Projection is available; disabling Skills for this backend',
+        error
+      )
+      return undefined
+    }
+    if (policy.kind === 'main') {
+      const boundIds = new Set(projection.descriptors.map((descriptor) => descriptor.id))
+      const omittedSkillIds = allowedSkillIds.filter((id) => !boundIds.has(id))
+      if (omittedSkillIds.length > 0) {
+        log.warn('Omitting ambiguous Skill invocation names from Main binding', {
+          skillIds: omittedSkillIds
+        })
+      }
+    }
+    const runtimeId = randomUUID()
+    let state
+    try {
+      state = await this.skillRuntimeState.acquire({
+        agentSessionId: `agent-${runtimeId}`,
+        runtimeBindingId: `binding-${projection.generationId}`,
+        attemptId: `attempt-${runtimeId}`,
+        language: new CompositeLanguageRuntimeAdapter([
+          new PythonLanguageRuntimeAdapter(),
+          new RLanguageRuntimeAdapter()
+        ])
+      })
+    } catch (error) {
+      // Writable state is optional to the ordinary backend, but never fall back to package-local
+      // writes. Release the read-only projection lease and continue with Skills disabled.
+      await projection.release().catch((releaseError) => {
+        log.warn('Failed to release Skill Runtime Projection after state allocation failure', {
+          error: releaseError
+        })
+      })
+      if (policy.kind === 'exact') {
+        log.warn('Failed to allocate writable state for an exact Skill Runtime binding', { error })
+        throw error
+      }
+      log.warn(
+        'Failed to allocate writable Skill Runtime state; disabling Skills for this backend',
+        { error }
+      )
+      return undefined
+    }
+
+    let releaseCompleted = false
+    let releaseOperation: Promise<void> | undefined
+    return Object.freeze({
+      generationId: projection.generationId,
+      generationRoot: projection.root,
+      skillsRoot: projection.skillsRoot,
+      discoveryRoot: projection.discoveryRoot,
+      descriptors: projection.descriptors,
+      stateRoots: state.roots,
+      environment: Object.freeze({
+        ...state.environment,
+        OPEN_SCIENCE_HANDOFF_DIR: state.roots.outputHandoffRoot,
+        OPEN_SCIENCE_SKILL_TEMP_DIR: state.roots.temporaryRoot,
+        OPEN_SCIENCE_SKILL_CACHE_DIR: state.roots.cacheRoot,
+        OPEN_SCIENCE_SKILL_STATE_DIR: state.roots.stateRoot
+      }),
+      release: () => {
+        if (releaseCompleted) return Promise.resolve()
+        releaseOperation ??= Promise.allSettled([
+          state.release().then(() =>
+            this.skillRuntimeState.cleanupRuntimeBinding({
+              agentSessionId: state.scope.agentSessionId,
+              runtimeBindingId: state.scope.runtimeBindingId
+            })
+          ),
+          projection.release()
+        ])
+          .then((results) => {
+            const failure = results.find(
+              (result): result is PromiseRejectedResult => result.status === 'rejected'
+            )
+            if (failure) throw failure.reason
+            releaseCompleted = true
+          })
+          .catch((error) => {
+            releaseOperation = undefined
+            throw error
+          })
+        return releaseOperation
+      }
+    })
+  }
+
+  /** Reclaims Skill Runtime Projection/state left by an abnormal prior app process. */
+  async reconcileSkillRuntime(): Promise<void> {
+    await this.reconcileSkillRuntimeOnce()
+  }
+
+  private async reconcileSkillRuntimeOnce(): Promise<void> {
+    this.skillRuntimeReconciliation ??= Promise.all([
+      this.skillProjection.reconcile(),
+      // A fresh owner has no live Attempts, so every prior binding is an app-crash orphan. Normal
+      // teardown removes its own state immediately; this policy bounds abnormal-exit storage too.
+      this.skillRuntimeState.reconcile({
+        maxAttemptAgeMs: 0,
+        maxBindingAgeMs: 0,
+        maxCacheBytes: 1024 ** 3
+      })
+    ])
+      .then(() => undefined)
+      .catch((error) => {
+        // A transient filesystem failure must not poison cleanup for the rest of this app process.
+        // Startup logs and continues; a later binding acquisition retries the same owned cleanup.
+        this.skillRuntimeReconciliation = undefined
+        throw error
+      })
+    return this.skillRuntimeReconciliation
+  }
+
+  private async skillRuntimeProjectionInputs(
+    settings: StoredSettings,
+    packages: readonly BundledSkill[]
+  ): Promise<SkillRuntimeProjectionInput[]> {
+    const computeHosts = packages.some((skill) => skill.id === COMPUTE_SKILL_ID)
+      ? await this.readComputeHosts()
+      : []
+    const packageInputs = await Promise.all(
+      packages.map(async (skill): Promise<SkillRuntimeProjectionInput> => {
+        const sourceRevision = await packageContentRevision(skill.sourceDir)
+        if (skill.id !== COMPUTE_SKILL_ID) {
+          return {
+            kind: 'package',
+            id: skill.id,
+            name: skill.name,
+            description: skill.description,
+            directory: `os-${skill.id}`,
+            revision: sourceRevision,
+            sourceDir: skill.sourceDir
+          }
+        }
+        const document = projectComputeSkillDoc(
+          await readFile(join(skill.sourceDir, 'SKILL.md'), 'utf8'),
+          computeHosts
+        )
+        return {
+          kind: 'package',
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          directory: `os-${skill.id}`,
+          revision: `${sourceRevision}:hosts:${digestBytes(document)}`,
+          sourceDir: skill.sourceDir,
+          overrides: [{ path: 'SKILL.md', content: document }]
+        }
+      })
+    )
+
+    const bundledConnectors: SkillRuntimeProjectionInput[] = this.connectors
+      .enabledConnectorIds(settings.connectors)
+      .map((id) => {
+        const name = `mcp-${id}`
+        const document = renderSkillDoc(id)
+        return {
+          kind: 'generated',
+          id: name,
+          name,
+          description: parseFrontmatter(document).fields.description ?? `Use ${id}.`,
+          source: 'connector',
+          directory: name,
+          revision: `sha256:${digestBytes(document)}`,
+          files: [{ path: 'SKILL.md', content: document }]
+        }
+      })
+    const customConnectors: SkillRuntimeProjectionInput[] = []
+    for (const name of this.connectors.materializedCustomSkillNames()) {
+      try {
+        const document = await readFile(
+          join(connectorSkillDocsDir(this.storageRoot), name, 'SKILL.md'),
+          'utf8'
+        )
+        customConnectors.push({
+          kind: 'generated',
+          id: name,
+          name,
+          description: parseFrontmatter(document).fields.description ?? `Use ${name}.`,
+          source: 'connector',
+          directory: name,
+          revision: `sha256:${digestBytes(document)}`,
+          files: [{ path: 'SKILL.md', content: document }]
+        })
+      } catch (error) {
+        log.warn('Skipping unavailable generated custom Connector Skill', { name, error })
+      }
+    }
+
+    return [...packageInputs, ...bundledConnectors, ...customConnectors].sort((left, right) =>
+      left.id.localeCompare(right.id)
+    )
+  }
+
   async materializeAgentSkills(
     settings: StoredSettings,
     configRoot: string,
@@ -614,7 +985,7 @@ export class AgentRuntimeManager {
     const bundledIds = this.connectors.enabledConnectorIds(settings.connectors)
     await syncConnectorSkillDocs(join(configRoot, 'skills'), bundledIds)
     const customSkillSync = await syncMaterializedCustomServerSkillDocs(
-      join(getAppClaudeConfigDir(this.storageRoot), 'skills'),
+      connectorSkillDocsDir(this.storageRoot),
       join(configRoot, 'skills'),
       this.connectors.materializedCustomSkillNames()
     )
@@ -638,13 +1009,9 @@ export class AgentRuntimeManager {
     const disabledSkillIds = (settings.disabledSkillIds ?? []).filter(
       (id) => !forcedSkillIds.has(id)
     )
-    await this.skills.provisionClaudeConfig(configDir, disabledSkillIds, modelConfig)
-    const connectors = await this.connectors.getConnectors()
-    await syncConnectorSkillDocs(
-      join(configDir, 'skills'),
-      this.connectors.enabledConnectorIds(connectors)
-    )
-    await this.syncComputeSkillDocument(join(configDir, 'skills'))
+    // Claude config/auth remains protected and contains no Skill packages. The shared immutable
+    // projection is attached independently as a session plugin.
+    await this.skills.provisionClaudeConfig(configDir, disabledSkillIds, modelConfig, false)
     return configDir
   }
 

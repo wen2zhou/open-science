@@ -3,7 +3,8 @@ import type {
   AgentFramework,
   AgentModelChangeTarget,
   AgentModelRoute,
-  ResolvedAgentBackend
+  ResolvedAgentBackend,
+  SkillRuntimeDescriptorView
 } from '../agent-framework'
 
 type AcpBackendGenerationAttemptIdentity = Readonly<{
@@ -33,6 +34,9 @@ export type AcpBackendGenerationView = Readonly<{
   }>
   adapter: Readonly<{
     codexHome?: string
+    additionalDirectories?: readonly string[]
+    skillsRoot?: string
+    skillDescriptors?: readonly SkillRuntimeDescriptorView[]
     nativeMcpEnabled: boolean
     bridgeMcpAliasesEnabled: boolean
   }>
@@ -73,6 +77,7 @@ const generationView = (backend: ResolvedAgentBackend): AcpBackendGenerationView
       : undefined
   const bridgeMcpAliasesEnabled =
     backend.framework.id === 'codex' && backend.providerConfiguration !== undefined
+  const skillRuntime = backend.skillRuntime
 
   return Object.freeze({
     framework: backend.framework,
@@ -102,6 +107,15 @@ const generationView = (backend: ResolvedAgentBackend): AcpBackendGenerationView
     }),
     adapter: Object.freeze({
       ...(codexHome ? { codexHome } : {}),
+      additionalDirectories: Object.freeze(skillRuntime ? [skillRuntime.generationRoot] : []),
+      ...(skillRuntime ? { skillsRoot: skillRuntime.skillsRoot } : {}),
+      ...(skillRuntime
+        ? {
+            skillDescriptors: Object.freeze(
+              skillRuntime.descriptors.map((descriptor) => Object.freeze({ ...descriptor }))
+            )
+          }
+        : {}),
       nativeMcpEnabled: backend.framework.id !== 'codex' || !bridgeMcpAliasesEnabled,
       bridgeMcpAliasesEnabled
     })

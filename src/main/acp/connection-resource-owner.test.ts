@@ -309,6 +309,36 @@ describe('AcpConnectionResourceOwner', () => {
     expect(release).toHaveBeenCalledOnce()
   })
 
+  it('retains a failed Skill Runtime lease and retries it on later teardown', async () => {
+    const owner = new AcpConnectionResourceOwner()
+    const release = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('temporary cleanup failure'))
+      .mockResolvedValueOnce(undefined)
+    await owner.connect(async (attempt) => {
+      attempt.attach({
+        process: process('skill-runtime-retry'),
+        connection: { close: vi.fn() } as unknown as ClientConnection,
+        framework: 'opencode',
+        bridgeLease: undefined,
+        skillRuntimeLease: { release }
+      })
+      return attempt.publish({ close: true, delete: false, resume: true })
+    })
+    const failure = vi.fn()
+
+    await owner.teardown(owner.supersede(), failure)
+    expect(failure).toHaveBeenCalledWith(
+      'skill-runtime-lease',
+      expect.objectContaining({ message: 'temporary cleanup failure' })
+    )
+
+    await owner.teardown(owner.epoch, failure)
+    expect(release).toHaveBeenCalledTimes(2)
+    await owner.teardown(owner.epoch, failure)
+    expect(release).toHaveBeenCalledTimes(2)
+  })
+
   it('keeps synchronous shutdown terminal when close and kill both throw', async () => {
     const owner = new AcpConnectionResourceOwner()
     const close = vi.fn(() => {

@@ -4,7 +4,7 @@ import type { ResolvedAgentBackend } from './types'
 import { releaseResolvedAgentBackendLeases } from './resolved-agent-backend-leases'
 
 describe('resolved agent backend lease owner', () => {
-  it('settles every lease and releases each at most once', async () => {
+  it('settles best-effort leases and releases each successful Skill Runtime lease at most once', async () => {
     const responsesRelease = vi.fn(async () => {
       throw new Error('already closed')
     })
@@ -12,10 +12,12 @@ describe('resolved agent backend lease owner', () => {
     const transportRelease = vi.fn(() => {
       throw new Error('synchronous close failure')
     })
+    const skillRuntimeRelease = vi.fn(async () => undefined)
     const backend = {
       responsesBridgeLease: { release: responsesRelease },
       anthropicBridgeLease: { release: anthropicRelease },
-      providerTransportLease: { release: transportRelease }
+      providerTransportLease: { release: transportRelease },
+      skillRuntimeLease: { release: skillRuntimeRelease }
     } as unknown as ResolvedAgentBackend
 
     const first = releaseResolvedAgentBackendLeases(backend)
@@ -26,8 +28,33 @@ describe('resolved agent backend lease owner', () => {
     expect(responsesRelease).toHaveBeenCalledOnce()
     expect(anthropicRelease).toHaveBeenCalledOnce()
     expect(transportRelease).toHaveBeenCalledOnce()
+    expect(skillRuntimeRelease).toHaveBeenCalledOnce()
     await releaseResolvedAgentBackendLeases(backend)
     expect(responsesRelease).toHaveBeenCalledOnce()
+  })
+
+  it('retains failed Skill Runtime lease ownership and retries only that lease', async () => {
+    const bridgeRelease = vi.fn(async () => {
+      throw new Error('best-effort bridge close failure')
+    })
+    const skillRuntimeRelease = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('Skill Runtime cleanup failed'))
+      .mockResolvedValueOnce(undefined)
+    const backend = {
+      responsesBridgeLease: { release: bridgeRelease },
+      skillRuntimeLease: { release: skillRuntimeRelease }
+    } as unknown as ResolvedAgentBackend
+
+    const first = releaseResolvedAgentBackendLeases(backend)
+    expect(releaseResolvedAgentBackendLeases(backend)).toBe(first)
+    await expect(first).rejects.toThrow('Skill Runtime cleanup failed')
+
+    await expect(releaseResolvedAgentBackendLeases(backend)).resolves.toBeUndefined()
+    expect(bridgeRelease).toHaveBeenCalledOnce()
+    expect(skillRuntimeRelease).toHaveBeenCalledTimes(2)
+    await releaseResolvedAgentBackendLeases(backend)
+    expect(skillRuntimeRelease).toHaveBeenCalledTimes(2)
   })
 
   it('releases an aliased lease only once', async () => {

@@ -154,9 +154,20 @@ export class ReviewerSessionOwner {
     const { framework, sessionOptions } = this.dependencies.currentSessionSetup()
     const startupGeneration = this.dependencies.currentStartupGeneration()
     const reviewerCwd = await mkdtemp(join(tmpdir(), 'open-science-reviewer-'))
+    // Claude's SDK options are otherwise inherited from the Main Agent connection. Reviewer
+    // sessions must not inherit its Skill whitelist, projection plugin, or filesystem roots.
+    const reviewerSessionOptions =
+      framework.id === 'claude-code'
+        ? {
+            ...sessionOptions,
+            skills: [],
+            plugins: [],
+            additionalDirectories: []
+          }
+        : sessionOptions
     const setup = framework.buildSessionSetup({
       systemPromptAppends: request.systemPromptAppend ? [request.systemPromptAppend] : [],
-      sessionOptions
+      sessionOptions: reviewerSessionOptions
     })
     const reviewerMeta: Record<string, unknown> = {
       ...(setup.meta ?? {}),
@@ -175,7 +186,13 @@ export class ReviewerSessionOwner {
           : {}
       reviewerMeta.claudeCode = {
         ...claudeCode,
-        options: { ...claudeOptions, tools: [] }
+        options: {
+          ...claudeOptions,
+          tools: [],
+          skills: [],
+          plugins: [],
+          additionalDirectories: []
+        }
       }
     }
 
@@ -184,6 +201,7 @@ export class ReviewerSessionOwner {
         .buildSession({
           cwd: reviewerCwd,
           mcpServers: request.mcpServers,
+          additionalDirectories: [],
           _meta: reviewerMeta
         })
         .start()

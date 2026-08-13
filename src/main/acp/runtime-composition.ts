@@ -1,10 +1,14 @@
 import { homedir } from 'node:os'
 import type { ChildProcessWithoutNullStreams } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
+import { rm } from 'node:fs/promises'
+import { join } from 'node:path'
 
 import { app } from 'electron'
 
 import type { AcpPermissionRequest, AcpRuntimeEvent, AcpStateSnapshot } from '../../shared/acp'
 import { DEFAULT_ARTIFACT_PROJECT_NAME } from '../../shared/artifacts'
+import { REVIEWER_MCP_SERVER_NAME, REVIEWER_MCP_TOOLS } from '../../shared/reviewer'
 import {
   MAIN_DURABLE_CONTINUATION_LIFECYCLE_CLIENT_ID,
   MAIN_PERMISSION_WAIT_LIFECYCLE_CLIENT_ID
@@ -39,7 +43,8 @@ import { resolveConfigRoot, resolveDataRoot, resolveStorageRoot } from '../stora
 import type { UploadRepository } from '../uploads/repository'
 import type { SessionPersistenceCoordinator } from '../session-persistence/coordinator'
 import type { NotebookRpcConnection } from '../notebook/mcp-server'
-import type { ResolvedAgentBackend } from '../agent-framework'
+import { releaseResolvedAgentBackendLeases, type ResolvedAgentBackend } from '../agent-framework'
+import { modelFacingAppMcpToolName } from '../agent-framework/app-mcp-names'
 import type { RootDelegatedWorkControl } from '../delegation/production-composition'
 import { AgentMcpHttpHost } from './mcp-http-host'
 import { projectRegistrySessionGrants } from './permission-broker'
@@ -47,8 +52,47 @@ import { AcpRuntime, type AcpRuntimeCallbacks, type AcpRuntimeOptions } from './
 import { composeAcpRuntimeBaseOwners } from './runtime-base-composition'
 import { AcpRuntimeCoordinator } from './runtime-coordinator'
 import { composeAcpRuntimeSessionOwners } from './runtime-session-composition'
+import { prepareRestrictedBackend } from './restricted-runtime-profile'
 
 const log = createLogger('acp')
+const scopedRuntimeReconciliations = new Map<string, Promise<void>>()
+
+const reconcileScopedRuntimeRootOnce = (root: string): Promise<void> => {
+  const existing = scopedRuntimeReconciliations.get(root)
+  if (existing) return existing
+  const reconciliation = rm(root, { recursive: true, force: true }).catch((error) => {
+    log.warn('scoped Agent runtime reconciliation failed', errorLogFields(error))
+  })
+  scopedRuntimeReconciliations.set(root, reconciliation)
+  return reconciliation
+}
+
+const resolveSpecialistSkillBindingPolicy = async (
+  profiles: Pick<ProfileService, 'resolveRunnableById'>,
+  settings: Pick<
+    AcpSettingsCapabilities,
+    'listSpecialistSkillCatalog' | 'provisionedConnectorSkillNames'
+  >,
+  specialistId: string
+): Promise<Readonly<{ kind: 'exact'; allowedSkillIds: string[] }>> => {
+  const profile = await profiles.resolveRunnableById(specialistId)
+  if (!profile.enabled) throw new Error('The bound Specialist is disabled.')
+  const effective = resolveEffectiveSpecialistSkills(
+    profile,
+    await settings.listSpecialistSkillCatalog()
+  )
+  if (effective.kind !== 'specialist') {
+    throw new Error('The bound Specialist Skill scope is unavailable.')
+  }
+  const connectorSkills = filterSpecialistConnectorSkills(
+    await settings.provisionedConnectorSkillNames(),
+    profile
+  )
+  return {
+    kind: 'exact' as const,
+    allowedSkillIds: [...new Set([...effective.skillIds, ...connectorSkills])]
+  }
+}
 
 // Builds the session-setup resolver for a project's Agent Context system-prompt append. The ACP
 // projectName carries the Project id; unknown ids (e.g. the DEFAULT_ARTIFACT_PROJECT_NAME fallback
@@ -171,6 +215,9 @@ const createAcpRuntime = ({
   const configRoot = resolveConfigRoot()
   const dataRoot = resolveDataRoot()
   const defaultCwd = homedir()
+  const scopedRuntimeRoot = join(configRoot, 'runtime-support', 'scoped-agents')
+  // One startup reconciliation fences crash leftovers without racing live concurrent scoped runtimes.
+  const scopedRuntimeReconciliation = reconcileScopedRuntimeRootOnce(scopedRuntimeRoot)
   // One lazily-shared repository for Agent Context lookups; getProjectDbClient caches the client.
   const projectRepository = new ProjectRepository(() => getProjectDbClient(resolveStorageRoot()))
   const callbacks: AcpRuntimeCallbacks = runtimeCallbacks ?? {
@@ -205,7 +252,7 @@ const createAcpRuntime = ({
   }
 
   return new AcpRuntimeCoordinator(
-    (runtimeCallbacks, permissionGrantStore) => {
+    (runtimeCallbacks, permissionGrantStore, processScope) => {
       const selection = fixedBackend
         ? undefined
         : settingsService.captureActiveAgentBackendSelection()
@@ -213,16 +260,26 @@ const createAcpRuntime = ({
         appVersion: app.getVersion(),
         // Packaged macOS apps often start with cwd at "/" or the app bundle; use home instead.
         defaultCwd,
-        resolveBackend: async (context) =>
-          fixedBackend ?? settingsService.resolveAgentBackend(await selection!, context),
+        resolveBackend: async (context) => {
+          if (fixedBackend) return fixedBackend
+          if (processScope.kind === 'main') {
+            return settingsService.resolveAgentBackend(await selection!, context)
+          }
+          if (!profileService) throw new Error('Specialist profile resolution is unavailable.')
+          return settingsService.resolveAgentBackend(await selection!, {
+            ...context,
+            skillBindingPolicy: await resolveSpecialistSkillBindingPolicy(
+              profileService,
+              settingsService,
+              processScope.specialistId
+            )
+          })
+        },
         ...(spawnAgent ? { spawnAgent } : {}),
         mcpHttpHost: new AgentMcpHttpHost(),
         skills: {
           needForceLoad: (ids) => settingsService.skillsNeedingForceLoad(ids),
-          namesForIds: (ids) => settingsService.skillNudgeNamesForIds(ids),
-          descriptorsForIds: (ids, codexHome) =>
-            settingsService.codexSkillDescriptorsForIds(ids, codexHome),
-          catalogForCodexHome: (codexHome) => settingsService.codexSkillCatalog(codexHome)
+          namesForIds: (ids) => settingsService.skillNudgeNamesForIds(ids)
         },
         ...(!delegatedNotebookConnection || delegatedArtifactCurrentRunFile
           ? {
@@ -451,9 +508,65 @@ const createAcpRuntime = ({
     permissionGrantRegistry
       ? () => projectRegistrySessionGrants(permissionGrantRegistry.listCached())
       : undefined,
-    delegatedWork
+    delegatedWork,
+    (runtimeCallbacks, permissionGrantStore) => {
+      if (fixedBackend) {
+        throw new Error(
+          'Reviewer startup is unavailable for delegated runtimes because an isolated backend process cannot be resolved safely.'
+        )
+      }
+      const selection = settingsService.captureActiveAgentBackendSelection()
+      const profileRoot = join(scopedRuntimeRoot, `reviewer-${randomUUID()}`)
+      const runtimeOptions: AcpRuntimeOptions = {
+        appVersion: app.getVersion(),
+        defaultCwd,
+        resolveBackend: async (context) => {
+          await scopedRuntimeReconciliation
+          const backend = await settingsService.resolveAgentBackend(await selection, {
+            ...context,
+            skillBindingPolicy: { kind: 'none' }
+          })
+          try {
+            return await prepareRestrictedBackend(backend, profileRoot, {
+              agentName: 'open-science-reviewer',
+              description: 'Reviews an artifact using only the app-owned Reviewer MCP tools.',
+              systemPrompt: '',
+              openCodePermissions: {
+                '*': 'deny',
+                ...Object.fromEntries(
+                  Object.values(REVIEWER_MCP_TOOLS).map((toolName) => [
+                    modelFacingAppMcpToolName('opencode', REVIEWER_MCP_SERVER_NAME, toolName),
+                    'allow' as const
+                  ])
+                )
+              },
+              persistSession: false
+            })
+          } catch (error) {
+            await releaseResolvedAgentBackendLeases(backend)
+            throw error
+          }
+        },
+        callbacks: runtimeCallbacks,
+        permissionGrantStore
+      }
+      const baseOwners = composeAcpRuntimeBaseOwners(runtimeOptions)
+      return {
+        runtime: new AcpRuntime(
+          runtimeOptions,
+          baseOwners,
+          composeAcpRuntimeSessionOwners(runtimeOptions, baseOwners)
+        ),
+        release: () => rm(profileRoot, { recursive: true, force: true })
+      }
+    }
   )
 }
 
-export { createAcpRuntime, createProjectAgentContextResolver }
+export {
+  createAcpRuntime,
+  createProjectAgentContextResolver,
+  reconcileScopedRuntimeRootOnce,
+  resolveSpecialistSkillBindingPolicy
+}
 export type { AcpRuntimeCompositionOptions }

@@ -75,6 +75,9 @@ const CODEX_DELEGATION_FEATURES = Object.freeze({
 const CODEX_ENV_KEYS = [
   'CODEX_API_KEY',
   'OPENAI_API_KEY',
+  'OPEN_SCIENCE_SKILL_RUNTIME_ROOT',
+  'OPEN_SCIENCE_SKILL_DISCOVERY_ROOT',
+  'OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT',
   'CODEX_CONFIG',
   'CODEX_HOME',
   'CODEX_PATH',
@@ -330,6 +333,16 @@ const buildSpawnEnvironment = (
   }
 }
 
+const skillRuntimeHandoff = (ctx: ModelConfigContext): AgentModelConfig['skillRuntimeHandoff'] =>
+  ctx.skillRuntime
+    ? {
+        kind: 'authorized-skill-paths',
+        descriptors: ctx.skillRuntime.descriptors,
+        environment: ctx.skillRuntime.environment,
+        readOnlyRoots: [ctx.skillRuntime.generationRoot]
+      }
+    : undefined
+
 const mapCodexPermissionProfile = (
   profile: PermissionProfileId,
   modes: SessionModeState | null | undefined
@@ -433,9 +446,18 @@ export const createCodexFramework = ({
       const codexHome = codexSubscriptionStorageDir(ctx.storageRoot)
       return {
         env: {
+          ...ctx.skillRuntime?.environment,
+          ...(ctx.skillRuntime
+            ? {
+                OPEN_SCIENCE_SKILL_RUNTIME_ROOT: ctx.skillRuntime.skillsRoot,
+                OPEN_SCIENCE_SKILL_DISCOVERY_ROOT: ctx.skillRuntime.discoveryRoot,
+                OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT: ctx.skillRuntime.generationRoot
+              }
+            : {}),
           ...isolatedCodexHomeEnv(codexHome, platform),
           ...(codexConfigJson ? { CODEX_CONFIG: codexConfigJson } : {})
         },
+        ...(skillRuntimeHandoff(ctx) ? { skillRuntimeHandoff: skillRuntimeHandoff(ctx) } : {}),
         ...(persistentSystemPrompt ? { persistentSystemPrompt } : {})
       }
     }
@@ -502,11 +524,20 @@ export const createCodexFramework = ({
     }
     return {
       env: {
+        ...ctx.skillRuntime?.environment,
+        ...(ctx.skillRuntime
+          ? {
+              OPEN_SCIENCE_SKILL_RUNTIME_ROOT: ctx.skillRuntime.skillsRoot,
+              OPEN_SCIENCE_SKILL_DISCOVERY_ROOT: ctx.skillRuntime.discoveryRoot,
+              OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT: ctx.skillRuntime.generationRoot
+            }
+          : {}),
         ...isolatedCodexHomeEnv(codexHome, platform),
         CODEX_CONFIG: JSON.stringify(codexConfig),
         MODEL_PROVIDER: CODEX_PROVIDER_ID,
         NO_BROWSER: '1'
       },
+      ...(skillRuntimeHandoff(ctx) ? { skillRuntimeHandoff: skillRuntimeHandoff(ctx) } : {}),
       configFiles: [
         {
           path: join(codexStorageDir(ctx.storageRoot), 'config.toml'),

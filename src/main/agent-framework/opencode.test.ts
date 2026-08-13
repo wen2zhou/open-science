@@ -5,6 +5,52 @@ import { describe, expect, it } from 'vitest'
 import { buildOpencodeConfig, opencodeFramework } from './opencode'
 
 describe('opencodeFramework.prepareModelConfig', () => {
+  it('discovers only explicitly authorized projected Skill package directories', () => {
+    const config = opencodeFramework.prepareModelConfig(
+      { type: 'custom', baseUrl: 'https://gw/v1', model: 'm', key: 'k' },
+      {
+        storageRoot: '/data',
+        executablePath: '/bin/opencode',
+        skillRuntime: {
+          generationRoot: '/runtime/skills/generations/g-1',
+          skillsRoot: '/runtime/skills/generations/g-1/skills',
+          discoveryRoot: '/runtime/skills/discovery/b-1',
+          descriptors: [
+            {
+              id: 'alpha',
+              name: 'Alpha',
+              description: 'Analyze alpha data.',
+              path: '/runtime/skills/generations/g-1/skills/alpha/SKILL.md'
+            },
+            {
+              id: 'nested',
+              name: 'Nested',
+              description: 'Analyze nested data.',
+              path: '/runtime/skills/generations/g-1/skills/team/nested/SKILL.md'
+            }
+          ],
+          environment: { SKILL_CACHE_ROOT: '/runtime/state/cache' }
+        }
+      }
+    )
+    const written = JSON.parse(
+      config.configFiles?.find((file) => file.path.endsWith('opencode.json'))?.content ?? '{}'
+    )
+    const pinned = JSON.parse(config.env?.OPENCODE_CONFIG_CONTENT ?? '{}')
+    const authorized = [
+      '/runtime/skills/generations/g-1/skills/alpha',
+      '/runtime/skills/generations/g-1/skills/team/nested'
+    ]
+    expect(written.skills).toEqual({ paths: authorized })
+    expect(pinned.skills).toEqual({ paths: authorized })
+    expect(written.skills.paths).not.toContain('/runtime/skills/generations/g-1/skills')
+    expect(config.env).toMatchObject({
+      SKILL_CACHE_ROOT: '/runtime/state/cache',
+      OPENCODE_DISABLE_EXTERNAL_SKILLS: 'true',
+      OPENCODE_DISABLE_PROJECT_CONFIG: 'true'
+    })
+  })
+
   it('writes connector conventions and wires them into opencode.json instructions', () => {
     const config = opencodeFramework.prepareModelConfig(
       { type: 'custom', baseUrl: 'https://gw/v1', model: 'm', key: 'k' },

@@ -50,6 +50,7 @@ type AcpProviderSessionAdopterDependencies = Readonly<{
     frameworkId: string
   ) => Promise<{ append: string; prefix: string } | undefined>
   resolveSpecialistSkills?: (specialistId: string) => Promise<EffectiveSpecialistSkills>
+  registerSessionSpecialist?: (sessionId: string, specialistId: string | undefined) => void
   // The ACP projectName carries the Project id (see workspace-conversation-controller). Returns
   // undefined when the project has no Agent Context or the lookup fails; failures never block
   // session adoption.
@@ -112,7 +113,12 @@ export class AcpProviderSessionAdopter {
         specialistSkills
       })
       provisionalSession = await request.connection.agent
-        .buildSession({ cwd: request.cwd, mcpServers: capability.mcpServers, ...setup.metaArg })
+        .buildSession({
+          cwd: request.cwd,
+          mcpServers: capability.mcpServers,
+          additionalDirectories: [...(startupBackend.adapter.additionalDirectories ?? [])],
+          ...setup.metaArg
+        })
         .start()
       adoptedProviderSessionId = provisionalSession.sessionId
 
@@ -169,6 +175,7 @@ export class AcpProviderSessionAdopter {
         }
         if (request.specialistId) aggregate.setSpecialistId(request.specialistId)
         capability.commit(stableAppSessionId)
+        this.deps.registerSessionSpecialist?.(stableAppSessionId, specialistId)
         this.deps.commitClaudeReplay(stableAppSessionId)
         provisionalSession = undefined
         capability = undefined

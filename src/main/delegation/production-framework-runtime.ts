@@ -11,6 +11,10 @@ import {
   type PermissionProfileId
 } from '../../shared/permission-profiles'
 import {
+  filterSpecialistConnectorSkills,
+  resolveEffectiveSpecialistSkills
+} from '../../shared/specialist'
+import {
   releaseResolvedAgentBackendLeases,
   type AgentModelConfig,
   type ResolvedAgentBackend,
@@ -81,6 +85,19 @@ const createProductionDelegatedFrameworkRuntime = (
           releaseBackend: boolean
         }>
       >()
+      const cleanupPreparedBackend = async (
+        backend: ResolvedAgentBackend,
+        runtimeHome: string,
+        releaseBackend: boolean
+      ): Promise<void> => {
+        const [releaseResult] = await Promise.allSettled([
+          releaseBackend
+            ? Promise.resolve().then(() => releaseResolvedAgentBackendLeases(backend))
+            : Promise.resolve(),
+          rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
+        ])
+        if (releaseResult.status === 'rejected') throw releaseResult.reason
+      }
       // The exact provider/model is validated by admission's model resolver. This certification hook
       // must not read the process-wide Active model, which may differ from the originating Session.
       const assertProviderAvailable = async (): Promise<void> => undefined
@@ -91,14 +108,24 @@ const createProductionDelegatedFrameworkRuntime = (
         if (!input.executionModel) {
           throw new Error('Delegated Attempt has no admitted model snapshot.')
         }
-        const resolveAdmitted = options.runtime.settingsService.resolveAdmittedSubagentBackend
-        if (!input.executionBackend && !resolveAdmitted) {
-          throw new Error('Admitted delegated backend resolution is unavailable.')
+        if (!input.executionBackend || !input.forkExecutionBackendSkillRuntime) {
+          throw new Error('Delegated Attempt has no admitted backend capability.')
         }
-        const releaseResolvedBackend = input.executionBackend === undefined
-        const backend =
-          input.executionBackend ??
-          (await resolveAdmitted!.call(options.runtime.settingsService, input.executionModel))
+        const specialistAllowedSkillIds = input.profile
+          ? await resolveSpecialistAllowedSkillIds(input.profile)
+          : undefined
+        // Provider/model/transport stay pinned to the admission snapshot even if settings change or
+        // the provider is deleted. Only Skill projection/state is forked per Attempt so siblings never
+        // share writable roots; Specialist children additionally narrow native discovery exactly.
+        const releaseResolvedBackend = true
+        const backend = await input.forkExecutionBackendSkillRuntime(
+          specialistAllowedSkillIds
+            ? {
+                kind: 'exact',
+                allowedSkillIds: specialistAllowedSkillIds
+              }
+            : { kind: 'main' }
+        )
         if (backend.framework.id !== frameworkId) {
           if (releaseResolvedBackend) await releaseResolvedAgentBackendLeases(backend)
           throw new Error('Resolved delegated backend changed framework during admission.')
@@ -170,8 +197,11 @@ const createProductionDelegatedFrameworkRuntime = (
             async disposeResources() {
               const owned = preparedAttempts.get(input.attemptId)
               preparedAttempts.delete(input.attemptId)
-              if (owned?.releaseBackend) await releaseResolvedAgentBackendLeases(owned.backend)
-              await rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
+              await cleanupPreparedBackend(
+                owned?.backend ?? backend,
+                runtimeHome,
+                owned?.releaseBackend ?? false
+              )
             }
           }
           if (frameworkId === 'claude-code') {
@@ -199,10 +229,30 @@ const createProductionDelegatedFrameworkRuntime = (
           throw new Error(`Unsupported delegated-work framework: ${String(unsupported)}`)
         } catch (error) {
           preparedAttempts.delete(input.attemptId)
-          if (releaseResolvedBackend) await releaseResolvedAgentBackendLeases(backend)
-          await rm(runtimeHome, { recursive: true, force: true }).catch(() => undefined)
+          await cleanupPreparedBackend(backend, runtimeHome, releaseResolvedBackend).catch(
+            () => undefined
+          )
           throw error
         }
+      }
+
+      const resolveSpecialistAllowedSkillIds = async (specialistId: string): Promise<string[]> => {
+        const profiles = options.runtime.profileService
+        if (!profiles) throw new Error('Specialist profile resolution is unavailable.')
+        const profile = await profiles.resolveRunnableById(specialistId)
+        if (!profile.enabled) throw new Error('The delegated Specialist is disabled.')
+        const effective = resolveEffectiveSpecialistSkills(
+          profile,
+          await options.runtime.settingsService.listSpecialistSkillCatalog()
+        )
+        if (effective.kind !== 'specialist') {
+          throw new Error('The delegated Specialist Skill scope is unavailable.')
+        }
+        const connectorSkills = filterSpecialistConnectorSkills(
+          await options.runtime.settingsService.provisionedConnectorSkillNames(),
+          profile
+        )
+        return [...new Set([...effective.skillIds, ...connectorSkills])]
       }
       const createRuntime = (
         scope: PreparedProductionFrameworkScope,
@@ -229,7 +279,9 @@ const createProductionDelegatedFrameworkRuntime = (
             ...(agentProcess ? { spawnAgent: () => agentProcess } : {})
           })
         } catch (error) {
-          if (owned.releaseBackend) void releaseResolvedAgentBackendLeases(owned.backend)
+          void cleanupPreparedBackend(owned.backend, scope.runtimeHome, owned.releaseBackend).catch(
+            () => undefined
+          )
           throw error
         }
       }

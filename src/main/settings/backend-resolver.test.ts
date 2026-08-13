@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest'
 
 import { SETTINGS_FILE_VERSION } from '../../shared/settings'
-import type { AgentConfigFile, AgentFrameworkId } from '../agent-framework'
+import {
+  releaseResolvedAgentBackendLeases,
+  type AgentConfigFile,
+  type AgentFrameworkId
+} from '../agent-framework'
 import { opencodeTransportProviderId } from '../agent-framework/opencode'
+import type { SkillRuntimeBindingPolicy } from '../skills/runtime-projection'
 import type { ResolvedProvider } from './provider-env'
 import type { ProviderRuntimeTarget, RuntimeProviderModelSelection } from './provider-accounts'
 import type { StoredProvider, StoredSettings } from './types'
@@ -149,6 +154,8 @@ type HarnessOptions = {
   connectorIds?: string[]
   connectorSkillNames?: string[]
   materializedConnectorSkillNames?: string[]
+  skillRuntimeUnavailable?: boolean
+  skillRuntimeReleaseBuilder?: (index: number) => ReturnType<typeof vi.fn<() => Promise<void>>>
   rejectRequiredModels?: ReadonlySet<string>
   targetOverride?: (
     provider: StoredProvider,
@@ -231,12 +238,60 @@ const makeHarness = (options: HarnessOptions = {}) => {
     resolveRuntimeReasoningEffortProfile
   }
 
+  const skillRuntimeReleases: Array<ReturnType<typeof vi.fn>> = []
+
   const runtime = {
     resolveClaudeExecutable: vi.fn(async () => '/runtime/claude'),
     resolveOpencodeExecutable: vi.fn(async () => '/runtime/opencode'),
     resolveCodexExecutable: vi.fn(async () => '/runtime/codex-acp'),
     probeCodexNativeVersion: vi.fn(async () => '0.144.6'),
     provisionClaudeRuntimeConfig: vi.fn(async () => '/storage/claude-config'),
+    acquireSkillRuntimeBinding: vi.fn(
+      async (
+        _settings: StoredSettings,
+        policyOrForcedSkillIds: SkillRuntimeBindingPolicy | ReadonlySet<string>
+      ) => {
+        const policy: SkillRuntimeBindingPolicy =
+          'kind' in policyOrForcedSkillIds
+            ? policyOrForcedSkillIds
+            : { kind: 'main', forcedSkillIds: [...policyOrForcedSkillIds] }
+        if (policy.kind === 'none') return undefined
+        if (options.skillRuntimeUnavailable) return undefined
+        const connectorNames =
+          options.materializedConnectorSkillNames ??
+          options.connectorSkillNames ??
+          (options.connectorIds ?? []).map((id) => `mcp-${id}`)
+        const names =
+          policy.kind === 'exact'
+            ? [...new Set(policy.allowedSkillIds)]
+            : [...new Set([...connectorNames, ...(policy.forcedSkillIds ?? [])])]
+        const release =
+          options.skillRuntimeReleaseBuilder?.(skillRuntimeReleases.length) ??
+          vi.fn(async () => undefined)
+        skillRuntimeReleases.push(release)
+        return {
+          generationId: 'skills-g1',
+          generationRoot: '/storage/skill-runtime/projection/generations/skills-g1',
+          skillsRoot: '/storage/skill-runtime/projection/generations/skills-g1/skills',
+          discoveryRoot: '/storage/skill-runtime/projection/discovery/binding-1',
+          descriptors: names.map((name) => ({
+            id: name,
+            name,
+            description: `Use ${name}.`,
+            path: `/storage/skill-runtime/projection/generations/skills-g1/skills/${name}/SKILL.md`
+          })),
+          environment: { SKILL_RUNTIME_TEST: '1' },
+          stateRoots: {
+            cacheRoot: '/storage/skill-runtime/state/cache',
+            stateRoot: '/storage/skill-runtime/state/state',
+            temporaryRoot: '/storage/skill-runtime/state/temp',
+            outputHandoffRoot: '/storage/skill-runtime/state/handoff',
+            executionCopiesRoot: '/storage/skill-runtime/state/copies'
+          },
+          release
+        }
+      }
+    ),
     materializeAgentSkills: vi.fn(
       async () =>
         options.materializedConnectorSkillNames ??
@@ -322,6 +377,7 @@ const makeHarness = (options: HarnessOptions = {}) => {
     nativeResponsesProxies,
     anthropicProviderBridges,
     openAiProviderBridges,
+    skillRuntimeReleases,
     getSettings: () => currentSettings,
     setSettings: (settings: StoredSettings) => {
       currentSettings = settings
@@ -335,6 +391,7 @@ const expectRuntimeNotStarted = (runtime: ReturnType<typeof makeHarness>['runtim
   expect(runtime.resolveCodexExecutable).not.toHaveBeenCalled()
   expect(runtime.probeCodexNativeVersion).not.toHaveBeenCalled()
   expect(runtime.provisionClaudeRuntimeConfig).not.toHaveBeenCalled()
+  expect(runtime.acquireSkillRuntimeBinding).not.toHaveBeenCalled()
   expect(runtime.materializeAgentSkills).not.toHaveBeenCalled()
   expect(runtime.materializeAgentConfigFiles).not.toHaveBeenCalled()
   expect(runtime.reserveOpenCodeUsagePort).not.toHaveBeenCalled()
@@ -975,7 +1032,11 @@ describe('AgentBackendResolver configured and explicit targets', () => {
       reasoningEffort: 'high'
     })
 
-    expect(explicit).toEqual(configured)
+    const { skillRuntimeLease: configuredLease, ...configuredStable } = configured
+    const { skillRuntimeLease: explicitLease, ...explicitStable } = explicit
+    expect(configuredLease).toBeDefined()
+    expect(explicitLease).toBeDefined()
+    expect(explicitStable).toEqual(configuredStable)
     expect(harness.resolveRuntimeTarget).toHaveBeenNthCalledWith(
       1,
       settings.providers[0],
@@ -1164,6 +1225,13 @@ describe('AgentBackendResolver runtime delegation', () => {
 
     expect(backend.framework.id).toBe(testCase.frameworkId)
     expect(harness.runtime[testCase.executableMethod]).toHaveBeenCalledTimes(1)
+    expect(harness.runtime.acquireSkillRuntimeBinding).toHaveBeenCalledWith(
+      harness.getSettings(),
+      new Set(['forced-skill'])
+    )
+    expect(backend.env).toMatchObject({ SKILL_RUNTIME_TEST: '1' })
+    expect(backend.skillRuntimeLease).toBeDefined()
+    expect(harness.runtime.materializeAgentSkills).not.toHaveBeenCalled()
     if (testCase.frameworkId === 'claude-code') {
       expect(harness.runtime.provisionClaudeRuntimeConfig).toHaveBeenCalledWith(
         harness.getSettings(),
@@ -1173,11 +1241,6 @@ describe('AgentBackendResolver runtime delegation', () => {
       expect(harness.runtime.materializeAgentSkills).not.toHaveBeenCalled()
       expect(harness.runtime.materializeAgentConfigFiles).not.toHaveBeenCalled()
     } else {
-      expect(harness.runtime.materializeAgentSkills).toHaveBeenCalledWith(
-        harness.getSettings(),
-        expect.any(String),
-        new Set(['forced-skill'])
-      )
       expect(harness.runtime.materializeAgentConfigFiles).toHaveBeenCalledTimes(1)
     }
     expect(harness.runtime.reserveOpenCodeUsagePort).toHaveBeenCalledTimes(
@@ -1187,6 +1250,232 @@ describe('AgentBackendResolver runtime delegation', () => {
       testCase.frameworkId === 'codex' ? 1 : 0
     )
   })
+
+  it.each(['claude-code', 'opencode', 'codex'] as const)(
+    'passes an exact Skill binding policy through the %s backend seam',
+    async (frameworkId) => {
+      const harness = makeHarness({ connectorSkillNames: ['mcp-main-only'] })
+      const policy = {
+        kind: 'exact' as const,
+        allowedSkillIds: ['specialist-only']
+      }
+
+      const backend = await harness.resolver.resolveExplicitTarget(
+        {
+          frameworkId,
+          providerId: 'provider-a',
+          model: { kind: 'provider-default' },
+          reasoningEffort: 'high'
+        },
+        { skillBindingPolicy: policy }
+      )
+
+      expect(harness.runtime.acquireSkillRuntimeBinding).toHaveBeenCalledWith(
+        harness.getSettings(),
+        policy
+      )
+      expect(backend.skillRuntime?.descriptors.map(({ id }) => id)).toEqual(['specialist-only'])
+    }
+  )
+
+  it('keeps shared Claude plugin startup compatible when Skill projection is unavailable', async () => {
+    const provider: StoredProvider = {
+      id: 'builtin-claude-shared',
+      type: 'claude-shared',
+      name: 'Claude subscription',
+      model: 'claude-sonnet'
+    }
+    const harness = makeHarness({
+      settings: makeSettings({
+        providers: [provider],
+        activeProviderId: provider.id,
+        activeModel: provider.model
+      }),
+      skillRuntimeUnavailable: true
+    })
+
+    const backend = await harness.resolver.resolveExplicitTarget({
+      frameworkId: 'claude-code',
+      providerId: provider.id,
+      model: { kind: 'provider-default' },
+      reasoningEffort: 'high'
+    })
+
+    expect(backend.skillRuntime).toBeUndefined()
+    expect(backend.sessionOptions).toMatchObject({
+      settings: '/storage/claude-config/settings.json',
+      plugins: [{ type: 'local', path: '/storage/claude-config' }]
+    })
+    expect(backend.sessionOptions).not.toHaveProperty('strictMcpConfig')
+    expect(JSON.stringify(backend.sessionOptions)).not.toContain('skipMcpDiscovery')
+  })
+
+  it.each(['claude-code', 'opencode', 'codex'] as const)(
+    'does not acquire Skill projection or state ownership for a no-Skill %s backend',
+    async (frameworkId) => {
+      const harness = makeHarness()
+
+      const backend = await harness.resolver.resolveExplicitTarget(
+        {
+          frameworkId,
+          providerId: 'provider-a',
+          model: { kind: 'provider-default' },
+          reasoningEffort: 'high'
+        },
+        { skillBindingPolicy: { kind: 'none' } }
+      )
+
+      expect(harness.runtime.acquireSkillRuntimeBinding).not.toHaveBeenCalled()
+      expect(backend.skillRuntime).toBeUndefined()
+      expect(backend.skillRuntimeLease).toBeUndefined()
+    }
+  )
+
+  it.each(['claude-code', 'opencode', 'codex'] as const)(
+    'forks independent exact Skill state onto an admitted no-Skill %s backend',
+    async (frameworkId) => {
+      const harness = makeHarness()
+      const target = {
+        frameworkId,
+        providerId: 'provider-a',
+        model: { kind: 'provider-default' as const },
+        reasoningEffort: 'high' as const
+      }
+      const parent = await harness.resolver.resolveExplicitTarget(target, {
+        skillBindingPolicy: { kind: 'none' }
+      })
+      const policy = { kind: 'exact' as const, allowedSkillIds: ['specialist-only'] }
+
+      const child = await harness.resolver.forkAdmittedBackendSkillRuntime(parent, policy)
+
+      expect(harness.runtime.acquireSkillRuntimeBinding).toHaveBeenCalledOnce()
+      expect(harness.runtime.acquireSkillRuntimeBinding).toHaveBeenCalledWith(
+        harness.getSettings(),
+        policy
+      )
+      expect(child).toMatchObject({
+        framework: { id: frameworkId },
+        backendId: parent.backendId,
+        modelRoute: parent.modelRoute,
+        executablePath: parent.executablePath
+      })
+      expect(child.skillRuntime?.descriptors.map(({ id }) => id)).toEqual(['specialist-only'])
+      expect(child.skillRuntimeLease).toBeDefined()
+      expect(child.responsesBridgeLease).toBeUndefined()
+      expect(child.anthropicBridgeLease).toBeUndefined()
+      expect(child.providerTransportLease).toBeUndefined()
+      if (frameworkId === 'claude-code') {
+        expect(child.sessionOptions).toMatchObject({
+          additionalDirectories: [child.skillRuntime?.generationRoot]
+        })
+      } else if (frameworkId === 'opencode') {
+        expect(JSON.parse(child.env.OPENCODE_CONFIG_CONTENT)).toMatchObject({
+          skills: { paths: [expect.stringContaining('/skills/specialist-only')] }
+        })
+      } else {
+        expect(child.env.OPEN_SCIENCE_SKILL_DISCOVERY_ROOT).toBe(child.skillRuntime?.discoveryRoot)
+        expect(child.skillRuntimeHandoff?.descriptors.map(({ id }) => id)).toEqual([
+          'specialist-only'
+        ])
+      }
+
+      await releaseResolvedAgentBackendLeases(child)
+      expect(harness.skillRuntimeReleases[0]).toHaveBeenCalledOnce()
+      await releaseResolvedAgentBackendLeases(parent)
+    }
+  )
+
+  it('retains a failed fork release and retries it before the next Skill binding', async () => {
+    const firstRelease = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('temporary Skill cleanup failure'))
+      .mockResolvedValue(undefined)
+    const secondRelease = vi.fn(async () => undefined)
+    const harness = makeHarness({
+      skillRuntimeReleaseBuilder: (index) => (index === 0 ? firstRelease : secondRelease)
+    })
+    const parent = await harness.resolver.resolveExplicitTarget(
+      {
+        frameworkId: 'opencode',
+        providerId: 'provider-a',
+        model: { kind: 'provider-default' },
+        reasoningEffort: 'high'
+      },
+      { skillBindingPolicy: { kind: 'none' } }
+    )
+    harness.runtime.materializeAgentConfigFiles.mockRejectedValueOnce(
+      new Error('native config write failed')
+    )
+
+    await expect(
+      harness.resolver.forkAdmittedBackendSkillRuntime(parent, { kind: 'main' })
+    ).rejects.toThrow('native config write failed')
+
+    expect(firstRelease).toHaveBeenCalledOnce()
+    const recovered = await harness.resolver.forkAdmittedBackendSkillRuntime(parent, {
+      kind: 'main'
+    })
+    expect(firstRelease).toHaveBeenCalledTimes(2)
+    await releaseResolvedAgentBackendLeases(recovered)
+    expect(secondRelease).toHaveBeenCalledOnce()
+    await releaseResolvedAgentBackendLeases(parent)
+  })
+
+  it('retains a successful fork binding when pre-attach release fails and retries it', async () => {
+    const firstRelease = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('temporary pre-attach cleanup failure'))
+      .mockResolvedValue(undefined)
+    const secondRelease = vi.fn(async () => undefined)
+    const harness = makeHarness({
+      skillRuntimeReleaseBuilder: (index) => (index === 0 ? firstRelease : secondRelease)
+    })
+    const parent = await harness.resolver.resolveExplicitTarget(
+      {
+        frameworkId: 'opencode',
+        providerId: 'provider-a',
+        model: { kind: 'provider-default' },
+        reasoningEffort: 'high'
+      },
+      { skillBindingPolicy: { kind: 'none' } }
+    )
+    const first = await harness.resolver.forkAdmittedBackendSkillRuntime(parent, {
+      kind: 'main'
+    })
+
+    await expect(releaseResolvedAgentBackendLeases(first)).rejects.toThrow(
+      'temporary pre-attach cleanup failure'
+    )
+    expect(firstRelease).toHaveBeenCalledOnce()
+
+    const second = await harness.resolver.forkAdmittedBackendSkillRuntime(parent, {
+      kind: 'main'
+    })
+    expect(firstRelease).toHaveBeenCalledTimes(2)
+    await releaseResolvedAgentBackendLeases(second)
+    expect(secondRelease).toHaveBeenCalledOnce()
+    await releaseResolvedAgentBackendLeases(parent)
+  })
+
+  it.each(['claude-code', 'opencode', 'codex'] as const)(
+    'keeps %s conversation available when first Skill projection publication degrades',
+    async (frameworkId) => {
+      const harness = makeHarness({ skillRuntimeUnavailable: true })
+
+      const backend = await harness.resolver.resolveExplicitTarget({
+        frameworkId,
+        providerId: 'provider-a',
+        model: { kind: 'provider-default' },
+        reasoningEffort: 'high'
+      })
+
+      expect(backend.framework.id).toBe(frameworkId)
+      expect(backend.skillRuntime).toBeUndefined()
+      expect(backend.skillRuntimeLease).toBeUndefined()
+      expect(backend.env).not.toHaveProperty('SKILL_RUNTIME_TEST')
+      expect(harness.runtime.materializeAgentSkills).not.toHaveBeenCalled()
+    }
+  )
 })
 
 describe('AgentBackendResolver bridge predicates', () => {
@@ -1435,6 +1724,36 @@ describe('AgentBackendResolver bridge generations', () => {
 })
 
 describe('AgentBackendResolver bridge cleanup', () => {
+  it('retains a failed pre-backend Skill Runtime release and retries it on later resolution', async () => {
+    const firstRelease = vi
+      .fn<() => Promise<void>>()
+      .mockRejectedValueOnce(new Error('temporary Skill Runtime cleanup failure'))
+      .mockResolvedValueOnce(undefined)
+    const harness = makeHarness({
+      settings: makeSettings({ agentFrameworkId: 'opencode' }),
+      skillRuntimeReleaseBuilder: (index) =>
+        index === 0 ? firstRelease : vi.fn(async () => undefined)
+    })
+    harness.runtime.materializeAgentConfigFiles.mockRejectedValueOnce(
+      new Error('backend preparation failed')
+    )
+    const target = {
+      frameworkId: 'opencode' as const,
+      providerId: 'provider-a',
+      model: { kind: 'provider-default' as const },
+      reasoningEffort: 'high' as const
+    }
+
+    await expect(harness.resolver.resolveExplicitTarget(target)).rejects.toThrow(
+      'backend preparation failed'
+    )
+    expect(firstRelease).toHaveBeenCalledOnce()
+
+    const backend = await harness.resolver.resolveExplicitTarget(target)
+    expect(firstRelease).toHaveBeenCalledTimes(2)
+    await backend.skillRuntimeLease?.release()
+  })
+
   it.each(['chat', 'native'] as const)(
     'closes a half-started %s resource and preserves the start error',
     async (protocol) => {

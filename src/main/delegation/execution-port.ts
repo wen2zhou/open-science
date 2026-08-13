@@ -2,6 +2,7 @@ import type { AcpAgentRuntimeUpdate, AcpPermissionScope, AcpTurnTokenUsage } fro
 import type { PermissionProfileId } from '../../shared/permission-profiles'
 import type { ResolvedSubagentModelSnapshot } from '../../shared/session-persistence'
 import type { ResolvedAgentBackend } from '../agent-framework'
+import type { SkillRuntimeBindingPolicy } from '../skills/runtime-projection'
 import type { JsonSchema } from './structured-output'
 
 type DelegateExecutionErrorCode = 'capacity' | 'unsupported_framework'
@@ -76,6 +77,9 @@ type DelegateExecutionInput = Readonly<{
   // Admission-only capability. It is never persisted; the durable owner releases it after this
   // Attempt settles, while the production runtime consumes only the lease-free backend view.
   executionBackend?: ResolvedAgentBackend
+  forkExecutionBackendSkillRuntime?: (
+    policy: SkillRuntimeBindingPolicy
+  ) => Promise<ResolvedAgentBackend>
   task: string
   inputs: readonly string[]
   workspaceCwd?: string
@@ -88,6 +92,7 @@ type DelegateExecutionInput = Readonly<{
 
 type DelegateExecutionBackendClaim = Readonly<{
   backend: ResolvedAgentBackend
+  forkSkillRuntime(policy: SkillRuntimeBindingPolicy): Promise<ResolvedAgentBackend>
   release(): Promise<void>
 }>
 

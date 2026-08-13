@@ -557,6 +557,28 @@ class AcpRuntime {
     return this.backend
   }
 
+  captureSessionResumeRequest(sessionId: string): AcpResumeSessionRequest | undefined {
+    const snapshot = this.sessionRegistry.lookup(sessionId)?.aggregate.snapshot()
+    if (!snapshot?.cwd) return undefined
+    return {
+      sessionId,
+      cwd: snapshot.cwd,
+      ...(snapshot.projectName ? { projectName: snapshot.projectName } : {}),
+      ...(snapshot.providerSessionId ? { providerSessionId: snapshot.providerSessionId } : {}),
+      ...(snapshot.permissionProfile?.selectedProfile
+        ? { permissionProfile: snapshot.permissionProfile.selectedProfile }
+        : {}),
+      ...(snapshot.frameworkId ? { previousFrameworkId: snapshot.frameworkId } : {}),
+      ...(snapshot.backendId ? { previousBackendId: snapshot.backendId } : {}),
+      ...(snapshot.specialistId ? { specialistId: snapshot.specialistId } : {})
+    }
+  }
+
+  republishSessionSpecialist(sessionId: string): void {
+    const specialistId = this.sessionRegistry.lookup(sessionId)?.aggregate.snapshot().specialistId
+    this.options.notebook?.registerSessionSpecialist?.(sessionId, specialistId)
+  }
+
   callSessionPlan(input: AcpSessionPlanCall): Promise<unknown> {
     return this.sessionPlanWorkflow.call(input)
   }
@@ -708,6 +730,10 @@ class AcpRuntime {
       )
       return resumed
     })
+  }
+
+  async adoptSessionFresh(request: AcpResumeSessionRequest): Promise<AcpCreateSessionResponse> {
+    return this.withOperationLease(() => this.providerSessionResumer.adoptFresh(request))
   }
 
   // Forcibly drops the agent-side context for a session whose accumulated history can no longer be sent
@@ -982,7 +1008,8 @@ class AcpRuntime {
       },
       onBackendPublished: (backend) => {
         this.sessionUpdateProjector.beginGeneration(
-          backend.adapter.codexHome ? join(backend.adapter.codexHome, 'skills') : undefined
+          backend.adapter.skillsRoot ??
+            (backend.adapter.codexHome ? join(backend.adapter.codexHome, 'skills') : undefined)
         )
       },
       onProcessTreeReaped: (reaped) => {
@@ -993,6 +1020,10 @@ class AcpRuntime {
       onProcessError: (error, context) => this.handleAgentProcessError(error, context),
       onProcessExit: (code, signal, context) => this.handleAgentProcessExit(code, signal, context),
       onConnectionClosed: () => this.connectionClose.handleUnexpectedClose(),
+      releaseUnattachedSkillRuntimeLease: (lease) =>
+        this.connectionResources.cleanupUnattached({ skillRuntimeLease: lease }, (stage, error) => {
+          safeLogError(`unattached ACP ${stage} cleanup failed`, errorLogFields(error))
+        }),
       reportCleanupFailure: (stage, error, framework, epoch) => {
         if (stage === 'bridge-lease') {
           safeLogError('responses bridge lease release failed', errorLogFields(error))
@@ -1004,6 +1035,10 @@ class AcpRuntime {
         }
         if (stage === 'provider-transport-lease') {
           safeLogError('provider transport lease release failed', errorLogFields(error))
+          return
+        }
+        if (stage === 'skill-runtime-lease') {
+          safeLogError('Skill Runtime lease release failed', errorLogFields(error))
           return
         }
         safeLogError(`unattached ACP ${stage} cleanup failed`, {

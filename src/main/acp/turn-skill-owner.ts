@@ -1,6 +1,7 @@
 import type { AgentFrameworkId } from '../../shared/settings'
 import type { EffectiveSpecialistSkills } from '../../shared/specialist'
 import type { ResolvedAgentBackend } from '../agent-framework'
+import type { SkillRuntimeDescriptorView } from '../agent-framework/types'
 import { createLogger } from '../logger'
 import type {
   ResponsesBridgeSkillCandidate,
@@ -25,6 +26,7 @@ type ProviderPreparationInput = Readonly<{
   promptText: string
   codex?: Readonly<{
     home?: string
+    skills?: readonly SkillRuntimeDescriptorView[]
     bridgeSkillsAvailable: boolean
     selectSkills: NonNullable<ResolvedAgentBackend['responsesBridgeLease']>['selectSkills']
     signal?: AbortSignal
@@ -142,18 +144,34 @@ class AcpTurnSkillOwner {
   ): Promise<ResponsesBridgeSkillInput[]> {
     if (input.frameworkId !== 'codex') return []
     if (state.selectedSkillIds.length > 0) {
+      if (input.codex?.skills) {
+        const selected = new Set(state.selectedSkillIds)
+        return input.codex.skills
+          .filter((skill) => selected.has(skill.id))
+          .map(({ name, path }) => ({ name, path }))
+      }
       return (
         this.options.skills?.descriptorsForIds?.([...state.selectedSkillIds], input.codex?.home) ??
         []
       )
     }
     const codex = input.codex
-    if (!codex?.bridgeSkillsAvailable || !this.options.skills?.catalogForCodexHome) return []
+    if (!codex?.bridgeSkillsAvailable) return []
     let catalog: ResponsesBridgeSkillCandidate[]
-    try {
-      catalog = await this.options.skills.catalogForCodexHome(codex.home)
-    } catch {
-      return this.selectionFailed('catalog-error')
+    if (codex.skills) {
+      catalog = codex.skills.map(({ name, description, path, source }) => ({
+        name,
+        description,
+        path,
+        ...(source ? { source } : {})
+      }))
+    } else {
+      if (!this.options.skills?.catalogForCodexHome) return []
+      try {
+        catalog = await this.options.skills.catalogForCodexHome(codex.home)
+      } catch {
+        return this.selectionFailed('catalog-error')
+      }
     }
     if (state.scope?.kind === 'specialist') {
       const allowed = new Set(state.scope.frameworkNames)

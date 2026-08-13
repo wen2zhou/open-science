@@ -45,8 +45,28 @@ const hasArtifactProvenance = (event: AcpRuntimeEvent): boolean =>
 
 type RuntimeFactory = (
   callbacks: AcpRuntimeCallbacks,
-  permissionGrantStore: ConversationPermissionGrantStore
+  permissionGrantStore: ConversationPermissionGrantStore,
+  scope: RuntimeProcessScope
 ) => AcpRuntime
+
+type RuntimeProcessScope =
+  Readonly<{ kind: 'main' }> | Readonly<{ kind: 'specialist'; specialistId: string }>
+
+type ReviewerRuntimeResource = Readonly<{
+  runtime: AcpRuntime
+  release?: () => Promise<void> | void
+}>
+
+type ReviewerRuntimeFactory = (
+  callbacks: AcpRuntimeCallbacks,
+  permissionGrantStore: ConversationPermissionGrantStore
+) => AcpRuntime | ReviewerRuntimeResource
+
+type ReviewerTeardownIntent = 'disconnect' | 'quit' | 'update-gate'
+type ReviewerTeardownOperation = Readonly<{
+  intent: ReviewerTeardownIntent
+  promise: Promise<unknown>
+}>
 
 type AcpRuntimeCoordinatorTeardownCallbacks = {
   onSessionTurnStarted?: (sessionId: string, turnToken: string) => void
@@ -120,7 +140,15 @@ class AcpRuntimeCoordinator {
   private readonly sessionConnectionStatuses = new Map<string, AcpStateSnapshot['status']>()
   private readonly permissionRuntimes = new Map<string, AcpRuntime>()
   private readonly reviewerRuntimes = new WeakMap<ActiveSession, AcpRuntime>()
+  private readonly isolatedReviewerRuntimes = new Set<AcpRuntime>()
+  private readonly reviewerRuntimeCleanup = new WeakMap<AcpRuntime, () => Promise<void> | void>()
+  private readonly reviewerRuntimeReleaseInFlight = new WeakMap<
+    AcpRuntime,
+    ReviewerTeardownOperation
+  >()
+  private readonly reviewerRuntimeReleases = new Set<Promise<unknown>>()
   private readonly runtimeIds = new WeakMap<AcpRuntime, string>()
+  private readonly primaryRuntimeClaims = new WeakSet<AcpRuntime>()
   private readonly publishedRuntimeEventIds = new WeakMap<AcpRuntime, Set<string>>()
   private readonly applicationEvents: AcpRuntimeEvent[] = []
   private readonly durableQuitDetachedSessionIds = new Set<string>()
@@ -162,7 +190,8 @@ class AcpRuntimeCoordinator {
     private readonly onSessionUnavailable?: (sessionId: string) => void,
     private readonly teardownCallbacks: AcpRuntimeCoordinatorTeardownCallbacks = {},
     private readonly permissionGrantSnapshot?: PermissionGrantSnapshotProvider,
-    private readonly delegatedWork?: RootDelegatedWorkControl
+    private readonly delegatedWork?: RootDelegatedWorkControl,
+    private readonly createReviewerRuntime?: ReviewerRuntimeFactory
   ) {
     this.activeRuntime = this.addRuntime()
     this.lastRuntime = this.activeRuntime
@@ -337,9 +366,18 @@ class AcpRuntimeCoordinator {
     this.invalidateAllSessionTurns()
     this.supersedeInitializationRequests()
     const runtimes = Array.from(this.runtimes)
+    const reviewerRuntimes = Array.from(this.isolatedReviewerRuntimes)
     const [delegatedResult, ...results] = await Promise.allSettled([
       this.delegatedWork?.stopAll() ?? Promise.resolve(),
-      ...runtimes.map((runtime) => runtime.disconnect(emitClosedStatus))
+      ...runtimes.map((runtime) => runtime.disconnect(emitClosedStatus)),
+      ...reviewerRuntimes.map((runtime) =>
+        this.teardownReviewerRuntime(
+          runtime,
+          'disconnect',
+          () => runtime.disconnect(emitClosedStatus),
+          true
+        )
+      )
     ])
     const failure =
       results.find((result): result is PromiseRejectedResult => result.status === 'rejected') ??
@@ -349,10 +387,15 @@ class AcpRuntimeCoordinator {
       // gone; failed runtimes retain their session and permission-routing ownership for retry.
       // A rejection can still happen after a runtime cleared some/all sessions, so reconcile those
       // actual disappearances too without releasing the failed runtime itself.
-      results.forEach((result, index) => {
+      results.slice(0, runtimes.length).forEach((result, index) => {
         const runtime = runtimes[index]
         if (result.status === 'fulfilled') this.releaseRuntimeOwnership(runtime)
         else this.releaseMissingRuntimeSessions(runtime, runtime.getSnapshot())
+      })
+      reviewerRuntimes.forEach((runtime, index) => {
+        if (results[runtimes.length + index]?.status === 'fulfilled') {
+          this.isolatedReviewerRuntimes.delete(runtime)
+        }
       })
       this.callbacks.onStateChanged?.(this.getSnapshot())
       throw failure.reason
@@ -367,6 +410,11 @@ class AcpRuntimeCoordinator {
     this.supersedeInitializationRequests()
     void this.delegatedWork?.stopAll().catch(() => undefined)
     for (const runtime of this.runtimes) runtime.shutdown()
+    for (const runtime of this.isolatedReviewerRuntimes) {
+      if (this.reviewerRuntimeReleaseInFlight.has(runtime)) continue
+      runtime.shutdown()
+      void this.cleanupReviewerRuntime(runtime).catch(() => undefined)
+    }
     this.clearRuntimeOwnership()
     this.onDisconnected?.()
   }
@@ -375,7 +423,7 @@ class AcpRuntimeCoordinator {
     this.providerShutdownStartedForQuit = true
     this.invalidateAllSessionTurns()
     this.supersedeInitializationRequests()
-    return this.shutdownAll((runtime) => runtime.shutdownForQuit())
+    return this.shutdownAll('quit', (runtime) => runtime.shutdownForQuit())
   }
 
   // Gives active agents a bounded chance to return their terminal stop response before process-tree
@@ -436,22 +484,37 @@ class AcpRuntimeCoordinator {
   async shutdownForUpdateGate(): Promise<{ reaped: boolean }> {
     this.invalidateAllSessionTurns()
     this.supersedeInitializationRequests()
-    return this.shutdownAll((runtime) => runtime.shutdownForUpdateGate())
+    return this.shutdownAll('update-gate', (runtime) => runtime.shutdownForUpdateGate())
   }
 
   async createSession(request: AcpCreateSessionRequest = {}): Promise<AcpCreateSessionResponse> {
     await this.waitForInitialization()
-    const runtime = this.getActiveRuntime()
-    const response = await runtime.createSession(request)
+    const runtime = request.specialistId
+      ? this.addRuntime({ kind: 'specialist', specialistId: request.specialistId })
+      : this.allocateMainSessionRuntime()
+    let response: AcpCreateSessionResponse
+    try {
+      response = await runtime.createSession(request)
+    } catch (error) {
+      await this.retireUnusedRuntime(runtime)
+      throw error
+    }
     this.sessionRuntimes.set(response.sessionId, runtime)
     this.lastRuntime = runtime
+    // A process-scoped native Skill catalog may be widened for one turn. Never attach another
+    // primary Session to this runtime, even when both begin with the Main policy.
     return response
   }
 
   async resumeSession(request: AcpResumeSessionRequest): Promise<AcpCreateSessionResponse> {
     await this.waitForInitialization()
     const owner = this.findRuntimeForSession(request.sessionId)
-    const runtime = owner && !this.retiredRuntimes.has(owner) ? owner : this.getActiveRuntime()
+    const runtime =
+      owner && !this.retiredRuntimes.has(owner)
+        ? owner
+        : request.specialistId
+          ? this.addRuntime({ kind: 'specialist', specialistId: request.specialistId })
+          : this.allocateMainSessionRuntime()
     const transfersOwnership = runtime !== owner
 
     // Keep the prior owner authoritative until adoption finishes. The renderer does not create the
@@ -465,6 +528,9 @@ class AcpRuntimeCoordinator {
     } catch (error) {
       if (transfersOwnership && this.pendingSessionAdoptions.get(request.sessionId) === runtime) {
         this.pendingSessionAdoptions.delete(request.sessionId)
+      }
+      if (transfersOwnership && runtime.getSnapshot().sessionIds.length === 0) {
+        await this.retireUnusedRuntime(runtime)
       }
       throw error
     }
@@ -551,8 +617,40 @@ class AcpRuntimeCoordinator {
     specialistId: string | undefined
   ): Promise<{ contextReset: boolean }> {
     await this.waitForInitialization()
-    const runtime = this.runtimeForSession(sessionId)
-    return runtime.switchSpecialist(sessionId, specialistId)
+    const owner = this.runtimeForSession(sessionId)
+    await this.waitForSessionDrain(owner, sessionId)
+    const resume = owner.captureSessionResumeRequest(sessionId)
+    if (!resume) throw new Error('The live Session cannot be migrated to a scoped runtime.')
+    const runtime = specialistId
+      ? this.addRuntime({ kind: 'specialist', specialistId })
+      : this.allocateMainSessionRuntime()
+    this.pendingSessionAdoptions.set(sessionId, runtime)
+    let response: AcpCreateSessionResponse
+    try {
+      response = await runtime.adoptSessionFresh({ ...resume, specialistId })
+      if (this.pendingSessionAdoptions.get(sessionId) !== runtime) {
+        throw new Error('Specialist runtime migration was superseded.')
+      }
+    } catch (error) {
+      if (this.pendingSessionAdoptions.get(sessionId) === runtime) {
+        this.pendingSessionAdoptions.delete(sessionId)
+      }
+      await this.retireUnusedRuntime(runtime)
+      throw error
+    }
+    // From here the migration is committed. Failure to retire the old owner cannot roll back or
+    // retire the already-published replacement; shutdown retains the old runtime for another try.
+    this.pendingSessionAdoptions.delete(sessionId)
+    this.sessionRuntimes.set(sessionId, runtime)
+    this.sessionConnectionStatuses.set(sessionId, runtime.getSnapshot().status)
+    this.lastRuntime = runtime
+    this.retiredRuntimes.add(owner)
+    await owner.requestRetirement().catch(() => undefined)
+    // The old runtime releases shared Notebook aliases/capabilities while retiring. Re-publish the
+    // committed owner after that cleanup so live Connector authorization keeps the new role.
+    runtime.republishSessionSpecialist(sessionId)
+    this.callbacks.onStateChanged?.(this.getSnapshot())
+    return { contextReset: Boolean(response.contextReset) }
   }
 
   isSessionUsingFramework(sessionId: string, frameworkId: AgentFrameworkId): boolean {
@@ -892,6 +990,7 @@ class AcpRuntimeCoordinator {
       this.clearApplicationSessionEvents(request.sessionId)
       this.onSessionUnavailable?.(request.sessionId)
     }
+    if (runtime.getSnapshot().sessionIds.length === 0) await this.retireUnusedRuntime(runtime)
     return this.getSnapshot()
   }
 
@@ -961,43 +1060,46 @@ class AcpRuntimeCoordinator {
   // A framework change takes effect for every future turn and workflow. The old generation stays alive
   // until its active prompts and workflow leases finish; idle sessions resume on demand.
   async requestAgentFrameworkSwitch(): Promise<void> {
-    const retiring = this.activeRuntime
-    if (!retiring) return
-
-    this.retiredRuntimes.add(retiring)
+    const retiring = [...this.runtimes].filter((runtime) => !this.retiredRuntimes.has(runtime))
+    if (retiring.length === 0) return
+    for (const runtime of retiring) this.retiredRuntimes.add(runtime)
     this.rotateActiveRuntime()
-    await retiring.requestRetirement()
+    await Promise.all(retiring.map((runtime) => runtime.requestRetirement()))
   }
 
-  // Reconnect-triggering settings target the generation that owns future turns. Retiring generations
-  // stay pinned to the backend of the workflow they are finishing; reconnecting them here can strand a
-  // later workflow operation behind a barrier that its own activity lease prevents from resolving.
-  requestProviderReconnect(): Promise<void> {
-    return this.getActiveRuntime().requestProviderReconnect()
+  // Every non-retired primary runtime owns future turns for one Session. Apply reconnect-triggering
+  // settings to all of them; retiring generations stay pinned while their old work drains.
+  async requestProviderReconnect(): Promise<void> {
+    await Promise.all(
+      this.currentPrimaryRuntimes().map((runtime) => runtime.requestProviderReconnect())
+    )
   }
 
   async requestSkillsReload(): Promise<void> {
-    const retiring = this.activeRuntime
-    if (!retiring) return
+    const retiring = [...this.runtimes].filter((runtime) => !this.retiredRuntimes.has(runtime))
+    if (retiring.length === 0) return
 
     // Skills are part of a runtime generation's tool list and context. Retire that generation
     // immediately so idle conversations detach before the settings call returns; active turns finish
     // on the old generation, while every later turn resumes through a freshly provisioned runtime.
-    this.retiredRuntimes.add(retiring)
+    for (const runtime of retiring) this.retiredRuntimes.add(runtime)
     this.rotateActiveRuntime()
     this.callbacks.onStateChanged?.(this.getSnapshot())
-    await retiring.requestRetirement()
+    await Promise.all(retiring.map((runtime) => runtime.requestRetirement()))
   }
 
   async applyReasoningEffortChange(effort: ResolvedReasoningEffort): Promise<boolean> {
-    // The settings layer resolved this value against the currently selected model. Retiring
-    // generations stay pinned to their own provider/model and therefore must not receive a value
-    // resolved for a different model profile.
-    return this.getActiveRuntime().applyReasoningEffortChange(effort)
+    const applied = await Promise.all(
+      this.currentPrimaryRuntimes().map((runtime) => runtime.applyReasoningEffortChange(effort))
+    )
+    return applied.every(Boolean)
   }
 
   async applyModelChange(target: AgentModelChangeTarget): Promise<boolean> {
-    return this.getActiveRuntime().applyModelChange(target)
+    const applied = await Promise.all(
+      this.currentPrimaryRuntimes().map((runtime) => runtime.applyModelChange(target))
+    )
+    return applied.every(Boolean)
   }
 
   writeArtifactForCurrentRun(
@@ -1030,7 +1132,11 @@ class AcpRuntimeCoordinator {
   disposeReviewerSession(session: ActiveSession): ReturnType<AcpRuntime['disposeReviewerSession']> {
     const runtime = this.reviewerRuntimes.get(session) ?? this.getActiveRuntime()
     this.reviewerRuntimes.delete(session)
-    return runtime.disposeReviewerSession(session)
+    try {
+      return runtime.disposeReviewerSession(session)
+    } finally {
+      if (this.isolatedReviewerRuntimes.has(runtime)) this.releaseReviewerRuntime(runtime)
+    }
   }
 
   private createScopedActivityRuntime(
@@ -1072,8 +1178,13 @@ class AcpRuntimeCoordinator {
     return {
       buildReviewerSession: (request) => this.buildReviewerSessionOnRuntime(runtime, request),
       disposeReviewerSession: (session) => {
+        const owner = this.reviewerRuntimes.get(session) ?? runtime
         this.reviewerRuntimes.delete(session)
-        return runtime.disposeReviewerSession(session)
+        try {
+          return owner.disposeReviewerSession(session)
+        } finally {
+          if (this.isolatedReviewerRuntimes.has(owner)) this.releaseReviewerRuntime(owner)
+        }
       },
       sendPrompt: async (request) => {
         this.assertPromptAdmissionOpen()
@@ -1101,16 +1212,105 @@ class AcpRuntimeCoordinator {
     request: Parameters<AcpRuntime['buildReviewerSession']>[0]
   ): ReturnType<AcpRuntime['buildReviewerSession']> {
     this.assertPromptAdmissionOpen()
-    const built = await runtime.buildReviewerSession(request)
+    const reviewerRuntime = this.createReviewerRuntime ? this.addReviewerRuntime() : runtime
+    let built: Awaited<ReturnType<AcpRuntime['buildReviewerSession']>>
+    try {
+      built = await reviewerRuntime.buildReviewerSession(request)
+    } catch (error) {
+      if (reviewerRuntime !== runtime) {
+        await this.releaseReviewerRuntime(reviewerRuntime).catch(() => undefined)
+      }
+      throw error
+    }
     if (this.promptAdmissionClosedForQuit) {
       try {
-        runtime.disposeReviewerSession(built.session)
+        reviewerRuntime.disposeReviewerSession(built.session)
       } finally {
+        if (reviewerRuntime !== runtime) {
+          await this.releaseReviewerRuntime(reviewerRuntime).catch(() => undefined)
+        }
         this.assertPromptAdmissionOpen()
       }
     }
-    this.reviewerRuntimes.set(built.session, runtime)
+    this.reviewerRuntimes.set(built.session, reviewerRuntime)
     return built
+  }
+
+  private addReviewerRuntime(): AcpRuntime {
+    if (!this.createReviewerRuntime) {
+      throw new Error('An isolated Reviewer runtime is not available.')
+    }
+    const created = this.createReviewerRuntime({}, this.permissionGrantStore)
+    const runtime = 'runtime' in created ? created.runtime : created
+    if ('runtime' in created && created.release) {
+      this.reviewerRuntimeCleanup.set(runtime, created.release)
+    }
+    this.isolatedReviewerRuntimes.add(runtime)
+    return runtime
+  }
+
+  private releaseReviewerRuntime(runtime: AcpRuntime): Promise<unknown> {
+    return this.teardownReviewerRuntime(runtime, 'quit', () => runtime.shutdownForQuit())
+  }
+
+  private teardownReviewerRuntime<Result>(
+    runtime: AcpRuntime,
+    intent: ReviewerTeardownIntent,
+    shutdown: () => Promise<Result>,
+    retryAfterPriorFailure = false
+  ): Promise<Result> {
+    const inFlight = this.reviewerRuntimeReleaseInFlight.get(runtime)
+    if (inFlight) {
+      if (inFlight.intent === intent) {
+        return (
+          retryAfterPriorFailure
+            ? inFlight.promise.catch(() =>
+                this.teardownReviewerRuntime(runtime, intent, shutdown, false)
+              )
+            : inFlight.promise
+        ) as Promise<Result>
+      }
+      // A disconnect result cannot satisfy an awaitable quit/update latch. Likewise, the caller's
+      // requested update/quit operation must not be replaced by a differently shaped result.
+      return inFlight.promise.then(
+        () => this.teardownReviewerRuntime(runtime, intent, shutdown),
+        (error) =>
+          retryAfterPriorFailure
+            ? this.teardownReviewerRuntime(runtime, intent, shutdown)
+            : Promise.reject(error)
+      )
+    }
+    const release = Promise.resolve()
+      .then(shutdown)
+      .then(async (result) => {
+        await this.cleanupReviewerRuntime(runtime)
+        this.isolatedReviewerRuntimes.delete(runtime)
+        return result
+      })
+    this.reviewerRuntimeReleaseInFlight.set(runtime, { intent, promise: release })
+    this.reviewerRuntimeReleases.add(release)
+    void release.then(
+      () => {
+        if (this.reviewerRuntimeReleaseInFlight.get(runtime)?.promise === release) {
+          this.reviewerRuntimeReleaseInFlight.delete(runtime)
+        }
+        this.reviewerRuntimeReleases.delete(release)
+      },
+      () => {
+        // Keep isolated ownership after failure so a later app shutdown can retry cleanup.
+        if (this.reviewerRuntimeReleaseInFlight.get(runtime)?.promise === release) {
+          this.reviewerRuntimeReleaseInFlight.delete(runtime)
+        }
+        this.reviewerRuntimeReleases.delete(release)
+      }
+    )
+    return release as Promise<Result>
+  }
+
+  private async cleanupReviewerRuntime(runtime: AcpRuntime): Promise<void> {
+    const cleanup = this.reviewerRuntimeCleanup.get(runtime)
+    await cleanup?.()
+    this.reviewerRuntimeCleanup.delete(runtime)
   }
 
   private async waitForInitialization(): Promise<void> {
@@ -1200,6 +1400,24 @@ class AcpRuntimeCoordinator {
     return this.activeRuntime
   }
 
+  private currentPrimaryRuntimes(): AcpRuntime[] {
+    const current = [...this.runtimes].filter((runtime) => !this.retiredRuntimes.has(runtime))
+    return current.length > 0 ? current : [this.getActiveRuntime()]
+  }
+
+  private allocateMainSessionRuntime(): AcpRuntime {
+    const current = this.getActiveRuntime()
+    if (!this.primaryRuntimeClaims.has(current) && current.getSnapshot().sessionIds.length === 0) {
+      this.primaryRuntimeClaims.add(current)
+      return current
+    }
+    const runtime = this.addRuntime({ kind: 'main' })
+    this.primaryRuntimeClaims.add(runtime)
+    this.activeRuntime = runtime
+    this.lastRuntime = runtime
+    return runtime
+  }
+
   private runtimeForSession(sessionId: string): AcpRuntime {
     return this.findRuntimeForSession(sessionId) ?? this.getActiveRuntime()
   }
@@ -1219,7 +1437,7 @@ class AcpRuntimeCoordinator {
     return undefined
   }
 
-  private addRuntime(): AcpRuntime {
+  private addRuntime(scope: RuntimeProcessScope = { kind: 'main' }): AcpRuntime {
     const runtime = this.createRuntime(
       {
         onStateChanged: (snapshot) => this.handleRuntimeState(runtime, snapshot),
@@ -1276,12 +1494,19 @@ class AcpRuntimeCoordinator {
         },
         onRetired: () => this.handleRuntimeRetired(runtime)
       },
-      this.permissionGrantStore
+      this.permissionGrantStore,
+      scope
     )
     this.runtimeSequence += 1
     this.runtimeIds.set(runtime, `runtime-${this.runtimeSequence}-${this.eventNamespace}`)
     this.runtimes.add(runtime)
     return runtime
+  }
+
+  private async retireUnusedRuntime(runtime: AcpRuntime): Promise<void> {
+    if (!this.runtimes.has(runtime)) return
+    this.retiredRuntimes.add(runtime)
+    await runtime.requestRetirement().catch(() => undefined)
   }
 
   private handleRuntimeState(runtime: AcpRuntime, snapshot: AcpStateSnapshot): void {
@@ -1459,12 +1684,17 @@ class AcpRuntimeCoordinator {
   }
 
   private async shutdownAll(
+    intent: Exclude<ReviewerTeardownIntent, 'disconnect'>,
     shutdown: (runtime: AcpRuntime) => Promise<{ reaped: boolean }>
   ): Promise<{ reaped: boolean }> {
     const runtimes = Array.from(this.runtimes)
+    const reviewerRuntimes = Array.from(this.isolatedReviewerRuntimes)
     const [delegatedOutcome, ...outcomes] = await Promise.allSettled([
       this.delegatedWork?.stopAll() ?? Promise.resolve(),
-      ...runtimes.map(shutdown)
+      ...runtimes.map(shutdown),
+      ...reviewerRuntimes.map((runtime) =>
+        this.teardownReviewerRuntime(runtime, intent, () => shutdown(runtime), true)
+      )
     ])
     const failure =
       outcomes.find((outcome): outcome is PromiseRejectedResult => outcome.status === 'rejected') ??
@@ -1473,24 +1703,37 @@ class AcpRuntimeCoordinator {
       // Awaitable shutdown paths suppress each runtime's closed-state event. Account for partial
       // success here so only runtimes that really stopped release their routing ownership.
       // Rejected teardowns may nevertheless have cleared their session maps before the failing step.
-      outcomes.forEach((outcome, index) => {
+      outcomes.slice(0, runtimes.length).forEach((outcome, index) => {
         const runtime = runtimes[index]
         if (outcome.status === 'fulfilled') this.releaseRuntimeOwnership(runtime)
         else this.releaseMissingRuntimeSessions(runtime, runtime.getSnapshot())
+      })
+      reviewerRuntimes.forEach((runtime, index) => {
+        if (outcomes[runtimes.length + index]?.status === 'fulfilled') {
+          this.isolatedReviewerRuntimes.delete(runtime)
+        }
       })
       this.callbacks.onStateChanged?.(this.getSnapshot())
       throw failure.reason
     }
     this.clearRuntimeOwnership()
     this.onDisconnected?.()
+    const runtimeShutdownOutcomes = outcomes.slice(
+      0,
+      runtimes.length + reviewerRuntimes.length
+    ) as PromiseSettledResult<{ reaped: boolean }>[]
     return {
-      reaped: outcomes.every((outcome) => outcome.status === 'fulfilled' && outcome.value.reaped)
+      reaped: runtimeShutdownOutcomes.every(
+        (outcome) => outcome.status === 'fulfilled' && outcome.value.reaped
+      )
     }
   }
 
   private clearRuntimeOwnership(): void {
     this.runtimes.clear()
     this.retiredRuntimes.clear()
+    this.isolatedReviewerRuntimes.clear()
+    this.reviewerRuntimeReleases.clear()
     this.sessionRuntimes.clear()
     this.pendingSessionAdoptions.clear()
     for (const pending of this.pendingSessionDrains.values()) pending.resolve()

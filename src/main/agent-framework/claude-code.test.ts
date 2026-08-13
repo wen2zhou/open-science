@@ -6,6 +6,47 @@ import { codexFramework } from './codex'
 import { opencodeFramework } from './opencode'
 
 describe('claudeCodeFramework', () => {
+  it('loads the immutable Skill Runtime Projection without exposing framework config', () => {
+    const config = claudeCodeFramework.prepareModelConfig(
+      { type: 'custom', baseUrl: 'https://gateway.example/v1', model: 'claude-test' },
+      {
+        storageRoot: '/app',
+        executablePath: '/runtime/claude',
+        skillRuntime: {
+          generationRoot: '/runtime/skills/generations/g-1',
+          skillsRoot: '/runtime/skills/generations/g-1/skills',
+          discoveryRoot: '/runtime/skills/discovery/b-1',
+          descriptors: [
+            {
+              id: 'alpha',
+              name: 'Alpha',
+              description: 'Analyze alpha data.',
+              path: '/runtime/skills/generations/g-1/skills/alpha/SKILL.md'
+            }
+          ],
+          environment: { SKILL_CACHE_ROOT: '/runtime/state/cache' }
+        }
+      }
+    )
+
+    expect(config.env?.SKILL_CACHE_ROOT).toBe('/runtime/state/cache')
+    expect(config.sessionOptions).toEqual({
+      additionalDirectories: ['/runtime/skills/generations/g-1'],
+      skills: ['Alpha'],
+      plugins: [{ type: 'local', path: '/runtime/skills/generations/g-1' }],
+      managedSettings: {
+        permissions: {
+          allow: ['Read(/runtime/skills/generations/g-1/**)'],
+          deny: [
+            'Edit(/runtime/skills/generations/g-1/**)',
+            'Write(/runtime/skills/generations/g-1/**)'
+          ]
+        }
+      }
+    })
+    expect(JSON.stringify(config.sessionOptions)).not.toContain('/app/claude')
+  })
+
   it('disables every Claude-native delegation path without removing ordinary built-in tools', () => {
     const setup = claudeCodeFramework.buildSessionSetup({ systemPromptAppends: [] })
 
@@ -75,7 +116,7 @@ describe('claudeCodeFramework', () => {
   it('injects resolved settings and local plugins into Claude session options', () => {
     const sessionOptions = {
       settings: '/app/claude/settings.json',
-      plugins: [{ type: 'local', path: '/app/claude', skipMcpDiscovery: true }]
+      plugins: [{ type: 'local', path: '/app/claude' }]
     }
 
     const setup = claudeCodeFramework.buildSessionSetup({

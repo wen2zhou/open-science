@@ -65,7 +65,10 @@ import { McpClientManager } from './connectors/mcp-client-manager'
 import { isCustomMcpServerRouteSafe, toCustomMcpConfig } from './connectors/custom-mcp-bootstrap'
 import { createMoleculePreviewHandler } from './connectors/molecule-preview'
 import { ALL_CONNECTOR_IDS } from './connectors/registry'
-import { ConnectorRuntimeSettingsProjection } from './connectors/runtime-settings-projection'
+import {
+  connectorSkillDocsDir,
+  ConnectorRuntimeSettingsProjection
+} from './connectors/runtime-settings-projection'
 import { ConnectorService } from './connectors/service'
 import { registerFileSaveHandlers } from './file-save'
 import { ImmutableInputAuthority } from './immutable-input-authority'
@@ -194,7 +197,6 @@ import { SETTINGS_INSTALL_LOG_CHANNEL, registerSettingsIpcHandlers } from './set
 import { registerLocalFsIpcHandlers } from './local-fs/ipc'
 import { GrantedLocalRootsRepository } from './local-fs/granted-roots-repository'
 import { LocalFsService } from './local-fs/service'
-import { getAppClaudeConfigDir } from './settings/provider-env'
 import { SettingsService } from './settings/service'
 import { SettingsRepository } from './settings/repository'
 import { NetworkProxyRuntime } from './settings/network-proxy-runtime'
@@ -394,6 +396,13 @@ const createApplicationModules = async (
   }))
   const storedSettings = await settingsService.getStoredSettings()
   const storageLog = createLogger('storage')
+  // Reclaim projection bindings, attempts, and execution state left by an abnormal previous process
+  // at app startup, even when this session never opens an Agent that would acquire a Skill binding.
+  void settingsService
+    .reconcileSkillRuntime()
+    .catch((error) =>
+      storageLog.warn('Skill runtime startup reconciliation failed', errorLogFields(error))
+    )
   await networkProxyRuntime.apply(storedSettings.networkProxy)
   // Prime the data-root cache from settings before any data repository is constructed below. A change
   // to this value only takes effect after a restart, so reading it once here is sufficient.
@@ -1070,7 +1079,7 @@ const createApplicationModules = async (
   })
   const connectorRuntimeSettings = new ConnectorRuntimeSettingsProjection({
     readConnectors: () => settingsService.getConnectors(),
-    skillsDir: join(getAppClaudeConfigDir(resolveStorageRoot()), 'skills'),
+    skillsDir: connectorSkillDocsDir(resolveStorageRoot()),
     mcpClientManager,
     notifyStatusChanged: () => broadcastToRenderers('settings:connector-runtime-changed', undefined)
   })

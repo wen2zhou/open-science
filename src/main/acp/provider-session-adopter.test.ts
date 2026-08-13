@@ -30,6 +30,7 @@ type ConfigurationFacts = {
 
 type AdopterHarness = {
   adopt: (specialistId?: string) => Promise<AcpCreateSessionResponse>
+  buildSession: ReturnType<typeof vi.fn>
   commit: ReturnType<typeof vi.fn>
   commitClaudeReplay: ReturnType<typeof vi.fn>
   configure: ReturnType<typeof vi.fn>
@@ -59,6 +60,7 @@ const createHarness = (
     projectAgentContext?: string
     specialistIdentity?: { append: string; prefix: string }
     specialistSkills?: EffectiveSpecialistSkills
+    registerSessionSpecialist?: (sessionId: string, specialistId: string | undefined) => void
   } = {}
 ): AdopterHarness => {
   const order: string[] = []
@@ -67,17 +69,18 @@ const createHarness = (
     sessionId: 'fresh-provider-session',
     dispose: vi.fn()
   } as unknown as ActiveSession
+  const buildSession = vi.fn(() => {
+    order.push('session/new prepared')
+    return {
+      start: vi.fn(async () => {
+        order.push('session/new')
+        return providerSession
+      })
+    }
+  })
   const connection = {
     agent: {
-      buildSession: vi.fn(() => {
-        order.push('session/new prepared')
-        return {
-          start: vi.fn(async () => {
-            order.push('session/new')
-            return providerSession
-          })
-        }
-      })
+      buildSession
     }
   } as unknown as ClientConnection
   const baseBackend: AcpBackendGenerationView = options.initialBackend ?? {
@@ -152,6 +155,7 @@ const createHarness = (
     resolveSpecialistSkills: options.specialistSkills
       ? vi.fn(async () => options.specialistSkills as EffectiveSpecialistSkills)
       : undefined,
+    registerSessionSpecialist: options.registerSessionSpecialist,
     resolveProjectAgentContext: options.projectAgentContext
       ? vi.fn(async () => options.projectAgentContext)
       : undefined,
@@ -174,6 +178,7 @@ const createHarness = (
     })
   return {
     adopt,
+    buildSession,
     commit,
     commitClaudeReplay,
     configure,
@@ -192,6 +197,31 @@ const createHarness = (
 }
 
 describe('AcpProviderSessionAdopter', () => {
+  it('authorizes the pinned Skill Runtime generation on the adopted provider Session', async () => {
+    const harness = createHarness({
+      initialBackend: {
+        framework: claudeCodeFramework,
+        backendId: 'claude-code',
+        session: { modelRequired: false },
+        prompt: { systemPromptAppends: [] },
+        context: { supportsImageInput: false },
+        adapter: {
+          additionalDirectories: ['/runtime/skills/generations/generation-2'],
+          nativeMcpEnabled: true,
+          bridgeMcpAliasesEnabled: false
+        }
+      }
+    })
+
+    await harness.adopt()
+
+    expect(harness.buildSession).toHaveBeenCalledWith(
+      expect.objectContaining({
+        additionalDirectories: ['/runtime/skills/generations/generation-2']
+      })
+    )
+  })
+
   it('preserves the runtime capability policy while adopting a fresh provider Session', async () => {
     const harness = createHarness({ capabilityPolicy: SIDE_CHAT_SESSION_CAPABILITY_POLICY })
 
@@ -284,6 +314,7 @@ describe('AcpProviderSessionAdopter', () => {
   })
 
   it('replays Specialist identity and staged handoff before committing continuity', async () => {
+    const registerSessionSpecialist = vi.fn()
     const harness = createHarness({
       handoffAppend: 'staged handoff continuity',
       specialistIdentity: {
@@ -295,7 +326,8 @@ describe('AcpProviderSessionAdopter', () => {
         skillIds: ['skill-1'],
         frameworkNames: ['literature-review'],
         missingSkillIds: []
-      }
+      },
+      registerSessionSpecialist
     })
 
     await harness.adopt('specialist-1')
@@ -307,6 +339,7 @@ describe('AcpProviderSessionAdopter', () => {
       specialistId: 'specialist-1',
       specialistPrefix: 'specialist turn prefix'
     })
+    expect(registerSessionSpecialist).toHaveBeenCalledWith('stable-app-session', 'specialist-1')
     expect(harness.order.indexOf('handoff commit')).toBeGreaterThan(
       harness.order.indexOf('registry publish')
     )

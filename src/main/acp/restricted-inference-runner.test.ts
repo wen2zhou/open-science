@@ -271,6 +271,7 @@ describe('RestrictedInferenceRunner', () => {
     const releaseResponses = vi.fn(async () => undefined)
     const releaseAnthropic = vi.fn(async () => undefined)
     const releaseTransport = vi.fn(async () => undefined)
+    const releaseSkillRuntime = vi.fn(async () => undefined)
     const { runner, runtimes } = await makeRunner(
       backend(codexFramework, {
         responsesBridgeLease: {
@@ -280,7 +281,8 @@ describe('RestrictedInferenceRunner', () => {
           release: releaseResponses
         },
         anthropicBridgeLease: { setTarget: vi.fn(() => true), release: releaseAnthropic },
-        providerTransportLease: { setTarget: vi.fn(() => true), release: releaseTransport }
+        providerTransportLease: { setTarget: vi.fn(() => true), release: releaseTransport },
+        skillRuntimeLease: { release: releaseSkillRuntime }
       })
     )
 
@@ -291,6 +293,7 @@ describe('RestrictedInferenceRunner', () => {
     expect(releaseResponses).toHaveBeenCalledOnce()
     expect(releaseAnthropic).toHaveBeenCalledOnce()
     expect(releaseTransport).toHaveBeenCalledOnce()
+    expect(releaseSkillRuntime).toHaveBeenCalledOnce()
   })
 
   it('leaves output unbounded when an Adapter does not opt into a limit', async () => {

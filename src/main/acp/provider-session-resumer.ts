@@ -99,6 +99,22 @@ export class AcpProviderSessionResumer {
     }
   }
 
+  async adoptFresh(request: AcpResumeSessionRequest): Promise<AcpCreateSessionResponse> {
+    const cwd = resolve(request.cwd || this.deps.currentCwd() || this.deps.defaultCwd)
+    const projectName = request.projectName?.trim() || this.deps.defaultProjectName
+    const reserved = this.deps.reserveIdentity(request.sessionId)
+    if (reserved.collision) throw reserved.collision
+    const identity = reserved.reservation
+    try {
+      const connection = await this.deps.ensureConnected(cwd)
+      this.deps.assertCurrentConnection(connection)
+      identity.renew()
+      return await this.adopt(request, connection, cwd, projectName, identity)
+    } finally {
+      identity.release()
+    }
+  }
+
   private async resumeAttached(
     request: AcpResumeSessionRequest,
     attachment: AcpSessionAttachment
@@ -262,6 +278,7 @@ export class AcpProviderSessionResumer {
           sessionId: providerSessionId,
           cwd,
           mcpServers: capability.mcpServers,
+          additionalDirectories: [...(backend.adapter.additionalDirectories ?? [])],
           ...setup.metaArg
         })
       } catch (error) {

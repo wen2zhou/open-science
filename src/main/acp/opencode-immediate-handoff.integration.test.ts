@@ -51,11 +51,11 @@ const deferred = (): { promise: Promise<void>; resolve: () => void } => {
   return { promise, resolve }
 }
 
-const startFakeOpenCodeProvider = (
-  process: FakeAgentProcess,
+const createFakeOpenCodeProvider = (
   calls: string[],
   executeOldTool: () => Promise<unknown>
 ): {
+  attach: (process: FakeAgentProcess) => void
   requests: string[]
   oldRequestStarted: Promise<void>
   oldToolStarted: Promise<void>
@@ -67,80 +67,83 @@ const startFakeOpenCodeProvider = (
   const releaseOldRequest = deferred()
   let oldToolCompletion: Promise<unknown> | undefined
 
-  acp
-    .agent({ name: 'fake-opencode' })
-    .onRequest(acp.methods.agent.initialize, () => ({
-      protocolVersion: acp.PROTOCOL_VERSION,
-      agentCapabilities: { loadSession: false, sessionCapabilities: { close: {} } },
-      authMethods: []
-    }))
-    .onRequest(acp.methods.agent.session.new, () => ({
-      sessionId: 'opencode-session',
-      modes: {
-        currentModeId: 'agent',
-        availableModes: [{ id: 'agent', name: 'agent' }]
-      }
-    }))
-    .onRequest(acp.methods.agent.session.setMode, () => ({}))
-    .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
-      const text = ctx.params.prompt
-        .map((content) => (content.type === 'text' ? content.text : ''))
-        .join('')
-      requests.push(text)
-      if (requests.length === 1) {
-        calls.push('provider-request:old-initial')
-        oldRequestStarted.resolve()
-        // The observable fake provider starts the real Notebook control tool while its old request
-        // owns the session. Cancellation releases the provider request independently; the tool then
-        // reaches NotebookRuntimeService's completion interceptor exactly as production does.
-        oldToolCompletion = (async () => {
-          try {
-            const result = await executeOldTool()
-            // This is the fake old provider's real tool-result continuation. It is intentionally
-            // adversarial: a normally returned repl_execute result synchronously starts the forbidden
-            // old-identity request before its promise resolves.
-            calls.push('provider-request:old-after-approval')
-            return result
-          } catch (error) {
-            if (error instanceof NotebookControlCompletionCapturedError) {
-              // The same provider handler observes the production transport's captured sentinel and
-              // does not turn it into either a tool result or an old-identity request.
-              calls.push('provider-tool-result:captured')
+  const attach = (process: FakeAgentProcess): void => {
+    acp
+      .agent({ name: 'fake-opencode' })
+      .onRequest(acp.methods.agent.initialize, () => ({
+        protocolVersion: acp.PROTOCOL_VERSION,
+        agentCapabilities: { loadSession: false, sessionCapabilities: { close: {} } },
+        authMethods: []
+      }))
+      .onRequest(acp.methods.agent.session.new, () => ({
+        sessionId: 'opencode-session',
+        modes: {
+          currentModeId: 'agent',
+          availableModes: [{ id: 'agent', name: 'agent' }]
+        }
+      }))
+      .onRequest(acp.methods.agent.session.setMode, () => ({}))
+      .onRequest(acp.methods.agent.session.prompt, async (ctx) => {
+        const text = ctx.params.prompt
+          .map((content) => (content.type === 'text' ? content.text : ''))
+          .join('')
+        requests.push(text)
+        if (requests.length === 1) {
+          calls.push('provider-request:old-initial')
+          oldRequestStarted.resolve()
+          // The observable fake provider starts the real Notebook control tool while its old request
+          // owns the session. Cancellation releases the provider request independently; the tool then
+          // reaches NotebookRuntimeService's completion interceptor exactly as production does.
+          oldToolCompletion = (async () => {
+            try {
+              const result = await executeOldTool()
+              // This is the fake old provider's real tool-result continuation. It is intentionally
+              // adversarial: a normally returned repl_execute result synchronously starts the forbidden
+              // old-identity request before its promise resolves.
+              calls.push('provider-request:old-after-approval')
+              return result
+            } catch (error) {
+              if (error instanceof NotebookControlCompletionCapturedError) {
+                // The same provider handler observes the production transport's captured sentinel and
+                // does not turn it into either a tool result or an old-identity request.
+                calls.push('provider-tool-result:captured')
+                throw error
+              }
+              // A legacy outer-tool error is still a completion delivered to the old provider.
+              calls.push('provider-request:old-after-approval')
               throw error
             }
-            // A legacy outer-tool error is still a completion delivered to the old provider.
-            calls.push('provider-request:old-after-approval')
-            throw error
-          }
-        })()
-        void oldToolCompletion.catch(() => undefined)
-        oldToolStarted.resolve()
-        await releaseOldRequest.promise
-      } else {
-        calls.push('provider-request:new')
-      }
-      await ctx.client.notify(acp.methods.client.session.update, {
-        sessionId: ctx.params.sessionId,
-        update: {
-          sessionUpdate: 'agent_message_chunk',
-          content: { type: 'text', text: 'provider reply' }
+          })()
+          void oldToolCompletion.catch(() => undefined)
+          oldToolStarted.resolve()
+          await releaseOldRequest.promise
+        } else {
+          calls.push('provider-request:new')
         }
+        await ctx.client.notify(acp.methods.client.session.update, {
+          sessionId: ctx.params.sessionId,
+          update: {
+            sessionUpdate: 'agent_message_chunk',
+            content: { type: 'text', text: 'provider reply' }
+          }
+        })
+        return { stopReason: requests.length === 1 ? 'cancelled' : 'end_turn' }
       })
-      return { stopReason: requests.length === 1 ? 'cancelled' : 'end_turn' }
-    })
-    .onNotification(acp.methods.agent.session.cancel, () => {
-      calls.push('stop-old-prompt')
-      releaseOldRequest.resolve()
-      return undefined
-    })
-    .connect(
-      acp.ndJsonStream(
-        Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
-        Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>
+      .onNotification(acp.methods.agent.session.cancel, () => {
+        calls.push('stop-old-prompt')
+        releaseOldRequest.resolve()
+        return undefined
+      })
+      .connect(
+        acp.ndJsonStream(
+          Writable.toWeb(process.stdout) as WritableStream<Uint8Array>,
+          Readable.toWeb(process.stdin) as ReadableStream<Uint8Array>
+        )
       )
-    )
+  }
 
   return {
+    attach,
     requests,
     oldRequestStarted: oldRequestStarted.promise,
     oldToolStarted: oldToolStarted.promise,
@@ -176,17 +179,28 @@ const catalog: AgentsCatalogSource = {
 describe('OpenCode immediate handoff production path', () => {
   it('makes the next provider request under the approved projection in the original user turn', async () => {
     const calls: string[] = []
-    const process = new FakeAgentProcess()
     const storageRoot = await mkdtemp(join(tmpdir(), 'opencode-handoff-'))
     const notebookSpecialists: Array<string | undefined> = []
     const turnTokens: string[] = []
     const userMessages: string[] = []
+    const notebookServiceRef: { current?: NotebookRuntimeService } = {}
+    const provider = createFakeOpenCodeProvider(calls, () =>
+      notebookServiceRef.current!.executeControl({
+        sessionId: 'opencode-session',
+        workspaceCwd: storageRoot,
+        code: "const switched = await host.agents.switch('New Specialist'); return JSON.stringify({ switched, afterAwait: 'completed' })"
+      })
+    )
     const runtime = new AcpRuntimeCoordinator(
       (callbacks) =>
         new AcpRuntime({
           appVersion: '0.1.0',
           defaultCwd: '/workspace',
-          spawnAgent: () => process as unknown as ChildProcessWithoutNullStreams,
+          spawnAgent: () => {
+            const process = new FakeAgentProcess()
+            provider.attach(process)
+            return process as unknown as ChildProcessWithoutNullStreams
+          },
           framework: opencodeFramework,
           callbacks,
           notebook: {
@@ -266,6 +280,7 @@ describe('OpenCode immediate handoff production path', () => {
           replLoopPath: loops.replLoopPath
         })
     })
+    notebookServiceRef.current = notebookService
     const server = new NotebookLocalRpcServer(notebookService, {
       token: 'opencode-production-handoff',
       agentsService: agents
@@ -276,14 +291,6 @@ describe('OpenCode immediate handoff production path', () => {
     notebookService.setControlCompletionInterceptor(
       createCompletionGatedControlToolInterceptor(completionCoordinator, async () => undefined)
     )
-    const provider = startFakeOpenCodeProvider(process, calls, () =>
-      notebookService.executeControl({
-        sessionId: 'opencode-session',
-        workspaceCwd: storageRoot,
-        code: "const switched = await host.agents.switch('New Specialist'); return JSON.stringify({ switched, afterAwait: 'completed' })"
-      })
-    )
-
     try {
       const session = await runtime.createSession({
         cwd: '/workspace',

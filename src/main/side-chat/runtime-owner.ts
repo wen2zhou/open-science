@@ -24,7 +24,11 @@ import type {
   SideChatStartResponse
 } from '../../shared/side-chat'
 import { SIDE_CHAT_MESSAGE_LIMIT } from '../../shared/side-chat'
-import type { AgentModelChangeTarget, ResolvedAgentBackend } from '../agent-framework'
+import {
+  releaseResolvedAgentBackendLeases,
+  type AgentModelChangeTarget,
+  type ResolvedAgentBackend
+} from '../agent-framework'
 import { modelFacingAppMcpToolName } from '../agent-framework/app-mcp-names'
 import type { ExplicitAgentBackendTarget } from '../settings/backend-resolver'
 import { createLogger, diagnosticErrorFields } from '../logger'
@@ -186,14 +190,7 @@ const deferred = (): Deferred => {
 }
 
 const releaseUnattachedBackend = async (backend: ResolvedAgentBackend): Promise<void> => {
-  const leases = new Set([
-    backend.responsesBridgeLease,
-    backend.anthropicBridgeLease,
-    backend.providerTransportLease
-  ])
-  await Promise.all(
-    [...leases].map((lease) => lease?.release().catch(() => undefined) ?? Promise.resolve())
-  )
+  await releaseResolvedAgentBackendLeases(backend)
 }
 
 const prepareSideChatBackend = (

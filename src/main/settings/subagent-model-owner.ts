@@ -87,10 +87,14 @@ class SubagentModelOwner {
         model: inherited.model,
         reasoningEffort: inherited.reasoningEffort ?? 'default'
       })
-      const backend = await this.resolveAdmittedBackend(snapshot)
+      const backend = await this.resolveAdmittedBackend(snapshot, {
+        skillBindingPolicy: { kind: 'none' }
+      })
       return Object.freeze({
         snapshot,
-        backendLease: createDelegateExecutionBackendLease(backend)
+        backendLease: createDelegateExecutionBackendLease(backend, (policy) =>
+          this.options.backendResolver.forkAdmittedBackendSkillRuntime(backend, policy)
+        )
       })
     }
 
@@ -105,12 +109,15 @@ class SubagentModelOwner {
       throw new Error('The configured Subagent model provider validation failed.')
     }
 
-    const backend = await this.options.backendResolver.resolveExplicitTarget({
-      frameworkId,
-      providerId: configuration.providerId,
-      model: { kind: 'required', id: configuration.model },
-      reasoningEffort: configuration.reasoningEffort
-    })
+    const backend = await this.options.backendResolver.resolveExplicitTarget(
+      {
+        frameworkId,
+        providerId: configuration.providerId,
+        model: { kind: 'required', id: configuration.model },
+        reasoningEffort: configuration.reasoningEffort
+      },
+      { skillBindingPolicy: { kind: 'none' } }
+    )
     try {
       if (!backend.backendId || !backend.modelRoute) {
         throw new Error('The configured Subagent model has no stable runtime route.')
@@ -125,7 +132,9 @@ class SubagentModelOwner {
       })
       return Object.freeze({
         snapshot,
-        backendLease: createDelegateExecutionBackendLease(backend)
+        backendLease: createDelegateExecutionBackendLease(backend, (policy) =>
+          this.options.backendResolver.forkAdmittedBackendSkillRuntime(backend, policy)
+        )
       })
     } catch (error) {
       await releaseResolvedAgentBackendLeases(backend)

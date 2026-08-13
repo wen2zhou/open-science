@@ -21,11 +21,9 @@ import {
   type AgentFrameworkId,
   type ResolvedAgentBackend
 } from '../agent-framework'
-import { opencodeConfigDir } from '../agent-framework/opencode'
-import { codexStorageDir, codexSubscriptionStorageDir } from '../agent-framework/codex'
-import { renderConnectorInstructions } from '../connectors/skill-doc'
+import type { SkillRuntimeBindingPolicy } from '../skills/runtime-projection'
 import { buildProviderEnv } from './provider-env'
-import type { AgentRuntimeManager } from './agent-runtime-manager'
+import type { AcquiredSkillRuntimeBinding, AgentRuntimeManager } from './agent-runtime-manager'
 import type { ConnectorSettingsModule } from './connector-settings'
 import {
   CLAUDE_SHARED_DISCONNECTED_MESSAGE,
@@ -47,6 +45,7 @@ import {
   ProviderTransportOwner,
   type ProviderTransportOwnerOptions
 } from './provider-transport-owner'
+import { mergeClaudeSessionOptions, SkillRuntimeBackendOwner } from './skill-runtime-backend-owner'
 
 export type { AgentBackendSelection, ExplicitAgentBackendTarget } from './backend-selection-owner'
 
@@ -58,6 +57,7 @@ export type AdmittedAgentBackendTarget = ExplicitAgentBackendTarget &
 
 export type AgentBackendResolutionContext = {
   forcedSkillIds?: string[]
+  skillBindingPolicy?: SkillRuntimeBindingPolicy
   systemPromptAppends?: string[]
   forceCodexNativeResponsesCompatibility?: boolean
 }
@@ -75,6 +75,7 @@ export type AgentBackendRuntimePort = Pick<
   | 'resolveOpencodeExecutable'
   | 'resolveCodexExecutable'
   | 'probeCodexNativeVersion'
+  | 'acquireSkillRuntimeBinding'
   | 'provisionClaudeRuntimeConfig'
   | 'materializeAgentSkills'
   | 'materializeAgentConfigFiles'
@@ -100,25 +101,22 @@ export type AgentBackendResolverOptions = ProviderTransportOwnerOptions & {
   ensureCodexSubscriptionHome?: () => Promise<void>
 }
 
-// Coordinates stable backend decisions while ProviderTransportOwner owns every live generation.
-// The constructor is intentionally side-effect free; runtime resources start only inside resolve calls.
 export class AgentBackendResolver {
   private readonly readSettings: () => Promise<StoredSettings>
   private readonly providers: AgentBackendProviderPort
   private readonly runtime: AgentBackendRuntimePort
-  private readonly connectors: AgentBackendConnectorPort
   private readonly storageRoot: string
   private readonly userClaudeDir: string
   private readonly selection: BackendSelectionOwner
   private readonly planner: BackendRoutePlanner
   private readonly transports: ProviderTransportOwner
   private readonly ensureCodexSubscriptionHome: () => Promise<void>
+  private readonly skillRuntimes = new SkillRuntimeBackendOwner()
 
   constructor(options: AgentBackendResolverOptions) {
     this.readSettings = options.readSettings
     this.providers = options.providers
     this.runtime = options.runtime
-    this.connectors = options.connectors
     this.storageRoot = options.storageRoot
     this.userClaudeDir = options.userClaudeDir
     this.selection = new BackendSelectionOwner({
@@ -225,6 +223,15 @@ export class AgentBackendResolver {
     throw new Error('The configured Subagent backend route changed since admission.')
   }
 
+  async forkAdmittedBackendSkillRuntime(
+    backend: ResolvedAgentBackend,
+    policy: SkillRuntimeBindingPolicy
+  ): Promise<ResolvedAgentBackend> {
+    return this.skillRuntimes.fork(backend, policy, async () =>
+      this.runtime.acquireSkillRuntimeBinding(await this.readSettings(), policy)
+    )
+  }
+
   async resolveActiveReasoningEffort(intent: ReasoningEffort): Promise<ResolvedReasoningEffort> {
     return this.selection.resolveActiveReasoningEffort(intent)
   }
@@ -268,6 +275,7 @@ export class AgentBackendResolver {
     context: AgentBackendResolutionContext,
     resolvedEffort?: ResolvedReasoningEffort
   ): Promise<ResolvedAgentBackend> {
+    await this.skillRuntimes.retryPendingReleases()
     const framework = getAgentFramework(frameworkId)
     const storedProvider = providerId
       ? settings.providers.find((provider) => provider.id === providerId)
@@ -291,11 +299,26 @@ export class AgentBackendResolver {
         'Artifact code reconstruction is unavailable with Codex subscription authentication.'
       )
     }
-    const forcedSkillIds = new Set(context.forcedSkillIds ?? [])
-    let connectorInstructions =
-      framework.id === 'claude-code'
-        ? renderConnectorInstructions(this.connectors.connectorSkillNames(settings.connectors))
-        : ''
+    const skillBindingPolicy: SkillRuntimeBindingPolicy = context.skillBindingPolicy ?? {
+      kind: 'main',
+      forcedSkillIds: context.forcedSkillIds ?? []
+    }
+    const forcedSkillIds = new Set(
+      skillBindingPolicy.kind === 'main'
+        ? (skillBindingPolicy.forcedSkillIds ?? [])
+        : skillBindingPolicy.kind === 'exact'
+          ? skillBindingPolicy.allowedSkillIds
+          : []
+    )
+    const acquireSkillBinding = (): Promise<AcquiredSkillRuntimeBinding | undefined> => {
+      if (skillBindingPolicy.kind === 'none') return Promise.resolve(undefined)
+      // Keep the old Set-shaped runtime port for callers that have not opted into scoped bindings.
+      // Explicit policies always cross the new typed seam.
+      return this.runtime.acquireSkillRuntimeBinding(
+        settings,
+        context.skillBindingPolicy ? skillBindingPolicy : forcedSkillIds
+      )
+    }
     const executablePath =
       framework.id === 'claude-code'
         ? await this.runtime.resolveClaudeExecutable(settings.claude?.resolvedPath)
@@ -330,34 +353,72 @@ export class AgentBackendResolver {
     const sessionEffort = plan.sessionEffort
     const supportedReasoningEfforts = plan.supportedReasoningEfforts
     if (framework.id === 'claude-code') {
-      const {
-        envOverrides,
-        executablePath: claudeExecutablePath,
-        sessionOptions,
-        contextWindow
-      } = await this.resolveClaudeSpawnConfig(
-        settings,
-        target,
-        forcedSkillIds,
-        executablePath,
-        plan.claudeModelConfig
-      )
-      const transport = await this.transports.acquire({ activeTarget: target, plan })
-      return {
-        framework,
-        backendId: `${framework.id}:${target.providerId}`,
-        modelRoute,
-        executablePath: claudeExecutablePath,
-        env: { ...envOverrides, ...(transport.environment ?? {}) },
-        sessionOptions,
-        sessionEffort,
-        contextWindow,
-        ...(target.provider.supportsImageInput ? { supportsImageInput: true } : {}),
-        contextUsageModel: target.effectiveModel,
-        ...(connectorInstructions ? { systemPromptAppends: [connectorInstructions] } : {}),
-        ...(transport.anthropicBridgeLease
-          ? { anthropicBridgeLease: transport.anthropicBridgeLease }
-          : {})
+      const skillBinding = await acquireSkillBinding()
+      let transport: Awaited<ReturnType<ProviderTransportOwner['acquire']>> | undefined
+      try {
+        const {
+          envOverrides,
+          executablePath: claudeExecutablePath,
+          sessionOptions,
+          contextWindow
+        } = await this.resolveClaudeSpawnConfig(
+          settings,
+          target,
+          forcedSkillIds,
+          executablePath,
+          plan.claudeModelConfig
+        )
+        transport = await this.transports.acquire({ activeTarget: target, plan })
+        const buildBackend = async (
+          binding: AcquiredSkillRuntimeBinding | undefined,
+          ownsProviderLease: boolean
+        ): Promise<ResolvedAgentBackend> => {
+          const skillRuntime = this.skillRuntimes.view(binding)
+          const projectedModelConfig = framework.prepareModelConfig(target.provider, {
+            storageRoot: this.storageRoot,
+            executablePath,
+            reasoningEffort: sessionEffort,
+            reasoningEfforts: supportedReasoningEfforts,
+            ...(skillRuntime ? { skillRuntime } : {})
+          })
+          const instructions = this.skillRuntimes.connectorInstructions(binding)
+          const resolvedSessionOptions = mergeClaudeSessionOptions(
+            sessionOptions,
+            projectedModelConfig.sessionOptions
+          )
+          return {
+            framework,
+            backendId: `${framework.id}:${target.providerId}`,
+            modelRoute,
+            executablePath: claudeExecutablePath,
+            env: {
+              ...(skillRuntime?.environment ?? {}),
+              ...envOverrides,
+              ...(transport?.environment ?? {})
+            },
+            sessionOptions: resolvedSessionOptions,
+            ...(skillRuntime ? { skillRuntime } : {}),
+            ...(binding ? { skillRuntimeLease: this.skillRuntimes.lease(binding) } : {}),
+            sessionEffort,
+            contextWindow,
+            ...(target.provider.supportsImageInput ? { supportsImageInput: true } : {}),
+            contextUsageModel: target.effectiveModel,
+            ...(instructions ? { systemPromptAppends: [instructions] } : {}),
+            ...(ownsProviderLease && transport?.anthropicBridgeLease
+              ? { anthropicBridgeLease: transport.anthropicBridgeLease }
+              : {})
+          }
+        }
+        const backend = await buildBackend(skillBinding, true)
+        this.skillRuntimes.register(backend, (binding) => buildBackend(binding, false))
+        return backend
+      } catch (error) {
+        try {
+          await transport?.release()
+        } finally {
+          if (skillBinding) await this.skillRuntimes.release(skillBinding).catch(() => undefined)
+        }
+        throw error
       }
     }
 
@@ -365,107 +426,119 @@ export class AgentBackendResolver {
       await this.ensureCodexSubscriptionHome()
     }
     const backendProviderId = plan.backendProviderId
-    const skillsRoot =
-      framework.id === 'codex'
-        ? isCodexSubscriptionProvider(target.provider.type)
-          ? codexSubscriptionStorageDir(this.storageRoot)
-          : codexStorageDir(this.storageRoot)
-        : opencodeConfigDir(this.storageRoot)
-    const materializedConnectorSkillNames = await this.runtime.materializeAgentSkills(
-      settings,
-      skillsRoot,
-      forcedSkillIds
-    )
-    connectorInstructions = renderConnectorInstructions(materializedConnectorSkillNames)
-
-    const transport = await this.transports.acquire({ activeTarget: target, plan })
-    const provider = transport.provider ?? target.provider
-    const providerModelCatalog = transport.providerModelCatalog ?? plan.providerModelCatalog
-    const responsesBridge = transport.responsesBridge
-    const persistentSystemPromptAppends = [
-      ...(context.systemPromptAppends ?? []),
-      ...(framework.id === 'codex' && connectorInstructions ? [connectorInstructions] : [])
-    ]
-
+    const skillBinding = await acquireSkillBinding()
+    let transport: Awaited<ReturnType<ProviderTransportOwner['acquire']>> | undefined
     try {
-      const modelConfig = framework.prepareModelConfig(provider, {
-        storageRoot: this.storageRoot,
-        executablePath,
-        ...(codexNativeVersion ? { nativeVersion: codexNativeVersion } : {}),
-        responsesBridge,
-        reasoningEffort: sessionEffort,
-        reasoningEfforts: supportedReasoningEfforts,
-        providerModelCatalog,
-        instructions: connectorInstructions,
-        ...(persistentSystemPromptAppends.length > 0
-          ? { systemPromptAppends: persistentSystemPromptAppends }
-          : {})
-      })
-      await this.runtime.materializeAgentConfigFiles(modelConfig.configFiles)
-      const opencodeUsagePort =
-        framework.id === 'opencode' ? await this.runtime.reserveOpenCodeUsagePort() : undefined
-      const opencodeUsagePassword = opencodeUsagePort === undefined ? undefined : randomUUID()
+      transport = await this.transports.acquire({ activeTarget: target, plan })
+      const resolvedTransport = transport
+      const provider = resolvedTransport.provider ?? target.provider
+      const providerModelCatalog =
+        resolvedTransport.providerModelCatalog ?? plan.providerModelCatalog
+      const responsesBridge = resolvedTransport.responsesBridge
       const usesCodexSystemProxy =
         framework.id === 'codex' && isCodexSubscriptionProvider(provider.type)
       const proxyEnv = usesCodexSystemProxy
         ? await this.runtime.resolveCodexProxyEnvironment()
         : undefined
-      const sessionModel = modelConfig.sessionModel ?? provider.model
 
-      return {
-        framework,
-        backendId: `${framework.id}:${backendProviderId}`,
-        modelRoute,
-        ...(modelRoute === 'codex-bridge' && responsesBridge?.continuityToken
-          ? { providerContinuityToken: responsesBridge.continuityToken }
-          : {}),
-        executablePath,
-        env: {
-          ...(modelConfig.env ?? {}),
-          ...(opencodeUsagePassword ? { OPENCODE_SERVER_PASSWORD: opencodeUsagePassword } : {}),
-          ...(proxyEnv ?? {}),
-          ...(transport.environment ?? {}),
-          ...(framework.id === 'codex' && settings.codex?.nativePath
-            ? { CODEX_PATH: settings.codex.nativePath }
+      const buildBackend = async (
+        binding: AcquiredSkillRuntimeBinding | undefined,
+        ownsProviderLeases: boolean
+      ): Promise<ResolvedAgentBackend> => {
+        const skillRuntime = this.skillRuntimes.view(binding)
+        const instructions = this.skillRuntimes.connectorInstructions(binding)
+        const persistentSystemPromptAppends = [
+          ...(context.systemPromptAppends ?? []),
+          ...(framework.id === 'codex' && instructions ? [instructions] : [])
+        ]
+        const modelConfig = framework.prepareModelConfig(provider, {
+          storageRoot: this.storageRoot,
+          executablePath,
+          ...(codexNativeVersion ? { nativeVersion: codexNativeVersion } : {}),
+          responsesBridge,
+          reasoningEffort: sessionEffort,
+          reasoningEfforts: supportedReasoningEfforts,
+          providerModelCatalog,
+          ...(skillRuntime ? { skillRuntime } : {}),
+          instructions,
+          ...(persistentSystemPromptAppends.length > 0
+            ? { systemPromptAppends: persistentSystemPromptAppends }
             : {})
-        },
-        args:
-          opencodeUsagePort === undefined
-            ? modelConfig.args
-            : [
-                ...(modelConfig.args ?? []),
-                '--port',
-                String(opencodeUsagePort),
-                '--hostname',
-                '127.0.0.1'
-              ],
-        ...(usesCodexSystemProxy
-          ? { proxyEnvironmentMode: proxyEnv === undefined ? 'inherit' : 'replace' }
-          : {}),
-        sessionModel,
-        ...(framework.id === 'codex' && isCodexSubscriptionProvider(provider.type) && sessionModel
-          ? { sessionModelRequired: true }
-          : {}),
-        sessionEffort,
-        contextWindow: provider.contextWindow,
-        ...(provider.supportsImageInput ? { supportsImageInput: true } : {}),
-        contextUsageModel: provider.model,
-        authentication: modelConfig.authentication,
-        providerConfiguration: modelConfig.providerConfiguration,
-        persistentSystemPrompt: modelConfig.persistentSystemPrompt,
-        ...(opencodeUsagePort === undefined || !opencodeUsagePassword
-          ? {}
-          : {
-              opencodeUsageApi: {
-                baseUrl: `http://127.0.0.1:${opencodeUsagePort}`,
-                authorization: `Basic ${Buffer.from(`opencode:${opencodeUsagePassword}`).toString('base64')}`
-              }
-            }),
-        responsesBridgeLease: responsesBridge?.lease,
-        providerTransportLease: transport.providerTransportLease
+        })
+        await this.runtime.materializeAgentConfigFiles(modelConfig.configFiles)
+        const opencodeUsagePort =
+          framework.id === 'opencode' ? await this.runtime.reserveOpenCodeUsagePort() : undefined
+        const opencodeUsagePassword = opencodeUsagePort === undefined ? undefined : randomUUID()
+        const sessionModel = modelConfig.sessionModel ?? provider.model
+        return {
+          framework,
+          backendId: `${framework.id}:${backendProviderId}`,
+          modelRoute,
+          ...(modelRoute === 'codex-bridge' && responsesBridge?.continuityToken
+            ? { providerContinuityToken: responsesBridge.continuityToken }
+            : {}),
+          executablePath,
+          env: {
+            ...(modelConfig.env ?? {}),
+            ...(opencodeUsagePassword ? { OPENCODE_SERVER_PASSWORD: opencodeUsagePassword } : {}),
+            ...(proxyEnv ?? {}),
+            ...(resolvedTransport.environment ?? {}),
+            ...(framework.id === 'codex' && settings.codex?.nativePath
+              ? { CODEX_PATH: settings.codex.nativePath }
+              : {})
+          },
+          ...(skillRuntime ? { skillRuntime } : {}),
+          skillRuntimeHandoff: modelConfig.skillRuntimeHandoff,
+          ...(binding ? { skillRuntimeLease: this.skillRuntimes.lease(binding) } : {}),
+          args:
+            opencodeUsagePort === undefined
+              ? modelConfig.args
+              : [
+                  ...(modelConfig.args ?? []),
+                  '--port',
+                  String(opencodeUsagePort),
+                  '--hostname',
+                  '127.0.0.1'
+                ],
+          ...(usesCodexSystemProxy
+            ? { proxyEnvironmentMode: proxyEnv === undefined ? 'inherit' : 'replace' }
+            : {}),
+          sessionModel,
+          ...(framework.id === 'codex' && isCodexSubscriptionProvider(provider.type) && sessionModel
+            ? { sessionModelRequired: true }
+            : {}),
+          sessionEffort,
+          contextWindow: provider.contextWindow,
+          ...(provider.supportsImageInput ? { supportsImageInput: true } : {}),
+          contextUsageModel: provider.model,
+          authentication: modelConfig.authentication,
+          providerConfiguration: modelConfig.providerConfiguration,
+          persistentSystemPrompt: modelConfig.persistentSystemPrompt,
+          ...(opencodeUsagePort === undefined || !opencodeUsagePassword
+            ? {}
+            : {
+                opencodeUsageApi: {
+                  baseUrl: `http://127.0.0.1:${opencodeUsagePort}`,
+                  authorization: `Basic ${Buffer.from(`opencode:${opencodeUsagePassword}`).toString('base64')}`
+                }
+              }),
+          ...(ownsProviderLeases && responsesBridge?.lease
+            ? { responsesBridgeLease: responsesBridge.lease }
+            : {}),
+          ...(ownsProviderLeases && resolvedTransport.providerTransportLease
+            ? { providerTransportLease: resolvedTransport.providerTransportLease }
+            : {})
+        }
       }
+      const backend = await buildBackend(skillBinding, true)
+      this.skillRuntimes.register(backend, (binding) => buildBackend(binding, false))
+      return backend
     } catch (error) {
-      await transport.release()
+      try {
+        await transport?.release()
+      } finally {
+        if (skillBinding) await this.skillRuntimes.release(skillBinding).catch(() => undefined)
+      }
       throw error
     }
   }
@@ -498,7 +571,7 @@ export class AgentBackendResolver {
       target.providerType === 'claude-shared'
         ? {
             settings: join(appConfigDir, 'settings.json'),
-            plugins: [{ type: 'local', path: appConfigDir, skipMcpDiscovery: true }]
+            plugins: [{ type: 'local', path: appConfigDir }]
           }
         : provider.type === 'custom'
           ? {

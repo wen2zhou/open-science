@@ -392,7 +392,7 @@ const CODEX_ACP_SKILL_INPUT_SOURCE = [
   '        return { type: "text", text: block.text, text_elements: [] };'
 ].join('\n')
 
-const CODEX_ACP_SKILL_INPUT_REPLACEMENT = [
+const CODEX_ACP_SKILL_INPUT_LEGACY_REPLACEMENT = [
   'function buildPromptItems(prompt) {',
   '  return prompt.flatMap((block) => {',
   '    switch (block.type) {',
@@ -434,6 +434,66 @@ const CODEX_ACP_SKILL_INPUT_REPLACEMENT = [
   '        return [...nativeSkills, { type: "text", text: block.text, text_elements: [] }];',
   '      }'
 ].join('\n')
+
+const CODEX_ACP_SKILL_INPUT_REPLACEMENT = CODEX_ACP_SKILL_INPUT_LEGACY_REPLACEMENT.replace(
+  [
+    '        const codexHome = typeof process.env.CODEX_HOME === "string" ? process.env.CODEX_HOME : "";',
+    '        const skillRoot = codexHome ? path4.join(codexHome, "skills") : "";'
+  ].join('\n'),
+  '        const skillRoot = typeof process.env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT === "string" ? process.env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT.trim() : "";'
+)
+
+// codex-acp 1.1.4 already calls the official app-server `skills/extraRoots/set` request before
+// creating, resuming, or prompting a thread. Extend that existing request rather than writing into
+// CODEX_HOME or racing initialization with a second connection-level protocol implementation.
+const CODEX_ACP_SKILL_EXTRA_ROOTS_SOURCE = [
+  'async refreshSkills(cwd, additionalRoots) {',
+  '  if (!cwd) {',
+  '    return;',
+  '  }',
+  '  const skillExtraRoots = additionalRoots.map((root) => path4.join(root, ".agents", "skills"));',
+  '  if (!arraysEqual(this.skillExtraRoots, skillExtraRoots)) {',
+  '    await this.codexClient.skillsExtraRootsSet({ extraRoots: skillExtraRoots });',
+  '    this.skillExtraRoots = skillExtraRoots;',
+  '  }',
+  '  await this.codexClient.listSkills({',
+  '    cwds: [cwd, ...additionalRoots],',
+  '    forceReload: true',
+  '  });',
+  '}'
+].join('\n')
+
+const CODEX_ACP_SKILL_EXTRA_ROOTS_LEGACY_REPLACEMENT = CODEX_ACP_SKILL_EXTRA_ROOTS_SOURCE.replace(
+  '  const skillExtraRoots = additionalRoots.map((root) => path4.join(root, ".agents", "skills"));',
+  [
+    '  const openScienceSkillRoot = typeof process.env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT === "string"',
+    '    ? process.env.OPEN_SCIENCE_SKILL_RUNTIME_ROOT.trim()',
+    '    : "";',
+    '  const skillExtraRoots = Array.from(new Set([',
+    '    ...(openScienceSkillRoot ? [openScienceSkillRoot] : []),',
+    '    ...additionalRoots.map((root) => path4.join(root, ".agents", "skills"))',
+    '  ]));'
+  ].join('\n')
+)
+
+const CODEX_ACP_SKILL_EXTRA_ROOTS_REPLACEMENT = CODEX_ACP_SKILL_EXTRA_ROOTS_SOURCE.replace(
+  '  const skillExtraRoots = additionalRoots.map((root) => path4.join(root, ".agents", "skills"));',
+  [
+    '  const openScienceDiscoveryRoot = typeof process.env.OPEN_SCIENCE_SKILL_DISCOVERY_ROOT === "string"',
+    '    ? process.env.OPEN_SCIENCE_SKILL_DISCOVERY_ROOT.trim()',
+    '    : "";',
+    '  const openScienceGenerationRoot = typeof process.env.OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT === "string"',
+    '    ? process.env.OPEN_SCIENCE_SKILL_RUNTIME_GENERATION_ROOT.trim()',
+    '    : "";',
+    '  const openScienceDiscoveryAuthorized = openScienceDiscoveryRoot && openScienceGenerationRoot',
+    '    ? additionalRoots.some((root) => path4.resolve(root) === path4.resolve(openScienceGenerationRoot))',
+    '    : false;',
+    '  const skillExtraRoots = Array.from(new Set([',
+    '    ...(openScienceDiscoveryAuthorized ? [openScienceDiscoveryRoot] : []),',
+    '    ...additionalRoots.map((root) => path4.join(root, ".agents", "skills"))',
+    '  ]));'
+  ].join('\n')
+)
 
 const CODEX_ACP_MODEL_CATALOG_STARTUP_SOURCE = [
   'function startCodexConnection(codexPath, env) {',
@@ -626,12 +686,45 @@ export const patchCodexAcpTurnUsageSource = (source: string): string => {
 export const patchCodexAcpSkillInputSource = (source: string): string => {
   if (source.includes(CODEX_ACP_SKILL_INPUT_REPLACEMENT)) return source
 
+  if (source.includes(CODEX_ACP_SKILL_INPUT_LEGACY_REPLACEMENT)) {
+    return source.replace(
+      CODEX_ACP_SKILL_INPUT_LEGACY_REPLACEMENT,
+      CODEX_ACP_SKILL_INPUT_REPLACEMENT
+    )
+  }
+
   const matches = source.split(CODEX_ACP_SKILL_INPUT_SOURCE).length - 1
   if (matches === 1) {
     return source.replace(CODEX_ACP_SKILL_INPUT_SOURCE, CODEX_ACP_SKILL_INPUT_REPLACEMENT)
   }
 
   throw new Error('Pinned Codex ACP Skill-input patch no longer matches the adapter bundle')
+}
+
+export const patchCodexAcpSkillExtraRootsSource = (source: string): string => {
+  if (source.includes(CODEX_ACP_SKILL_EXTRA_ROOTS_REPLACEMENT)) return source
+
+  if (source.includes(CODEX_ACP_SKILL_EXTRA_ROOTS_LEGACY_REPLACEMENT)) {
+    return source.replace(
+      CODEX_ACP_SKILL_EXTRA_ROOTS_LEGACY_REPLACEMENT,
+      CODEX_ACP_SKILL_EXTRA_ROOTS_REPLACEMENT
+    )
+  }
+
+  const matches = source.split(CODEX_ACP_SKILL_EXTRA_ROOTS_SOURCE).length - 1
+  if (matches === 1) {
+    return source.replace(
+      CODEX_ACP_SKILL_EXTRA_ROOTS_SOURCE,
+      CODEX_ACP_SKILL_EXTRA_ROOTS_REPLACEMENT
+    )
+  }
+
+  if (source.includes('async refreshSkills(cwd, additionalRoots)') || matches > 1) {
+    throw new Error('Pinned Codex ACP Skill extra-roots patch no longer matches the adapter bundle')
+  }
+
+  // Small installer/unit-test fixtures do not contain the pinned Skill refresh implementation.
+  return source
 }
 
 // Codex builds its ModelsManager once when app-server starts. The adapter otherwise forwards
@@ -656,9 +749,11 @@ export const patchCodexAcpModelCatalogStartupSource = (source: string): string =
 
 export const ensureManagedCodexContextUsage = async (adapterPath: string): Promise<void> => {
   const source = await readFile(adapterPath, 'utf8')
-  const patched = patchCodexAcpModelCatalogStartupSource(
-    patchCodexAcpSkillInputSource(
-      patchCodexAcpTurnUsageSource(patchCodexAcpContextUsageSource(source))
+  const patched = patchCodexAcpSkillExtraRootsSource(
+    patchCodexAcpModelCatalogStartupSource(
+      patchCodexAcpSkillInputSource(
+        patchCodexAcpTurnUsageSource(patchCodexAcpContextUsageSource(source))
+      )
     )
   )
 

@@ -57,10 +57,12 @@ const createFakeRuntime = (options: {
   activePromptSessions?: { projectName: string; sessionId: string }[]
   quitBlockingSessions?: { projectName: string; sessionId: string }[]
   prompt?: (sessionId: string) => Promise<unknown>
+  resumeContextReset?: boolean
 }): {
   runtime: AcpRuntime
   connect: ReturnType<typeof vi.fn>
   createSession: ReturnType<typeof vi.fn>
+  adoptSessionFresh: ReturnType<typeof vi.fn>
   resetSessionContext: ReturnType<typeof vi.fn>
   switchSpecialist: ReturnType<typeof vi.fn>
   compactSession: ReturnType<typeof vi.fn>
@@ -75,6 +77,7 @@ const createFakeRuntime = (options: {
   applyReasoningEffortChange: ReturnType<typeof vi.fn>
   applyModelChange: ReturnType<typeof vi.fn>
   captureBackend: ReturnType<typeof vi.fn>
+  republishSessionSpecialist: ReturnType<typeof vi.fn>
   setPermissionProfile: ReturnType<typeof vi.fn>
   respondToPermission: ReturnType<typeof vi.fn>
   requestUserInput: ReturnType<typeof vi.fn>
@@ -110,7 +113,12 @@ const createFakeRuntime = (options: {
       }
       options.callbacks.onStateChanged?.(snapshot)
       await options.afterResumeAttached?.()
-      return { sessionId, cwd: '/workspace', frameworkId: options.frameworkId, contextReset: true }
+      return {
+        sessionId,
+        cwd: '/workspace',
+        frameworkId: options.frameworkId,
+        contextReset: options.resumeContextReset ?? true
+      }
     }
   )
   const resetSessionContext = vi.fn(async ({ sessionId }: { sessionId: string }) => ({
@@ -119,6 +127,19 @@ const createFakeRuntime = (options: {
     frameworkId: options.frameworkId,
     contextReset: true
   }))
+  const adoptSessionFresh = vi.fn(
+    async ({ sessionId, projectName }: { sessionId: string; projectName?: string }) => {
+      sessionProjects.set(sessionId, projectName ?? 'Artifacts')
+      snapshot = { ...snapshot, sessionId, sessionIds: [...snapshot.sessionIds, sessionId] }
+      options.callbacks.onStateChanged?.(snapshot)
+      return {
+        sessionId,
+        cwd: '/workspace',
+        frameworkId: options.frameworkId,
+        contextReset: true
+      }
+    }
+  )
   const switchSpecialist = vi.fn(async () => ({ contextReset: false }))
   const compactSession = vi.fn(async () => ({ stopReason: 'end_turn' }))
   const cancelPrompt = vi.fn(async () => snapshot)
@@ -138,6 +159,7 @@ const createFakeRuntime = (options: {
   const applyReasoningEffortChange = vi.fn(async () => true)
   const applyModelChange = vi.fn(async () => true)
   const captureBackend = vi.fn(() => ({ backendId: `${options.frameworkId}:owned` }) as never)
+  const republishSessionSpecialist = vi.fn()
   const setPermissionProfile = vi.fn(async () => snapshot)
   const respondToPermission = vi.fn((response: AcpPermissionResponse) => {
     options.callbacks.onPermissionSettled?.(
@@ -205,6 +227,7 @@ const createFakeRuntime = (options: {
     connect,
     createSession,
     resumeSession,
+    adoptSessionFresh,
     resetSessionContext,
     switchSpecialist,
     compactSession,
@@ -237,6 +260,13 @@ const createFakeRuntime = (options: {
     applyReasoningEffortChange,
     applyModelChange,
     captureBackend,
+    republishSessionSpecialist,
+    captureSessionResumeRequest: vi.fn((sessionId: string) => ({
+      sessionId,
+      cwd: '/workspace',
+      projectName: sessionProjects.get(sessionId) ?? 'Artifacts',
+      previousFrameworkId: options.frameworkId
+    })),
     setPermissionProfile,
     respondToPermission,
     requestUserInput,
@@ -249,6 +279,7 @@ const createFakeRuntime = (options: {
     runtime,
     connect,
     createSession,
+    adoptSessionFresh,
     resetSessionContext,
     switchSpecialist,
     compactSession,
@@ -263,6 +294,7 @@ const createFakeRuntime = (options: {
     applyReasoningEffortChange,
     applyModelChange,
     captureBackend,
+    republishSessionSpecialist,
     setPermissionProfile,
     respondToPermission,
     requestUserInput,
@@ -608,13 +640,16 @@ describe('AcpRuntimeCoordinator', () => {
     expect(coordinator.liveSessionProjectId(session.sessionId)).toBeUndefined()
   })
 
-  it('forwards switchSpecialist to the owning runtime and returns its contextReset flag', async () => {
+  it('atomically migrates a Specialist switch to a dedicated scoped runtime', async () => {
     const created: ReturnType<typeof createFakeRuntime>[] = []
-    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+    const scopes: unknown[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks, _grants, scope) => {
+      scopes.push(scope)
       const fake = createFakeRuntime({
         frameworkId: 'claude-code',
         sessionIds: [`session-${created.length + 1}`],
-        callbacks
+        callbacks,
+        resumeContextReset: scope.kind === 'specialist' ? false : true
       })
       created.push(fake)
       return fake.runtime
@@ -623,8 +658,93 @@ describe('AcpRuntimeCoordinator', () => {
 
     const result = await coordinator.switchSpecialist(session.sessionId, 'sp-b')
 
-    expect(created[0].switchSpecialist).toHaveBeenCalledWith(session.sessionId, 'sp-b')
-    expect(result).toEqual({ contextReset: false })
+    expect(created[0].switchSpecialist).not.toHaveBeenCalled()
+    expect(scopes).toContainEqual({ kind: 'specialist', specialistId: 'sp-b' })
+    expect(created.at(-1)?.adoptSessionFresh).toHaveBeenCalledWith(
+      expect.objectContaining({ sessionId: session.sessionId, specialistId: 'sp-b' })
+    )
+    expect(created.at(-1)?.resumeSession).not.toHaveBeenCalled()
+    expect(result).toEqual({ contextReset: true })
+  })
+
+  it('gives concurrent Main Sessions distinct process-scoped runtimes', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'opencode',
+        sessionIds: [`session-${created.length + 1}`],
+        callbacks
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+
+    const [first, second] = await Promise.all([
+      coordinator.createSession(),
+      coordinator.createSession()
+    ])
+
+    expect(created).toHaveLength(2)
+    await coordinator.sendPrompt({ sessionId: first.sessionId, text: 'first' })
+    await coordinator.sendPrompt({ sessionId: second.sessionId, text: 'second' })
+    expect(created[0].sendPrompt).toHaveBeenCalledOnce()
+    expect(created[1].sendPrompt).toHaveBeenCalledOnce()
+  })
+
+  it('retires a claimed Main runtime when Session creation fails', async () => {
+    let created!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      created = createFakeRuntime({ frameworkId: 'opencode', sessionIds: [], callbacks })
+      created.createSession.mockRejectedValueOnce(new Error('session creation failed'))
+      return created.runtime
+    })
+
+    await expect(coordinator.createSession()).rejects.toThrow('session creation failed')
+
+    expect(created.requestRetirement).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    { name: 'Main', specialistId: undefined },
+    { name: 'Specialist', specialistId: 'specialist-1' }
+  ])(
+    'retires the exclusive $name runtime after its Session is deleted',
+    async ({ specialistId }) => {
+      let created!: ReturnType<typeof createFakeRuntime>
+      const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+        created = createFakeRuntime({ frameworkId: 'codex', sessionIds: ['session-1'], callbacks })
+        return created.runtime
+      })
+      const session = await coordinator.createSession({ specialistId })
+
+      await coordinator.deleteSession({ sessionId: session.sessionId })
+
+      expect(created.requestRetirement).toHaveBeenCalledOnce()
+    }
+  )
+
+  it('keeps a committed Specialist migration usable when old runtime retirement fails', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'opencode',
+        sessionIds: [`session-${created.length + 1}`],
+        callbacks
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+    const session = await coordinator.createSession()
+    created[0].requestRetirement.mockRejectedValueOnce(new Error('old retirement failed'))
+
+    await expect(coordinator.switchSpecialist(session.sessionId, 'specialist-2')).resolves.toEqual({
+      contextReset: true
+    })
+    await coordinator.sendPrompt({ sessionId: session.sessionId, text: 'continue' })
+
+    expect(created[1].requestRetirement).not.toHaveBeenCalled()
+    expect(created[1].republishSessionSpecialist).toHaveBeenCalledWith(session.sessionId)
+    expect(created[1].sendPrompt).toHaveBeenCalledOnce()
   })
 
   it('routes app-owned continuations through the dedicated runtime operation', async () => {
@@ -1292,6 +1412,291 @@ describe('AcpRuntimeCoordinator', () => {
     expect(vi.mocked(created.runtime.disposeReviewerSession)).toHaveBeenCalledOnce()
   })
 
+  it('builds reviewers on an isolated runtime and releases it on disposal', async () => {
+    let primary!: ReturnType<typeof createFakeRuntime>
+    const reviewerRuntimes: ReturnType<typeof createFakeRuntime>[] = []
+    const releaseProfile = vi.fn(async () => undefined)
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => {
+        primary = createFakeRuntime({ frameworkId: 'opencode', sessionIds: [], callbacks })
+        return primary.runtime
+      },
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      (callbacks) => {
+        const reviewer = createFakeRuntime({ frameworkId: 'opencode', sessionIds: [], callbacks })
+        reviewerRuntimes.push(reviewer)
+        return { runtime: reviewer.runtime, release: releaseProfile }
+      }
+    )
+
+    const built = await coordinator.buildReviewerSession({ cwd: '/workspace', mcpServers: [] })
+    const disposition = coordinator.disposeReviewerSession(built.session)
+
+    expect(primary.runtime.buildReviewerSession).not.toHaveBeenCalled()
+    expect(reviewerRuntimes).toHaveLength(1)
+    expect(reviewerRuntimes[0].runtime.buildReviewerSession).toHaveBeenCalledOnce()
+    expect(reviewerRuntimes[0].runtime.disposeReviewerSession).toHaveBeenCalledWith(built.session)
+    await vi.waitFor(() => {
+      expect(reviewerRuntimes[0].runtime.shutdownForQuit).toHaveBeenCalledOnce()
+      expect(releaseProfile).toHaveBeenCalledOnce()
+    })
+    expect(disposition).toEqual({ rejectedToolCalls: 0, reviewerBridgeScoped: undefined })
+  })
+
+  it('releases an isolated reviewer runtime when session creation fails', async () => {
+    let reviewer!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      (callbacks) => {
+        reviewer = createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks })
+        vi.mocked(reviewer.runtime.buildReviewerSession).mockRejectedValueOnce(
+          new Error('reviewer startup failed')
+        )
+        return reviewer.runtime
+      }
+    )
+
+    await expect(
+      coordinator.buildReviewerSession({ cwd: '/workspace', mcpServers: [] })
+    ).rejects.toThrow('reviewer startup failed')
+
+    expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledOnce()
+  })
+
+  it('awaits isolated reviewer runtime teardown during quit', async () => {
+    let reviewer!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) =>
+        createFakeRuntime({ frameworkId: 'claude-code', sessionIds: [], callbacks }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      (callbacks) => {
+        reviewer = createFakeRuntime({ frameworkId: 'claude-code', sessionIds: [], callbacks })
+        return reviewer.runtime
+      }
+    )
+    await coordinator.buildReviewerSession({ cwd: '/workspace', mcpServers: [] })
+
+    await coordinator.shutdownForQuit()
+
+    expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledOnce()
+  })
+
+  it('waits at quit for reviewer teardown already started by disposal', async () => {
+    const released = createDeferred<{ reaped: boolean }>()
+    let reviewer!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) =>
+        createFakeRuntime({ frameworkId: 'claude-code', sessionIds: [], callbacks }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      (callbacks) => {
+        reviewer = createFakeRuntime({ frameworkId: 'claude-code', sessionIds: [], callbacks })
+        vi.mocked(reviewer.runtime.shutdownForQuit).mockReturnValueOnce(released.promise)
+        return reviewer.runtime
+      }
+    )
+    const built = await coordinator.buildReviewerSession({ cwd: '/workspace', mcpServers: [] })
+    coordinator.disposeReviewerSession(built.session)
+
+    let quitFinished = false
+    const quitting = coordinator.shutdownForQuit().then(() => {
+      quitFinished = true
+    })
+    await Promise.resolve()
+    expect(quitFinished).toBe(false)
+
+    released.resolve({ reaped: true })
+    await quitting
+    expect(quitFinished).toBe(true)
+    expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledOnce()
+  })
+
+  it('retains failed reviewer teardown for a later shutdown retry', async () => {
+    let reviewer!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      (callbacks) => {
+        reviewer = createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks })
+        vi.mocked(reviewer.runtime.shutdownForQuit)
+          .mockRejectedValueOnce(new Error('first teardown failed'))
+          .mockResolvedValueOnce({ reaped: true })
+        return reviewer.runtime
+      }
+    )
+    const built = await coordinator.buildReviewerSession({ cwd: '/workspace', mcpServers: [] })
+
+    coordinator.disposeReviewerSession(built.session)
+    await vi.waitFor(() => expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledOnce())
+    await expect(coordinator.shutdownForQuit()).resolves.toEqual({ reaped: true })
+
+    expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries an overlapping same-intent Reviewer quit after disposal teardown fails', async () => {
+    const firstTeardown = createDeferred<{ reaped: boolean }>()
+    let reviewer!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      (callbacks) => {
+        reviewer = createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks })
+        vi.mocked(reviewer.runtime.shutdownForQuit)
+          .mockReturnValueOnce(firstTeardown.promise)
+          .mockResolvedValueOnce({ reaped: true })
+        return reviewer.runtime
+      }
+    )
+    const built = await coordinator.buildReviewerSession({ cwd: '/workspace', mcpServers: [] })
+    coordinator.disposeReviewerSession(built.session)
+    await vi.waitFor(() => expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledOnce())
+
+    const quitting = coordinator.shutdownForQuit()
+    firstTeardown.reject(new Error('overlapping disposal teardown failed'))
+
+    await expect(quitting).resolves.toEqual({ reaped: true })
+    expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledTimes(2)
+  })
+
+  it('retries a failed same-intent Reviewer teardown joined while disposal is in flight', async () => {
+    const firstShutdown = createDeferred<{ reaped: boolean }>()
+    let reviewer!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      (callbacks) => {
+        reviewer = createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks })
+        vi.mocked(reviewer.runtime.shutdownForQuit)
+          .mockReturnValueOnce(firstShutdown.promise)
+          .mockResolvedValueOnce({ reaped: true })
+        return reviewer.runtime
+      }
+    )
+    const built = await coordinator.buildReviewerSession({ cwd: '/workspace', mcpServers: [] })
+
+    coordinator.disposeReviewerSession(built.session)
+    await vi.waitFor(() => expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledOnce())
+    const quitting = coordinator.shutdownForQuit()
+    firstShutdown.reject(new Error('overlapping disposal teardown failed'))
+
+    await expect(quitting).resolves.toEqual({ reaped: true })
+    expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledTimes(2)
+  })
+
+  it('runs Reviewer quit teardown after an in-flight disconnect', async () => {
+    const disconnected = createDeferred<AcpStateSnapshot>()
+    let reviewer!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) => createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      (callbacks) => {
+        reviewer = createFakeRuntime({ frameworkId: 'codex', sessionIds: [], callbacks })
+        reviewer.disconnect.mockReturnValueOnce(disconnected.promise)
+        return reviewer.runtime
+      }
+    )
+    await coordinator.buildReviewerSession({ cwd: '/workspace', mcpServers: [] })
+
+    const disconnecting = coordinator.disconnect()
+    await vi.waitFor(() => expect(reviewer.disconnect).toHaveBeenCalledOnce())
+    const quitting = coordinator.shutdownForQuit()
+    expect(reviewer.runtime.shutdownForQuit).not.toHaveBeenCalled()
+
+    disconnected.resolve(reviewer.runtime.getSnapshot())
+    await expect(disconnecting).resolves.toBeDefined()
+    await expect(quitting).resolves.toEqual({ reaped: true })
+    expect(reviewer.runtime.shutdownForQuit).toHaveBeenCalledOnce()
+  })
+
+  it('runs Reviewer update-gate teardown after an in-flight disconnect', async () => {
+    const disconnected = createDeferred<AcpStateSnapshot>()
+    let reviewer!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator(
+      (callbacks) =>
+        createFakeRuntime({ frameworkId: 'opencode', sessionIds: [], callbacks }).runtime,
+      {},
+      '',
+      undefined,
+      undefined,
+      undefined,
+      {},
+      undefined,
+      undefined,
+      (callbacks) => {
+        reviewer = createFakeRuntime({ frameworkId: 'opencode', sessionIds: [], callbacks })
+        reviewer.disconnect.mockReturnValueOnce(disconnected.promise)
+        return reviewer.runtime
+      }
+    )
+    await coordinator.buildReviewerSession({ cwd: '/workspace', mcpServers: [] })
+
+    const disconnecting = coordinator.disconnect()
+    await vi.waitFor(() => expect(reviewer.disconnect).toHaveBeenCalledOnce())
+    const updating = coordinator.shutdownForUpdateGate()
+    expect(reviewer.runtime.shutdownForUpdateGate).not.toHaveBeenCalled()
+
+    disconnected.resolve(reviewer.runtime.getSnapshot())
+    await expect(disconnecting).resolves.toBeDefined()
+    await expect(updating).resolves.toEqual({ reaped: true })
+    expect(reviewer.runtime.shutdownForUpdateGate).toHaveBeenCalledOnce()
+  })
+
   it('blocks user prompts on startup admission while allowing recovery continuations through', async () => {
     const admission = createDeferred<void>()
     let createdRuntime!: ReturnType<typeof createFakeRuntime>
@@ -1607,13 +2012,56 @@ describe('AcpRuntimeCoordinator', () => {
     expect(created[1].applyModelChange).toHaveBeenCalledWith(target)
   })
 
+  it('applies provider, model, and effort changes to every live primary Session runtime', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'opencode',
+        sessionIds: [`session-${created.length + 1}`],
+        callbacks
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+    const target: AgentModelChangeTarget = {
+      frameworkId: 'opencode',
+      backendId: 'opencode:provider-a',
+      route: 'opencode-openai',
+      model: 'model-b',
+      sessionModel: 'provider-a/model-b',
+      sessionModelRequired: false,
+      supportsImageInput: true,
+      reasoningEffort: 'high'
+    }
+
+    await coordinator.createSession()
+    await coordinator.createSession()
+    created[1].applyReasoningEffortChange.mockResolvedValue(false)
+
+    await coordinator.requestProviderReconnect()
+    await expect(coordinator.applyModelChange(target)).resolves.toBe(true)
+    await expect(coordinator.applyReasoningEffortChange('high')).resolves.toBe(false)
+
+    expect(created).toHaveLength(2)
+    for (const runtime of created) {
+      expect(runtime.requestProviderReconnect).toHaveBeenCalledOnce()
+      expect(runtime.applyModelChange).toHaveBeenCalledWith(target)
+      expect(runtime.applyReasoningEffortChange).toHaveBeenCalledWith('high')
+    }
+  })
+
   it('detaches idle sessions while an active turn retires and resumes them on a fresh runtime', async () => {
     const retirement = createDeferred<void>()
     const created: ReturnType<typeof createFakeRuntime>[] = []
     const coordinator = new AcpRuntimeCoordinator((callbacks) => {
       const fake = createFakeRuntime({
         frameworkId: 'claude-code',
-        sessionIds: created.length === 0 ? ['active-session', 'idle-session'] : ['fresh-session'],
+        sessionIds:
+          created.length === 0
+            ? ['active-session']
+            : created.length === 1
+              ? ['idle-session']
+              : ['fresh-session'],
         callbacks
       })
       created.push(fake)
@@ -1626,7 +2074,7 @@ describe('AcpRuntimeCoordinator', () => {
       promptInFlight: true,
       promptInFlightSessionIds: [activeSession.sessionId]
     })
-    created[0].requestRetirement.mockReturnValue(retirement.promise)
+    created[1].requestRetirement.mockReturnValue(retirement.promise)
     const reloadRequest = coordinator.requestSkillsReload()
 
     expect(coordinator.getSnapshot().sessionIds).toEqual([activeSession.sessionId])
@@ -1642,9 +2090,9 @@ describe('AcpRuntimeCoordinator', () => {
     })
     await coordinator.sendPrompt({ sessionId: idleSession.sessionId, text: 'fresh turn' })
 
-    expect(created).toHaveLength(2)
-    expect(created[1].resumeSession).toHaveBeenCalledOnce()
-    expect(created[1].sendPrompt).toHaveBeenCalledOnce()
+    expect(created).toHaveLength(3)
+    expect(created[2].resumeSession).toHaveBeenCalledOnce()
+    expect(created[2].sendPrompt).toHaveBeenCalledOnce()
 
     retirement.resolve()
     await reloadRequest
@@ -2501,7 +2949,11 @@ describe('AcpRuntimeCoordinator', () => {
               callbacks,
               prompt: () => oldPrompt.promise
             }
-          : { frameworkId: 'codex', sessionIds: ['new-session-1', 'new-session-2'], callbacks }
+          : {
+              frameworkId: 'codex',
+              sessionIds: [`new-session-${created.length}`],
+              callbacks
+            }
       )
       created.push(fake)
       return fake.runtime
@@ -2520,7 +2972,7 @@ describe('AcpRuntimeCoordinator', () => {
     ).resolves.toMatchObject({ stopReason: 'end_turn' })
 
     expect(newSessions.map((session) => session.frameworkId)).toEqual(['codex', 'codex'])
-    expect(created).toHaveLength(2)
+    expect(created).toHaveLength(3)
     expect(created[0].requestRetirement).toHaveBeenCalledOnce()
     expect(created[0].requestProviderReconnect).not.toHaveBeenCalled()
     expect(created[0].disconnect).not.toHaveBeenCalled()
@@ -2545,12 +2997,12 @@ describe('AcpRuntimeCoordinator', () => {
     ).resolves.toMatchObject({ stopReason: 'end_turn' })
 
     expect(vi.mocked(created[0].runtime.sendPrompt)).toHaveBeenCalledTimes(1)
-    expect(vi.mocked(created[1].runtime.resumeSession)).toHaveBeenCalledWith({
+    expect(vi.mocked(created[3].runtime.resumeSession)).toHaveBeenCalledWith({
       sessionId: 'old-session',
       cwd: '/workspace',
       previousFrameworkId: 'claude-code'
     })
-    expect(vi.mocked(created[1].runtime.sendPrompt)).toHaveBeenCalledWith(
+    expect(vi.mocked(created[3].runtime.sendPrompt)).toHaveBeenCalledWith(
       expect.objectContaining({
         sessionId: 'old-session',
         text: 'continue on Codex'
