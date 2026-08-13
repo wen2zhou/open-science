@@ -39,10 +39,6 @@ const COMPUTE_PROJECT_NAME = process.env.OPEN_SCIENCE_NOTEBOOK_PROJECT_NAME
 delete process.env.OPEN_SCIENCE_NOTEBOOK_SESSION_ID
 delete process.env.OPEN_SCIENCE_NOTEBOOK_PROJECT_NAME
 
-// Stable trusted workspace root captured before user code can call process.chdir(). Skill staging
-// always writes beneath this initial Session cwd, never beneath mutable process-global cwd state.
-const INITIAL_WORKSPACE_CWD = fs.realpathSync.native(process.cwd())
-
 // Updated only by the trusted kernel request frame while one serialized control invocation is
 // running. It is never exposed to sandbox code; host.agents forwards it as server context so an
 // approved switch can capture only this invocation's outer completion.
@@ -2647,22 +2643,6 @@ const hostSkills = {
   },
   async read(name, path = 'SKILL.md') {
     return skillsRpc('read', { name, path })
-  },
-  async resource(skillId, path) {
-    return skillsRpc('resource', { skill_id: skillId, path })
-  },
-  async stage(skillId, resourcePath) {
-    const staged = await skillsRpc('stage', { skill_id: skillId, path: resourcePath })
-    const directory = await fs.promises.mkdtemp(
-      path.join(INITIAL_WORKSPACE_CWD, '.open-science-skill-resource-')
-    )
-    const destination = path.join(directory, staged.filename)
-    await fs.promises.writeFile(destination, Buffer.from(staged.base64, 'base64'), {
-      flag: 'wx',
-      mode: staged.executable ? 0o555 : 0o444
-    })
-    await fs.promises.chmod(destination, staged.executable ? 0o555 : 0o444)
-    return { path: destination }
   },
   async validate(name) {
     return skillsRpc('validate', { name })

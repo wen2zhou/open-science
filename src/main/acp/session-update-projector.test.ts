@@ -1,11 +1,8 @@
 import type { SessionNotification } from '@agentclientprotocol/sdk'
-import { mkdirSync, mkdtempSync, rmSync } from 'node:fs'
-import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { SessionPermissionProfileState } from '../../shared/permission-profiles'
-import { isSkillResourceGranted } from '../skills/resource-capability'
 
 import { AcpSessionUpdateProjector } from './session-update-projector'
 
@@ -37,8 +34,7 @@ const createProjector = (
     availableModeIds: ['default', 'bypassPermissions'],
     fullAccessAvailable: true
   },
-  acceptProviderPermissionProfile = true,
-  trustedClaudeSkillsRoot?: string
+  acceptProviderPermissionProfile = true
 ): TestProjector => {
   let routing: TestRouting = {
     eventId: 'event-route',
@@ -99,8 +95,7 @@ const createProjector = (
     },
     emitState: () => undefined,
     pushEvent: (event) => record({ kind: 'visible-event', event }),
-    reportToolFailure: (effect) => record(effect),
-    trustedClaudeSkillsRoot
+    reportToolFailure: (effect) => record(effect)
   })
   return {
     beginGeneration: (root?: string) => owner.beginGeneration(root),
@@ -120,99 +115,6 @@ const createProjector = (
 }
 
 describe('AcpSessionUpdateProjector', () => {
-  it('binds an exact Skill only from a successful provider-native result wrapper', () => {
-    const trustedRoot = mkdtempSync(join(tmpdir(), 'projector-skills-'))
-    mkdirSync(join(trustedRoot, 'os-demo-id'))
-    mkdirSync(join(trustedRoot, 'shared-profile-shadow'))
-    const projector = createProjector(undefined, true, trustedRoot)
-    const route = (
-      sessionId: string,
-      options: { providerToolName?: string; status?: 'completed' | 'failed'; content?: string } = {}
-    ): void => {
-      projector.route(
-        {
-          sessionId: `provider-${sessionId}`,
-          update: {
-            sessionUpdate: 'tool_call_update',
-            toolCallId: `skill-${sessionId}`,
-            title: 'Skill',
-            status: options.status ?? 'completed',
-            rawInput: { name: 'forged-from-input' },
-            content: [
-              {
-                type: 'content',
-                content: {
-                  type: 'text',
-                  text:
-                    options.content ??
-                    `<skill_content name="demo-skill"><!-- open-science:skill-resource id="demo-id" name="demo-skill" -->\nBase directory for this skill: ${join(
-                      trustedRoot,
-                      'os-demo-id'
-                    )}\nTrusted instructions</skill_content>`
-                }
-              }
-            ],
-            ...(options.providerToolName
-              ? { _meta: { claudeCode: { toolName: options.providerToolName } } }
-              : {})
-          }
-        },
-        {
-          framework: 'claude-code',
-          appSessionId: sessionId,
-          eventId: `event-${sessionId}`,
-          visible: true,
-          reconnectPending: false,
-          mcpServerNames: []
-        }
-      )
-    }
-
-    route('native-session', { providerToolName: 'Skill' })
-    route('title-only-session')
-    route('failed-session', { providerToolName: 'Skill', status: 'failed' })
-    route('ambiguous-session', {
-      providerToolName: 'Skill',
-      content:
-        '<skill_content name="demo-skill">one</skill_content><skill_content name="other">two</skill_content>'
-    })
-    route('mismatched-session', {
-      providerToolName: 'Skill',
-      content:
-        '<skill_content name="demo-skill"><!-- open-science:skill-resource id="other-id" name="other-skill" --></skill_content>'
-    })
-    route('missing-base-session', {
-      providerToolName: 'Skill',
-      content:
-        '<skill_content name="demo-skill"><!-- open-science:skill-resource id="demo-id" name="demo-skill" --></skill_content>'
-    })
-    route('outside-base-session', {
-      providerToolName: 'Skill',
-      content: `<skill_content name="demo-skill"><!-- open-science:skill-resource id="demo-id" name="demo-skill" -->\nBase directory for this skill: ${trustedRoot}\n</skill_content>`
-    })
-    route('shadow-session', {
-      providerToolName: 'Skill',
-      content: `<skill_content name="demo-skill"><!-- open-science:skill-resource id="demo-id" name="demo-skill" -->\nBase directory for this skill: ${join(
-        trustedRoot,
-        'shared-profile-shadow'
-      )}\n</skill_content>`
-    })
-
-    expect(isSkillResourceGranted('native-session', 'demo-id')).toBe(true)
-    expect(isSkillResourceGranted('native-session', 'forged-from-input')).toBe(false)
-    expect(isSkillResourceGranted('title-only-session', 'demo-id')).toBe(false)
-    expect(isSkillResourceGranted('failed-session', 'demo-id')).toBe(false)
-    expect(isSkillResourceGranted('ambiguous-session', 'demo-id')).toBe(false)
-    expect(isSkillResourceGranted('mismatched-session', 'other-id')).toBe(false)
-    expect(isSkillResourceGranted('missing-base-session', 'demo-id')).toBe(false)
-    expect(isSkillResourceGranted('outside-base-session', 'demo-id')).toBe(false)
-    expect(isSkillResourceGranted('shadow-session', 'demo-id')).toBe(false)
-
-    projector.clearSession('native-session')
-    expect(isSkillResourceGranted('native-session', 'demo-id')).toBe(false)
-    rmSync(trustedRoot, { recursive: true, force: true })
-  })
-
   it('routes stable Session usage through context owners in projection order', () => {
     const journal: string[] = []
     const beginSession = vi.fn(() => journal.push('context:begin'))

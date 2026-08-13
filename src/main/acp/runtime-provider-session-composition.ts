@@ -122,7 +122,6 @@ const composeAcpRuntimeProviderSessionOwners = (
     permission: session.permissionContext,
     elicitation: session.elicitationOwner,
     clearUserChoiceProvenanceForSession: runtime.clearUserChoiceProvenanceForSession,
-    clearSessionProjection: (sessionId) => session.sessionUpdateProjector.clearSession(sessionId),
     appContinuations: session.appContinuations,
     promptContent: base.promptContentOwner,
     contextUsage: base.contextUsageTracker,

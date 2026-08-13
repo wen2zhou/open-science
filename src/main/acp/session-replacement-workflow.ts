@@ -31,7 +31,6 @@ type AcpSessionReplacementWorkflowDependencies = Readonly<{
   permission: Pick<AcpPermissionContext, 'cancelForSession' | 'clearLivePermissionProfile'>
   elicitation: Pick<AcpElicitationOwner, 'cancelForSession'>
   clearUserChoiceProvenanceForSession: (sessionId: string) => void
-  clearSessionProjection?: (sessionId: string) => void
   appContinuations: Pick<AcpAppContinuationOwner, 'delete'>
   promptContent: Pick<AcpPromptContentOwner, 'resetSession'>
   contextUsage: Pick<ContextUsageTracker, 'deleteSession'>
@@ -76,7 +75,6 @@ export class AcpSessionReplacementWorkflow {
       }
 
       this.deps.permission.cancelForSession(request.sessionId)
-      this.deps.clearSessionProjection?.(request.sessionId)
       this.deps.clearUserChoiceProvenanceForSession(request.sessionId)
       this.deps.elicitation.cancelForSession(request.sessionId)
       this.deps.appContinuations.delete(request.sessionId)
@@ -114,7 +112,6 @@ export class AcpSessionReplacementWorkflow {
     }
 
     const { aggregate } = this.deps.registry.ensureAffinity(sessionId)
-    this.deps.clearSessionProjection?.(sessionId)
     // Projection is intentionally eager and is not rolled back if identity resolution or reset fails.
     aggregate.setSpecialistId(specialistId)
 

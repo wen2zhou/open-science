@@ -1,5 +1,4 @@
-import { constants } from 'node:fs'
-import { chmod, cp, lstat, mkdir, open, readFile, readdir, rm, writeFile } from 'node:fs/promises'
+import { chmod, cp, lstat, mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { createLogger } from '../logger'
@@ -35,82 +34,11 @@ const COMPUTE_UNAVAILABLE_NOTICE = [
   ''
 ].join('\n')
 
-const RESOURCE_NOTICE_START = '<!-- open-science:skill-resource-capability:start -->'
-const RESOURCE_NOTICE_END = '<!-- open-science:skill-resource-capability:end -->'
-const resourceIdentityMarker = (skillId: string, skillName: string): string =>
-  `<!-- open-science:skill-resource id=${JSON.stringify(skillId)} name=${JSON.stringify(skillName)} -->`
-
-const resourceAccessNotice = (skillId: string, skillName: string): string =>
-  [
-    RESOURCE_NOTICE_START,
-    resourceIdentityMarker(skillId, skillName),
-    '> [!IMPORTANT]',
-    '> Auxiliary files in this Skill are protected application resources. Read a relative resource',
-    '> through `repl_execute` with the Skill id below; do not use Read, Bash, Python, or an',
-    '> absolute path. Example:',
-    `> \`await host.skills.resource(${JSON.stringify(skillId)}, "references/example.md")\``,
-    '> To execute a script or copy an asset, first stage that relative path into the workspace with',
-    `> \`await host.skills.stage(${JSON.stringify(skillId)}, "scripts/example.py")\`.`,
-    RESOURCE_NOTICE_END,
-    '',
-    ''
-  ].join('\n')
-
-async function injectResourceAccessNotice(
-  target: string,
-  skillId: string,
-  skillName: string
-): Promise<void> {
-  const file = join(target, 'SKILL.md')
-  const targetMetadata = await lstat(target).catch(() => undefined)
-  const fileMetadata = await lstat(file).catch(() => undefined)
-  if (
-    !targetMetadata?.isDirectory() ||
-    targetMetadata.isSymbolicLink() ||
-    !fileMetadata?.isFile() ||
-    fileMetadata.isSymbolicLink()
-  ) {
-    throw new Error('Refusing to inject into an irregular materialized Skill path')
-  }
-  const handle = await open(file, constants.O_RDWR | (constants.O_NOFOLLOW ?? 0))
-  try {
-    const openedMetadata = await handle.stat()
-    if (
-      !openedMetadata.isFile() ||
-      openedMetadata.dev !== fileMetadata.dev ||
-      openedMetadata.ino !== fileMetadata.ino
-    ) {
-      throw new Error('Materialized SKILL.md changed while opening')
-    }
-    let raw = await handle.readFile('utf8')
-    // The identity marker is app-owned authority metadata. Remove every source-provided/stale copy
-    // before injecting exactly one marker for the catalog entry being materialized.
-    raw = raw.replace(/<!-- open-science:skill-resource id="[^"\n]*" name="[^"\n]*" -->\n?/g, '')
-    const notice = resourceAccessNotice(skillId, skillName)
-    const existingStart = raw.indexOf(RESOURCE_NOTICE_START)
-    const existingEnd = raw.indexOf(RESOURCE_NOTICE_END)
-    const updated =
-      existingStart >= 0 && existingEnd >= existingStart
-        ? `${raw.slice(0, existingStart)}${notice}${raw.slice(
-            existingEnd + RESOURCE_NOTICE_END.length
-          )}`
-        : (() => {
-            const frontmatter = /^---\n[\s\S]*?\n---\n?/.exec(raw)
-            return frontmatter
-              ? `${raw.slice(0, frontmatter[0].length)}\n${notice}${raw.slice(frontmatter[0].length)}`
-              : `${notice}${raw}`
-          })()
-    await handle.truncate(0)
-    const contents = Buffer.from(updated, 'utf8')
-    let written = 0
-    while (written < contents.length) {
-      const result = await handle.write(contents, written, contents.length - written, written)
-      written += result.bytesWritten
-    }
-  } finally {
-    await handle.close()
-  }
-}
+// Older #1134 development builds wrote an unreleased host SDK contract into the persistent Claude
+// projection. The source package was never meant to carry that runtime-specific text. A startup sync
+// recognizes only this exact app-owned marker and rebuilds the projection from source; it never edits
+// bundled, imported, or personal source directories.
+const LEGACY_RESOURCE_NOTICE_MARKER = '<!-- open-science:skill-resource-capability:start -->'
 
 // Whether a skill's model tooling needs a compute backend this app does not provide — true for the
 // biomodel category or any skill whose frontmatter requirements mention gpu/compute.
@@ -196,11 +124,9 @@ interface SkillMaterializer {
 }
 
 // Materializes bundled skills into `<configDir>/skills/os-<id>/` for Claude Code. The target state is
-// exactly the enabled set: enabled skills are copied when new or when their version changed, and os-
-// dirs not in the set are removed. Directories without the os- prefix are never touched.
+// exactly the enabled set: enabled skills are copied when new or when their source/version changed,
+// and os- dirs not in the set are removed. Directories without the os- prefix are never touched.
 class ClaudeCodeSkillMaterializer implements SkillMaterializer {
-  constructor(private readonly injectResourceBrokerNotice = true) {}
-
   async sync(configDir: string, enabled: BundledSkill[]): Promise<void> {
     const skillsDir = join(configDir, 'skills')
     const skillsMetadata = await lstat(skillsDir).catch(() => undefined)
@@ -258,8 +184,29 @@ class ClaudeCodeSkillMaterializer implements SkillMaterializer {
         !targetMetadata.isSymbolicLink() &&
         documentMetadata?.isFile() === true &&
         !documentMetadata.isSymbolicLink()
+      const sourceDocument = await readFile(join(skill.sourceDir, 'SKILL.md')).catch(
+        () => undefined
+      )
+      const projectedDocument = regularProjection
+        ? await readFile(join(target, 'SKILL.md')).catch(() => undefined)
+        : undefined
+      const hasInjectedLegacyNotice =
+        projectedDocument?.includes(LEGACY_RESOURCE_NOTICE_MARKER) === true &&
+        sourceDocument?.includes(LEGACY_RESOURCE_NOTICE_MARKER) !== true
+      // Ordinary projections are exact source copies. Checking bytes even when the version manifest
+      // matches both repairs old dev-build pollution shared across branches and detects unexpected
+      // projection edits. Compute projections intentionally carry app-owned runtime status text.
+      const sourceIdentical =
+        skill.id === COMPUTE_SKILL_ID || requiresCompute(skill)
+          ? true
+          : sourceDocument !== undefined && projectedDocument?.equals(sourceDocument) === true
       const unchanged =
-        regularProjection && version !== '' && existingDirs.has(name) && versions[name] === version
+        regularProjection &&
+        version !== '' &&
+        existingDirs.has(name) &&
+        versions[name] === version &&
+        !hasInjectedLegacyNotice &&
+        sourceIdentical
       if (unchanged) continue
 
       try {
@@ -313,11 +260,6 @@ class ClaudeCodeSkillMaterializer implements SkillMaterializer {
         continue
       }
       try {
-        await chmodTree(target, 'writable')
-        if (this.injectResourceBrokerNotice) {
-          const skill = wanted.get(name)!
-          await injectResourceAccessNotice(target, skill.id, skill.name)
-        }
         await chmodTree(target, 'readonly')
       } catch (error) {
         await rm(target, { recursive: true, force: true }).catch(() => undefined)

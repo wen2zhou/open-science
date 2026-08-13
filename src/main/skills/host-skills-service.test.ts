@@ -1,4 +1,4 @@
-import { chmod, mkdtemp, mkdir, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -7,13 +7,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 import type { BundledSkill } from './registry'
 import { HostSkillsService, type HostSkillsCatalog } from './host-skills-service'
 import { UserSkillRepository } from './user-skill-repository'
-import { clearSkillResourceGrants, registerSkillResourceGrant } from './resource-capability'
 
 const roots: string[] = []
 
 afterEach(async () => {
-  clearSkillResourceGrants('session-1')
-  clearSkillResourceGrants('session-2')
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
@@ -27,21 +24,12 @@ const makeFixture = async (): Promise<{
 }> => {
   const root = await mkdtemp(join(tmpdir(), 'host-skills-'))
   roots.push(root)
-  await mkdir(join(root, 'workspace'), { recursive: true })
   const featuredDir = join(root, 'featured', 'literature-review')
   await mkdir(featuredDir, { recursive: true })
   await writeFile(
     join(featuredDir, 'SKILL.md'),
     '---\nname: literature-review\ndescription: Review literature.\n---\nFeatured body.\n'
   )
-  await mkdir(join(featuredDir, 'references'), { recursive: true })
-  await writeFile(join(featuredDir, 'references', 'guide.md'), 'unprotected catalog source')
-  const projectedDir = join(root, 'protected-projection', 'literature-review')
-  await mkdir(join(projectedDir, 'references'), { recursive: true })
-  await mkdir(join(projectedDir, 'scripts'), { recursive: true })
-  await writeFile(join(projectedDir, 'references', 'guide.md'), 'trusted guide')
-  await writeFile(join(projectedDir, 'scripts', 'run.sh'), '#!/bin/sh\necho safe\n')
-  await chmod(join(projectedDir, 'scripts', 'run.sh'), 0o555)
   const featured: BundledSkill = {
     id: 'literature-review',
     name: 'literature-review',
@@ -73,7 +61,6 @@ const makeFixture = async (): Promise<{
     service: new HostSkillsService({
       storageRoot: root,
       catalog,
-      resourceRoot: (skill) => join(root, 'protected-projection', skill.id),
       approveDelete,
       onPublishedSkillsChanged: reload
     })
@@ -81,99 +68,6 @@ const makeFixture = async (): Promise<{
 }
 
 describe('HostSkillsService', () => {
-  it('reads only the exact Skill granted to the authenticated Session', async () => {
-    const { service } = await makeFixture()
-    registerSkillResourceGrant('session-1', 'literature-review')
-
-    await expect(
-      service.dispatch(
-        { op: 'resource', params: { skill_id: 'literature-review', path: 'references/guide.md' } },
-        { sessionId: 'session-1' }
-      )
-    ).resolves.toEqual({ path: 'references/guide.md', content: 'trusted guide' })
-    await expect(
-      service.dispatch(
-        {
-          op: 'resource',
-          params: { skill_id: 'other-skill', path: 'references/guide.md' }
-        },
-        { sessionId: 'session-1' }
-      )
-    ).rejects.toThrow('no longer installed')
-    await expect(
-      service.dispatch(
-        { op: 'resource', params: { skill_id: 'literature-review', path: '../settings.json' } },
-        { sessionId: 'session-1' }
-      )
-    ).rejects.toThrow('unsafe path')
-    await expect(
-      service.dispatch(
-        { op: 'resource', params: { skill_id: 'literature-review', path: 'SKILL.md' } },
-        { sessionId: 'session-1' }
-      )
-    ).rejects.toThrow('loaded only by the native Skill tool')
-    await expect(
-      service.dispatch(
-        { op: 'resource', params: { skill_id: 'literature-review', path: 'references/guide.md' } },
-        { sessionId: 'session-2' }
-      )
-    ).rejects.toThrow('not authorized for this Session')
-  })
-
-  it.skipIf(process.platform === 'win32')(
-    'rejects a symbolic-link escape even with a valid Skill grant',
-    async () => {
-      const { service, root } = await makeFixture()
-      registerSkillResourceGrant('session-1', 'literature-review')
-      const outside = join(root, 'outside-secret.md')
-      await writeFile(outside, 'secret')
-      await symlink(
-        outside,
-        join(root, 'protected-projection', 'literature-review', 'references', 'outside.md')
-      )
-
-      await expect(
-        service.dispatch(
-          {
-            op: 'resource',
-            params: {
-              skill_id: 'literature-review',
-              path: 'references/outside.md'
-            }
-          },
-          { sessionId: 'session-1' }
-        )
-      ).rejects.toThrow('symbolic link')
-    }
-  )
-
-  it('returns bounded stage bytes and source execute metadata without a privileged path write', async () => {
-    const { service } = await makeFixture()
-    registerSkillResourceGrant('session-1', 'literature-review')
-
-    const result = (await service.dispatch(
-      { op: 'stage', params: { skill_id: 'literature-review', path: 'references/guide.md' } },
-      { sessionId: 'session-1' }
-    )) as { filename: string; base64: string; executable: boolean }
-
-    expect(result).toEqual({
-      filename: 'guide.md',
-      base64: Buffer.from('trusted guide').toString('base64'),
-      executable: false
-    })
-    const script = (await service.dispatch(
-      { op: 'stage', params: { skill_id: 'literature-review', path: 'scripts/run.sh' } },
-      { sessionId: 'session-1' }
-    )) as { executable: boolean }
-    expect(script.executable).toBe(true)
-    await expect(
-      service.dispatch(
-        { op: 'stage', params: { skill_id: 'literature-review', path: 'references/guide.md' } },
-        {}
-      )
-    ).rejects.toThrow('not authorized for this Session')
-  })
-
   it('validates a draft through the same frontmatter contract used by publish', async () => {
     const { service } = await makeFixture()
     await service.dispatch({
@@ -234,12 +128,10 @@ describe('HostSkillsService', () => {
         op: 'read',
         params: { name: 'personal-analysis-helper', path: 'scripts/run.js' }
       })
-    ).rejects.toThrow('require a loaded Skill resource grant')
-    await expect(
-      service.dispatch({ op: 'read', params: { name: 'personal-analysis-helper' } })
-    ).resolves.toMatchObject({
+    ).resolves.toEqual({
       name: 'analysis-helper',
-      path: 'SKILL.md',
+      path: 'scripts/run.js',
+      content: 'console.log("v2")\n',
       origin: 'personal'
     })
     await expect(

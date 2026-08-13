@@ -1,9 +1,9 @@
 import { describe, it, expect, beforeAll, afterAll } from 'vitest'
 import { spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
-import { existsSync, realpathSync } from 'node:fs'
-import { mkdir, mkdtemp, readFile, readdir, rm, stat, writeFile } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdir, mkdtemp, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { createInterface } from 'node:readline'
-import { delimiter, dirname, join, relative } from 'node:path'
+import { join, relative } from 'node:path'
 import { tmpdir } from 'node:os'
 import { randomUUID } from 'node:crypto'
 import { createServer, type Server } from 'node:http'
@@ -16,7 +16,6 @@ import { createProfileService } from '../specialist/service'
 import { createDeterministicDelegateExecution } from '../delegation/deterministic-execution'
 import { createInMemoryDelegatedWorkRecords } from '../delegation/durable-delegated-work'
 import { createTestDurableDelegatedWork as createDurableDelegatedWork } from '../delegation/durable-delegated-work-test-fixture'
-import { protectControlReplFilesystem } from './managed-runtime-guard'
 
 // Run with: RUN_KERNEL=1 npx vitest run src/main/notebook/repl-loop.integration.test.ts
 // Node is always available in vitest, so the only gate is RUN_KERNEL. The child is spawned exactly
@@ -34,16 +33,7 @@ const startLoop = (
   child: ChildProcessWithoutNullStreams
   send: (code: string) => Promise<KernelLoopResponse>
 } => {
-  const protectedRoots = String(env.OPEN_SCIENCE_PROTECTED_DIRS || '')
-    .split(delimiter)
-    .filter(Boolean)
-  const invocation = protectControlReplFilesystem(
-    { executable: process.execPath, args: [LOOP] },
-    env.OPEN_SCIENCE_RUNTIME_DIR || join(tmpdir(), 'repl-loop-test-runtime'),
-    protectedRoots,
-    process.platform
-  )
-  const child = spawn(invocation.executable, invocation.args, {
+  const child = spawn(process.execPath, [LOOP], {
     env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', ...env }
   })
   const rl = createInterface({ input: child.stdout })
@@ -1758,147 +1748,64 @@ describe('repl_loop local RPC transport', () => {
     }
   }, 60_000)
 
-  it.skipIf(process.platform !== 'darwin')(
-    'routes host.skills while the native sandbox denies protected filesystem access',
-    async () => {
-      const protectedRoot = await mkdtemp(join(tmpdir(), 'repl-loop-protected-'))
-      const protectedSettings = join(protectedRoot, 'settings.json')
-      const unrelatedSkill = join(
-        protectedRoot,
-        'skills',
-        'os-unrelated',
-        'references',
-        'secret.md'
+  it('routes the published host.skills composer without exposing unreleased resource methods', async () => {
+    let received: { method?: string; params?: Record<string, unknown> } = {}
+    const server = createServer((request, response) => {
+      let body = ''
+      request.on('data', (chunk) => (body += chunk))
+      request.on('end', () => {
+        received = JSON.parse(body)
+        response
+          .writeHead(200, { 'content-type': 'application/json' })
+          .end(JSON.stringify({ result: { status: 'edited', origin: 'draft' } }))
+      })
+    })
+    const connection = await listenForLocalRpc(server, {
+      name: 'repl-loop-skills-test',
+      transport: 'pipe'
+    })
+    const { child, send } = startLoop({
+      OPEN_SCIENCE_MCP_RPC_ENDPOINT: connection.endpoint,
+      OPEN_SCIENCE_MCP_RPC_SOCKET_PATH: connection.socketPath,
+      OPEN_SCIENCE_MCP_RPC_TOKEN: 'test-token',
+      OPEN_SCIENCE_NOTEBOOK_SESSION_ID: 'session-1'
+    })
+
+    try {
+      const result = await send(
+        "return await host.skills.edit('demo', 'SKILL.md', 'new body', 'old body')"
       )
-      await mkdir(dirname(unrelatedSkill), { recursive: true })
-      await writeFile(protectedSettings, '{"auth":"secret"}')
-      await writeFile(unrelatedSkill, 'unrelated secret')
-      const changedCwd = await mkdtemp(join(tmpdir(), 'repl-loop-changed-cwd-'))
-      const initialWorkspace = realpathSync.native(process.cwd())
-      let received: { method?: string; params?: Record<string, unknown> } = {}
-      const server = createServer((request, response) => {
-        let body = ''
-        request.on('data', (chunk) => (body += chunk))
-        request.on('end', () => {
-          received = JSON.parse(body)
-          const result =
-            received.params?.op === 'stage'
-              ? {
-                  filename: 'run.sh',
-                  base64: Buffer.from('#!/bin/sh\necho staged\n').toString('base64'),
-                  executable: true
-                }
-              : received.params?.op === 'resource'
-                ? { path: 'references/guide.md', content: 'selected resource' }
-                : { status: 'edited', origin: 'draft' }
-          response
-            .writeHead(200, { 'content-type': 'application/json' })
-            .end(JSON.stringify({ result }))
-        })
-      })
-      const connection = await listenForLocalRpc(server, {
-        name: 'repl-loop-skills-test',
-        transport: 'pipe'
-      })
-      const { child, send } = startLoop({
-        OPEN_SCIENCE_MCP_RPC_ENDPOINT: connection.endpoint,
-        OPEN_SCIENCE_MCP_RPC_SOCKET_PATH: connection.socketPath,
-        OPEN_SCIENCE_MCP_RPC_TOKEN: 'test-token',
-        OPEN_SCIENCE_NOTEBOOK_SESSION_ID: 'session-1',
-        OPEN_SCIENCE_PROTECTED_DIRS: [protectedRoot].join(delimiter)
-      })
-
-      try {
-        const result = await send(
-          "return await host.skills.edit('demo', 'SKILL.md', 'new body', 'old body')"
-        )
-        expect(result.error).toBeNull()
-        expect(received).toMatchObject({
-          method: 'skillsCall',
-          params: {
-            op: 'edit',
-            name: 'demo',
-            path: 'SKILL.md',
-            content: 'new body',
-            old_string: 'old body'
-          }
-        })
-
-        const validated = await send("return await host.skills.validate('demo')")
-        expect(validated.error).toBeNull()
-        expect(received).toMatchObject({
-          method: 'skillsCall',
-          params: { op: 'validate', name: 'demo' }
-        })
-
-        const protectedAttempts = [
-          `require('node:fs').readFileSync(${JSON.stringify(protectedSettings)}, 'utf8')`,
-          `await require('node:fs/promises').readFile(${JSON.stringify(unrelatedSkill)}, 'utf8')`,
-          `(await import('node:fs')).readFileSync(${JSON.stringify(protectedSettings)}, 'utf8')`,
-          `await (await import('node:fs/promises')).readFile(${JSON.stringify(
-            unrelatedSkill
-          )}, 'utf8')`,
-          `require('node:fs').writeFileSync(${JSON.stringify(protectedSettings)}, 'changed')`,
-          `require('node:fs').renameSync(${JSON.stringify(unrelatedSkill)}, ${JSON.stringify(
-            join(protectedRoot, '..', 'escaped-secret.md')
-          )})`,
-          `(() => { const originalCwd = process.cwd(); try { process.chdir(${JSON.stringify(
-            protectedRoot
-          )}); return require('node:fs').readdirSync('.') } finally { process.chdir(originalCwd) } })()`,
-          `require('node:child_process').execFileSync(process.execPath, ['-e', ${JSON.stringify(
-            `require('node:fs').readFileSync(${JSON.stringify(protectedSettings)})`
-          )}])`,
-          `(await import('node:child_process')).execFileSync(process.execPath, ['-e', ''])`
-        ]
-        protectedAttempts.push(`process.loadEnvFile(${JSON.stringify(protectedSettings)})`)
-        for (const attempt of protectedAttempts) {
-          const denied = await send(
-            `try { ${attempt}; return 'allowed' } catch (error) { return error.message }`
-          )
-          expect(denied.result).not.toBe('allowed')
-          expect(denied.result).toMatch(
-            /permission|operation not permitted|EACCES|EPERM|ENOENT|dynamic import|command failed/i
-          )
+      expect(result.error).toBeNull()
+      expect(received).toMatchObject({
+        method: 'skillsCall',
+        params: {
+          op: 'edit',
+          name: 'demo',
+          path: 'SKILL.md',
+          content: 'new body',
+          old_string: 'old body'
         }
+      })
 
-        const selected = await send(
-          "return await host.skills.resource('demo-id', 'references/guide.md')"
-        )
-        expect(selected.error).toBeNull()
-        expect(JSON.parse(selected.result ?? '{}')).toEqual({
-          path: 'references/guide.md',
-          content: 'selected resource'
-        })
+      const validated = await send("return await host.skills.validate('demo')")
+      expect(validated.error).toBeNull()
+      expect(received).toMatchObject({
+        method: 'skillsCall',
+        params: { op: 'validate', name: 'demo' }
+      })
 
-        const changed = await send(
-          `process.chdir(${JSON.stringify(changedCwd)}); return process.cwd()`
-        )
-        expect(changed.result).toBe(realpathSync.native(changedCwd))
-        const staged = await send("return await host.skills.stage('demo-id', 'scripts/run.sh')")
-        expect(staged.error).toBeNull()
-        const stagedPath = (JSON.parse(staged.result ?? '{}') as { path: string }).path
-        expect(stagedPath.startsWith(join(initialWorkspace, '.open-science-skill-resource-'))).toBe(
-          true
-        )
-        expect(stagedPath.startsWith(changedCwd)).toBe(false)
-        expect(await readFile(stagedPath, 'utf8')).toBe('#!/bin/sh\necho staged\n')
-        expect((await stat(stagedPath)).mode & 0o111).not.toBe(0)
-        expect(received).toMatchObject({
-          method: 'skillsCall',
-          params: { op: 'stage', skill_id: 'demo-id', path: 'scripts/run.sh' }
-        })
-        await rm(dirname(stagedPath), { recursive: true, force: true })
-      } finally {
-        child.kill()
-        await rm(protectedRoot, { recursive: true, force: true })
-        await rm(changedCwd, { recursive: true, force: true })
-        await new Promise<void>((resolve, reject) =>
-          server.close((error) => (error ? reject(error) : resolve()))
-        )
-      }
-    },
-    60_000
-  )
+      const unreleased = await send(
+        'return [typeof host.skills.resource, typeof host.skills.stage]'
+      )
+      expect(unreleased.error).toBeNull()
+      expect(JSON.parse(unreleased.result ?? '[]')).toEqual(['undefined', 'undefined'])
+    } finally {
+      child.kill()
+      await new Promise<void>((resolve, reject) =>
+        server.close((error) => (error ? reject(error) : resolve()))
+      )
+    }
+  }, 60_000)
 })
 
 gate('repl_loop.js', () => {

@@ -188,6 +188,7 @@ import { registerLocalFsIpcHandlers } from './local-fs/ipc'
 import { GrantedLocalRootsRepository } from './local-fs/granted-roots-repository'
 import { LocalFsService } from './local-fs/service'
 import { getAppClaudeConfigDir } from './settings/provider-env'
+import { SkillCatalogModule } from './settings/skill-catalog'
 import { SettingsService } from './settings/service'
 import { SettingsRepository } from './settings/repository'
 import type { NotebookRuntimeSettings } from './settings/capabilities'
@@ -370,12 +371,29 @@ const createApplicationModules = async (
     createApplicationEventModule
   )
   // One settings service backs both the settings IPC and the ACP spawn config (single source of truth).
-  const settingsRepository = new SettingsRepository(resolveStorageRoot())
+  const configRoot = resolveStorageRoot()
+  const settingsRepository = new SettingsRepository(configRoot)
   const settingsService = await modules.add(undefined, () => ({
     capability: new SettingsService({ repository: settingsRepository })
   }))
   const storedSettings = await settingsService.getStoredSettings()
   const storageLog = createLogger('storage')
+  try {
+    await new SkillCatalogModule({
+      repository: settingsRepository,
+      storageRoot: configRoot
+    }).provisionClaudeConfig(
+      getAppClaudeConfigDir(configRoot),
+      storedSettings.disabledSkillIds ?? []
+    )
+  } catch (error) {
+    // Keep startup available if one projection cannot be repaired; materialization is per-Skill
+    // fail-closed and the next launch will retry the app-owned projection.
+    storageLog.warn(
+      'materialized Claude Skill reconciliation incomplete',
+      diagnosticErrorFields(error)
+    )
+  }
   // Prime the data-root cache from settings before any data repository is constructed below. A change
   // to this value only takes effect after a restart, so reading it once here is sufficient.
   initDataRoot(storedSettings.dataRoot)
@@ -539,7 +557,6 @@ const createApplicationModules = async (
 
   // Construct one storage/index/deletion graph for every related IPC surface. Sharing these instances
   // is essential: separate coordinators would have independent queues and recovery gates.
-  const configRoot = resolveStorageRoot()
   const permissionGrantRegistry = await createPermissionGrantRegistry({
     getClient: () => getProjectDbClient(configRoot),
     isScopeLive: (scope) =>
@@ -1533,9 +1550,6 @@ const createApplicationModules = async (
   const hostSkillsService = new HostSkillsService({
     storageRoot: configRoot,
     catalog: hostSkillsCatalog,
-    // Broker auxiliary resources only from the app-owned materialized projection. Original bundled
-    // and user catalog sources may be readable by provider shells and are never an authority path.
-    resourceRoot: (skill) => join(getAppClaudeConfigDir(configRoot), 'skills', `os-${skill.id}`),
     approveDelete: async (payload, session) => {
       const runtime = runtimeRef.current
       if (!session.sessionId || !runtime) return false

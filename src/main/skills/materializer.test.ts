@@ -76,17 +76,45 @@ describe('ClaudeCodeSkillMaterializer', () => {
     await writeFile(join(skill.sourceDir, 'SKILL.md'), '# beta v2', 'utf8')
     await materializer.sync(configDir, [skill])
 
-    expect(await readFile(join(configDir, 'skills', 'os-beta', 'SKILL.md'), 'utf8')).toContain(
+    expect(await readFile(join(configDir, 'skills', 'os-beta', 'SKILL.md'), 'utf8')).toBe(
       '# beta v2'
     )
     expect(await listSkillDirs(configDir)).toEqual(['os-beta'])
-    const materialized = await readFile(join(configDir, 'skills', 'os-beta', 'SKILL.md'), 'utf8')
-    expect(materialized.match(/open-science:skill-resource-capability:start/g)).toHaveLength(1)
-    expect(materialized.match(/open-science:skill-resource-capability:end/g)).toHaveLength(1)
-    expect(materialized.match(/open-science:skill-resource id="beta" name="beta"/g)).toHaveLength(1)
   })
 
-  it('re-copies when content compatibility changes even if updatedAt does not', async () => {
+  it('replaces a legacy SDK-injected projection with source-identical bytes', async () => {
+    const configDir = await skillsDir()
+    const skill = { ...(await makeSkill('legacy-resource-notice')), compatibility: 'sha256:v1' }
+    const materializer = new ClaudeCodeSkillMaterializer()
+    await materializer.sync(configDir, [skill])
+
+    const source = await readFile(join(skill.sourceDir, 'SKILL.md'))
+    const projection = join(configDir, 'skills', 'os-legacy-resource-notice', 'SKILL.md')
+    await chmod(join(configDir, 'skills', 'os-legacy-resource-notice'), 0o755)
+    await chmod(projection, 0o644)
+    await writeFile(
+      projection,
+      [
+        '<!-- open-science:skill-resource-capability:start -->',
+        '<!-- open-science:skill-resource id="legacy-resource-notice" name="legacy-resource-notice" -->',
+        '> `await host.skills.resource("legacy-resource-notice", "references/example.md")`',
+        '> `await host.skills.stage("legacy-resource-notice", "scripts/example.py")`.',
+        '<!-- open-science:skill-resource-capability:end -->',
+        '',
+        source.toString('utf8')
+      ].join('\n'),
+      'utf8'
+    )
+
+    // A different branch sees the same persistent config root and the same compatibility value.
+    // Startup synchronization must still rebuild the app-owned projection from its source.
+    await materializer.sync(configDir, [skill])
+
+    expect(await readFile(projection)).toEqual(source)
+    expect(await readFile(join(skill.sourceDir, 'SKILL.md'))).toEqual(source)
+  })
+
+  it('keeps an ordinary projection source-identical even when compatibility metadata is stale', async () => {
     const configDir = await skillsDir()
     const skill = {
       ...(await makeSkill('gamma')),
@@ -96,21 +124,21 @@ describe('ClaudeCodeSkillMaterializer', () => {
     const materializer = new ClaudeCodeSkillMaterializer()
 
     await materializer.sync(configDir, [skill])
-    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toContain(
+    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toBe(
       '# gamma'
     )
 
-    // A source edit with an unchanged fingerprint is skipped.
+    // A stale fingerprint must not preserve bytes written by another dev build or branch.
     await writeFile(join(skill.sourceDir, 'SKILL.md'), '# gamma edited', 'utf8')
     await materializer.sync(configDir, [skill])
-    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toContain(
-      '# gamma'
+    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toBe(
+      '# gamma edited'
     )
 
     // Registry compatibility tracks content, so a new fingerprint refreshes the materialized copy
     // even when human-maintained updatedAt metadata was not bumped.
     await materializer.sync(configDir, [{ ...skill, compatibility: 'sha256:v2' }])
-    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toContain(
+    expect(await readFile(join(configDir, 'skills', 'os-gamma', 'SKILL.md'), 'utf8')).toBe(
       '# gamma edited'
     )
   })
@@ -138,7 +166,7 @@ describe('ClaudeCodeSkillMaterializer', () => {
     await writeFile(join(skill.sourceDir, 'SKILL.md'), '# epsilon v2', 'utf8')
     await materializer.sync(configDir, [{ ...skill, updatedAt: 'v2' }])
 
-    expect(await readFile(file, 'utf8')).toContain('# epsilon v2')
+    expect(await readFile(file, 'utf8')).toBe('# epsilon v2')
     expect((await stat(file)).mode & 0o222).toBe(0)
   })
 
