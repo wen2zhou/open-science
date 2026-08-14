@@ -1,6 +1,7 @@
 import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
 import { constants } from 'node:fs'
-import { access } from 'node:fs/promises'
+import { access, lstat, readFile } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import { createServer } from 'node:net'
 import { promisify } from 'node:util'
@@ -16,6 +17,7 @@ import type {
   Preflight,
   ValidateProviderResult
 } from '../../shared/settings'
+import type { ComputeHost } from '../../shared/compute'
 import { isProviderUsableByFramework } from '../../shared/settings'
 import { isModelBridgeSupported } from '../../shared/provider-registry'
 import { CLAUDE_EXECUTABLE_MISSING_MESSAGE } from '../../shared/run-error-classification'
@@ -30,10 +32,24 @@ import {
   syncConnectorSkillDocs,
   syncMaterializedCustomServerSkillDocs
 } from '../connectors/provision'
+import { renderSkillDoc } from '../connectors/skill-doc'
 import { ComputeHostRepository } from '../compute/repository'
 import { createLogger } from '../logger'
 import { getProjectDbClient } from '../projects/prisma-client'
-import { hasCanonicalComputeSkillDoc, syncComputeSkillDoc } from '../compute/skill-doc'
+import {
+  COMPUTE_SKILL_ID,
+  hasCanonicalComputeSkillDoc,
+  projectComputeSkillDoc,
+  syncComputeSkillDoc
+} from '../compute/skill-doc'
+import {
+  AgentSkillRuntime,
+  type AgentSkillRuntimeLease,
+  type AgentSkillRuntimeLifecycle,
+  type AgentSkillRuntimeSkill,
+  type AgentSkillRuntimeScope
+} from '../skills/agent-skill-runtime'
+import { parseFrontmatter } from '../skills/frontmatter'
 import { writeAgentConfigFiles } from './agent-config-files'
 import { createDefaultDetectDeps, detectClaude, type ClaudeDetectDeps } from './claude-detect'
 import {
@@ -98,6 +114,42 @@ const CODEX_INSTALL_TARGET: InstallTarget = {
 
 const isManagedCodexPath = (adapterPath: string, storageRoot: string): boolean =>
   adapterPath === managedCodexAdapterEntry(storageRoot)
+
+const generatedConnectorSkill = (skillName: string, document: string): AgentSkillRuntimeSkill => {
+  const { fields, hasFrontmatter } = parseFrontmatter(document)
+  if (
+    !hasFrontmatter ||
+    fields.name !== skillName ||
+    fields.source !== 'connector' ||
+    !fields.description?.trim()
+  ) {
+    throw new Error(`Connector Skill document has invalid frontmatter: ${skillName}`)
+  }
+
+  return {
+    kind: 'generated',
+    id: skillName,
+    name: skillName,
+    description: fields.description,
+    revision: `sha256:${createHash('sha256').update(document).digest('hex')}`,
+    files: [{ path: 'SKILL.md', content: document }]
+  }
+}
+
+const readCustomConnectorSkill = async (
+  storageRoot: string,
+  skillName: string
+): Promise<AgentSkillRuntimeSkill> => {
+  if (!/^(?=.{5,64}$)mcp-[a-z0-9]+(?:-[a-z0-9]+)*$/.test(skillName)) {
+    throw new Error(`Custom Connector Skill has an invalid name: ${skillName}`)
+  }
+  const file = join(getAppClaudeConfigDir(storageRoot), 'skills', skillName, 'SKILL.md')
+  const entry = await lstat(file)
+  if (!entry.isFile()) {
+    throw new Error(`Custom Connector Skill document is not a regular file: ${skillName}`)
+  }
+  return generatedConnectorSkill(skillName, await readFile(file, 'utf8'))
+}
 
 export type ExecuteClaudeProbe = (
   executablePath: string,
@@ -228,7 +280,16 @@ export type AgentRuntimeManagerOptions = {
   ) => Promise<ManagedCodexInstallOutcome>
   resolveCodexProxyEnvironment?: () => Promise<SystemProxyEnvironment | undefined>
   syncComputeSkillDocument?: (skillsDir: string) => Promise<void>
+  listComputeHosts?: () => Promise<readonly ComputeHost[]>
+  agentSkillRuntime?: Pick<AgentSkillRuntime, 'acquire' | 'fork'>
 }
+
+export type AgentSkillRuntimeAcquireRequest = Readonly<{
+  lifecycle: AgentSkillRuntimeLifecycle
+  scope: AgentSkillRuntimeScope
+  forcedSkillIds?: readonly string[]
+  allowedSkillIds?: readonly string[]
+}>
 
 // Owns host runtime discovery, installation, executable preparation, and runtime-specific filesystem
 // provisioning. Durable records remain serialized by SettingsRepository; live ACP generations and
@@ -256,6 +317,8 @@ export class AgentRuntimeManager {
   ) => Promise<ManagedCodexInstallOutcome>
   private readonly resolveProxyEnvironment: () => Promise<SystemProxyEnvironment | undefined>
   private readonly syncComputeSkillDocument: (skillsDir: string) => Promise<void>
+  private readonly listComputeHosts: () => Promise<readonly ComputeHost[]>
+  private readonly agentSkillRuntime: Pick<AgentSkillRuntime, 'acquire' | 'fork'>
 
   constructor(options: AgentRuntimeManagerOptions) {
     this.repository = options.repository
@@ -300,15 +363,16 @@ export class AgentRuntimeManager {
     this.installManagedCodexImpl = options.installManagedCodexImpl ?? installManagedCodex
     this.resolveProxyEnvironment =
       options.resolveCodexProxyEnvironment ?? resolveSystemProxyEnvironment
+    this.listComputeHosts =
+      options.listComputeHosts ??
+      (() => new ComputeHostRepository(() => getProjectDbClient(this.storageRoot)).list())
     this.syncComputeSkillDocument =
       options.syncComputeSkillDocument ??
       (async (skillsDir) => {
         if (!(await hasCanonicalComputeSkillDoc(skillsDir))) return
-        const hosts = await new ComputeHostRepository(() =>
-          getProjectDbClient(this.storageRoot)
-        ).list()
-        await syncComputeSkillDoc(skillsDir, hosts)
+        await syncComputeSkillDoc(skillsDir, await this.listComputeHosts())
       })
+    this.agentSkillRuntime = options.agentSkillRuntime ?? new AgentSkillRuntime()
   }
 
   async getPreflight(providers: ProviderPreflightAccess): Promise<Preflight> {
@@ -603,6 +667,79 @@ export class AgentRuntimeManager {
 
   async resolveCodexProxyEnvironment(): Promise<SystemProxyEnvironment | undefined> {
     return this.resolveProxyEnvironment()
+  }
+
+  async acquireAgentSkillRuntime(
+    settings: StoredSettings,
+    request: AgentSkillRuntimeAcquireRequest
+  ): Promise<AgentSkillRuntimeLease> {
+    const packageCatalog = await this.skills.runtimeProjectionCatalog()
+    const packageSkills = await Promise.all(
+      packageCatalog.map(async (skill): Promise<AgentSkillRuntimeSkill> => {
+        const base = {
+          kind: 'package' as const,
+          id: skill.id,
+          name: skill.name,
+          description: skill.description,
+          sourceDir: skill.sourceDir,
+          revision: skill.compatibility || skill.updatedAt
+        }
+        if (skill.id !== COMPUTE_SKILL_ID) return base
+
+        const projectedDocument = projectComputeSkillDoc(
+          await readFile(join(skill.sourceDir, 'SKILL.md'), 'utf8'),
+          await this.listComputeHosts()
+        )
+        return {
+          ...base,
+          revision: `sha256:${createHash('sha256')
+            .update(JSON.stringify([base.revision, projectedDocument]))
+            .digest('hex')}`,
+          overrides: [{ path: 'SKILL.md', content: projectedDocument }]
+        }
+      })
+    )
+    const connectorSkills = this.connectors
+      .enabledConnectorIds(settings.connectors)
+      .map((id) => generatedConnectorSkill(`mcp-${id}`, renderSkillDoc(id)))
+    const customConnectorSkills = await Promise.all(
+      this.connectors
+        .materializedCustomSkillNames()
+        .map((skillName) => readCustomConnectorSkill(this.storageRoot, skillName))
+    )
+    const catalog = [...packageSkills, ...connectorSkills, ...customConnectorSkills]
+    const disabled = new Set(settings.disabledSkillIds ?? [])
+    const forced = new Set(request.forcedSkillIds ?? [])
+    const allowed = request.allowedSkillIds ? new Set(request.allowedSkillIds) : undefined
+    const selected = catalog.filter((skill) => {
+      if (allowed) return allowed.has(skill.id)
+      const packageEntry = packageCatalog.find((entry) => entry.id === skill.id)
+      return (
+        packageEntry?.exposure === 'internal' || !disabled.has(skill.id) || forced.has(skill.id)
+      )
+    })
+    if (allowed) {
+      const available = new Set(selected.map((skill) => skill.id))
+      const unavailable = [...allowed].filter((id) => !available.has(id))
+      if (unavailable.length > 0) {
+        throw new Error(`Authorized Skill is unavailable: ${unavailable.join(', ')}`)
+      }
+    }
+
+    return this.agentSkillRuntime.acquire({
+      storageRoot: this.storageRoot,
+      lifecycle: request.lifecycle,
+      scope: request.scope,
+      skills: selected
+    })
+  }
+
+  forkAgentSkillRuntime(
+    catalog: AgentSkillRuntimeLease,
+    lifecycle: AgentSkillRuntimeLifecycle,
+    scope: AgentSkillRuntimeScope
+  ): Promise<AgentSkillRuntimeLease> {
+    return this.agentSkillRuntime.fork(catalog, { lifecycle, scope })
   }
 
   async materializeAgentSkills(

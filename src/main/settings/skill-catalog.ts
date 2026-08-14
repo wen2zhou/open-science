@@ -208,6 +208,13 @@ class SkillCatalogModule {
     return this.catalog()
   }
 
+  // Agent-facing runtime projections start from the complete installed catalog. Enablement and
+  // role scope are applied when a runtime lease is acquired, so disabled Specialist Skills and
+  // internal host Skills remain available without exposing their authoritative source directories.
+  async runtimeProjectionCatalog(): Promise<BundledSkill[]> {
+    return this.catalog()
+  }
+
   // Main-process observer adapter. Keeping this read on the existing repository owner avoids a
   // second production transaction facade while excluding immutable bundled packages from each
   // writable-directory reconciliation.

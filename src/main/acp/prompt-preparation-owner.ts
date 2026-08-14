@@ -158,6 +158,7 @@ class AcpPromptPreparationOwner {
         backendSystemPromptAppends: input.backend.prompt.systemPromptAppends,
         persistentSystemPrompt: input.backend.prompt.persistentSystemPrompt,
         sessionOptions: input.backend.session.options,
+        ...(input.backend.skillRuntime ? { skillRuntime: input.backend.skillRuntime } : {}),
         specialistPrefix: input.specialistPrefix,
         sessionSetupPromptPrefix: input.sessionSetupPromptPrefix,
         turnPromptReminders: [

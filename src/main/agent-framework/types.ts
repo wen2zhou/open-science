@@ -48,6 +48,37 @@ export type AgentProviderConfiguration = {
   headers: Record<string, string>
 }
 
+// Secret-free view of one prepared skill runtime. Adapters consume only this projection: lifecycle,
+// cache ownership, and release authority remain behind the skills runtime module.
+export type SkillRuntimeDescriptor = Readonly<{
+  id: string
+  name: string
+  description: string
+  path: string
+}>
+
+export type SkillRuntimeView = Readonly<{
+  projectionRoot: string
+  discoveryRoot: string
+  descriptors: readonly SkillRuntimeDescriptor[]
+  environment: Readonly<Record<string, string>>
+}>
+
+export type SkillRuntimeLifecycle = Readonly<{
+  sessionId: string
+  agentFrameId: string
+  runtimeSegmentId: string
+}>
+
+export type SkillRuntimeFork = Readonly<{
+  acquire(lifecycle: SkillRuntimeLifecycle): Promise<
+    Readonly<{
+      view: SkillRuntimeView
+      lease: Readonly<{ release(): Promise<void> }>
+    }>
+  >
+}>
+
 // How the app's provider maps onto a framework's native model configuration. Claude reads env
 // (ANTHROPIC_*); opencode reads a generated config file referenced by OPENCODE_CONFIG. Fields are
 // merged over the spawn base, so an empty result just spawns with inherited defaults.
@@ -64,6 +95,9 @@ export type AgentModelConfig = {
   // ordinary ACP prompt content. The runtime uses this for context accounting and to avoid copying
   // the same text into every user message.
   persistentSystemPrompt?: string
+  // Carries the same secret-free runtime view across the public adapter seam so session-native
+  // discovery can be assembled without exposing the runtime lease or its release authority.
+  skillRuntime?: SkillRuntimeView
 }
 
 export type AgentModelRoute =
@@ -133,6 +167,7 @@ export type ModelConfigContext = {
   // Same-provider models that keep the active backend route. Frameworks may pre-register these in
   // their native catalog so a later session configOption switch does not require a process respawn.
   providerModelCatalog?: readonly AgentModelCatalogEntry[]
+  skillRuntime?: SkillRuntimeView
 }
 
 // System-prompt guidance the runtime wants appended for a session (artifact routing, notebook, skill
@@ -148,6 +183,7 @@ export type SessionSetupContext = {
   // undefined is the Main Agent and must omit the native field; [] is an explicit Specialist
   // zero-skill whitelist and must be preserved verbatim by supporting frameworks.
   skillWhitelist?: string[]
+  skillRuntime?: SkillRuntimeView
 }
 
 // Framework-specific session configuration returned to the runtime. `meta` becomes the ACP `_meta`
@@ -257,6 +293,12 @@ export type ResolvedAgentBackend = {
   env: Record<string, string>
   args?: string[]
   proxyEnvironmentMode?: ProxyEnvironmentMode
+  skillRuntime?: SkillRuntimeView
+  skillRuntimeLease?: { release(): Promise<void> }
+  // Process-local derivation authority. Delegated Attempts use it to share the immutable catalog
+  // while receiving independent writable cache/tmp roots. It is never persisted or exposed to the
+  // agent process, and is deliberately separate from the physical lease ownership seam.
+  skillRuntimeFork?: SkillRuntimeFork
   // Framework-native session options retained by the runtime and passed through buildSessionSetup.
   sessionOptions?: Record<string, unknown>
   // Backend-resolved guidance appended to every session. Connector conventions use this channel for

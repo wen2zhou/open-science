@@ -26,6 +26,10 @@ import { codexStorageDir, codexSubscriptionStorageDir } from '../agent-framework
 import { renderConnectorInstructions } from '../connectors/skill-doc'
 import { buildProviderEnv } from './provider-env'
 import type { AgentRuntimeManager } from './agent-runtime-manager'
+import {
+  AgentBackendSkillRuntimeOwner,
+  type AgentSkillRuntimeResolutionInput
+} from './agent-skill-runtime-projection'
 import type { ConnectorSettingsModule } from './connector-settings'
 import {
   CLAUDE_SHARED_DISCONNECTED_MESSAGE,
@@ -56,8 +60,7 @@ export type AdmittedAgentBackendTarget = ExplicitAgentBackendTarget &
     expectedModelRoute: AgentModelRoute
   }>
 
-export type AgentBackendResolutionContext = {
-  forcedSkillIds?: string[]
+export type AgentBackendResolutionContext = AgentSkillRuntimeResolutionInput & {
   systemPromptAppends?: string[]
   forceCodexNativeResponsesCompatibility?: boolean
 }
@@ -87,6 +90,8 @@ export type AgentBackendRuntimePort = Pick<
   | 'resolveCodexExecutable'
   | 'probeCodexNativeVersion'
   | 'provisionClaudeRuntimeConfig'
+  | 'acquireAgentSkillRuntime'
+  | 'forkAgentSkillRuntime'
   | 'materializeAgentSkills'
   | 'materializeAgentConfigFiles'
   | 'reserveOpenCodeUsagePort'
@@ -123,6 +128,7 @@ export class AgentBackendResolver {
   private readonly selection: BackendSelectionOwner
   private readonly planner: BackendRoutePlanner
   private readonly transports: ProviderTransportOwner
+  private readonly skillRuntimes: AgentBackendSkillRuntimeOwner
   private readonly ensureCodexSubscriptionHome: () => Promise<void>
 
   constructor(options: AgentBackendResolverOptions) {
@@ -141,6 +147,7 @@ export class AgentBackendResolver {
     })
     this.planner = new BackendRoutePlanner({ providers: this.providers })
     this.transports = new ProviderTransportOwner(options)
+    this.skillRuntimes = new AgentBackendSkillRuntimeOwner(this.runtime)
     this.ensureCodexSubscriptionHome =
       options.ensureCodexSubscriptionHome ??
       (() => ensureCodexAuthHome('isolated', this.storageRoot))
@@ -342,37 +349,66 @@ export class AgentBackendResolver {
     const sessionEffort = plan.sessionEffort
     const supportedReasoningEfforts = plan.supportedReasoningEfforts
     if (framework.id === 'claude-code') {
-      const {
-        envOverrides,
-        executablePath: claudeExecutablePath,
-        sessionOptions,
-        contextWindow
-      } = await this.resolveClaudeSpawnConfig(
-        settings,
-        target,
-        forcedSkillIds,
-        executablePath,
-        plan.claudeModelConfig
-      )
-      const transport = await this.transports.acquire({ activeTarget: target, plan })
-      return {
-        framework,
-        backendId: `${framework.id}:${target.providerId}`,
-        modelRoute,
-        executablePath: claudeExecutablePath,
-        env: { ...envOverrides, ...(transport.environment ?? {}) },
-        sessionOptions,
-        sessionEffort,
-        contextWindow,
-        ...(target.provider.supportsImageInput ? { supportsImageInput: true } : {}),
-        contextUsageModel: target.effectiveModel,
-        systemPromptAppends: [
-          userSkillDirectoryGuidance,
-          ...(connectorInstructions ? [connectorInstructions] : [])
-        ],
-        ...(transport.anthropicBridgeLease
-          ? { anthropicBridgeLease: transport.anthropicBridgeLease }
-          : {})
+      let skillRuntimeLease:
+        Awaited<ReturnType<AgentBackendRuntimePort['acquireAgentSkillRuntime']>> | undefined
+      let transport: Awaited<ReturnType<ProviderTransportOwner['acquire']>> | undefined
+      try {
+        const {
+          envOverrides,
+          executablePath: claudeExecutablePath,
+          sessionOptions,
+          contextWindow
+        } = await this.resolveClaudeSpawnConfig(
+          settings,
+          target,
+          forcedSkillIds,
+          executablePath,
+          plan.claudeModelConfig
+        )
+        const ownedSkillRuntime = await this.skillRuntimes.acquire(settings, context)
+        skillRuntimeLease = ownedSkillRuntime.lease
+        const { view: skillRuntime, fork: skillRuntimeFork } = ownedSkillRuntime
+        const modelConfig = framework.prepareModelConfig(target.provider, {
+          storageRoot: this.storageRoot,
+          executablePath,
+          reasoningEffort: sessionEffort,
+          reasoningEfforts: supportedReasoningEfforts,
+          skillRuntime
+        })
+        transport = await this.transports.acquire({ activeTarget: target, plan })
+        return {
+          framework,
+          backendId: `${framework.id}:${target.providerId}`,
+          modelRoute,
+          executablePath: claudeExecutablePath,
+          env: {
+            ...(modelConfig.env ?? {}),
+            ...envOverrides,
+            ...(transport.environment ?? {})
+          },
+          sessionOptions,
+          skillRuntime,
+          skillRuntimeLease,
+          skillRuntimeFork,
+          sessionEffort,
+          contextWindow,
+          ...(target.provider.supportsImageInput ? { supportsImageInput: true } : {}),
+          contextUsageModel: target.effectiveModel,
+          systemPromptAppends: [
+            userSkillDirectoryGuidance,
+            ...(connectorInstructions ? [connectorInstructions] : [])
+          ],
+          ...(transport.anthropicBridgeLease
+            ? { anthropicBridgeLease: transport.anthropicBridgeLease }
+            : {})
+        }
+      } catch (error) {
+        try {
+          await transport?.release()
+        } finally {
+          await skillRuntimeLease?.release().catch(() => undefined)
+        }
+        throw error
       }
     }
 
@@ -393,7 +429,18 @@ export class AgentBackendResolver {
     )
     connectorInstructions = renderConnectorInstructions(materializedConnectorSkillNames)
 
-    const transport = await this.transports.acquire({ activeTarget: target, plan })
+    const {
+      lease: skillRuntimeLease,
+      view: skillRuntime,
+      fork: skillRuntimeFork
+    } = await this.skillRuntimes.acquire(settings, context)
+    let transport: Awaited<ReturnType<ProviderTransportOwner['acquire']>> | undefined
+    try {
+      transport = await this.transports.acquire({ activeTarget: target, plan })
+    } catch (error) {
+      await skillRuntimeLease.release().catch(() => undefined)
+      throw error
+    }
     const provider = transport.provider ?? target.provider
     const providerModelCatalog = transport.providerModelCatalog ?? plan.providerModelCatalog
     const responsesBridge = transport.responsesBridge
@@ -412,6 +459,7 @@ export class AgentBackendResolver {
         reasoningEffort: sessionEffort,
         reasoningEfforts: supportedReasoningEfforts,
         providerModelCatalog,
+        skillRuntime,
         instructions: connectorInstructions,
         ...(persistentSystemPromptAppends.length > 0
           ? { systemPromptAppends: persistentSystemPromptAppends }
@@ -445,6 +493,9 @@ export class AgentBackendResolver {
             ? { CODEX_PATH: settings.codex.nativePath }
             : {})
         },
+        skillRuntime,
+        skillRuntimeLease,
+        skillRuntimeFork,
         args:
           opencodeUsagePort === undefined
             ? modelConfig.args
@@ -481,7 +532,11 @@ export class AgentBackendResolver {
         providerTransportLease: transport.providerTransportLease
       }
     } catch (error) {
-      await transport.release()
+      try {
+        await transport.release()
+      } finally {
+        await skillRuntimeLease.release().catch(() => undefined)
+      }
       throw error
     }
   }
@@ -513,8 +568,10 @@ export class AgentBackendResolver {
     const sessionOptions =
       target.providerType === 'claude-shared'
         ? {
-            settings: join(appConfigDir, 'settings.json'),
-            plugins: [{ type: 'local', path: appConfigDir, skipMcpDiscovery: true }]
+            // Shared auth still needs the app-owned settings layer, while native Skill discovery is
+            // supplied exclusively by the immutable generation runtime plugin. Do not load this
+            // persistent legacy directory as a plugin: older contents could include an MCP manifest.
+            settings: join(appConfigDir, 'settings.json')
           }
         : provider.type === 'custom'
           ? {

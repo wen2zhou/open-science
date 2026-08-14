@@ -75,6 +75,9 @@ const CODEX_DELEGATION_FEATURES = Object.freeze({
 const CODEX_ENV_KEYS = [
   'CODEX_API_KEY',
   'OPENAI_API_KEY',
+  'OPEN_SCIENCE_SKILL_RUNTIME_ROOT',
+  'OPEN_SCIENCE_SKILL_DISCOVERY_ROOT',
+  'OPEN_SCIENCE_SKILL_PROJECTION_ROOT',
   'CODEX_CONFIG',
   'CODEX_HOME',
   'CODEX_PATH',
@@ -111,6 +114,16 @@ const isolatedCodexHomeEnv = (codexHome: string, platform: NodeJS.Platform): Nod
   ...(platform === 'win32' ? { USERPROFILE: codexHome } : {}),
   CODEX_HOME: codexHome
 })
+
+const skillRuntimeEnvironment = (ctx: ModelConfigContext): NodeJS.ProcessEnv =>
+  ctx.skillRuntime
+    ? {
+        ...ctx.skillRuntime.environment,
+        OPEN_SCIENCE_SKILL_RUNTIME_ROOT: ctx.skillRuntime.discoveryRoot,
+        OPEN_SCIENCE_SKILL_DISCOVERY_ROOT: ctx.skillRuntime.discoveryRoot,
+        OPEN_SCIENCE_SKILL_PROJECTION_ROOT: ctx.skillRuntime.projectionRoot
+      }
+    : {}
 
 const normalizeResponsesBaseUrl = (value: string | undefined): string | undefined => {
   const normalized = value
@@ -433,6 +446,7 @@ export const createCodexFramework = ({
       const codexHome = codexSubscriptionStorageDir(ctx.storageRoot)
       return {
         env: {
+          ...skillRuntimeEnvironment(ctx),
           ...isolatedCodexHomeEnv(codexHome, platform),
           ...(codexConfigJson ? { CODEX_CONFIG: codexConfigJson } : {})
         },
@@ -502,6 +516,7 @@ export const createCodexFramework = ({
     }
     return {
       env: {
+        ...skillRuntimeEnvironment(ctx),
         ...isolatedCodexHomeEnv(codexHome, platform),
         CODEX_CONFIG: JSON.stringify(codexConfig),
         MODEL_PROVIDER: CODEX_PROVIDER_ID,

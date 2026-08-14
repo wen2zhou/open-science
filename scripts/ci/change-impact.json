@@ -158,6 +158,7 @@
         "src/main/settings/opencode-install.ts",
         "src/main/settings/preferences.ts",
         "src/main/settings/process-tree.ts",
+        "src/main/skills/agent-skill-runtime.ts",
         "src/main/settings/skill-catalog.ts",
         "src/main/storage-root.ts",
         "src/main/storage/**",

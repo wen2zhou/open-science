@@ -1,4 +1,14 @@
-import { chmod, mkdir, mkdtemp, readFile, rename, rm, symlink, writeFile } from 'node:fs/promises'
+import {
+  chmod,
+  mkdir,
+  mkdtemp,
+  readFile,
+  readdir,
+  rename,
+  rm,
+  symlink,
+  writeFile
+} from 'node:fs/promises'
 import { dirname, join, normalize } from 'node:path'
 import { tmpdir } from 'node:os'
 import { execPath } from 'node:process'
@@ -85,7 +95,21 @@ const MANAGED_CODEX_ADAPTER_FIXTURE = [
   '        return null;',
   '    }',
   '  }).filter((block) => block !== null);',
-  '}'
+  '}',
+  '  async refreshSkills(cwd, additionalRoots) {',
+  '    if (!cwd) {',
+  '      return;',
+  '    }',
+  '    const skillExtraRoots = additionalRoots.map((root) => path4.join(root, ".agents", "skills"));',
+  '    if (!arraysEqual(this.skillExtraRoots, skillExtraRoots)) {',
+  '      await this.codexClient.skillsExtraRootsSet({ extraRoots: skillExtraRoots });',
+  '      this.skillExtraRoots = skillExtraRoots;',
+  '    }',
+  '    await this.codexClient.listSkills({',
+  '      cwds: [cwd, ...additionalRoots],',
+  '      forceReload: true',
+  '    });',
+  '  }'
 ].join('\n')
 
 const validAnthropicResponse = (): Response =>
@@ -257,9 +281,17 @@ beforeEach(async () => {
   await writeFile(join(userCodexDir, 'auth.json'), '{"tokens":{"access_token":"test"}}')
 })
 
+const makeTreeWritable = async (directory: string): Promise<void> => {
+  for (const entry of await readdir(directory, { withFileTypes: true }).catch(() => [])) {
+    if (entry.isDirectory()) await makeTreeWritable(join(directory, entry.name))
+  }
+  await chmod(directory, 0o755).catch(() => undefined)
+}
+
 afterEach(async () => {
   vi.unstubAllGlobals()
   vi.unstubAllEnvs()
+  await makeTreeWritable(storageRoot)
   await rm(storageRoot, { recursive: true, force: true })
 })
 
@@ -3866,9 +3898,11 @@ describe('SettingsService: skills', () => {
 
       expect(config.env.CLAUDE_CONFIG_DIR).toBe(userClaudeDir)
       expect(config.sessionOptions).toEqual({
-        settings: join(appClaudeDir, 'settings.json'),
-        plugins: [{ type: 'local', path: appClaudeDir, skipMcpDiscovery: true }]
+        settings: join(appClaudeDir, 'settings.json')
       })
+      expect(config.skillRuntime?.descriptors).toContainEqual(
+        expect.objectContaining({ id: 'demo' })
+      )
       expect(await readFile(managedSkillFile, 'utf8')).toContain('demo body')
       expect(await readFile(join(userSkillDir, 'SKILL.md'), 'utf8')).toBe('# User skill')
       expect(await readFile(join(userConnectorDir, 'SKILL.md'), 'utf8')).toBe(
@@ -5187,7 +5221,14 @@ describe('SettingsService: Subagent model', () => {
       providerId: provider.id,
       model: 'subagent-model'
     })
-    expect(claim.backend).toMatchObject({
+    const claimedBackend = await claim.acquireAttemptBackend({
+      lifecycle: {
+        sessionId: 'session-1',
+        agentFrameId: 'frame-1',
+        runtimeSegmentId: 'runtime-1'
+      }
+    })
+    expect(claimedBackend).toMatchObject({
       framework: { id: 'claude-code' },
       env: { ANTHROPIC_AUTH_TOKEN: 'secret' }
     })

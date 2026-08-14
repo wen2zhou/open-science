@@ -14,7 +14,8 @@ import type {
   AgentSpawnInput,
   ModelConfigContext,
   SessionSetup,
-  SessionSetupContext
+  SessionSetupContext,
+  SkillRuntimeView
 } from './types'
 import { isProductionDelegatedWorkFramework } from '../delegation/production-readiness'
 import { renderAppMcpToolReferences } from './app-mcp-names'
@@ -43,6 +44,20 @@ const recordValue = (value: unknown): Record<string, unknown> =>
 
 const stringArrayValue = (value: unknown): string[] =>
   Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : []
+
+const arrayValue = (value: unknown): unknown[] => (Array.isArray(value) ? value : [])
+
+const skillRuntimeEnvironment = (
+  skillRuntime: SkillRuntimeView | undefined
+): Record<string, string> =>
+  skillRuntime
+    ? {
+        ...skillRuntime.environment,
+        OPEN_SCIENCE_SKILL_RUNTIME_ROOT: skillRuntime.discoveryRoot,
+        OPEN_SCIENCE_SKILL_DISCOVERY_ROOT: skillRuntime.discoveryRoot,
+        OPEN_SCIENCE_SKILL_PROJECTION_ROOT: skillRuntime.projectionRoot
+      }
+    : {}
 
 // Claude Code adapter. A faithful extraction of behavior currently inline in AcpRuntime /
 // agent-process / provider-env — moving the runtime onto AgentFramework must not change it.
@@ -76,10 +91,14 @@ export const claudeCodeFramework: AgentFramework = {
   prepareModelConfig(provider: ResolvedProvider, ctx: ModelConfigContext): AgentModelConfig {
     // Anthropic-shaped env (ANTHROPIC_* + CLAUDE_CONFIG_DIR/CLAUDE_CODE_EXECUTABLE).
     return {
-      env: buildProviderEnv(provider, {
-        storageRoot: ctx.storageRoot,
-        claudeExecutablePath: ctx.executablePath
-      })
+      env: {
+        ...skillRuntimeEnvironment(ctx.skillRuntime),
+        ...buildProviderEnv(provider, {
+          storageRoot: ctx.storageRoot,
+          claudeExecutablePath: ctx.executablePath
+        })
+      },
+      ...(ctx.skillRuntime ? { skillRuntime: ctx.skillRuntime } : {})
     }
   },
 
@@ -87,6 +106,7 @@ export const claudeCodeFramework: AgentFramework = {
     // settingSources:['user'] excludes workspace settings that could override the active provider.
     // Shared mode adds app-owned settings/plugins at the SDK flag layer via sessionOptions.
     const sessionOptions = ctx.sessionOptions ?? {}
+    const skillRuntime = ctx.skillRuntime
     const disallowedTools = Object.freeze([
       ...new Set([
         ...stringArrayValue(sessionOptions.disallowedTools),
@@ -101,9 +121,64 @@ export const claudeCodeFramework: AgentFramework = {
     })
     const env = Object.freeze({
       ...recordValue(sessionOptions.env),
+      // Runtime/cache ownership is an application invariant, not a caller preference. Keep these
+      // values authoritative even when a legacy session option happens to use the same variable.
+      ...skillRuntimeEnvironment(skillRuntime),
       CLAUDE_CODE_DISABLE_AGENT_VIEW: '1',
       CLAUDE_CODE_DISABLE_WORKFLOWS: '1'
     })
+    const plugins = skillRuntime
+      ? Object.freeze([
+          ...arrayValue(sessionOptions.plugins),
+          ...(arrayValue(sessionOptions.plugins).some(
+            (plugin) =>
+              recordValue(plugin).type === 'local' &&
+              recordValue(plugin).path === skillRuntime.projectionRoot
+          )
+            ? []
+            : [
+                {
+                  type: 'local',
+                  // The runtime plugin contains no MCP manifest. Omitting skipMcpDiscovery keeps
+                  // this compatible with Claude Code releases that support --plugin-dir but not
+                  // the newer SDK-generated --plugin-dir-no-mcp flag.
+                  path: skillRuntime.projectionRoot
+                }
+              ])
+        ])
+      : sessionOptions.plugins
+    const additionalDirectories = skillRuntime
+      ? Object.freeze([
+          ...new Set([
+            ...stringArrayValue(sessionOptions.additionalDirectories),
+            skillRuntime.projectionRoot
+          ])
+        ])
+      : sessionOptions.additionalDirectories
+    const sandbox = skillRuntime
+      ? (() => {
+          const baseSandbox = recordValue(sessionOptions.sandbox)
+          const baseFilesystem = recordValue(baseSandbox.filesystem)
+          return Object.freeze({
+            ...baseSandbox,
+            filesystem: Object.freeze({
+              ...baseFilesystem,
+              allowRead: Object.freeze([
+                ...new Set([
+                  ...stringArrayValue(baseFilesystem.allowRead),
+                  skillRuntime.projectionRoot
+                ])
+              ]),
+              denyWrite: Object.freeze([
+                ...new Set([
+                  ...stringArrayValue(baseFilesystem.denyWrite),
+                  skillRuntime.projectionRoot
+                ])
+              ])
+            })
+          })
+        })()
+      : sessionOptions.sandbox
     const meta: Record<string, unknown> = {
       claudeCode: {
         // ACP's usage total omits the latest model-step split and Claude SDK's agentic turn count.
@@ -116,6 +191,9 @@ export const claudeCodeFramework: AgentFramework = {
           disallowedTools,
           managedSettings,
           env,
+          ...(plugins !== undefined ? { plugins } : {}),
+          ...(additionalDirectories !== undefined ? { additionalDirectories } : {}),
+          ...(sandbox !== undefined ? { sandbox } : {}),
           ...(ctx.skillWhitelist !== undefined ? { skills: ctx.skillWhitelist } : {})
         }
       }

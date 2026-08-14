@@ -21,7 +21,8 @@ import type {
   AgentSpawnInput,
   ModelConfigContext,
   SessionSetup,
-  SessionSetupContext
+  SessionSetupContext,
+  SkillRuntimeView
 } from './types'
 import { isProductionDelegatedWorkFramework } from '../delegation/production-readiness'
 import { renderAppMcpToolReferences } from './app-mcp-names'
@@ -137,6 +138,18 @@ const OPENCODE_DISABLED_NATIVE_AGENTS = {
 const asRecord = (value: unknown): Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
+    : {}
+
+const skillRuntimeEnvironment = (
+  skillRuntime: SkillRuntimeView | undefined
+): Record<string, string> =>
+  skillRuntime
+    ? {
+        ...skillRuntime.environment,
+        OPEN_SCIENCE_SKILL_RUNTIME_ROOT: skillRuntime.discoveryRoot,
+        OPEN_SCIENCE_SKILL_DISCOVERY_ROOT: skillRuntime.discoveryRoot,
+        OPEN_SCIENCE_SKILL_PROJECTION_ROOT: skillRuntime.projectionRoot
+      }
     : {}
 
 // Resolves the app provider's opencode endpoint primitives (provider id, npm package, base URL, model).
@@ -329,7 +342,8 @@ const buildOpencodeProviders = (
 const buildAppConfigContent = (
   provider: ResolvedProvider,
   reasoningEffort?: ModelReasoningEffort,
-  catalog: readonly AgentModelCatalogEntry[] = []
+  catalog: readonly AgentModelCatalogEntry[] = [],
+  skillPaths: readonly string[] = []
 ): Record<string, unknown> => {
   const { bareModel, providerId } = resolveOpencodeEndpoint(provider)
 
@@ -337,6 +351,7 @@ const buildAppConfigContent = (
     ...(bareModel ? { model: `${providerId}/${bareModel}` } : {}),
     permission: { ...OPENCODE_PERMISSION_RULES },
     agent: { ...OPENCODE_DISABLED_NATIVE_AGENTS },
+    ...(skillPaths.length > 0 ? { skills: { paths: [...new Set(skillPaths)] } } : {}),
     provider: buildOpencodeProviders(provider, reasoningEffort, catalog)
   }
 }
@@ -351,7 +366,8 @@ const buildOpencodeConfig = (
   baseConfig: Record<string, unknown> = {},
   instructionPaths: string[] = [],
   reasoningEffort?: ModelReasoningEffort,
-  catalog: readonly AgentModelCatalogEntry[] = []
+  catalog: readonly AgentModelCatalogEntry[] = [],
+  skillPaths: readonly string[] = []
 ): string => {
   const { bareModel, providerId } = resolveOpencodeEndpoint(provider)
 
@@ -362,6 +378,11 @@ const buildOpencodeConfig = (
     ? baseConfig.instructions.filter((entry): entry is string => typeof entry === 'string')
     : []
   const instructions = [...new Set([...baseInstructions, ...instructionPaths])]
+  const baseSkills = asRecord(baseConfig.skills)
+  const baseSkillPaths = Array.isArray(baseSkills.paths)
+    ? baseSkills.paths.filter((entry): entry is string => typeof entry === 'string')
+    : []
+  const mergedSkillPaths = [...new Set([...baseSkillPaths, ...skillPaths])]
 
   const merged: Record<string, unknown> = {
     $schema: 'https://opencode.ai/config.json',
@@ -380,6 +401,7 @@ const buildOpencodeConfig = (
       ...asRecord(baseConfig.agent),
       ...OPENCODE_DISABLED_NATIVE_AGENTS
     },
+    ...(mergedSkillPaths.length > 0 ? { skills: { ...baseSkills, paths: mergedSkillPaths } } : {}),
     provider: buildOpencodeProviders(provider, reasoningEffort, catalog, baseProviders)
   }
 
@@ -465,11 +487,13 @@ export const opencodeFramework: AgentFramework = {
       {},
       instructionPaths,
       ctx.reasoningEffort,
-      ctx.providerModelCatalog
+      ctx.providerModelCatalog,
+      ctx.skillRuntime ? [ctx.skillRuntime.discoveryRoot] : []
     )
 
     return {
       env: {
+        ...skillRuntimeEnvironment(ctx.skillRuntime),
         XDG_CONFIG_HOME: configHome,
         XDG_DATA_HOME: dataHome,
         // Redirect opencode's Global.Path.home (= `OPENCODE_TEST_HOME ?? os.homedir()`) to an app-owned,
@@ -498,7 +522,12 @@ export const opencodeFramework: AgentFramework = {
         // active provider's baseURL or swap the model to an attacker provider while inheriting the app's
         // `{env:...}` key ref. The key itself never rides this layer, only its env reference.
         OPENCODE_CONFIG_CONTENT: JSON.stringify(
-          buildAppConfigContent(provider, ctx.reasoningEffort, ctx.providerModelCatalog)
+          buildAppConfigContent(
+            provider,
+            ctx.reasoningEffort,
+            ctx.providerModelCatalog,
+            ctx.skillRuntime ? [ctx.skillRuntime.discoveryRoot] : []
+          )
         ),
         // Pass credentials only through referenced environment values. Generation-local transport
         // routes use distinct variables so late OpenCode background work cannot inherit a new route.
@@ -512,6 +541,7 @@ export const opencodeFramework: AgentFramework = {
         )
       },
       configFiles,
+      ...(ctx.skillRuntime ? { skillRuntime: ctx.skillRuntime } : {}),
       ...(provider.agentProviderId && provider.model
         ? { sessionModel: `${provider.agentProviderId}/${provider.model}` }
         : {}),

@@ -1,4 +1,4 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import { claudeCodeFramework } from '../agent-framework/claude-code'
 import { codexFramework } from '../agent-framework/codex'
@@ -6,6 +6,13 @@ import { opencodeFramework } from '../agent-framework/opencode'
 import { NOTEBOOK_SYSTEM_PROMPT_APPEND } from '../notebook/mcp-server'
 import { SKILL_IMPORT_SYSTEM_PROMPT_APPEND } from '../skills/mcp-server'
 import { AcpSessionPresentationPolicy } from './session-presentation-policy'
+
+const skillRuntime = {
+  projectionRoot: '/runtime/projection',
+  discoveryRoot: '/runtime/projection/skills',
+  descriptors: [],
+  environment: { XDG_CACHE_HOME: '/runtime/cache' }
+} as const
 
 const TURN_CONTINUITY_APPEND = [
   '<open_science_turn_continuity_instructions>',
@@ -37,6 +44,18 @@ const ARTIFACT_FILE_APPEND = [
 
 describe('ACP Session presentation policy', () => {
   const policy = new AcpSessionPresentationPolicy()
+
+  it('passes the same Skill Runtime view through Session and turn framework setup', () => {
+    const buildSessionSetup = vi.fn(() => ({}))
+    const framework = { id: 'codex' as const, buildSessionSetup }
+    const tooling = { artifacts: false, notebook: false, skillImport: false }
+
+    policy.buildSessionSetup({ framework, tooling, skillRuntime })
+    policy.buildTurnPromptPrefix({ framework, tooling, skillRuntime })
+
+    expect(buildSessionSetup).toHaveBeenNthCalledWith(1, expect.objectContaining({ skillRuntime }))
+    expect(buildSessionSetup).toHaveBeenNthCalledWith(2, expect.objectContaining({ skillRuntime }))
+  })
 
   it('returns the exact application appends in stable order when every tool is available', () => {
     const appends = policy.applicationSystemPromptAppends({
