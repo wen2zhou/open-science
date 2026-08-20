@@ -18,10 +18,10 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, rename, statfs, unlink } from 'node:fs/promises'
+import { mkdir, readdir, rename, statfs, unlink } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 
-import type { ComputeJob, JobSummary } from '../../shared/compute'
+import type { ComputeFailurePhase, ComputeJob, JobSummary } from '../../shared/compute'
 import type { ComputeHostRepository } from './repository'
 import type { ComputeJobRepository } from './job-repository'
 import {
@@ -44,8 +44,8 @@ import {
   type HarvestConfig
 } from './harvest-classifier'
 import { getNotebookSessionRoot } from '../notebook/repository'
-import { buildComputeDonePayload } from './job-notifier'
 import { withDataRootWrite } from '../storage/migration-state'
+import { workspaceRelativePath } from './workspace-path'
 
 const MIB_BYTES = 1024 * 1024
 export const HARVEST_FREE_DISK_RESERVE_BYTES = 2 * 1024 * MIB_BYTES
@@ -78,8 +78,8 @@ const withHarvestBudgetLock = async <Result>(operation: () => Promise<Result>): 
  * Returns the local harvest directory for a job:
  *   <storageRoot>/notebooks/<project>/<sessionId>/hpc/<jobId>/
  *
- * This is inside the session workspace (alongside ./handoff, ./data) so the
- * agent's data kernel can directly open('hpc/<jobId>/out.result') (design §4).
+ * This is inside the session workspace (alongside ./handoff and ./data). Legacy API paths are
+ * relative to that workspace root; absolute local path fields remain readable from other cwd values.
  * Delegates path-segment validation to getNotebookSessionRoot which rejects
  * traversal attempts.
  */
@@ -92,6 +92,100 @@ export const getJobHarvestDir = (
   // getNotebookSessionRoot validates project and sessionId (throws on traversal).
   const workspaceCwd = getNotebookSessionRoot(storageRoot, project, sessionId)
   return join(workspaceCwd, 'hpc', jobId)
+}
+
+export type HarvestProjection = Readonly<{
+  failurePhase: ComputeFailurePhase | null
+  featuredFiles: string[]
+  localFeaturedFiles: string[]
+  hiddenFiles: string[]
+  outputFiles: string[]
+  leftOnRemote: Array<{ uri: string; size_mb: number; reason: string }>
+}>
+
+const parseLeftOnRemote = (
+  value: string | undefined
+): Array<{ uri: string; size_mb: number; reason: string }> => {
+  if (!value) return []
+  try {
+    return JSON.parse(value) as Array<{ uri: string; size_mb: number; reason: string }>
+  } catch {
+    return []
+  }
+}
+
+const projectFailurePhase = (job: ComputeJob): ComputeFailurePhase | null =>
+  job.stderr_tail?.split(/\r?\n/, 1)[0]?.trim() === 'stage=input_upload'
+    ? 'input_upload'
+    : job.harvest_error
+      ? 'harvest'
+      : job.status === 'error'
+        ? 'dispatch'
+        : job.status === 'failed' || job.status === 'timeout'
+          ? 'remote_execution'
+          : null
+
+// Reads the app-owned harvest tree once and projects every public file-list representation from
+// the same set of regular files. Symlinks and other special filesystem entries are never exposed.
+export const buildHarvestProjection = async (
+  job: ComputeJob,
+  storageRoot?: string
+): Promise<HarvestProjection> => {
+  const localFeaturedFiles: string[] = []
+  const featuredFiles: string[] = []
+  const hiddenFiles: string[] = []
+
+  if (storageRoot) {
+    const workspaceCwd = getNotebookSessionRoot(storageRoot, job.project_id, job.session_id)
+    const harvestDir = getJobHarvestDir(storageRoot, job.project_id, job.session_id, job.job_id)
+    const collectRegularFiles = async (
+      currentDir: string,
+      visibility: 'featured' | 'hidden'
+    ): Promise<void> => {
+      let entries: import('node:fs').Dirent[]
+      try {
+        entries = await readdir(currentDir, { withFileTypes: true })
+      } catch {
+        return
+      }
+      for (const entry of entries) {
+        const fullPath = join(currentDir, entry.name)
+        if (entry.isDirectory()) {
+          await collectRegularFiles(fullPath, visibility)
+        } else if (entry.isFile()) {
+          const relativePath = workspaceRelativePath(workspaceCwd, fullPath)
+          if (visibility === 'featured') {
+            localFeaturedFiles.push(fullPath)
+            featuredFiles.push(relativePath)
+          } else {
+            hiddenFiles.push(relativePath)
+          }
+        }
+      }
+    }
+
+    let rootEntries: import('node:fs').Dirent[] = []
+    try {
+      rootEntries = await readdir(harvestDir, { withFileTypes: true })
+    } catch {
+      // A missing or unreadable harvest tree projects as empty file lists.
+    }
+    for (const entry of rootEntries) {
+      if (!entry.isDirectory()) continue
+      if (entry.name === 'featured' || entry.name === 'hidden') {
+        await collectRegularFiles(join(harvestDir, entry.name), entry.name)
+      }
+    }
+  }
+
+  return {
+    failurePhase: projectFailurePhase(job),
+    featuredFiles,
+    localFeaturedFiles,
+    hiddenFiles,
+    outputFiles: [...featuredFiles, ...hiddenFiles],
+    leftOnRemote: parseLeftOnRemote(job.left_on_remote)
+  }
 }
 
 // ---------------------------------------------------------------------------
@@ -322,10 +416,10 @@ const harvestJobUnchecked = async (job: ComputeJob, deps: HarvestDeps): Promise<
     }
   }
 
-  // Builds the notification payload and broadcasts it (idempotent guard inside buildComputeDonePayload).
+  // Builds the notification payload and broadcasts it.
   const buildAndBroadcastNotification = async (updatedJob: ComputeJob): Promise<void> => {
     try {
-      const payload = await buildComputeDonePayload(updatedJob, storageRoot)
+      const projection = await buildHarvestProjection(updatedJob, storageRoot)
       // Look up displayName (same logic as emitJobNotification — we inline it here to avoid
       // calling emitJobNotification which has its own idempotency guard and notifiedAt write).
       let displayName = updatedJob.provider_id
@@ -353,12 +447,14 @@ const harvestJobUnchecked = async (job: ComputeJob, deps: HarvestDeps): Promise<
         remote_workdir: updatedJob.remote_workdir,
         stdout_tail: updatedJob.stdout_tail,
         stderr_tail: updatedJob.stderr_tail,
+        failure_phase: projection.failurePhase,
         notified_at: updatedJob.notified_at,
         notification_consumed_at: updatedJob.notification_consumed_at,
-        featured_files: payload.featured_files,
-        featured_file_count: payload.featured_file_count,
-        left_on_remote_count: payload.left_on_remote_count,
-        left_on_remote: payload.left_on_remote,
+        featured_files: projection.featuredFiles,
+        local_featured_files: projection.localFeaturedFiles,
+        featured_file_count: projection.featuredFiles.length,
+        left_on_remote_count: projection.leftOnRemote.length,
+        left_on_remote: projection.leftOnRemote,
         harvest_error: updatedJob.harvest_error
       }
 

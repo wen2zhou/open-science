@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 
@@ -12,6 +12,7 @@ import type { ResolvedSshTarget, SshRunner } from './ssh-runner'
 import type { ComputeConnectionBrokerAcquirer } from './connection-broker'
 import type { ConcurrencyManager } from './concurrency-manager'
 import { sharedDispatchTracker } from './dispatch-tracker'
+import { buildComputeDonePayload } from './job-notifier'
 
 // ---------------------------------------------------------------------------
 // Helpers
@@ -874,7 +875,7 @@ describe('ComputeJobWorkflowOwner.getJobResult', () => {
     expect(result.output_files).toEqual([])
   })
 
-  it('clean harvest: returns full file lists with workspace-relative paths', async () => {
+  it('clean harvest: preserves relative lists and adds absolute local featured paths', async () => {
     const harvestDir = join(tmpDir, 'notebooks', 'proj-1', 'sess-1', 'hpc', 'job-result-1')
     await mkdir(join(harvestDir, 'featured'), { recursive: true })
     await mkdir(join(harvestDir, 'hidden'), { recursive: true })
@@ -887,15 +888,72 @@ describe('ComputeJobWorkflowOwner.getJobResult', () => {
 
     expect(result.status).toBe('success')
     expect(result.exit_code).toBe(0)
-    expect(result.featured_files).toContain('hpc/job-result-1/featured/out.result')
-    expect(result.hidden_files).toContain('hpc/job-result-1/hidden/debug.log')
-    expect(result.output_files).toContain('hpc/job-result-1/featured/out.result')
-    expect(result.output_files).toContain('hpc/job-result-1/hidden/debug.log')
+    const featuredPath = 'hpc/job-result-1/featured/out.result'
+    const hiddenPath = 'hpc/job-result-1/hidden/debug.log'
+    expect(result.featured_files).toContain(featuredPath)
+    expect(result.hidden_files).toContain(hiddenPath)
+    expect(result.output_files).toContain(featuredPath)
+    expect(result.output_files).toContain(hiddenPath)
     // featured entries come before hidden in output_files
-    const featIdx = result.output_files.indexOf('hpc/job-result-1/featured/out.result')
-    const hidIdx = result.output_files.indexOf('hpc/job-result-1/hidden/debug.log')
+    const featIdx = result.output_files.indexOf(featuredPath)
+    const hidIdx = result.output_files.indexOf(hiddenPath)
     expect(featIdx).toBeLessThan(hidIdx)
+    expect(result.localFeaturedFiles).toEqual([join(harvestDir, 'featured', 'out.result')])
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'keeps public notification and attach projections aligned on regular nested files',
+    async () => {
+      const harvestDir = join(tmpDir, 'notebooks', 'proj-1', 'sess-1', 'hpc', 'job-result-1')
+      const featuredDir = join(harvestDir, 'featured')
+      const hiddenDir = join(harvestDir, 'hidden')
+      const outsideFile = join(tmpDir, 'outside.txt')
+      await mkdir(join(featuredDir, 'nested'), { recursive: true })
+      await mkdir(join(hiddenDir, 'nested'), { recursive: true })
+      await writeFile(outsideFile, 'outside')
+      await writeFile(join(featuredDir, 'nested', 'out.result'), 'result')
+      await writeFile(join(hiddenDir, 'nested', 'debug.log'), 'debug')
+      await symlink(outsideFile, join(featuredDir, 'linked.result'))
+      await symlink(outsideFile, join(hiddenDir, 'linked.log'))
+
+      const leftOnRemote = JSON.stringify([
+        { uri: 'ssh://biowulf/tmp/big.bin', size_mb: 150, reason: 'exceeds_max_file_mb' }
+      ])
+      const job = baseJob({ harvested_at: Date.now(), left_on_remote: leftOnRemote })
+      const service = makeServiceWithStorageRoot(job, tmpDir)
+      const [payload, result] = await Promise.all([
+        buildComputeDonePayload(job, tmpDir),
+        service.getJobResult(job.job_id)
+      ])
+
+      expect(payload.featured_files).toEqual(result.featured_files)
+      expect(payload.local_featured_files).toEqual(result.localFeaturedFiles)
+      expect(result.featured_files).toEqual(['hpc/job-result-1/featured/nested/out.result'])
+      expect(result.hidden_files).toEqual(['hpc/job-result-1/hidden/nested/debug.log'])
+      expect(result.output_files).toEqual([...result.featured_files, ...result.hidden_files])
+      expect(payload.left_on_remote).toEqual(result.left_on_remote)
+    }
+  )
+
+  it.each([undefined, 'malformed left-on-remote json'])(
+    'keeps missing harvest trees and %s left_on_remote empty across public projections',
+    async (leftOnRemote) => {
+      const job = baseJob({ harvested_at: Date.now(), left_on_remote: leftOnRemote })
+      const service = makeServiceWithStorageRoot(job, tmpDir)
+      const [payload, result] = await Promise.all([
+        buildComputeDonePayload(job, tmpDir),
+        service.getJobResult(job.job_id)
+      ])
+
+      expect(payload.featured_files).toEqual([])
+      expect(payload.local_featured_files).toEqual([])
+      expect(payload.left_on_remote).toEqual([])
+      expect(result.featured_files).toEqual([])
+      expect(result.hidden_files).toEqual([])
+      expect(result.output_files).toEqual([])
+      expect(result.left_on_remote).toEqual([])
+    }
+  )
 
   it('reads attach_job results from the data-root workspace when config and data roots differ', async () => {
     const configRoot = await mkdtemp(join(tmpdir(), 'job-result-config-root-'))
@@ -922,6 +980,12 @@ describe('ComputeJobWorkflowOwner.getJobResult', () => {
       const result = await service.getJobResult('job-result-1')
       expect(result.featured_files).toEqual(['hpc/job-result-1/featured/data-root.result'])
       expect(result.output_files).toEqual(['hpc/job-result-1/featured/data-root.result'])
+      expect(result.localFeaturedFiles).toEqual([
+        join(dataHarvestDir, 'featured', 'data-root.result')
+      ])
+      expect(result.localFeaturedFiles).not.toContain(
+        join(configHarvestDir, 'featured', 'stale-config.result')
+      )
     } finally {
       await rm(configRoot, { recursive: true, force: true })
       await rm(dataRoot, { recursive: true, force: true })
@@ -947,6 +1011,7 @@ describe('ComputeJobWorkflowOwner.getJobResult', () => {
 
     expect(result.status).toBe('success')
     expect(result.featured_files).toContain('hpc/job-result-1/featured/partial.result')
+    expect(result.localFeaturedFiles).toContain(join(harvestDir, 'featured', 'partial.result'))
     expect(result.remote_workdir).toBe('~/.openscience/jobs/job-result-1')
     expect(result.left_on_remote).toHaveLength(1)
     expect(result.left_on_remote[0].uri).toBe('ssh://biowulf/tmp/big.bin')

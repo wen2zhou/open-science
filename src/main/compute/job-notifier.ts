@@ -16,20 +16,17 @@
  *
  * Payload shape aligns with spec §11.3:
  *  { job_id, provider_id, status, exit_code,
- *    featured_files, featured_file_count,
+ *    featured_files, local_featured_files, featured_file_count,
  *    left_on_remote_count, left_on_remote }
  *
- * Paths are workspace-relative (hpc/<jobId>/featured/...) per design §4.
+ * Existing featured_files remain workspace-relative. local_featured_files contains absolute paths
+ * on this machine so an analysis runtime can read harvested files regardless of cwd.
  */
 
-import { readdir } from 'node:fs/promises'
-import { join } from 'node:path'
-
-import type { ComputeJob, JobSummary } from '../../shared/compute'
+import type { ComputeFailurePhase, ComputeJob, JobSummary } from '../../shared/compute'
 import type { ComputeJobRepository } from './job-repository'
 import type { ComputeHostRepository } from './repository'
-import { getJobHarvestDir } from './harvest-engine'
-import { workspaceRelativePath } from './workspace-path'
+import { buildHarvestProjection } from './harvest-engine'
 
 // ---------------------------------------------------------------------------
 // Types
@@ -46,7 +43,9 @@ export type JobNotifierDeps = {
 
 // The compute_done payload fields embedded into the JobSummary broadcast (spec §11.3).
 export type ComputeDonePayload = {
+  failure_phase: ComputeFailurePhase | null
   featured_files: string[]
+  local_featured_files: string[]
   featured_file_count: number
   left_on_remote_count: number
   left_on_remote: Array<{ uri: string; size_mb: number; reason: string }>
@@ -60,7 +59,8 @@ export type ComputeDonePayload = {
  * Scans the job's local harvest directory and builds the compute_done payload.
  * Returns empty arrays if the directory does not exist (e.g. execution-error jobs).
  *
- * featured_files: relative paths under hpc/<jobId>/featured/ (workspace-relative).
+ * featured_files: workspace-relative paths under hpc/<jobId>/featured/.
+ * local_featured_files: absolute paths on this machine under the job's harvest directory.
  * featured_file_count: total featured file count (scandir).
  * left_on_remote_count / left_on_remote: from job.left_on_remote JSON column.
  */
@@ -68,57 +68,16 @@ export const buildComputeDonePayload = async (
   job: ComputeJob,
   storageRoot: string
 ): Promise<ComputeDonePayload> => {
-  const harvestDir = getJobHarvestDir(storageRoot, job.project_id, job.session_id, job.job_id)
-  const featuredDir = join(harvestDir, 'featured')
-
-  // Workspace root for computing relative paths (everything under <workspaceCwd>).
-  // getJobHarvestDir returns <workspaceCwd>/hpc/<jobId>, so two levels up is workspaceCwd.
-  const workspaceCwd = join(harvestDir, '..', '..')
-
-  // Scan featured dir — may not exist for error jobs or if harvest failed before creating it.
-  let featuredFiles: string[] = []
-  try {
-    const entries = await readdirRecursive(featuredDir)
-    featuredFiles = entries.map((abs) => workspaceRelativePath(workspaceCwd, abs))
-  } catch {
-    // Directory does not exist or is unreadable — emit empty list (execution-error / harvest_failed
-    // before any files were pulled). This is correct per design §8 and the acceptance criteria.
-  }
-
-  // Parse left_on_remote from the job DB column (JSON array).
-  let leftOnRemote: Array<{ uri: string; size_mb: number; reason: string }> = []
-  if (job.left_on_remote) {
-    try {
-      leftOnRemote = JSON.parse(job.left_on_remote) as typeof leftOnRemote
-    } catch {
-      // Malformed — treat as empty.
-    }
-  }
+  const projection = await buildHarvestProjection(job, storageRoot)
 
   return {
-    featured_files: featuredFiles,
-    featured_file_count: featuredFiles.length,
-    left_on_remote_count: leftOnRemote.length,
-    left_on_remote: leftOnRemote
+    failure_phase: projection.failurePhase,
+    featured_files: projection.featuredFiles,
+    local_featured_files: projection.localFeaturedFiles,
+    featured_file_count: projection.featuredFiles.length,
+    left_on_remote_count: projection.leftOnRemote.length,
+    left_on_remote: projection.leftOnRemote
   }
-}
-
-// ---------------------------------------------------------------------------
-// Recursive readdir helper (returns absolute paths of all files)
-// ---------------------------------------------------------------------------
-
-const readdirRecursive = async (dir: string): Promise<string[]> => {
-  const entries = await readdir(dir, { withFileTypes: true })
-  const results: string[] = []
-  for (const entry of entries) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      results.push(...(await readdirRecursive(full)))
-    } else {
-      results.push(full)
-    }
-  }
-  return results
 }
 
 // ---------------------------------------------------------------------------
@@ -181,10 +140,12 @@ export const emitJobNotification = async (
     remote_workdir: updatedJob.remote_workdir,
     stdout_tail: updatedJob.stdout_tail,
     stderr_tail: updatedJob.stderr_tail,
+    failure_phase: payload.failure_phase,
     notified_at: updatedJob.notified_at,
     notification_consumed_at: updatedJob.notification_consumed_at,
     // Payload fields (spec §11.3).
     featured_files: payload.featured_files,
+    local_featured_files: payload.local_featured_files,
     featured_file_count: payload.featured_file_count,
     left_on_remote_count: payload.left_on_remote_count,
     left_on_remote: payload.left_on_remote,

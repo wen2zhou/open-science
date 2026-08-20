@@ -15,12 +15,7 @@ import {
   type ComputeConnectionLease
 } from './connection-broker'
 import type { CredentialVault } from './credential-vault'
-import {
-  buildScpUploadArgs,
-  resolveScpBinary,
-  type BoundedScpResult,
-  type ScpRunner
-} from './scp-runner'
+import { runScpUploadWithCompatibility, type BoundedScpResult, type ScpRunner } from './scp-runner'
 import {
   resolveSshTarget,
   readEffectiveConfig,
@@ -159,9 +154,14 @@ const hasHostUnreachableDiagnostic = (stderr: string): boolean => {
 const classifyPasswordConnectionFailure = (
   result: { exitCode: number | null; stderr: string; timedOut: boolean },
   askpass: AskpassEnvironment,
-  unsupportedFallback = true
+  unsupportedFallback = true,
+  classifyUnknownExit255AsUnreachable = true
 ): ComputeConnectionError | undefined => {
-  const failure = classifyConnectionFailure(result, unsupportedFallback)
+  const failure = classifyConnectionFailure(
+    result,
+    unsupportedFallback,
+    classifyUnknownExit255AsUnreachable
+  )
   if (!failure || !askpass.wasUnsupportedPromptRejected?.()) return failure
   if (
     failure.code === 'authentication_failed' ||
@@ -388,19 +388,38 @@ class PasswordSshAdapter implements ComputeConnectionAdapter {
             stderr: redactPassword(result.stderr, password)
           }
         }),
-      upload: async (localPath, remotePath) =>
-        withAskpass(async (askpass) => {
-          if (!this.scpRunner) throw new ComputeConnectionError('unsupported_auth_configuration')
-          const result = await this.scpRunner.copy(
-            resolveScpBinary(),
-            buildScpUploadArgs(scpUploadTarget(target), localPath, remotePath),
-            30 * 60 * 1000,
-            { env: askpass.env, signal: request.signal }
-          )
-          const failure = classifyPasswordConnectionFailure(result, askpass)
-          if (failure) throw failure
-          if (result.exitCode !== 0) throw new Error('Remote file upload failed.')
-        }),
+      upload: async (localPath, remotePath) => {
+        if (!this.scpRunner) throw new ComputeConnectionError('unsupported_auth_configuration')
+        const scpRunner = this.scpRunner
+        const result = await runScpUploadWithCompatibility(
+          scpRunner,
+          scpUploadTarget(target),
+          localPath,
+          remotePath,
+          30 * 60 * 1000,
+          { signal: request.signal },
+          (_binary, args, timeoutMs, options) =>
+            withAskpass(async (askpass) => {
+              const attempt = await scpRunner.copy(_binary, args, timeoutMs, {
+                ...options,
+                env: askpass.env
+              })
+              const failure = classifyPasswordConnectionFailure(attempt, askpass, false, false)
+              if (failure) {
+                throw new ComputeConnectionError(failure.code, failure.message, {
+                  stage: 'input_upload',
+                  ...(attempt.stderr.trim()
+                    ? { diagnostic: redactPassword(attempt.stderr.trim(), password) }
+                    : {})
+                })
+              }
+              return { ...attempt, stderr: redactPassword(attempt.stderr, password) }
+            })
+        )
+        if (result.exitCode !== 0) {
+          throw new Error(result.stderr.trim() || `scp exited with code ${String(result.exitCode)}`)
+        }
+      },
       download: async (remotePath, localPath, maxBytes): Promise<BoundedScpResult> =>
         withAskpass(async (askpass) => {
           if (!this.scpRunner) throw new ComputeConnectionError('unsupported_auth_configuration')

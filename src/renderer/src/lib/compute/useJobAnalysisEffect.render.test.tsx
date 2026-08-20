@@ -4,13 +4,14 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { JobSummary } from '../../../../shared/compute'
+import { i18next } from '@/i18n'
 import { createInitialSessionJobState, useSessionJobStore } from '../../stores/session-job-store'
 import { createInitialSessionState, useSessionStore } from '../../stores/session-store'
 import { useJobAnalysisEffect } from './useJobAnalysisEffect'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-const makeCompletedJob = (): JobSummary => ({
+const makeCompletedJob = (overrides: Partial<JobSummary> = {}): JobSummary => ({
   job_id: 'job-1',
   provider_id: 'ssh:biowulf',
   display_name: 'biowulf',
@@ -26,11 +27,13 @@ const makeCompletedJob = (): JobSummary => ({
   remote_workdir: undefined,
   stdout_tail: undefined,
   stderr_tail: undefined,
+  failure_phase: null,
   notified_at: 1300,
   notification_consumed_at: undefined,
   featured_files: [],
   featured_file_count: 0,
-  left_on_remote_count: 0
+  left_on_remote_count: 0,
+  ...overrides
 })
 
 describe('useJobAnalysisEffect persistence readiness', () => {
@@ -77,9 +80,61 @@ describe('useJobAnalysisEffect persistence readiness', () => {
     } as unknown as Window['api']
   })
 
-  afterEach(() => {
-    act(() => root.unmount())
+  afterEach(async () => {
+    await act(async () => {
+      root.unmount()
+      await i18next.changeLanguage('en')
+    })
     container.remove()
+  })
+
+  it('uses the current locale without resetting repeated-failure suppression', async () => {
+    jobsPendingNotification.mockResolvedValueOnce([])
+    await act(async () => {
+      await i18next.changeLanguage('zh-Hans')
+      root.render(<Probe enabled />)
+    })
+
+    const failure = {
+      status: 'error' as const,
+      started_at: undefined,
+      error_code: 'dispatch_failed',
+      stderr_tail: 'stage=input_upload\nsubsystem request failed on channel 0',
+      featured_files: []
+    }
+    act(() =>
+      useSessionJobStore
+        .getState()
+        .applyUpdate(makeCompletedJob({ ...failure, job_id: 'job-first' }))
+    )
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
+
+    expect(sendMessage).toHaveBeenCalledOnce()
+    expect(sendMessage.mock.calls[0]?.[0].text).toContain('自动恢复策略')
+
+    await act(async () => i18next.changeLanguage('ja'))
+    act(() =>
+      useSessionJobStore
+        .getState()
+        .applyUpdate(makeCompletedJob({ ...failure, job_id: 'job-same-fault' }))
+    )
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
+
+    expect(sendMessage).toHaveBeenCalledOnce()
+
+    act(() =>
+      useSessionJobStore.getState().applyUpdate(
+        makeCompletedJob({
+          ...failure,
+          job_id: 'job-distinct-fault',
+          provider_id: 'ssh:other-host'
+        })
+      )
+    )
+    await act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
+
+    expect(sendMessage).toHaveBeenCalledTimes(2)
+    expect(sendMessage.mock.calls[1]?.[0].text).toContain('自動復旧ポリシー')
   })
 
   it('does not start job analysis while Session persistence is not ready', async () => {

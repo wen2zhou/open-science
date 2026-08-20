@@ -11,6 +11,7 @@
 // - The restart-recovery scan fires whenever the active session id changes (session navigation).
 
 import { useEffect, useEffectEvent } from 'react'
+import { useTranslation } from 'react-i18next'
 
 import { useSessionJobStore } from '../../stores/session-job-store'
 import { useSessionStore } from '../../stores/session-store'
@@ -33,9 +34,11 @@ export const useJobAnalysisEffect = ({
   enabled,
   sendMessage
 }: UseJobAnalysisEffectOptions): void => {
+  const { t } = useTranslation()
   const sendLatestMessage = useEffectEvent(
     (input: Parameters<SendMessageFn>[0]): ReturnType<SendMessageFn> => sendMessage(input)
   )
+  const translateLatest = useEffectEvent(t)
 
   useEffect(() => {
     if (!enabled) return
@@ -43,6 +46,7 @@ export const useJobAnalysisEffect = ({
     let isActive = true
     const turnEndUnsubscribes = new Set<() => void>()
     const trigger = createJobAnalysisTrigger({
+      t: translateLatest,
       isSessionInFlight: (sessionId) => {
         const session = useSessionStore.getState().sessions.find((s) => s.id === sessionId)
         return (

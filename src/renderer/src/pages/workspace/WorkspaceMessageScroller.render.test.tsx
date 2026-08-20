@@ -2338,6 +2338,7 @@ const createJob = (overrides: Partial<JobSummary> = {}): JobSummary => ({
   remote_workdir: undefined,
   stdout_tail: undefined,
   stderr_tail: undefined,
+  failure_phase: null,
   notified_at: undefined,
   notification_consumed_at: undefined,
   featured_files: [],

@@ -1,5 +1,4 @@
 import { randomUUID } from 'node:crypto'
-import { readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 
 import { BrowserWindow, shell } from 'electron'
@@ -44,8 +43,7 @@ import { ComputeConnectionError, type ComputeConnectionBroker } from './connecti
 import { dispatchJob } from './job-dispatcher'
 import { EnabledComputeHostsRegistry, enabledComputeHostsRegistry } from './enabled-hosts-registry'
 import { deleteComputeHost, type DeleteComputeHostOptions } from './compute-host-deletion-owner'
-import { getJobHarvestDir } from './harvest-engine'
-import { workspaceRelativePath } from './workspace-path'
+import { buildComputeDonePayload } from './job-notifier'
 import type { PermissionGrantRegistry } from '../permission-grants/registry'
 import {
   createComputePermissionGrantAdapter,
@@ -62,21 +60,6 @@ export const COMPUTE_JOB_UPDATED_CHANNEL = 'compute:job-updated'
 
 const log = createLogger('compute')
 
-// Recursive readdir helper (returns absolute paths of all files).
-const readdirRecursive = async (dir: string): Promise<string[]> => {
-  const entries = await readdir(dir, { withFileTypes: true })
-  const results: string[] = []
-  for (const entry of entries) {
-    const full = join(dir, entry.name)
-    if (entry.isDirectory()) {
-      results.push(...(await readdirRecursive(full)))
-    } else {
-      results.push(full)
-    }
-  }
-  return results
-}
-
 // Converts a full ComputeJob to the lightweight JobSummary sent over IPC. The display_name is
 // denormalized from the host list at query time in listJobSummaries below.
 // Phase 3b: includes notification inbox timestamps so the renderer can decide whether to trigger
@@ -86,28 +69,7 @@ export const toJobSummary = async (
   displayName: string,
   storageRoot: string
 ): Promise<JobSummary> => {
-  // Parse left_on_remote JSON safely (stored as string in DB, but JobSummary expects array).
-  let leftOnRemote: Array<{ uri: string; size_mb: number; reason: string }> = []
-  if (job.left_on_remote) {
-    try {
-      leftOnRemote = JSON.parse(job.left_on_remote)
-    } catch {
-      // Malformed JSON — fall back to empty array.
-    }
-  }
-
-  // Compute featured_files by scanning the harvest directory (same logic as buildComputeDonePayload).
-  const harvestDir = getJobHarvestDir(storageRoot, job.project_id, job.session_id, job.job_id)
-  const featuredDir = join(harvestDir, 'featured')
-  const workspaceCwd = join(harvestDir, '..', '..')
-
-  let featuredFiles: string[] = []
-  try {
-    const entries = await readdirRecursive(featuredDir)
-    featuredFiles = entries.map((abs) => workspaceRelativePath(workspaceCwd, abs))
-  } catch {
-    // Directory does not exist or is unreadable — emit empty list (execution-error / harvest_failed).
-  }
+  const payload = await buildComputeDonePayload(job, storageRoot)
 
   return {
     job_id: job.job_id,
@@ -126,14 +88,16 @@ export const toJobSummary = async (
     remote_workdir: job.remote_workdir,
     stdout_tail: job.stdout_tail,
     stderr_tail: job.stderr_tail,
+    failure_phase: payload.failure_phase,
     // Phase 3b notification inbox timestamps (issue 06).
     notified_at: job.notified_at,
     notification_consumed_at: job.notification_consumed_at,
     // Phase 3b compute_done payload fields (spec §11.3).
-    featured_files: featuredFiles,
-    featured_file_count: featuredFiles.length,
-    left_on_remote_count: leftOnRemote.length,
-    left_on_remote: leftOnRemote,
+    featured_files: payload.featured_files,
+    local_featured_files: payload.local_featured_files,
+    featured_file_count: payload.featured_file_count,
+    left_on_remote_count: payload.left_on_remote_count,
+    left_on_remote: payload.left_on_remote,
     harvest_error: job.harvest_error ?? undefined
   }
 }

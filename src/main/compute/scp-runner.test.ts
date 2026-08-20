@@ -17,6 +17,7 @@ import {
   inferMimeType,
   resolveDestFilename,
   runScpUpload,
+  runScpUploadWithCompatibility,
   shellSingleQuote,
   validateImportPath
 } from './scp-runner'
@@ -425,6 +426,58 @@ describe('runScpUpload', () => {
     expect(localIdx).toBeGreaterThan(-1)
     expect(remoteIdx).toBeGreaterThan(-1)
     expect(localIdx).toBeLessThan(remoteIdx)
+  })
+
+  it('retries once with legacy SCP when the server explicitly lacks SFTP', async () => {
+    const copy = vi
+      .fn()
+      .mockResolvedValueOnce({
+        exitCode: 255,
+        stderr: 'subsystem request failed on channel 0\nscp: Connection closed',
+        timedOut: false
+      })
+      .mockResolvedValueOnce({ exitCode: 0, stderr: '', timedOut: false })
+
+    const result = await runScpUploadWithCompatibility(
+      { copy },
+      target,
+      '/local/data.csv',
+      '~/.openscience/jobs/job-1/data.csv'
+    )
+
+    expect(result).toMatchObject({ exitCode: 0 })
+    expect(copy).toHaveBeenCalledTimes(2)
+    expect(copy.mock.calls[0]?.[1]).not.toContain('-O')
+    expect(copy.mock.calls[1]?.[1]?.[0]).toBe('-O')
+  })
+
+  it('does not downgrade for an ambiguous exit 255 or a shell-unsafe remote path', async () => {
+    const ambiguous = vi.fn(async () => ({
+      exitCode: 255,
+      stderr: 'scp: Connection closed',
+      timedOut: false
+    }))
+    await runScpUploadWithCompatibility(
+      { copy: ambiguous },
+      target,
+      '/local/data.csv',
+      '~/.openscience/jobs/job-1/data.csv'
+    )
+    expect(ambiguous).toHaveBeenCalledTimes(1)
+
+    const unsafe = vi.fn(async () => ({
+      exitCode: 255,
+      stderr: 'subsystem request failed on channel 0\nscp: Connection closed',
+      timedOut: false
+    }))
+    const result = await runScpUploadWithCompatibility(
+      { copy: unsafe },
+      target,
+      '/local/data.csv',
+      '/remote/job dir/$(id).csv'
+    )
+    expect(result).toMatchObject({ exitCode: 255 })
+    expect(unsafe).toHaveBeenCalledTimes(1)
   })
 })
 

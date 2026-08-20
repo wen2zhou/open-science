@@ -1228,6 +1228,61 @@ describe('ComputeConnectionBroker SSH configuration compatibility', () => {
     )
   })
 
+  it('uses a fresh constrained password prompt for the legacy SCP compatibility attempt', async () => {
+    const secret = 'legacy-transfer-secret'
+    const scpRunner: ScpRunner = {
+      copy: vi
+        .fn()
+        .mockResolvedValueOnce({
+          exitCode: 255,
+          stderr: 'subsystem request failed on channel 0\nscp: Connection closed',
+          timedOut: false
+        })
+        .mockResolvedValueOnce({ exitCode: 0, stderr: '', timedOut: false })
+    }
+    const disposals: Array<ReturnType<typeof vi.fn>> = []
+    const createAskpass = vi.fn(async () => {
+      const dispose = vi.fn(async () => undefined)
+      disposals.push(dispose)
+      return {
+        env: { SSH_ASKPASS: `/constrained/helper-${disposals.length}` },
+        wasAnswered: () => true,
+        dispose
+      }
+    })
+    const adapter = new PasswordSshAdapter(
+      {
+        acquirePasswordLease: vi.fn(async () => ({
+          withPassword: (operation: (password: string) => Promise<unknown>) => operation(secret)
+        }))
+      } as unknown as CredentialVault,
+      {
+        run: vi.fn(async () => ({
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        }))
+      },
+      vi.fn(async () => target),
+      vi.fn(async () => ({})),
+      createAskpass,
+      scpRunner
+    )
+
+    const lease = await adapter.acquire(host, { intent: 'job_dispatch' })
+    await expect(
+      lease.upload('/local/input.csv', '~/.openscience/jobs/job-1/input.csv')
+    ).resolves.toBeUndefined()
+
+    expect(createAskpass).toHaveBeenCalledTimes(2)
+    expect(disposals).toHaveLength(2)
+    expect(disposals.every((dispose) => dispose.mock.calls.length === 1)).toBe(true)
+    expect(vi.mocked(scpRunner.copy).mock.calls[0]?.[1]).not.toContain('-O')
+    expect(vi.mocked(scpRunner.copy).mock.calls[1]?.[1]?.[0]).toBe('-O')
+  })
+
   it('brackets a resolved IPv6 hostname in password-mode SCP upload specs', async () => {
     const scpRunner: ScpRunner = {
       copy: vi.fn(async () => ({ exitCode: 0, stderr: '', timedOut: false }))
@@ -1735,7 +1790,7 @@ describe('ComputeConnectionBroker SSH configuration compatibility', () => {
   })
 
   it.each(['upload', 'download'] as const)(
-    'fails closed with a safe code when password %s returns unclassified diagnostics',
+    'never exposes the password when %s returns unclassified diagnostics',
     async (operation) => {
       const rawDiagnostic = 'vendor helper crashed: release-gate-secret at /private/helper'
       const runner: SshRunner = {
@@ -1793,7 +1848,12 @@ describe('ComputeConnectionBroker SSH configuration compatibility', () => {
           : lease.download('/remote/output', '/local/output', 1024)
       ).catch((error) => error)
 
-      expect(failure).toMatchObject({ code: 'unsupported_auth_configuration' })
+      if (operation === 'download') {
+        expect(failure).toMatchObject({ code: 'unsupported_auth_configuration' })
+      } else {
+        expect(failure).not.toHaveProperty('code')
+        expect(failure.message).toContain('[redacted]')
+      }
       expect(failure.message).not.toContain(rawDiagnostic)
       expect(failure.message).not.toContain('release-gate-secret')
     }

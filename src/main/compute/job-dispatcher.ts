@@ -21,6 +21,11 @@ const DISPATCH_MAX_OUTPUT_BYTES = 4 * 1024
 // slow cluster file systems; the job itself runs detached so the connection can close after.
 const DISPATCH_TIMEOUT_MS = 120_000
 
+const persistedConnectionError = (error: ComputeConnectionError): string =>
+  [error.stage ? `stage=${error.stage}` : undefined, error.message, error.diagnostic]
+    .filter((value): value is string => Boolean(value))
+    .join('\n')
+
 // Remote handle stored in the DB once the job is launched.
 export type RemoteHandle = {
   pid: number
@@ -130,7 +135,7 @@ export async function dispatchJob(jobId: string, deps: DispatcherDeps): Promise<
       const lifecycle = new ComputeJobLifecycle(deps.jobRepository, deps.onJobUpdated)
       await lifecycle.dispatchError(jobId, {
         errorCode: error.code,
-        stderrTail: error.message
+        stderrTail: persistedConnectionError(error)
       })
     }
   } finally {
@@ -206,7 +211,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
       const msg = err instanceof Error ? err.message : String(err)
       await lifecycle.dispatchError(jobId, {
         errorCode: 'dispatch_failed',
-        stderrTail: `Input staging failed: ${msg}`
+        stderrTail: `stage=input_upload\n${msg}`
       })
       return
     }

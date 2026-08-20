@@ -6,6 +6,10 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 const pit = it.skipIf(process.platform === 'win32')
 
+vi.mock('electron', () => ({
+  app: { isPackaged: false, getAppPath: () => process.cwd() }
+}))
+
 import type { ComputeJob } from '../../shared/compute'
 import type { ComputeHostRepository } from './repository'
 import type { ComputeJobRepository } from './job-repository'
@@ -13,9 +17,12 @@ import type { SshRunner, ResolvedSshTarget } from './ssh-runner'
 import { runScpUpload, type ScpRunner } from './scp-runner'
 import {
   ComputeConnectionError,
+  SshConfigComputeConnectionBroker,
   type ComputeConnectionBrokerAcquirer,
   type ComputeConnectionLease
 } from './connection-broker'
+import { PasswordSshAdapter } from './connection-adapters'
+import type { CredentialVault } from './credential-vault'
 import {
   dispatchJob,
   buildLauncherScript,
@@ -738,7 +745,139 @@ describe('dispatchJob — staging integration', () => {
     expect(transition).toHaveBeenCalledWith(
       'job-1',
       ['submitted'],
-      expect.objectContaining({ status: 'error', errorCode: 'dispatch_failed' })
+      expect.objectContaining({
+        status: 'error',
+        errorCode: 'dispatch_failed',
+        stderrTail: 'stage=input_upload\nno such file'
+      })
     )
+  })
+
+  it.each([
+    {
+      name: 'keeps an ambiguous SCP exit 255 as dispatch_failed',
+      stderr: 'scp: Connection closed',
+      errorCode: 'dispatch_failed',
+      stderrTail: 'stage=input_upload\nscp: Connection closed'
+    },
+    {
+      name: 'preserves an explicit connection-refused classification',
+      stderr: 'ssh: connect to host biowulf.nih.gov port 22: Connection refused',
+      errorCode: 'host_unreachable',
+      stderrTail:
+        'stage=input_upload\nThe Compute Host could not be reached.\nssh: connect to host biowulf.nih.gov port 22: Connection refused'
+    }
+  ])('$name', async ({ stderr, errorCode, stderrTail }) => {
+    const job = makeJob({
+      input_manifest: JSON.stringify([
+        { kind: 'upload', localPath: '/local/a.csv', dstFilename: 'a.csv', label: 'a.csv' }
+      ])
+    })
+    const runner = makeSshRunner({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const scpRunner: ScpRunner = {
+      copy: vi.fn(async () => ({ exitCode: 255, stderr, timedOut: false }))
+    }
+    const host = sampleHost()
+    const broker = new SshConfigComputeConnectionBroker({
+      getHost: vi.fn(async () => host),
+      runner,
+      scpRunner,
+      resolveTarget: vi.fn(async () => fakeTarget)
+    })
+    const { repo, transition } = makeJobRepo(job)
+
+    await dispatchJob(job.job_id, {
+      connectionBroker: broker,
+      hostRepository: makeHostRepo(host) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository
+    })
+
+    expect(transition).toHaveBeenCalledWith(
+      'job-1',
+      ['submitted'],
+      expect.objectContaining({
+        status: 'error',
+        errorCode,
+        stderrTail
+      })
+    )
+  })
+
+  it('redacts password adapter diagnostics before persisting the dispatch failure', async () => {
+    const secret = 'dispatcher-release-gate-secret'
+    const rawDiagnostic = `vendor scp helper crashed with ${secret} at /private/helper`
+    const passwordHost = {
+      ...sampleHost(),
+      sshOverrides: { user: 'researcher', port: 22 },
+      authentication: {
+        mode: 'password' as const,
+        credentialStatus: 'configured' as const,
+        revision: 1,
+        lastVerifiedAt: undefined
+      }
+    }
+    const job = makeJob({
+      input_manifest: JSON.stringify([
+        { kind: 'upload', localPath: '/local/a.csv', dstFilename: 'a.csv', label: 'a.csv' }
+      ])
+    })
+    const runner = makeSshRunner({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const scpRunner: ScpRunner = {
+      copy: vi.fn(async () => ({ exitCode: 42, stderr: rawDiagnostic, timedOut: false }))
+    }
+    const passwordAdapter = new PasswordSshAdapter(
+      {
+        acquirePasswordLease: vi.fn(async () => ({
+          withPassword: (operation: (password: string) => Promise<unknown>) => operation(secret)
+        }))
+      } as unknown as CredentialVault,
+      runner,
+      vi.fn(async () => fakeTarget),
+      vi.fn(async () => ({})),
+      vi.fn(async () => ({
+        env: { SSH_ASKPASS: '/constrained/helper' },
+        wasAnswered: () => true,
+        dispose: async () => undefined
+      })),
+      scpRunner
+    )
+    const broker = new SshConfigComputeConnectionBroker({
+      getHost: vi.fn(async () => passwordHost),
+      runner,
+      scpRunner,
+      passwordAdapter
+    })
+    const { repo, transition } = makeJobRepo(job)
+
+    await dispatchJob(job.job_id, {
+      connectionBroker: broker,
+      hostRepository: makeHostRepo(passwordHost) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository
+    })
+
+    const persisted = transition.mock.calls[0]?.[2] as {
+      errorCode?: string
+      stderrTail?: string
+    }
+    expect(persisted).toMatchObject({
+      status: 'error',
+      errorCode: 'dispatch_failed',
+      stderrTail: 'stage=input_upload\nvendor scp helper crashed with [redacted] at /private/helper'
+    })
+    expect(JSON.stringify(transition.mock.calls)).not.toContain(secret)
+    expect(persisted.errorCode).not.toContain(secret)
+    expect(persisted.stderrTail).not.toContain(secret)
   })
 })

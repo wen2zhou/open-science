@@ -125,6 +125,12 @@ describe('emitJobNotification', () => {
     expect(summary.featured_files).toEqual(
       expect.arrayContaining(['hpc/job-1/featured/result.csv', 'hpc/job-1/featured/fig1.png'])
     )
+    expect(summary.local_featured_files).toEqual(
+      expect.arrayContaining([
+        join(harvestDir, 'featured', 'result.csv'),
+        join(harvestDir, 'featured', 'fig1.png')
+      ])
+    )
     expect(summary.featured_file_count).toBe(2)
     expect(summary.left_on_remote_count).toBe(1)
     expect(summary.left_on_remote).toHaveLength(1)
@@ -164,6 +170,7 @@ describe('emitJobNotification', () => {
     const summary = broadcast.mock.calls[0][0]
     expect(summary.status).toBe('failed')
     expect(summary.featured_files).toEqual(['hpc/job-1/featured/partial.csv'])
+    expect(summary.local_featured_files).toEqual([join(featuredDir, 'partial.csv')])
     expect(summary.featured_file_count).toBe(1)
     expect(summary.notified_at).toBeDefined()
   })
@@ -227,7 +234,7 @@ describe('emitJobNotification', () => {
     expect(broadcast).not.toHaveBeenCalled()
   })
 
-  it('paths are workspace-relative (hpc/<jobId>/featured/...)', async () => {
+  it('preserves relative paths and adds absolute paths readable from any runtime cwd', async () => {
     const storageRoot = await mkTmp()
 
     const harvestDir = join(storageRoot, 'notebooks', 'proj-1', 'sess-1', 'hpc', 'job-1')
@@ -251,10 +258,7 @@ describe('emitJobNotification', () => {
     })
 
     const summary = broadcast.mock.calls[0][0]
-    // All paths should be relative (no absolute path prefix)
-    for (const p of summary.featured_files) {
-      expect(p.startsWith('hpc/')).toBe(true)
-      expect(p.startsWith('/')).toBe(false)
-    }
+    expect(summary.featured_files).toEqual(['hpc/job-1/featured/out.result'])
+    expect(summary.local_featured_files).toEqual([join(featuredDir, 'out.result')])
   })
 })

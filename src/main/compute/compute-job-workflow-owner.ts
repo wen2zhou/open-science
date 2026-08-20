@@ -1,6 +1,5 @@
 import { randomUUID } from 'node:crypto'
-import { readdir } from 'node:fs/promises'
-import { basename, isAbsolute, join, relative, resolve } from 'node:path'
+import { basename, isAbsolute, relative, resolve } from 'node:path'
 
 import type {
   ComputeCallError,
@@ -9,7 +8,6 @@ import type {
   JobStatusResult,
   SubmitJobResult
 } from '../../shared/compute'
-import { getNotebookSessionRoot } from '../notebook/repository'
 import type { ComputeApprovalBroker } from './compute-approval-broker'
 import type { ComputeConnectionBrokerAcquirer } from './connection-broker'
 import type { ConcurrencyManager, SessionStatus } from './concurrency-manager'
@@ -17,11 +15,10 @@ import { sharedDispatchTracker } from './dispatch-tracker'
 import { computeRemoteWorkdir, dispatchJob, hashCommand } from './job-dispatcher'
 import type { StagedInputEntry } from './job-dispatcher'
 import type { ComputeJobRepository } from './job-repository'
-import { getJobHarvestDir } from './harvest-engine'
+import { buildHarvestProjection, type HarvestProjection } from './harvest-engine'
 import { validateHarvestConfig } from './harvest-classifier'
 import type { ComputeHostRepository } from './repository'
 import { GLOB_CHARS, SHELL_UNSAFE_CHARS } from './remote-path-security'
-import { workspaceRelativePath } from './workspace-path'
 
 const COMMAND_PREVIEW_MAX_LEN = 120
 const JOB_MAX_TIMEOUT_SECONDS = 7 * 24 * 3600
@@ -361,32 +358,17 @@ export class ComputeJobWorkflowOwner {
     const job = await this.jobRepository.get(jobId)
     if (!job) throw new Error(`No compute job found with id "${jobId}".`)
 
-    let leftOnRemote: Array<{ uri: string; size_mb: number; reason: string }> = []
-    if (job.left_on_remote) {
-      try {
-        leftOnRemote = JSON.parse(job.left_on_remote) as typeof leftOnRemote
-      } catch {
-        // Preserve the existing projection for malformed persisted JSON.
-      }
-    }
-
     if (!TERMINAL_JOB_STATUSES.has(job.status) || !job.harvested_at) {
-      return jobResultWithFiles(job, [], [], [])
+      return jobResultWithFiles(job, {
+        featuredFiles: [],
+        localFeaturedFiles: [],
+        hiddenFiles: [],
+        outputFiles: [],
+        leftOnRemote: []
+      })
     }
-    if (!this.storageRoot) {
-      return jobResultWithFiles(job, [], [], leftOnRemote)
-    }
-
-    const harvestDir = getJobHarvestDir(
-      this.storageRoot,
-      job.project_id,
-      job.session_id,
-      job.job_id
-    )
-    const workspaceCwd = getNotebookSessionRoot(this.storageRoot, job.project_id, job.session_id)
-    const featuredFiles = await scanDirRelative(join(harvestDir, 'featured'), workspaceCwd)
-    const hiddenFiles = await scanDirRelative(join(harvestDir, 'hidden'), workspaceCwd)
-    return jobResultWithFiles(job, featuredFiles, hiddenFiles, leftOnRemote)
+    const projection = await buildHarvestProjection(job, this.storageRoot)
+    return jobResultWithFiles(job, projection, Boolean(this.storageRoot))
   }
 
   async setSessionConcurrencyLimit(sessionId: string, limit: number): Promise<void> {
@@ -422,46 +404,21 @@ export class ComputeJobWorkflowOwner {
 
 const jobResultWithFiles = (
   job: ComputeJob,
-  featuredFiles: string[],
-  hiddenFiles: string[],
-  leftOnRemote: Array<{ uri: string; size_mb: number; reason: string }>
+  files: Pick<
+    HarvestProjection,
+    'featuredFiles' | 'localFeaturedFiles' | 'hiddenFiles' | 'outputFiles' | 'leftOnRemote'
+  >,
+  includeLocalFeaturedFiles = false
 ): JobResult => ({
   job_id: job.job_id,
   status: job.status,
   exit_code: job.exit_code,
-  featured_files: featuredFiles,
-  hidden_files: hiddenFiles,
-  output_files: [...featuredFiles, ...hiddenFiles],
-  left_on_remote: leftOnRemote,
+  featured_files: files.featuredFiles,
+  hidden_files: files.hiddenFiles,
+  output_files: files.outputFiles,
+  ...(includeLocalFeaturedFiles ? { localFeaturedFiles: files.localFeaturedFiles } : {}),
+  left_on_remote: files.leftOnRemote,
   remote_workdir: job.remote_workdir,
   stdout_tail: job.stdout_tail,
   stderr_tail: job.stderr_tail
 })
-
-async function scanDirRelative(dir: string, workspaceCwd: string): Promise<string[]> {
-  const results: string[] = []
-  try {
-    await collectFiles(dir, workspaceCwd, results)
-  } catch {
-    // Missing or unreadable harvest directories project as empty file lists.
-  }
-  return results
-}
-
-async function collectFiles(
-  currentDir: string,
-  workspaceCwd: string,
-  results: string[]
-): Promise<void> {
-  let entries: import('node:fs').Dirent[]
-  try {
-    entries = await readdir(currentDir, { withFileTypes: true })
-  } catch {
-    return
-  }
-  for (const entry of entries) {
-    const fullPath = join(currentDir, entry.name)
-    if (entry.isDirectory()) await collectFiles(fullPath, workspaceCwd, results)
-    else if (entry.isFile()) results.push(workspaceRelativePath(workspaceCwd, fullPath))
-  }
-}

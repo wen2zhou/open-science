@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -1544,7 +1544,52 @@ describe('toJobSummary — harvest features and left_on_remote parsing', () => {
     ...overrides
   })
 
-  it('walks the featured directory recursively and emits paths relative to the session workspace', async () => {
+  it('projects input upload failures as a structured failure phase', async () => {
+    const summary = await toJobSummary(
+      sampleJob({ status: 'error', stderr_tail: 'stage=input_upload\nscp: Connection closed' }),
+      'Biowulf HPC',
+      storageRoot
+    )
+
+    expect(summary.failure_phase).toBe('input_upload')
+  })
+
+  it('projects harvest failures as a structured failure phase', async () => {
+    const summary = await toJobSummary(
+      sampleJob({ harvest_error: 'harvest_failed: download timed out' }),
+      'Biowulf HPC',
+      storageRoot
+    )
+
+    expect(summary.failure_phase).toBe('harvest')
+  })
+
+  it('projects pre-start failures as a structured dispatch phase', async () => {
+    const summary = await toJobSummary(
+      sampleJob({ status: 'error', started_at: undefined, stderr_tail: 'launcher setup failed' }),
+      'Biowulf HPC',
+      storageRoot
+    )
+
+    expect(summary.failure_phase).toBe('dispatch')
+  })
+
+  it.each(['failed', 'timeout'] as const)(
+    'projects %s jobs as structured remote execution failures',
+    async (status) => {
+      const summary = await toJobSummary(sampleJob({ status }), 'Biowulf HPC', storageRoot)
+
+      expect(summary.failure_phase).toBe('remote_execution')
+    }
+  )
+
+  it('projects successful jobs with no failure phase', async () => {
+    const summary = await toJobSummary(sampleJob({ status: 'success' }), 'Biowulf HPC', storageRoot)
+
+    expect(summary.failure_phase).toBeNull()
+  })
+
+  it('emits relative compatibility paths and absolute local paths from one scan', async () => {
     const featuredDir = featuredDirFor('proj-1', 'sess-1', 'job-harvest')
     await mkdir(join(featuredDir, 'sub'), { recursive: true })
     await writeFile(join(featuredDir, 'result.csv'), 'a,b\n1,2\n')
@@ -1552,8 +1597,6 @@ describe('toJobSummary — harvest features and left_on_remote parsing', () => {
 
     const summary = await toJobSummary(sampleJob(), 'Biowulf HPC', storageRoot)
 
-    // Relative to <storageRoot>/notebooks/proj-1/sess-1 (workspaceCwd = harvestDir/../..).
-    // IPC paths are logical workspace paths and must stay POSIX-shaped on Windows.
     const expected = [
       'hpc/job-harvest/featured/result.csv',
       'hpc/job-harvest/featured/sub/nested.txt'
@@ -1562,8 +1605,29 @@ describe('toJobSummary — harvest features and left_on_remote parsing', () => {
     expect(summary.featured_files).not.toEqual(
       expect.arrayContaining([expect.stringContaining('\\')])
     )
+    expect((summary.local_featured_files ?? []).sort()).toEqual(
+      [join(featuredDir, 'result.csv'), join(featuredDir, 'sub', 'nested.txt')].sort()
+    )
     expect(summary.featured_file_count).toBe(2)
   })
+
+  it.skipIf(process.platform === 'win32')(
+    'projects only regular files when the featured tree contains a symlink',
+    async () => {
+      const featuredDir = featuredDirFor('proj-1', 'sess-1', 'job-harvest')
+      const outsideFile = join(storageRoot, 'outside.txt')
+      await mkdir(join(featuredDir, 'nested'), { recursive: true })
+      await writeFile(outsideFile, 'outside')
+      await writeFile(join(featuredDir, 'nested', 'regular.txt'), 'regular')
+      await symlink(outsideFile, join(featuredDir, 'linked.txt'))
+
+      const summary = await toJobSummary(sampleJob(), 'Biowulf HPC', storageRoot)
+
+      expect(summary.featured_files).toEqual(['hpc/job-harvest/featured/nested/regular.txt'])
+      expect(summary.local_featured_files).toEqual([join(featuredDir, 'nested', 'regular.txt')])
+      expect(summary.featured_file_count).toBe(1)
+    }
+  )
 
   it('scans the relocated data-root workspace rather than a separate config root', async () => {
     const configRoot = await mkdtemp(join(tmpdir(), 'compute-ipc-config-root-'))
@@ -1594,7 +1658,8 @@ describe('toJobSummary — harvest features and left_on_remote parsing', () => {
     try {
       const summary = await toJobSummary(sampleJob(), 'Biowulf HPC', dataRoot)
       expect(summary.featured_files).toEqual(['hpc/job-harvest/featured/data-root.csv'])
-      expect(summary.featured_files).not.toContain('hpc/job-harvest/featured/stale-config.csv')
+      expect(summary.local_featured_files).toEqual([join(dataFeatured, 'data-root.csv')])
+      expect(summary.local_featured_files).not.toContain(join(configFeatured, 'stale-config.csv'))
     } finally {
       await rm(configRoot, { recursive: true, force: true })
       await rm(dataRoot, { recursive: true, force: true })
@@ -1829,6 +1894,7 @@ describe('createJobUpdatedBroadcaster', () => {
       remote_workdir: undefined,
       stdout_tail: undefined,
       stderr_tail: undefined,
+      failure_phase: null,
       notified_at: undefined,
       notification_consumed_at: undefined,
       featured_files: [],

@@ -76,7 +76,8 @@ Then call the `wait_for_notification` brain-tool. When the
 `compute_done` notification arrives, act on its payload:
 
 ```python
-save_artifacts(payload["featured_files"])   # paths under hpc/<job_id>/
+paths = payload.get("local_featured_files") or payload["featured_files"]
+save_artifacts(paths)  # local_featured_files are absolute paths on this machine; fallback is workspace-relative
 ```
 
 For the full result dict (`output_files`, `remote_workdir`, …), re-enter the

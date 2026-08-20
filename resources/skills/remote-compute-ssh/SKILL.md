@@ -163,8 +163,11 @@ const s = await handle.status()
 
 ## Workflow: the analysis turn
 
-When the app initiates the analysis turn, it provides the `job_id`, `status`, and
-`featured_files` (workspace-relative paths under `hpc/<job_id>/featured/`). In this turn:
+When the app initiates the analysis turn, it provides the `job_id`, `status`, and harvested paths.
+Prefer `local_featured_files`: these are absolute paths on the machine running Open Science and are
+directly readable across the control REPL, Python/R Notebook kernels, and the agent shell. For
+compatibility, older notifications may only provide workspace-relative `featured_files` under
+`hpc/<job_id>/`; do not prepend the Notebook kernel's `data/` cwd to those paths. In this turn:
 
 1. Call `attachJob(job_id).result()` to get the full result dict.
 2. Inspect the outputs, run any analysis needed.
@@ -176,9 +179,10 @@ const c = host.compute.create('ssh:<alias>')
 const r = await c.attachJob(job_id).result()
 // r → {
 //   job_id, status, exit_code,
-//   featured_files: ['hpc/<job_id>/featured/out.result', ...],   // workspace-relative
+//   featured_files: ['hpc/<job_id>/featured/out.result', ...],   // compatibility: workspace-relative
 //   hidden_files:   ['hpc/<job_id>/hidden/run.log', ...],
 //   output_files:   [...featured_files, ...hidden_files],         // featured first
+//   localFeaturedFiles: ['/absolute/local/.../hpc/<job_id>/featured/out.result', ...],
 //   left_on_remote: [{ uri: 'ssh:<alias>/<abs_path>', size_mb: 420, reason: 'residency:remote' }],
 //   remote_workdir: '.openscience/jobs/<job_id>',
 //   stdout_tail: '...last 64 KB...',
@@ -186,12 +190,15 @@ const r = await c.attachJob(job_id).result()
 // }
 ```
 
-Files land in the workspace at `hpc/<job_id>/` and are readable directly:
+Use `localFeaturedFiles` when present. It contains paths on the local Open Science machine, not
+paths on the remote Compute Host. Fall back to `featured_files` only for compatibility with older
+app versions; resolve those workspace-relative paths from the Session workspace rather than the
+Notebook kernel's `data/` cwd:
 
 ```python
-# python cell — files are in the workspace; open() works with workspace-relative paths
+# Python cell — pass a localFeaturedFiles entry from the result
 import pandas as pd
-df = pd.read_csv('hpc/<job_id>/featured/results.csv')
+df = pd.read_csv('/absolute/.../hpc/<job_id>/featured/results.csv')
 ```
 
 ### Publish artifacts
@@ -201,7 +208,7 @@ Call `write_artifact_file` in the analysis turn to publish outputs worth keeping
 
 ```javascript
 // In the analysis turn — publish featured outputs as artifacts (bound to this turn)
-for (const path of r.featured_files) {
+for (const path of r.localFeaturedFiles ?? r.featured_files) {
   await host.mcp('artifacts', 'write_artifact_file', { path })
 }
 // Artifacts appear in the artifact panel with provenance tied to this analysis turn.

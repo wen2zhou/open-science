@@ -92,6 +92,7 @@ const makeJob = (overrides: Partial<JobSummary> = {}): JobSummary => ({
   remote_workdir: '/home/user/.openscience/jobs/job-abc',
   stdout_tail: 'stdout output line 1\nline 2',
   stderr_tail: 'stderr output line 1',
+  failure_phase: null,
   notified_at: undefined,
   notification_consumed_at: undefined,
   ...overrides

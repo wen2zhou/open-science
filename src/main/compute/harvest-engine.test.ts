@@ -257,6 +257,9 @@ describe('harvestJob — clean harvest', () => {
     await expect(readdir(configHarvestDir)).rejects.toMatchObject({ code: 'ENOENT' })
     expect(broadcasts).toHaveLength(1)
     expect(broadcasts[0]?.featured_files).toEqual(['hpc/job-1/featured/run.result'])
+    expect(broadcasts[0]?.local_featured_files).toEqual([
+      join(dataHarvestDir, 'featured', 'run.result')
+    ])
   })
 
   it('downloads featured and hidden files to correct subdirs, sets harvestedAt', async () => {

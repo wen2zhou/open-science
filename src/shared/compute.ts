@@ -209,6 +209,8 @@ export type ComputeApprovalRequest = {
 export type ComputeJobStatus =
   'queued' | 'submitted' | 'running' | 'success' | 'failed' | 'timeout' | 'error'
 
+export type ComputeFailurePhase = 'input_upload' | 'dispatch' | 'remote_execution' | 'harvest'
+
 // A compute job record, normalized for cross-process sharing (main → renderer via IPC, main → repl
 // via JSON RPC). Timestamps are epoch milliseconds; JSON columns are parsed at the repository
 // boundary to their respective types.
@@ -266,7 +268,8 @@ export type JobStatusResult = {
 }
 
 // Full job result shape returned by attach_job().result() (spec §11.4, design §9).
-// File lists are workspace-relative paths (e.g. "hpc/<jobId>/featured/out.result").
+// Existing file lists remain workspace-relative for compatibility. localFeaturedFiles contains
+// absolute paths on this machine so callers outside the session workspace cwd can read them.
 // In non-terminal states or before harvest completes, file fields are empty arrays.
 export type JobResult = {
   job_id: string
@@ -278,6 +281,8 @@ export type JobResult = {
   hidden_files: string[]
   // featured_files + hidden_files combined, featured first.
   output_files: string[]
+  // Absolute paths on this machine for the featured output files.
+  localFeaturedFiles?: string[]
   // Files not downloaded from the remote workdir (JSON [{uri,size_mb,reason}]).
   left_on_remote: Array<{ uri: string; size_mb: number; reason: string }>
   // Remote workdir path; preserved even on harvest_failed so the user can manually retrieve files.
@@ -329,11 +334,14 @@ export type JobSummary = {
   remote_workdir: string | undefined
   stdout_tail: string | undefined
   stderr_tail: string | undefined
+  failure_phase: ComputeFailurePhase | null
   // Phase 3b: inbox timestamps — renderer uses these to decide whether to start an analysis turn.
   notified_at: number | undefined
   notification_consumed_at: number | undefined
-  // Phase 3b: compute_done payload fields (spec §11.3). Present when notified_at is set.
+  // Phase 3b: compute_done payload fields (spec §11.3). featured_files remains workspace-relative;
+  // local_featured_files contains absolute paths on this machine for automatic analysis.
   featured_files?: string[]
+  local_featured_files?: string[]
   featured_file_count?: number
   left_on_remote_count?: number
   left_on_remote?: Array<{ uri: string; size_mb: number; reason: string }>

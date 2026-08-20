@@ -1,10 +1,5 @@
 import type { ComputeAuthenticationErrorCode, ComputeHost } from '../../shared/compute'
-import {
-  buildScpUploadArgs,
-  resolveScpBinary,
-  type BoundedScpResult,
-  type ScpRunner
-} from './scp-runner'
+import { runScpUploadWithCompatibility, type BoundedScpResult, type ScpRunner } from './scp-runner'
 import { resolveSshTarget, type ResolvedSshTarget, type SshRunner } from './ssh-runner'
 
 type ConnectionRunOptions = Parameters<SshRunner['run']>[2]
@@ -64,12 +59,17 @@ interface ComputeConnectionAdapter {
 
 class ComputeConnectionError extends Error {
   readonly name = 'ComputeConnectionError'
+  readonly stage?: 'input_upload'
+  readonly diagnostic?: string
 
   constructor(
     readonly code: ComputeAuthenticationErrorCode,
-    message = safeConnectionErrorMessage(code)
+    message = safeConnectionErrorMessage(code),
+    details: Readonly<{ stage?: 'input_upload'; diagnostic?: string }> = {}
   ) {
     super(message)
+    this.stage = details.stage
+    this.diagnostic = details.diagnostic
   }
 }
 
@@ -106,7 +106,8 @@ const safeConnectionErrorMessage = (code: ComputeAuthenticationErrorCode): strin
 
 const classifyConnectionFailure = (
   result: { exitCode: number | null; stderr: string; timedOut: boolean },
-  unsupportedFallback = true
+  unsupportedFallback = true,
+  classifyUnknownExit255AsUnreachable = true
 ): ComputeConnectionError | undefined => {
   if (result.timedOut) return new ComputeConnectionError('timeout')
   if (result.exitCode === 0) return undefined
@@ -131,7 +132,7 @@ const classifyConnectionFailure = (
     stderr.includes('network is unreachable') ||
     stderr.includes('no route to host') ||
     stderr.includes('could not resolve hostname') ||
-    result.exitCode === 255
+    (classifyUnknownExit255AsUnreachable && result.exitCode === 255)
   )
     return new ComputeConnectionError('host_unreachable')
   return unsupportedFallback
@@ -322,15 +323,25 @@ class SshConfigComputeConnectionBroker implements ComputeConnectionBroker {
     const upload = async (localPath: string, remotePath: string): Promise<void> => {
       const scpRunner = this.dependencies.scpRunner
       if (!scpRunner) throw new ComputeConnectionError('unsupported_auth_configuration')
-      const result = await scpRunner.copy(
-        resolveScpBinary(),
-        buildScpUploadArgs(target, localPath, remotePath),
+      const result = await runScpUploadWithCompatibility(
+        scpRunner,
+        target,
+        localPath,
+        remotePath,
         30 * 60 * 1000,
         { signal: request.signal }
       )
-      const failure = classifyConnectionFailure(result, false)
-      if (failure) throw failure
-      if (result.exitCode !== 0) throw new Error('Remote file upload failed.')
+      const failure = classifyConnectionFailure(result, false, false)
+      const diagnostic = result.stderr.trim()
+      if (failure) {
+        throw new ComputeConnectionError(failure.code, failure.message, {
+          stage: 'input_upload',
+          ...(diagnostic ? { diagnostic } : {})
+        })
+      }
+      if (result.exitCode !== 0) {
+        throw new Error(diagnostic || `scp exited with code ${String(result.exitCode)}`)
+      }
     }
 
     const download = async (
