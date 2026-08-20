@@ -117,6 +117,12 @@ const OPENCODE_PERMISSION_RULES: Record<string, 'ask' | 'allow' | 'deny'> = {
   // work graph. Deny it at the highest-precedence config layer: asking is insufficient because an
   // approval would still create an invisible child that bypasses Attempt authority and lifecycle.
   task: 'deny',
+  // Open Science supplies its own clarification card and durable review-gated Plan tools. Deny the
+  // native equivalents so they cannot create a second, untracked interaction or task-state lane.
+  question: 'deny',
+  plan_enter: 'deny',
+  plan_exit: 'deny',
+  todowrite: 'deny',
   // Skill loading only reads definitions already provisioned into the isolated OpenCode config.
   // Permission for creating/editing/enabling those definitions remains app-owned elsewhere.
   skill: 'allow',

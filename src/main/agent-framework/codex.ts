@@ -63,13 +63,29 @@ const CODEX_MODE_IDS = {
   full: 'agent-full-access'
 } as const satisfies Record<PermissionProfileId, string>
 
-// Open Science owns delegation lifecycle, authority, permission, and evidence. Keep both the stable
-// and preview Codex implementations off in every profile so native children cannot bypass that Host
-// contract. This must live in CODEX_CONFIG (rather than only custom model metadata), because trusted
-// bundled models intentionally do not receive an app-authored model catalog.
-const CODEX_DELEGATION_FEATURES = Object.freeze({
+// Open Science owns delegation, durable Plan/continuation state, Artifact provenance, and connector
+// discovery. Keep the corresponding Codex-native feature families off in every profile so a
+// subscription session cannot create provider-owned state or tools beside the app-owned paths.
+// This must live in CODEX_CONFIG (rather than only custom model metadata), because trusted bundled
+// models intentionally do not receive an app-authored model catalog.
+const CODEX_APP_OWNED_FEATURES = Object.freeze({
   multi_agent: false,
-  multi_agent_v2: false
+  multi_agent_v2: false,
+  goals: false,
+  artifact: false,
+  apps: false,
+  enable_mcp_apps: false,
+  plugins: false,
+  tool_suggest: false,
+  remote_plugin: false,
+  plugin_sharing: false,
+  request_permissions_tool: false
+})
+
+// Codex 0.144.6 gates request_user_input under this nested tool config. Pin it off rather than
+// relying on its current default so app-owned clarification cards remain the only question path.
+const CODEX_APP_OWNED_TOOLS = Object.freeze({
+  experimental_request_user_input: Object.freeze({ enabled: false })
 })
 
 const CODEX_ENV_KEYS = [
@@ -169,7 +185,8 @@ const buildCodexConfig = (provider: {
 
   return {
     ...buildCodexModelOptions(provider),
-    features: CODEX_DELEGATION_FEATURES,
+    features: CODEX_APP_OWNED_FEATURES,
+    tools: CODEX_APP_OWNED_TOOLS,
     ...(contextWindow
       ? {
           model_context_window: contextWindow,
@@ -425,7 +442,8 @@ export const createCodexFramework = ({
       })
       const codexConfig = {
         ...modelOptions,
-        features: CODEX_DELEGATION_FEATURES,
+        features: CODEX_APP_OWNED_FEATURES,
+        tools: CODEX_APP_OWNED_TOOLS,
         ...(persistentSystemPrompt ? { developer_instructions: persistentSystemPrompt } : {})
       }
       const codexConfigJson =

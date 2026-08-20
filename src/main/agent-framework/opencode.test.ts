@@ -103,7 +103,9 @@ describe('opencodeFramework.prepareModelConfig', () => {
     for (const tool of ['edit', 'bash', 'webfetch', 'websearch', 'external_directory']) {
       expect(rules[tool]).toBe('ask')
     }
-    expect(rules.task).toBe('deny')
+    for (const tool of ['task', 'question', 'plan_enter', 'plan_exit', 'todowrite']) {
+      expect(rules[tool]).toBe('deny')
+    }
     expect(JSON.parse(config.env?.OPENCODE_CONFIG_CONTENT ?? '{}').agent).toEqual({
       general: { disable: true },
       explore: { disable: true },
@@ -520,11 +522,21 @@ describe('buildOpencodeConfig', () => {
     expect(config.provider.anthropic.options.apiKey).toBeUndefined()
   })
 
-  it('pins sensitive built-in tools to ask and disables native task delegation', () => {
+  it('pins sensitive tools and disables app-owned native capabilities', () => {
     const config = JSON.parse(
       buildOpencodeConfig(
         { type: 'custom', baseUrl: 'https://gw/v1', model: 'm' },
-        { permission: { edit: 'allow', bash: 'allow', task: 'allow' } }
+        {
+          permission: {
+            edit: 'allow',
+            bash: 'allow',
+            task: 'allow',
+            question: 'allow',
+            plan_enter: 'allow',
+            plan_exit: 'allow',
+            todowrite: 'allow'
+          }
+        }
       )
     )
 
@@ -532,7 +544,9 @@ describe('buildOpencodeConfig', () => {
     for (const tool of ['edit', 'bash', 'webfetch', 'websearch', 'external_directory']) {
       expect(config.permission[tool]).toBe('ask')
     }
-    expect(config.permission.task).toBe('deny')
+    for (const tool of ['task', 'question', 'plan_enter', 'plan_exit', 'todowrite']) {
+      expect(config.permission[tool]).toBe('deny')
+    }
     expect(config.agent).toEqual({
       general: { disable: true },
       explore: { disable: true },
@@ -556,7 +570,9 @@ describe('buildOpencodeConfig', () => {
     // Mutating/external tools are pinned to ask (and unlisted MCP tools fall through to "*" → ask).
     expect(config.permission.edit).toBe('ask')
     expect(config.permission.bash).toBe('ask')
-    expect(config.permission.task).toBe('deny')
+    for (const tool of ['task', 'question', 'plan_enter', 'plan_exit', 'todowrite']) {
+      expect(config.permission[tool]).toBe('deny')
+    }
   })
 
   it('keeps delegation on even if the base config tried to disable it', () => {

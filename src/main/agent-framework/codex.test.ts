@@ -15,7 +15,7 @@ import { CODEX_VERSION } from '../settings/managed-codex'
 const fakeChild = {} as ChildProcessWithoutNullStreams
 
 describe('codexFramework', () => {
-  it('disables every Codex native multi-agent implementation in every spawned profile', () => {
+  it('disables every Codex-native capability owned by Open Science in every profile', () => {
     const framework = createCodexFramework()
     const configurations = [
       framework.prepareModelConfig(
@@ -35,12 +35,26 @@ describe('codexFramework', () => {
       )
     ]
 
-    expect(configurations.map(({ env }) => JSON.parse(env?.CODEX_CONFIG ?? '{}').features)).toEqual(
-      [
-        { multi_agent: false, multi_agent_v2: false },
-        { multi_agent: false, multi_agent_v2: false }
-      ]
-    )
+    const expectedFeatures = {
+      multi_agent: false,
+      multi_agent_v2: false,
+      goals: false,
+      artifact: false,
+      apps: false,
+      enable_mcp_apps: false,
+      plugins: false,
+      tool_suggest: false,
+      remote_plugin: false,
+      plugin_sharing: false,
+      request_permissions_tool: false
+    }
+    const expectedTools = { experimental_request_user_input: { enabled: false } }
+
+    for (const { env } of configurations) {
+      const config = JSON.parse(env?.CODEX_CONFIG ?? '{}')
+      expect(config.features).toEqual(expectedFeatures)
+      expect(config.tools).toEqual(expectedTools)
+    }
   })
 
   it.each([
@@ -505,9 +519,12 @@ describe('codexFramework', () => {
       env: {
         HOME: join('/data', 'codex-subscription'),
         CODEX_HOME: join('/data', 'codex-subscription'),
-        CODEX_CONFIG: JSON.stringify({ features: { multi_agent: false, multi_agent_v2: false } })
+        CODEX_CONFIG: expect.any(String)
       }
     })
+    const codexConfig = JSON.parse(config.env?.CODEX_CONFIG ?? '{}')
+    expect(codexConfig.features).toMatchObject({ multi_agent: false, goals: false, apps: false })
+    expect(codexConfig.tools).toEqual({ experimental_request_user_input: { enabled: false } })
   })
 
   it('uses persistent app-owned storage for an isolated Codex subscription', () => {
@@ -521,9 +538,12 @@ describe('codexFramework', () => {
       env: {
         HOME: join('/data', 'codex-subscription'),
         CODEX_HOME: join('/data', 'codex-subscription'),
-        CODEX_CONFIG: JSON.stringify({ features: { multi_agent: false, multi_agent_v2: false } })
+        CODEX_CONFIG: expect.any(String)
       }
     })
+    const codexConfig = JSON.parse(config.env?.CODEX_CONFIG ?? '{}')
+    expect(codexConfig.features).toMatchObject({ multi_agent: false, goals: false, apps: false })
+    expect(codexConfig.tools).toEqual({ experimental_request_user_input: { enabled: false } })
   })
 
   it('isolates the native Windows home used for user-installed Skills', () => {

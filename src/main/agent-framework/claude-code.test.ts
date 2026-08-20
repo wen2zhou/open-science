@@ -13,14 +13,37 @@ import { codexFramework } from './codex'
 import { opencodeFramework } from './opencode'
 
 describe('claudeCodeFramework', () => {
-  it('disables every Claude-native delegation path without removing ordinary built-in tools', () => {
+  it('disables native capabilities owned by Open Science without removing ordinary tools', () => {
     const setup = claudeCodeFramework.buildSessionSetup({ systemPromptAppends: [] })
 
     expect(setup.meta).toMatchObject({
       claudeCode: {
         options: {
           tools: { type: 'preset', preset: 'claude_code' },
-          disallowedTools: ['Agent', 'Task', 'Workflow', 'SendMessage', 'TeamCreate', 'TeamDelete'],
+          disallowedTools: [
+            'Agent',
+            'Task',
+            'Workflow',
+            'SendMessage',
+            'TeamCreate',
+            'TeamDelete',
+            'AskUserQuestion',
+            'EnterPlanMode',
+            'ExitPlanMode',
+            'TodoWrite',
+            'TaskCreate',
+            'TaskGet',
+            'TaskUpdate',
+            'TaskList',
+            'REPL',
+            'Artifact',
+            'EnterWorktree',
+            'ExitWorktree',
+            'ScheduleWakeup',
+            'CronCreate',
+            'CronDelete',
+            'CronList'
+          ],
           managedSettings: {
             disableAgentView: true,
             disableWorkflows: true,
@@ -43,7 +66,27 @@ describe('claudeCodeFramework', () => {
     expect(options.disallowedTools).not.toContain('TaskStop')
   })
 
-  it('does not let backend session options reopen a native delegation bypass', () => {
+  it('keeps project, web, and app-routed Skill capabilities available', () => {
+    const setup = claudeCodeFramework.buildSessionSetup({ systemPromptAppends: [] })
+    const options = (setup.meta?.claudeCode as { options: Record<string, unknown> }).options
+
+    for (const tool of [
+      'Bash',
+      'Read',
+      'Write',
+      'Edit',
+      'Glob',
+      'Grep',
+      'NotebookEdit',
+      'WebFetch',
+      'WebSearch',
+      'Skill'
+    ]) {
+      expect(options.disallowedTools).not.toContain(tool)
+    }
+  })
+
+  it('does not let backend session options reopen app-owned native capabilities', () => {
     const setup = claudeCodeFramework.buildSessionSetup({
       systemPromptAppends: [],
       sessionOptions: {
@@ -65,7 +108,23 @@ describe('claudeCodeFramework', () => {
       'Workflow',
       'SendMessage',
       'TeamCreate',
-      'TeamDelete'
+      'TeamDelete',
+      'AskUserQuestion',
+      'EnterPlanMode',
+      'ExitPlanMode',
+      'TodoWrite',
+      'TaskCreate',
+      'TaskGet',
+      'TaskUpdate',
+      'TaskList',
+      'REPL',
+      'Artifact',
+      'EnterWorktree',
+      'ExitWorktree',
+      'ScheduleWakeup',
+      'CronCreate',
+      'CronDelete',
+      'CronList'
     ])
     expect(options.managedSettings).toMatchObject({
       disableAgentView: true,

@@ -42,6 +42,36 @@ const CLAUDE_CODE_NATIVE_DELEGATION_TOOLS = Object.freeze([
   'TeamDelete'
 ] as const)
 
+// Open Science owns these user interactions and durable state transitions through app-scoped MCP
+// tools. Remove Claude's parallel implementations from the model context so a turn cannot bypass the
+// app's clarification UI, review-gated Plan contract, Notebook REPL, or Artifact provenance path.
+// Unknown names are intentionally safe across Claude versions: disallowedTools is a fail-soft string
+// deny list, so older runtimes simply have no matching tool to remove.
+const CLAUDE_CODE_OVERLAPPING_TOOLS = Object.freeze([
+  'AskUserQuestion',
+  'EnterPlanMode',
+  'ExitPlanMode',
+  'TodoWrite',
+  'TaskCreate',
+  'TaskGet',
+  'TaskUpdate',
+  'TaskList',
+  'REPL',
+  'Artifact'
+] as const)
+
+// These tools mutate the Claude session's workspace or enqueue future turns outside Open Science's
+// Project/Session owners. The app cannot reconcile a hidden cwd switch, worktree deletion, or a
+// wake-up that bypasses its prompt/continuation lifecycle, so remove those entry points as well.
+const CLAUDE_CODE_UNTRACKED_LIFECYCLE_TOOLS = Object.freeze([
+  'EnterWorktree',
+  'ExitWorktree',
+  'ScheduleWakeup',
+  'CronCreate',
+  'CronDelete',
+  'CronList'
+] as const)
+
 const recordValue = (value: unknown): Record<string, unknown> =>
   value !== null && typeof value === 'object' && !Array.isArray(value)
     ? (value as Record<string, unknown>)
@@ -129,7 +159,9 @@ export const claudeCodeFramework: AgentFramework = {
     const disallowedTools = Object.freeze([
       ...new Set([
         ...stringArrayValue(sessionOptions.disallowedTools),
-        ...CLAUDE_CODE_NATIVE_DELEGATION_TOOLS
+        ...CLAUDE_CODE_NATIVE_DELEGATION_TOOLS,
+        ...CLAUDE_CODE_OVERLAPPING_TOOLS,
+        ...CLAUDE_CODE_UNTRACKED_LIFECYCLE_TOOLS
       ])
     ])
     const managedSettings = Object.freeze({
