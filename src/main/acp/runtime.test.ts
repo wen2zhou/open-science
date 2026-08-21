@@ -17567,6 +17567,14 @@ describe('ACP runtime session management', () => {
       expect(fakeAgent.prompts[0]?.text).toContain('approval=approved lifecycle=approved')
       expect(fakeAgent.prompts[0]?.text).not.toContain('artifact_version_id=')
       expect(fakeAgent.prompts[0]?.text).toContain('Analyze data: not_started')
+      expect(fakeAgent.prompts[0]?.text).toContain('approved_plan_definition:')
+      expect(fakeAgent.prompts[0]?.text).toContain('- phase 1: Analysis')
+      expect(fakeAgent.prompts[0]?.text).toContain('- delegation 1: Primary agent')
+      expect(fakeAgent.prompts[0]?.text).toContain('1. Analyze data — Produce the result.')
+      expect(fakeAgent.prompts[0]?.text).toContain('desired_outputs:\n- Analysis result')
+      expect(fakeAgent.prompts[0]?.text).toContain(
+        'each later phase depends on every previous step being completed or skipped'
+      )
       expect(fakeAgent.prompts[0]?.text).toContain('continue')
     }
   )

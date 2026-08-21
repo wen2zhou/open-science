@@ -74,7 +74,19 @@ describe('protected Plan context', () => {
       [
         '<open_science_protected_plan_context>',
         'approval=approved lifecycle=blocked',
-        'task=Analyze data',
+        'approved_plan_definition:',
+        'task_summary=Analyze data',
+        'phases (ordered; each later phase depends on every previous step being completed or skipped):',
+        '- phase 1: Analysis',
+        '  delegations (independent sibling work tracks within this phase):',
+        '  - delegation 1: Main Agent',
+        '    steps (ordered within this delegation):',
+        '    1. Inspect exact input title — Inspect the data.',
+        '    2. Analyze — Analyze the data.',
+        'desired_outputs:',
+        '- Result',
+        'feasibility=high — Ready.',
+        'recorded_step_statuses (durable Session runtime state, not Plan definition):',
         '- Inspect exact input title: completed',
         '- Analyze: blocked — Input missing',
         'This is the authoritative Plan checkpoint at turn entry. Successful Session Plan MCP receipts confirm newer changes made later in the turn.',
@@ -141,6 +153,12 @@ describe('protected Plan context', () => {
     expect(summary).toContain('- Blocked work: blocked — Input unavailable')
     expect(summary).toContain('- Skipped work: skipped — Out of scope')
     expect(summary).toContain('- Unstarted work: not_started')
+    expect(summary).toContain('1. Completed work — Already done.')
+    expect(summary).toContain('2. Uncertain work — Started before interruption.')
+    expect(summary).toContain('desired_outputs:\n- Result')
+    expect(summary).toContain(
+      'recorded_step_statuses (durable Session runtime state, not Plan definition):'
+    )
     expect(summary).not.toContain('approved_plan_file')
   })
 })

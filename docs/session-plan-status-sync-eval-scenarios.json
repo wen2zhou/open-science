@@ -3,11 +3,17 @@
   "runs_per_configuration": 3,
   "configurations": ["origin/main", "candidate"],
   "frameworks": ["claude-code", "codex", "opencode"],
+  "fixture_root": "docs/session-plan-status-sync-eval-fixtures",
   "scenarios": [
     {
       "id": "same-turn-sequential",
       "plan_steps": ["Create first note", "Create second note", "Verify both notes"],
-      "prompt": "After I approve this Plan, create two separately named text notes in order, verify their exact contents, and report the paths.",
+      "prompt": "Create first-note.txt containing exactly `alpha checkpoint` followed by one newline. Then create second-note.txt containing exactly `beta checkpoint` followed by one newline. Finally read both files, verify their exact bytes, and report their paths.",
+      "setup": "Use a clean writable Project directory with first-note.txt and second-note.txt absent.",
+      "expected_results": [
+        "first-note.txt has UTF-8 bytes `alpha checkpoint\\n`",
+        "second-note.txt has UTF-8 bytes `beta checkpoint\\n`"
+      ],
       "observations": [
         "same_turn_start_checkpoint",
         "sequential_checkpoint_order",
@@ -17,19 +23,33 @@
     {
       "id": "eligible-parallel",
       "plan_steps": ["Inspect dataset A", "Inspect dataset B", "Compare findings"],
-      "prompt": "Inspect the two supplied independent datasets concurrently when supported, then compare the findings after both inspections finish.",
+      "prompt": "Inspect session-plan-status-sync-eval-fixtures/dataset-a.csv and dataset-b.csv concurrently when supported. For each file report row count and sum of value, then compare the sums after both inspections finish.",
+      "setup": "Copy the fixed fixture directory into the clean Project directory without modification.",
+      "expected_results": [
+        "dataset-a.csv has 3 data rows and value sum 10",
+        "dataset-b.csv has 3 data rows and value sum 31",
+        "dataset-b.csv exceeds dataset-a.csv by 21"
+      ],
       "observations": ["parallelism_preserved", "unjustified_batch"]
     },
     {
       "id": "exploratory-boundary",
       "plan_steps": ["Locate relevant inputs", "Analyze selected input", "Summarize evidence"],
-      "prompt": "Explore the supplied folder to identify the relevant input; only then analyze the selected file and summarize the evidence.",
+      "prompt": "Explore session-plan-status-sync-eval-fixtures/exploration, use its README.txt to identify the relevant CSV, then report that file's row count and signal sum. Do not use the distractor in the result.",
+      "setup": "Copy the fixed fixture directory into the clean Project directory without modification.",
+      "expected_results": ["relevant.csv is selected", "relevant.csv has 2 rows and signal sum 10"],
       "observations": ["uncertainty_preserved", "sequential_checkpoint_order"]
     },
     {
       "id": "blocked-with-live-peer",
       "plan_steps": ["Fetch unavailable input", "Inspect available peer", "Combine results"],
-      "prompt": "Start the two dependency-eligible input checks. One supplied input is deliberately unavailable; inspect the available peer and combine results only if both prerequisites succeed.",
+      "prompt": "Start dependency-eligible checks of session-plan-status-sync-eval-fixtures/missing-input.txt and available-peer.txt. missing-input.txt is deliberately absent. Report the available peer's exact result, and do not start the combine step unless both checks succeed.",
+      "setup": "Copy the fixed fixture directory into the clean Project directory. Confirm available-peer.txt exists and missing-input.txt does not.",
+      "expected_results": [
+        "missing-input.txt is blocked as absent",
+        "available peer result is PEER_OK",
+        "Combine results does not start"
+      ],
       "observations": [
         "blocked_reachability_preserved",
         "parallelism_preserved",
@@ -39,15 +59,23 @@
     {
       "id": "explicit-continuation",
       "plan_steps": ["Complete durable note", "Run interruptible check", "Write final summary"],
-      "prompt": "Continue the explicitly selected Plan after the test harness interrupts the second step. Use the protected checkpoint before taking action.",
-      "setup": "Record the first step completed and the second in_progress, interrupt the interaction, then explicitly continue the same Artifact Version and revision.",
+      "prompt": "Continue the explicitly selected Plan after the test harness interrupts the second step. Use the protected checkpoint before taking action; do not recreate durable-note.txt if it is already completed.",
+      "setup": "Create durable-note.txt with exact bytes `durable checkpoint\\n`; record Complete durable note completed and Run interruptible check in_progress; interrupt the interaction; then explicitly continue the same Artifact Version and revision.",
+      "expected_results": [
+        "durable-note.txt is not rewritten",
+        "the inherited in_progress check is verified before its terminal status is chosen"
+      ],
       "observations": ["durable_checkpoint_used", "uncertainty_preserved"]
     },
     {
       "id": "context-replacement-continuation",
       "plan_steps": ["Record first result", "Record second result", "Synthesize results"],
-      "prompt": "Continue the explicitly selected Plan after the provider context is replaced. Use the protected checkpoint before taking action.",
-      "setup": "Record the first step completed, replace or compact away the provider conversation context, then explicitly continue the same durable Plan.",
+      "prompt": "Continue the explicitly selected Plan after the provider context is replaced. Use the protected checkpoint before taking action and synthesize the recorded values.",
+      "setup": "Record Record first result completed with value 10 and Record second result completed with value 31; replace or compact away the provider conversation context; then explicitly continue the same durable Plan.",
+      "expected_results": [
+        "the two completed steps are not repeated",
+        "the synthesis reports 31 exceeds 10 by 21"
+      ],
       "observations": ["durable_checkpoint_used", "sequential_checkpoint_order"]
     },
     {
@@ -55,6 +83,7 @@
       "plan_steps": ["Complete durable note", "Write final summary"],
       "prompt": "What is the current Project name?",
       "setup": "Leave an approved incomplete Plan without live execution authority, then send this unrelated ordinary Message.",
+      "expected_results": ["no Plan step substantive work or status update occurs"],
       "observations": ["no_plan_execution_without_explicit_continuation"]
     }
   ]

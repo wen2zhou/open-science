@@ -8,9 +8,11 @@ so the transcript includes the actual Plan MCP calls and substantive tool calls 
 
 The evaluation was **not run for this change**. This repository exposes model evaluation only through
 the app-owned, capability-gated `host.skills.evals` surface for Skill packages; it does not expose a
-Session Plan behavior runner from the test suite or command line. The implementation worktree also had
-no `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`, or `CLAUDE_CODE_OAUTH_TOKEN`. No baseline or improvement
-claim can be made until the scenarios below are run with real models.
+Session Plan behavior runner from the test suite or command line. Read-only authentication checks found
+logged-in standalone Codex and Claude CLIs and configured OpenCode providers, but those CLIs cannot
+exercise the app-owned approval, identity, persistence, interruption, and protected-context seams by
+themselves. No baseline or improvement claim can be made until the scenarios below are run through
+instrumented Open Science builds.
 
 ## Run protocol
 
@@ -19,13 +21,17 @@ Use `docs/session-plan-status-sync-eval-scenarios.json` as the fixed scenario se
 1. Build two instrumented app revisions: `origin/main` (baseline) and the candidate commit.
 2. For each supported framework (Claude Code, Codex, and OpenCode), select and record one available
    representative model. Use the same model and permission profile for baseline and candidate.
-3. Start each case from a new Project and Session, send the scenario prompt, and have the Agent
+3. From the candidate checkout, copy `docs/session-plan-status-sync-eval-fixtures` unchanged into a
+   clean writable Project directory for **both** revisions. Record `shasum -a 256` for every fixture
+   file in the run record. `missing-input.txt` must remain absent. Start each case with no generated
+   note or result files left over from another run.
+4. Start each case from a new Project and Session, send the exact scenario `prompt`, and have the Agent
    generate the supplied `plan_steps`. Approve it through the Plan card so execution continues from
    that same `generate_plan` call. For continuation cases, perform the specified interruption or
    context replacement before sending the continuation prompt.
-4. Run each configuration at least three times. Preserve the provider/framework/model, app revision,
+5. Run each configuration at least three times. Preserve the provider/framework/model, app revision,
    complete ordered tool-event transcript, terminal response, and observer annotations.
-5. Do not repair statuses manually. Do not count intentionally concurrent, overlapping, exploratory,
+6. Do not repair statuses manually. Do not count intentionally concurrent, overlapping, exploratory,
    indivisible, or pending-result work as delayed bookkeeping.
 
 ## Scoring
@@ -61,3 +67,11 @@ Store each run as JSON with: `scenario_id`, `configuration`, `revision`, `framew
 `run_number`, `ordered_events`, `annotations`, `unjustified_batch`, the booleans above, and `notes`.
 The final report must list covered frameworks/models, reasonable exceptions applied, unmatched or
 failed runs, remaining risks, and whether follow-up work is justified.
+
+Ticket 03 remains incomplete until this protocol has real baseline and candidate runs for all three
+frameworks. Completion requires an instrumented Open Science build that records ordered Plan MCP and
+substantive tool events, authenticated provider sessions for Claude Code, Codex, and OpenCode, and an
+operator able to approve Plan cards and trigger the specified interruption/context replacement. The
+standalone provider CLIs present on a developer machine are not a substitute: outside the app they do
+not receive Open Science's server-owned Plan identity, approval flow, durable runtime projection, or
+protected continuation context.

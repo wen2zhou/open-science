@@ -119,6 +119,22 @@ const compactPlanContextText = (value: string): string =>
   value.replace(/\s+/g, ' ').trim().slice(0, 500)
 
 export const formatPlanProtectedContext = (projection: ActivePlanProjection): string => {
+  const definition = projection.document.phases.flatMap((phase, phaseIndex) => [
+    `- phase ${phaseIndex + 1}: ${compactPlanContextText(phase.name)}`,
+    '  delegations (independent sibling work tracks within this phase):',
+    ...phase.delegations.flatMap((delegation, delegationIndex) => [
+      `  - delegation ${delegationIndex + 1}: ${compactPlanContextText(delegation.name)}`,
+      '    steps (ordered within this delegation):',
+      ...delegation.steps.map(
+        (step, stepIndex) =>
+          `    ${stepIndex + 1}. ${compactPlanContextText(step.title)} — ${compactPlanContextText(step.description)}`
+      )
+    ])
+  ])
+  const desiredOutputs =
+    projection.document.desired_outputs.length > 0
+      ? projection.document.desired_outputs.map((output) => `- ${compactPlanContextText(output)}`)
+      : ['- (none specified)']
   const steps = planStepTitles(projection.document).map((title) => {
     const state = projection.stepStates[title] ?? { status: 'not_started' as const }
     const notes =
@@ -128,7 +144,14 @@ export const formatPlanProtectedContext = (projection: ActivePlanProjection): st
   return [
     '<open_science_protected_plan_context>',
     `approval=${projection.approval} lifecycle=${projection.lifecycle}`,
-    `task=${compactPlanContextText(projection.document.task_summary)}`,
+    'approved_plan_definition:',
+    `task_summary=${compactPlanContextText(projection.document.task_summary)}`,
+    'phases (ordered; each later phase depends on every previous step being completed or skipped):',
+    ...definition,
+    'desired_outputs:',
+    ...desiredOutputs,
+    `feasibility=${projection.document.feasibility.confidence} — ${compactPlanContextText(projection.document.feasibility.rationale)}`,
+    'recorded_step_statuses (durable Session runtime state, not Plan definition):',
     ...steps,
     'This is the authoritative Plan checkpoint at turn entry. Successful Session Plan MCP receipts confirm newer changes made later in the turn.',
     'An in_progress status means work began but its final outcome was not reliably recorded. Verify uncertain work before deciding whether to continue, complete, or block it; do not repeat completed work.',

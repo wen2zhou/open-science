@@ -728,12 +728,14 @@ describe('AcpPromptTurnWorkflow', () => {
 
     expect(harness.preparation).toHaveBeenCalledWith(
       expect.objectContaining({
-        protectedContext: expect.stringContaining(
-          'approval=approved lifecycle=approved\ntask=Analyze the result\n- Analyze: not_started'
-        ),
+        protectedContext: expect.stringContaining('approval=approved lifecycle=approved'),
         turnPromptReminders: [expect.stringContaining('Plan mode (ACTIVE')]
       })
     )
+    const protectedContext = harness.preparation.mock.calls[0][0].protectedContext
+    expect(protectedContext).toContain('task_summary=Analyze the result')
+    expect(protectedContext).toContain('1. Analyze — Analyze the result.')
+    expect(protectedContext).toContain('- Analyze: not_started')
     const handles = harness.finalizer.mock.calls[0][0]
     const interaction = handles.interaction
     handles.beforeInteractionRelease()
