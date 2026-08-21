@@ -87,7 +87,7 @@ describe('protected Plan context', () => {
         '- Result',
         'feasibility=high — Ready.',
         'recorded_step_statuses (durable Session runtime state, not Plan definition):',
-        '- Inspect exact input title: completed',
+        '- Inspect exact input title: completed — A long completed-step implementation log that is no longer actionable.',
         '- Analyze: blocked — Input missing',
         'This is the authoritative Plan checkpoint at turn entry. Successful Session Plan MCP receipts confirm newer changes made later in the turn.',
         'An in_progress status means work began but its final outcome was not reliably recorded. Verify uncertain work before deciding whether to continue, complete, or block it; do not repeat completed work.',

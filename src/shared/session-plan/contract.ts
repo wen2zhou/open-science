@@ -137,8 +137,7 @@ export const formatPlanProtectedContext = (projection: ActivePlanProjection): st
       : ['- (none specified)']
   const steps = planStepTitles(projection.document).map((title) => {
     const state = projection.stepStates[title] ?? { status: 'not_started' as const }
-    const notes =
-      state.status !== 'completed' && state.notes ? ` — ${compactPlanContextText(state.notes)}` : ''
+    const notes = state.notes ? ` — ${compactPlanContextText(state.notes)}` : ''
     return `- ${compactPlanContextText(title)}: ${state.status}${notes}`
   })
   return [

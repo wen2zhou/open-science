@@ -17524,7 +17524,10 @@ describe('ACP runtime session management', () => {
               delegations: [
                 {
                   name: 'Primary agent',
-                  steps: [{ title: 'Analyze data', description: 'Produce the result.' }]
+                  steps: [
+                    { title: 'Inspect inputs', description: 'Record the input value.' },
+                    { title: 'Analyze data', description: 'Produce the result.' }
+                  ]
                 }
               ]
             }
@@ -17532,9 +17535,14 @@ describe('ACP runtime session management', () => {
           desired_outputs: ['Analysis result'],
           feasibility: { confidence: 'high', rationale: 'Inputs are available.' }
         },
-        stepStatuses: {},
-        stepStates: { 'Analyze data': { status: 'not_started' } },
-        counts: { phases: 1, delegations: 1, steps: 1, completed: 0, inProgress: 0 }
+        stepStatuses: {
+          'Inspect inputs': { status: 'completed', updatedAt: 42, notes: 'Recorded value: 10' }
+        },
+        stepStates: {
+          'Inspect inputs': { status: 'completed', notes: 'Recorded value: 10' },
+          'Analyze data': { status: 'not_started' }
+        },
+        counts: { phases: 1, delegations: 1, steps: 2, completed: 1, inProgress: 0 }
       } satisfies ActivePlanProjection
       const authorizeContinuation = vi.fn(async () => active)
       installPromptPlanTestWorkflow(runtime, {
@@ -17566,11 +17574,15 @@ describe('ACP runtime session management', () => {
       expect(fakeAgent.prompts[0]?.text).toContain('<open_science_protected_plan_context>')
       expect(fakeAgent.prompts[0]?.text).toContain('approval=approved lifecycle=approved')
       expect(fakeAgent.prompts[0]?.text).not.toContain('artifact_version_id=')
+      expect(fakeAgent.prompts[0]?.text).toContain(
+        '- Inspect inputs: completed — Recorded value: 10'
+      )
       expect(fakeAgent.prompts[0]?.text).toContain('Analyze data: not_started')
       expect(fakeAgent.prompts[0]?.text).toContain('approved_plan_definition:')
       expect(fakeAgent.prompts[0]?.text).toContain('- phase 1: Analysis')
       expect(fakeAgent.prompts[0]?.text).toContain('- delegation 1: Primary agent')
-      expect(fakeAgent.prompts[0]?.text).toContain('1. Analyze data — Produce the result.')
+      expect(fakeAgent.prompts[0]?.text).toContain('1. Inspect inputs — Record the input value.')
+      expect(fakeAgent.prompts[0]?.text).toContain('2. Analyze data — Produce the result.')
       expect(fakeAgent.prompts[0]?.text).toContain('desired_outputs:\n- Analysis result')
       expect(fakeAgent.prompts[0]?.text).toContain(
         'each later phase depends on every previous step being completed or skipped'
