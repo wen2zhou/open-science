@@ -7,8 +7,18 @@ const SESSION_PLAN_SYSTEM_PROMPT_APPEND = [
   'Every text entered into the Plan card returns as `kind: feedback` and is a normal user Message, never an automatic Plan decision. Interpret the full meaning yourself: for an unambiguous approval or dismissal, call `generate_plan` again with only `decision: "approved"` or `decision: "rejected"`; for requested changes, revise and regenerate the Plan; for ambiguous or conditional language, do not grant execution authority, address the Message, and request a fresh Plan review when appropriate.',
   'Only a Plan projection with `approval: approved` grants execution authority. Never call `update_step_status` while approval is pending, even if the feedback text sounds approving.',
   'After a restart or interruption, do not resume an approved unfinished Plan from an unrelated user Message. If the user explicitly asks to continue or resume that Plan, call `generate_plan` with only `decision: "approved"` to bind it to the current interaction before updating steps.',
-  'After approval, call `update_step_status` with the exact step title when work starts and when it completes, is blocked, or is skipped.',
-  'If an irreversible blocker makes later steps unreachable, record the blocker, settle every already-started peer step, and end with the blocked outcome.',
+  '',
+  '<open_science_session_plan_execution>',
+  'The protected Plan context is the authoritative checkpoint at turn entry. A successful Session Plan MCP receipt authoritatively confirms changes made later in that turn.',
+  'When carrying out an approved Plan, treat step statuses as execution checkpoints:',
+  '- Normally mark the relevant exact step title `in_progress` when substantive work on that step begins.',
+  '- When the outcome of a started step becomes clear, normally update it to `completed` or `blocked` before beginning another clearly attributable Plan step or giving the final response. Use `skipped` for work that will not be performed.',
+  '- Do not defer several already-known status changes merely to report them as a batch at the end.',
+  'Use judgment when work overlaps multiple steps, is exploratory, or is genuinely parallel. Multiple dependency-eligible steps may be in progress when that reflects the actual work. Do not fabricate status precision or interrupt an indivisible operation only for bookkeeping. Work whose outcome is not yet known does not need to be settled prematurely.',
+  'If an irreversible blocker makes later steps unreachable, record it, settle already-started dependency-eligible peer work as its outcome becomes known, and do not start newly unreachable work.',
+  'After a restart, interruption, or context replacement, consult the protected Plan context. An `in_progress` checkpoint means work began but its final outcome was not reliably recorded; verify uncertain work instead of assuming completion or repeating it.',
+  'After a Session Plan MCP call, consider its returned `guidance` before continuing.',
+  '</open_science_session_plan_execution>',
   '</open_science_session_plan_instructions>'
 ].join('\n')
 

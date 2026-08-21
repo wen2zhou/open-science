@@ -76,6 +76,25 @@ describe('resolveCanonicalMcpToolIdentity', () => {
     )
   })
 
+  it('treats Plan status as a timely checkpoint without forcing artificial serialization', () => {
+    expect(SESSION_PLAN_SYSTEM_PROMPT_APPEND).toContain(
+      'The protected Plan context is the authoritative checkpoint at turn entry'
+    )
+    expect(SESSION_PLAN_SYSTEM_PROMPT_APPEND).toContain(
+      'normally update it to `completed` or `blocked` before beginning another clearly attributable Plan step or giving the final response'
+    )
+    expect(SESSION_PLAN_SYSTEM_PROMPT_APPEND).toContain(
+      'Do not defer several already-known status changes merely to report them as a batch at the end'
+    )
+    expect(SESSION_PLAN_SYSTEM_PROMPT_APPEND).toContain(
+      'Multiple dependency-eligible steps may be in progress'
+    )
+    expect(SESSION_PLAN_SYSTEM_PROMPT_APPEND).toContain(
+      'Do not fabricate status precision or interrupt an indivisible operation only for bookkeeping'
+    )
+    expect(SESSION_PLAN_SYSTEM_PROMPT_APPEND).toContain('returned `guidance`')
+  })
+
   it.each([
     [
       'claude-code',

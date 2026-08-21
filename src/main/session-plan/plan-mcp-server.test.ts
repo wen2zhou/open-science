@@ -46,6 +46,9 @@ describe('Session Plan MCP server', () => {
       const generatePlan = (await client.listTools()).tools.find(
         (tool) => tool.name === 'generate_plan'
       )
+      const updateStepStatus = (await client.listTools()).tools.find(
+        (tool) => tool.name === 'update_step_status'
+      )
       const inputSchema = generatePlan?.inputSchema as {
         properties?: Record<string, unknown>
       }
@@ -103,6 +106,13 @@ describe('Session Plan MCP server', () => {
         }
       })
       expect(inputSchema).not.toHaveProperty('required')
+      expect(generatePlan?.description).toContain('consider the returned guidance')
+      expect(updateStepStatus?.description).toContain(
+        'Normally mark a step in_progress when substantive work begins'
+      )
+      expect(updateStepStatus?.description).toContain(
+        'without inventing precision for exploratory, overlapping, or genuinely parallel work'
+      )
     } finally {
       await client.close()
       await server.close()
@@ -234,7 +244,9 @@ describe('Session Plan MCP server', () => {
           changed: true,
           step: { title: 'Analyze the data', status: 'completed' },
           revision: 12,
-          lifecycle: 'completed'
+          lifecycle: 'completed',
+          guidance:
+            'The Plan has reached a completed outcome. Summarize the result and any relevant limitations.'
         })
         expect(content[0].text).not.toContain('projection')
         expect(content[0].text).not.toContain('private-task-summary')
@@ -292,14 +304,18 @@ describe('Session Plan MCP server', () => {
           decision: 'approved',
           changed: true,
           revision: 7,
-          lifecycle: 'approved'
+          lifecycle: 'approved',
+          guidance:
+            'The Plan is approved. Before substantive planned work, identify the relevant step and normally mark its exact title in_progress.'
         })
         expect(JSON.parse(rejectedText)).toEqual({
           kind: 'decision',
           decision: 'rejected',
           changed: true,
           revision: 8,
-          lifecycle: 'rejected'
+          lifecycle: 'rejected',
+          guidance:
+            "The Plan was rejected. Do not execute it; respond to the user's decision and await further direction."
         })
         expect(`${approvedText}${rejectedText}`).not.toContain('projection')
         expect(`${approvedText}${rejectedText}`).not.toContain('private-decision-summary')
@@ -352,7 +368,9 @@ describe('Session Plan MCP server', () => {
 
         expect(JSON.parse(text)).toEqual({
           kind: 'feedback',
-          text: 'Split the analysis by cohort.'
+          text: 'Split the analysis by cohort.',
+          guidance:
+            'The Plan is still pending. Interpret the feedback and revise the Plan or ask for clarification; do not begin Plan execution.'
         })
         expect(text).not.toContain('private-interaction-id')
         expect(text).not.toContain('private-message-id')
@@ -405,13 +423,78 @@ describe('Session Plan MCP server', () => {
           decision: 'approved',
           changed: true,
           revision: 10,
-          lifecycle: 'approved'
+          lifecycle: 'approved',
+          guidance:
+            'The Plan is approved. Before substantive planned work, identify the relevant step and normally mark its exact title in_progress.'
         })
         expect(text).not.toContain('private-generated-plan-checksum')
         expect(text).not.toContain('private-generated-plan-summary')
       }
     )
   })
+
+  it.each([
+    {
+      status: 'in_progress' as const,
+      lifecycle: 'in_progress' as const,
+      guidance:
+        'This step is recorded as in progress. When its outcome becomes clear, normally update it before beginning another clearly attributable Plan step or giving the final response; do not accumulate several already-known changes for an end-of-turn batch.'
+    },
+    {
+      status: 'completed' as const,
+      lifecycle: 'approved' as const,
+      guidance:
+        'This status is recorded. When substantive work begins on another relevant Plan step, normally mark that exact step in_progress.'
+    },
+    {
+      status: 'blocked' as const,
+      lifecycle: 'in_progress' as const,
+      guidance:
+        'This step is blocked while other Plan work is still in progress. Do not start newly unreachable work; keep already-started dependency-eligible peer work current and settle it as its outcome becomes known.'
+    },
+    {
+      status: 'blocked' as const,
+      lifecycle: 'blocked' as const,
+      guidance:
+        'The Plan has reached a blocked outcome. Explain the blocker and useful options without claiming the remaining work was completed.'
+    }
+  ])(
+    'selects event-aligned guidance for a $status step with $lifecycle Plan lifecycle',
+    async ({ status, lifecycle, guidance }) => {
+      const result = await withPlanMcpClient(
+        `plan-${status}-${lifecycle}-guidance-test`,
+        {
+          generate: vi.fn(),
+          approve: vi.fn(),
+          reject: vi.fn(),
+          updateStepStatus: vi.fn().mockResolvedValue({
+            changed: true,
+            projection: {
+              approval: 'approved',
+              revision: 14,
+              lifecycle,
+              stepStates: { 'Analyze the data': { status } }
+            }
+          })
+        },
+        (client) =>
+          client.callTool({
+            name: 'update_step_status',
+            arguments: { title: 'Analyze the data', status }
+          })
+      )
+
+      const text = (result as { content: Array<{ text: string }> }).content[0].text
+      expect(JSON.parse(text)).toEqual({
+        changed: true,
+        revision: 14,
+        lifecycle,
+        step: { title: 'Analyze the data', status },
+        guidance
+      })
+      expect(text).not.toContain('stepStates')
+    }
+  )
 
   it('fails closed when a Plan handler returns an unknown success shape', async () => {
     await withPlanMcpClient(

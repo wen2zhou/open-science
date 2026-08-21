@@ -77,10 +77,71 @@ describe('protected Plan context', () => {
         'task=Analyze data',
         '- Inspect exact input title: completed',
         '- Analyze: blocked — Input missing',
+        'This is the authoritative Plan checkpoint at turn entry. Successful Session Plan MCP receipts confirm newer changes made later in the turn.',
+        'An in_progress status means work began but its final outcome was not reliably recorded. Verify uncertain work before deciding whether to continue, complete, or block it; do not repeat completed work.',
+        'A not_started entry means no status is durably recorded for that step.',
         'Do not execute this Plan without interaction-bound authority from Open Science.',
         '</open_science_protected_plan_context>'
       ].join('\n')
     )
+    expect(summary).not.toContain('artifact-1')
+    expect(summary).not.toContain('version-3')
+    expect(summary).not.toContain('approved_plan_file')
+  })
+
+  it('projects the latest recorded outcome for every exact step without implying file access', () => {
+    const summary = formatPlanProtectedContext({
+      artifactId: 'artifact-1',
+      artifactVersionId: 'version-3',
+      artifactChecksum: 'a'.repeat(64),
+      revision: 9,
+      approval: 'approved',
+      lifecycle: 'interrupted',
+      requiresExplicitContinuation: true,
+      document: createPlanDocumentV1({
+        task_summary: 'Resume analysis',
+        phases: [
+          {
+            name: 'Analysis',
+            delegations: [
+              {
+                name: 'Main Agent',
+                steps: [
+                  { title: 'Completed work', description: 'Already done.' },
+                  { title: 'Uncertain work', description: 'Started before interruption.' },
+                  { title: 'Blocked work', description: 'Cannot continue.' },
+                  { title: 'Skipped work', description: 'Intentionally omitted.' },
+                  { title: 'Unstarted work', description: 'Not begun.' }
+                ]
+              }
+            ]
+          }
+        ],
+        desired_outputs: ['Result'],
+        feasibility: { confidence: 'high', rationale: 'Ready.' }
+      }),
+      stepStatuses: {
+        'Completed work': { status: 'completed', updatedAt: 1 },
+        'Uncertain work': { status: 'in_progress', updatedAt: 2, notes: 'Process was interrupted' },
+        'Blocked work': { status: 'blocked', updatedAt: 3, notes: 'Input unavailable' },
+        'Skipped work': { status: 'skipped', updatedAt: 4, notes: 'Out of scope' }
+      },
+      stepStates: {
+        'Completed work': { status: 'completed' },
+        'Uncertain work': { status: 'in_progress', notes: 'Process was interrupted' },
+        'Blocked work': { status: 'blocked', notes: 'Input unavailable' },
+        'Skipped work': { status: 'skipped', notes: 'Out of scope' },
+        'Unstarted work': { status: 'not_started' }
+      },
+      counts: { phases: 1, delegations: 1, steps: 5, completed: 1, inProgress: 1 }
+    })
+
+    expect(summary).toContain('- Completed work: completed')
+    expect(summary).toContain('- Uncertain work: in_progress — Process was interrupted')
+    expect(summary).toContain('- Blocked work: blocked — Input unavailable')
+    expect(summary).toContain('- Skipped work: skipped — Out of scope')
+    expect(summary).toContain('- Unstarted work: not_started')
+    expect(summary).not.toContain('approved_plan_file')
   })
 })
 

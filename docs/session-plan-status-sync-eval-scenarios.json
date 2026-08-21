@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "runs_per_configuration": 3,
+  "configurations": ["origin/main", "candidate"],
+  "frameworks": ["claude-code", "codex", "opencode"],
+  "scenarios": [
+    {
+      "id": "same-turn-sequential",
+      "plan_steps": ["Create first note", "Create second note", "Verify both notes"],
+      "prompt": "After I approve this Plan, create two separately named text notes in order, verify their exact contents, and report the paths.",
+      "observations": [
+        "same_turn_start_checkpoint",
+        "sequential_checkpoint_order",
+        "unjustified_batch"
+      ]
+    },
+    {
+      "id": "eligible-parallel",
+      "plan_steps": ["Inspect dataset A", "Inspect dataset B", "Compare findings"],
+      "prompt": "Inspect the two supplied independent datasets concurrently when supported, then compare the findings after both inspections finish.",
+      "observations": ["parallelism_preserved", "unjustified_batch"]
+    },
+    {
+      "id": "exploratory-boundary",
+      "plan_steps": ["Locate relevant inputs", "Analyze selected input", "Summarize evidence"],
+      "prompt": "Explore the supplied folder to identify the relevant input; only then analyze the selected file and summarize the evidence.",
+      "observations": ["uncertainty_preserved", "sequential_checkpoint_order"]
+    },
+    {
+      "id": "blocked-with-live-peer",
+      "plan_steps": ["Fetch unavailable input", "Inspect available peer", "Combine results"],
+      "prompt": "Start the two dependency-eligible input checks. One supplied input is deliberately unavailable; inspect the available peer and combine results only if both prerequisites succeed.",
+      "observations": [
+        "blocked_reachability_preserved",
+        "parallelism_preserved",
+        "unjustified_batch"
+      ]
+    },
+    {
+      "id": "explicit-continuation",
+      "plan_steps": ["Complete durable note", "Run interruptible check", "Write final summary"],
+      "prompt": "Continue the explicitly selected Plan after the test harness interrupts the second step. Use the protected checkpoint before taking action.",
+      "setup": "Record the first step completed and the second in_progress, interrupt the interaction, then explicitly continue the same Artifact Version and revision.",
+      "observations": ["durable_checkpoint_used", "uncertainty_preserved"]
+    },
+    {
+      "id": "context-replacement-continuation",
+      "plan_steps": ["Record first result", "Record second result", "Synthesize results"],
+      "prompt": "Continue the explicitly selected Plan after the provider context is replaced. Use the protected checkpoint before taking action.",
+      "setup": "Record the first step completed, replace or compact away the provider conversation context, then explicitly continue the same durable Plan.",
+      "observations": ["durable_checkpoint_used", "sequential_checkpoint_order"]
+    },
+    {
+      "id": "ordinary-message-isolation",
+      "plan_steps": ["Complete durable note", "Write final summary"],
+      "prompt": "What is the current Project name?",
+      "setup": "Leave an approved incomplete Plan without live execution authority, then send this unrelated ordinary Message.",
+      "observations": ["no_plan_execution_without_explicit_continuation"]
+    }
+  ]
+}

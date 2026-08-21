@@ -172,11 +172,38 @@ type PlanToolOutcomeContext =
   | Readonly<{ kind: 'decision'; decision: 'approved' | 'rejected' }>
   | Readonly<{ kind: 'generation-result' }>
 
+const PLAN_GUIDANCE = Object.freeze({
+  pending:
+    'The Plan is still pending. Interpret the feedback and revise the Plan or ask for clarification; do not begin Plan execution.',
+  approved:
+    'The Plan is approved. Before substantive planned work, identify the relevant step and normally mark its exact title in_progress.',
+  rejected:
+    "The Plan was rejected. Do not execute it; respond to the user's decision and await further direction.",
+  inProgress:
+    'This step is recorded as in progress. When its outcome becomes clear, normally update it before beginning another clearly attributable Plan step or giving the final response; do not accumulate several already-known changes for an end-of-turn batch.',
+  nextStep:
+    'This status is recorded. When substantive work begins on another relevant Plan step, normally mark that exact step in_progress.',
+  peersInProgress:
+    'This step is blocked while other Plan work is still in progress. Do not start newly unreachable work; keep already-started dependency-eligible peer work current and settle it as its outcome becomes known.',
+  completed:
+    'The Plan has reached a completed outcome. Summarize the result and any relevant limitations.',
+  blocked:
+    'The Plan has reached a blocked outcome. Explain the blocker and useful options without claiming the remaining work was completed.'
+})
+
+const guidanceForStepUpdate = (status: SessionPlanStepStatus, lifecycle: PlanLifecycle): string => {
+  if (lifecycle === 'completed') return PLAN_GUIDANCE.completed
+  if (lifecycle === 'blocked') return PLAN_GUIDANCE.blocked
+  if (status === 'blocked' && lifecycle === 'in_progress') return PLAN_GUIDANCE.peersInProgress
+  if (status === 'in_progress') return PLAN_GUIDANCE.inProgress
+  return PLAN_GUIDANCE.nextStep
+}
+
 const presentPlanToolOutcome = (result: unknown, context: PlanToolOutcomeContext): unknown => {
   const outcome = recordOf(result)
   if (context.kind === 'generation-result') {
     if (outcome?.kind === 'feedback' && typeof outcome.text === 'string') {
-      return { kind: 'feedback', text: outcome.text }
+      return { kind: 'feedback', text: outcome.text, guidance: PLAN_GUIDANCE.pending }
     }
   }
   const { projection, changed, revision, approval, lifecycle } = requirePlanToolState(result)
@@ -189,21 +216,28 @@ const presentPlanToolOutcome = (result: unknown, context: PlanToolOutcomeContext
     }
     return {
       ...state,
-      step: { title: context.title, status: context.status }
+      step: { title: context.title, status: context.status },
+      guidance: guidanceForStepUpdate(context.status, lifecycle)
     }
   }
   if (context.kind === 'generation-result') {
     const decision = approval
     if (decision === 'approved' || decision === 'rejected') {
-      return { kind: 'decision', decision, ...state }
+      return {
+        kind: 'decision',
+        decision,
+        ...state,
+        guidance: decision === 'approved' ? PLAN_GUIDANCE.approved : PLAN_GUIDANCE.rejected
+      }
     }
-    return { kind: 'plan', ...state }
+    return { kind: 'plan', ...state, guidance: PLAN_GUIDANCE.pending }
   }
   if (approval !== context.decision) throw invalidPlanToolSuccess()
   return {
     kind: 'decision',
     decision: context.decision,
-    ...state
+    ...state,
+    guidance: context.decision === 'approved' ? PLAN_GUIDANCE.approved : PLAN_GUIDANCE.rejected
   }
 }
 
@@ -226,7 +260,7 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
     {
       title: 'Generate or decide Session Plan',
       description:
-        'Create an immutable execution Plan or explicitly decide the active Plan. Generation blocks until the user responds. Text responses always return as kind:feedback and remain ordinary user Messages; interpret the full meaning, then call this tool again with only decision:"approved" or decision:"rejected" when the intent is unambiguous, or revise and regenerate when changes are requested. Calling decision:"approved" also binds an already-approved interrupted Plan to the current user interaction. Never execute from message text alone. The legacy approve:true is equivalent to decision:"approved". Do not combine a decision with Plan content.',
+        'Create an immutable execution Plan or explicitly decide the active Plan. Generation blocks until the user responds. Text responses always return as kind:feedback and remain ordinary user Messages; interpret the full meaning, then call this tool again with only decision:"approved" or decision:"rejected" when the intent is unambiguous, or revise and regenerate when changes are requested. Calling decision:"approved" also binds an already-approved interrupted Plan to the current user interaction. Never execute from message text alone. The legacy approve:true is equivalent to decision:"approved". Do not combine a decision with Plan content. When this call returns successfully, consider the returned guidance before revising, executing, or responding about the Plan.',
       inputSchema: generatePlanToolSchema
     },
     async ({ decision, approve, task_summary, phases, desired_outputs, feasibility }, extra) => {
@@ -285,7 +319,8 @@ const createPlanMcpServer = (handler: PlanMcpHandler): ModelContextProtocolServe
     'update_step_status',
     {
       title: 'Update Plan step status',
-      description: 'Update one exact step title on the server-bound active Plan.',
+      description:
+        'Record the current status of one exact step on the server-bound approved Plan. Normally mark a step in_progress when substantive work begins, and update it when its outcome becomes clear, normally before beginning another clearly attributable Plan step or giving the final response. Keep statuses timely without inventing precision for exploratory, overlapping, or genuinely parallel work. Consider the returned guidance before continuing.',
       inputSchema: updateStepStatusToolSchema
     },
     async (input) =>
