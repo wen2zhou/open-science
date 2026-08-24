@@ -1906,6 +1906,43 @@ describe('workspace agent message sending', () => {
     })
   })
 
+  it('binds an automatic Compute analysis prompt to its durable delivery identity', async () => {
+    const runtime = {
+      state: createSnapshot(['transport-session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt: vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
+    }
+
+    const sent = await sendWorkspaceMessage(runtime, {
+      sessionId: 'transport-session-1',
+      text: 'Analyze completed remote job job-1.',
+      cwd: '/workspace/project',
+      projectId: 'project-1',
+      attribution: {
+        kind: 'application',
+        feature: 'compute',
+        purpose: 'job-completion-analysis',
+        deliveryKey: 'compute_done:transport-session-1:job-1',
+        jobIds: ['job-1']
+      }
+    })
+
+    expect(sent).toBeDefined()
+    expect(useSessionStore.getState().sessions[0].messages[0]).toMatchObject({
+      id: sent?.messageId,
+      role: 'user',
+      attribution: {
+        kind: 'application',
+        feature: 'compute',
+        purpose: 'job-completion-analysis',
+        deliveryKey: 'compute_done:transport-session-1:job-1',
+        jobIds: ['job-1']
+      }
+    })
+  })
+
   it('does not append a prompt when attachment finalization fails', async () => {
     const attachment = createAttachment()
     useSessionStore.getState().appendUserMessage({
