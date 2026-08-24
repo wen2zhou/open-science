@@ -1689,7 +1689,24 @@ describe('createJobUpdatedBroadcaster', () => {
     remove()
   })
 
-  it('broadcasts a persisted update when the Job existence lookup fails transiently', async () => {
+  it('re-reads the current row and never broadcasts an older status snapshot', async () => {
+    const current = sampleJob({ status: 'success', finished_at: 2, exit_code: 0 })
+    const broadcaster = createJobUpdatedBroadcaster(
+      mockRepository({ get: vi.fn(async () => sampleHost()) }),
+      storageRoot,
+      { get: vi.fn(async () => current) }
+    )
+
+    const captured = captureNextBroadcast()
+    broadcaster(sampleJob({ status: 'running' }))
+
+    await expect(captured).resolves.toMatchObject({
+      channel: COMPUTE_JOB_UPDATED_CHANNEL,
+      payload: expect.objectContaining({ status: 'success', finished_at: 2, exit_code: 0 })
+    })
+  })
+
+  it('does not broadcast an unverified snapshot when the current-row lookup fails', async () => {
     const sink = vi.fn()
     const remove = addRendererBroadcastSink(sink)
     const jobRepository = {
@@ -1704,13 +1721,8 @@ describe('createJobUpdatedBroadcaster', () => {
     )
 
     broadcaster(sampleJob({ status: 'success' }))
-
-    await vi.waitFor(() =>
-      expect(sink).toHaveBeenCalledWith(
-        COMPUTE_JOB_UPDATED_CHANNEL,
-        expect.objectContaining({ job_id: 'job-bcast', status: 'success' })
-      )
-    )
+    await vi.waitFor(() => expect(jobRepository.get).toHaveBeenCalled())
+    expect(sink).not.toHaveBeenCalled()
     remove()
   })
 

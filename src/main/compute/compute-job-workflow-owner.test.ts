@@ -238,6 +238,7 @@ describe('ComputeJobWorkflowOwner.submitJob', () => {
     let handoffWait: Promise<void> | undefined
     const concurrencyManager = {
       enqueue: vi.fn(async () => 'can_dispatch' as const),
+      handleJobUpdated: vi.fn(),
       admit: vi.fn(
         async (
           _params: { sessionId: string; providerId: string },
@@ -314,6 +315,36 @@ describe('ComputeJobWorkflowOwner.submitJob', () => {
     expect(result.job_id).toBeDefined()
     expect(result.remote_workdir).toContain('.openscience/jobs/')
     expect(createCalls).toHaveBeenCalledOnce()
+  })
+
+  it('publishes the committed submitted row immediately after creation', async () => {
+    const runner = makeFakeRunner({
+      exitCode: 0,
+      stdout: '',
+      stderr: '',
+      truncated: false,
+      timedOut: false
+    })
+    const { repo: jobRepo } = makeJobRepo()
+    const { repo } = makeRepo()
+    const publish = vi.fn()
+    const broker = {
+      request: vi.fn(),
+      requestWithContext: vi.fn(async () => 'once' as const),
+      respond: vi.fn()
+    } as unknown as ComputeApprovalBroker
+
+    await makeOwner(runner, repo, broker, jobRepo, publish).submitJob(
+      'ssh:biowulf',
+      'visible immediately',
+      'echo ready',
+      {},
+      { sessionId: 'sess-1', projectId: 'proj-1' }
+    )
+
+    expect(publish).toHaveBeenCalledWith(
+      expect.objectContaining({ session_id: 'sess-1', status: 'submitted' })
+    )
   })
 
   it('throws approval_denied and does NOT create a DB row when approval is denied', async () => {
