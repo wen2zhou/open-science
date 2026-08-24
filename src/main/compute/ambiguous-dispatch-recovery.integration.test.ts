@@ -359,6 +359,67 @@ describe('ambiguous Compute Job dispatch recovery', () => {
     })
   })
 
+  it('keeps a launched job recoverable when persisting its local handle fails', async () => {
+    const recoveryOutput = [
+      'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+      'workdir:1',
+      'exit_code:',
+      'pid:2468',
+      'cwd_match:1'
+    ].join('\n')
+    const run = vi
+      .fn<ComputeConnectionLease['run']>()
+      .mockResolvedValueOnce(successfulRun('2468'))
+      .mockResolvedValueOnce(successfulRun(recoveryOutput))
+    const originalUpdateIfStatus = jobRepository.updateIfStatus.bind(jobRepository)
+    let rejectHandlePersistence = true
+    vi.spyOn(jobRepository, 'updateIfStatus').mockImplementation(
+      async (jobId, expectedStatuses, updates) => {
+        if (rejectHandlePersistence && updates.status === 'running') {
+          rejectHandlePersistence = false
+          throw new Error('local persistence unavailable')
+        }
+        return originalUpdateIfStatus(jobId, expectedStatuses, updates)
+      }
+    )
+    const connectionBroker = serviceBroker(run)
+    const dispatchingService = new ComputeService({
+      runner: { run: vi.fn() } as unknown as SshRunner,
+      repository: hostRepository,
+      jobRepository,
+      connectionBroker,
+      approvalBroker: {
+        requestWithContext: vi.fn(async () => 'once')
+      } as unknown as ComputeApprovalBroker
+    })
+
+    const submitted = await dispatchingService.submitJob(
+      'ssh:recovery-host',
+      'lost local handle persistence',
+      'sleep 60',
+      {},
+      { sessionId: 'session-1', projectId: 'project-1' }
+    )
+
+    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce())
+    await new Promise((resolve) => setTimeout(resolve, 20))
+    await expect(dispatchingService.getJobStatus(submitted.job_id)).resolves.toMatchObject({
+      status: 'submitted'
+    })
+
+    await new JobPoller({
+      connectionBroker,
+      hostRepository,
+      jobRepository,
+      dispatchTracker: new DispatchTracker()
+    }).tick()
+
+    await expect(dispatchingService.getJobStatus(submitted.job_id)).resolves.toMatchObject({
+      status: 'running'
+    })
+    expect(run).toHaveBeenCalledTimes(2)
+  })
+
   it.each([
     { name: 'malformed', stdout: '2468junk\n', truncated: false },
     { name: 'truncated', stdout: '2468\n', truncated: true }
