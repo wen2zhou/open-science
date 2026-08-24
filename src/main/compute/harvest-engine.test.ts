@@ -27,7 +27,12 @@ import {
 } from './connection-broker'
 import type { ComputeJobRepository } from './job-repository'
 import type { ComputeHostRepository } from './repository'
-import { HARVEST_FREE_DISK_RESERVE_BYTES, getJobHarvestDir, harvestJob } from './harvest-engine'
+import {
+  HARVEST_FREE_DISK_RESERVE_BYTES,
+  getJobHarvestDir,
+  harvestJob,
+  type HarvestDeps
+} from './harvest-engine'
 import { beginMigration, clearMigrationPending } from '../storage/migration-state'
 
 // ---------------------------------------------------------------------------
@@ -875,7 +880,7 @@ describe('harvestJob - bounded logs and disk reserve', () => {
     })
     const connections = [connection('first.result'), connection('second.result')]
     let acquired = 0
-    const deps = (job: ComputeJob) => ({
+    const deps = (job: ComputeJob): HarvestDeps => ({
       connectionBroker: {
         acquire: vi.fn(async () => connections[acquired++]!)
       },
@@ -934,7 +939,7 @@ describe('harvestJob - bounded logs and disk reserve', () => {
       filename: string,
       sizeBytes: number,
       download: ComputeConnectionLease['download']
-    ) => ({
+    ): ComputeConnectionLease => ({
       run: vi.fn(async () => ({
         exitCode: 0,
         stdout: findOutput([{ path: filename, size_bytes: sizeBytes }]),
