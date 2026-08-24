@@ -42,10 +42,7 @@ const computePaths = {
   jobLifecycle: resolve(mainRoot, 'compute/compute-job-lifecycle.ts'),
   jobRepository: resolve(mainRoot, 'compute/job-repository.ts'),
   cancellationOwner: resolve(mainRoot, 'compute/compute-job-cancellation-owner.ts'),
-  cancellationRepository: resolve(
-    mainRoot,
-    'compute/compute-job-cancellation-repository.ts'
-  ),
+  cancellationRepository: resolve(mainRoot, 'compute/compute-job-cancellation-repository.ts'),
   concurrencyManager: resolve(mainRoot, 'compute/concurrency-manager.ts'),
   jobDispatcher: resolve(mainRoot, 'compute/job-dispatcher.ts'),
   jobPoller: resolve(mainRoot, 'compute/job-poller.ts'),
