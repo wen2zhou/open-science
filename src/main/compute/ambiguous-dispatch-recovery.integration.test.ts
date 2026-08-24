@@ -420,6 +420,75 @@ describe('ambiguous Compute Job dispatch recovery', () => {
     expect(run).toHaveBeenCalledTimes(2)
   })
 
+  it('keeps a timed-out job active when its termination handle becomes untrustworthy', async () => {
+    const jobId = 'job-untrustworthy-timeout-handle'
+    const remoteWorkdir = `/scratch/.openscience/jobs/${jobId}`
+    const handle = {
+      pid: 2468,
+      exit_code_path: `${remoteWorkdir}/exit_code`,
+      stdout_path: `${remoteWorkdir}/stdout`,
+      stderr_path: `${remoteWorkdir}/stderr`,
+      workdir: remoteWorkdir
+    }
+    await jobRepository.create({
+      id: jobId,
+      providerId: 'ssh:recovery-host',
+      shape: 'direct_ssh',
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      intent: 'fail-closed timeout recovery',
+      command: 'sleep 60',
+      commandHash: 'hash',
+      timeoutSeconds: 10,
+      remoteWorkdir,
+      initialStatus: 'submitted'
+    })
+    await jobRepository.updateIfStatus(jobId, ['submitted'], {
+      status: 'running',
+      remoteHandle: JSON.stringify(handle),
+      startedAt: new Date(Date.now() - 71_000)
+    })
+
+    const nonce = 'timeout_review_'
+    const pollOutput = [
+      `${nonce}JOB_START:${jobId}`,
+      `${nonce}alive:1`,
+      '',
+      '',
+      `${nonce}STDOUT_END:${jobId}`,
+      '',
+      `${nonce}STDERR_END:${jobId}`
+    ].join('\n')
+    const run = vi.fn<ComputeConnectionLease['run']>(async () => {
+      await jobRepository.update(jobId, {
+        remoteHandle: JSON.stringify({ ...handle, workdir: `${remoteWorkdir}-other` })
+      })
+      return successfulRun(pollOutput)
+    })
+    const harvest = vi.fn(async () => undefined)
+    const onJobUpdated = vi.fn()
+
+    await new JobPoller({
+      connectionBroker: serviceBroker(run),
+      hostRepository,
+      jobRepository,
+      harvestFn: harvest,
+      onJobUpdated,
+      makeNonce: () => nonce
+    }).tick()
+
+    await expect(service.getJobStatus(jobId)).resolves.toMatchObject({ status: 'running' })
+    expect(onJobUpdated).toHaveBeenCalledWith(
+      expect.objectContaining({
+        job_id: jobId,
+        status: 'running',
+        last_poll_error: 'timeout_termination_unconfirmed'
+      })
+    )
+    expect(run).toHaveBeenCalledOnce()
+    expect(harvest).not.toHaveBeenCalled()
+  })
+
   it.each([
     { name: 'malformed', stdout: '2468junk\n', truncated: false },
     { name: 'truncated', stdout: '2468\n', truncated: true }
