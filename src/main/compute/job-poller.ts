@@ -301,32 +301,38 @@ export class JobPoller {
   // Polls all jobs for one provider in a single SSH round-trip (where possible).
   private async _pollProvider(providerId: string, jobs: ComputeJob[]): Promise<void> {
     const noHandle: ComputeJob[] = []
+    const invalidHandle: ComputeJob[] = []
     const withHandle: ComputeJob[] = []
     for (const job of jobs) {
       if (job.status === 'queued') continue
       if (job.status === 'submitted' && !job.remote_handle) {
         if (this.dispatchTracker.has(job.job_id)) continue // still dispatching — not orphaned
         noHandle.push(job)
+      } else if (!this._parseHandle(job.remote_handle, job.remote_workdir)) {
+        invalidHandle.push(job)
       } else {
         withHandle.push(job)
       }
     }
     const recoverableNoHandle = noHandle.filter((job) => job.remote_workdir)
     const legacyNoHandle = noHandle.filter((job) => !job.remote_workdir)
-    for (const job of legacyNoHandle) {
+    const recoverableInvalidHandle = invalidHandle.filter((job) => job.remote_workdir)
+    const unrecoverableInvalidHandle = invalidHandle.filter((job) => !job.remote_workdir)
+    for (const job of [...legacyNoHandle, ...unrecoverableInvalidHandle]) {
       this._applySubmittedRecoveryResult(await this.submittedJobRecovery.interrupt(job))
     }
-    if (withHandle.length === 0 && recoverableNoHandle.length === 0) return
+    const recoverableJobs = [...recoverableNoHandle, ...recoverableInvalidHandle]
+    if (withHandle.length === 0 && recoverableJobs.length === 0) return
     let connection: ComputeConnectionLease
     try {
       connection = await this.deps.connectionBroker.acquire(providerId, { intent: 'job_poll' })
     } catch (error) {
       const errorCode = error instanceof ComputeConnectionError ? error.code : 'host_unreachable'
-      await this.submittedJobRecovery.recordUnavailable(recoverableNoHandle, errorCode)
+      await this.submittedJobRecovery.recordUnavailable(recoverableJobs, errorCode)
       await this._recordPollError(withHandle, errorCode)
       return
     }
-    for (const job of recoverableNoHandle) {
+    for (const job of recoverableJobs) {
       this._applySubmittedRecoveryResult(await this.submittedJobRecovery.recover(job, connection))
     }
     if (withHandle.length === 0) return
@@ -369,7 +375,7 @@ export class JobPoller {
     // Format per job (each marker carries the nonce prefix):
     //   echo "<nonce>JOB_START:<jobId>"
     //   kill -0 <pid> 2>/dev/null && echo "<nonce>alive:1" || echo "<nonce>alive:0"
-    //   test -f <exit_code_path> && cat <exit_code_path> || echo ""
+    //   echo "<nonce>exit:<exit-code-or-empty>"
     //   tail -c 65536 <stdout_path> 2>/dev/null || true
     //   echo "<nonce>STDOUT_END:<jobId>"
     //   tail -c 65536 <stderr_path> 2>/dev/null || true
@@ -377,14 +383,14 @@ export class JobPoller {
     const parts: string[] = []
     const batched: ComputeJob[] = []
     for (const job of jobs) {
-      const handle = this._parseHandle(job.remote_handle)
+      const handle = this._parseHandle(job.remote_handle, job.remote_workdir)
       if (!handle) continue
       batched.push(job)
 
       parts.push(
         `echo "${nonce}JOB_START:${job.job_id}"`,
         `kill -0 ${handle.pid} 2>/dev/null && echo "${nonce}alive:1" || echo "${nonce}alive:0"`,
-        `if [ -f ${quoteRemotePath(handle.exit_code_path)} ]; then cat ${quoteRemotePath(handle.exit_code_path)}; else echo ""; fi`,
+        `if [ -f ${quoteRemotePath(handle.exit_code_path)} ]; then POLL_EXIT_CODE=$(cat ${quoteRemotePath(handle.exit_code_path)}); else POLL_EXIT_CODE=; fi; printf '${nonce}exit:%s\\n' "$POLL_EXIT_CODE"`,
         `tail -c ${TAIL_MAX_BYTES} ${quoteRemotePath(handle.stdout_path)} 2>/dev/null || true`,
         `echo "${nonce}STDOUT_END:${job.job_id}"`,
         `tail -c ${TAIL_MAX_BYTES} ${quoteRemotePath(handle.stderr_path)} 2>/dev/null || true`,
@@ -418,6 +424,11 @@ export class JobPoller {
       return
     }
 
+    if (runResult.truncated) {
+      await this._recordPollError(batched, 'poll_protocol_incomplete', false)
+      return
+    }
+
     // Parse the batched output using nonce-prefixed markers. Pass target for poller fallback kill.
     // A truncated result should be impossible now that the cap is sized to the batch, but if it ever
     // happens the head is kept, so leading jobs still parse; any job whose section was dropped simply
@@ -425,10 +436,28 @@ export class JobPoller {
     await this._parsePollOutput(runResult.stdout, batched, nonce, connection)
   }
 
-  private _parseHandle(raw: string | undefined): RemoteHandle | null {
+  private _parseHandle(
+    raw: string | undefined,
+    expectedWorkdir: string | undefined
+  ): RemoteHandle | null {
     if (!raw) return null
     try {
-      return JSON.parse(raw) as RemoteHandle
+      const handle = JSON.parse(raw) as Partial<RemoteHandle> | null
+      if (
+        !handle ||
+        typeof handle !== 'object' ||
+        !Number.isSafeInteger(handle.pid) ||
+        (handle.pid ?? 0) <= 1 ||
+        typeof expectedWorkdir !== 'string' ||
+        expectedWorkdir.length === 0 ||
+        handle.workdir !== expectedWorkdir ||
+        handle.exit_code_path !== `${expectedWorkdir}/exit_code` ||
+        handle.stdout_path !== `${expectedWorkdir}/stdout` ||
+        handle.stderr_path !== `${expectedWorkdir}/stderr`
+      ) {
+        return null
+      }
+      return handle as RemoteHandle
     } catch {
       return null
     }
@@ -436,10 +465,19 @@ export class JobPoller {
 
   // Records a transient SSH connectivity error for each job without changing job status.
   // Implements design.md §8 boundary 2: "host unreachable ≠ job failed".
-  private async _recordPollError(jobs: ComputeJob[], message: string): Promise<void> {
+  private async _recordPollError(
+    jobs: ComputeJob[],
+    message: string,
+    retryAfterUserAction = true
+  ): Promise<void> {
     for (const job of jobs) {
       if (job.status !== 'submitted' && job.status !== 'running') continue
-      await this.lifecycle.recordPollError(job.job_id, job.status, message)
+      await this.lifecycle.recordPollError(
+        job.job_id,
+        job.status,
+        message,
+        retryAfterUserAction
+      )
     }
   }
 
@@ -453,12 +491,17 @@ export class JobPoller {
     connection: ComputeConnectionLease
   ): Promise<void> {
     const parsedResults = parsePollOutput(output, jobs, nonce)
+    const completeResults = parsedResults.filter((result) => result.status === 'complete')
+    const incompleteJobs = parsedResults
+      .filter((result) => result.status === 'incomplete')
+      .map((result) => result.job)
+    await this._recordPollError(incompleteJobs, 'poll_protocol_incomplete', false)
 
     const safeTails = await redactConnectionOutputs(
       connection,
-      parsedResults.flatMap(({ stdoutTail, stderrTail }) => [stdoutTail, stderrTail])
+      completeResults.flatMap(({ stdoutTail, stderrTail }) => [stdoutTail, stderrTail])
     )
-    for (const [index, result] of parsedResults.entries()) {
+    for (const [index, result] of completeResults.entries()) {
       await this._applyPollResult(
         result.job,
         {
@@ -569,7 +612,7 @@ export class JobPoller {
         const current = await this.deps.jobRepository.get(job.job_id)
         if (!current || (current.status !== 'submitted' && current.status !== 'running')) return
 
-        const handle = this._parseHandle(current.remote_handle)
+        const handle = this._parseHandle(current.remote_handle, current.remote_workdir)
         const workdir = current.remote_workdir
         if (
           !handle ||
