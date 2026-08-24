@@ -390,6 +390,7 @@ const createPanelDefaults = (): PanelProps => ({
   },
   conversation: {
     optimisticMessage: undefined,
+    admitApplicationMessage: vi.fn().mockResolvedValue(undefined),
     availability: {
       submit: false,
       submitMode: undefined,
