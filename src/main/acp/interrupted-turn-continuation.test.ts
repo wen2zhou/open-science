@@ -128,6 +128,54 @@ describe('continueInterruptedTurn', () => {
     expect(admittedBaseline).toEqual({ turnUsage: persistedTurnUsage })
   })
 
+  it('restores unavailable usage only from the active Message Branch', async () => {
+    const durable = session([
+      message('prompt-1', 'user', 'Continue the analysis'),
+      message('active-answer', 'agent', 'Active partial analysis', {
+        responseToMessageId: 'prompt-1',
+        turnUsageUnavailable: true
+      })
+    ])
+    const graph = durable.conversationGraph!
+    const frame = graph.frames.find(({ id }) => id === graph.activeFrameId)!
+    const inactiveAnswer = message('inactive-answer', 'agent', 'Inactive branch analysis', {
+      responseToMessageId: 'prompt-1',
+      turnUsage: { inputTokens: 999, cacheTokens: 999, outputTokens: 999 }
+    })
+    durable.messages.push(inactiveAnswer)
+    graph.messages.push({
+      ...inactiveAnswer,
+      agentFrameId: frame.id,
+      introducedOnBranchId: 'inactive-branch',
+      parentMessageId: 'prompt-1',
+      runtimeSegmentId: graph.runtimeSegments[0].id
+    })
+    graph.branches.push({
+      id: 'inactive-branch',
+      agentFrameId: frame.id,
+      parentBranchId: frame.activeBranchId,
+      forkMessageId: 'prompt-1',
+      headMessageId: inactiveAnswer.id,
+      createdAt: 2,
+      updatedAt: 2
+    })
+    const startContinuation = vi.fn(async () => {})
+
+    await continueInterruptedTurn(
+      {
+        runtime: {
+          getSnapshot: () => snapshot(),
+          getLatestUserPrompt: () => undefined,
+          startContinuation
+        },
+        loadSession: vi.fn(async () => durable)
+      },
+      { sessionId: 'session-1', projectId: 'project-1', promptMessageId: 'prompt-1' }
+    )
+
+    expect(startContinuation).toHaveBeenCalledWith(expect.any(Object), { unavailable: true })
+  })
+
   it('reconstructs the hidden Save as skill turn after restart', async () => {
     const durable = session([
       message('prompt-1', 'user', 'Save as skill', { turnIntent: 'save-as-skill' })
