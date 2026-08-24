@@ -278,6 +278,7 @@ export const selectTokenUsageSummary = (
   const cacheTokens = usageEvents.reduce((total, event) => total + event.cacheTokens, 0)
   const outputTokens = usageEvents.reduce((total, event) => total + event.outputTokens, 0)
   const cacheDenominator = inputTokens + cacheTokens
+  const incompleteUsageReports = usageEvents.filter((event) => event.incomplete).length
   const futureArtifactCount = analytics.artifactCreatedAt.filter(
     (timestamp) => timestamp > analytics.now
   ).length
@@ -288,7 +289,10 @@ export const selectTokenUsageSummary = (
     cacheTokens,
     outputTokens,
     totalTokens: inputTokens + cacheTokens + outputTokens,
-    cacheShare: cacheDenominator > 0 ? cacheTokens / cacheDenominator : null,
+    cacheShare:
+      cacheDenominator > 0 && incompleteUsageReports === 0
+        ? cacheTokens / cacheDenominator
+        : null,
     totalSessions: analytics.sessionCreatedAt.filter((timestamp) => timestamp <= analytics.now)
       .length,
     newConversations: analytics.sessionCreatedAt.filter((timestamp) =>
@@ -310,7 +314,7 @@ export const selectTokenUsageSummary = (
     newRuns: analytics.runsAt.filter((timestamp) => isInPeriod(timestamp, start, analytics.now))
       .length,
     reportedRuns: usageEvents.filter((event) => event.rootRunUsage).length,
-    incompleteUsageReports: usageEvents.filter((event) => event.incomplete).length
+    incompleteUsageReports
   }
 }
 

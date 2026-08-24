@@ -308,6 +308,7 @@ describe('token usage analytics', () => {
       newRuns: 2,
       reportedRuns: 2,
       incompleteUsageReports: 1,
+      cacheShare: null,
       totalProjects: 2,
       newProjects: 2,
       totalArtifacts: 2,

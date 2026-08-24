@@ -176,6 +176,9 @@ describe('TokenUsagePanel', () => {
     expect(document.body.querySelector('[data-slot="token-usage-summary"]')?.textContent).toContain(
       'Total tokens≥999'
     )
+    expect(document.body.querySelector('[data-slot="token-usage-summary"]')?.textContent).toContain(
+      'Cache share —'
+    )
     expect(
       document.body.querySelector('[data-slot="token-usage-coverage"]')?.textContent
     ).toContain('Known token totals include 1 incomplete usage report in this period.')
