@@ -104,6 +104,7 @@ model SessionTurnUsage {
   cacheTokens   BigInt
   outputTokens  BigInt
   isRootFrame   Boolean
+  incomplete    Boolean @default(false)
   session       Session @relation(fields: [sessionId], references: [id], onDelete: Cascade)
 
   @@id([sessionId, messageId])

@@ -38,6 +38,7 @@ type TokenUsageEvent = {
   cacheTokens: number
   outputTokens: number
   rootRunUsage: boolean
+  incomplete: boolean
 }
 
 export type TokenUsageAnalytics = {
@@ -66,6 +67,7 @@ export type TokenUsageSummary = {
   totalRuns: number
   newRuns: number
   reportedRuns: number
+  incompleteUsageReports: number
 }
 
 const finiteNonNegative = (value: number): number =>
@@ -131,7 +133,10 @@ const buildAnalyticsFromProjection = (
     projectCreatedAt: projection.projectCreatedAt,
     artifactCreatedAt: projection.artifactCreatedAt,
     runsAt: projection.runsAt,
-    usageEvents: projection.usageEvents,
+    usageEvents: projection.usageEvents.map((event) => ({
+      ...event,
+      incomplete: event.incomplete === true
+    })),
     totalArtifacts: projection.totalArtifacts
   }
   const dailyByKey = new Map(analytics.last30Days.map((point) => [point.dateKey, point]))
@@ -218,7 +223,7 @@ export const buildTokenUsageAnalytics = (
         runsAt.push(message.createdAt || session.createdAt)
       }
 
-      if (message.role !== 'agent' || !message.turnUsage || message.turnUsage.incomplete) continue
+      if (message.role !== 'agent' || !message.turnUsage) continue
 
       const inputTokens = finiteNonNegative(message.turnUsage.inputTokens)
       const cacheTokens = finiteNonNegative(message.turnUsage.cacheTokens)
@@ -228,7 +233,8 @@ export const buildTokenUsageAnalytics = (
         inputTokens,
         cacheTokens,
         outputTokens,
-        rootRunUsage: isRootMessage
+        rootRunUsage: isRootMessage,
+        incomplete: message.turnUsage.incomplete === true
       })
     }
   }
@@ -300,7 +306,8 @@ export const selectTokenUsageSummary = (
     totalRuns: analytics.runsAt.filter((timestamp) => timestamp <= analytics.now).length,
     newRuns: analytics.runsAt.filter((timestamp) => isInPeriod(timestamp, start, analytics.now))
       .length,
-    reportedRuns: usageEvents.filter((event) => event.rootRunUsage).length
+    reportedRuns: usageEvents.filter((event) => event.rootRunUsage).length,
+    incompleteUsageReports: usageEvents.filter((event) => event.incomplete).length
   }
 }
 

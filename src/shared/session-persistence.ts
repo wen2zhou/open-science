@@ -607,6 +607,7 @@ export type SessionUsageProjection = Readonly<{
       cacheTokens: number
       outputTokens: number
       rootRunUsage: boolean
+      incomplete?: boolean
     }>
   >
   totalArtifacts: number

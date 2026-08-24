@@ -191,6 +191,8 @@ function TokenUsagePanel({
   )
 
   const formatNumber = (value: number): string => numberFormatter.format(value)
+  const formatTokenTotal = (value: number): string =>
+    `${summary.incompleteUsageReports > 0 ? '≥' : ''}${formatNumber(value)}`
   const formatTokenAxisValue = (value: number): string => {
     const units = [
       { threshold: 1_000_000_000, suffix: 'B' },
@@ -219,15 +221,15 @@ function TokenUsagePanel({
     detailLabel?: string
     detailValue?: string
   }> = [
-    { label: 'Total tokens', value: formatNumber(summary.totalTokens), featured: true },
-    { label: 'Input tokens', value: formatNumber(summary.inputTokens) },
+    { label: 'Total tokens', value: formatTokenTotal(summary.totalTokens), featured: true },
+    { label: 'Input tokens', value: formatTokenTotal(summary.inputTokens) },
     {
       label: 'Cache tokens',
-      value: formatNumber(summary.cacheTokens),
+      value: formatTokenTotal(summary.cacheTokens),
       detailLabel: 'Cache share',
       detailValue: summary.cacheShare === null ? '—' : percentFormatter.format(summary.cacheShare)
     },
-    { label: 'Output tokens', value: formatNumber(summary.outputTokens) }
+    { label: 'Output tokens', value: formatTokenTotal(summary.outputTokens) }
   ]
   const entitySummaryItems: ReadonlyArray<{
     newLabel?: string
@@ -477,7 +479,7 @@ function TokenUsagePanel({
             </div>
           </div>
 
-          {summary.newRuns > summary.reportedRuns ? (
+          {summary.newRuns > summary.reportedRuns || summary.incompleteUsageReports > 0 ? (
             <div
               role="status"
               data-slot="token-usage-coverage"
@@ -485,16 +487,30 @@ function TokenUsagePanel({
             >
               <Info className="mt-0.5 size-3.5 shrink-0" aria-hidden="true" />
               <p>
-                {t(
-                  'Token totals are available for {{reported}} of {{count}} runs in this period.',
-                  {
-                    reported: summary.reportedRuns,
-                    count: summary.newRuns,
-                    defaultValue_one:
-                      'Token totals are available for {{reported}} of {{count}} run in this period.'
-                  }
-                )}{' '}
-                {t('Older conversations or some providers may not report usage.')}
+                {summary.newRuns > summary.reportedRuns ? (
+                  <>
+                    {t(
+                      'Token totals are available for {{reported}} of {{count}} runs in this period.',
+                      {
+                        reported: summary.reportedRuns,
+                        count: summary.newRuns,
+                        defaultValue_one:
+                          'Token totals are available for {{reported}} of {{count}} run in this period.'
+                      }
+                    )}{' '}
+                    {t('Older conversations or some providers may not report usage.')}{' '}
+                  </>
+                ) : null}
+                {summary.incompleteUsageReports > 0
+                  ? t(
+                      'Known token totals include {{count}} incomplete usage reports in this period.',
+                      {
+                        count: summary.incompleteUsageReports,
+                        defaultValue_one:
+                          'Known token totals include {{count}} incomplete usage report in this period.'
+                      }
+                    )
+                  : null}
               </p>
             </div>
           ) : null}

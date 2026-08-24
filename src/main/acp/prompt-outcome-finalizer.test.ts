@@ -500,6 +500,18 @@ describe('AcpPromptOutcomeFinalizer', () => {
       response: { stopReason: 'cancelled' },
       facts: {}
     })
+    expect(cancelled.events).toContainEqual(
+      expect.objectContaining({
+        kind: 'stop',
+        turnUsage: {
+          inputTokens: 10,
+          cacheTokens: 2,
+          outputTokens: 3,
+          turnCount: 4,
+          incomplete: true
+        }
+      })
+    )
 
     const resumed = createHarness()
     expect(resumed.interactions.captureTerminal(resumed.interaction, 'stop')).toBe(true)

@@ -137,6 +137,50 @@ describe('TokenUsagePanel', () => {
     )
   })
 
+  it('presents projected incomplete usage as a known lower bound', async () => {
+    const now = localTime(2026, 8, 15, 18)
+    window.api = {
+      sessions: {
+        loadUsage: vi.fn(async () => ({
+          sessionCreatedAt: [now],
+          projectCreatedAt: [now],
+          artifactCreatedAt: [],
+          runsAt: [now],
+          usageEvents: [
+            {
+              timestamp: now,
+              inputTokens: 900,
+              cacheTokens: 90,
+              outputTokens: 9,
+              rootRunUsage: true,
+              incomplete: true
+            }
+          ],
+          totalArtifacts: 0
+        }))
+      }
+    } as unknown as Window['api']
+
+    await act(async () => {
+      root.render(
+        <TokenUsagePanel
+          sessions={[createSession(now)]}
+          projects={[createProject(now)]}
+          now={now}
+        />
+      )
+      await Promise.resolve()
+      await Promise.resolve()
+    })
+
+    expect(document.body.querySelector('[data-slot="token-usage-summary"]')?.textContent).toContain(
+      'Total tokens≥999'
+    )
+    expect(
+      document.body.querySelector('[data-slot="token-usage-coverage"]')?.textContent
+    ).toContain('Known token totals include 1 incomplete usage report in this period.')
+  })
+
   it('shows a retryable error instead of partial hydrated usage when the projection fails', async () => {
     const now = localTime(2026, 8, 15, 18)
     const projection: SessionUsageProjection = {

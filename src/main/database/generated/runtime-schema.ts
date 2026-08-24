@@ -64,6 +64,7 @@ const RUNTIME_SCHEMA_TABLE_DDLS = [
     "cacheTokens" BIGINT NOT NULL,
     "outputTokens" BIGINT NOT NULL,
     "isRootFrame" BOOLEAN NOT NULL,
+    "incomplete" BOOLEAN NOT NULL DEFAULT false,
 
     PRIMARY KEY ("sessionId", "messageId"),
     CONSTRAINT "SessionTurnUsage_sessionId_fkey" FOREIGN KEY ("sessionId") REFERENCES "Session" ("id") ON DELETE CASCADE ON UPDATE CASCADE,

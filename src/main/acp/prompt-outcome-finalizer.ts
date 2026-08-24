@@ -135,11 +135,12 @@ export class AcpPromptOutcomeFinalizer {
     const key = `${sessionId.length}:${sessionId}${promptMessageId}`
     const previous = this.logicalTurnUsage.get(key)
     if (!turnUsage) {
-      const next: LogicalTurnUsage = previous?.turnUsage
-        ? { turnUsage: { ...previous.turnUsage, incomplete: true } }
-        : { unavailable: true }
+      const knownUsage = previous?.turnUsage
+        ? { ...previous.turnUsage, incomplete: true as const }
+        : undefined
+      const next: LogicalTurnUsage = knownUsage ? { turnUsage: knownUsage } : { unavailable: true }
       this.rememberLogicalTurnUsage(key, next)
-      return undefined
+      return knownUsage
     }
 
     const accumulated = previous?.turnUsage

@@ -226,12 +226,17 @@ const TurnTokenUsage = ({
   const safeTotalTokens = Number.isSafeInteger(totalTokens) ? totalTokens : undefined
   const breakdownLabel =
     usage && safeTotalTokens !== undefined
-      ? t('{{entries}}; Total {{total}} tokens', {
-          entries: entries
-            .map(([label, value]) => `${label} ${formatDisplayNumber(value ?? 0)}`)
-            .join(', '),
-          total: formatDisplayNumber(safeTotalTokens)
-        })
+      ? t(
+          usage.incomplete
+            ? '{{entries}}; Known total {{total}} tokens'
+            : '{{entries}}; Total {{total}} tokens',
+          {
+            entries: entries
+              .map(([label, value]) => `${label} ${formatDisplayNumber(value ?? 0)}`)
+              .join(', '),
+            total: formatDisplayNumber(safeTotalTokens)
+          }
+        )
       : t('Token usage breakdown unavailable')
 
   const keepOpen = (): void => {

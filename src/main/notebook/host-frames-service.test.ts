@@ -353,6 +353,37 @@ describe('HostFramesService', () => {
     })
   })
 
+  it('preserves incomplete usage semantics in the transcript projection', async () => {
+    const messages = [
+      message('prompt', 'user', 100),
+      {
+        ...message('response', 'agent', 200),
+        responseToMessageId: 'prompt',
+        turnUsage: {
+          inputTokens: 15_953,
+          cacheTokens: 0,
+          outputTokens: 578,
+          incomplete: true as const
+        }
+      }
+    ]
+    const service = new HostFramesService({
+      readProject: vi.fn(async () => ({ sessions: [session({ messages })], isComplete: true })),
+      readSession: vi.fn()
+    })
+
+    const result = (await service.get('root-frame-session-1', {}, context)) as {
+      transcript: { messages: Array<{ turn_usage?: unknown }> }
+    }
+
+    expect(result.transcript.messages[1].turn_usage).toEqual({
+      input_tokens: 15_953,
+      cache_tokens: 0,
+      output_tokens: 578,
+      incomplete: true
+    })
+  })
+
   it('resolves an explicitly selected non-active Branch by parent links instead of array order', async () => {
     const target = session({
       messages: [message('shared-prompt', 'user', 100), message('active-response', 'agent', 200)]

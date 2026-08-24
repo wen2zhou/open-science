@@ -99,7 +99,8 @@ describe('Session projection', () => {
         inputTokens: 10n,
         cacheTokens: 4n,
         outputTokens: 3n,
-        isRootFrame: true
+        isRootFrame: true,
+        incomplete: false
       }
     ])
     expect(projected.artifactRefs).toEqual([
@@ -107,7 +108,7 @@ describe('Session projection', () => {
     ])
   })
 
-  it('does not project incomplete lower-bound usage as a complete analytics total', () => {
+  it('projects incomplete usage with its lower-bound semantics intact', () => {
     const partial = session('session-partial')
     partial.messages[1].turnUsage = {
       inputTokens: 10,
@@ -116,7 +117,15 @@ describe('Session projection', () => {
       incomplete: true
     }
 
-    expect(buildSessionProjection(partial).turnUsage).toEqual([])
+    expect(buildSessionProjection(partial).turnUsage).toEqual([
+      expect.objectContaining({
+        messageId: 'session-partial-usage',
+        inputTokens: 10n,
+        cacheTokens: 4n,
+        outputTokens: 3n,
+        incomplete: true
+      })
+    ])
   })
 
   it('marks pending Artifact paths for one-time startup recovery', () => {
@@ -306,7 +315,7 @@ describe('Session projection', () => {
       sessionCreatedAt: [100],
       runsAt: [101],
       totalArtifacts: 1,
-      usageEvents: [expect.objectContaining({ inputTokens: 10 })]
+      usageEvents: [expect.objectContaining({ inputTokens: 10, incomplete: false })]
     })
 
     await sessions.clearForRebuild()
@@ -333,7 +342,12 @@ describe('Session projection', () => {
     await repository.ensureSessionProjection(() => files.loadAll())
     const loaded = (await repository.loadSession('project-1', 'session-1'))!
     const updated = { ...session('session-1'), number: loaded.number, revision: loaded.revision }
-    updated.messages[1].turnUsage = { inputTokens: 99, cacheTokens: 8, outputTokens: 7 }
+    updated.messages[1].turnUsage = {
+      inputTokens: 99,
+      cacheTokens: 8,
+      outputTokens: 7,
+      incomplete: true
+    }
 
     await projection.markPending('project-1', 'session-1')
     await files.saveSession(updated)
@@ -345,7 +359,7 @@ describe('Session projection', () => {
     await expect(projection.usage()).resolves.toMatchObject({
       projectCreatedAt: [50],
       sessionCreatedAt: [100],
-      usageEvents: [expect.objectContaining({ inputTokens: 99 })]
+      usageEvents: [expect.objectContaining({ inputTokens: 99, incomplete: true })]
     })
     await files.completeProjectSessionDeletion('project-1')
     await expect(projection.usage()).resolves.toMatchObject({
@@ -489,7 +503,7 @@ describe('Session projection', () => {
     const deleted = await repository.saveSession(session('deleted', 100))
     await repository.deleteSession(deleted.projectId, deleted.id)
     await client.sessionProjectionState.create({
-      data: { id: 'session-projection', projectionVersion: 2, completedAt: new Date() }
+      data: { id: 'session-projection', projectionVersion: 3, completedAt: new Date() }
     })
     const files = new SessionRepository(storageRoot)
     await files.saveSession(session('live', 200))

@@ -27,6 +27,7 @@ import { computePasswordAuthMigration } from './migrations/0010-compute-password
 import { crossResourceTagsMigration } from './migrations/0011-cross-resource-tags'
 import { tagOrderingMigration } from './migrations/0012-tag-ordering'
 import { sessionProjectionMigration } from './migrations/0013-session-projection'
+import { partialTurnUsageMigration } from './migrations/0014-partial-turn-usage'
 import {
   applySqliteMigrationOperations,
   type SqliteMigrationOperation
@@ -223,6 +224,12 @@ const SESSION_PROJECTION_CHECKSUM = checksumMigrationPayload(
   sessionProjectionMigration.verifiers,
   sessionProjectionMigration.operations
 )
+const PARTIAL_TURN_USAGE_CHECKSUM = checksumMigrationPayload(
+  partialTurnUsageMigration.id,
+  partialTurnUsageMigration.statements,
+  partialTurnUsageMigration.verifiers,
+  partialTurnUsageMigration.operations
+)
 const DATABASE_DOMAIN_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints = Object.fromEntries(
   databaseDomainConstraintsMigration.verifiers[0].tables.map(({ table, constraints }) => [
     table,
@@ -363,6 +370,12 @@ const MIGRATION_MANIFEST = [
   {
     ...sessionProjectionMigration,
     checksum: SESSION_PROJECTION_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...partialTurnUsageMigration,
+    checksum: PARTIAL_TURN_USAGE_CHECKSUM,
     backupOnApply: 'required',
     backupRetention: 'retain'
   }

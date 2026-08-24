@@ -268,7 +268,8 @@ const toTurnUsage = (usage: NonNullable<PersistedMessageNode['turnUsage']>): unk
     ? {}
     : { cached_write_tokens: usage.cachedWriteTokens }),
   output_tokens: usage.outputTokens,
-  ...(usage.turnCount === undefined ? {} : { turn_count: usage.turnCount })
+  ...(usage.turnCount === undefined ? {} : { turn_count: usage.turnCount }),
+  ...(usage.incomplete ? { incomplete: true } : {})
 })
 
 const displayName = (value: string | undefined): string | undefined =>

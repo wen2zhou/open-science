@@ -814,6 +814,11 @@ describe('WorkspaceMessageItem turn token usage', () => {
     expect(usagePopover?.textContent).toContain('Input15,953')
     expect(usagePopover?.textContent).toContain('Output578')
     expect(usagePopover?.textContent).toContain('Known total16,531')
+    expect(
+      usagePopover
+        ?.querySelector('[data-slot="turn-token-usage-breakdown"]')
+        ?.getAttribute('aria-label')
+    ).toBe('Input 15,953, Cache 0, Output 578; Known total 16,531 tokens')
   })
 
   it('reveals unavailable totals from the Usage summary when the agent did not report them', async () => {

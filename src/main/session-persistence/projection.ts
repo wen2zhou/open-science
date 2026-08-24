@@ -16,7 +16,7 @@ import {
 } from '../../shared/session-persistence'
 
 const PROJECTION_STATE_ID = 'session-projection'
-const PROJECTION_VERSION = 1
+const PROJECTION_VERSION = 2
 const SESSION_NUMBER_SEQUENCE_ID = 'global'
 
 type ProjectionClient = () => Promise<PrismaClient>
@@ -30,6 +30,7 @@ type SessionProjection = Readonly<{
     cacheTokens: bigint
     outputTokens: bigint
     isRootFrame: boolean
+    incomplete: boolean
   }>
   runs: Array<{ messageId: string; createdAtMs: bigint }>
   artifactRefs: Array<{ artifactId: string; artifactCreatedAtMs: bigint | null }>
@@ -126,14 +127,15 @@ export const buildSessionProjection = (session: PersistedChatSession): SessionPr
       })
     }
 
-    if (message.role !== 'agent' || !message.turnUsage || message.turnUsage.incomplete) continue
+    if (message.role !== 'agent' || !message.turnUsage) continue
     turnUsage.push({
       messageId: message.id,
       completedAtMs: toBigInt(message.completedAt ?? message.updatedAt ?? message.createdAt),
       inputTokens: toBigInt(message.turnUsage.inputTokens),
       cacheTokens: toBigInt(message.turnUsage.cacheTokens),
       outputTokens: toBigInt(message.turnUsage.outputTokens),
-      isRootFrame
+      isRootFrame,
+      incomplete: message.turnUsage.incomplete === true
     })
   }
 
@@ -603,7 +605,8 @@ export class SessionProjectionRepository {
         inputTokens: Number(event.inputTokens),
         cacheTokens: Number(event.cacheTokens),
         outputTokens: Number(event.outputTokens),
-        rootRunUsage: event.isRootFrame
+        rootRunUsage: event.isRootFrame,
+        incomplete: event.incomplete
       })),
       totalArtifacts: artifactCreatedAt.size
     }
