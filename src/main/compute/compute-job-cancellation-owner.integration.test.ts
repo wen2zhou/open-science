@@ -46,8 +46,18 @@ const success = (stdout: string): Awaited<ReturnType<ComputeConnectionLease['run
   timedOut: false
 })
 
+type CancellationTestSetup = Readonly<{
+  client: ReturnType<typeof createProjectDbClient>
+  jobs: ComputeJobRepository
+  cancellations: ComputeJobCancellationRepository
+  createJob(
+    status: 'queued' | 'submitted' | 'running' | 'success',
+    handle?: typeof remoteHandle
+  ): Promise<void>
+}>
+
 describe('Compute Job cancellation owner (SQLite + fake SSH)', () => {
-  const setup = async () => {
+  const setup = async (): Promise<CancellationTestSetup> => {
     storageRoot = await mkdtemp(join(tmpdir(), 'open-science-cancellation-owner-'))
     const client = createProjectDbClient(storageRoot)
     disconnect = () => client.$disconnect()
@@ -57,7 +67,7 @@ describe('Compute Job cancellation owner (SQLite + fake SSH)', () => {
     const createJob = async (
       status: 'queued' | 'submitted' | 'running' | 'success',
       handle = status === 'running' ? remoteHandle : undefined
-    ) => {
+    ): Promise<void> => {
       await jobs.create({
         id: 'job-1',
         providerId: scope.providerId,
