@@ -752,84 +752,267 @@ describe('JobPoller', () => {
     )
   })
 
-  it('poller fallback: kills and marks timeout when elapsed > startedAt+timeout+60s grace', async () => {
-    // Started timeout+61 seconds ago; the remote timeout command may have been absent or failed.
-    // The poller should SSH-kill the pid and mark the job as timeout.
-    const now = Date.now()
-    const timeoutSecs = 10
-    const graceMs = (timeoutSecs + 61) * 1000 // well past grace
-    const job = makeJob({
-      timeout_seconds: timeoutSecs,
-      started_at: now - graceMs
-    })
-    const update = vi.fn((_id: string, u: unknown) => Promise.resolve({ ...job, ...(u as object) }))
-    const updateIfStatus = guardStatusUpdate(update)
-    const jobRepo = {
-      findNonTerminal: vi.fn(() => Promise.resolve([job])),
-      get: vi.fn(() => Promise.resolve(job)),
-      update,
-      updateIfStatus
-    } as unknown as ComputeJobRepository
-    const hostRepo = {
-      get: vi.fn(() => Promise.resolve(sampleHost()))
-    } as unknown as ComputeHostRepository
+  it.each([
+    { ownership: 'mismatch', expectedSignals: 0, expectedOperations: 2 },
+    { ownership: 'owned', expectedSignals: 1, expectedOperations: 3 }
+  ] as const)(
+    'poller fallback: handles $ownership pid ownership safely and still marks timeout',
+    async ({ ownership, expectedSignals, expectedOperations }) => {
+      // Started timeout+61 seconds ago; the remote timeout command may have been absent or failed.
+      // The poller should SSH-kill the pid and mark the job as timeout.
+      const now = Date.now()
+      const timeoutSecs = 10
+      const graceMs = (timeoutSecs + 61) * 1000 // well past grace
+      const job = makeJob({
+        timeout_seconds: timeoutSecs,
+        started_at: now - graceMs
+      })
+      const update = vi.fn((_id: string, u: unknown) =>
+        Promise.resolve({ ...job, ...(u as object) })
+      )
+      const updateIfStatus = guardStatusUpdate(update)
+      const jobRepo = {
+        findNonTerminal: vi.fn(() => Promise.resolve([job])),
+        get: vi.fn(() => Promise.resolve(job)),
+        update,
+        updateIfStatus
+      } as unknown as ComputeJobRepository
+      const hostRepo = {
+        get: vi.fn(() => Promise.resolve(sampleHost()))
+      } as unknown as ComputeHostRepository
 
-    // Process is still alive, no exit_code — triggers the poller fallback kill path.
-    const pollOutput = withNonce([
-      'JOB_START:job-1',
-      'alive:1',
-      '',
-      '',
-      'STDOUT_END:job-1',
-      '',
-      'STDERR_END:job-1'
-    ])
+      // Process is still alive, no exit_code — triggers the poller fallback kill path.
+      const pollOutput = withNonce([
+        'JOB_START:job-1',
+        'alive:1',
+        '',
+        '',
+        'STDOUT_END:job-1',
+        '',
+        'STDERR_END:job-1'
+      ])
 
-    // runner.run is called twice: once for poll, once for kill.
-    const runFn = vi.fn()
-    runFn.mockResolvedValueOnce({
-      exitCode: 0,
-      stdout: pollOutput,
-      stderr: '',
-      truncated: false,
-      timedOut: false
-    })
-    runFn.mockResolvedValueOnce({
-      exitCode: 0,
-      stdout: '',
-      stderr: '',
-      truncated: false,
-      timedOut: false
-    })
-    const runner: SshRunner = { run: runFn }
-    const onJobUpdated = vi.fn()
+      const signals: number[] = []
+      const runFn = vi.fn(async (_target, command: string) => {
+        if (runFn.mock.calls.length === 1) {
+          return {
+            exitCode: 0,
+            stdout: pollOutput,
+            stderr: '',
+            truncated: false,
+            timedOut: false
+          }
+        }
+        // This fake models the SSH boundary semantically: signal operations mutate remote process
+        // state, while the ownership probe returns the configured remote observation.
+        if (/^kill [0-9]/.test(command) || command.includes('kill -TERM')) {
+          signals.push(1234)
+          return {
+            exitCode: 0,
+            stdout: 'terminated',
+            stderr: '',
+            truncated: false,
+            timedOut: false
+          }
+        }
+        return { exitCode: 0, stdout: ownership, stderr: '', truncated: false, timedOut: false }
+      })
+      const runner: SshRunner = { run: runFn }
+      const onJobUpdated = vi.fn()
 
-    const poller = new JobPoller({
-      connectionBroker: brokerFromRunner(runner),
-      hostRepository: hostRepo,
-      jobRepository: jobRepo,
-      onJobUpdated,
-      makeNonce: () => NONCE
-    })
-    await poller.tick()
+      const poller = new JobPoller({
+        connectionBroker: brokerFromRunner(runner),
+        hostRepository: hostRepo,
+        jobRepository: jobRepo,
+        onJobUpdated,
+        makeNonce: () => NONCE
+      })
+      await poller.tick()
 
-    // Must have been updated to timeout.
-    expect(update).toHaveBeenCalledWith(
-      'job-1',
-      expect.objectContaining({ status: 'timeout', errorCode: 'timeout' })
-    )
-    // Second run call should have been the kill command.
-    expect(runFn).toHaveBeenCalledTimes(2)
-    const killCall = runFn.mock.calls[1]
-    expect(killCall[1]).toContain('kill')
-    expect(killCall[1]).toContain('1234') // pid from makeJob
-    expect(runFn.mock.invocationCallOrder[1]).toBeLessThan(
-      updateIfStatus.mock.invocationCallOrder[0]
-    )
-    expect(updateIfStatus.mock.invocationCallOrder[0]).toBeLessThan(
-      onJobUpdated.mock.invocationCallOrder[0]
-    )
-  })
+      // Must have been updated to timeout.
+      expect(update).toHaveBeenCalledWith(
+        'job-1',
+        expect.objectContaining({ status: 'timeout', errorCode: 'timeout' })
+      )
+      expect(signals).toHaveLength(expectedSignals)
+      expect(runFn).toHaveBeenCalledTimes(expectedOperations)
+      expect(runFn.mock.invocationCallOrder.at(-1)).toBeLessThan(
+        updateIfStatus.mock.invocationCallOrder[0]
+      )
+      expect(updateIfStatus.mock.invocationCallOrder[0]).toBeLessThan(
+        onJobUpdated.mock.invocationCallOrder[0]
+      )
+    }
+  )
+
+  it.each(['unknown', 'unexpected-output'] as const)(
+    'poller fallback: keeps the job active when ownership is $ownership',
+    async (ownership) => {
+      const job = makeJob({ timeout_seconds: 10, started_at: Date.now() - 71_000 })
+      const update = vi.fn((_id: string, updates: unknown) =>
+        Promise.resolve({ ...job, ...(updates as object) })
+      )
+      const jobRepo = {
+        findTerminalUnharvested: vi.fn(() => Promise.resolve([])),
+        findErrorUnnotified: vi.fn(() => Promise.resolve([])),
+        findNonTerminal: vi.fn(() => Promise.resolve([job])),
+        get: vi.fn(() => Promise.resolve(job)),
+        update,
+        updateIfStatus: guardStatusUpdate(update)
+      } as unknown as ComputeJobRepository
+      const hostRepo = {
+        get: vi.fn(() => Promise.resolve(sampleHost()))
+      } as unknown as ComputeHostRepository
+      const pollOutput = withNonce([
+        'JOB_START:job-1',
+        'alive:1',
+        '',
+        '',
+        'STDOUT_END:job-1',
+        '',
+        'STDERR_END:job-1'
+      ])
+      const runFn = vi
+        .fn()
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: pollOutput,
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: ownership,
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: pollOutput,
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: 'owned',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: 'terminated',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      const harvestFn = vi.fn(async () => undefined)
+      const poller = new JobPoller({
+        connectionBroker: brokerFromRunner({ run: runFn }),
+        hostRepository: hostRepo,
+        jobRepository: jobRepo,
+        harvestFn,
+        makeNonce: () => NONCE
+      })
+
+      await poller.tick()
+
+      expect(update).toHaveBeenCalledWith(
+        'job-1',
+        expect.objectContaining({ lastPollError: 'timeout_termination_unconfirmed' })
+      )
+      expect(update).not.toHaveBeenCalledWith(
+        'job-1',
+        expect.objectContaining({ status: 'timeout' })
+      )
+      expect(runFn).toHaveBeenCalledTimes(2)
+      expect(harvestFn).not.toHaveBeenCalled()
+
+      await poller.tick()
+
+      expect(update).toHaveBeenCalledWith(
+        'job-1',
+        expect.objectContaining({ status: 'timeout', errorCode: 'timeout' })
+      )
+      expect(runFn).toHaveBeenCalledTimes(5)
+      await vi.waitFor(() => expect(harvestFn).toHaveBeenCalledOnce())
+    }
+  )
+
+  it.each([
+    { failure: 'timeout', result: { exitCode: null, truncated: false, timedOut: true } },
+    { failure: 'truncated', result: { exitCode: 0, truncated: true, timedOut: false } },
+    { failure: 'nonzero', result: { exitCode: 1, truncated: false, timedOut: false } }
+  ] as const)(
+    'poller fallback: keeps the job active when guarded termination is $failure',
+    async ({ result }) => {
+      const job = makeJob({ timeout_seconds: 10, started_at: Date.now() - 71_000 })
+      const update = vi.fn((_id: string, updates: unknown) =>
+        Promise.resolve({ ...job, ...(updates as object) })
+      )
+      const jobRepo = {
+        findTerminalUnharvested: vi.fn(() => Promise.resolve([])),
+        findErrorUnnotified: vi.fn(() => Promise.resolve([])),
+        findNonTerminal: vi.fn(() => Promise.resolve([job])),
+        get: vi.fn(() => Promise.resolve(job)),
+        update,
+        updateIfStatus: guardStatusUpdate(update)
+      } as unknown as ComputeJobRepository
+      const hostRepo = {
+        get: vi.fn(() => Promise.resolve(sampleHost()))
+      } as unknown as ComputeHostRepository
+      const pollOutput = withNonce([
+        'JOB_START:job-1',
+        'alive:1',
+        '',
+        '',
+        'STDOUT_END:job-1',
+        '',
+        'STDERR_END:job-1'
+      ])
+      const runFn = vi
+        .fn()
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: pollOutput,
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: 'owned',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockResolvedValueOnce({ ...result, stdout: '', stderr: '' })
+      const harvestFn = vi.fn(async () => undefined)
+      const poller = new JobPoller({
+        connectionBroker: brokerFromRunner({ run: runFn }),
+        hostRepository: hostRepo,
+        jobRepository: jobRepo,
+        harvestFn,
+        makeNonce: () => NONCE
+      })
+
+      await poller.tick()
+
+      expect(update).toHaveBeenCalledWith(
+        'job-1',
+        expect.objectContaining({ lastPollError: 'timeout_termination_unconfirmed' })
+      )
+      expect(update).not.toHaveBeenCalledWith(
+        'job-1',
+        expect.objectContaining({ status: 'timeout' })
+      )
+      expect(runFn).toHaveBeenCalledTimes(3)
+      expect(harvestFn).not.toHaveBeenCalled()
+    }
+  )
 
   it('serializes overlapping results so a late fallback timeout cannot kill after success', async () => {
     const job = makeJob({ timeout_seconds: 10, started_at: Date.now() - 71_000 })
