@@ -151,7 +151,7 @@ describe('JobPoller', () => {
     )
     const jobRepo = {
       findTerminalUnharvested: vi.fn(async () => [makeJob({ status: 'success' })]),
-      findErrorUnnotified: vi.fn(async () => []),
+      findNotificationReadyUnnotified: vi.fn(async () => []),
       findNonTerminal: vi.fn(async () => [])
     } as unknown as ComputeJobRepository
     const poller = new JobPoller({
@@ -908,7 +908,7 @@ describe('JobPoller', () => {
       )
       const jobRepo = {
         findTerminalUnharvested: vi.fn(() => Promise.resolve([])),
-        findErrorUnnotified: vi.fn(() => Promise.resolve([])),
+        findNotificationReadyUnnotified: vi.fn(() => Promise.resolve([])),
         findNonTerminal: vi.fn(() => Promise.resolve([job])),
         get: vi.fn(() => Promise.resolve(job)),
         update,
@@ -1009,7 +1009,7 @@ describe('JobPoller', () => {
       )
       const jobRepo = {
         findTerminalUnharvested: vi.fn(() => Promise.resolve([])),
-        findErrorUnnotified: vi.fn(() => Promise.resolve([])),
+        findNotificationReadyUnnotified: vi.fn(() => Promise.resolve([])),
         findNonTerminal: vi.fn(() => Promise.resolve([job])),
         get: vi.fn(() => Promise.resolve(job)),
         update,
@@ -1714,7 +1714,6 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
   it('emits notification for error/dispatch_failed job (broadcast + notifiedAt written)', async () => {
     const job = makeJob({ status: 'submitted', remote_handle: undefined })
 
-    // Track update calls: first call writes status=error, second writes notifiedAt (from emitJobNotification).
     const updatedJobWithError = {
       ...job,
       status: 'error' as const,
@@ -1724,16 +1723,15 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
     }
     const updatedJobWithNotif = { ...updatedJobWithError, notified_at: Date.now() }
 
-    const update = vi
-      .fn()
-      .mockResolvedValueOnce(updatedJobWithError) // status=error write
-      .mockResolvedValueOnce(updatedJobWithNotif) // notifiedAt write
+    const update = vi.fn().mockResolvedValue(updatedJobWithError)
+    const claimNotification = vi.fn().mockResolvedValue(updatedJobWithNotif)
 
     const jobRepo = {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       findTerminalUnharvested: vi.fn(() => Promise.resolve([])),
-      findErrorUnnotified: vi.fn(() => Promise.resolve([])),
+      findNotificationReadyUnnotified: vi.fn(() => Promise.resolve([])),
       update,
+      claimNotification,
       updateIfStatus: guardStatusUpdate(update)
     } as unknown as ComputeJobRepository
 
@@ -1770,10 +1768,7 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
     )
 
     // Notification write (notifiedAt)
-    expect(update).toHaveBeenCalledWith(
-      'job-1',
-      expect.objectContaining({ notifiedAt: expect.any(Date) })
-    )
+    expect(claimNotification).toHaveBeenCalledWith('job-1', expect.any(Date))
 
     // Broadcast was called with the notification summary
     const summary = broadcast.mock.calls[0][0]
@@ -1789,7 +1784,7 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
     const jobRepo = {
       findNonTerminal: vi.fn(() => Promise.resolve([job])),
       findTerminalUnharvested: vi.fn(() => Promise.resolve([])),
-      findErrorUnnotified: vi.fn(() => Promise.resolve([])),
+      findNotificationReadyUnnotified: vi.fn(() => Promise.resolve([])),
       updateIfStatus
     } as unknown as ComputeJobRepository
     const runner = makeSshRunner({
@@ -1853,7 +1848,7 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
   it('emits notification for dispatcher-written error jobs via the recovery scan', async () => {
     // The dispatcher writes status='error' directly (dispatch_failed / host_unreachable) without
     // notifying. 'error' is excluded from findNonTerminal and findTerminalUnharvested, so only the
-    // findErrorUnnotified recovery scan surfaces it to notify→analyze.
+    // The notification-ready recovery scan surfaces it to notify→analyze.
     const errorJob = makeJob({
       status: 'error',
       error_code: 'host_unreachable',
@@ -1862,15 +1857,14 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
       notified_at: undefined
     })
     const notifiedJob = { ...errorJob, notified_at: Date.now() }
-    const update = vi.fn().mockResolvedValue(notifiedJob)
+    const claimNotification = vi.fn().mockResolvedValue(notifiedJob)
 
     const jobRepo = {
       // No non-terminal jobs and nothing to harvest — only the error job awaits notification.
       findNonTerminal: vi.fn(() => Promise.resolve([])),
       findTerminalUnharvested: vi.fn(() => Promise.resolve([])),
-      findErrorUnnotified: vi.fn(() => Promise.resolve([errorJob])),
-      update,
-      updateIfStatus: guardStatusUpdate(update)
+      findNotificationReadyUnnotified: vi.fn(() => Promise.resolve([errorJob])),
+      claimNotification
     } as unknown as ComputeJobRepository
     const hostRepo = {
       get: vi.fn(() => Promise.resolve(sampleHost()))
@@ -1896,10 +1890,7 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
     await new Promise((resolve) => setTimeout(resolve, 10))
 
     // notifiedAt written and broadcast fired for the error job
-    expect(update).toHaveBeenCalledWith(
-      'job-1',
-      expect.objectContaining({ notifiedAt: expect.any(Date) })
-    )
+    expect(claimNotification).toHaveBeenCalledWith('job-1', expect.any(Date))
     expect(broadcast).toHaveBeenCalledOnce()
     expect(broadcast.mock.calls[0][0].status).toBe('error')
   })
@@ -1921,18 +1912,17 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
     const updateGate = new Promise<void>((resolve) => {
       releaseUpdate = resolve
     })
-    const update = vi.fn(async (id: string, u: unknown) => {
+    const claimNotification = vi.fn(async (id: string, notifiedAt: Date) => {
       await updateGate
-      return { ...errorJob, job_id: id, ...(u as object) }
+      return { ...errorJob, job_id: id, notified_at: notifiedAt.getTime() }
     })
 
     const jobRepo = {
       findNonTerminal: vi.fn(() => Promise.resolve([])),
       findTerminalUnharvested: vi.fn(() => Promise.resolve([])),
       // Both ticks see the row as still unnotified (write is gated).
-      findErrorUnnotified: vi.fn(() => Promise.resolve([errorJob])),
-      update,
-      updateIfStatus: guardStatusUpdate(update)
+      findNotificationReadyUnnotified: vi.fn(() => Promise.resolve([errorJob])),
+      claimNotification
     } as unknown as ComputeJobRepository
     const hostRepo = {
       get: vi.fn(() => Promise.resolve(sampleHost()))
@@ -1962,7 +1952,7 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
     await new Promise((resolve) => setTimeout(resolve, 10))
 
     // Only ONE emit despite two overlapping ticks selecting the same unnotified row.
-    expect(update).toHaveBeenCalledTimes(1)
+    expect(claimNotification).toHaveBeenCalledTimes(1)
     expect(broadcast).toHaveBeenCalledOnce()
   })
 })

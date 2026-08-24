@@ -97,8 +97,10 @@ describe('emitJobNotification', () => {
     })
 
     const updatedJob = { ...job, notified_at: Date.now() }
-    const mockUpdate = vi.fn().mockResolvedValue(updatedJob)
-    const jobRepo: Pick<ComputeJobRepository, 'update'> = { update: mockUpdate }
+    const mockClaim = vi.fn().mockResolvedValue(updatedJob)
+    const jobRepo: Pick<ComputeJobRepository, 'claimNotification'> = {
+      claimNotification: mockClaim
+    }
     const hostRepo = makeMockHostRepository()
     const broadcast = vi.fn()
 
@@ -110,9 +112,8 @@ describe('emitJobNotification', () => {
     })
 
     // notifiedAt should be written
-    expect(mockUpdate).toHaveBeenCalledOnce()
-    const updateArg = mockUpdate.mock.calls[0][1]
-    expect(updateArg.notifiedAt).toBeInstanceOf(Date)
+    expect(mockClaim).toHaveBeenCalledOnce()
+    expect(mockClaim.mock.calls[0][1]).toBeInstanceOf(Date)
 
     // broadcast should be called with a JobSummary carrying notification payload fields
     expect(broadcast).toHaveBeenCalledOnce()
@@ -148,8 +149,10 @@ describe('emitJobNotification', () => {
     })
 
     const updatedJob = { ...job, notified_at: Date.now() }
-    const mockUpdate = vi.fn().mockResolvedValue(updatedJob)
-    const jobRepo: Pick<ComputeJobRepository, 'update'> = { update: mockUpdate }
+    const mockClaim = vi.fn().mockResolvedValue(updatedJob)
+    const jobRepo: Pick<ComputeJobRepository, 'claimNotification'> = {
+      claimNotification: mockClaim
+    }
     const hostRepo = makeMockHostRepository()
     const broadcast = vi.fn()
 
@@ -160,7 +163,7 @@ describe('emitJobNotification', () => {
       broadcast
     })
 
-    expect(mockUpdate).toHaveBeenCalledOnce()
+    expect(mockClaim).toHaveBeenCalledOnce()
     const summary = broadcast.mock.calls[0][0]
     expect(summary.status).toBe('failed')
     expect(summary.featured_files).toEqual(['hpc/job-1/featured/partial.csv'])
@@ -181,8 +184,10 @@ describe('emitJobNotification', () => {
     })
 
     const updatedJob = { ...job, notified_at: Date.now() }
-    const mockUpdate = vi.fn().mockResolvedValue(updatedJob)
-    const jobRepo: Pick<ComputeJobRepository, 'update'> = { update: mockUpdate }
+    const mockClaim = vi.fn().mockResolvedValue(updatedJob)
+    const jobRepo: Pick<ComputeJobRepository, 'claimNotification'> = {
+      claimNotification: mockClaim
+    }
     const hostRepo = makeMockHostRepository()
     const broadcast = vi.fn()
 
@@ -193,7 +198,7 @@ describe('emitJobNotification', () => {
       broadcast
     })
 
-    expect(mockUpdate).toHaveBeenCalledOnce()
+    expect(mockClaim).toHaveBeenCalledOnce()
     const summary = broadcast.mock.calls[0][0]
     expect(summary.status).toBe('error')
     expect(summary.featured_files).toEqual([])
@@ -210,8 +215,10 @@ describe('emitJobNotification', () => {
       notified_at: Date.now() - 1000 // already notified
     })
 
-    const mockUpdate = vi.fn()
-    const jobRepo: Pick<ComputeJobRepository, 'update'> = { update: mockUpdate }
+    const mockClaim = vi.fn()
+    const jobRepo: Pick<ComputeJobRepository, 'claimNotification'> = {
+      claimNotification: mockClaim
+    }
     const hostRepo: Pick<ComputeHostRepository, 'get'> = { get: vi.fn() }
     const broadcast = vi.fn()
 
@@ -223,7 +230,7 @@ describe('emitJobNotification', () => {
     })
 
     // Neither update nor broadcast should be called
-    expect(mockUpdate).not.toHaveBeenCalled()
+    expect(mockClaim).not.toHaveBeenCalled()
     expect(broadcast).not.toHaveBeenCalled()
   })
 
@@ -238,8 +245,10 @@ describe('emitJobNotification', () => {
     const job = makeJob({ status: 'success' })
 
     const updatedJob = { ...job, notified_at: Date.now() }
-    const mockUpdate = vi.fn().mockResolvedValue(updatedJob)
-    const jobRepo: Pick<ComputeJobRepository, 'update'> = { update: mockUpdate }
+    const mockClaim = vi.fn().mockResolvedValue(updatedJob)
+    const jobRepo: Pick<ComputeJobRepository, 'claimNotification'> = {
+      claimNotification: mockClaim
+    }
     const hostRepo = makeMockHostRepository()
     const broadcast = vi.fn()
 

@@ -208,8 +208,8 @@ export class JobPoller {
     // notified via another path (e.g. the noHandle branch below) is skipped.
     if (this.deps.broadcast && this.deps.storageRoot) {
       const { broadcast, storageRoot } = this.deps
-      const errorUnnotified = await this.deps.jobRepository.findErrorUnnotified()
-      for (const job of errorUnnotified) {
+      const notificationReady = await this.deps.jobRepository.findNotificationReadyUnnotified()
+      for (const job of notificationReady) {
         // emitJobNotification guards on notified_at (idempotent), but that is a check-then-act
         // with a real window: ticks are not serialized, so a second tick could re-select this row
         // before the notified_at write commits and emit a duplicate user-visible notification. The

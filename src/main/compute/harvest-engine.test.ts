@@ -177,7 +177,7 @@ const makeHostRepo = (host: ReturnType<typeof sampleHost> | null): ComputeHostRe
 const makeJobRepo = (
   job: ComputeJob
 ): {
-  repo: Pick<ComputeJobRepository, 'update'>
+  repo: Pick<ComputeJobRepository, 'update' | 'claimNotification'>
   updates: { jobId: string; data: unknown }[]
 } => {
   const updates: { jobId: string; data: unknown }[] = []
@@ -185,8 +185,11 @@ const makeJobRepo = (
     update: vi.fn((jobId: string, data: unknown) => {
       updates.push({ jobId, data })
       return Promise.resolve({ ...job, ...(data as object) })
-    })
-  } as unknown as Pick<ComputeJobRepository, 'update'>
+    }),
+    claimNotification: vi.fn((_jobId: string, notifiedAt: Date) =>
+      Promise.resolve({ ...job, notified_at: notifiedAt.getTime() })
+    )
+  } as unknown as Pick<ComputeJobRepository, 'update' | 'claimNotification'>
   return { repo, updates }
 }
 
@@ -610,8 +613,11 @@ describe('harvestJob — compute_done notification (issue 06)', () => {
           notified_at: data.notifiedAt instanceof Date ? data.notifiedAt.getTime() : job.notified_at
         }
         return Promise.resolve(result)
-      })
-    } as unknown as Pick<ComputeJobRepository, 'update'>
+      }),
+      claimNotification: vi.fn((_jobId: string, notifiedAt: Date) =>
+        Promise.resolve({ ...job, notified_at: notifiedAt.getTime() })
+      )
+    } as unknown as Pick<ComputeJobRepository, 'update' | 'claimNotification'>
 
     const broadcast = vi.fn()
 
@@ -653,8 +659,11 @@ describe('harvestJob — compute_done notification (issue 06)', () => {
           notified_at: data.notifiedAt instanceof Date ? data.notifiedAt.getTime() : job.notified_at
         }
         return Promise.resolve(result)
-      })
-    } as unknown as Pick<ComputeJobRepository, 'update'>
+      }),
+      claimNotification: vi.fn((_jobId: string, notifiedAt: Date) =>
+        Promise.resolve({ ...job, notified_at: notifiedAt.getTime() })
+      )
+    } as unknown as Pick<ComputeJobRepository, 'update' | 'claimNotification'>
 
     const broadcast = vi.fn()
 

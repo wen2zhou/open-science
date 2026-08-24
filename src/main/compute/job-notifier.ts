@@ -36,7 +36,7 @@ import { workspaceRelativePath } from './workspace-path'
 // ---------------------------------------------------------------------------
 
 export type JobNotifierDeps = {
-  jobRepository: Pick<ComputeJobRepository, 'update'>
+  jobRepository: Pick<ComputeJobRepository, 'claimNotification'>
   hostRepository: Pick<ComputeHostRepository, 'get'>
   storageRoot: string
   // Injectable broadcast function; defaults to the production broadcastJobUpdated.
@@ -158,9 +158,11 @@ export const emitJobNotification = async (
   // Build the payload (scan harvest dir + parse leftOnRemote column).
   const payload = await buildComputeDonePayload(job, storageRoot)
 
-  // Persist notifiedAt (inbox semantics: survives restart, design §2/§11).
+  // Persist notifiedAt as a compare-and-set claim. Every notification entrance uses this seam, so
+  // overlapping stale projections cannot both broadcast.
   const notifiedAt = new Date()
-  const updatedJob = await jobRepository.update(job.job_id, { notifiedAt })
+  const updatedJob = await jobRepository.claimNotification(job.job_id, notifiedAt)
+  if (!updatedJob) return
 
   // Broadcast the summary with notification payload fields embedded.
   // Reuses COMPUTE_JOB_UPDATED_CHANNEL via the injected broadcast fn (no new IPC channel).

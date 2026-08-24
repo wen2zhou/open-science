@@ -245,6 +245,37 @@ describe('ComputeJob repository (SQLite integration)', () => {
     expect(cleared.notification_consumed_at).toBeUndefined()
   })
 
+  it('allows only one concurrent notification claim', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-notification-claim-'))
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+    await migrateApplicationDatabase(client)
+    const repo = new ComputeJobRepository(() => Promise.resolve(client))
+    await repo.create({
+      id: 'job-claim',
+      providerId: 'ssh:test',
+      shape: 'direct_ssh',
+      sessionId: 's1',
+      projectId: 'p1',
+      intent: 'notification claim',
+      command: 'true',
+      commandHash: 'claim-hash'
+    })
+    await repo.update('job-claim', {
+      status: 'error',
+      errorCode: 'dispatch_failed',
+      finishedAt: new Date()
+    })
+
+    const claims = await Promise.all([
+      repo.claimNotification('job-claim', new Date('2026-08-24T01:00:00Z')),
+      repo.claimNotification('job-claim', new Date('2026-08-24T01:00:01Z'))
+    ])
+
+    expect(claims.filter((claim) => claim !== null)).toHaveLength(1)
+    expect(claims.filter((claim) => claim === null)).toHaveLength(1)
+  })
+
   it('findTerminalUnharvested returns terminal jobs with null harvestedAt, excludes already-harvested and non-terminal', async () => {
     storageRoot = await mkdtemp(join(tmpdir(), 'open-science-jobs-unharvested-'))
 
@@ -780,7 +811,7 @@ describe('ComputeJob repository (SQLite integration)', () => {
     await expect(create('late-job', 'project-1', 'session-1')).rejects.toThrow(/being deleted/i)
     expect((await repo.findNonTerminal()).map((item) => item.job_id)).toEqual(['survivor'])
     expect(await repo.findTerminalUnharvested()).toEqual([])
-    expect(await repo.findErrorUnnotified()).toEqual([])
+    expect(await repo.findNotificationReadyUnnotified()).toEqual([])
     expect((await repo.findByOwner(owner)).map((item) => item.job_id).sort()).toEqual([
       'owned-error',
       'owned-job',
