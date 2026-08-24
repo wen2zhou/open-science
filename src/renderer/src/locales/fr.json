@@ -3524,5 +3524,7 @@
   "{{count}} lines of output_many": "{{count}} lignes de sortie",
   "{{count}} lines of output_other": "{{count}} lignes de sortie",
   "done": "terminé",
-  "Esc to close": "Échap pour fermer"
+  "Esc to close": "Échap pour fermer",
+  "Remote job completed": "Tâche distante terminée",
+  "Analysis started automatically": "Analyse démarrée automatiquement"
 }

@@ -3250,5 +3250,7 @@
   "Figure {{index}}": "図 {{index}}",
   "{{count}} lines of output_other": "{{count}} 行の出力",
   "done": "完了",
-  "Esc to close": "Esc で閉じる"
+  "Esc to close": "Esc で閉じる",
+  "Remote job completed": "リモートジョブが完了しました",
+  "Analysis started automatically": "分析を自動的に開始しました"
 }

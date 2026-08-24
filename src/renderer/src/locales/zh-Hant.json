@@ -3250,5 +3250,7 @@
   "Figure {{index}}": "圖表 {{index}}",
   "{{count}} lines of output_other": "{{count}} 行輸出",
   "done": "完成",
-  "Esc to close": "按 Esc 關閉"
+  "Esc to close": "按 Esc 關閉",
+  "Remote job completed": "遠端工作已完成",
+  "Analysis started automatically": "已自動開始分析"
 }
