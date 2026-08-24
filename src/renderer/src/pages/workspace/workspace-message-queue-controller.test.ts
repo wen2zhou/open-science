@@ -906,7 +906,14 @@ describe('workspace message queue controller', () => {
       })
     )
     currentSession = { ...running, status: 'idle', specialistId: 'specialist-b' }
-    hook.rerender(options(currentSession, { ...input, getSession: () => currentSession }))
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        promptInFlightSessionIds: [],
+        getSession: () => currentSession
+      })
+    )
 
     await vi.waitFor(() => expect(hook.result.current.items[0].phase).toBe('error'))
     expect(input.runtime.sendMessage).not.toHaveBeenCalled()
@@ -927,7 +934,14 @@ describe('workspace message queue controller', () => {
       })
     )
     currentSession = { ...running, status: 'idle', permissionProfile: 'auto' }
-    hook.rerender(options(currentSession, { ...input, getSession: () => currentSession }))
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        promptInFlightSessionIds: [],
+        getSession: () => currentSession
+      })
+    )
 
     await vi.waitFor(() => expect(hook.result.current.items[0].phase).toBe('error'))
     expect(input.runtime.sendMessage).not.toHaveBeenCalled()
@@ -1503,12 +1517,34 @@ describe('workspace message queue controller', () => {
     expect(hook.result.current.items.map((item) => item.text)).toEqual(['user queued first'])
 
     currentSession = session('idle')
-    hook.rerender(options(currentSession, { ...input, getSession: () => currentSession }))
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        promptInFlightSessionIds: [],
+        getSession: () => currentSession
+      })
+    )
     await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(1))
-    expect(sendMessage.mock.calls[0]?.[0]).not.toHaveProperty('attribution')
+    expect(sendMessage.mock.calls[0]?.[0].attribution).toBeUndefined()
 
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        promptInFlightSessionIds: ['session-a'],
+        getSession: () => currentSession
+      })
+    )
     currentSession = session('idle')
-    hook.rerender(options(currentSession, { ...input, getSession: () => currentSession }))
+    hook.rerender(
+      options(currentSession, {
+        ...input,
+        activeSession: currentSession,
+        promptInFlightSessionIds: [],
+        getSession: () => currentSession
+      })
+    )
     await vi.waitFor(() => expect(sendMessage).toHaveBeenCalledTimes(2))
     await expect(automatic).resolves.toEqual({
       sessionId: 'session-a',

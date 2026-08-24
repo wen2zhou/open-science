@@ -63,6 +63,7 @@ import { useJobAnalysisEffect } from '@/lib/compute/useJobAnalysisEffect'
 import { WorkspacePanelLayout } from './workspace-panel-layout'
 import { useWorkspaceComposerController } from './workspace-composer-controller'
 import { useWorkspaceConversationController } from './workspace-conversation-controller'
+import { useWorkspaceApplicationMessageQueue } from './workspace-message-queue-controller'
 import { useWorkspaceSessionController } from './workspace-session-controller'
 import { useWorkspaceBranchSwitchGuard } from './use-workspace-branch-switch-guard'
 import { useSideChatController } from './use-side-chat-controller'
@@ -215,8 +216,21 @@ const WorkspacePage = ({
   } = runtime
   const { respondToElicitation } = useWorkspaceElicitation(runtime.resolveSessionRuntimeSelection)
 
-  // Auto-trigger an analysis turn when a remote job finishes (design §11).
-  useJobAnalysisEffect({ enabled: isSessionPersistenceReady, sendMessage: runtime.sendMessage })
+  const enqueueApplicationMessage = useWorkspaceApplicationMessageQueue()
+  // Auto-trigger analysis through the same per-Session admission queue as user Messages. The
+  // application attribution is persisted on the actual prompt and remains hidden from user edits.
+  useJobAnalysisEffect({
+    enabled: isSessionPersistenceReady,
+    sendMessage: ({ sessionId, text, attribution }) => {
+      if (!sessionId || !attribution) return Promise.resolve(undefined)
+      const session = useSessionStore
+        .getState()
+        .sessions.find((candidate) => candidate.id === sessionId)
+      return session
+        ? enqueueApplicationMessage({ session, text, attribution })
+        : Promise.resolve(undefined)
+    }
+  })
   const [newConversationPermissionProfile, setNewConversationPermissionProfile] =
     useState<PermissionProfileId>(defaultPermissionProfile)
   // Draft auto-review state for a not-yet-created conversation. Auto-review defaults off, so a new

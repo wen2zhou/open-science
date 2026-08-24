@@ -29,7 +29,7 @@ const projectActiveQueueItems = (
   activeSessionId: string | undefined
 ): MessageQueueItemView[] => {
   const activeItems = activeSessionId ? (queues.get(activeSessionId) ?? []) : []
-  return activeItems.map(({ id, text, attachmentCount, phase, error, deferredUntilIdle }) => ({
+  return activeItems.filter((item) => item.kind === 'user').map(({ id, text, attachmentCount, phase, error, deferredUntilIdle }) => ({
     id,
     text,
     attachmentCount,
@@ -83,7 +83,7 @@ const removeQueuedItem = (
   const queue = activeSessionQueue(owner, optionsRef.current.activeSession?.id)
   if (!queue) return
   const item = queue.items.find((candidate) => candidate.id === itemId)
-  if (!item || queueItemIsBusy(item)) return
+  if (!item?.snapshot || queueItemIsBusy(item)) return
   optionsRef.current.composer.discardSnapshot(item.snapshot)
   const remaining = queue.items.filter((candidate) => candidate.id !== itemId)
   if (remaining.length === 0) owner.queues.delete(queue.sessionId)
@@ -99,7 +99,7 @@ const editQueuedItem = (
   const queue = activeSessionQueue(owner, optionsRef.current.activeSession?.id)
   if (!queue) return
   const item = queue.items.find((candidate) => candidate.id === itemId)
-  if (!item || queueItemIsBusy(item)) return
+  if (!item?.snapshot || queueItemIsBusy(item)) return
   if (!optionsRef.current.composer.restoreQueuedDraft(item.snapshot)) {
     owner.replaceItem(queue.sessionId, itemId, {
       phase: 'error',

@@ -1,5 +1,6 @@
 import type { PermissionProfileId } from '../../../../shared/permission-profiles'
 import type { SessionAgentConfiguration } from '../../../../shared/settings'
+import type { MessageAttribution } from '../../../../shared/session-persistence'
 import type { ChatSession } from '@/stores/session-store'
 import type { WorkspaceAgentRuntime } from '@/lib/acp/useWorkspaceAgentRuntime'
 
@@ -12,22 +13,28 @@ type MessageQueueError = {
 }
 
 type MessageQueueItem = {
+  kind: 'user' | 'application'
   id: string
   sessionId: string
   agentFrameId: string
   messageBranchId: string
-  snapshot: ComposerSendSnapshot
+  snapshot?: ComposerSendSnapshot
   text: string
   attachmentCount: number
   forcedSkillIds: string[]
   permissionProfile: PermissionProfileId
-  agentConfiguration: SessionAgentConfiguration
+  agentConfiguration?: SessionAgentConfiguration
   specialistId: string | null | undefined
   projectId: string
   cwd: string | undefined
   phase: MessageQueuePhase
   error?: MessageQueueError
   deferredUntilIdle?: boolean
+  application?: {
+    attribution: Extract<MessageAttribution, { feature: 'compute' }>
+    completion: Promise<{ sessionId: string; messageId: string } | undefined>
+    resolve: (result: { sessionId: string; messageId: string } | undefined) => void
+  }
 }
 
 type MessageQueueAdmission = {
@@ -38,6 +45,12 @@ type MessageQueueAdmission = {
   permissionProfile: PermissionProfileId
   agentConfiguration: SessionAgentConfiguration
   specialistId: string | null | undefined
+}
+
+type ApplicationMessageQueueAdmission = {
+  session: ChatSession
+  text: string
+  attribution: Extract<MessageAttribution, { feature: 'compute' }>
 }
 
 type MessageQueueDispatch = {
@@ -141,7 +154,10 @@ class WorkspaceMessageQueueOwner {
     sessionId: string,
     discardSnapshot: WorkspaceMessageQueueControllerOptions['composer']['discardSnapshot']
   ): void => {
-    for (const item of this.itemsFor(sessionId)) discardSnapshot(item.snapshot)
+    for (const item of this.itemsFor(sessionId)) {
+      if (item.snapshot) discardSnapshot(item.snapshot)
+      item.application?.resolve(undefined)
+    }
     this.queues.delete(sessionId)
     this.emit()
   }
@@ -197,7 +213,8 @@ class WorkspaceMessageQueueOwner {
     this.runtimeOptions = undefined
     for (const items of this.queues.values()) {
       for (const item of items) {
-        if (item.phase !== 'sending') this.discardSnapshot?.(item.snapshot)
+        if (item.snapshot && item.phase !== 'sending') this.discardSnapshot?.(item.snapshot)
+        item.application?.resolve(undefined)
       }
     }
     this.queues.clear()
@@ -209,6 +226,7 @@ class WorkspaceMessageQueueOwner {
 export { WorkspaceMessageQueueOwner }
 export type {
   MessageQueueAdmission,
+  ApplicationMessageQueueAdmission,
   MessageQueueDispatch,
   MessageQueueError,
   MessageQueueItem,
