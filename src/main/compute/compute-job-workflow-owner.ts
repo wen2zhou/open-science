@@ -368,7 +368,8 @@ export class ComputeJobWorkflowOwner {
       exit_code: job.exit_code,
       stdout_tail: job.stdout_tail,
       stderr_tail: job.stderr_tail,
-      remote_workdir: job.remote_workdir
+      remote_workdir: job.remote_workdir,
+      harvest_error: job.harvest_error
     }
   }
 
@@ -464,7 +465,8 @@ const jobResultWithFiles = (
   left_on_remote: leftOnRemote,
   remote_workdir: job.remote_workdir,
   stdout_tail: job.stdout_tail,
-  stderr_tail: job.stderr_tail
+  stderr_tail: job.stderr_tail,
+  harvest_error: job.harvest_error
 })
 
 async function scanDirRelative(dir: string, workspaceCwd: string): Promise<string[]> {

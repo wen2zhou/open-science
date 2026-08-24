@@ -357,6 +357,7 @@ export type JobStatusResult = {
   stdout_tail: string | undefined
   stderr_tail: string | undefined
   remote_workdir: string | undefined
+  harvest_error: string | undefined
 }
 
 // Full job result shape returned by attach_job().result() (spec §11.4, design §9).
@@ -378,6 +379,7 @@ export type JobResult = {
   remote_workdir: string | undefined
   stdout_tail: string | undefined
   stderr_tail: string | undefined
+  harvest_error: string | undefined
 }
 
 // Result returned by submit_job (immediate, before dispatch completes). remote_workdir is

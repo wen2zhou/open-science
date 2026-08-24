@@ -1292,6 +1292,48 @@ describe('JobPoller', () => {
 // ---------------------------------------------------------------------------
 
 describe('JobPoller — harvest wiring', () => {
+  it('backs off retryable harvest connection failures exponentially', async () => {
+    let now = 1_000
+    const terminalJob = makeJob({ status: 'success', harvested_at: undefined })
+    const harvestFn: HarvestFn = vi.fn(() =>
+      Promise.reject(new ComputeConnectionError('host_unreachable'))
+    )
+    const jobRepo = {
+      findTerminalUnharvested: vi.fn(async () => [terminalJob]),
+      findErrorUnnotified: vi.fn(async () => []),
+      findNonTerminal: vi.fn(async () => [])
+    } as unknown as ComputeJobRepository
+    const poller = new JobPoller({
+      connectionBroker: brokerFromRunner(
+        makeSshRunner({
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      ),
+      hostRepository: {} as ComputeHostRepository,
+      jobRepository: jobRepo,
+      harvestFn,
+      now: () => now
+    })
+
+    await poller.tick()
+    await vi.waitFor(() => expect(harvestFn).toHaveBeenCalledOnce())
+    await poller.tick()
+    expect(harvestFn).toHaveBeenCalledOnce()
+
+    now += 60_000
+    await poller.tick()
+    await vi.waitFor(() => expect(harvestFn).toHaveBeenCalledTimes(2))
+    await poller.tick()
+    expect(harvestFn).toHaveBeenCalledTimes(2)
+
+    now += 120_000
+    await poller.tick()
+    await vi.waitFor(() => expect(harvestFn).toHaveBeenCalledTimes(3))
+  })
   // Helper: builds a terminal poll output (exit_code=0 → success)
   const makeTerminalPollOutput = (jobId: string, exitCode = 0): string =>
     withNonce([

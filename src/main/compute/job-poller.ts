@@ -53,6 +53,8 @@ const POLLER_KILL_GRACE_SECONDS = 60
 
 // Maximum concurrent harvest operations (design.md §3: concurrency limit 2).
 const HARVEST_CONCURRENCY_LIMIT = 2
+const HARVEST_RETRY_BASE_MS = 60_000
+const HARVEST_RETRY_MAX_MS = 15 * 60_000
 
 /**
  * Injectable harvest function type. The poller calls this for each terminal job that needs
@@ -90,6 +92,7 @@ export type JobPollerDeps = {
    * Required when broadcast is set; used to compute the harvest dir path.
    */
   storageRoot?: string
+  now?: () => number
 }
 
 // Per-job vanish counter (lives here because the poller is the only thing that increments it).
@@ -124,6 +127,7 @@ export class JobPoller {
   //   harvestSemaphore: count of available harvest slots (starts at HARVEST_CONCURRENCY_LIMIT)
   //   harvestQueue: jobs waiting for a semaphore slot
   private readonly inFlightHarvests = new Set<string>()
+  private readonly harvestRetries = new Map<string, { attempts: number; retryAt: number }>()
   private harvestSemaphore = HARVEST_CONCURRENCY_LIMIT
   private readonly harvestQueue: ComputeJob[] = []
   //   inFlightErrorNotifs: jobIds whose error-notification emit is in progress — prevents a second
@@ -261,6 +265,8 @@ export class JobPoller {
   // concurrency semaphore (at most HARVEST_CONCURRENCY_LIMIT harvests run simultaneously).
   private _dispatchHarvest(job: ComputeJob): void {
     if (!this.harvestFn) return
+    const retry = this.harvestRetries.get(job.job_id)
+    if (retry && retry.retryAt > (this.deps.now?.() ?? Date.now())) return
     // In-flight dedup: if already harvesting this job, skip.
     if (this.inFlightHarvests.has(job.job_id)) return
 
@@ -281,11 +287,22 @@ export class JobPoller {
     this.harvestSemaphore--
 
     // Fire-and-forget: intentionally not awaited.
+    let retryableFailure = false
     const task = this.harvestFn(job)
-      .catch(() => {
-        // Individual harvest failures must not propagate to the poller (design §3: error isolation).
+      .catch((error) => {
+        if (error instanceof ComputeConnectionError) {
+          retryableFailure = true
+          const attempts = (this.harvestRetries.get(job.job_id)?.attempts ?? 0) + 1
+          const delay = Math.min(HARVEST_RETRY_BASE_MS * 2 ** (attempts - 1), HARVEST_RETRY_MAX_MS)
+          this.harvestRetries.set(job.job_id, {
+            attempts,
+            retryAt: (this.deps.now?.() ?? Date.now()) + delay
+          })
+        }
+        // Individual harvest failures must not propagate to the poller.
       })
       .finally(() => {
+        if (!retryableFailure) this.harvestRetries.delete(job.job_id)
         this.inFlightHarvests.delete(job.job_id)
         this.harvestSemaphore++
         // Drain one item from the queue if any are waiting.
