@@ -3,9 +3,20 @@ import { join } from 'node:path'
 
 import { describe, expect, it } from 'vitest'
 
+import { parseSkillDocument } from '../../shared/skill-frontmatter'
+
 const skillPath = join(process.cwd(), 'resources', 'skills', 'remote-compute-ssh', 'SKILL.md')
 
 describe('remote-compute-ssh immediate failure guidance', () => {
+  it('keeps valid public Skill identity metadata', async () => {
+    const skill = parseSkillDocument(await readFile(skillPath, 'utf8'))
+    expect(skill).toMatchObject({
+      name: 'remote-compute-ssh',
+      hasFrontmatter: true
+    })
+    expect(skill.description).toBeTruthy()
+  })
+
   it('requires exactly one short bounded status check after asynchronous submission', async () => {
     const skill = await readFile(skillPath, 'utf8')
     const section = skill.match(
