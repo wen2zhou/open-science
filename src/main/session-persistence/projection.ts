@@ -126,7 +126,7 @@ export const buildSessionProjection = (session: PersistedChatSession): SessionPr
       })
     }
 
-    if (message.role !== 'agent' || !message.turnUsage) continue
+    if (message.role !== 'agent' || !message.turnUsage || message.turnUsage.incomplete) continue
     turnUsage.push({
       messageId: message.id,
       completedAtMs: toBigInt(message.completedAt ?? message.updatedAt ?? message.createdAt),

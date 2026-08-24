@@ -107,6 +107,18 @@ describe('Session projection', () => {
     ])
   })
 
+  it('does not project incomplete lower-bound usage as a complete analytics total', () => {
+    const partial = session('session-partial')
+    partial.messages[1].turnUsage = {
+      inputTokens: 10,
+      cacheTokens: 4,
+      outputTokens: 3,
+      incomplete: true
+    }
+
+    expect(buildSessionProjection(partial).turnUsage).toEqual([])
+  })
+
   it('marks pending Artifact paths for one-time startup recovery', () => {
     const pending = session('pending-artifact')
     pending.artifacts![0].path = '/managed/.pending/run-1/report.md'

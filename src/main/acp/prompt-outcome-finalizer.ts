@@ -94,7 +94,8 @@ const sumTurnUsage = (
     cacheTokens,
     ...(hasCacheBreakdown ? { cachedReadTokens, cachedWriteTokens } : {}),
     outputTokens,
-    ...(hasTurnCount ? { turnCount } : {})
+    ...(hasTurnCount ? { turnCount } : {}),
+    ...(left.incomplete || right.incomplete ? { incomplete: true as const } : {})
   }
 }
 
@@ -133,12 +134,19 @@ export class AcpPromptOutcomeFinalizer {
 
     const key = `${sessionId.length}:${sessionId}${promptMessageId}`
     const previous = this.logicalTurnUsage.get(key)
-    const accumulated =
-      !turnUsage || previous?.unavailable
-        ? undefined
-        : previous?.turnUsage
-          ? sumTurnUsage(previous.turnUsage, turnUsage)
-          : turnUsage
+    if (!turnUsage) {
+      const next: LogicalTurnUsage = previous?.turnUsage
+        ? { turnUsage: { ...previous.turnUsage, incomplete: true } }
+        : { unavailable: true }
+      this.rememberLogicalTurnUsage(key, next)
+      return undefined
+    }
+
+    const accumulated = previous?.turnUsage
+      ? sumTurnUsage(previous.turnUsage, turnUsage)
+      : previous?.unavailable
+        ? { ...turnUsage, incomplete: true as const }
+        : turnUsage
     const next: LogicalTurnUsage = accumulated ? { turnUsage: accumulated } : { unavailable: true }
 
     // Refresh insertion order so an active continuation is never the oldest retained entry.

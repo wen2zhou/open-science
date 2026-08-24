@@ -204,7 +204,9 @@ const TurnTokenUsage = ({
   const closeTimerRef = useRef<ReturnType<typeof setTimeout> | undefined>(undefined)
   const openedFromPointerRef = useRef(false)
   const accessibleLabel = usage
-    ? t('Token usage for this response')
+    ? usage.incomplete
+      ? t('Partial token usage for this response')
+      : t('Token usage for this response')
     : t('Token usage unavailable for this response')
   const hasCacheBreakdown =
     usage?.cachedReadTokens !== undefined && usage.cachedWriteTokens !== undefined
@@ -319,6 +321,14 @@ const TurnTokenUsage = ({
         <div className="flex items-center justify-between gap-3">
           <div className="flex items-center gap-1.5">
             <div className="text-[13px] font-medium">{t('Usage')}</div>
+            {usage?.incomplete ? (
+              <span
+                data-slot="turn-token-usage-incomplete"
+                className="rounded bg-status-warning-surface px-1 py-0.5 text-[10px] font-medium text-status-warning-foreground dark:bg-status-warning-dark-surface dark:text-status-warning-dark-foreground"
+              >
+                {t('Partial')}
+              </span>
+            ) : null}
             {frameworkName || provider ? (
               <div data-slot="turn-runtime-icons" className="flex items-center gap-1">
                 {frameworkName && runtimeIdentity?.frameworkId ? (
@@ -410,7 +420,7 @@ const TurnTokenUsage = ({
           data-slot="turn-token-usage-total"
           className="mt-2 flex items-center justify-between gap-4 border-t border-border pt-2 font-medium whitespace-nowrap"
         >
-          <span>{t('Total')}</span>
+          <span>{usage?.incomplete ? t('Known total') : t('Total')}</span>
           <span className="tabular-nums">
             {safeTotalTokens !== undefined ? formatDisplayNumber(safeTotalTokens) : '—'}
           </span>

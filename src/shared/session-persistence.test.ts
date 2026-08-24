@@ -1077,7 +1077,8 @@ describe('turn token usage persistence', () => {
             cachedReadTokens: 500,
             cachedWriteTokens: 178,
             outputTokens: 90,
-            turnCount: 3
+            turnCount: 3,
+            incomplete: true
           },
           createdAt: 1,
           updatedAt: 1
@@ -1114,7 +1115,8 @@ describe('turn token usage persistence', () => {
       cachedReadTokens: 500,
       cachedWriteTokens: 178,
       outputTokens: 90,
-      turnCount: 3
+      turnCount: 3,
+      incomplete: true
     })
     expect(restored?.messages[1].turnUsage).toBeUndefined()
     expect(restored?.messages[1].turnUsageUnavailable).toBe(true)

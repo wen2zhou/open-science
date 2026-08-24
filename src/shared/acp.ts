@@ -309,9 +309,12 @@ export type AcpTurnTokenUsage = {
   // Number of model inference turns performed during this completed agent run. Optional because
   // ACP adapters do not all expose a reliable request count.
   turnCount?: number
+  // Known lower bound when one or more Attempts in the visible Conversation Turn did not report
+  // usage. Consumers must not present these values as a complete total.
+  incomplete?: true
 }
 
-export type AcpModelStepTokenUsage = Omit<AcpTurnTokenUsage, 'turnCount'>
+export type AcpModelStepTokenUsage = Omit<AcpTurnTokenUsage, 'turnCount' | 'incomplete'>
 
 export type AcpPromptStopReason = PromptResponse['stopReason']
 
@@ -386,6 +389,7 @@ export const sanitizeAcpTurnTokenUsage = (value: unknown): AcpTurnTokenUsage | u
   const cacheTokens = asTokenCount(usage.cacheTokens)
   const outputTokens = asTokenCount(usage.outputTokens)
   const turnCount = asTokenCount(usage.turnCount)
+  const incomplete = usage.incomplete === true
 
   if (inputTokens === undefined || cacheTokens === undefined || outputTokens === undefined) {
     return undefined
@@ -404,7 +408,8 @@ export const sanitizeAcpTurnTokenUsage = (value: unknown): AcpTurnTokenUsage | u
     cacheTokens,
     ...(hasCacheBreakdown ? { cachedReadTokens, cachedWriteTokens } : {}),
     outputTokens,
-    ...(turnCount !== undefined && turnCount > 0 ? { turnCount } : {})
+    ...(turnCount !== undefined && turnCount > 0 ? { turnCount } : {}),
+    ...(incomplete ? { incomplete: true as const } : {})
   }
 }
 

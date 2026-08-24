@@ -218,7 +218,7 @@ export const buildTokenUsageAnalytics = (
         runsAt.push(message.createdAt || session.createdAt)
       }
 
-      if (message.role !== 'agent' || !message.turnUsage) continue
+      if (message.role !== 'agent' || !message.turnUsage || message.turnUsage.incomplete) continue
 
       const inputTokens = finiteNonNegative(message.turnUsage.inputTokens)
       const cacheTokens = finiteNonNegative(message.turnUsage.cacheTokens)

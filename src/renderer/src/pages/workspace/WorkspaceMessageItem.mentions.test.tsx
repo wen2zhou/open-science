@@ -782,6 +782,40 @@ describe('WorkspaceMessageItem turn token usage', () => {
     expect(container.textContent).not.toContain('Input 12,345')
   })
 
+  it('shows known token values as partial when an interrupted Attempt did not report usage', async () => {
+    await renderMessageItem(
+      createMessage({
+        role: 'agent',
+        content: 'Done',
+        completedAt: 1710000000000,
+        turnUsage: {
+          inputTokens: 15_953,
+          cacheTokens: 0,
+          outputTokens: 578,
+          incomplete: true
+        }
+      })
+    )
+
+    const usageTrigger = container.querySelector<HTMLButtonElement>(
+      '[data-slot="turn-token-usage"] button'
+    )
+    expect(usageTrigger?.getAttribute('aria-label')).toBe('Partial token usage for this response')
+
+    await act(async () => {
+      usageTrigger?.focus()
+      await Promise.resolve()
+    })
+
+    const usagePopover = document.body.querySelector('[data-slot="turn-token-usage-popover"]')
+    expect(
+      usagePopover?.querySelector('[data-slot="turn-token-usage-incomplete"]')?.textContent
+    ).toBe('Partial')
+    expect(usagePopover?.textContent).toContain('Input15,953')
+    expect(usagePopover?.textContent).toContain('Output578')
+    expect(usagePopover?.textContent).toContain('Known total16,531')
+  })
+
   it('reveals unavailable totals from the Usage summary when the agent did not report them', async () => {
     await renderMessageItem(
       createMessage({

@@ -256,7 +256,15 @@ describe('token usage analytics', () => {
               turnUsage: { inputTokens: 4, cacheTokens: 1, outputTokens: 2 }
             }),
             message('user-unavailable', 'user', now),
-            message('agent-unavailable', 'agent', now, { turnUsageUnavailable: true })
+            message('agent-unavailable', 'agent', now, { turnUsageUnavailable: true }),
+            message('agent-partial', 'agent', now, {
+              turnUsage: {
+                inputTokens: 10_000,
+                cacheTokens: 20_000,
+                outputTokens: 30_000,
+                incomplete: true
+              }
+            })
           ],
           {
             artifacts: [
