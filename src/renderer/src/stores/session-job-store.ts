@@ -27,6 +27,9 @@ const mergeTimestamp = (
 ): number | undefined =>
   older === undefined ? newer : newer === undefined ? older : Math.max(older, newer)
 
+const terminalProjectionPhase = (job: JobSummary): number =>
+  job.notified_at !== undefined ? 2 : job.harvest_error !== undefined ? 1 : 0
+
 const mergeJob = (existing: JobSummary | undefined, incoming: JobSummary): JobSummary => {
   if (!existing) return incoming
 
@@ -39,7 +42,9 @@ const mergeJob = (existing: JobSummary | undefined, incoming: JobSummary): JobSu
   const olderTerminal =
     existingTerminal &&
     incomingTerminal &&
-    (incoming.finished_at ?? 0) < (existing.finished_at ?? 0)
+    ((incoming.finished_at ?? 0) < (existing.finished_at ?? 0) ||
+      ((incoming.finished_at ?? 0) === (existing.finished_at ?? 0) &&
+        terminalProjectionPhase(incoming) < terminalProjectionPhase(existing)))
   const base = terminalRegression || activeRegression || olderTerminal ? existing : incoming
 
   return {

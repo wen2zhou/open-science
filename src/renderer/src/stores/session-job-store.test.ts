@@ -163,6 +163,46 @@ describe('session job store — applyUpdate', () => {
       notification_consumed_at: 300
     })
   })
+
+  it('does not let a late pre-harvest terminal projection erase harvested details', () => {
+    useSessionJobStore.getState().applyUpdate(
+      makeJob({
+        job_id: 'j',
+        status: 'failed',
+        finished_at: 150,
+        notified_at: 200,
+        harvest_error: 'harvest_failed: connection reset',
+        featured_files: ['hpc/j/featured/current.csv'],
+        featured_file_count: 1,
+        left_on_remote: [
+          { uri: 'ssh://biowulf/current.dat', size_mb: 20, reason: 'exceeds_max_file_mb' }
+        ],
+        left_on_remote_count: 1
+      })
+    )
+    useSessionJobStore.getState().applyUpdate(
+      makeJob({
+        job_id: 'j',
+        status: 'failed',
+        finished_at: 150,
+        featured_files: [],
+        featured_file_count: 0,
+        left_on_remote: [],
+        left_on_remote_count: 0
+      })
+    )
+
+    expect(useSessionJobStore.getState().jobsById.get('j')).toMatchObject({
+      notified_at: 200,
+      harvest_error: 'harvest_failed: connection reset',
+      featured_files: ['hpc/j/featured/current.csv'],
+      featured_file_count: 1,
+      left_on_remote: [
+        { uri: 'ssh://biowulf/current.dat', size_mb: 20, reason: 'exceeds_max_file_mb' }
+      ],
+      left_on_remote_count: 1
+    })
+  })
 })
 
 describe('session job store — runningJobsForSession', () => {
