@@ -81,6 +81,15 @@ const useProvidedWorkspaceMessageQueueOwner = (): WorkspaceMessageQueueOwner => 
   return owner
 }
 
+const useWorkspaceApplicationMessageAdmission =
+  (): WorkspaceMessageQueueController['lifecycle']['enqueueApplication'] => {
+    const owner = useProvidedWorkspaceMessageQueueOwner()
+    return useCallback(
+      (admission: ApplicationMessageQueueAdmission) => enqueueApplicationMessage(owner, admission),
+      [owner]
+    )
+  }
+
 const WorkspaceMessageQueueProvider = ({ children }: PropsWithChildren): ReactElement => {
   const [owner] = useState(() => new WorkspaceMessageQueueOwner())
   useEffect(() => {
@@ -219,6 +228,7 @@ const useWorkspaceMessageQueueController = (
 
 export {
   useWorkspaceMessageQueueController,
+  useWorkspaceApplicationMessageAdmission,
   WorkspaceMessageQueueProvider,
   WorkspaceMessageQueueRuntimeBridge
 }

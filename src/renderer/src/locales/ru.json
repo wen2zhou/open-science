@@ -3643,5 +3643,9 @@
   "Submitting": "Отправка",
   "Unable to load remote jobs.": "Не удалось загрузить удалённые задания.",
   "Harvest pending. Open Science will retry automatically.": "Сбор результатов ожидается. Open Science автоматически повторит попытку.",
-  "Harvest failed. Remote files were left untouched.": "Не удалось собрать результаты. Удалённые файлы не изменены."
+  "Harvest failed. Remote files were left untouched.": "Не удалось собрать результаты. Удалённые файлы не изменены.",
+  "Remote job recovery needs attention": "Восстановление удалённых заданий требует внимания",
+  "Open Science could not check saved remote jobs. Retry to restore pending result analysis.": "Open Science не удалось проверить сохранённые удалённые задания. Повторите попытку, чтобы восстановить ожидающий анализ результатов.",
+  "Saved remote job data needs attention": "Сохранённые данные удалённого задания требуют внимания",
+  "This job remains visible, but automatic result analysis is paused because its saved state is incompatible.": "Задание остаётся видимым, но автоматический анализ результатов приостановлен из-за несовместимого сохранённого состояния."
 }

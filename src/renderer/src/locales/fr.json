@@ -3531,5 +3531,9 @@
   "Submitting": "Envoi en cours",
   "Unable to load remote jobs.": "Impossible de charger les tâches distantes.",
   "Harvest pending. Open Science will retry automatically.": "Collecte en attente. Open Science réessaiera automatiquement.",
-  "Harvest failed. Remote files were left untouched.": "Échec de la collecte. Les fichiers distants n’ont pas été modifiés."
+  "Harvest failed. Remote files were left untouched.": "Échec de la collecte. Les fichiers distants n’ont pas été modifiés.",
+  "Remote job recovery needs attention": "La récupération des tâches distantes nécessite votre attention",
+  "Open Science could not check saved remote jobs. Retry to restore pending result analysis.": "Open Science n’a pas pu vérifier les tâches distantes enregistrées. Réessayez pour restaurer l’analyse des résultats en attente.",
+  "Saved remote job data needs attention": "Les données enregistrées de la tâche distante nécessitent votre attention",
+  "This job remains visible, but automatic result analysis is paused because its saved state is incompatible.": "Cette tâche reste visible, mais l’analyse automatique des résultats est suspendue car son état enregistré est incompatible."
 }

@@ -183,6 +183,36 @@ describe('JobDetailModal — detail view', () => {
     expect(container.textContent).toContain('job-abc')
   })
 
+  it('keeps quarantined persisted jobs visible with an explicit diagnostic', async () => {
+    const { JobDetailModal } = await import('./JobDetailModal')
+    const job = makeJob({
+      status: 'error',
+      raw_status: 'future_state',
+      needs_attention: true,
+      integrity_issues: [
+        {
+          jobId: 'job-abc',
+          sessionId: 'sess-1',
+          projectId: 'project-1',
+          code: 'unknown-status',
+          disposition: 'quarantined',
+          rawStatus: 'future_state'
+        }
+      ]
+    })
+    useSessionJobStore.getState().applyUpdate(job)
+
+    act(() => {
+      root.render(
+        <JobDetailModal open={true} sessionId="sess-1" initialJob={job} onClose={vi.fn()} />
+      )
+    })
+
+    expect(container.textContent).toContain('Saved remote job data needs attention')
+    expect(container.textContent).toContain('unknown-status')
+    expect(container.textContent).toContain('future_state')
+  })
+
   it('offers recovery for a background authentication failure', async () => {
     const { JobDetailModal } = await import('./JobDetailModal')
     const openSettingsToComputeAuthentication = vi.fn()

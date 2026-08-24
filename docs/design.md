@@ -612,6 +612,19 @@ colors communicate a successful or failed probe/migration result.
   dispatch while a visible root or delegated Permission request is pending. Keep the Permission
   Profile selector and other Agent controls read-only until that queue is empty so every item retains
   its captured authorization level and Specialist binding.
+- Compute completion Messages use the same application-message admission seam, but their durable
+  delivery identity lives in Session Message attribution plus the Job notification timestamps. A
+  route-independent recovery bridge scans all persisted Sessions only after Session persistence is
+  ready, queues background analysis without selecting its Session, and ACKs the Job inbox only after
+  the exact analysis Message is durably successful. Pending-scan and visible Job-hydration failures
+  show Retry controls, retry with capped exponential delays, retry immediately on window focus, and
+  clear their timers when their owner stops.
+- Main performs a detect-only startup integrity scan over raw Compute Job persistence. Unknown raw
+  status, unknown error codes, incomplete remote handles, and notified/consumed invariant failures
+  produce structured needs-attention diagnostics. Unknown status and invalid notification history
+  are quarantined from lifecycle scans; no compatibility mapper may turn them into an ordinary
+  terminal result. Incomplete submitted/running handles remain on the established recovery path and
+  may be repaired only when deterministic workdir, `job.pid`, and process cwd jointly prove ownership.
 - Blocking interactions own the composer lane in this order: an already-open Side Chat, Permission
   approval, Ask-User elicitation, Plan approval, then the ordinary composer. Closing Side Chat reveals
   any still-pending Permission approval instead of interrupting the Side Chat in progress.

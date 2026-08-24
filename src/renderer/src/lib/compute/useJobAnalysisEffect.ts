@@ -10,7 +10,7 @@
 // - `isSessionInFlight` reads from useSessionStore.getState() synchronously — no subscription needed.
 // - The restart-recovery scan fires whenever the active session id changes (session navigation).
 
-import { useEffect, useEffectEvent } from 'react'
+import { useCallback, useEffect, useEffectEvent, useRef, useState } from 'react'
 
 import { isComputeJobCompletionAttribution } from '../../../../shared/session-persistence'
 import { useSessionJobStore } from '../../stores/session-job-store'
@@ -37,12 +37,22 @@ type UseJobAnalysisEffectOptions = {
   admitMessage: AdmitMessageFn
 }
 
+type JobAnalysisRecoveryStatus = Readonly<{
+  error: 'pending-scan-failed' | undefined
+  retry: () => void
+}>
+
+const RECOVERY_RETRY_DELAYS_MS = [250, 500, 1_000, 2_000, 4_000] as const
+
 // Subscribes to all done-state compute:job-updated broadcasts and runs the analysis turn trigger.
 // Also scans for pending notifications on session load (restart recovery path).
 export const useJobAnalysisEffect = ({
   enabled,
   admitMessage
-}: UseJobAnalysisEffectOptions): void => {
+}: UseJobAnalysisEffectOptions): JobAnalysisRecoveryStatus => {
+  const [error, setError] = useState<JobAnalysisRecoveryStatus['error']>()
+  const retryScanRef = useRef<() => void>(() => undefined)
+  const retry = useCallback(() => retryScanRef.current(), [])
   const admitLatestMessage = useEffectEvent(
     (input: Parameters<AdmitMessageFn>[0]): ReturnType<AdmitMessageFn> => admitMessage(input)
   )
@@ -51,6 +61,9 @@ export const useJobAnalysisEffect = ({
     if (!enabled) return
 
     let isActive = true
+    let scanRunning = false
+    let retryAttempt = 0
+    let retryTimer: ReturnType<typeof setTimeout> | undefined
     const turnEndUnsubscribes = new Set<() => void>()
     const trigger = createJobAnalysisTrigger({
       isSessionInFlight: (sessionId) => {
@@ -135,34 +148,63 @@ export const useJobAnalysisEffect = ({
       }
     }
 
-    const scanPendingJobs = (sessionId: string | undefined): void => {
-      if (!sessionId) return
+    const scanPendingJobs = (): void => {
       if (typeof window.api?.compute?.jobsPendingNotification !== 'function') return
-
-      void window.api.compute.jobsPendingNotification(sessionId).then((jobs) => {
-        if (!isActive) return
-        for (const job of jobs) trigger.onJobDone(job)
-      })
+      if (scanRunning) return
+      scanRunning = true
+      void window.api.compute
+        .jobsPendingNotification()
+        .then((jobs) => {
+          if (!isActive) return
+          retryAttempt = 0
+          setError(undefined)
+          for (const job of jobs) trigger.onJobDone(job)
+        })
+        .catch((scanError: unknown) => {
+          if (!isActive) return
+          console.warn('[compute] pending notification recovery scan failed', scanError)
+          setError('pending-scan-failed')
+          if (retryAttempt >= RECOVERY_RETRY_DELAYS_MS.length) return
+          const delay = RECOVERY_RETRY_DELAYS_MS[retryAttempt++]
+          retryTimer = setTimeout(() => {
+            retryTimer = undefined
+            scanPendingJobs()
+          }, delay)
+        })
+        .finally(() => {
+          scanRunning = false
+        })
     }
+
+    const retryNow = (): void => {
+      if (retryTimer) clearTimeout(retryTimer)
+      retryTimer = undefined
+      retryAttempt = 0
+      scanPendingJobs()
+    }
+    retryScanRef.current = retryNow
+    window.addEventListener('focus', retryNow)
 
     const initialState = useSessionJobStore.getState()
     feedNotifiedJobs(initialState)
-    scanPendingJobs(initialState.hydratedSessionId)
+    scanPendingJobs()
 
-    const unsubscribeJobs = useSessionJobStore.subscribe((state, previousState) => {
+    const unsubscribeJobs = useSessionJobStore.subscribe((state) => {
       feedNotifiedJobs(state)
-      if (state.hydratedSessionId !== previousState.hydratedSessionId) {
-        scanPendingJobs(state.hydratedSessionId)
-      }
     })
 
     return () => {
       isActive = false
+      retryScanRef.current = () => undefined
+      window.removeEventListener('focus', retryNow)
+      if (retryTimer) clearTimeout(retryTimer)
       unsubscribeJobs()
       for (const unsubscribe of turnEndUnsubscribes) unsubscribe()
       turnEndUnsubscribes.clear()
     }
   }, [enabled])
+
+  return { error, retry }
 }
 
 const computeDeliveryOutcome = (

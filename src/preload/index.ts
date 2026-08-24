@@ -615,7 +615,9 @@ const api: OpenScienceAPI = {
       electronRendererContracts.invoke('compute.jobsList', filter),
     // Returns jobs pending analysis turn (notifiedAt set, notificationConsumedAt null).
     jobsPendingNotification: (sessionId) =>
-      electronRendererContracts.invoke('compute.jobsPendingNotification', sessionId),
+      sessionId === undefined
+        ? electronRendererContracts.invoke('compute.jobsPendingNotification')
+        : electronRendererContracts.invoke('compute.jobsPendingNotification', sessionId),
     // Marks job ids as notification-consumed after a successful analysis turn (issue 05).
     jobsMarkConsumed: (sessionId, jobIds) =>
       electronRendererContracts.invoke('compute.jobsMarkConsumed', sessionId, jobIds),

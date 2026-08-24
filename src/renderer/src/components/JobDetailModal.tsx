@@ -222,6 +222,28 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
         </div>
       </div>
 
+      {latestJob.needs_attention ? (
+        <div
+          role="alert"
+          data-testid="job-integrity-diagnostic"
+          className="m-3 rounded-lg border border-status-warning-border bg-status-warning-subtle/50 px-3 py-2 text-sm text-status-warning-strong"
+        >
+          <p className="font-medium">{t('Saved remote job data needs attention')}</p>
+          <p className="mt-1">
+            {t(
+              'This job remains visible, but automatic result analysis is paused because its saved state is incompatible.'
+            )}
+          </p>
+          <ul className="mt-1 list-disc pl-5 font-mono text-xs">
+            {latestJob.integrity_issues?.map((issue) => (
+              <li key={issue.code}>
+                {issue.code}: {issue.rawErrorCode ?? issue.rawStatus}
+              </li>
+            ))}
+          </ul>
+        </div>
+      ) : null}
+
       {runtimeErrorCode ? (
         <div
           role="alert"

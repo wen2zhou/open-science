@@ -99,6 +99,11 @@ After Session persistence hydrates, the renderer mounts one route-independent Wo
 owner at the application boundary. Home consumes its Session status projection without acquiring
 Workspace commands or preview behavior. Generated artifacts continue to finalize in the background,
 while molecule preview activation is limited to the foreground Workspace for the owning Project.
+The same application boundary owns Compute Job completion recovery: after persistence is ready it
+scans pending deliveries for every persisted Session, admits analysis Messages through the shared
+Session queue without changing navigation, and uses durable delivery metadata to avoid replay.
+Unknown or internally inconsistent persisted Job state stays visible as needs-attention data and is
+excluded from automatic analysis; startup must not fail or silently reinterpret future status values.
 
 ```mermaid
 flowchart LR

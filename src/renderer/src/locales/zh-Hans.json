@@ -3257,5 +3257,9 @@
   "Submitting": "正在提交",
   "Unable to load remote jobs.": "无法加载远程作业。",
   "Harvest pending. Open Science will retry automatically.": "结果收集待处理。Open Science 将自动重试。",
-  "Harvest failed. Remote files were left untouched.": "结果收集失败。远程文件保持不变。"
+  "Harvest failed. Remote files were left untouched.": "结果收集失败。远程文件保持不变。",
+  "Remote job recovery needs attention": "远程作业恢复需要处理",
+  "Open Science could not check saved remote jobs. Retry to restore pending result analysis.": "Open Science 无法检查已保存的远程作业。请重试以恢复待处理的结果分析。",
+  "Saved remote job data needs attention": "已保存的远程作业数据需要处理",
+  "This job remains visible, but automatic result analysis is paused because its saved state is incompatible.": "此作业仍然可见，但由于其保存状态不兼容，自动结果分析已暂停。"
 }

@@ -535,6 +535,7 @@ describe('Compute service architecture', () => {
       'src/main/compute/job-notifier.ts',
       'src/main/compute/job-harvest-scheduler.ts',
       'src/main/compute/harvest-engine.ts',
+      'src/main/compute/compute-job-integrity.ts',
       'src/main/compute/job-repository.ts',
       'src/main/compute/remote-job-process.ts',
       'src/main/compute/remote-job-handle.ts',
@@ -549,6 +550,8 @@ describe('Compute service architecture', () => {
       'src/main/compute/compute-service.ts',
       'src/renderer/src/lib/compute/job-analysis-trigger.ts',
       'src/renderer/src/lib/compute/useJobAnalysisEffect.ts',
+      'src/renderer/src/lib/compute/useSessionJobHydration.ts',
+      'src/renderer/src/lib/compute/WorkspaceComputeRecoveryBridge.tsx',
       'resources/skills/remote-compute-ssh/SKILL.md'
     ])
     expect(computeService.interfacePaths).toEqual([
@@ -581,7 +584,8 @@ describe('Compute service architecture', () => {
         'src/main/compute/job-notifier.test.ts',
         'src/main/compute/remote-compute-skill.test.ts',
         'src/renderer/src/lib/compute/job-analysis-trigger.test.ts',
-        'src/renderer/src/lib/compute/useJobAnalysisEffect.render.test.tsx'
+        'src/renderer/src/lib/compute/useJobAnalysisEffect.render.test.tsx',
+        'src/renderer/src/lib/compute/useSessionJobHydration.render.test.tsx'
       ])
     )
     expect(computeService.testFiles.contract).toEqual(

@@ -113,6 +113,10 @@ describe('workspace page component boundaries', () => {
     expect(appSource).toContain('const sessionPersistence = useSessionPersistence()')
     expect(appSource).toContain('const isSessionPersistenceReady = sessionPersistence.isReady')
     expect(appSource).toContain('isSessionPersistenceReady={isSessionPersistenceReady}')
+    expect(appSource).toContain(
+      '<WorkspaceComputeRecoveryBridge enabled={isSessionPersistenceReady} />'
+    )
+    expect(workspacePageSource).not.toContain('useJobAnalysisEffect')
 
     expect(workspacePageSource).toContain('isSessionPersistenceReady')
     expect(workspacePageSource).toContain('isSessionPersistenceReady &&')

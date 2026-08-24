@@ -394,11 +394,11 @@ export class ComputeJobRepository {
   // Returns jobs for a session that have been notified (notifiedAt set) but not yet consumed
   // (notificationConsumedAt null). Used by the renderer at session load time to find jobs that
   // need an analysis turn (issue 05: restart recovery path).
-  async findPendingNotifications(sessionId: string): Promise<ComputeJob[]> {
+  async findPendingNotifications(sessionId?: string): Promise<ComputeJob[]> {
     const client = await this.getClient()
     const rows = await client.computeJob.findMany({
       where: {
-        sessionId,
+        ...(sessionId === undefined ? {} : { sessionId }),
         status: { in: ['success', 'failed', 'timeout', 'error'] },
         notifiedAt: { not: null },
         notificationConsumedAt: null

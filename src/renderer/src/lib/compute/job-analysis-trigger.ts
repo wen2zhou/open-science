@@ -141,7 +141,7 @@ export const createJobAnalysisTrigger = (deps: JobAnalysisTriggerDeps): JobAnaly
       job.status === 'error') &&
     job.notified_at !== undefined &&
     job.notified_at !== null &&
-    !job.integrity_issues?.some((issue) => issue.disposition === 'quarantined')
+    job.needs_attention !== true
 
   const isAlreadyConsumed = (job: JobSummary): boolean =>
     job.notification_consumed_at !== undefined && job.notification_consumed_at !== null

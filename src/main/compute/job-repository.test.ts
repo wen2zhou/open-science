@@ -402,6 +402,10 @@ describe('ComputeJob repository (SQLite integration)', () => {
     const pending = await repo.findPendingNotifications('sess-1')
     expect(pending).toHaveLength(1)
     expect(pending[0]!.job_id).toBe('job-notified-unconsumed')
+    expect((await repo.findPendingNotifications()).map((job) => job.job_id)).toEqual([
+      'job-notified-unconsumed',
+      'job-other-session'
+    ])
   })
 
   it('keeps notified non-terminal rows out of the pending analysis seam', async () => {

@@ -141,6 +141,43 @@ const sampleHost = (): import('../../shared/compute').ComputeHost => ({
 // ---------------------------------------------------------------------------
 
 describe('JobPoller', () => {
+  it('reports startup integrity issues once without preventing ordinary recovery ticks', async () => {
+    const integrityIssue = {
+      jobId: 'unknown-job',
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      code: 'unknown-status' as const,
+      disposition: 'quarantined' as const,
+      rawStatus: 'future_state'
+    }
+    const jobRepo = {
+      scanIntegrity: vi.fn().mockResolvedValue([integrityIssue]),
+      findNonTerminal: vi.fn().mockResolvedValue([])
+    } as unknown as ComputeJobRepository
+    const onIntegrityIssues = vi.fn()
+    const poller = new JobPoller({
+      connectionBroker: brokerFromRunner(
+        makeSshRunner({
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+      ),
+      hostRepository: { get: vi.fn() } as unknown as ComputeHostRepository,
+      jobRepository: jobRepo,
+      onIntegrityIssues
+    })
+
+    await poller.tick()
+    await poller.tick()
+
+    expect(jobRepo.scanIntegrity).toHaveBeenCalledOnce()
+    expect(onIntegrityIssues).toHaveBeenCalledWith([integrityIssue])
+    expect(jobRepo.findNonTerminal).toHaveBeenCalledTimes(2)
+  })
+
   it('pause waits for in-flight harvest work before deletion continues', async () => {
     let finishHarvest!: () => void
     const harvest = vi.fn(

@@ -59,7 +59,6 @@ import { useProjectFormDialog } from '@/hooks/useProjectFormDialog'
 import { ProjectFormDialog } from '../home/ProjectFormDialog'
 import { getVisiblePermissionRequests } from './session-permissions'
 import { WorkspaceSidebarContainer } from './WorkspaceSidebarContainer'
-import { useJobAnalysisEffect } from '@/lib/compute/useJobAnalysisEffect'
 import { WorkspacePanelLayout } from './workspace-panel-layout'
 import { useWorkspaceComposerController } from './workspace-composer-controller'
 import { useWorkspaceConversationController } from './workspace-conversation-controller'
@@ -512,10 +511,6 @@ const WorkspacePage = ({
     getSession: (sessionId) =>
       useSessionStore.getState().sessions.find((candidate) => candidate.id === sessionId),
     subscribeSessionChanges: useSessionStore.subscribe
-  })
-  useJobAnalysisEffect({
-    enabled: isSessionPersistenceReady,
-    admitMessage: conversation.admitApplicationMessage
   })
   // "Request review" is disabled when:
   //   - there is no active session or no completed agent turn yet, OR

@@ -6,6 +6,7 @@ import type { StorageInfo, StorageStatus } from '../../shared/storage'
 
 import { useDeepLinkNavigation } from '@/lib/deep-link'
 import { WorkspaceAgentRuntimeProvider } from '@/lib/acp/useWorkspaceAgentRuntime'
+import { WorkspaceComputeRecoveryBridge } from '@/lib/compute/WorkspaceComputeRecoveryBridge'
 import { useSessionPersistence } from '@/lib/session-persistence/session-persistence'
 import { CloseConfirmModal } from '@/components/CloseConfirmModal'
 import { DataRootMissingDialog } from '@/components/DataRootMissingDialog'
@@ -640,6 +641,7 @@ const AppContent = (): React.JSX.Element | null => {
         <WorkspaceAgentRuntimeProvider>
           <WorkspaceMessageQueueProvider>
             <WorkspaceMessageQueueRuntimeBridge />
+            <WorkspaceComputeRecoveryBridge enabled={isSessionPersistenceReady} />
             {view === 'home' ? (
               <HomePage
                 canDeleteProjects={sessionPersistence.canDeleteSessionsAndProjects}

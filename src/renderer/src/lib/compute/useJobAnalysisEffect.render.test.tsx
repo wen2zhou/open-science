@@ -10,7 +10,7 @@ import { useJobAnalysisEffect } from './useJobAnalysisEffect'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
 
-const makeCompletedJob = (): JobSummary => ({
+const makeCompletedJob = (overrides: Partial<JobSummary> = {}): JobSummary => ({
   job_id: 'job-1',
   provider_id: 'ssh:biowulf',
   display_name: 'biowulf',
@@ -30,7 +30,8 @@ const makeCompletedJob = (): JobSummary => ({
   notification_consumed_at: undefined,
   featured_files: [],
   featured_file_count: 0,
-  left_on_remote_count: 0
+  left_on_remote_count: 0,
+  ...overrides
 })
 
 describe('useJobAnalysisEffect persistence readiness', () => {
@@ -119,7 +120,7 @@ describe('useJobAnalysisEffect persistence readiness', () => {
       root.render(<Probe enabled />)
       await Promise.resolve()
     })
-    expect(jobsPendingNotification).toHaveBeenCalledWith('session-1')
+    expect(jobsPendingNotification).toHaveBeenCalledWith()
 
     await act(async () => root.render(<Probe enabled={false} />))
     await act(async () => {
@@ -266,7 +267,68 @@ describe('useJobAnalysisEffect persistence readiness', () => {
       await new Promise((resolve) => setTimeout(resolve, 0))
     })
 
-    expect(jobsPendingNotification).toHaveBeenCalledWith('session-1')
+    expect(jobsPendingNotification).toHaveBeenCalledWith()
+    expect(sendMessage).toHaveBeenCalledOnce()
+  })
+
+  it('recovers a background Session without changing the active Session', async () => {
+    const backgroundJob = makeCompletedJob({
+      job_id: 'job-background',
+      session_id: 'session-2'
+    })
+    jobsPendingNotification.mockResolvedValueOnce([backgroundJob])
+    useSessionStore.setState({
+      ...createInitialSessionState(),
+      selectedSessionId: 'session-1',
+      sessions: [
+        ...useSessionStore.getState().sessions,
+        {
+          id: 'session-2',
+          projectId: 'project-b',
+          title: 'Background',
+          cwd: '/workspace/project-b',
+          status: 'idle',
+          messages: [],
+          createdAt: 2,
+          updatedAt: 2
+        }
+      ]
+    })
+
+    await act(async () => {
+      root.render(<Probe enabled />)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ session: expect.objectContaining({ id: 'session-2' }) })
+    )
+    expect(useSessionStore.getState().selectedSessionId).toBe('session-1')
+  })
+
+  it('surfaces a failed scan and retries immediately when the window regains focus', async () => {
+    jobsPendingNotification
+      .mockRejectedValueOnce(new Error('database busy'))
+      .mockResolvedValueOnce([makeCompletedJob()])
+    let recovery: ReturnType<typeof useJobAnalysisEffect> | undefined
+    const RecoveryProbe = (): null => {
+      recovery = useJobAnalysisEffect({ enabled: true, admitMessage: sendMessage })
+      return null
+    }
+
+    await act(async () => {
+      root.render(<RecoveryProbe />)
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+    expect(recovery?.error).toBe('pending-scan-failed')
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      await new Promise((resolve) => setTimeout(resolve, 0))
+    })
+
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(2)
+    expect(recovery?.error).toBeUndefined()
     expect(sendMessage).toHaveBeenCalledOnce()
   })
 })

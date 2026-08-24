@@ -128,7 +128,7 @@ const registerComputeIpcHandlerSet = ({ handlers, enabledHosts }: ComputeIpcAdap
     (_event, filter: { sessionId: string; status?: string[] }) => handlers.jobsList(filter)
   )
   // Returns jobs pending analysis turn (notifiedAt set, notificationConsumedAt null — issue 05).
-  ipcMainHandle('compute:jobs:pending-notification', (_event, sessionId: string) =>
+  ipcMainHandle('compute:jobs:pending-notification', (_event, sessionId?: string) =>
     handlers.jobsPendingNotification(sessionId)
   )
   // Marks job ids as notification-consumed (analysis turn done — issue 05).
