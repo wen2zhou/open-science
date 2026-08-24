@@ -18,8 +18,8 @@
  */
 
 import { randomUUID } from 'node:crypto'
-import { mkdir, rename, statfs, unlink } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { access, mkdir, realpath, rename, rm, statfs, unlink } from 'node:fs/promises'
+import { dirname, join, resolve } from 'node:path'
 
 import type { ComputeJob, JobSummary } from '../../shared/compute'
 import type { ComputeHostRepository } from './repository'
@@ -70,6 +70,48 @@ const withHarvestBudgetLock = async <Result>(operation: () => Promise<Result>): 
     release()
   }
 }
+
+const reservedHarvestBytesByRoot = new Map<string, number>()
+
+const canonicalStorageRoot = async (storageRoot: string): Promise<string> =>
+  realpath(storageRoot).catch(() => resolve(storageRoot))
+
+const reserveHarvestBudget = async (
+  storageRoot: string,
+  freeDiskBytes: number,
+  requestedBytes: number
+): Promise<{ bytes: number; release: () => Promise<void> }> => {
+  const rootKey = await canonicalStorageRoot(storageRoot)
+  return withHarvestBudgetLock(async () => {
+    const reserved = reservedHarvestBytesByRoot.get(rootKey) ?? 0
+    const available = Math.max(
+      0,
+      Math.floor(freeDiskBytes - HARVEST_FREE_DISK_RESERVE_BYTES - reserved)
+    )
+    const bytes = Math.max(0, Math.min(Math.floor(requestedBytes), available))
+    reservedHarvestBytesByRoot.set(rootKey, reserved + bytes)
+    let released = false
+    return {
+      bytes,
+      release: async () => {
+        if (released) return
+        released = true
+        await withHarvestBudgetLock(async () => {
+          const current = reservedHarvestBytesByRoot.get(rootKey) ?? 0
+          const next = Math.max(0, current - bytes)
+          if (next === 0) reservedHarvestBytesByRoot.delete(rootKey)
+          else reservedHarvestBytesByRoot.set(rootKey, next)
+        })
+      }
+    }
+  })
+}
+
+const pathExists = async (path: string): Promise<boolean> =>
+  access(path).then(
+    () => true,
+    () => false
+  )
 // ---------------------------------------------------------------------------
 // Public path helper
 // ---------------------------------------------------------------------------
@@ -220,6 +262,8 @@ export type HarvestDeps = {
   storageRoot: string
   /** Override free-space discovery for deterministic tests. */
   getFreeDiskBytesFn?: (path: string) => Promise<number>
+  /** Injectable filesystem publication seam for crash/interruption tests. */
+  renameFn?: typeof rename
   /**
    * Broadcast hook for the compute_done notification (issue 06).
    * Called after harvestedAt is written. Defaults to the production broadcastJobUpdated.
@@ -267,27 +311,58 @@ const buildLeftOnRemoteUri = (
  * previous harvest (re-downloads files, re-writes DB fields).
  */
 export const harvestJob = async (job: ComputeJob, deps: HarvestDeps): Promise<void> => {
-  // Serialize before acquiring the data-root writer lease so queued harvests do not unnecessarily
-  // delay a storage migration. The active harvest keeps its lease through every download.
-  return await withHarvestBudgetLock(async () =>
-    withDataRootWrite(async () => {
-      try {
-        await harvestJobUnchecked(job, deps)
-      } catch (error) {
-        if (!(error instanceof ComputeConnectionError)) throw error
-        // Connection failures are recoverable. Keep harvestedAt unset so the restart/tick scan can
-        // retry after credentials, host keys, or network reachability are repaired.
+  return withDataRootWrite(async () => {
+    const harvestDir = getJobHarvestDir(
+      deps.storageRoot,
+      job.project_id,
+      job.session_id,
+      job.job_id
+    )
+    const attemptDir = `${harvestDir}.harvest-attempt`
+    const backupDir = `${harvestDir}.harvest-backup`
+    const renamePath = deps.renameFn ?? rename
+
+    // Repair the only interrupted publication states before touching a new attempt. A whole harvest
+    // is published by directory rename, so readers see one complete generation or none, never a
+    // per-file mixture. Only exact app-owned sibling paths are cleaned.
+    if (await pathExists(backupDir)) {
+      if (await pathExists(harvestDir)) await rm(backupDir, { recursive: true, force: true })
+      else await renamePath(backupDir, harvestDir)
+    }
+    await rm(attemptDir, { recursive: true, force: true })
+
+    try {
+      await harvestJobUnchecked(job, deps, { harvestDir, attemptDir, backupDir, renamePath })
+    } catch (error) {
+      if (error instanceof ComputeConnectionError) {
+        // Keep harvestedAt unset so restart/tick recovery retries. Persist only a safe error class;
+        // never persist connection output or credentials.
+        await deps.jobRepository.update(job.job_id, {
+          harvestError: `harvest pending: ${error.code}`
+        })
       }
-    })
-  )
+      throw error
+    } finally {
+      await rm(attemptDir, { recursive: true, force: true })
+    }
+  })
 }
 
-const harvestJobUnchecked = async (job: ComputeJob, deps: HarvestDeps): Promise<void> => {
+const harvestJobUnchecked = async (
+  job: ComputeJob,
+  deps: HarvestDeps,
+  publication: {
+    harvestDir: string
+    attemptDir: string
+    backupDir: string
+    renamePath: typeof rename
+  }
+): Promise<void> => {
   const { connectionBroker, hostRepository, jobRepository, storageRoot } = deps
 
-  const harvestDir = getJobHarvestDir(storageRoot, job.project_id, job.session_id, job.job_id)
-  const featuredDir = join(harvestDir, 'featured')
-  const hiddenDir = join(harvestDir, 'hidden')
+  const { harvestDir, attemptDir, backupDir, renamePath } = publication
+  const featuredDir = join(attemptDir, 'featured')
+  const hiddenDir = join(attemptDir, 'hidden')
 
   // Ensure harvest directory structure exists (idempotent).
   await mkdir(featuredDir, { recursive: true })
@@ -423,9 +498,13 @@ const harvestJobUnchecked = async (job: ComputeJob, deps: HarvestDeps): Promise<
   const stagedInputs = new Set<string>()
   if (job.input_manifest) {
     try {
-      const manifest = JSON.parse(job.input_manifest) as Array<{ dest?: string }>
+      const manifest = JSON.parse(job.input_manifest) as Array<{
+        dstFilename?: string
+        dest?: string
+      }>
       for (const entry of manifest) {
-        if (entry.dest) stagedInputs.add(entry.dest)
+        const destination = entry.dstFilename ?? entry.dest
+        if (destination) stagedInputs.add(destination)
       }
     } catch {
       // Ignore parse errors.
@@ -435,7 +514,7 @@ const harvestJobUnchecked = async (job: ComputeJob, deps: HarvestDeps): Promise<
   const normalizedHarvestConfig = normalizeHarvestConfig(harvestConfig)
   let freeDiskBytes: number
   try {
-    freeDiskBytes = await (deps.getFreeDiskBytesFn ?? getFreeDiskBytes)(harvestDir)
+    freeDiskBytes = await (deps.getFreeDiskBytesFn ?? getFreeDiskBytes)(attemptDir)
     if (!Number.isFinite(freeDiskBytes) || freeDiskBytes < 0) {
       throw new Error('free-space query returned an invalid value')
     }
@@ -444,14 +523,15 @@ const harvestJobUnchecked = async (job: ComputeJob, deps: HarvestDeps): Promise<
     await finalizeAndReturn(`free-space check failed: ${msg}`, '[]')
     return
   }
-  const diskBudgetMb = Math.max(0, (freeDiskBytes - HARVEST_FREE_DISK_RESERVE_BYTES) / MIB_BYTES)
+  const requestedBudgetBytes = Math.floor((normalizedHarvestConfig.max_total_mb ?? 0) * MIB_BYTES)
+  const reservation = await reserveHarvestBudget(storageRoot, freeDiskBytes, requestedBudgetBytes)
   const effectiveHarvestConfig: HarvestConfig = {
     ...normalizedHarvestConfig,
-    max_total_mb: Math.min(normalizedHarvestConfig.max_total_mb ?? 0, diskBudgetMb)
+    max_total_mb: reservation.bytes / MIB_BYTES
   }
   const classification = classifyFiles(remoteFiles, outputs, effectiveHarvestConfig, stagedInputs)
   const remoteSizeByPath = new Map(remoteFiles.map((entry) => [entry.path, entry.size_bytes]))
-  let remainingBudgetBytes = Math.floor((effectiveHarvestConfig.max_total_mb ?? 0) * MIB_BYTES)
+  let remainingBudgetBytes = reservation.bytes
 
   // ── 5. Download files ───────────────────────────────────────────────────────
   const errors: string[] = []
@@ -474,7 +554,7 @@ const harvestJobUnchecked = async (job: ComputeJob, deps: HarvestDeps): Promise<
     const expectedBytes = remoteSizeByPath.get(relativePath) ?? 0
     let currentFreeBytes: number
     try {
-      currentFreeBytes = await (deps.getFreeDiskBytesFn ?? getFreeDiskBytes)(harvestDir)
+      currentFreeBytes = await (deps.getFreeDiskBytesFn ?? getFreeDiskBytes)(attemptDir)
       if (!Number.isFinite(currentFreeBytes) || currentFreeBytes < 0) {
         throw new Error('free-space query returned an invalid value')
       }
@@ -524,24 +604,28 @@ const harvestJobUnchecked = async (job: ComputeJob, deps: HarvestDeps): Promise<
     }
   }
 
-  // Download featured files.
-  for (const relativePath of classification.featured) {
-    const localPath = join(featuredDir, relativePath)
-    await mkdir(dirname(localPath), { recursive: true })
-    await safeDownload(relativePath, localPath)
-  }
+  try {
+    // Download featured files.
+    for (const relativePath of classification.featured) {
+      const localPath = join(featuredDir, relativePath)
+      await mkdir(dirname(localPath), { recursive: true })
+      await safeDownload(relativePath, localPath)
+    }
 
-  // Download hidden files.
-  for (const relativePath of classification.hidden) {
-    const localPath = join(hiddenDir, relativePath)
-    await mkdir(dirname(localPath), { recursive: true })
-    await safeDownload(relativePath, localPath)
-  }
+    // Download hidden files.
+    for (const relativePath of classification.hidden) {
+      const localPath = join(hiddenDir, relativePath)
+      await mkdir(dirname(localPath), { recursive: true })
+      await safeDownload(relativePath, localPath)
+    }
 
   // ── 6. Build left_on_remote JSON and finalize ────────────────────────────────
   // Download full logs last; bounded tails remain available when the budget excludes them.
-  for (const relativePath of classification.logs) {
-    await safeDownload(relativePath, join(harvestDir, relativePath))
+    for (const relativePath of classification.logs) {
+      await safeDownload(relativePath, join(attemptDir, relativePath))
+    }
+  } finally {
+    await reservation.release()
   }
 
   const leftOnRemote = classification.left_on_remote.map((entry) => ({
@@ -554,6 +638,24 @@ const harvestJobUnchecked = async (job: ComputeJob, deps: HarvestDeps): Promise<
     errors.length > 0
       ? `harvest_failed: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? ` (and ${errors.length - 3} more)` : ''}`
       : null
+
+  if (!harvestError) {
+    let backedUp = false
+    try {
+      if (await pathExists(harvestDir)) {
+        await rm(backupDir, { recursive: true, force: true })
+        await renamePath(harvestDir, backupDir)
+        backedUp = true
+      }
+      await renamePath(attemptDir, harvestDir)
+      if (backedUp) await rm(backupDir, { recursive: true, force: true })
+    } catch (error) {
+      if (backedUp && !(await pathExists(harvestDir)) && (await pathExists(backupDir))) {
+        await renamePath(backupDir, harvestDir)
+      }
+      throw error
+    }
+  }
 
   const updatedJob = await finalize(harvestError, JSON.stringify(leftOnRemote))
   // Broadcast notification for the successful harvest path (early-exit paths use finalizeAndReturn).
