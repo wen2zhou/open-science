@@ -49,7 +49,7 @@ describe('session job store — hydrate', () => {
     expect(state.jobsById.get('job-1')).toEqual(jobs[0])
   })
 
-  it('replaces the existing job map on each hydrate call', async () => {
+  it('keeps each Session partition when another Session hydrates', async () => {
     const first = [makeJob({ job_id: 'old', session_id: 'sess-1' })]
     const second = [makeJob({ job_id: 'new', session_id: 'sess-2' })]
     setJobsApi({
@@ -60,9 +60,72 @@ describe('session job store — hydrate', () => {
     await useSessionJobStore.getState().hydrate('sess-2')
 
     const state = useSessionJobStore.getState()
-    expect(state.jobsById.has('old')).toBe(false)
+    expect(state.jobsById.has('old')).toBe(true)
     expect(state.jobsById.has('new')).toBe(true)
     expect(state.hydratedSessionId).toBe('sess-2')
+  })
+
+  it('does not let an older Session hydrate completion switch the active Session back', async () => {
+    let resolveFirst!: (jobs: JobSummary[]) => void
+    const first = new Promise<JobSummary[]>((resolve) => {
+      resolveFirst = resolve
+    })
+    setJobsApi({
+      jobsList: vi
+        .fn()
+        .mockReturnValueOnce(first)
+        .mockResolvedValueOnce([makeJob({ job_id: 'second', session_id: 'sess-2' })])
+    })
+
+    const firstHydrate = useSessionJobStore.getState().hydrate('sess-1')
+    await useSessionJobStore.getState().hydrate('sess-2')
+    resolveFirst([makeJob({ job_id: 'first', session_id: 'sess-1' })])
+    await firstHydrate
+
+    expect(useSessionJobStore.getState().hydratedSessionId).toBe('sess-2')
+    expect(useSessionJobStore.getState().jobsById.has('first')).toBe(true)
+  })
+
+  it('does not overwrite a newer terminal broadcast with an older hydrate response', async () => {
+    let resolveHydrate!: (jobs: JobSummary[]) => void
+    setJobsApi({
+      jobsList: vi.fn(
+        () =>
+          new Promise<JobSummary[]>((resolve) => {
+            resolveHydrate = resolve
+          })
+      )
+    })
+
+    const hydrating = useSessionJobStore.getState().hydrate('sess-1')
+    useSessionJobStore
+      .getState()
+      .applyUpdate(makeJob({ job_id: 'job-race', session_id: 'sess-1', status: 'success' }))
+    resolveHydrate([makeJob({ job_id: 'job-race', session_id: 'sess-1', status: 'running' })])
+    await hydrating
+
+    expect(useSessionJobStore.getState().jobsById.get('job-race')?.status).toBe('success')
+  })
+
+  it('background ACK hydration does not change the active Session', async () => {
+    setJobsApi({ jobsList: vi.fn().mockResolvedValue([]) })
+    await useSessionJobStore.getState().hydrate('sess-active')
+    await useSessionJobStore.getState().hydrate('sess-background', { activate: false })
+    expect(useSessionJobStore.getState().hydratedSessionId).toBe('sess-active')
+  })
+
+  it('exposes hydrate errors and clears them after a successful retry', async () => {
+    setJobsApi({
+      jobsList: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('database busy'))
+        .mockResolvedValueOnce([makeJob({ session_id: 'sess-1' })])
+    })
+
+    await expect(useSessionJobStore.getState().hydrate('sess-1')).resolves.toBeUndefined()
+    expect(useSessionJobStore.getState().loadErrorBySession.get('sess-1')).toBe('database busy')
+    await useSessionJobStore.getState().hydrate('sess-1')
+    expect(useSessionJobStore.getState().loadErrorBySession.has('sess-1')).toBe(false)
   })
 })
 
@@ -79,6 +142,26 @@ describe('session job store — applyUpdate', () => {
     useSessionJobStore.getState().applyUpdate(makeJob({ job_id: 'j', status: 'success' }))
 
     expect(useSessionJobStore.getState().jobsById.get('j')?.status).toBe('success')
+  })
+
+  it('never regresses terminal, notified, or consumed state on an out-of-order update', () => {
+    useSessionJobStore.getState().applyUpdate(
+      makeJob({
+        job_id: 'j',
+        status: 'success',
+        notified_at: 200,
+        notification_consumed_at: 300
+      })
+    )
+    useSessionJobStore
+      .getState()
+      .applyUpdate(makeJob({ job_id: 'j', status: 'running', notified_at: undefined }))
+
+    expect(useSessionJobStore.getState().jobsById.get('j')).toMatchObject({
+      status: 'success',
+      notified_at: 200,
+      notification_consumed_at: 300
+    })
   })
 })
 
