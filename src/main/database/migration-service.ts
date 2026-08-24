@@ -26,6 +26,7 @@ import { visionEvidenceMigration } from './migrations/0009-vision-evidence'
 import { computePasswordAuthMigration } from './migrations/0010-compute-password-auth'
 import { crossResourceTagsMigration } from './migrations/0011-cross-resource-tags'
 import { tagOrderingMigration } from './migrations/0012-tag-ordering'
+import { computeJobCancellationMigration } from './migrations/0013-compute-job-cancellation'
 import {
   applySqliteMigrationOperations,
   type SqliteMigrationOperation
@@ -216,6 +217,12 @@ const TAG_ORDERING_CHECKSUM = checksumMigrationPayload(
   tagOrderingMigration.verifiers,
   tagOrderingMigration.operations
 )
+const COMPUTE_JOB_CANCELLATION_CHECKSUM = checksumMigrationPayload(
+  computeJobCancellationMigration.id,
+  computeJobCancellationMigration.statements,
+  computeJobCancellationMigration.verifiers,
+  computeJobCancellationMigration.operations
+)
 const DATABASE_DOMAIN_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints = Object.fromEntries(
   databaseDomainConstraintsMigration.verifiers[0].tables.map(({ table, constraints }) => [
     table,
@@ -269,6 +276,16 @@ const CROSS_RESOURCE_TAGS_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints =
       Object.fromEntries(constraints.map(({ name, expression }) => [name, expression]))
     ])
 )
+const COMPUTE_JOB_CANCELLATION_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints =
+  Object.fromEntries(
+    computeJobCancellationMigration.verifiers
+      .filter((verifier) => verifier.kind === 'check-constraints-exist')
+      .flatMap((verifier) => verifier.tables)
+      .map(({ table, constraints }) => [
+        table,
+        Object.fromEntries(constraints.map(({ name, expression }) => [name, expression]))
+      ])
+  )
 const mergeAllowedSuffixChecks = (
   ...contracts: readonly AllowedSuffixCheckConstraints[]
 ): AllowedSuffixCheckConstraints => {
@@ -350,6 +367,12 @@ const MIGRATION_MANIFEST = [
   {
     ...tagOrderingMigration,
     checksum: TAG_ORDERING_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...computeJobCancellationMigration,
+    checksum: COMPUTE_JOB_CANCELLATION_CHECKSUM,
     backupOnApply: 'required',
     backupRetention: 'retain'
   }
@@ -1205,6 +1228,11 @@ const migrateApplicationDatabaseWithManifest = async (
       candidate.id === crossResourceTagsMigration.id &&
       candidate.checksum === CROSS_RESOURCE_TAGS_CHECKSUM
   )
+  const adoptsComputeJobCancellation = manifest.some(
+    (candidate) =>
+      candidate.id === computeJobCancellationMigration.id &&
+      candidate.checksum === COMPUTE_JOB_CANCELLATION_CHECKSUM
+  )
   const applied: string[] = []
   const adoptedLegacy = appliedCount === 0 && hadApplicationTablesAtStart
   const allowedSuffixChecks = mergeAllowedSuffixChecks(
@@ -1213,7 +1241,8 @@ const migrateApplicationDatabaseWithManifest = async (
     adoptsDatabaseJsonConstraints ? DATABASE_JSON_ALLOWED_SUFFIX_CHECKS : {},
     adoptsVisionEvidence ? VISION_EVIDENCE_ALLOWED_SUFFIX_CHECKS : {},
     adoptsComputePasswordAuth ? COMPUTE_PASSWORD_AUTH_ALLOWED_SUFFIX_CHECKS : {},
-    adoptsCrossResourceTags ? CROSS_RESOURCE_TAGS_ALLOWED_SUFFIX_CHECKS : {}
+    adoptsCrossResourceTags ? CROSS_RESOURCE_TAGS_ALLOWED_SUFFIX_CHECKS : {},
+    adoptsComputeJobCancellation ? COMPUTE_JOB_CANCELLATION_ALLOWED_SUFFIX_CHECKS : {}
   )
 
   let nextIndex = appliedCount
@@ -1256,6 +1285,7 @@ export {
   VISION_EVIDENCE_CHECKSUM,
   COMPUTE_PASSWORD_AUTH_CHECKSUM,
   TAG_ORDERING_CHECKSUM,
+  COMPUTE_JOB_CANCELLATION_CHECKSUM,
   DatabaseMigrationError,
   checksumMigrationPayload,
   classifyDatabaseFailure,

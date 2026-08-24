@@ -444,6 +444,31 @@
       "tableName": "GrantedLocalRoot",
       "name": "GrantedLocalRoot_access_check",
       "expression": "\"access\" IN ('ro', 'rw')"
+    },
+    {
+      "tableName": "ComputeJobCancellation",
+      "name": "ComputeJobCancellation_state_check",
+      "expression": "\"state\" IN ('requested', 'claimed', 'retry_wait', 'confirmed', 'superseded')"
+    },
+    {
+      "tableName": "ComputeJobCancellation",
+      "name": "ComputeJobCancellation_revision_check",
+      "expression": "\"revision\" >= 1"
+    },
+    {
+      "tableName": "ComputeJobCancellation",
+      "name": "ComputeJobCancellation_attempt_check",
+      "expression": "\"attempt\" >= 0"
+    },
+    {
+      "tableName": "ComputeJobCancellation",
+      "name": "ComputeJobCancellation_lease_check",
+      "expression": "(\"state\" = 'claimed' AND \"leaseToken\" IS NOT NULL AND \"leaseExpiresAt\" IS NOT NULL) OR (\"state\" <> 'claimed' AND \"leaseToken\" IS NULL AND \"leaseExpiresAt\" IS NULL)"
+    },
+    {
+      "tableName": "ComputeJobCancellation",
+      "name": "ComputeJobCancellation_terminal_time_check",
+      "expression": "(\"state\" = 'confirmed' AND \"confirmedAt\" IS NOT NULL AND \"supersededAt\" IS NULL) OR (\"state\" = 'superseded' AND \"supersededAt\" IS NOT NULL AND \"confirmedAt\" IS NULL) OR (\"state\" IN ('requested', 'claimed', 'retry_wait') AND \"confirmedAt\" IS NULL AND \"supersededAt\" IS NULL)"
     }
   ]
 }

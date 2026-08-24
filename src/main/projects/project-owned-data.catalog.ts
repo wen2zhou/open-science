@@ -325,7 +325,7 @@ const PROJECT_OWNED_DATA_CATALOG: readonly ProjectOwnedDataCatalogEntry[] = [
   {
     id: 'compute-jobs',
     medium: 'sqlite',
-    resources: ['ComputeJob'],
+    resources: ['ComputeJob', 'ComputeJobCancellation'],
     prismaModels: [
       {
         name: 'ComputeJob',
