@@ -10,7 +10,7 @@
  *             §6 (enumeration), §9 (harvest_failed).
  */
 
-import { mkdir, readFile, readdir, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -218,6 +218,66 @@ describe('getJobHarvestDir', () => {
 // ---------------------------------------------------------------------------
 
 describe('harvestJob — clean harvest', () => {
+  it('excludes staged inputs from both current and legacy input manifests', async () => {
+    const storageRoot = await mkTmp()
+    const job = makeJob({
+      input_manifest: JSON.stringify([
+        { kind: 'upload', dstFilename: 'current-input.csv' },
+        { kind: 'upload', dest: 'legacy-input.csv' }
+      ])
+    })
+    const scp = makeScpRunner()
+
+    await harvestJob(job, {
+      connectionBroker: brokerFromRunners(
+        makeSshRunner(
+          findOutput([
+            { path: 'current-input.csv', size_bytes: 10 },
+            { path: 'legacy-input.csv', size_bytes: 10 },
+            { path: 'result.csv', size_bytes: 10 }
+          ])
+        ),
+        scp
+      ),
+      hostRepository: makeHostRepo(sampleHost()),
+      jobRepository: makeJobRepo(job).repo,
+      storageRoot
+    })
+
+    expect(scp.calls.map(([remotePath]) => remotePath)).toEqual([
+      '~/.openscience/jobs/job-1/result.csv'
+    ])
+  })
+
+  it('publishes one complete replacement without stale files from an older harvest', async () => {
+    const storageRoot = await mkTmp()
+    const job = makeJob({ output_manifest: JSON.stringify(['*.result']) })
+    const harvestDir = getJobHarvestDir(storageRoot, job.project_id, job.session_id, job.job_id)
+    await mkdir(join(harvestDir, 'featured'), { recursive: true })
+    await mkdir(join(harvestDir, 'hidden'), { recursive: true })
+    await writeFile(join(harvestDir, 'featured', 'stale.result'), 'old')
+    await writeFile(join(harvestDir, 'hidden', 'stale.log'), 'old')
+
+    await harvestJob(job, {
+      connectionBroker: brokerFromRunners(
+        makeSshRunner(findOutput([{ path: 'fresh.result', size_bytes: 10 }])),
+        makeWritingScpRunner()
+      ),
+      hostRepository: makeHostRepo(sampleHost()),
+      jobRepository: makeJobRepo(job).repo,
+      storageRoot
+    })
+
+    await expect(readFile(join(harvestDir, 'featured', 'fresh.result'), 'utf8')).resolves.toBe(
+      'downloaded'
+    )
+    await expect(readFile(join(harvestDir, 'featured', 'stale.result'))).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+    await expect(readFile(join(harvestDir, 'hidden', 'stale.log'))).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+  })
   it('writes and reports harvest files from the data-root session workspace, never the config root', async () => {
     const configRoot = await mkTmp()
     const dataRoot = await mkTmp()
@@ -353,6 +413,73 @@ describe('harvestJob — data-root migration gate', () => {
 // ---------------------------------------------------------------------------
 
 describe('harvestJob — harvest_failed', () => {
+  it('does not publish a partial attempt or delete user .partial files after a download failure', async () => {
+    const storageRoot = await mkTmp()
+    const job = makeJob({ output_manifest: JSON.stringify(['*.result']) })
+    const harvestDir = getJobHarvestDir(storageRoot, job.project_id, job.session_id, job.job_id)
+    const userPartial = join(harvestDir, 'featured', 'user-history.partial')
+    await mkdir(dirname(userPartial), { recursive: true })
+    await writeFile(userPartial, 'user-owned')
+    const scp = makeScpRunner(2)
+
+    await harvestJob(job, {
+      connectionBroker: brokerFromRunners(
+        makeSshRunner(
+          findOutput([
+            { path: 'first.result', size_bytes: 10 },
+            { path: 'second.result', size_bytes: 10 }
+          ])
+        ),
+        scp
+      ),
+      hostRepository: makeHostRepo(sampleHost()),
+      jobRepository: makeJobRepo(job).repo,
+      storageRoot
+    })
+
+    await expect(readFile(userPartial, 'utf8')).resolves.toBe('user-owned')
+    await expect(readFile(join(harvestDir, 'featured', 'first.result'))).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+  })
+
+  it('restores the previous complete generation when publication is interrupted', async () => {
+    const storageRoot = await mkTmp()
+    const job = makeJob({ output_manifest: JSON.stringify(['*.result']) })
+    const harvestDir = getJobHarvestDir(storageRoot, job.project_id, job.session_id, job.job_id)
+    const attemptDir = `${harvestDir}.harvest-attempt`
+    await mkdir(join(harvestDir, 'featured'), { recursive: true })
+    await writeFile(join(harvestDir, 'featured', 'old.result'), 'old complete generation')
+    let rejectPublish = true
+    const renameFn: typeof rename = async (source, destination) => {
+      if (rejectPublish && String(source) === attemptDir && String(destination) === harvestDir) {
+        rejectPublish = false
+        throw new Error('simulated publication interruption')
+      }
+      await rename(source, destination)
+    }
+
+    await expect(
+      harvestJob(job, {
+        connectionBroker: brokerFromRunners(
+          makeSshRunner(findOutput([{ path: 'fresh.result', size_bytes: 10 }])),
+          makeWritingScpRunner()
+        ),
+        hostRepository: makeHostRepo(sampleHost()),
+        jobRepository: makeJobRepo(job).repo,
+        storageRoot,
+        renameFn
+      })
+    ).rejects.toThrow('simulated publication interruption')
+
+    await expect(readFile(join(harvestDir, 'featured', 'old.result'), 'utf8')).resolves.toBe(
+      'old complete generation'
+    )
+    await expect(readFile(join(harvestDir, 'featured', 'fresh.result'))).rejects.toMatchObject({
+      code: 'ENOENT'
+    })
+  })
+
   it.each(['ssh_config', 'password'] as const)(
     'leaves %s connection failures unharvested so restart recovery can retry safely',
     async () => {
@@ -383,13 +510,18 @@ describe('harvestJob — harvest_failed', () => {
         storageRoot
       }
 
-      await harvestJob(job, deps)
+      await expect(harvestJob(job, deps)).rejects.toMatchObject({
+        code: 'authentication_failed'
+      })
 
-      expect(updates).toEqual([])
+      expect(updates[0]?.data).toEqual(
+        expect.objectContaining({ harvestError: 'harvest pending: authentication_failed' })
+      )
+      expect(updates[0]?.data).not.toHaveProperty('harvestedAt')
 
       // Simulate the restart scan selecting the still-unharvested row after credentials are repaired.
       await harvestJob(job, deps)
-      expect(updates[0]?.data).toEqual(
+      expect(updates.at(-1)?.data).toEqual(
         expect.objectContaining({ harvestedAt: expect.any(Date), harvestError: null })
       )
     }
