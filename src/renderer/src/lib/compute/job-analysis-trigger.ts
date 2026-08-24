@@ -196,10 +196,7 @@ export const createJobAnalysisTrigger = (deps: JobAnalysisTriggerDeps): JobAnaly
       return
     }
     if (outcome === 'failed' || outcome === 'cancelled') {
-      deps.log(
-        'analysis-turn:not-consumed',
-        `session=${delivery.sessionId} outcome=${outcome}`
-      )
+      deps.log('analysis-turn:not-consumed', `session=${delivery.sessionId} outcome=${outcome}`)
       releaseDelivery(delivery)
       return
     }
@@ -211,8 +208,7 @@ export const createJobAnalysisTrigger = (deps: JobAnalysisTriggerDeps): JobAnaly
     persisted: NonNullable<ReturnType<JobAnalysisTriggerDeps['findPersistedDelivery']>>
   ): void => {
     const jobIds = persisted.jobIds?.length ? [...persisted.jobIds] : [job.job_id]
-    const deliveryKey =
-      persisted.deliveryKey ?? buildComputeDeliveryKey(job.session_id, jobIds)
+    const deliveryKey = persisted.deliveryKey ?? buildComputeDeliveryKey(job.session_id, jobIds)
     let delivery = deliveries.get(deliveryKey)
     if (!delivery) {
       delivery = {

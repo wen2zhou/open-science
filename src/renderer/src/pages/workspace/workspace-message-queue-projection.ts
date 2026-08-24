@@ -29,14 +29,16 @@ const projectActiveQueueItems = (
   activeSessionId: string | undefined
 ): MessageQueueItemView[] => {
   const activeItems = activeSessionId ? (queues.get(activeSessionId) ?? []) : []
-  return activeItems.filter((item) => item.kind === 'user').map(({ id, text, attachmentCount, phase, error, deferredUntilIdle }) => ({
-    id,
-    text,
-    attachmentCount,
-    phase,
-    error,
-    ...(deferredUntilIdle ? { deferredUntilIdle: true } : {})
-  }))
+  return activeItems
+    .filter((item) => item.kind === 'user')
+    .map(({ id, text, attachmentCount, phase, error, deferredUntilIdle }) => ({
+      id,
+      text,
+      attachmentCount,
+      phase,
+      error,
+      ...(deferredUntilIdle ? { deferredUntilIdle: true } : {})
+    }))
 }
 
 const moveQueuedItem = (
