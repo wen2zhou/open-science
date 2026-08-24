@@ -483,7 +483,7 @@ describe('dispatchJob', () => {
     expect(tracker.has('job-1')).toBe(false) // cleared in finally
   })
 
-  it('clears the in-flight tracker and settles a non-transport runner failure', async () => {
+  it('clears the tracker and keeps a non-transport launcher failure recoverable', async () => {
     const job = makeJob()
     const tracker = new DispatchTracker()
     // A runner that throws simulates an unexpected error mid-dispatch.
@@ -502,9 +502,8 @@ describe('dispatchJob', () => {
       'job-1',
       ['submitted'],
       expect.objectContaining({
-        status: 'error',
-        errorCode: 'dispatch_failed',
-        stderrTail: 'The remote Compute Job launcher failed unexpectedly.'
+        lastPollError: 'dispatch_recovery_probe_failed',
+        retryAfterUserAction: true
       })
     )
   })

@@ -541,7 +541,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
     })
   })
 
-  it('settles a fire-and-forget dispatch when the runner throws a non-transport error', async () => {
+  it('keeps a fire-and-forget dispatch recoverable after a non-transport runner error', async () => {
     const run = vi.fn<ComputeConnectionLease['run']>().mockRejectedValue(new Error('boom'))
     const dispatchingService = new ComputeService({
       runner: { run: vi.fn() } as unknown as SshRunner,
@@ -561,14 +561,13 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       { sessionId: 'session-1', projectId: 'project-1' }
     )
 
-    await vi.waitFor(async () => {
-      await expect(dispatchingService.getJobStatus(submitted.job_id)).resolves.toMatchObject({
-        status: 'error'
-      })
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2))
+    await expect(dispatchingService.getJobStatus(submitted.job_id)).resolves.toMatchObject({
+      status: 'submitted'
     })
     await expect(jobRepository.get(submitted.job_id)).resolves.toMatchObject({
-      error_code: 'dispatch_failed',
-      stderr_tail: 'The remote Compute Job launcher failed unexpectedly.'
+      error_code: undefined,
+      last_poll_error: 'dispatch_recovery_probe_failed'
     })
   })
 

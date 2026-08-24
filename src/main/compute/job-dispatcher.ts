@@ -128,16 +128,12 @@ export async function dispatchJob(jobId: string, deps: DispatcherDeps): Promise<
     try {
       await dispatchJobInner(jobId, deps)
     } catch (error) {
+      // Unknown failures may occur after the remote launcher has started but before its handle is
+      // durable. Leave that row submitted so deterministic restart recovery can adopt it; only a
+      // transport failure already proven to be pre-launch is safe to terminalize here.
+      if (!(error instanceof ComputeConnectionError)) return
       const lifecycle = new ComputeJobLifecycle(deps.jobRepository, deps.onJobUpdated)
-      await lifecycle.dispatchError(
-        jobId,
-        error instanceof ComputeConnectionError
-          ? { errorCode: error.code, stderrTail: error.message }
-          : {
-              errorCode: 'dispatch_failed',
-              stderrTail: 'The remote Compute Job launcher failed unexpectedly.'
-            }
-      )
+      await lifecycle.dispatchError(jobId, { errorCode: error.code, stderrTail: error.message })
     }
   } finally {
     tracker.end(jobId)
@@ -252,7 +248,6 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
       maxOutputBytes: DISPATCH_MAX_OUTPUT_BYTES
     })
   } catch (error) {
-    if (!(error instanceof ComputeConnectionError)) throw error
     if (isDefinitivePreLaunchConnectionError(error)) throw error
     await recoverAmbiguousRemoteLaunch(job, connection, workdir, lifecycle)
     return
