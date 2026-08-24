@@ -12,14 +12,21 @@
 
 import { useEffect, useEffectEvent } from 'react'
 
+import { isComputeJobCompletionAttribution } from '../../../../shared/session-persistence'
 import { useSessionJobStore } from '../../stores/session-job-store'
 import { useSessionStore } from '../../stores/session-store'
+import { flushSessionPersistence } from '../session-persistence/session-persistence'
 import { createJobAnalysisTrigger } from '../compute/job-analysis-trigger'
 
 // Matches the sendMessage signature returned by useWorkspaceAgentRuntime.
 type SendMessageFn = (input: {
   sessionId?: string
   text: string
+  attribution?: Extract<
+    NonNullable<ReturnType<typeof useSessionStore.getState>['sessions'][number]['messages'][number]['attribution']>,
+    { feature: 'compute' }
+  >
+  requireExistingSession?: boolean
 }) => Promise<{ sessionId: string; messageId: string } | undefined>
 
 type UseJobAnalysisEffectOptions = {
@@ -48,13 +55,41 @@ export const useJobAnalysisEffect = ({
         return (
           session?.status === 'running' ||
           session?.status === 'waiting-for-user' ||
-          session?.status === 'waiting-permission'
+          session?.status === 'waiting-permission' ||
+          session?.status === 'waiting-plan-approval'
         )
       },
-      sendPrompt: async (sessionId, text) => {
+      sendPrompt: async (sessionId, text, attribution) => {
         if (!isActive) return undefined
-        return sendLatestMessage({ sessionId, text })
+        return sendLatestMessage({ sessionId, text, attribution, requireExistingSession: true })
       },
+      findPersistedDelivery: (sessionId, jobId) => {
+        const session = useSessionStore
+          .getState()
+          .sessions.find((candidate) => candidate.id === sessionId)
+        const message = session?.messages.find((candidate) => {
+          const attribution = candidate.attribution
+          return (
+            isComputeJobCompletionAttribution(attribution) && attribution.jobIds.includes(jobId)
+          )
+        })
+        if (!session || !message || !isComputeJobCompletionAttribution(message.attribution)) {
+          return undefined
+        }
+        return {
+          deliveryKey: message.attribution.deliveryKey,
+          jobIds: [...message.attribution.jobIds],
+          messageId: message.id,
+          outcome: computeDeliveryOutcome(session, message.id)
+        }
+      },
+      getDeliveryOutcome: (sessionId, messageId) => {
+        const session = useSessionStore
+          .getState()
+          .sessions.find((candidate) => candidate.id === sessionId)
+        return session ? computeDeliveryOutcome(session, messageId) : 'cancelled'
+      },
+      flushPersistence: () => flushSessionPersistence(),
       markConsumed: async (sessionId, jobIds) => {
         if (!isActive) return
         if (typeof window.api?.compute?.jobsMarkConsumed === 'function') {
@@ -71,7 +106,8 @@ export const useJobAnalysisEffect = ({
           if (
             session.status !== 'running' &&
             session.status !== 'waiting-for-user' &&
-            session.status !== 'waiting-permission'
+            session.status !== 'waiting-permission' &&
+            session.status !== 'waiting-plan-approval'
           ) {
             unsubscribe()
             turnEndUnsubscribes.delete(unsubscribe)
@@ -121,4 +157,30 @@ export const useJobAnalysisEffect = ({
       turnEndUnsubscribes.clear()
     }
   }, [enabled])
+}
+
+const computeDeliveryOutcome = (
+  session: ReturnType<typeof useSessionStore.getState>['sessions'][number],
+  messageId: string
+): 'pending' | 'succeeded' | 'failed' | 'cancelled' => {
+  const prompt = session.messages.find((message) => message.id === messageId)
+  if (!prompt || !isComputeJobCompletionAttribution(prompt.attribution)) return 'cancelled'
+  if (prompt.interrupted) return 'cancelled'
+  if (
+    session.status === 'running' ||
+    session.status === 'waiting-for-user' ||
+    session.status === 'waiting-permission' ||
+    session.status === 'waiting-plan-approval'
+  ) {
+    return 'pending'
+  }
+  const responses = session.messages.filter(
+    (message) => message.role === 'agent' && message.responseToMessageId === messageId
+  )
+  if (session.status === 'error' || responses.some((message) => message.status === 'error')) {
+    return 'failed'
+  }
+  return responses.some((message) => message.status === 'complete' && message.completedAt !== undefined)
+    ? 'succeeded'
+    : 'pending'
 }

@@ -41,6 +41,7 @@ const createDeps = (overrides: Partial<JobAnalysisTriggerDeps> = {}): JobAnalysi
   isSessionInFlight: vi.fn().mockReturnValue(false),
   sendPrompt: vi.fn().mockResolvedValue({ sessionId: 'sess-1', messageId: 'msg-1' }),
   findPersistedDelivery: vi.fn().mockReturnValue(undefined),
+  getDeliveryOutcome: vi.fn().mockReturnValue('succeeded'),
   flushPersistence: vi.fn().mockResolvedValue(undefined),
   markConsumed: vi.fn().mockResolvedValue(undefined),
   onTurnEnd: vi.fn(),
