@@ -216,6 +216,7 @@ export const createSessionMessageGraphOwner = <
     attachments = [],
     parts,
     turnIntent,
+    attribution,
     cwd,
     projectId,
     permissionProfile,
@@ -238,16 +239,19 @@ export const createSessionMessageGraphOwner = <
     const state = get()
     const existingSession = state.sessions.find((session) => session.id === sessionId)
     const now = Date.now()
-    const userMessage = createMessage(
-      'user',
-      trimmedContent,
-      'complete',
-      undefined,
-      [],
-      uploads,
-      parts,
-      turnIntent
-    )
+    const userMessage = {
+      ...createMessage(
+        'user',
+        trimmedContent,
+        'complete',
+        undefined,
+        [],
+        uploads,
+        parts,
+        turnIntent
+      ),
+      ...(attribution ? { attribution } : {})
+    }
     const activeRun: ActiveRun = {
       promptMessageId: userMessage.id,
       startedAt: now

@@ -669,7 +669,9 @@ const isRecord = (value: unknown): value is Record<string, unknown> =>
 const asString = (value: unknown): string | undefined =>
   typeof value === 'string' ? value : undefined
 
-export const isReviewerCorrectionAttribution = (value: unknown): value is MessageAttribution => {
+export const isReviewerCorrectionAttribution = (
+  value: unknown
+): value is Extract<MessageAttribution, { feature: 'reviewer' }> => {
   if (!isRecord(value)) return false
   return !(
     Object.keys(value).some(

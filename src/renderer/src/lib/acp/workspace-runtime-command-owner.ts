@@ -1,7 +1,7 @@
 import type { AcpMessageImage, AcpRuntimeEvent } from '../../../../shared/acp'
 import type { FileReference } from '../../../../shared/artifacts'
 import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
-import type { MessagePart } from '../../../../shared/session-persistence'
+import type { MessageAttribution, MessagePart } from '../../../../shared/session-persistence'
 import type { AgentFrameworkId, SessionAgentConfiguration } from '../../../../shared/settings'
 import {
   DEFAULT_PERMISSION_PROFILE,
@@ -39,6 +39,7 @@ type SendWorkspaceMessageIntent = {
   branchSourceSessionId?: string
   branchSourceMessageId?: string
   text: string
+  attribution?: MessageAttribution
   turnIntent?: 'plan-first'
   planContinuation?: Pick<ActivePlanProjection, 'artifactVersionId' | 'revision'> & {
     pendingAction?: 'review' | 'approve' | 'reject'
@@ -477,6 +478,7 @@ const sendWorkspaceMessage = async (
         attachments: effectiveAttachments,
         parts: input.parts,
         turnIntent: input.turnIntent,
+        attribution: input.attribution,
         cwd,
         projectId: input.projectId ?? session.projectId,
         agentFrameworkId: input.agentFrameworkId,
@@ -557,6 +559,7 @@ const sendWorkspaceMessage = async (
       attachments: promptAttachments,
       parts: input.parts,
       turnIntent: input.turnIntent,
+      attribution: input.attribution,
       cwd: input.cwd,
       projectId: input.projectId ?? prepared.appendOwnership.projectId,
       agentFrameworkId: prepared.appendOwnership.agentFrameworkId,
