@@ -73,6 +73,7 @@ const createFakeRuntime = (options: {
   disconnect: ReturnType<typeof vi.fn>
   requestRetirement: ReturnType<typeof vi.fn>
   requestProviderReconnect: ReturnType<typeof vi.fn>
+  restoreLogicalTurnUsageIfAbsent: ReturnType<typeof vi.fn>
   sendPrompt: ReturnType<typeof vi.fn>
   sendAppContinuation: ReturnType<typeof vi.fn>
   steerFollowUp: ReturnType<typeof vi.fn>
@@ -141,6 +142,7 @@ const createFakeRuntime = (options: {
   const disconnect = vi.fn(async () => snapshot)
   const requestRetirement = vi.fn(async () => undefined)
   const requestProviderReconnect = vi.fn(async () => undefined)
+  const restoreLogicalTurnUsageIfAbsent = vi.fn()
   const applyReasoningEffortChange = vi.fn(async () => true)
   const applyModelChange = vi.fn(async () => true)
   const captureBackend = vi.fn(() => ({ backendId: `${options.frameworkId}:owned` }) as never)
@@ -275,6 +277,7 @@ const createFakeRuntime = (options: {
     disconnect,
     requestRetirement,
     requestProviderReconnect,
+    restoreLogicalTurnUsageIfAbsent,
     applyReasoningEffortChange,
     applyModelChange,
     captureBackend,
@@ -300,6 +303,7 @@ const createFakeRuntime = (options: {
     disconnect,
     requestRetirement,
     requestProviderReconnect,
+    restoreLogicalTurnUsageIfAbsent,
     sendPrompt,
     sendAppContinuation,
     steerFollowUp,
@@ -1637,6 +1641,36 @@ describe('AcpRuntimeCoordinator', () => {
     expect(onProviderPromptAccepted).toHaveBeenCalledWith(
       session.sessionId,
       expect.stringMatching(/^prompt-attempt-/)
+    )
+  })
+
+  it('restores persisted turn usage on the selected runtime before continuation dispatch', async () => {
+    let createdRuntime!: ReturnType<typeof createFakeRuntime>
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      createdRuntime = createFakeRuntime({
+        frameworkId: 'codex',
+        sessionIds: ['session-1'],
+        callbacks
+      })
+      return createdRuntime.runtime
+    })
+    const session = await coordinator.createSession()
+    const baseline = {
+      turnUsage: { inputTokens: 10, cacheTokens: 2, outputTokens: 3, turnCount: 4 }
+    }
+
+    await coordinator.startContinuation(
+      { sessionId: session.sessionId, text: 'continue original task' },
+      baseline
+    )
+
+    expect(createdRuntime.restoreLogicalTurnUsageIfAbsent).toHaveBeenCalledWith(
+      session.sessionId,
+      expect.stringMatching(/^prompt-/u),
+      baseline
+    )
+    expect(createdRuntime.restoreLogicalTurnUsageIfAbsent.mock.invocationCallOrder[0]).toBeLessThan(
+      createdRuntime.sendAppContinuation.mock.invocationCallOrder[0]
     )
   })
 

@@ -4,6 +4,7 @@ import { createLinearConversationGraph } from '../../shared/conversation-graph'
 import type { AcpPromptRequest, AcpStateSnapshot } from '../../shared/acp'
 import type { PersistedChatMessage, PersistedChatSession } from '../../shared/session-persistence'
 import { continueInterruptedTurn } from './interrupted-turn-continuation'
+import type { LogicalTurnUsage } from './prompt-outcome-finalizer'
 
 const snapshot = (promptInFlightSessionIds: string[] = []): AcpStateSnapshot => ({
   status: 'connected',
@@ -60,6 +61,73 @@ const session = (messages: PersistedChatMessage[]): PersistedChatSession => ({
 })
 
 describe('continueInterruptedTurn', () => {
+  it('restores persisted turn usage before continuing after restart', async () => {
+    const persistedTurnUsage = {
+      inputTokens: 10,
+      cacheTokens: 2,
+      outputTokens: 3,
+      turnCount: 4
+    }
+    const durable = session([
+      message('prompt-1', 'user', 'Continue the analysis'),
+      message('answer-1', 'agent', 'Partial analysis', {
+        responseToMessageId: 'prompt-1',
+        turnUsage: persistedTurnUsage
+      })
+    ])
+    const startContinuation = vi.fn(async () => {})
+
+    await continueInterruptedTurn(
+      {
+        runtime: {
+          getSnapshot: () => snapshot(),
+          getLatestUserPrompt: () => undefined,
+          startContinuation
+        },
+        loadSession: vi.fn(async () => durable)
+      },
+      { sessionId: 'session-1', projectId: 'project-1', promptMessageId: 'prompt-1' }
+    )
+
+    expect(startContinuation).toHaveBeenCalledWith(expect.any(Object), {
+      turnUsage: persistedTurnUsage
+    })
+  })
+
+  it('restores turn usage from the Session revalidated at dispatch admission', async () => {
+    const persistedTurnUsage = {
+      inputTokens: 10,
+      cacheTokens: 2,
+      outputTokens: 3,
+      turnCount: 4
+    }
+    const durable = session([
+      message('prompt-1', 'user', 'Continue the analysis'),
+      message('answer-1', 'agent', 'Partial analysis', {
+        responseToMessageId: 'prompt-1',
+        turnUsage: persistedTurnUsage
+      })
+    ])
+    let admittedBaseline: unknown
+
+    await continueInterruptedTurn(
+      {
+        runtime: {
+          getSnapshot: () => snapshot(),
+          getLatestUserPrompt: () => undefined,
+          startContinuation: vi.fn()
+        },
+        loadSession: vi.fn(async () => durable),
+        startDispatchAdmittedContinuation: async (_request, validate) => {
+          admittedBaseline = await validate()
+        }
+      },
+      { sessionId: 'session-1', projectId: 'project-1', promptMessageId: 'prompt-1' }
+    )
+
+    expect(admittedBaseline).toEqual({ turnUsage: persistedTurnUsage })
+  })
+
   it('reconstructs the hidden Save as skill turn after restart', async () => {
     const durable = session([
       message('prompt-1', 'user', 'Save as skill', { turnIntent: 'save-as-skill' })
@@ -414,7 +482,7 @@ describe('continueInterruptedTurn', () => {
     const durable = session([message('prompt-1', 'user', 'Keep going')])
     const startContinuation = vi.fn()
     const startDispatchAdmittedContinuation = vi.fn(
-      async (_request: AcpPromptRequest, validate: () => Promise<void>) => {
+      async (_request: AcpPromptRequest, validate: () => Promise<LogicalTurnUsage | undefined>) => {
         durable.resumeRecovery = {
           kind: 'resume-required',
           cause: 'app-restart',

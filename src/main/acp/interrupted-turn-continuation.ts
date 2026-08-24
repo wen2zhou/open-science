@@ -13,6 +13,7 @@ import { buildSessionHistoryReplay } from '../../shared/session-history-replay'
 import { isHiddenControlMessage, type PersistedChatSession } from '../../shared/session-persistence'
 import { toRuntimeUploadedAttachment } from '../../shared/uploads'
 import type { TaskNotificationService } from '../notifications/task-notifications'
+import type { LogicalTurnUsage } from './prompt-outcome-finalizer'
 
 const INTERRUPTED_TURN_CONTINUATION_PROMPT =
   'Continue the interrupted turn from where it stopped. Do not repeat completed work or completed tool calls unless needed to finish the original request.'
@@ -35,7 +36,7 @@ const buildContinuationPrompt = (
 type InterruptedTurnContinuationRuntime = {
   getSnapshot(): AcpStateSnapshot
   getLatestUserPrompt(sessionId: string, promptMessageId: string): AcpPromptRequest | undefined
-  startContinuation(request: AcpPromptRequest): Promise<void>
+  startContinuation(request: AcpPromptRequest, baseline?: LogicalTurnUsage): Promise<void>
 }
 
 type InterruptedTurnContinuationDependencies = {
@@ -43,7 +44,7 @@ type InterruptedTurnContinuationDependencies = {
   loadSession(projectId: string, sessionId: string): Promise<PersistedChatSession | undefined>
   startDispatchAdmittedContinuation?: (
     request: AcpPromptRequest,
-    validate: () => Promise<void>
+    validate: () => Promise<LogicalTurnUsage | undefined>
   ) => Promise<unknown>
   notifications?: Pick<TaskNotificationService, 'trackPrompt' | 'untrackPrompt'>
 }
@@ -76,6 +77,23 @@ const requireInterruptedTurn = (
     )
   }
   return prompt
+}
+
+const resolvePersistedLogicalTurnUsage = (
+  session: PersistedChatSession,
+  promptMessageId: string
+): LogicalTurnUsage | undefined => {
+  const messages = session.conversationGraph
+    ? resolveActiveConversationMessages(session.conversationGraph)
+    : session.messages
+  const owner = messages.findLast(
+    (message) =>
+      message.role === 'agent' &&
+      message.responseToMessageId === promptMessageId &&
+      (message.turnUsage !== undefined || message.turnUsageUnavailable === true)
+  )
+  if (owner?.turnUsage) return { turnUsage: owner.turnUsage }
+  return owner?.turnUsageUnavailable ? { unavailable: true } : undefined
 }
 
 const resolveProvenanceContext = (
@@ -236,6 +254,7 @@ export const continueInterruptedTurn = async (
   })
   try {
     const continuation = buildContinuationRequest(session, prompt, request, livePrompt)
+    const persistedTurnUsage = resolvePersistedLogicalTurnUsage(session, request.promptMessageId)
     if (dependencies.startDispatchAdmittedContinuation) {
       await dependencies.startDispatchAdmittedContinuation(continuation, async () => {
         const admittedSession = await dependencies.loadSession(request.projectId, request.sessionId)
@@ -254,9 +273,12 @@ export const continueInterruptedTurn = async (
         if (!isDeepStrictEqual(admittedContinuation, continuation)) {
           throw new Error('Interrupted Session changed before provider admission.')
         }
+        return resolvePersistedLogicalTurnUsage(admittedSession, request.promptMessageId)
       })
     } else {
-      await dependencies.runtime.startContinuation(continuation)
+      await (persistedTurnUsage
+        ? dependencies.runtime.startContinuation(continuation, persistedTurnUsage)
+        : dependencies.runtime.startContinuation(continuation))
     }
   } catch (error) {
     if (tracked) dependencies.notifications?.untrackPrompt(request.sessionId, tracked)

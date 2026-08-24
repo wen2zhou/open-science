@@ -23,6 +23,7 @@ import { hasCurrentRunningDelegatedAttempt } from '../../shared/delegated-work-p
 import { buildSessionHistoryReplay } from '../../shared/session-history-replay'
 import type { HistoryReplayDescriptor, HistoryReplayTarget } from '../../shared/history-preamble'
 import type { AcpBackendGenerationView } from './backend-generation-owner'
+import type { LogicalTurnUsage } from './prompt-outcome-finalizer'
 
 const log = createLogger('acp')
 const resumeLogHashKey = randomBytes(32)
@@ -45,10 +46,10 @@ type AcpHandlerWorkflowRuntime = {
   resumeSession(request: AcpResumeSessionRequest): Promise<AcpCreateSessionResponse>
   startPrompt(request: AcpPromptRequest): Promise<void>
   getLatestUserPrompt(sessionId: string, promptMessageId: string): AcpPromptRequest | undefined
-  startContinuation(request: AcpPromptRequest): Promise<void>
+  startContinuation(request: AcpPromptRequest, baseline?: LogicalTurnUsage): Promise<void>
   startContinuationWhenDispatchAdmitted(
     request: AcpPromptRequest,
-    validate: () => Promise<void>
+    validate: () => Promise<void | LogicalTurnUsage>
   ): Promise<unknown>
 }
 
@@ -334,7 +335,7 @@ const createAcpHandlerWorkflows = (
             ? {
                 startDispatchAdmittedContinuation: (
                   continuation: AcpPromptRequest,
-                  validate: () => Promise<void>
+                  validate: () => Promise<LogicalTurnUsage | undefined>
                 ) => runtime.startContinuationWhenDispatchAdmitted(continuation, validate)
               }
             : {}),

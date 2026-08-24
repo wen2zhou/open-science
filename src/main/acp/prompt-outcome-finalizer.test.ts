@@ -457,7 +457,7 @@ describe('AcpPromptOutcomeFinalizer', () => {
     expect(harness.handles.skill.close).toHaveBeenCalledWith('cancelled')
   })
 
-  it('keeps prior turn usage when an interrupted Attempt resumes after a cancelled stop without usage', async () => {
+  it('keeps prior turn usage when an interrupted Conversation Turn continues in a new Attempt after a cancelled stop without usage', async () => {
     const finalizer = new AcpPromptOutcomeFinalizer()
     const beforeInterruption = createHarness()
     expect(
@@ -507,6 +507,32 @@ describe('AcpPromptOutcomeFinalizer', () => {
 
     expect(resumed.events).toContainEqual(
       expect.objectContaining({ kind: 'stop', turnUsage: undefined })
+    )
+  })
+
+  it('continues from persisted turn usage after the runtime is rebuilt', async () => {
+    const finalizer = new AcpPromptOutcomeFinalizer()
+    finalizer.restoreLogicalTurnUsageIfAbsent('s1', 'prompt-1', {
+      turnUsage: { inputTokens: 10, cacheTokens: 2, outputTokens: 3, turnCount: 4 }
+    })
+    finalizer.restoreLogicalTurnUsageIfAbsent('s1', 'prompt-1', {
+      turnUsage: { inputTokens: 999, cacheTokens: 999, outputTokens: 999, turnCount: 999 }
+    })
+
+    const resumed = createHarness()
+    expect(resumed.interactions.captureTerminal(resumed.interaction, 'stop')).toBe(true)
+    await finalizer.finalize(resumed.handles, stopped())
+
+    expect(resumed.events).toContainEqual(
+      expect.objectContaining({
+        kind: 'stop',
+        turnUsage: {
+          inputTokens: 20,
+          cacheTokens: 4,
+          outputTokens: 6,
+          turnCount: 8
+        }
+      })
     )
   })
 })

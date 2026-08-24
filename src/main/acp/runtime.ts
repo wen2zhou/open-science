@@ -115,6 +115,7 @@ import type {
 } from './backend-generation-owner'
 import type { AcpSessionConfigurator } from './session-configurator'
 import type { AcpSessionUpdateProjector } from './session-update-projector'
+import { AcpPromptOutcomeFinalizer, type LogicalTurnUsage } from './prompt-outcome-finalizer'
 import type { AcpConnectionLifecycleWorkflow } from './connection-lifecycle-workflow'
 import type { AcpConnectionCloseWorkflow } from './connection-close-workflow'
 import type { AcpModelChangeWorkflow } from './model-change-workflow'
@@ -452,6 +453,7 @@ class AcpRuntime {
   private readonly sessionPlanWorkflow: AcpRuntimePlanWorkflow
   private readonly contextCompactionWorkflow: AcpContextCompactionWorkflow
   private readonly promptTurnWorkflow: AcpPromptTurnWorkflow
+  private readonly promptOutcomeFinalizer: AcpPromptOutcomeFinalizer
   private readonly promptContent: AcpPromptContentOwner
   private readonly nativeFollowUp: AcpNativeFollowUpWorkflow
   private readonly connectionClose: AcpConnectionCloseWorkflow
@@ -500,6 +502,7 @@ class AcpRuntime {
     this.appContinuations = session.appContinuations
     this.reviewerSessions = session.reviewerSessions
     this.sessionUpdateProjector = session.sessionUpdateProjector
+    this.promptOutcomeFinalizer = base.promptOutcomeFinalizer
     this.sessionPlanWorkflow = composeAcpRuntimePlanWorkflow(options, base, session, {
       continuations: this.planContinuationOwner
     })
@@ -1184,6 +1187,18 @@ class AcpRuntime {
   }
 
   // Sends one prompt turn to the targeted session and streams updates until stop.
+  restoreLogicalTurnUsageIfAbsent(
+    sessionId: string,
+    promptMessageId: string,
+    baseline: LogicalTurnUsage
+  ): void {
+    this.promptOutcomeFinalizer.restoreLogicalTurnUsageIfAbsent(
+      sessionId,
+      promptMessageId,
+      baseline
+    )
+  }
+
   async sendPrompt(request: AcpPromptRequest, promptAttemptId?: string): Promise<PromptResponse> {
     return this.withOperationLease(() =>
       this.runPromptTurn(request, {

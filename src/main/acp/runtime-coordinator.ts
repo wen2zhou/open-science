@@ -38,6 +38,7 @@ import {
   type DelegateMessageAcceptanceEvidence
 } from '../delegation/execution-port'
 import type { ShutdownStepOutcome } from '../lifecycle-shutdown'
+import type { LogicalTurnUsage } from './prompt-outcome-finalizer'
 
 const QUIT_PREPARATION_TIMEOUT_MS = 4_000
 
@@ -893,20 +894,20 @@ class AcpRuntimeCoordinator {
 
   // Starts an app-owned continuation and reports the strongest acceptance evidence available.
   // Validation rejection is proven pre-accept; a provider-call rejection remains conservatively unknown.
-  startContinuation(request: AcpPromptRequest): Promise<void> {
-    return this.startContinuationWhen(request, async () => undefined).then(() => undefined)
+  startContinuation(request: AcpPromptRequest, baseline?: LogicalTurnUsage): Promise<void> {
+    return this.startContinuationWhen(request, async () => baseline).then(() => undefined)
   }
 
   startContinuationWhen(
     request: AcpPromptRequest,
-    validate: () => Promise<void>
+    validate: () => Promise<void | LogicalTurnUsage>
   ): Promise<DelegateMessageAcceptanceEvidence> {
     return this.startContinuationWhenWithDispatchAdmission(request, validate, false)
   }
 
   startContinuationWhenDispatchAdmitted(
     request: AcpPromptRequest,
-    validate: () => Promise<void>
+    validate: () => Promise<void | LogicalTurnUsage>
   ): Promise<DelegateMessageAcceptanceEvidence> {
     // The caller owns final deletion admission for the whole validation/resume/acceptance lifecycle.
     // Bypass only the nested dispatch guard; root-session admission remains linearized below.
@@ -915,7 +916,7 @@ class AcpRuntimeCoordinator {
 
   private startContinuationWhenWithDispatchAdmission(
     request: AcpPromptRequest,
-    validate: () => Promise<void>,
+    validate: () => Promise<void | LogicalTurnUsage>,
     dispatchAdmitted: boolean
   ): Promise<DelegateMessageAcceptanceEvidence> {
     let resolve!: (evidence: DelegateMessageAcceptanceEvidence) => void
@@ -943,8 +944,9 @@ class AcpRuntimeCoordinator {
     }
 
     void this.linearizeRootAdmission(request.sessionId, async () => {
+      let baseline: void | LogicalTurnUsage
       try {
-        await validate()
+        baseline = await validate()
       } catch (error) {
         if (error instanceof DelegateMessageParkedError) throw error
         throw new DelegateMessagePreAcceptanceError(
@@ -953,8 +955,26 @@ class AcpRuntimeCoordinator {
         )
       }
       await (dispatchAdmitted
-        ? this.dispatchAdmittedPrompt(request, acceptance, 'sendAppContinuation')
-        : this.dispatchPrompt(request, acceptance, 'sendAppContinuation'))
+        ? this.dispatchAdmittedPrompt(
+            request,
+            acceptance,
+            'sendAppContinuation',
+            undefined,
+            false,
+            undefined,
+            undefined,
+            baseline || undefined
+          )
+        : this.dispatchPrompt(
+            request,
+            acceptance,
+            'sendAppContinuation',
+            undefined,
+            false,
+            undefined,
+            undefined,
+            baseline || undefined
+          ))
       if (!acceptance.settled) {
         acceptance.settled = true
         resolve('provider_prompt_completed')
@@ -970,7 +990,8 @@ class AcpRuntimeCoordinator {
     pinnedRuntime?: AcpRuntime,
     retainAsLatestUserPrompt = operation === 'sendPrompt',
     attribution?: MessageAttribution,
-    onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void
+    onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void,
+    logicalTurnUsageBaseline?: LogicalTurnUsage
   ): ReturnType<AcpRuntime['sendPrompt']> {
     let dispatchStarted = false
     const dispatch = (): ReturnType<AcpRuntime['sendPrompt']> => {
@@ -982,7 +1003,8 @@ class AcpRuntimeCoordinator {
         pinnedRuntime,
         retainAsLatestUserPrompt,
         attribution,
-        onApplicationPromptAdmitted
+        onApplicationPromptAdmitted,
+        logicalTurnUsageBaseline
       )
     }
     if (!this.promptDispatchAdmissionGuard) return dispatch()
@@ -1002,7 +1024,8 @@ class AcpRuntimeCoordinator {
     pinnedRuntime?: AcpRuntime,
     retainAsLatestUserPrompt = operation === 'sendPrompt',
     attribution?: MessageAttribution,
-    onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void
+    onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void,
+    logicalTurnUsageBaseline?: LogicalTurnUsage
   ): ReturnType<AcpRuntime['sendPrompt']> {
     if (this.promptAdmissionClosedForQuit) return this.rejectPromptForQuit()
     const owner = pinnedRuntime ?? this.findRuntimeForSession(request.sessionId)
@@ -1069,6 +1092,13 @@ class AcpRuntimeCoordinator {
       ) {
         throw new DelegateMessagePreAcceptanceError(
           'ACP prompt start was superseded before provider dispatch'
+        )
+      }
+      if (originatingPromptId && logicalTurnUsageBaseline) {
+        runtime.restoreLogicalTurnUsageIfAbsent(
+          request.sessionId,
+          originatingPromptId,
+          logicalTurnUsageBaseline
         )
       }
       return operation === 'sendApplicationPrompt'

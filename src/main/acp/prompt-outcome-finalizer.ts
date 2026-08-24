@@ -52,13 +52,12 @@ type ObservedPromptStop = Readonly<{
   turnUsage?: Extract<ProviderPromptOutcome, { kind: 'stopped' }>['facts']['turnUsage']
   modelTurnCount?: number
   terminalContextWindow?: AcpTerminalContextWindow
-  preserveTurnUsage?: true
+  leaveLogicalTurnUsageUnchanged?: true
 }>
 
-type LogicalTurnUsage = Readonly<{
-  turnUsage?: AcpTurnTokenUsage
-  unavailable?: true
-}>
+export type LogicalTurnUsage = Readonly<
+  { turnUsage: AcpTurnTokenUsage; unavailable?: never } | { turnUsage?: never; unavailable: true }
+>
 
 const MAX_LOGICAL_TURN_USAGE_ENTRIES = 500
 
@@ -103,6 +102,19 @@ export class AcpPromptOutcomeFinalizer {
   // Detached ask-user replies resume as new provider prompts but keep the original Message identity.
   // Retain a bounded running total so every later stop describes that complete visible user turn.
   private readonly logicalTurnUsage = new Map<string, LogicalTurnUsage>()
+
+  restoreLogicalTurnUsageIfAbsent(
+    sessionId: string,
+    promptMessageId: string,
+    baseline: LogicalTurnUsage
+  ): void {
+    const key = `${sessionId.length}:${sessionId}${promptMessageId}`
+    if (this.logicalTurnUsage.has(key)) return
+    this.logicalTurnUsage.set(
+      key,
+      baseline.turnUsage ? { turnUsage: { ...baseline.turnUsage } } : { unavailable: true }
+    )
+  }
 
   private accumulateTurnUsage(
     sessionId: string,
@@ -182,7 +194,7 @@ export class AcpPromptOutcomeFinalizer {
           : { modelTurnCount: observedStop.modelTurnCount })
       })
       if (!terminal) return false
-      const turnUsage = observedStop.preserveTurnUsage
+      const turnUsage = observedStop.leaveLogicalTurnUsageUnchanged
         ? undefined
         : this.accumulateTurnUsage(sessionId, handles.promptMessageId, terminal.turnUsage)
       handles.pushEvent({
@@ -210,7 +222,7 @@ export class AcpPromptOutcomeFinalizer {
         const capturedContext = context?.captureTerminal()
         observedStop = {
           response,
-          preserveTurnUsage: true,
+          leaveLogicalTurnUsageUnchanged: true,
           ...(capturedContext
             ? {
                 terminalContextWindow: {

@@ -202,7 +202,7 @@ describe('workspace conversation timeline', () => {
     expect(timelineIds(input)).not.toContain('turn-completion-reply-1')
   })
 
-  it('omits completion while an interrupted Prompt still requires resume', () => {
+  it('omits completion while an interrupted Conversation Turn still requires resume', () => {
     const input = session({
       status: 'error',
       resumeRecovery: {
