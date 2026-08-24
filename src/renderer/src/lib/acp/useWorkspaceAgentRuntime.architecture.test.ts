@@ -482,6 +482,8 @@ const sendIntentKeys = [
   'branchSourceSessionId',
   'branchSourceMessageId',
   'text',
+  'attribution',
+  'requireExistingSession',
   'turnIntent',
   'planContinuation',
   'attachments',
@@ -827,17 +829,13 @@ describe('workspace runtime architecture', () => {
       'src/renderer/src/lib/acp/useWorkspaceAgentRuntime.ts',
       'src/renderer/src/lib/acp/workspace-events.ts',
       ...ownerNames.map((name) => `src/renderer/src/lib/acp/${name}.ts`),
-      'src/renderer/src/lib/acp/workspace-subagent-runtime-presentation.ts',
-      'src/renderer/src/lib/compute/useJobAnalysisEffect.ts'
+      'src/renderer/src/lib/acp/workspace-subagent-runtime-presentation.ts'
     ])
     expect(workspaceRuntime.interfacePaths).toEqual([
       'src/renderer/src/lib/acp/useWorkspaceAgentRuntime.ts'
     ])
     expect(workspaceRuntime.consumerModules).toEqual(['workspace_page'])
     expect(workspaceRuntime.testFiles.owner).toContain(architectureTestPath)
-    expect(workspaceRuntime.testFiles.owner).toContain(
-      'src/renderer/src/lib/compute/useJobAnalysisEffect.render.test.tsx'
-    )
     expect(workspaceRuntime.capabilityOverlays).toEqual(['renderer_state'])
     expect(workspaceRuntime.fallbackCapability).toBe('renderer_view')
   })

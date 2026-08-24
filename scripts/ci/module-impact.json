@@ -41,8 +41,7 @@
         "src/renderer/src/lib/acp/workspace-runtime-session-lifecycle-owner.ts",
         "src/renderer/src/lib/acp/workspace-runtime-selection-owner.ts",
         "src/renderer/src/lib/acp/workspace-runtime-save-as-skill-owner.ts",
-        "src/renderer/src/lib/acp/workspace-subagent-runtime-presentation.ts",
-        "src/renderer/src/lib/compute/useJobAnalysisEffect.ts"
+        "src/renderer/src/lib/acp/workspace-subagent-runtime-presentation.ts"
       ],
       "interfacePaths": ["src/renderer/src/lib/acp/useWorkspaceAgentRuntime.ts"],
       "consumerModules": ["workspace_page"],
@@ -53,8 +52,7 @@
           "src/renderer/src/lib/acp/useWorkspaceAgentRuntime.characterization.test.tsx",
           "src/renderer/src/lib/acp/workspace-runtime-event-owner.test.ts",
           "src/renderer/src/lib/acp/workspace-runtime-save-as-skill-owner.test.tsx",
-          "src/renderer/src/lib/acp/workspace-events.test.ts",
-          "src/renderer/src/lib/compute/useJobAnalysisEffect.render.test.tsx"
+          "src/renderer/src/lib/acp/workspace-events.test.ts"
         ],
         "contract": [
           "src/renderer/src/lib/acp/useWorkspaceAgentRuntime.first-output.render.test.tsx"
