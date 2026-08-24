@@ -103,7 +103,12 @@ describe('compute handlers', () => {
     const cancelJob = vi.fn(async () => ({
       job_id: 'job-1',
       status: 'running' as const,
-      cancellation_status: 'cancelling' as const
+      cancellation_status: 'cancelling' as const,
+      exit_code: undefined,
+      stdout_tail: undefined,
+      stderr_tail: undefined,
+      remote_workdir: undefined,
+      harvest_error: undefined
     }))
     const computeHandlers = createComputeHandlers(
       mockRepository({}),

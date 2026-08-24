@@ -309,7 +309,6 @@ const createComputeHandlers = (
       repository,
       approvalBroker: broker,
       jobRepository,
-      cancellationRepository,
       hostLifecycle,
       permissionGrantRegistry,
       authenticationDependencies,

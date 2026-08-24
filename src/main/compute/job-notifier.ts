@@ -171,10 +171,12 @@ export const emitJobNotification = async (
   const summary: JobSummary = {
     job_id: updatedJob.job_id,
     provider_id: updatedJob.provider_id,
+    project_id: updatedJob.project_id,
     display_name: displayName,
     shape: updatedJob.shape,
     session_id: updatedJob.session_id,
     status: updatedJob.status,
+    cancellation_status: updatedJob.cancellation_status,
     intent: updatedJob.intent,
     created_at: updatedJob.created_at,
     started_at: updatedJob.started_at,

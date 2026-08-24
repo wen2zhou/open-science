@@ -143,6 +143,7 @@ describe('emitJobNotification', () => {
 
     const job = makeJob({
       status: 'failed',
+      cancellation_status: 'cancelled',
       exit_code: 1,
       harvest_error: 'harvest_failed: scp timed out for big.dat',
       harvested_at: Date.now()
@@ -166,6 +167,8 @@ describe('emitJobNotification', () => {
     expect(mockClaim).toHaveBeenCalledOnce()
     const summary = broadcast.mock.calls[0][0]
     expect(summary.status).toBe('failed')
+    expect(summary.cancellation_status).toBe('cancelled')
+    expect(summary.project_id).toBe('proj-1')
     expect(summary.featured_files).toEqual([])
     expect(summary.featured_file_count).toBe(0)
     expect(summary.notified_at).toBeDefined()

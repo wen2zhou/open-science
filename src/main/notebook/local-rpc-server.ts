@@ -158,6 +158,11 @@ type NotebookLocalRpcServerOptions = {
       providerId: string,
       jobId: string
     ): Promise<unknown>
+    cancelJob(
+      context: { sessionId: string; projectId: string },
+      providerId: string,
+      jobId: string
+    ): Promise<unknown>
     getJobResult(
       context: { sessionId: string; projectId: string },
       providerId: string,

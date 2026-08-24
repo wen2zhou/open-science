@@ -277,6 +277,7 @@ export class ComputeJobRepository {
         status: { in: ['success', 'failed', 'timeout'] },
         harvestedAt: null
       },
+      include: { cancellation: true },
       orderBy: { createdAt: 'asc' }
     })
     return this.excludeDeletingOwners(rows.map(toJob))
@@ -294,6 +295,7 @@ export class ComputeJobRepository {
           { status: { in: ['success', 'failed', 'timeout'] }, harvestedAt: { not: null } }
         ]
       },
+      include: { cancellation: true },
       orderBy: { createdAt: 'asc' }
     })
     return this.excludeDeletingOwners(rows.map(toJob))

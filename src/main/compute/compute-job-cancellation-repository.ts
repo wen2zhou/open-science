@@ -263,7 +263,10 @@ class ComputeJobCancellationRepository {
           updatedAt: now
         }
       })
-      return confirmed.count === 1
+      if (confirmed.count !== 1) {
+        throw new Error('Cancellation confirmation lost its ownership claim')
+      }
+      return true
     })
   }
 
