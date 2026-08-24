@@ -44,7 +44,7 @@ import {
   type HarvestConfig
 } from './harvest-classifier'
 import { getNotebookSessionRoot } from '../notebook/repository'
-import { buildComputeDonePayload } from './job-notifier'
+import { emitJobNotification } from './job-notifier'
 import { withDataRootWrite } from '../storage/migration-state'
 
 const MIB_BYTES = 1024 * 1024
@@ -258,7 +258,7 @@ const downloadFile = async (
 export type HarvestDeps = {
   connectionBroker: ComputeConnectionBrokerAcquirer
   hostRepository: Pick<ComputeHostRepository, 'get'>
-  jobRepository: Pick<ComputeJobRepository, 'update'>
+  jobRepository: Pick<ComputeJobRepository, 'update' | 'claimNotification'>
   storageRoot: string
   /** Override free-space discovery for deterministic tests. */
   getFreeDiskBytesFn?: (path: string) => Promise<number>
@@ -368,9 +368,8 @@ const harvestJobUnchecked = async (
   await mkdir(featuredDir, { recursive: true })
   await mkdir(hiddenDir, { recursive: true })
 
-  // finalize writes harvestedAt + harvestError + leftOnRemote + notifiedAt in a single atomic
-  // update (fix: was two separate writes causing notification loss on restart between them).
-  // Returns the updated job so the caller can broadcast if needed.
+  // Finalize the harvest result first. Notification ownership is claimed separately through the
+  // notifier's database CAS, and restart recovery can claim any completed-but-unnotified row.
   const finalize = async (
     harvestError: string | null,
     leftOnRemoteJson: string
@@ -378,8 +377,7 @@ const harvestJobUnchecked = async (
     return await jobRepository.update(job.job_id, {
       harvestedAt: new Date(),
       harvestError,
-      leftOnRemote: leftOnRemoteJson,
-      notifiedAt: new Date() // Atomic with harvest result — notification inbox write (design §2/§11)
+      leftOnRemote: leftOnRemoteJson
     })
   }
 
@@ -389,57 +387,20 @@ const harvestJobUnchecked = async (
     leftOnRemoteJson: string
   ): Promise<void> => {
     const updatedJob = await finalize(harvestError, leftOnRemoteJson)
-    // Broadcast the compute_done notification. We already have host lookup result here for
-    // displayName, but early-exit paths don't — so we delegate displayName lookup to the
-    // notification builder (emitJobNotification now does host.get internally).
-    if (deps.broadcast) {
-      await buildAndBroadcastNotification(updatedJob)
-    }
+    if (deps.broadcast) await notify(updatedJob)
   }
 
-  // Builds the notification payload and broadcasts it (idempotent guard inside buildComputeDonePayload).
-  const buildAndBroadcastNotification = async (updatedJob: ComputeJob): Promise<void> => {
+  const notify = async (updatedJob: ComputeJob): Promise<void> => {
     try {
-      const payload = await buildComputeDonePayload(updatedJob, storageRoot)
-      // Look up displayName (same logic as emitJobNotification — we inline it here to avoid
-      // calling emitJobNotification which has its own idempotency guard and notifiedAt write).
-      let displayName = updatedJob.provider_id
-      try {
-        const host = await hostRepository.get(updatedJob.provider_id)
-        if (host) displayName = host.displayName
-      } catch {
-        // Fall back to provider_id.
-      }
-
-      const summary: JobSummary = {
-        job_id: updatedJob.job_id,
-        provider_id: updatedJob.provider_id,
-        display_name: displayName,
-        shape: updatedJob.shape,
-        session_id: updatedJob.session_id,
-        status: updatedJob.status,
-        intent: updatedJob.intent,
-        created_at: updatedJob.created_at,
-        started_at: updatedJob.started_at,
-        finished_at: updatedJob.finished_at,
-        exit_code: updatedJob.exit_code,
-        error_code: updatedJob.error_code,
-        last_poll_error: updatedJob.last_poll_error,
-        remote_workdir: updatedJob.remote_workdir,
-        stdout_tail: updatedJob.stdout_tail,
-        stderr_tail: updatedJob.stderr_tail,
-        notified_at: updatedJob.notified_at,
-        notification_consumed_at: updatedJob.notification_consumed_at,
-        featured_files: payload.featured_files,
-        featured_file_count: payload.featured_file_count,
-        left_on_remote_count: payload.left_on_remote_count,
-        left_on_remote: payload.left_on_remote,
-        harvest_error: updatedJob.harvest_error
-      }
-
-      deps.broadcast?.(summary)
+      await emitJobNotification(updatedJob, {
+        jobRepository,
+        hostRepository,
+        storageRoot,
+        broadcast: deps.broadcast!
+      })
     } catch {
-      // Notification build/broadcast failure is non-fatal: harvest result is already persisted.
+      // Notification failure is non-fatal: harvest result is already persisted and restart recovery
+      // can retry rows whose CAS claim was never committed.
     }
   }
 
@@ -676,8 +637,5 @@ const harvestJobUnchecked = async (
   }
 
   const updatedJob = await finalize(harvestError, JSON.stringify(leftOnRemote))
-  // Broadcast notification for the successful harvest path (early-exit paths use finalizeAndReturn).
-  if (deps.broadcast) {
-    await buildAndBroadcastNotification(updatedJob)
-  }
+  if (deps.broadcast) await notify(updatedJob)
 }

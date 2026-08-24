@@ -267,17 +267,17 @@ export class ComputeJobRepository {
     return this.excludeDeletingOwners(rows.map(toJob))
   }
 
-  // Returns error-state jobs that have not yet emitted a compute_done notification.
-  // 'error' is a terminal resting state written by the dispatcher (dispatch_failed / host_unreachable)
-  // and is excluded from both findNonTerminal and findTerminalUnharvested — so without this scan an
-  // error job would never reach the notify→analyze flow. The poller uses it as a recovery scan;
-  // emitJobNotification is idempotent (guards on notified_at), so re-scanning a row is a no-op.
-  async findErrorUnnotified(): Promise<ComputeJob[]> {
+  // Returns every final resting state ready for notification. Harvested execution outcomes and
+  // dispatch errors share one restart-recovery entrance; the notifier CAS decides the sole emitter.
+  async findNotificationReadyUnnotified(): Promise<ComputeJob[]> {
     const client = await this.getClient()
     const rows = await client.computeJob.findMany({
       where: {
-        status: 'error',
-        notifiedAt: null
+        notifiedAt: null,
+        OR: [
+          { status: 'error' },
+          { status: { in: ['success', 'failed', 'timeout'] }, harvestedAt: { not: null } }
+        ]
       },
       orderBy: { createdAt: 'asc' }
     })
@@ -301,6 +301,25 @@ export class ComputeJobRepository {
       data: toUpdateData(updates)
     })
     return toJob(row)
+  }
+
+  // Atomically claims the right to emit a notification. Stale callers may all hold a projection
+  // with notified_at unset; only the transaction that changes NULL to a timestamp may broadcast.
+  async claimNotification(jobId: string, notifiedAt: Date): Promise<ComputeJob | null> {
+    return this.runMutation(async () => {
+      const client = await this.getClient()
+      return client.$transaction(async (transaction) => {
+        const current = await transaction.computeJob.findUnique({ where: { id: jobId } })
+        if (!current || !this.isOwnerMutable(current.projectId, current.sessionId)) return null
+        const claimed = await transaction.computeJob.updateMany({
+          where: { id: jobId, notifiedAt: null },
+          data: { notifiedAt }
+        })
+        if (claimed.count === 0) return null
+        const row = await transaction.computeJob.findUnique({ where: { id: jobId } })
+        return row ? toJob(row) : null
+      })
+    })
   }
 
   async updateIfStatus(
