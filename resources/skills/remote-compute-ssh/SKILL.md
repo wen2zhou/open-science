@@ -83,7 +83,8 @@ are reported through the normal command result/error behavior.
 
 Use `submitJob` for long-running computations (minutes to hours). It returns immediately with a
 `job_id`; the job runs on the remote host in the background. When the job finishes, the app
-automatically harvests the outputs and initiates a new analysis turn — **you never poll or block**.
+automatically harvests the outputs and initiates a new analysis turn. Do not poll for completion;
+perform only the single bounded immediate-failure check below, then return control to the user.
 
 ```javascript
 // Reuse the `candidates` selected above from the Session catalog.
@@ -113,10 +114,26 @@ const job = await c.submitJob(
   }
 )
 // job → { job_id, provider_id, status: 'submitted', remote_workdir }
-print(job.job_id) // end the cell — kernel never blocks on compute
+// Give dispatch enough time to expose an immediately broken script, then read exactly one snapshot.
+await new Promise((resolve) => setTimeout(resolve, 2000))
+const initial = await c.attachJob(job.job_id).status()
+if (['success', 'failed', 'timeout', 'error'].includes(initial.status)) {
+  // This is a local result snapshot, not another remote wait. It surfaces stderr promptly.
+  print(await c.attachJob(job.job_id).result())
+} else {
+  print(initial)
+}
 ```
 
-**End the cell here. Do NOT write a polling loop.** The app runs the poller and harvest in the
+### Immediate failure check after submission
+
+Wait exactly once for 2 seconds (`setTimeout(..., 2000)`), call `.status()` exactly once, and inspect
+the result immediately when it is already terminal. This catches syntax errors, missing executables,
+and other scripts that fail as soon as they start. **Do not wait again** and do not turn this into a
+polling loop: if the snapshot is `submitted` or `running`, end the cell and let the app own the rest
+of the lifecycle.
+
+**End the cell after that one check. Do NOT write a polling loop.** The app runs the poller and harvest in the
 background. When the job finishes, the app automatically starts a new analysis turn in this
 conversation — the conversation is NOT locked while the job runs, so the user can keep chatting.
 
