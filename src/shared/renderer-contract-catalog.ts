@@ -190,7 +190,7 @@ export const RENDERER_CONTRACT_GROUPS = Object.freeze([
     ['bookmarksSet', 'compute:bookmarks:set'], ['changeAuthentication', 'compute:change-authentication', LOCAL], ['concurrencySet', 'compute:concurrency:set'], ['create', 'compute:create'], ['createPassword', 'compute:create-password', LOCAL], ['delete', 'compute:delete'], ['deletionStatus', 'compute:deletion-status'],
     ['detailsGet', 'compute:details:get'], ['detailsSave', 'compute:details:save'], ['download', 'compute:download', LOCAL],
     ['enabledHostsGet', 'compute:enabled-hosts:get'], ['enabledHostsSet', 'compute:enabled-hosts:set'], ['hostEnabledSet', 'compute:host-enabled:set'], ['hostSelectedSet', 'compute:host-selected:set'], ['get', 'compute:get'],
-    ['jobsList', 'compute:jobs:list'], ['jobsMarkConsumed', 'compute:jobs:mark-consumed'], ['jobsPendingNotification', 'compute:jobs:pending-notification'],
+    ['jobsCancel', 'compute:jobs:cancel'], ['jobsList', 'compute:jobs:list'], ['jobsMarkConsumed', 'compute:jobs:mark-consumed'], ['jobsPendingNotification', 'compute:jobs:pending-notification'],
     ['list', 'compute:list'], ['listDir', 'compute:list-dir'], ['passwordCapability', 'compute:password-capability', LOCAL], ['probe', 'compute:probe'], ['replayApproval', 'compute:approval-replay'], ['replayPendingApprovals', 'compute:approval-replay-pending'], ['resetPassword', 'compute:reset-password', LOCAL], ['respondApproval', 'compute:approval-respond'],
     ['revealInFolder', 'compute:reveal-in-folder', LOCAL], ['scratchSet', 'compute:scratch:set'], ['sshConfigAliases', 'compute:ssh-config-aliases'],
   ]),

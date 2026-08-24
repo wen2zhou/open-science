@@ -10,6 +10,7 @@ import { createComputeJobRuntime } from './job-runtime'
 describe('createComputeJobRuntime', () => {
   it('routes updates through the service-owned seams and delegates runtime start/stop', async () => {
     const handleJobUpdated = vi.fn()
+    const handleJobCancellationConfirmed = vi.fn(async () => undefined)
     const startQueueReconciliation = vi.fn()
     const stopQueueReconciliation = vi.fn(async () => undefined)
     const start = vi.fn()
@@ -30,7 +31,12 @@ describe('createComputeJobRuntime', () => {
     })
     const runtime = createComputeJobRuntime(
       {
-        computeService: { handleJobUpdated, startQueueReconciliation, stopQueueReconciliation },
+        computeService: {
+          handleJobUpdated,
+          handleJobCancellationConfirmed,
+          startQueueReconciliation,
+          stopQueueReconciliation
+        },
         jobDeletionOwner,
         hostRepository,
         jobRepository,
@@ -64,7 +70,10 @@ describe('createComputeJobRuntime', () => {
     expect(startQueueReconciliation).toHaveBeenCalledTimes(1)
     expect(stop).toHaveBeenCalledTimes(1)
     expect(stopQueueReconciliation).toHaveBeenCalledTimes(1)
-    expect(jobDeletionOwner.bindRuntime).toHaveBeenCalledWith({ start, stop, pause, resume })
+    expect(jobDeletionOwner.bindRuntime).toHaveBeenCalledWith({
+      pause: expect.any(Function),
+      resume: expect.any(Function)
+    })
     expect(unbind).toHaveBeenCalledOnce()
   })
 })

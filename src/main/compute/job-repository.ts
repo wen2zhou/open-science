@@ -37,13 +37,21 @@ const asStatus = (value: string): ComputeJobStatus => {
 }
 
 // Maps a Prisma row to the shared ComputeJob type.
-const toJob = (row: PrismaComputeJob): ComputeJob => ({
+const toJob = (
+  row: PrismaComputeJob & { cancellation?: { state: string } | null }
+): ComputeJob => ({
   job_id: row.id,
   provider_id: row.providerId,
   shape: row.shape,
   session_id: row.sessionId,
   project_id: row.projectId,
   status: asStatus(row.status),
+  cancellation_status:
+    row.cancellation?.state === 'confirmed'
+      ? 'cancelled'
+      : row.cancellation && row.cancellation.state !== 'superseded'
+        ? 'cancelling'
+        : undefined,
   intent: row.intent,
   command: row.command,
   command_hash: row.commandHash,
@@ -231,7 +239,8 @@ export class ComputeJobRepository {
           timeoutSeconds: request.timeoutSeconds,
           remoteWorkdir: request.remoteWorkdir,
           submittedAt: initialStatus === 'submitted' ? new Date() : undefined
-        }
+        },
+        include: { cancellation: true }
       })
       return toJob(row)
     })
@@ -239,7 +248,10 @@ export class ComputeJobRepository {
 
   async get(jobId: string): Promise<ComputeJob | null> {
     const client = await this.getClient()
-    const row = await client.computeJob.findUnique({ where: { id: jobId } })
+    const row = await client.computeJob.findUnique({
+      where: { id: jobId },
+      include: { cancellation: true }
+    })
     return row ? toJob(row) : null
   }
 
@@ -247,7 +259,10 @@ export class ComputeJobRepository {
   async findNonTerminal(): Promise<ComputeJob[]> {
     const client = await this.getClient()
     const rows = await client.computeJob.findMany({
-      where: { status: { in: ['queued', 'submitted', 'running'] } },
+      where: {
+        status: { in: ['queued', 'submitted', 'running'] },
+        cancellation: { is: null }
+      },
       orderBy: { createdAt: 'asc' }
     })
     return this.excludeDeletingOwners(rows.map(toJob))
@@ -288,7 +303,11 @@ export class ComputeJobRepository {
   async findNonTerminalByProvider(providerId: string): Promise<ComputeJob[]> {
     const client = await this.getClient()
     const rows = await client.computeJob.findMany({
-      where: { providerId, status: { in: ['queued', 'submitted', 'running'] } },
+      where: {
+        providerId,
+        status: { in: ['queued', 'submitted', 'running'] },
+        cancellation: { is: null }
+      },
       orderBy: { createdAt: 'asc' }
     })
     return rows.map(toJob)
@@ -298,7 +317,8 @@ export class ComputeJobRepository {
     const client = await this.getClient()
     const row = await client.computeJob.update({
       where: { id: jobId },
-      data: toUpdateData(updates)
+      data: toUpdateData(updates),
+      include: { cancellation: true }
     })
     return toJob(row)
   }
@@ -316,7 +336,10 @@ export class ComputeJobRepository {
           data: { notifiedAt }
         })
         if (claimed.count === 0) return null
-        const row = await transaction.computeJob.findUnique({ where: { id: jobId } })
+        const row = await transaction.computeJob.findUnique({
+          where: { id: jobId },
+          include: { cancellation: true }
+        })
         return row ? toJob(row) : null
       })
     })
@@ -334,12 +357,19 @@ export class ComputeJobRepository {
         if (!current || !this.isOwnerMutable(current.projectId, current.sessionId)) return null
 
         const applied = await transaction.computeJob.updateMany({
-          where: { id: jobId, status: { in: [...expectedStatuses] } },
+          where: {
+            id: jobId,
+            status: { in: [...expectedStatuses] },
+            cancellation: { is: null }
+          },
           data: toUpdateData(updates)
         })
         if (applied.count === 0) return null
 
-        const row = await transaction.computeJob.findUnique({ where: { id: jobId } })
+        const row = await transaction.computeJob.findUnique({
+          where: { id: jobId },
+          include: { cancellation: true }
+        })
         return row ? toJob(row) : null
       })
     })
@@ -353,7 +383,8 @@ export class ComputeJobRepository {
         sessionId,
         ...(statuses && statuses.length > 0 ? { status: { in: statuses } } : {})
       },
-      orderBy: { createdAt: 'desc' }
+      orderBy: { createdAt: 'desc' },
+      include: { cancellation: true }
     })
     return rows.map(toJob)
   }
@@ -362,7 +393,11 @@ export class ComputeJobRepository {
   async hasActiveJobsForProvider(providerId: string): Promise<boolean> {
     const client = await this.getClient()
     const count = await client.computeJob.count({
-      where: { providerId, status: { in: ['queued', 'submitted', 'running'] } }
+      where: {
+        providerId,
+        status: { in: ['queued', 'submitted', 'running'] },
+        cancellation: { is: null }
+      }
     })
     return count > 0
   }
@@ -403,7 +438,8 @@ export class ComputeJobRepository {
         notifiedAt: { not: null },
         notificationConsumedAt: null
       },
-      orderBy: { createdAt: 'asc' }
+      orderBy: { createdAt: 'asc' },
+      include: { cancellation: true }
     })
     return rows.map(toJob)
   }
@@ -445,7 +481,8 @@ export class ComputeJobRepository {
     return await client.computeJob.count({
       where: {
         providerId,
-        status: { in: ['queued', 'submitted', 'running'] }
+        status: { in: ['queued', 'submitted', 'running'] },
+        cancellation: { is: null }
       }
     })
   }
@@ -457,7 +494,8 @@ export class ComputeJobRepository {
     return await client.computeJob.count({
       where: {
         sessionId,
-        status: { in: ['queued', 'submitted', 'running'] }
+        status: { in: ['queued', 'submitted', 'running'] },
+        cancellation: { is: null }
       }
     })
   }
@@ -469,7 +507,8 @@ export class ComputeJobRepository {
     return await client.computeJob.count({
       where: {
         sessionId,
-        status: { in: ['submitted', 'running'] }
+        status: { in: ['submitted', 'running'] },
+        cancellation: { is: null }
       }
     })
   }
@@ -481,7 +520,8 @@ export class ComputeJobRepository {
     return await client.computeJob.count({
       where: {
         providerId,
-        status: { in: ['submitted', 'running'] }
+        status: { in: ['submitted', 'running'] },
+        cancellation: { is: null }
       }
     })
   }
@@ -491,7 +531,7 @@ export class ComputeJobRepository {
   async countQueuedJobs(): Promise<number> {
     const client = await this.getClient()
     return await client.computeJob.count({
-      where: { status: 'queued' }
+      where: { status: 'queued', cancellation: { is: null } }
     })
   }
 
@@ -500,7 +540,7 @@ export class ComputeJobRepository {
   async findQueuedJobs(): Promise<ComputeJob[]> {
     const client = await this.getClient()
     const rows = await client.computeJob.findMany({
-      where: { status: 'queued' },
+      where: { status: 'queued', cancellation: { is: null } },
       orderBy: { createdAt: 'asc' }
     })
     return rows.map(toJob)

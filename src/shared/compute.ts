@@ -303,6 +303,10 @@ export type ComputeApprovalRequest = {
 export type ComputeJobStatus =
   'queued' | 'submitted' | 'running' | 'success' | 'failed' | 'timeout' | 'error'
 
+// Additive logical projection. Existing clients can continue reading `status`; cancellation-aware
+// clients use this field to distinguish durable intent from confirmed termination.
+export type ComputeJobCancellationStatus = 'cancelling' | 'cancelled'
+
 // A compute job record, normalized for cross-process sharing (main → renderer via IPC, main → repl
 // via JSON RPC). Timestamps are epoch milliseconds; JSON columns are parsed at the repository
 // boundary to their respective types.
@@ -313,6 +317,7 @@ export type ComputeJob = {
   session_id: string
   project_id: string
   status: ComputeJobStatus
+  cancellation_status?: ComputeJobCancellationStatus
   intent: string
   command: string
   command_hash: string
@@ -353,6 +358,7 @@ export type ComputeJob = {
 export type JobStatusResult = {
   job_id: string
   status: ComputeJobStatus
+  cancellation_status?: ComputeJobCancellationStatus
   exit_code: number | undefined
   stdout_tail: string | undefined
   stderr_tail: string | undefined
@@ -366,6 +372,7 @@ export type JobStatusResult = {
 export type JobResult = {
   job_id: string
   status: ComputeJobStatus
+  cancellation_status?: ComputeJobCancellationStatus
   exit_code: number | undefined
   // Workspace-relative paths of featured output files (hpc/<jobId>/featured/*).
   featured_files: string[]
@@ -391,6 +398,13 @@ export type SubmitJobResult = {
   remote_workdir: string
 }
 
+export type CancelComputeJobRequest = Readonly<{
+  jobId: string
+  providerId: string
+  sessionId: string
+  projectId: string
+}>
+
 // Error codes for compute jobs (Phase 3a subset of spec §12).
 export type ComputeJobErrorCode =
   | 'approval_denied'
@@ -414,7 +428,9 @@ export type JobSummary = {
   shape: string
   // Session the job was submitted in — needed for the renderer store to filter by active session.
   session_id: string
+  project_id?: string
   status: ComputeJobStatus
+  cancellation_status?: ComputeJobCancellationStatus
   intent: string
   created_at: number
   started_at: number | undefined

@@ -22,6 +22,8 @@ import type { ConcurrencyManager, SessionStatus } from './concurrency-manager'
 import type { ComputeConnectionBroker } from './connection-broker'
 import type { CredentialVault } from './credential-vault'
 import type { ComputeJobRepository } from './job-repository'
+import { ComputeJobCancellationOwner } from './compute-job-cancellation-owner'
+import type { ComputeJobCancellationRepository } from './compute-job-cancellation-repository'
 import type { ComputeHostRepository } from './repository'
 import type { ScpRunner } from './scp-runner'
 import type { SshRunner } from './ssh-runner'
@@ -46,6 +48,7 @@ export type ComputeServiceDependencies = Readonly<{
   scpRunner?: ScpRunner
   overrideDownloadsDir?: string
   jobRepository?: ComputeJobRepository
+  cancellationRepository?: ComputeJobCancellationRepository
   onJobUpdated?: (job: ComputeJob) => void
   artifactResolver?: ArtifactResolver
   storageRoot?: string
@@ -59,6 +62,7 @@ export class ComputeService {
   private readonly hostProfiles: ComputeHostProfileOwner
   private readonly remoteOperations: ComputeRemoteOperationOwner
   private readonly jobWorkflow: ComputeJobWorkflowOwner
+  private readonly jobCancellation?: ComputeJobCancellationOwner
   private readonly repository: ComputeHostRepository
   private readonly concurrencyManager?: ConcurrencyManager
   private readonly credentialVault?: Pick<CredentialVault, 'credentialStatus'>
@@ -71,6 +75,7 @@ export class ComputeService {
       scpRunner,
       overrideDownloadsDir,
       jobRepository,
+      cancellationRepository,
       onJobUpdated,
       artifactResolver,
       storageRoot,
@@ -100,6 +105,10 @@ export class ComputeService {
       storageRoot,
       concurrencyManager
     )
+    this.jobCancellation =
+      cancellationRepository && jobRepository
+        ? new ComputeJobCancellationOwner(cancellationRepository, jobRepository)
+        : undefined
   }
 
   async probe(providerId: string, signal?: AbortSignal): Promise<ProbeResult> {
@@ -200,6 +209,27 @@ export class ComputeService {
 
   async getJobResult(jobId: string, scope?: ComputeJobReadScope): Promise<JobResult> {
     return this.jobWorkflow.getJobResult(jobId, scope)
+  }
+
+  async cancelJob(
+    jobId: string,
+    scope: ComputeJobReadScope
+  ): Promise<import('../../shared/compute').JobStatusResult> {
+    if (!this.jobCancellation) {
+      throw new Error('ComputeJobCancellationRepository is required to call cancelJob.')
+    }
+    const result = await this.jobCancellation.request(jobId, scope)
+    const job = await this.jobWorkflow.getJob(jobId, scope)
+    this.handleJobUpdated(job)
+    if (result.cancellation_status === 'cancelled') {
+      await this.concurrencyManager?.onJobCompleted()
+    }
+    return result
+  }
+
+  handleJobCancellationConfirmed = async (job: ComputeJob): Promise<void> => {
+    this.handleJobUpdated(job)
+    await this.concurrencyManager?.onJobCompleted()
   }
 
   async setSessionConcurrencyLimit(sessionId: string, limit: number): Promise<void> {

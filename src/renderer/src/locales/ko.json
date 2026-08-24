@@ -263,6 +263,8 @@
   "Cancel run": "실행 취소",
   "Cancel sign-in": "로그인 취소",
   "Cancelled": "취소됨",
+  "Cancelling": "취소 중",
+  "Unable to cancel remote job.": "원격 작업을 취소할 수 없습니다.",
   "Cancelling…": "취소 중…",
   "Cannot continue": "계속할 수 없습니다",
   "Capabilities": "기능",

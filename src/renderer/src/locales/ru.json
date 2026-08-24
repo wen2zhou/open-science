@@ -276,6 +276,8 @@
   "Cancel run": "Отмена выполнения",
   "Cancel sign-in": "Отмена входа",
   "Cancelled": "Отменено",
+  "Cancelling": "Отмена",
+  "Unable to cancel remote job.": "Не удалось отменить удалённое задание.",
   "Cancelling…": "Отмена...",
   "Cannot continue": "Нельзя продолжать",
   "Capabilities": "Возможности",

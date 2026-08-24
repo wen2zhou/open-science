@@ -77,7 +77,10 @@ function SessionJobsList({
                     <span className="rounded bg-muted px-2 py-0.5 text-xs text-secondary-foreground">
                       {job.display_name}
                     </span>
-                    <JobStatusBadge status={job.status} />
+                    <JobStatusBadge
+                      status={job.status}
+                      cancellationStatus={job.cancellation_status}
+                    />
                   </div>
                 </div>
                 <span className="shrink-0 text-[12px] text-muted-foreground">
@@ -118,6 +121,8 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
   const hydrateJobs = useSessionJobStore((s) => s.hydrate)
   const loadError = useSessionJobStore((s) => s.loadErrorBySession.get(job.session_id))
   const [isRefreshing, setIsRefreshing] = useState(false)
+  const [isCancellingRequest, setIsCancellingRequest] = useState(false)
+  const [cancelError, setCancelError] = useState<string>()
   const refreshJob = useCallback(async (): Promise<void> => {
     setIsRefreshing(true)
     try {
@@ -138,6 +143,29 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
   // Track elapsed time for running jobs
   const [now, setNow] = useState(() => Date.now())
   const isRunning = latestJob.status === 'running' || latestJob.status === 'submitted'
+  const isActive =
+    latestJob.status === 'queued' ||
+    latestJob.status === 'submitted' ||
+    latestJob.status === 'running'
+  const isCancelling = latestJob.cancellation_status === 'cancelling'
+  const cancelJob = useCallback(async (): Promise<void> => {
+    if (!latestJob.project_id) return
+    setIsCancellingRequest(true)
+    setCancelError(undefined)
+    try {
+      await window.api.compute.jobsCancel({
+        jobId: latestJob.job_id,
+        providerId: latestJob.provider_id,
+        sessionId: latestJob.session_id,
+        projectId: latestJob.project_id
+      })
+      await hydrateJobs(latestJob.session_id, { activate: false })
+    } catch (error) {
+      setCancelError(error instanceof Error ? error.message : t('Unable to cancel remote job.'))
+    } finally {
+      setIsCancellingRequest(false)
+    }
+  }, [hydrateJobs, latestJob, t])
 
   // Tick for elapsed time
   useEffect(() => {
@@ -190,7 +218,22 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
         >
           {t('Refresh')}
         </Button>
-        <JobStatusBadge status={latestJob.status} />
+        {isActive && latestJob.cancellation_status !== 'cancelled' ? (
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            data-testid="job-cancel"
+            disabled={isCancelling || isCancellingRequest || !latestJob.project_id}
+            onClick={() => void cancelJob()}
+          >
+            {isCancelling || isCancellingRequest ? t('Cancelling') : t('Cancel')}
+          </Button>
+        ) : null}
+        <JobStatusBadge
+          status={latestJob.status}
+          cancellationStatus={latestJob.cancellation_status}
+        />
       </div>
 
       {/* Meta info grid */}
@@ -199,7 +242,16 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
         data-testid="job-meta"
       >
         <MetaRow label={t('Provider')} value={latestJob.display_name} />
-        <MetaRow label={t('Status')} value={latestJob.status} />
+        <MetaRow
+          label={t('Status')}
+          value={
+            latestJob.cancellation_status === 'cancelled'
+              ? t('Cancelled')
+              : latestJob.cancellation_status === 'cancelling'
+                ? t('Cancelling')
+                : latestJob.status
+          }
+        />
         <MetaRow label={t('Runtime', { context: 'duration' })} value={runtimeDisplay()} />
         <MetaRow
           label={t('Remote workdir')}
@@ -239,6 +291,15 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
           >
             {computeRuntimeRecoveryAction(runtimeErrorCode, t)}
           </Button>
+        </div>
+      ) : null}
+
+      {cancelError ? (
+        <div
+          role="alert"
+          className="m-3 rounded-lg border border-status-warning-border bg-status-warning-subtle/50 px-3 py-2 text-sm text-status-warning-strong"
+        >
+          {t('Unable to cancel remote job.')}
         </div>
       ) : null}
 

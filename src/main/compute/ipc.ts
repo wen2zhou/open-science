@@ -6,6 +6,7 @@ import { BrowserWindow, shell } from 'electron'
 
 import type {
   ChangeComputeHostAuthenticationRequest,
+  CancelComputeJobRequest,
   ChangeComputeHostAuthenticationResult,
   ComputeApprovalDecision,
   ComputeHost,
@@ -36,6 +37,7 @@ import { ComputeService, type ArtifactResolver } from './compute-service'
 import { ConcurrencyManager } from './concurrency-manager'
 import { ComputeHostRepository } from './repository'
 import { ComputeJobRepository } from './job-repository'
+import { ComputeJobCancellationRepository } from './compute-job-cancellation-repository'
 import { createComputeJobDeletionOwner, type ComputeJobDeletionOwner } from './job-deletion-owner'
 import { readSshConfigHostAliases } from './ssh-config'
 import { ComputeConnectionError, type ComputeConnectionBroker } from './connection-broker'
@@ -114,7 +116,9 @@ export const toJobSummary = async (
     display_name: displayName,
     shape: job.shape,
     session_id: job.session_id,
+    project_id: job.project_id,
     status: job.status,
+    cancellation_status: job.cancellation_status,
     intent: job.intent,
     created_at: job.created_at,
     started_at: job.started_at,
@@ -194,6 +198,9 @@ type ComputeHandlers = {
   approvalResumeSession: (sessionId: string) => void
   // Returns JobSummary[] for a session, optionally filtered by status (renderer feed, issue 05).
   jobsList: (filter: { sessionId: string; status?: string[] }) => Promise<JobSummary[]>
+  jobsCancel: (
+    request: CancelComputeJobRequest
+  ) => Promise<import('../../shared/compute').JobStatusResult>
   // Returns jobs with notifiedAt set and notificationConsumedAt null (issue 05 restart recovery).
   jobsPendingNotification: (sessionId: string) => Promise<JobSummary[]>
   // Marks the given job ids as notification-consumed. Idempotent (issue 05).
@@ -216,7 +223,8 @@ const createComputeHandlers = (
   >,
   permissionGrantRegistry?: PermissionGrantRegistry,
   hostLifecycle?: ComputeHostLifecycle,
-  authenticationDependencies?: ComputeAuthenticationDependencies
+  authenticationDependencies?: ComputeAuthenticationDependencies,
+  cancellationRepository?: ComputeJobCancellationRepository
 ): ComputeHandlers => {
   const permissionGrants = permissionGrantRegistry
     ? createComputePermissionGrantAdapter(permissionGrantRegistry, legacyComputeGrants)
@@ -301,6 +309,7 @@ const createComputeHandlers = (
       repository,
       approvalBroker: broker,
       jobRepository,
+      cancellationRepository,
       hostLifecycle,
       permissionGrantRegistry,
       authenticationDependencies,
@@ -330,6 +339,7 @@ const createComputeHandlers = (
       approvalBroker: broker,
       scpRunner,
       jobRepository,
+      cancellationRepository,
       artifactResolver,
       storageRoot,
       concurrencyManager,
@@ -449,6 +459,12 @@ const createComputeHandlers = (
         )
       )
     },
+    jobsCancel: (request) =>
+      service.cancelJob(request.jobId, {
+        projectId: request.projectId,
+        sessionId: request.sessionId,
+        providerId: request.providerId
+      }),
     jobsPendingNotification: async (sessionId) => {
       if (!jobRepository || !storageRoot) return []
       const hosts = await repository.list()
@@ -475,6 +491,9 @@ const createDefaultComputeHostRepository = (): ComputeHostRepository =>
 
 const createDefaultComputeJobRepository = (): ComputeJobRepository =>
   new ComputeJobRepository(() => getProjectDbClient(resolveStorageRoot()))
+
+const createDefaultComputeJobCancellationRepository = (): ComputeJobCancellationRepository =>
+  new ComputeJobCancellationRepository(() => getProjectDbClient(resolveStorageRoot()))
 
 // Broadcasts a job summary to all renderer windows. Called by the JobPoller onJobUpdated hook
 // and by the job dispatcher on status transitions (Phase 3d, design.md §9).
@@ -524,6 +543,7 @@ type ComputeIpcModule = {
   connectionBroker: ComputeConnectionBroker
   jobDeletionOwner: ComputeJobDeletionOwner
   jobRepository: ComputeJobRepository
+  cancellationRepository: ComputeJobCancellationRepository
   hostRepository: ComputeHostRepository
   enabledComputeHostsRegistry: EnabledComputeHostsRegistry
 }
@@ -548,6 +568,7 @@ const createComputeIpcModule = (
   legacyComputeGrants?: LegacyComputeGrantPort,
   hostLifecycle?: ComputeHostLifecycle
 ): ComputeIpcModule => {
+  const cancellationRepository = createDefaultComputeJobCancellationRepository()
   const storageRoot = resolveStorageRoot()
   const dataRoot = resolveDataRoot()
   void repository
@@ -570,7 +591,9 @@ const createComputeIpcModule = (
     dataRoot,
     taskNotifications,
     permissionGrantRegistry,
-    hostLifecycle
+    hostLifecycle,
+    undefined,
+    cancellationRepository
   )
   const jobDeletionOwner = createComputeJobDeletionOwner({
     jobRepository,
@@ -585,6 +608,7 @@ const createComputeIpcModule = (
     connectionBroker: handlers.connectionBroker,
     jobDeletionOwner,
     jobRepository,
+    cancellationRepository,
     hostRepository: repository,
     enabledComputeHostsRegistry
   }
@@ -595,6 +619,7 @@ export {
   createComputeIpcModule,
   createDefaultComputeHostRepository,
   createDefaultComputeJobRepository,
+  createDefaultComputeJobCancellationRepository,
   enabledComputeHostsRegistry
 }
 export { COMPUTE_JOBS_LIST_CHANNEL, installComputeIpcHandlers } from './electron-ipc-adapter'

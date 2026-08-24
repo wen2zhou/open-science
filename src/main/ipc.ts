@@ -1409,6 +1409,7 @@ const createApplicationModules = async (
     connectionBroker,
     jobDeletionOwner,
     jobRepository,
+    cancellationRepository,
     hostRepository,
     enabledComputeHostsRegistry: hostsRegistry
   } = computeIpcModule
@@ -1437,6 +1438,7 @@ const createApplicationModules = async (
       jobDeletionOwner,
       hostRepository,
       jobRepository,
+      cancellationRepository,
       storageRoot: dataRoot
     },
     (dependencies) => {

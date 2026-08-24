@@ -1,4 +1,5 @@
 import type {
+  CancelComputeJobRequest,
   AcpCancelPromptRequest,
   AcpAgentRuntimeUpdate,
   AcpCompactSessionRequest,
@@ -90,6 +91,7 @@ import type {
   DeleteComputeHostRequest,
   DetailsAuthor,
   JobSummary,
+  JobStatusResult,
   ProbeResult
 } from '../shared/compute'
 import type { DirListing, DownloadDest, LocalFile } from '../shared/remote-fs'
@@ -796,6 +798,7 @@ export interface OpenScienceAPI {
     bookmarksSet(providerId: string, folders: string[]): Promise<void>
     // Returns all jobs for a session as JobSummary[], optionally filtered by status (Phase 3d).
     jobsList(filter: { sessionId: string; status?: string[] }): Promise<JobSummary[]>
+    jobsCancel(request: CancelComputeJobRequest): Promise<JobStatusResult>
     // Returns jobs with notifiedAt set and notificationConsumedAt null (issue 05 restart recovery).
     jobsPendingNotification(sessionId: string): Promise<JobSummary[]>
     // Marks job ids as notification-consumed after a successful analysis turn (issue 05).

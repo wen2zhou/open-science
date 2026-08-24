@@ -159,8 +159,16 @@ conversation — the conversation is NOT locked while the job runs, so the user 
 // Non-blocking DB read — no SSH. Use if you need a status snapshot mid-conversation.
 const handle = c.attachJob(job.job_id)
 const s = await handle.status()
-// s → { job_id, status, exit_code, stdout_tail, stderr_tail, remote_workdir }
+// s → { job_id, status, cancellation_status?, exit_code, stdout_tail, stderr_tail, remote_workdir }
 // status: 'submitted' | 'running' | 'success' | 'failed' | 'timeout' | 'error'
+```
+
+To stop one active job, request durable cancellation through the same handle:
+
+```javascript
+await c.attachJob(job.job_id).cancel()
+// cancellation_status is 'cancelling' until owned remote termination is confirmed,
+// then 'cancelled'. Repeating cancel() is safe.
 ```
 
 ### submitJob status values

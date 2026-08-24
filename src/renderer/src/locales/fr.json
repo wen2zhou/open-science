@@ -273,6 +273,8 @@
   "Cancel run": "Annuler l'exécution",
   "Cancel sign-in": "Annuler la connexion",
   "Cancelled": "Annulé",
+  "Cancelling": "Annulation en cours",
+  "Unable to cancel remote job.": "Impossible d’annuler la tâche distante.",
   "Cancelling…": "Annulation…",
   "Cannot continue": "Impossible de continuer",
   "Capabilities": "Capacités",

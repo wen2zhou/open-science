@@ -4,7 +4,12 @@ import { unwrapApplicationCommandOutcome } from '../shared/application-command-c
 import { createElectronRendererContractAdapter } from './electron-renderer-contract-adapter'
 import type { OpenScienceAPI } from './renderer-api'
 
-import type { ComputeApprovalDecision, ComputeApprovalRequest, JobSummary } from '../shared/compute'
+import type {
+  CancelComputeJobRequest,
+  ComputeApprovalDecision,
+  ComputeApprovalRequest,
+  JobSummary
+} from '../shared/compute'
 import type {
   InitializeLocalePreferenceRequest,
   SetLocalePreferenceRequest
@@ -613,6 +618,8 @@ const api: OpenScienceAPI = {
     // Returns all jobs for a session as JobSummary[], optionally filtered by status (Phase 3d).
     jobsList: (filter: { sessionId: string; status?: string[] }) =>
       electronRendererContracts.invoke('compute.jobsList', filter),
+    jobsCancel: (request: CancelComputeJobRequest) =>
+      electronRendererContracts.invoke('compute.jobsCancel', request),
     // Returns jobs pending analysis turn (notifiedAt set, notificationConsumedAt null).
     jobsPendingNotification: (sessionId) =>
       electronRendererContracts.invoke('compute.jobsPendingNotification', sessionId),

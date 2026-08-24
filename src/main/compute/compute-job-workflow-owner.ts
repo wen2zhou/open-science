@@ -347,6 +347,20 @@ export class ComputeJobWorkflowOwner {
   }
 
   async getJobStatus(jobId: string, scope?: ComputeJobReadScope): Promise<JobStatusResult> {
+    const job = await this.getJob(jobId, scope)
+    return {
+      job_id: job.job_id,
+      status: job.status,
+      cancellation_status: job.cancellation_status,
+      exit_code: job.exit_code,
+      stdout_tail: job.stdout_tail,
+      stderr_tail: job.stderr_tail,
+      remote_workdir: job.remote_workdir,
+      harvest_error: job.harvest_error
+    }
+  }
+
+  async getJob(jobId: string, scope?: ComputeJobReadScope): Promise<ComputeJob> {
     if (!this.jobRepository) {
       throw new Error('ComputeJobRepository is required to call getJobStatus.')
     }
@@ -363,15 +377,7 @@ export class ComputeJobWorkflowOwner {
     ) {
       throw new ComputeHostUnavailableError()
     }
-    return {
-      job_id: job.job_id,
-      status: job.status,
-      exit_code: job.exit_code,
-      stdout_tail: job.stdout_tail,
-      stderr_tail: job.stderr_tail,
-      remote_workdir: job.remote_workdir,
-      harvest_error: job.harvest_error
-    }
+    return job
   }
 
   async getJobResult(jobId: string, scope?: ComputeJobReadScope): Promise<JobResult> {
@@ -462,6 +468,7 @@ const jobResultWithFiles = (
 ): JobResult => ({
   job_id: job.job_id,
   status: job.status,
+  cancellation_status: job.cancellation_status,
   exit_code: job.exit_code,
   featured_files: featuredFiles,
   hidden_files: hiddenFiles,

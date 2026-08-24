@@ -263,6 +263,8 @@
   "Cancel run": "実行をキャンセル",
   "Cancel sign-in": "サインインをキャンセルする",
   "Cancelled": "キャンセルされました",
+  "Cancelling": "キャンセル中",
+  "Unable to cancel remote job.": "リモートジョブをキャンセルできません。",
   "Cancelling…": "キャンセル中…",
   "Cannot continue": "続行できません",
   "Capabilities": "機能",

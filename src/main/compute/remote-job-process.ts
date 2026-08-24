@@ -1,7 +1,7 @@
 import { quoteRemotePath } from './remote-path-security'
 import type { ComputeConnectionLease } from './connection-broker'
 
-export type RemoteJobProcessOwnership = 'owned' | 'mismatch' | 'unknown'
+export type RemoteJobProcessOwnership = 'owned' | 'mismatch' | 'absent' | 'unknown'
 
 const validPid = (pid: number): void => {
   if (!Number.isSafeInteger(pid) || pid <= 1) throw new Error('Invalid remote process id.')
@@ -14,6 +14,7 @@ export const remoteJobPidOwnershipFunctionLines = (): string[] => [
   '  pid=$1',
   "  case $pid in ''|*[!0-9]*) return 2 ;; esac",
   '  [ -n "$workdir" ] || return 2',
+  '  kill -0 "$pid" 2>/dev/null || return 3',
   '  process_workdir=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)',
   '  if [ -z "$process_workdir" ] && command -v lsof >/dev/null 2>&1; then',
   `    process_workdir=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)`,
@@ -55,7 +56,7 @@ const ownershipProbeCommand = (pid: number, workdir: string): string => {
     ...canonicalWorkdirLines(workdir),
     ...remoteJobPidOwnershipFunctionLines(),
     `job_pid_is_owned ${pid}`,
-    'case $? in 0) echo owned ;; 1) echo mismatch ;; *) echo unknown ;; esac'
+    'case $? in 0) echo owned ;; 1) echo mismatch ;; 3) echo absent ;; *) echo unknown ;; esac'
   ].join('\n')
 }
 
@@ -85,7 +86,9 @@ export const probeRemoteJobProcessOwnership = async (
   }
   if (result.timedOut || result.truncated || result.exitCode !== 0) return 'unknown'
   const ownership = result.stdout.trim()
-  return ownership === 'owned' || ownership === 'mismatch' ? ownership : 'unknown'
+  return ownership === 'owned' || ownership === 'mismatch' || ownership === 'absent'
+    ? ownership
+    : 'unknown'
 }
 
 export const terminateRemoteJobProcessIfOwned = async (

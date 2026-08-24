@@ -352,6 +352,8 @@
   "Cancel run": "取消執行",
   "Cancel sign-in": "取消登入",
   "Cancelled": "已取消",
+  "Cancelling": "正在取消",
+  "Unable to cancel remote job.": "無法取消遠端工作。",
   "Cancelling…": "正在取消……",
   "Cannot continue": "無法繼續",
   "Capabilities": "能力",

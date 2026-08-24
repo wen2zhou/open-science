@@ -1,5 +1,6 @@
 import type {
   ChangeComputeHostAuthenticationRequest,
+  CancelComputeJobRequest,
   ComputeApprovalDecision,
   CreateComputeHostRequest,
   CreatePasswordComputeHostRequest,
@@ -126,6 +127,9 @@ const registerComputeIpcHandlerSet = ({ handlers, enabledHosts }: ComputeIpcAdap
   ipcMainHandle(
     COMPUTE_JOBS_LIST_CHANNEL,
     (_event, filter: { sessionId: string; status?: string[] }) => handlers.jobsList(filter)
+  )
+  ipcMainHandle('compute:jobs:cancel', (_event, request: CancelComputeJobRequest) =>
+    handlers.jobsCancel(request)
   )
   // Returns jobs pending analysis turn (notifiedAt set, notificationConsumedAt null — issue 05).
   ipcMainHandle('compute:jobs:pending-notification', (_event, sessionId: string) =>

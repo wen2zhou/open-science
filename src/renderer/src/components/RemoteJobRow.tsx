@@ -32,6 +32,8 @@ export function RemoteJobRow({ job, onOpen }: RemoteJobRowProps): React.JSX.Elem
   // Truncate long intent text to keep the row compact
   const intentDisplay = job.intent.length > 60 ? `${job.intent.slice(0, 57)}…` : job.intent
   const statusLabel = (() => {
+    if (job.cancellation_status === 'cancelling') return t('Cancelling')
+    if (job.cancellation_status === 'cancelled') return t('Cancelled')
     switch (job.status) {
       case 'queued':
         return t('Waiting in queue')
@@ -50,7 +52,8 @@ export function RemoteJobRow({ job, onOpen }: RemoteJobRowProps): React.JSX.Elem
     }
   })()
   const showElapsed =
-    job.status === 'queued' || job.status === 'submitted' || job.status === 'running'
+    job.cancellation_status !== 'cancelled' &&
+    (job.status === 'queued' || job.status === 'submitted' || job.status === 'running')
 
   return (
     <button

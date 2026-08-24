@@ -1,6 +1,6 @@
 import { useTranslation } from 'react-i18next'
 
-import type { ComputeJobStatus } from '../../../shared/compute'
+import type { ComputeJobCancellationStatus, ComputeJobStatus } from '../../../shared/compute'
 
 // Maps job status to badge styling. Follows design.md §6 badge pattern (same conventions as ReviewCard).
 // Terminal statuses consolidate under semantic groups: success=Done, error/failed/timeout=Failed.
@@ -48,12 +48,24 @@ const STATUS_STYLE = {
 
 type JobStatusBadgeProps = {
   status: ComputeJobStatus
+  cancellationStatus?: ComputeJobCancellationStatus
 }
 
 // Status badge for job detail modal header (top-right). Follows design.md §6 color table.
-export function JobStatusBadge({ status }: JobStatusBadgeProps): React.JSX.Element {
+export function JobStatusBadge({
+  status,
+  cancellationStatus
+}: JobStatusBadgeProps): React.JSX.Element {
   const { t } = useTranslation()
-  const { labelKey, className } = STATUS_STYLE[status]
+  const { labelKey, className } = cancellationStatus
+    ? {
+        labelKey: cancellationStatus === 'cancelled' ? 'Cancelled' : 'Cancelling',
+        className:
+          cancellationStatus === 'cancelled'
+            ? 'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-950/40 dark:text-slate-400 dark:border-slate-800/50'
+            : 'bg-amber-50 text-amber-700 border-amber-200 dark:bg-amber-950/20 dark:text-amber-300 dark:border-amber-800/50'
+      }
+    : STATUS_STYLE[status]
   return (
     <span
       data-testid="job-status-badge"

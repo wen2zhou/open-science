@@ -99,6 +99,33 @@ const approvalBrokerFrom = (service: ComputeService): ComputeApprovalBroker =>
   ).remoteOperations.approvalBroker
 
 describe('compute handlers', () => {
+  it('passes the complete renderer owner tuple to cancellation', async () => {
+    const cancelJob = vi.fn(async () => ({
+      job_id: 'job-1',
+      status: 'running' as const,
+      cancellation_status: 'cancelling' as const
+    }))
+    const computeHandlers = createComputeHandlers(
+      mockRepository({}),
+      undefined,
+      mockService({ cancelJob })
+    )
+    const request = {
+      jobId: 'job-1',
+      providerId: 'ssh:test',
+      sessionId: 'session-1',
+      projectId: 'project-1'
+    }
+
+    await computeHandlers.jobsCancel(request)
+
+    expect(cancelJob).toHaveBeenCalledWith('job-1', {
+      providerId: 'ssh:test',
+      sessionId: 'session-1',
+      projectId: 'project-1'
+    })
+  })
+
   it('list delegates to the repository', async () => {
     const list = vi.fn(() => Promise.resolve([sampleHost()]))
     const handlers = createComputeHandlers(mockRepository({ list }))

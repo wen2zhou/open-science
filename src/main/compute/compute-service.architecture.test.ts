@@ -41,6 +41,11 @@ const computePaths = {
   deletionOwner: resolve(mainRoot, 'compute/job-deletion-owner.ts'),
   jobLifecycle: resolve(mainRoot, 'compute/compute-job-lifecycle.ts'),
   jobRepository: resolve(mainRoot, 'compute/job-repository.ts'),
+  cancellationOwner: resolve(mainRoot, 'compute/compute-job-cancellation-owner.ts'),
+  cancellationRepository: resolve(
+    mainRoot,
+    'compute/compute-job-cancellation-repository.ts'
+  ),
   concurrencyManager: resolve(mainRoot, 'compute/concurrency-manager.ts'),
   jobDispatcher: resolve(mainRoot, 'compute/job-dispatcher.ts'),
   jobPoller: resolve(mainRoot, 'compute/job-poller.ts'),
@@ -201,6 +206,8 @@ const lifecyclePaths = [
   computePaths.deletionOwner,
   computePaths.jobLifecycle,
   computePaths.jobRepository,
+  computePaths.cancellationOwner,
+  computePaths.cancellationRepository,
   computePaths.concurrencyManager,
   computePaths.jobDispatcher,
   computePaths.jobPoller
@@ -415,12 +422,14 @@ describe('Compute service architecture', () => {
       [
         'appendDetails',
         'callCommand',
+        'cancelJob',
         'download',
         'getDetails',
         'getJobResult',
         'getJobStatus',
         'getSessionConcurrencyStatus',
         'handleJobUpdated',
+        'handleJobCancellationConfirmed',
         'list',
         'listDir',
         'probe',
@@ -458,6 +467,7 @@ describe('Compute service architecture', () => {
     ])
 
     expect(referencedMembersOn(computePaths.jobRuntime, ['deps', 'computeService'])).toEqual([
+      'handleJobCancellationConfirmed',
       'handleJobUpdated',
       'startQueueReconciliation',
       'stopQueueReconciliation'
@@ -468,6 +478,7 @@ describe('Compute service architecture', () => {
     expect(calledMembersOn(computePaths.localRpc, ['this', 'computeService'])).toEqual([
       'appendDetails',
       'callCommand',
+      'cancelJob',
       'download',
       'getDetails',
       'getJobResult',
@@ -488,7 +499,7 @@ describe('Compute service architecture', () => {
     const computeContracts = RENDERER_CONTRACT_CATALOG.filter(
       ({ channel }) => channel?.startsWith('compute:') === true
     )
-    expect(computeContracts).toHaveLength(33)
+    expect(computeContracts).toHaveLength(34)
     const remoteRestricted = computeContracts.filter(
       ({ surfaceInstallation }) => surfaceInstallation.remoteWeb === 'rejecting-stub'
     )
@@ -526,6 +537,8 @@ describe('Compute service architecture', () => {
       'src/main/compute/compute-job-lifecycle.ts',
       'src/main/compute/job-deletion-owner.ts',
       'src/main/compute/compute-job-workflow-owner.ts',
+      'src/main/compute/compute-job-cancellation-owner.ts',
+      'src/main/compute/compute-job-cancellation-repository.ts',
       'src/main/compute/compute-remote-operation-owner.ts',
       'src/main/compute/concurrency-manager.ts',
       'src/main/compute/job-dispatcher.ts',
@@ -566,6 +579,7 @@ describe('Compute service architecture', () => {
         'src/main/compute/session-enabled-hosts-owner.test.ts',
         'src/main/compute/compute-host-profile-owner.test.ts',
         'src/main/compute/compute-job-workflow-owner.test.ts',
+        'src/main/compute/compute-job-cancellation-owner.integration.test.ts',
         'src/main/compute/compute-remote-operation-owner.test.ts',
         'src/main/compute/permission-grant-adapter.test.ts',
         'src/main/compute/compute-service.test.ts',

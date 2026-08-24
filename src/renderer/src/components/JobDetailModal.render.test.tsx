@@ -82,6 +82,7 @@ const makeJob = (overrides: Partial<JobSummary> = {}): JobSummary => ({
   display_name: 'biowulf',
   shape: 'direct_ssh',
   session_id: 'sess-1',
+  project_id: 'project-1',
   status: 'running',
   intent: 'Run EDA analysis',
   created_at: Date.now(),
@@ -114,6 +115,45 @@ afterEach(() => {
 })
 
 describe('JobDetailModal — detail view', () => {
+  it('requests cancellation with the complete owner tuple and disables while cancelling', async () => {
+    const { JobDetailModal } = await import('./JobDetailModal')
+    const job = makeJob()
+    const jobsCancel = vi.fn(async () => ({
+      job_id: job.job_id,
+      status: job.status,
+      cancellation_status: 'cancelling' as const
+    }))
+    const jobsList = vi.fn(async () => [{ ...job, cancellation_status: 'cancelling' as const }])
+    ;(
+      window as unknown as {
+        api: { compute: { jobsCancel: typeof jobsCancel; jobsList: typeof jobsList } }
+      }
+    ).api = {
+      compute: { jobsCancel, jobsList }
+    }
+    useSessionJobStore.getState().applyUpdate(job)
+
+    act(() => {
+      root.render(
+        <JobDetailModal open={true} sessionId="sess-1" initialJob={job} onClose={vi.fn()} />
+      )
+    })
+    await act(async () => {
+      ;(container.querySelector('[data-testid="job-cancel"]') as HTMLButtonElement).click()
+    })
+
+    expect(jobsCancel).toHaveBeenCalledWith({
+      jobId: job.job_id,
+      providerId: job.provider_id,
+      sessionId: job.session_id,
+      projectId: job.project_id
+    })
+    expect(
+      (container.querySelector('[data-testid="job-cancel"]') as HTMLButtonElement).disabled
+    ).toBe(true)
+    expect(container.textContent).toContain('Cancelling')
+  })
+
   it('refreshes details by fetching the Session job list', async () => {
     const { JobDetailModal } = await import('./JobDetailModal')
     const job = makeJob({ status: 'running', stdout_tail: 'old output' })
