@@ -268,6 +268,7 @@ describe('Compute service architecture', () => {
         'observeRunning',
         'promoteQueued',
         'recordPollError',
+        'recoverRemoteHandle',
         'recoverInterruptedDispatch'
       ].sort()
     )
@@ -529,8 +530,12 @@ describe('Compute service architecture', () => {
       'src/main/compute/job-dispatcher.ts',
       'src/main/compute/job-poller.ts',
       'src/main/compute/job-poll-output.ts',
+      'src/main/compute/job-runtime.ts',
+      'src/main/compute/job-notifier.ts',
+      'src/main/compute/harvest-engine.ts',
       'src/main/compute/job-repository.ts',
       'src/main/compute/remote-job-process.ts',
+      'src/main/compute/remote-job-handle.ts',
       'src/main/compute/remote-launch-recovery.ts',
       'src/main/compute/submitted-job-recovery.ts',
       'src/main/compute/enabled-hosts-registry.ts',
@@ -563,6 +568,8 @@ describe('Compute service architecture', () => {
         'src/main/compute/credential-vault.test.ts',
         'src/main/compute/compute-password-auth.architecture.test.ts',
         'src/main/compute/ambiguous-dispatch-recovery.integration.test.ts',
+        'src/main/compute/job-poll-protocol.integration.test.ts',
+        'src/main/compute/job-notifier.integration.test.ts',
         'src/main/compute/job-deletion-runtime-drain.test.ts',
         'src/main/compute/job-deletion-runtime-isolation.test.ts'
       ])
@@ -575,6 +582,10 @@ describe('Compute service architecture', () => {
         'src/main/compute/ipc.test.ts',
         'src/main/compute/job-dispatcher.test.ts',
         'src/main/compute/job-poller.test.ts',
+        'src/main/compute/job-poll-output.test.ts',
+        'src/main/compute/job-notifier.test.ts',
+        'src/main/compute/job-repository.test.ts',
+        'src/main/compute/harvest-engine.test.ts',
         'src/main/notebook/local-rpc-server.mcpcall.test.ts',
         'src/main/notebook/local-rpc-server.test.ts'
       ])

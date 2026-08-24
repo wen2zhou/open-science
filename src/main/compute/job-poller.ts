@@ -10,7 +10,7 @@ import {
   type ComputeConnectionBrokerAcquirer,
   type ComputeConnectionLease
 } from './connection-broker'
-import { quoteRemotePath, type RemoteHandle } from './job-dispatcher'
+import { quoteRemotePath } from './job-dispatcher'
 import { parsePollOutput } from './job-poll-output'
 import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
 import { emitJobNotification } from './job-notifier'
@@ -21,6 +21,7 @@ import {
 } from './remote-job-process'
 import { classifyComputeJobExit } from './remote-launch-recovery'
 import { SubmittedJobRecovery, type SubmittedJobRecoveryResult } from './submitted-job-recovery'
+import { parseRemoteJobHandle } from './remote-job-handle'
 
 // Polling interval: 15 seconds (design.md §8).
 export const POLL_INTERVAL_MS = 15_000
@@ -308,7 +309,7 @@ export class JobPoller {
       if (job.status === 'submitted' && !job.remote_handle) {
         if (this.dispatchTracker.has(job.job_id)) continue // still dispatching — not orphaned
         noHandle.push(job)
-      } else if (!this._parseHandle(job.remote_handle, job.remote_workdir)) {
+      } else if (!parseRemoteJobHandle(job.remote_handle, job.remote_workdir)) {
         invalidHandle.push(job)
       } else {
         withHandle.push(job)
@@ -383,7 +384,7 @@ export class JobPoller {
     const parts: string[] = []
     const batched: ComputeJob[] = []
     for (const job of jobs) {
-      const handle = this._parseHandle(job.remote_handle, job.remote_workdir)
+      const handle = parseRemoteJobHandle(job.remote_handle, job.remote_workdir)
       if (!handle) continue
       batched.push(job)
 
@@ -434,33 +435,6 @@ export class JobPoller {
     // happens the head is kept, so leading jobs still parse; any job whose section was dropped simply
     // stays non-terminal and is re-polled next tick (its remote exit_code file persists).
     await this._parsePollOutput(runResult.stdout, batched, nonce, connection)
-  }
-
-  private _parseHandle(
-    raw: string | undefined,
-    expectedWorkdir: string | undefined
-  ): RemoteHandle | null {
-    if (!raw) return null
-    try {
-      const handle = JSON.parse(raw) as Partial<RemoteHandle> | null
-      if (
-        !handle ||
-        typeof handle !== 'object' ||
-        !Number.isSafeInteger(handle.pid) ||
-        (handle.pid ?? 0) <= 1 ||
-        typeof expectedWorkdir !== 'string' ||
-        expectedWorkdir.length === 0 ||
-        handle.workdir !== expectedWorkdir ||
-        handle.exit_code_path !== `${expectedWorkdir}/exit_code` ||
-        handle.stdout_path !== `${expectedWorkdir}/stdout` ||
-        handle.stderr_path !== `${expectedWorkdir}/stderr`
-      ) {
-        return null
-      }
-      return handle as RemoteHandle
-    } catch {
-      return null
-    }
   }
 
   // Records a transient SSH connectivity error for each job without changing job status.
@@ -612,7 +586,7 @@ export class JobPoller {
         const current = await this.deps.jobRepository.get(job.job_id)
         if (!current || (current.status !== 'submitted' && current.status !== 'running')) return
 
-        const handle = this._parseHandle(current.remote_handle, current.remote_workdir)
+        const handle = parseRemoteJobHandle(current.remote_handle, current.remote_workdir)
         const workdir = current.remote_workdir
         if (
           !handle ||

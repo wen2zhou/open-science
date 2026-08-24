@@ -98,7 +98,7 @@ const pollSuccessOutput = (): string =>
   [
     `${NONCE}JOB_START:survivor-job`,
     `${NONCE}alive:0`,
-    '0',
+    `${NONCE}exit:0`,
     'completed',
     `${NONCE}STDOUT_END:survivor-job`,
     '',
