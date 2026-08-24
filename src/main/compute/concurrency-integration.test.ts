@@ -278,7 +278,10 @@ describe('ConcurrencyManager integration with ComputeService', () => {
 
   it('starts independent eligible queued work without waiting for older staging', async () => {
     const firstProviderId = computeProviderId('test-host')
-    const secondHost = await hostRepo.create({ sshAlias: 'second-host', displayName: 'Second Host' })
+    const secondHost = await hostRepo.create({
+      sshAlias: 'second-host',
+      displayName: 'Second Host'
+    })
     for (const [jobId, providerId, sessionId] of [
       ['queued-slow-staging', firstProviderId, 'session-slow'],
       ['queued-independent', secondHost.providerId, 'session-independent']

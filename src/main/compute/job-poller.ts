@@ -351,7 +351,10 @@ export class JobPoller {
       return
     }
     for (const job of recoverableJobs) {
-      this._applySubmittedRecoveryResult(await this.submittedJobRecovery.recover(job, connection))
+      const result = recoverableInvalidHandle.includes(job)
+        ? await this.submittedJobRecovery.recoverInvalidHandle(job, connection)
+        : await this.submittedJobRecovery.recover(job, connection)
+      this._applySubmittedRecoveryResult(result)
     }
     if (withHandle.length === 0) return
 
@@ -463,12 +466,7 @@ export class JobPoller {
   ): Promise<void> {
     for (const job of jobs) {
       if (job.status !== 'submitted' && job.status !== 'running') continue
-      await this.lifecycle.recordPollError(
-        job.job_id,
-        job.status,
-        message,
-        retryAfterUserAction
-      )
+      await this.lifecycle.recordPollError(job.job_id, job.status, message, retryAfterUserAction)
     }
   }
 

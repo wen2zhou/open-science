@@ -211,3 +211,95 @@ it('recovers malformed handles from durable workdirs without blocking a healthy 
     await rm(storageRoot, { recursive: true, force: true })
   }
 })
+
+it('safely converges a persistently ambiguous malformed handle across poller restart', async () => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'open-science-handle-convergence-'))
+  const client = createProjectDbClient(storageRoot)
+  try {
+    await migrateApplicationDatabase(client)
+    const jobRepository = new ComputeJobRepository(() => Promise.resolve(client))
+    for (const jobId of ['ambiguous-handle', 'healthy-sibling']) {
+      await jobRepository.create({
+        id: jobId,
+        providerId,
+        shape: 'direct_ssh',
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        intent: 'handle convergence',
+        command: 'echo done',
+        commandHash: `${jobId}-hash`,
+        remoteWorkdir: `~/.openscience/jobs/${jobId}`,
+        initialStatus: 'running'
+      })
+    }
+    await jobRepository.update('ambiguous-handle', { remoteHandle: JSON.stringify({}) })
+    await jobRepository.update('healthy-sibling', { remoteHandle: remoteHandle('healthy-sibling') })
+
+    const run = vi.fn(async (command: string) => {
+      if (command.includes('OPEN_SCIENCE_DISPATCH_RECOVERY_V1')) {
+        return {
+          exitCode: 0,
+          stdout: [
+            'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+            'workdir:1',
+            'exit_code:',
+            'pid:not-a-pid',
+            'cwd_match:1'
+          ].join('\n'),
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        }
+      }
+      return {
+        exitCode: 0,
+        stdout: [
+          `${nonce}JOB_START:healthy-sibling`,
+          `${nonce}alive:0`,
+          `${nonce}exit:0`,
+          'healthy output',
+          `${nonce}STDOUT_END:healthy-sibling`,
+          '',
+          `${nonce}STDERR_END:healthy-sibling`
+        ].join('\n'),
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      }
+    })
+    const connectionBroker: ComputeConnectionBrokerAcquirer = {
+      acquire: vi.fn(async () => ({ run, upload: vi.fn(), download: vi.fn() }))
+    }
+    const makePoller = (): JobPoller =>
+      new JobPoller({
+        connectionBroker,
+        hostRepository: { get: vi.fn(async () => null) } as unknown as ComputeHostRepository,
+        jobRepository,
+        makeNonce: () => nonce
+      })
+
+    await makePoller().tick()
+    expect(await jobRepository.get('ambiguous-handle')).toMatchObject({
+      status: 'running',
+      last_poll_error: 'remote_handle_recovery_ambiguous'
+    })
+    expect(await jobRepository.get('healthy-sibling')).toMatchObject({
+      status: 'success',
+      exit_code: 0
+    })
+
+    // A fresh poller must use the durable first observation rather than an in-memory counter.
+    await makePoller().tick()
+    expect(await jobRepository.get('ambiguous-handle')).toMatchObject({
+      status: 'error',
+      error_code: 'dispatch_failed',
+      last_poll_error: 'remote_handle_recovery_ambiguous'
+    })
+    expect(run.mock.calls.map(([command]) => command)).not.toEqual(
+      expect.arrayContaining([expect.stringMatching(/kill\s+-(?:TERM|KILL)/)])
+    )
+  } finally {
+    await client.$disconnect()
+    await rm(storageRoot, { recursive: true, force: true })
+  }
+})
