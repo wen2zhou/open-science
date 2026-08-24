@@ -292,7 +292,7 @@ export class ComputeJobWorkflowOwner {
         sharedDispatchTracker.begin(jobId)
         dispatchHandoffHeld = true
       }
-      await jobRepository.create({
+      const created = await jobRepository.create({
         id: jobId,
         providerId: host.providerId,
         shape: host.shape,
@@ -310,6 +310,7 @@ export class ComputeJobWorkflowOwner {
         remoteWorkdir,
         initialStatus
       })
+      this.handleJobUpdated(created)
     }
 
     let initialStatus: 'submitted' | 'queued' = 'submitted'

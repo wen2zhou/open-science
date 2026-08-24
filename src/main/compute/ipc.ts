@@ -494,9 +494,25 @@ export const createJobUpdatedBroadcaster =
       } catch {
         // Preserve provider fallback; likewise, only a successful null Job lookup proves deletion.
       }
-      if (!(await jobRepository.get(job.job_id).catch(() => true))) return
-      const summary = await toJobSummary(job, displayName, storageRoot)
-      if (await jobRepository.get(job.job_id).catch(() => true)) broadcastJobUpdated(summary)
+      const current = await jobRepository.get(job.job_id).catch(() => null)
+      if (!current) return
+      let summary = await toJobSummary(current, displayName, storageRoot)
+      // Filesystem scanning above yields. Re-read immediately before delivery so a terminal or
+      // consumed transition committed during that scan cannot be overwritten by an older snapshot.
+      const verified = await jobRepository.get(job.job_id).catch(() => null)
+      if (!verified) return
+      if (
+        verified.status !== current.status ||
+        verified.finished_at !== current.finished_at ||
+        verified.exit_code !== current.exit_code ||
+        verified.notified_at !== current.notified_at ||
+        verified.notification_consumed_at !== current.notification_consumed_at ||
+        verified.harvested_at !== current.harvested_at ||
+        verified.harvest_error !== current.harvest_error
+      ) {
+        summary = await toJobSummary(verified, displayName, storageRoot)
+      }
+      broadcastJobUpdated(summary)
     })().catch(() => undefined)
   }
 
