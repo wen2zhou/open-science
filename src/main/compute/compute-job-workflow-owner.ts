@@ -331,7 +331,7 @@ export class ComputeJobWorkflowOwner {
           hostRepository: this.hostRepository,
           jobRepository: this.jobRepository,
           onJobUpdated: this.handleJobUpdated
-        })
+        }).catch(() => undefined)
       }
     } finally {
       if (dispatchHandoffHeld) sharedDispatchTracker.end(jobId)
