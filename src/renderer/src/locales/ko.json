@@ -3248,5 +3248,7 @@
   "Figure {{index}}": "그림 {{index}}",
   "{{count}} lines of output_other": "출력 {{count}}줄",
   "done": "완료",
-  "Esc to close": "Esc로 닫기"
+  "Esc to close": "Esc로 닫기",
+  "Remote job completed": "원격 작업이 완료되었습니다",
+  "Analysis started automatically": "분석이 자동으로 시작되었습니다"
 }
