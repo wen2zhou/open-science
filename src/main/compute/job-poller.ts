@@ -11,6 +11,7 @@ import {
   type ComputeConnectionLease
 } from './connection-broker'
 import { quoteRemotePath } from './job-dispatcher'
+import { JobHarvestScheduler, type HarvestFn } from './job-harvest-scheduler'
 import { parsePollOutput } from './job-poll-output'
 import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
 import { emitJobNotification } from './job-notifier'
@@ -52,17 +53,7 @@ const POLL_BATCH_MAX_JOBS = 8
 // cleanly and write the exit_code file (exit 124) before the poller intervenes.
 const POLLER_KILL_GRACE_SECONDS = 60
 
-// Maximum concurrent harvest operations (design.md §3: concurrency limit 2).
-const HARVEST_CONCURRENCY_LIMIT = 2
-const HARVEST_RETRY_BASE_MS = 60_000
-const HARVEST_RETRY_MAX_MS = 15 * 60_000
-
-/**
- * Injectable harvest function type. The poller calls this for each terminal job that needs
- * harvesting (design §3). In production this is `harvestJob` from harvest-engine.ts.
- * Accepting the full job object lets the function access all fields without extra lookups.
- */
-export type HarvestFn = (job: ComputeJob) => Promise<void>
+export type { HarvestFn } from './job-harvest-scheduler'
 
 export type JobPollerDeps = {
   connectionBroker: ComputeConnectionBrokerAcquirer
@@ -118,19 +109,10 @@ export class JobPoller {
   private readonly makeNonceFn: () => string
   // Shared dispatch tracker (see JobPollerDeps.dispatchTracker).
   private readonly dispatchTracker: DispatchTracker
-  // Optional injectable harvest function (design §3).
-  private readonly harvestFn: HarvestFn | undefined
+  private readonly harvestScheduler: JobHarvestScheduler | undefined
   private readonly lifecycle: ComputeJobLifecycle
   private readonly submittedJobRecovery: SubmittedJobRecovery
 
-  // Harvest concurrency state (design §3):
-  //   inFlightHarvests: jobIds whose harvest is currently running — prevents duplicate dispatches
-  //   harvestSemaphore: count of available harvest slots (starts at HARVEST_CONCURRENCY_LIMIT)
-  //   harvestQueue: jobs waiting for a semaphore slot
-  private readonly inFlightHarvests = new Set<string>()
-  private readonly harvestRetries = new Map<string, { attempts: number; retryAt: number }>()
-  private harvestSemaphore = HARVEST_CONCURRENCY_LIMIT
-  private readonly harvestQueue: ComputeJob[] = []
   //   inFlightErrorNotifs: jobIds whose error-notification emit is in progress — prevents a second
   //   overlapping tick from re-emitting before notified_at is persisted (ticks are not serialized)
   private readonly inFlightErrorNotifs = new Set<string>()
@@ -140,7 +122,9 @@ export class JobPoller {
     this.clearIntervalFn = deps.clearInterval ?? ((h) => clearInterval(h))
     this.makeNonceFn = deps.makeNonce ?? (() => randomBytes(12).toString('hex') + '_')
     this.dispatchTracker = deps.dispatchTracker ?? sharedDispatchTracker
-    this.harvestFn = deps.harvestFn
+    this.harvestScheduler = deps.harvestFn
+      ? new JobHarvestScheduler(deps.harvestFn, deps.now)
+      : undefined
     this.lifecycle = new ComputeJobLifecycle(deps.jobRepository, deps.onJobUpdated)
     this.submittedJobRecovery = new SubmittedJobRecovery(this.lifecycle)
   }
@@ -168,6 +152,7 @@ export class JobPoller {
     while (this.activeTicks.size > 0 || this.backgroundTasks.size > 0) {
       await Promise.allSettled([...this.activeTicks, ...this.backgroundTasks])
     }
+    if (this.harvestScheduler) await this.harvestScheduler.waitForIdle()
   }
 
   resume(): void {
@@ -199,10 +184,10 @@ export class JobPoller {
   async tick(): Promise<void> {
     // Restart-recovery harvest scan: re-queue terminal jobs whose harvest was interrupted by restart.
     // harvestFn must be configured; without it, harvest is disabled entirely.
-    if (this.harvestFn) {
+    if (this.harvestScheduler) {
       const unharvested = await this.deps.jobRepository.findTerminalUnharvested()
       for (const job of unharvested) {
-        this._dispatchHarvest(job)
+        this.harvestScheduler.schedule(job)
       }
     }
 
@@ -257,65 +242,6 @@ export class JobPoller {
     )
   }
 
-  // ---------------------------------------------------------------------------
-  // Harvest dispatch helpers (design §3)
-  // ---------------------------------------------------------------------------
-
-  // Dispatches a harvest for a terminal job. Fire-and-forget: does NOT await the harvest so the
-  // poller tick returns immediately (hard constraint: design §3 "never await in tick loop").
-  // Enforces: in-flight dedup (same job not re-dispatched while harvest is running), and the
-  // concurrency semaphore (at most HARVEST_CONCURRENCY_LIMIT harvests run simultaneously).
-  private _dispatchHarvest(job: ComputeJob): void {
-    if (!this.harvestFn) return
-    const retry = this.harvestRetries.get(job.job_id)
-    if (retry && retry.retryAt > (this.deps.now?.() ?? Date.now())) return
-    // In-flight dedup: if already harvesting this job, skip.
-    if (this.inFlightHarvests.has(job.job_id)) return
-
-    this.inFlightHarvests.add(job.job_id)
-
-    if (this.harvestSemaphore > 0) {
-      // Slot available — start immediately.
-      this._runHarvest(job)
-    } else {
-      // No slot — enqueue; will be started when a running harvest completes.
-      this.harvestQueue.push(job)
-    }
-  }
-
-  // Acquires a semaphore slot, runs harvestFn, then releases the slot and drains the queue.
-  private _runHarvest(job: ComputeJob): void {
-    if (!this.harvestFn) return
-    this.harvestSemaphore--
-
-    // Fire-and-forget: intentionally not awaited.
-    let retryableFailure = false
-    const task = this.harvestFn(job)
-      .catch((error) => {
-        if (error instanceof ComputeConnectionError) {
-          retryableFailure = true
-          const attempts = (this.harvestRetries.get(job.job_id)?.attempts ?? 0) + 1
-          const delay = Math.min(HARVEST_RETRY_BASE_MS * 2 ** (attempts - 1), HARVEST_RETRY_MAX_MS)
-          this.harvestRetries.set(job.job_id, {
-            attempts,
-            retryAt: (this.deps.now?.() ?? Date.now()) + delay
-          })
-        }
-        // Individual harvest failures must not propagate to the poller.
-      })
-      .finally(() => {
-        if (!retryableFailure) this.harvestRetries.delete(job.job_id)
-        this.inFlightHarvests.delete(job.job_id)
-        this.harvestSemaphore++
-        // Drain one item from the queue if any are waiting.
-        const next = this.harvestQueue.shift()
-        if (next) {
-          this._runHarvest(next)
-        }
-      })
-    this.trackBackground(task)
-  }
-
   // Polls all jobs for one provider in a single SSH round-trip (where possible).
   private async _pollProvider(providerId: string, jobs: ComputeJob[]): Promise<void> {
     const noHandle: ComputeJob[] = []
@@ -366,7 +292,7 @@ export class JobPoller {
   }
 
   private _applySubmittedRecoveryResult(result: SubmittedJobRecoveryResult): void {
-    if (result.kind === 'harvest') this._dispatchHarvest(result.job)
+    if (result.kind === 'harvest') this.harvestScheduler?.schedule(result.job)
     if (result.kind === 'notification') this._dispatchErrorNotification(result.job)
   }
 
@@ -561,7 +487,7 @@ export class JobPoller {
       if (transition.kind === 'ignored') return
       // Async-dispatch harvest for success/failed/timeout (design §3). Not awaited — must not
       // block the tick loop. 'error' status is never reached here (only in the noHandle path).
-      this._dispatchHarvest(transition.job)
+      this.harvestScheduler?.schedule(transition.job)
       return
     }
 
@@ -580,7 +506,7 @@ export class JobPoller {
           stderrTail: stderrTail || null
         })
         // process_vanished is a terminal state — dispatch harvest (design §3).
-        if (transition.kind === 'applied') this._dispatchHarvest(transition.job)
+        if (transition.kind === 'applied') this.harvestScheduler?.schedule(transition.job)
       }
       // else: keep running, check again next tick
       return
@@ -644,7 +570,7 @@ export class JobPoller {
         })
         if (transition.kind === 'ignored') return
         // Poller-fallback timeout is a terminal state — dispatch harvest (design §3).
-        this._dispatchHarvest(transition.job)
+        this.harvestScheduler?.schedule(transition.job)
         return
       }
     }
