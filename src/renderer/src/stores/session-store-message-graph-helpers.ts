@@ -32,6 +32,7 @@ export type AppendUserMessageInput = {
   attachments?: PersistedUploadedAttachment[]
   parts?: MessagePart[]
   turnIntent?: PersistedChatMessage['turnIntent']
+  attribution?: PersistedChatMessage['attribution']
   cwd?: string
   projectId?: string
   permissionProfile?: ChatSession['permissionProfile']
