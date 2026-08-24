@@ -123,6 +123,7 @@ type WorkspaceConversationController = {
     delete: () => void
   }
   queue: Omit<WorkspaceMessageQueueController, 'lifecycle'>
+  admitApplicationMessage: WorkspaceMessageQueueController['lifecycle']['enqueueApplication']
 }
 
 const errorMessage = (error: unknown): string =>
@@ -494,6 +495,7 @@ const useWorkspaceConversationController = (
   const queueDraft = canQueueDraft(options)
 
   return {
+    admitApplicationMessage: messageQueue.lifecycle.enqueueApplication,
     optimisticMessage: options.activeSession
       ? optimisticMessages[options.activeSession.id]
       : undefined,

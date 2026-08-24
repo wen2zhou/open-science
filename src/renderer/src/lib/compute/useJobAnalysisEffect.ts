@@ -1,6 +1,6 @@
 // useJobAnalysisEffect — wires the job-analysis-trigger into the React component tree.
 //
-// Called from WorkspacePage (which owns `sendMessage` from useWorkspaceAgentRuntime).
+// Called from WorkspacePage with the shared per-Session application Message admission queue.
 // On every `compute:job-updated` broadcast AND once at session hydration time,
 // the trigger is fed the job summary and decides whether to fire / queue an analysis turn.
 //
@@ -19,10 +19,10 @@ import { flushSessionPersistence } from '../session-persistence/session-persiste
 import { createJobAnalysisTrigger } from '../compute/job-analysis-trigger'
 
 // Matches the sendMessage signature returned by useWorkspaceAgentRuntime.
-type SendMessageFn = (input: {
-  sessionId?: string
+type AdmitMessageFn = (input: {
+  session: ReturnType<typeof useSessionStore.getState>['sessions'][number]
   text: string
-  attribution?: Extract<
+  attribution: Extract<
     NonNullable<
       ReturnType<
         typeof useSessionStore.getState
@@ -30,22 +30,21 @@ type SendMessageFn = (input: {
     >,
     { feature: 'compute' }
   >
-  requireExistingSession?: boolean
 }) => Promise<{ sessionId: string; messageId: string } | undefined>
 
 type UseJobAnalysisEffectOptions = {
   enabled: boolean
-  sendMessage: SendMessageFn
+  admitMessage: AdmitMessageFn
 }
 
 // Subscribes to all done-state compute:job-updated broadcasts and runs the analysis turn trigger.
 // Also scans for pending notifications on session load (restart recovery path).
 export const useJobAnalysisEffect = ({
   enabled,
-  sendMessage
+  admitMessage
 }: UseJobAnalysisEffectOptions): void => {
-  const sendLatestMessage = useEffectEvent(
-    (input: Parameters<SendMessageFn>[0]): ReturnType<SendMessageFn> => sendMessage(input)
+  const admitLatestMessage = useEffectEvent(
+    (input: Parameters<AdmitMessageFn>[0]): ReturnType<AdmitMessageFn> => admitMessage(input)
   )
 
   useEffect(() => {
@@ -65,7 +64,10 @@ export const useJobAnalysisEffect = ({
       },
       sendPrompt: async (sessionId, text, attribution) => {
         if (!isActive) return undefined
-        return sendLatestMessage({ sessionId, text, attribution, requireExistingSession: true })
+        const session = useSessionStore
+          .getState()
+          .sessions.find((candidate) => candidate.id === sessionId)
+        return session ? admitLatestMessage({ session, text, attribution }) : undefined
       },
       findPersistedDelivery: (sessionId, jobId) => {
         const session = useSessionStore
