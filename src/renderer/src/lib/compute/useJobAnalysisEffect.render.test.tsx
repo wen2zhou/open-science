@@ -184,7 +184,15 @@ describe('useJobAnalysisEffect persistence readiness', () => {
         }
       ]
     })
-    const firstSend = vi.fn<AnalysisSendMessage>(async () => {
+    const firstSend = vi.fn<AnalysisSendMessage>(async (input) => {
+      useSessionStore.getState().appendRoutedUserMessage({
+        sessionId: 'session-1',
+        messageId: 'message-1',
+        eventId: 'compute-delivery-event-1',
+        content: input.text,
+        attribution: input.attribution,
+        createdAt: 2
+      })
       useSessionStore.setState((state) => ({
         sessions: state.sessions.map((session) =>
           session.id === 'session-1' ? { ...session, status: 'running' } : session
@@ -205,7 +213,26 @@ describe('useJobAnalysisEffect persistence readiness', () => {
     act(() => {
       useSessionStore.setState((state) => ({
         sessions: state.sessions.map((session) =>
-          session.id === 'session-1' ? { ...session, status: 'idle' } : session
+          session.id === 'session-1'
+            ? {
+                ...session,
+                status: 'idle',
+                messages: [
+                  ...session.messages,
+                  {
+                    id: 'agent-message-1',
+                    role: 'agent',
+                    content: 'Analysis complete',
+                    status: 'complete',
+                    responseToMessageId: 'message-1',
+                    eventIds: [],
+                    createdAt: 3,
+                    updatedAt: 3,
+                    completedAt: 3
+                  }
+                ]
+              }
+            : session
         )
       }))
     })
