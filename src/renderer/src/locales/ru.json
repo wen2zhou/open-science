@@ -3638,5 +3638,10 @@
   "done": "готово",
   "Esc to close": "Esc — закрыть",
   "Remote job completed": "Удалённая задача завершена",
-  "Analysis started automatically": "Анализ запущен автоматически"
+  "Analysis started automatically": "Анализ запущен автоматически",
+  "Waiting in queue": "Ожидание в очереди",
+  "Submitting": "Отправка",
+  "Unable to load remote jobs.": "Не удалось загрузить удалённые задания.",
+  "Harvest pending. Open Science will retry automatically.": "Сбор результатов ожидается. Open Science автоматически повторит попытку.",
+  "Harvest failed. Remote files were left untouched.": "Не удалось собрать результаты. Удалённые файлы не изменены."
 }

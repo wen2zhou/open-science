@@ -3526,5 +3526,10 @@
   "done": "terminé",
   "Esc to close": "Échap pour fermer",
   "Remote job completed": "Tâche distante terminée",
-  "Analysis started automatically": "Analyse démarrée automatiquement"
+  "Analysis started automatically": "Analyse démarrée automatiquement",
+  "Waiting in queue": "En attente dans la file",
+  "Submitting": "Envoi en cours",
+  "Unable to load remote jobs.": "Impossible de charger les tâches distantes.",
+  "Harvest pending. Open Science will retry automatically.": "Collecte en attente. Open Science réessaiera automatiquement.",
+  "Harvest failed. Remote files were left untouched.": "Échec de la collecte. Les fichiers distants n’ont pas été modifiés."
 }

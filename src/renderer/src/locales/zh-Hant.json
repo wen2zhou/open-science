@@ -3252,5 +3252,10 @@
   "done": "完成",
   "Esc to close": "按 Esc 關閉",
   "Remote job completed": "遠端工作已完成",
-  "Analysis started automatically": "已自動開始分析"
+  "Analysis started automatically": "已自動開始分析",
+  "Waiting in queue": "正在佇列中等待",
+  "Submitting": "正在提交",
+  "Unable to load remote jobs.": "無法載入遠端作業。",
+  "Harvest pending. Open Science will retry automatically.": "結果收集尚待處理。Open Science 將自動重試。",
+  "Harvest failed. Remote files were left untouched.": "結果收集失敗。遠端檔案保持不變。"
 }
