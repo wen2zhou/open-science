@@ -55,7 +55,7 @@ const getFreeDiskBytes = async (path: string): Promise<number> => {
   return Number(stats.bavail) * Number(stats.bsize)
 }
 
-// Serialize harvests so concurrent jobs cannot spend the same free-space reservation.
+// Serialize only reservation bookkeeping so concurrent harvests cannot spend the same free space.
 let harvestBudgetTail: Promise<void> = Promise.resolve()
 const withHarvestBudgetLock = async <Result>(operation: () => Promise<Result>): Promise<Result> => {
   const previous = harvestBudgetTail
@@ -512,6 +512,22 @@ const harvestJobUnchecked = async (
   }
 
   const normalizedHarvestConfig = normalizeHarvestConfig(harvestConfig)
+  const plannedClassification = classifyFiles(
+    remoteFiles,
+    outputs,
+    normalizedHarvestConfig,
+    stagedInputs
+  )
+  const remoteSizeByPath = new Map(remoteFiles.map((entry) => [entry.path, entry.size_bytes]))
+  const plannedPaths = new Set([
+    ...plannedClassification.featured,
+    ...plannedClassification.hidden,
+    ...plannedClassification.logs
+  ])
+  const plannedTransferBytes = [...plannedPaths].reduce(
+    (total, path) => total + Math.max(0, remoteSizeByPath.get(path) ?? 0),
+    0
+  )
   let freeDiskBytes: number
   try {
     freeDiskBytes = await (deps.getFreeDiskBytesFn ?? getFreeDiskBytes)(attemptDir)
@@ -523,14 +539,16 @@ const harvestJobUnchecked = async (
     await finalizeAndReturn(`free-space check failed: ${msg}`, '[]')
     return
   }
-  const requestedBudgetBytes = Math.floor((normalizedHarvestConfig.max_total_mb ?? 0) * MIB_BYTES)
+  const requestedBudgetBytes = Math.min(
+    Math.floor((normalizedHarvestConfig.max_total_mb ?? 0) * MIB_BYTES),
+    plannedTransferBytes
+  )
   const reservation = await reserveHarvestBudget(storageRoot, freeDiskBytes, requestedBudgetBytes)
   const effectiveHarvestConfig: HarvestConfig = {
     ...normalizedHarvestConfig,
     max_total_mb: reservation.bytes / MIB_BYTES
   }
   const classification = classifyFiles(remoteFiles, outputs, effectiveHarvestConfig, stagedInputs)
-  const remoteSizeByPath = new Map(remoteFiles.map((entry) => [entry.path, entry.size_bytes]))
   let remainingBudgetBytes = reservation.bytes
 
   // ── 5. Download files ───────────────────────────────────────────────────────

@@ -829,6 +829,68 @@ describe('harvestJob — compute_done notification (issue 06)', () => {
 })
 
 describe('harvestJob - bounded logs and disk reserve', () => {
+  it('allows small harvests on the same root to download concurrently', async () => {
+    const storageRoot = await mkTmp()
+    const jobs = [
+      makeJob({
+        job_id: 'job-concurrent-1',
+        remote_workdir: '~/.openscience/jobs/job-concurrent-1',
+        output_manifest: JSON.stringify(['*.result']),
+        harvest_config: JSON.stringify({ max_file_mb: 1, max_total_mb: 1 })
+      }),
+      makeJob({
+        job_id: 'job-concurrent-2',
+        remote_workdir: '~/.openscience/jobs/job-concurrent-2',
+        output_manifest: JSON.stringify(['*.result']),
+        harvest_config: JSON.stringify({ max_file_mb: 1, max_total_mb: 1 })
+      })
+    ]
+    let releaseDownloads!: () => void
+    const downloadsReleased = new Promise<void>((resolve) => {
+      releaseDownloads = resolve
+    })
+    let startedDownloads = 0
+    const connection = (filename: string): ComputeConnectionLease => ({
+      run: vi.fn(async () => ({
+        exitCode: 0,
+        stdout: findOutput([{ path: filename, size_bytes: 1 }]),
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      })),
+      upload: vi.fn(async () => undefined),
+      download: vi.fn(async (_remotePath: string, localPath: string) => {
+        startedDownloads += 1
+        await downloadsReleased
+        await mkdir(dirname(localPath), { recursive: true })
+        await writeFile(localPath, filename)
+        return {
+          exitCode: 0,
+          stderr: '',
+          timedOut: false,
+          bytesWritten: 1,
+          exceeded: false
+        }
+      })
+    })
+    const connections = [connection('first.result'), connection('second.result')]
+    let acquired = 0
+    const deps = (job: ComputeJob) => ({
+      connectionBroker: {
+        acquire: vi.fn(async () => connections[acquired++]!)
+      },
+      hostRepository: makeHostRepo(sampleHost()),
+      jobRepository: makeJobRepo(job).repo,
+      storageRoot,
+      getFreeDiskBytesFn: async () => HARVEST_FREE_DISK_RESERVE_BYTES + 2
+    })
+
+    const harvests = jobs.map((job) => harvestJob(job, deps(job)))
+    await vi.waitFor(() => expect(startedDownloads).toBe(2))
+    releaseDownloads()
+    await Promise.all(harvests)
+  })
+
   it('uses one canonical budget for aliases of the same storage root', async () => {
     const storageRoot = await mkTmp()
     const aliasRoot = `${storageRoot}-alias`
@@ -868,10 +930,14 @@ describe('harvestJob - bounded logs and disk reserve', () => {
       bytesWritten: 0,
       exceeded: false
     }))
-    const lease = (filename: string, download: ComputeConnectionLease['download']) => ({
+    const lease = (
+      filename: string,
+      sizeBytes: number,
+      download: ComputeConnectionLease['download']
+    ) => ({
       run: vi.fn(async () => ({
         exitCode: 0,
-        stdout: findOutput([{ path: filename, size_bytes: 1 }]),
+        stdout: findOutput([{ path: filename, size_bytes: sizeBytes }]),
         stderr: '',
         truncated: false,
         timedOut: false
@@ -881,7 +947,11 @@ describe('harvestJob - bounded logs and disk reserve', () => {
     })
     const freeBytes = HARVEST_FREE_DISK_RESERVE_BYTES + MIB_BYTES_FOR_TEST
     const firstHarvest = harvestJob(firstJob, {
-      connectionBroker: { acquire: vi.fn(async () => lease('first.result', firstDownload)) },
+      connectionBroker: {
+        acquire: vi.fn(async () =>
+          lease('first.result', MIB_BYTES_FOR_TEST, firstDownload)
+        )
+      },
       hostRepository: makeHostRepo(sampleHost()),
       jobRepository: makeJobRepo(firstJob).repo,
       storageRoot,
@@ -890,7 +960,9 @@ describe('harvestJob - bounded logs and disk reserve', () => {
     await vi.waitFor(() => expect(firstDownload).toHaveBeenCalledOnce())
 
     await harvestJob(secondJob, {
-      connectionBroker: { acquire: vi.fn(async () => lease('second.result', secondDownload)) },
+      connectionBroker: {
+        acquire: vi.fn(async () => lease('second.result', 1, secondDownload))
+      },
       hostRepository: makeHostRepo(sampleHost()),
       jobRepository: makeJobRepo(secondJob).repo,
       storageRoot: aliasRoot,
@@ -1041,14 +1113,14 @@ describe('harvestJob - bounded logs and disk reserve', () => {
       expect.any(Object),
       expect.stringContaining('/growing.result'),
       expect.any(String),
-      100 * 1024 * 1024
+      1
     )
     const finalUpdate = updates[0]!.data as Record<string, unknown>
     expect(finalUpdate.harvestError).toContain('download exceeded the allowed byte budget')
     expect(JSON.parse(finalUpdate.leftOnRemote as string)).toEqual([
       expect.objectContaining({
         uri: expect.stringContaining('/growing.result'),
-        reason: 'exceeds_max_file_mb'
+        reason: 'exceeds_max_total_mb'
       })
     ])
   })
