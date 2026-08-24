@@ -56,6 +56,14 @@ const fakeTarget: ResolvedSshTarget = {
   extraArgs: ['-o', 'BatchMode=yes']
 }
 
+const noLaunchRecoveryOutput = [
+  'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+  'workdir:0',
+  'exit_code:',
+  'pid:',
+  'cwd_match:0'
+].join('\n')
+
 const leaseFromRunners = (runner: SshRunner, scpRunner?: ScpRunner): ComputeConnectionLease => ({
   run: (command, options) => runner.run(fakeTarget, command, options),
   upload: async (localPath, remotePath) => {
@@ -400,13 +408,24 @@ describe('dispatchJob', () => {
   it('redacts invalid dispatch protocol output only after PID parsing fails', async () => {
     const job = makeJob()
     const secret = 'dispatch-secret'
-    const runner = makeSshRunner({
-      exitCode: 0,
-      stdout: `not-a-pid ${secret}`,
-      stderr: '',
-      truncated: false,
-      timedOut: false
-    })
+    const runner: SshRunner = {
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: `not-a-pid ${secret}`,
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: noLaunchRecoveryOutput,
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+    }
     const lease = leaseFromRunners(runner)
     lease.redactSensitiveOutputs = vi.fn(async (values) =>
       values.map((value) => value.replaceAll(secret, '[redacted]'))
@@ -464,23 +483,30 @@ describe('dispatchJob', () => {
     expect(tracker.has('job-1')).toBe(false) // cleared in finally
   })
 
-  it('clears the in-flight tracker even when dispatch throws', async () => {
+  it('clears the in-flight tracker and settles a non-transport runner failure', async () => {
     const job = makeJob()
     const tracker = new DispatchTracker()
     // A runner that throws simulates an unexpected error mid-dispatch.
     const runner: SshRunner = { run: vi.fn(() => Promise.reject(new Error('boom'))) }
-    const { repo } = makeJobRepo(job)
+    const { repo, transition } = makeJobRepo(job)
 
-    await expect(
-      dispatchJob(job.job_id, {
-        connectionBroker: brokerFromRunners(runner),
-        hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
-        jobRepository: repo as unknown as ComputeJobRepository,
-        dispatchTracker: tracker
-      })
-    ).rejects.toThrow('boom')
+    await dispatchJob(job.job_id, {
+      connectionBroker: brokerFromRunners(runner),
+      hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository,
+      dispatchTracker: tracker
+    })
 
     expect(tracker.has('job-1')).toBe(false)
+    expect(transition).toHaveBeenCalledWith(
+      'job-1',
+      ['submitted'],
+      expect.objectContaining({
+        status: 'error',
+        errorCode: 'dispatch_failed',
+        stderrTail: 'The remote Compute Job launcher failed unexpectedly.'
+      })
+    )
   })
 
   it('does not double-quote a leading ~ in the dispatch command (tilde must expand)', async () => {

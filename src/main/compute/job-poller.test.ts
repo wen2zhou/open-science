@@ -45,6 +45,14 @@ const withNonce = (lines: string[]): string =>
     .map((l) => (/^(JOB_START:|alive:|STDOUT_END:|STDERR_END:)/.test(l) ? NONCE + l : l))
     .join('\n')
 
+const noLaunchRecoveryOutput = [
+  'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+  'workdir:0',
+  'exit_code:',
+  'pid:',
+  'cwd_match:0'
+].join('\n')
+
 const makeSshRunner = (result: Awaited<ReturnType<SshRunner['run']>>): SshRunner => ({
   run: vi.fn(() => Promise.resolve(result))
 })
@@ -1135,8 +1143,8 @@ describe('JobPoller', () => {
   it.each(['ssh_config', 'password'] as const)(
     'marks a submitted %s job without pid as interrupted on restart',
     async () => {
-      // A submitted job with no remote_handle AND no in-flight dispatch = dispatch was interrupted by
-      // an app restart (the tracker is empty after a restart). Mark it error/dispatch_failed.
+      // The empty tracker identifies a restart candidate; the remote probe proves its deterministic
+      // workdir was never created, so it is safe to mark dispatch_failed.
       const job = makeJob({ status: 'submitted', remote_handle: undefined })
       const update = vi.fn((_id: string, u: unknown) =>
         Promise.resolve({ ...job, ...(u as object) })
@@ -1152,7 +1160,7 @@ describe('JobPoller', () => {
 
       const runner = makeSshRunner({
         exitCode: 0,
-        stdout: '',
+        stdout: noLaunchRecoveryOutput,
         stderr: '',
         truncated: false,
         timedOut: false
@@ -1399,7 +1407,7 @@ describe('JobPoller — harvest wiring', () => {
 
     const runner = makeSshRunner({
       exitCode: 0,
-      stdout: '',
+      stdout: noLaunchRecoveryOutput,
       stderr: '',
       truncated: false,
       timedOut: false
@@ -1689,7 +1697,7 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
 
     const runner = makeSshRunner({
       exitCode: 0,
-      stdout: '',
+      stdout: noLaunchRecoveryOutput,
       stderr: '',
       truncated: false,
       timedOut: false
@@ -1740,7 +1748,7 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
     } as unknown as ComputeJobRepository
     const runner = makeSshRunner({
       exitCode: 0,
-      stdout: '',
+      stdout: noLaunchRecoveryOutput,
       stderr: '',
       truncated: false,
       timedOut: false
@@ -1774,7 +1782,7 @@ describe('compute_done notification on dispatch_failed (error) jobs', () => {
 
     const runner = makeSshRunner({
       exitCode: 0,
-      stdout: '',
+      stdout: noLaunchRecoveryOutput,
       stderr: '',
       truncated: false,
       timedOut: false
