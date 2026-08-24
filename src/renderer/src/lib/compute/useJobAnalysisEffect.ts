@@ -23,7 +23,11 @@ type SendMessageFn = (input: {
   sessionId?: string
   text: string
   attribution?: Extract<
-    NonNullable<ReturnType<typeof useSessionStore.getState>['sessions'][number]['messages'][number]['attribution']>,
+    NonNullable<
+      ReturnType<
+        typeof useSessionStore.getState
+      >['sessions'][number]['messages'][number]['attribution']
+    >,
     { feature: 'compute' }
   >
   requireExistingSession?: boolean
@@ -180,7 +184,9 @@ const computeDeliveryOutcome = (
   if (session.status === 'error' || responses.some((message) => message.status === 'error')) {
     return 'failed'
   }
-  return responses.some((message) => message.status === 'complete' && message.completedAt !== undefined)
+  return responses.some(
+    (message) => message.status === 'complete' && message.completedAt !== undefined
+  )
     ? 'succeeded'
     : 'pending'
 }
