@@ -274,10 +274,13 @@ class ComputeJobDeletionOwner {
     }
 
     await this.armOwner(owner, false)
+    // Runtime pause is global. Hold it only through the owner-scoped barrier and dispatch drain;
+    // durable remote cleanup runs later under that barrier without freezing unrelated owners.
+    const runtime = this.runtime
     let runtimePaused = false
     try {
-      if (this.runtime) {
-        await this.runtime.pause()
+      if (runtime) {
+        await runtime.pause()
         runtimePaused = true
       }
       const observed = await this.deps.jobRepository.findByOwner(owner)
@@ -294,14 +297,12 @@ class ComputeJobDeletionOwner {
       })
       this.preparedDeletion = { owner, remoteCleanups, outcome, settleOutcome }
     } catch (error) {
-      try {
-        if (!this.retainedOwners.has(this.ownerKey(owner))) {
-          await this.releaseOwnerBarrier(owner)
-        }
-      } finally {
-        if (runtimePaused) this.runtime?.resume()
+      if (!this.retainedOwners.has(this.ownerKey(owner))) {
+        await this.releaseOwnerBarrier(owner)
       }
       throw error
+    } finally {
+      if (runtimePaused) runtime?.resume()
     }
   }
 
@@ -322,7 +323,6 @@ class ComputeJobDeletionOwner {
     this.preparedDeletion = undefined
     prepared.settleOutcome({ status: 'released' })
     this.releaseCommittedOwnerBarriers(owner)
-    this.runtime?.resume()
   }
 
   private async abortOwner(owner: ComputeJobOwner): Promise<void> {
@@ -337,7 +337,6 @@ class ComputeJobDeletionOwner {
     if (prepared) {
       this.preparedDeletion = undefined
       prepared.settleOutcome({ status: 'released' })
-      this.runtime?.resume()
     }
   }
 

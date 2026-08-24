@@ -171,7 +171,7 @@ describe('ComputeJobDeletionOwner', () => {
       expect(harness.dispatchTracker.waitFor).toHaveBeenCalledWith(['job-1'])
       expect(harness.runner.run).not.toHaveBeenCalled()
       expect(harness.lifecycle.deleteOwnerRows).not.toHaveBeenCalled()
-      expect(harness.runtime.resume).not.toHaveBeenCalled()
+      expect(harness.runtime.resume).toHaveBeenCalledOnce()
 
       harness.order.push('owner-authority')
       await harness.owner.commitSessionJobDeletion('project-1', 'session-1')
@@ -185,11 +185,11 @@ describe('ComputeJobDeletionOwner', () => {
         'queue-paused',
         'poller-paused',
         'dispatch-drained',
+        'poller-resumed',
         'owner-authority',
         'remote-cleanup',
         'delete-rows',
-        'queue-resumed',
-        'poller-resumed'
+        'queue-resumed'
       ])
       expect(harness.connectionBroker.acquire).toHaveBeenCalledWith('ssh:cluster', {
         intent: 'job_cleanup'
@@ -276,7 +276,7 @@ describe('ComputeJobDeletionOwner', () => {
     expect(harness.lifecycle.deleteOwnerRows).not.toHaveBeenCalled()
     expect(harness.lifecycle.abortOwnerDeletion).not.toHaveBeenCalled()
     expect(harness.queueManager.resumeOwner).not.toHaveBeenCalled()
-    expect(harness.runtime.resume).not.toHaveBeenCalled()
+    expect(harness.runtime.resume).toHaveBeenCalledOnce()
   })
 
   it('recovers a retained child Session plan before preparing its parent Project', async () => {
