@@ -7,10 +7,13 @@ import type { ComputeHostRepository } from './repository'
 import type { ComputeService } from './compute-service'
 import type { ComputeConnectionBroker } from './connection-broker'
 
-type ComputeJobRuntime = Pick<JobPoller, 'start' | 'stop'>
+type ComputeJobRuntime = { start(): void; stop(): Promise<void> }
 
 type ComputeJobRuntimeDeps = {
-  computeService: Pick<ComputeService, 'handleJobUpdated'>
+  computeService: Pick<
+    ComputeService,
+    'handleJobUpdated' | 'startQueueReconciliation' | 'stopQueueReconciliation'
+  >
   jobDeletionOwner?: Pick<ComputeJobDeletionOwner, 'bindRuntime'>
   hostRepository: ComputeHostRepository
   jobRepository: ComputeJobRepository
@@ -53,10 +56,14 @@ export const createComputeJobRuntime = (
   const poller = adapters.createPoller?.(pollerDeps) ?? new JobPoller(pollerDeps)
   const unbindDeletionRuntime = deps.jobDeletionOwner?.bindRuntime(poller)
   return {
-    start: () => poller.start(),
-    stop: () => {
+    start: () => {
+      poller.start()
+      deps.computeService.startQueueReconciliation()
+    },
+    stop: async () => {
       unbindDeletionRuntime?.()
       poller.stop()
+      await deps.computeService.stopQueueReconciliation()
     }
   }
 }

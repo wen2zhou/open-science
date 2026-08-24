@@ -426,6 +426,8 @@ describe('Compute service architecture', () => {
         'setConcurrencyLimit',
         'setScratchRoot',
         'setSessionConcurrencyLimit',
+        'startQueueReconciliation',
+        'stopQueueReconciliation',
         'submitJob'
       ].sort()
     )
@@ -454,7 +456,9 @@ describe('Compute service architecture', () => {
     ])
 
     expect(referencedMembersOn(computePaths.jobRuntime, ['deps', 'computeService'])).toEqual([
-      'handleJobUpdated'
+      'handleJobUpdated',
+      'startQueueReconciliation',
+      'stopQueueReconciliation'
     ])
   })
 

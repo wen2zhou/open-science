@@ -10,6 +10,8 @@ import { createComputeJobRuntime } from './job-runtime'
 describe('createComputeJobRuntime', () => {
   it('routes updates through the service-owned seams and delegates runtime start/stop', async () => {
     const handleJobUpdated = vi.fn()
+    const startQueueReconciliation = vi.fn()
+    const stopQueueReconciliation = vi.fn(async () => undefined)
     const start = vi.fn()
     const stop = vi.fn()
     const pause = vi.fn(async () => undefined)
@@ -28,7 +30,7 @@ describe('createComputeJobRuntime', () => {
     })
     const runtime = createComputeJobRuntime(
       {
-        computeService: { handleJobUpdated },
+        computeService: { handleJobUpdated, startQueueReconciliation, stopQueueReconciliation },
         jobDeletionOwner,
         hostRepository,
         jobRepository,
@@ -48,7 +50,7 @@ describe('createComputeJobRuntime', () => {
     pollerDeps?.onJobUpdated?.(job)
     await pollerDeps?.harvestFn?.(job)
     runtime.start()
-    runtime.stop()
+    await runtime.stop()
 
     expect(handleJobUpdated).toHaveBeenCalledWith(job)
     expect(harvest).toHaveBeenCalledWith(job, {
@@ -59,7 +61,9 @@ describe('createComputeJobRuntime', () => {
       broadcast
     })
     expect(start).toHaveBeenCalledTimes(1)
+    expect(startQueueReconciliation).toHaveBeenCalledTimes(1)
     expect(stop).toHaveBeenCalledTimes(1)
+    expect(stopQueueReconciliation).toHaveBeenCalledTimes(1)
     expect(jobDeletionOwner.bindRuntime).toHaveBeenCalledWith({ start, stop, pause, resume })
     expect(unbind).toHaveBeenCalledOnce()
   })
