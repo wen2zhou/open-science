@@ -137,11 +137,13 @@ const deletionCases: DeletionCase[] = [
 
 const createDeletionRuntimeHarness = async (
   deletionCase: DeletionCase,
-  options: { holdRemoteCleanup?: boolean } = {}
+  options: { holdCleanupPlanning?: boolean; holdRemoteCleanup?: boolean } = {}
 ): Promise<{
   authorityCommitted(): boolean
+  cleanupPlanningStarted: Promise<void>
   cleanupStarted: Promise<void>
   deleteOwner(): Promise<unknown>
+  releaseCleanupPlanning(): void
   releaseRemoteCleanup(): void
   runScheduledPoll(): void
   survivorStatus(): Promise<JobStatusResult>
@@ -153,8 +155,14 @@ const createDeletionRuntimeHarness = async (
   await migrateApplicationDatabase(client)
 
   const jobRepository = new ComputeJobRepository(() => Promise.resolve(client))
+  const cleanupPlanningStarted = deferred()
+  const releaseCleanupPlanning = deferred()
   const hostRepository = {
-    get: vi.fn(async () => host)
+    get: vi.fn(async () => {
+      cleanupPlanningStarted.resolve()
+      if (options.holdCleanupPlanning) await releaseCleanupPlanning.promise
+      return host
+    })
   } as unknown as ComputeHostRepository
   const cleanupStarted = deferred()
   const releaseRemoteCleanup = deferred()
@@ -280,8 +288,10 @@ const createDeletionRuntimeHarness = async (
 
   return {
     authorityCommitted: () => sessionRepository.authorityCommitted,
+    cleanupPlanningStarted: cleanupPlanningStarted.promise,
     cleanupStarted: cleanupStarted.promise,
     deleteOwner: () => deletionCase.deleteOwner(coordinator),
+    releaseCleanupPlanning: releaseCleanupPlanning.resolve,
     releaseRemoteCleanup: releaseRemoteCleanup.resolve,
     runScheduledPoll: () => {
       if (!scheduledTick) throw new Error('Job poller did not install its scheduled tick.')
@@ -292,6 +302,7 @@ const createDeletionRuntimeHarness = async (
     deletedStatus: () =>
       readStatus('deleted-job', deletionCase.deletedProjectId, 'deleted-session'),
     dispose: async () => {
+      releaseCleanupPlanning.resolve()
       releaseRemoteCleanup.resolve()
       unbindRuntime()
       poller.stop()
