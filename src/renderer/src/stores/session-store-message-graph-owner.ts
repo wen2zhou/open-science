@@ -233,25 +233,22 @@ export const createSessionMessageGraphOwner = <
     const normalizedAgentBackendId = agentBackendId?.trim() || undefined
     const normalizedAgentModel = agentModel?.trim() || undefined
     const uploads = attachments.map(createPersistedUpload)
-
     if (!sessionId || (!trimmedContent && uploads.length === 0)) return undefined
 
     const state = get()
     const existingSession = state.sessions.find((session) => session.id === sessionId)
     const now = Date.now()
-    const userMessage = {
-      ...createMessage(
-        'user',
-        trimmedContent,
-        'complete',
-        undefined,
-        [],
-        uploads,
-        parts,
-        turnIntent
-      ),
-      ...(attribution ? { attribution } : {})
-    }
+    const userMessage = createMessage(
+      'user',
+      trimmedContent,
+      'complete',
+      undefined,
+      [],
+      uploads,
+      parts,
+      turnIntent
+    )
+    if (attribution) userMessage.attribution = attribution
     const activeRun: ActiveRun = {
       promptMessageId: userMessage.id,
       startedAt: now

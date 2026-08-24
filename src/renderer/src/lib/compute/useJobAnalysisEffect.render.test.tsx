@@ -41,7 +41,7 @@ describe('useJobAnalysisEffect persistence readiness', () => {
   const jobsMarkConsumed = vi.fn().mockResolvedValue(undefined)
   const jobsList = vi.fn().mockResolvedValue([])
 
-  type AnalysisSendMessage = Parameters<typeof useJobAnalysisEffect>[0]['sendMessage']
+  type AnalysisSendMessage = Parameters<typeof useJobAnalysisEffect>[0]['admitMessage']
 
   const Probe = ({
     enabled,
@@ -50,7 +50,7 @@ describe('useJobAnalysisEffect persistence readiness', () => {
     enabled: boolean
     onSendMessage?: AnalysisSendMessage
   }): null => {
-    useJobAnalysisEffect({ enabled, sendMessage: onSendMessage })
+    useJobAnalysisEffect({ enabled, admitMessage: onSendMessage })
     return null
   }
 
@@ -67,7 +67,21 @@ describe('useJobAnalysisEffect persistence readiness', () => {
       hydratedSessionId: 'session-1',
       isLoaded: true
     })
-    useSessionStore.setState(createInitialSessionState())
+    useSessionStore.setState({
+      ...createInitialSessionState(),
+      sessions: [
+        {
+          id: 'session-1',
+          projectId: 'project-a',
+          title: 'Ready',
+          cwd: '/workspace/project-a',
+          status: 'idle',
+          messages: [],
+          createdAt: 1,
+          updatedAt: 1
+        }
+      ]
+    })
     window.api = {
       compute: {
         jobsPendingNotification,
