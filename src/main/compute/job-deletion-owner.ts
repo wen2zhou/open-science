@@ -279,12 +279,19 @@ class ComputeJobDeletionOwner {
     const runtime = this.runtime
     let runtimePaused = false
     try {
-      if (runtime) {
-        await runtime.pause()
-        runtimePaused = true
+      try {
+        if (runtime) {
+          await runtime.pause()
+          runtimePaused = true
+        }
+        const observed = await this.deps.jobRepository.findByOwner(owner)
+        await this.dispatchTracker.waitFor(observed.map((job) => job.job_id))
+      } finally {
+        if (runtimePaused) runtime?.resume()
       }
-      const observed = await this.deps.jobRepository.findByOwner(owner)
-      await this.dispatchTracker.waitFor(observed.map((job) => job.job_id))
+
+      // The owner barrier now excludes these rows from new polling/dispatch. Build the cleanup plan
+      // without holding the global runtime pause so unrelated owners keep making progress.
       const jobs = await this.deps.jobRepository.findByOwner(owner)
       const remoteCleanups: PreparedRemoteCleanup[] = []
       for (const job of jobs) {
@@ -301,8 +308,6 @@ class ComputeJobDeletionOwner {
         await this.releaseOwnerBarrier(owner)
       }
       throw error
-    } finally {
-      if (runtimePaused) runtime?.resume()
     }
   }
 
