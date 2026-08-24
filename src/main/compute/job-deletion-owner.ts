@@ -12,6 +12,7 @@ import {
   classifyConnectionFailure,
   type ComputeConnectionBrokerAcquirer
 } from './connection-broker'
+import { remoteJobPidTerminationFunctionLines } from './remote-job-process'
 
 type ComputeJobDeletionRepository = Pick<ComputeJobRepository, 'findByOwner' | 'listOwners'>
 type ComputeJobOwnerLiveness = boolean | 'unknown'
@@ -108,20 +109,7 @@ const cleanupCommand = (workdir: string, handle: RemoteHandle | undefined): stri
     `workdir=$(cd -- ${quotedWorkdir} 2>/dev/null && pwd -P || true)`,
     'expected_workdir=${scratch_root%/}/' + quotedWorkdirSuffix,
     '[ -z "$workdir" ] || { [ -n "$scratch_root" ] && [ "$workdir" = "$expected_workdir" ]; } || exit 1',
-    'kill_job_pid() {',
-    '  pid=$1',
-    "  case $pid in ''|*[!0-9]*) return 0 ;; esac",
-    '  [ -n "$workdir" ] || return 0',
-    '  process_workdir=$(readlink "/proc/$pid/cwd" 2>/dev/null || true)',
-    '  if [ -z "$process_workdir" ] && command -v lsof >/dev/null 2>&1; then',
-    `    process_workdir=$(lsof -a -p "$pid" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)`,
-    '  fi',
-    '  [ "$process_workdir" = "$workdir" ] || return 0',
-    '  kill -TERM -- -$pid 2>/dev/null || true',
-    '  kill -TERM $pid 2>/dev/null || true',
-    '  kill -KILL -- -$pid 2>/dev/null || true',
-    '  kill -KILL $pid 2>/dev/null || true',
-    '}'
+    ...remoteJobPidTerminationFunctionLines()
   ]
   if (handle) lines.push(`kill_job_pid ${handle.pid}`)
   lines.push(

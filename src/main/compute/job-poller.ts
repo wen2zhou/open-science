@@ -15,6 +15,10 @@ import { parsePollOutput } from './job-poll-output'
 import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
 import { emitJobNotification } from './job-notifier'
 import { ComputeJobLifecycle } from './compute-job-lifecycle'
+import {
+  probeRemoteJobProcessOwnership,
+  terminateRemoteJobProcessIfOwned
+} from './remote-job-process'
 
 // Polling interval: 15 seconds (design.md §8).
 export const POLL_INTERVAL_MS = 15_000
@@ -585,19 +589,48 @@ export class JobPoller {
         if (!current || (current.status !== 'submitted' && current.status !== 'running')) return
 
         const handle = this._parseHandle(current.remote_handle)
-        if (handle) {
-          // Best-effort kill; ignore errors (process may have already exited).
+        const workdir = current.remote_workdir
+        if (
+          handle &&
+          workdir &&
+          handle.workdir === workdir &&
+          Number.isSafeInteger(handle.pid) &&
+          handle.pid > 0
+        ) {
+          // Probe failures are unknown ownership and fail closed. The termination operation repeats
+          // the same cwd guard before signalling, closing the probe-to-signal PID reuse window.
           try {
-            await connection.run(
-              `kill ${handle.pid} 2>/dev/null; kill -9 ${handle.pid} 2>/dev/null; true`,
-              {
-                timeoutMs: 10_000,
-                loginShell: false,
-                maxOutputBytes: 64
+            const ownership = await probeRemoteJobProcessOwnership(handle.pid, workdir, connection)
+            if (ownership === 'unknown') {
+              await this.lifecycle.recordPollError(
+                current.job_id,
+                current.status,
+                'timeout_termination_unconfirmed'
+              )
+              return
+            }
+            if (ownership === 'owned') {
+              const terminated = await terminateRemoteJobProcessIfOwned(
+                handle.pid,
+                workdir,
+                connection
+              )
+              if (!terminated) {
+                await this.lifecycle.recordPollError(
+                  current.job_id,
+                  current.status,
+                  'timeout_termination_unconfirmed'
+                )
+                return
               }
-            )
+            }
           } catch {
-            // Ignore kill errors — the job is marked terminal regardless.
+            await this.lifecycle.recordPollError(
+              current.job_id,
+              current.status,
+              'timeout_termination_unconfirmed'
+            )
+            return
           }
         }
         const transition = await this.lifecycle.finishPolled(job.job_id, {
