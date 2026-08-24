@@ -540,6 +540,8 @@ describe('Compute service architecture', () => {
       'src/main/compute/connection-adapters.ts',
       'src/main/compute/credential-vault.ts',
       'src/main/compute/compute-service.ts',
+      'src/main/compute/harvest-engine.ts',
+      'src/main/compute/job-notifier.ts',
       'src/renderer/src/lib/compute/job-analysis-trigger.ts',
       'src/renderer/src/lib/compute/useJobAnalysisEffect.ts',
       'resources/skills/remote-compute-ssh/SKILL.md'
@@ -568,6 +570,8 @@ describe('Compute service architecture', () => {
         'src/main/compute/ambiguous-dispatch-recovery.integration.test.ts',
         'src/main/compute/job-deletion-runtime-drain.test.ts',
         'src/main/compute/job-deletion-runtime-isolation.test.ts',
+        'src/main/compute/harvest-engine.test.ts',
+        'src/main/compute/job-notifier.test.ts',
         'src/main/compute/remote-compute-skill.test.ts',
         'src/renderer/src/lib/compute/job-analysis-trigger.test.ts',
         'src/renderer/src/lib/compute/useJobAnalysisEffect.render.test.tsx'
