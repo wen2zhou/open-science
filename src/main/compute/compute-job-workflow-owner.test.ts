@@ -514,6 +514,7 @@ describe('ComputeJobWorkflowOwner.getJobStatus', () => {
       stdout_tail: 'hi\n',
       stderr_tail: '',
       error_code: undefined,
+      harvest_error: 'harvest pending: authentication_failed',
       created_at: 1,
       submitted_at: 1,
       started_at: 1,
@@ -532,6 +533,7 @@ describe('ComputeJobWorkflowOwner.getJobStatus', () => {
     expect(status.exit_code).toBe(0)
     expect(status.stdout_tail).toBe('hi\n')
     expect(status.remote_workdir).toBe('~/.openscience/jobs/job-42')
+    expect(status.harvest_error).toBe('harvest pending: authentication_failed')
 
     await expect(
       service.getJobStatus('job-42', {
@@ -903,12 +905,17 @@ describe('ComputeJobWorkflowOwner.getJobResult', () => {
   })
 
   it('terminal but harvest not done: returns empty file lists without error', async () => {
-    const job = baseJob({ status: 'success', harvested_at: undefined })
+    const job = baseJob({
+      status: 'success',
+      harvested_at: undefined,
+      harvest_error: 'harvest pending: host_unreachable'
+    })
     const service = makeServiceWithStorageRoot(job, tmpDir)
     const result = await service.getJobResult('job-result-1')
     expect(result.status).toBe('success')
     expect(result.featured_files).toEqual([])
     expect(result.output_files).toEqual([])
+    expect(result.harvest_error).toBe('harvest pending: host_unreachable')
   })
 
   it('clean harvest: returns full file lists with workspace-relative paths', async () => {
