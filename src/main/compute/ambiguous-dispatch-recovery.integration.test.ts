@@ -491,7 +491,8 @@ describe('ambiguous Compute Job dispatch recovery', () => {
 
   it.each([
     { name: 'malformed', stdout: '2468junk\n', truncated: false },
-    { name: 'truncated', stdout: '2468\n', truncated: true }
+    { name: 'truncated', stdout: '2468\n', truncated: true },
+    { name: 'reserved process id', stdout: '1\n', truncated: false }
   ])('rejects a $name dispatch PID response unless recovery proves a launch', async (protocol) => {
     const run = vi
       .fn<ComputeConnectionLease['run']>()
