@@ -6,6 +6,9 @@ import type { ComputeJobRepository } from './job-repository'
 import type { ComputeHostRepository } from './repository'
 import type { ComputeService } from './compute-service'
 import type { ComputeConnectionBroker } from './connection-broker'
+import { createLogger } from '../logger'
+
+const log = createLogger('compute-integrity')
 
 type ComputeJobRuntime = { start(): void; stop(): Promise<void> }
 
@@ -42,6 +45,9 @@ export const createComputeJobRuntime = (
     jobRepository: deps.jobRepository,
     onJobUpdated: deps.computeService.handleJobUpdated,
     broadcast,
+    onIntegrityIssues: (issues) => {
+      for (const issue of issues) log.warn('compute job needs attention', issue)
+    },
     storageRoot: deps.storageRoot,
     harvestFn: (job) =>
       harvest(job, {

@@ -376,10 +376,16 @@ describe('ComputeJob repository (SQLite integration)', () => {
     }
 
     await mkJob('job-notified-unconsumed', 'sess-1')
-    await repo.update('job-notified-unconsumed', { notifiedAt: new Date('2026-01-01') })
+    await repo.update('job-notified-unconsumed', {
+      status: 'error',
+      errorCode: 'dispatch_failed',
+      notifiedAt: new Date('2026-01-01')
+    })
 
     await mkJob('job-notified-consumed', 'sess-1')
     await repo.update('job-notified-consumed', {
+      status: 'error',
+      errorCode: 'dispatch_failed',
       notifiedAt: new Date('2026-01-01'),
       notificationConsumedAt: new Date('2026-01-02')
     })
@@ -387,11 +393,114 @@ describe('ComputeJob repository (SQLite integration)', () => {
     await mkJob('job-not-notified', 'sess-1')
 
     await mkJob('job-other-session', 'sess-2')
-    await repo.update('job-other-session', { notifiedAt: new Date('2026-01-01') })
+    await repo.update('job-other-session', {
+      status: 'error',
+      errorCode: 'dispatch_failed',
+      notifiedAt: new Date('2026-01-01')
+    })
 
     const pending = await repo.findPendingNotifications('sess-1')
     expect(pending).toHaveLength(1)
     expect(pending[0]!.job_id).toBe('job-notified-unconsumed')
+  })
+
+  it('keeps notified non-terminal rows out of the pending analysis seam', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-jobs-pending-terminal-guard-'))
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+    await migrateApplicationDatabase(client)
+    const repo = new ComputeJobRepository(() => Promise.resolve(client))
+
+    await repo.create({
+      id: 'job-running-notified',
+      providerId: 'ssh:test',
+      shape: 'direct_ssh',
+      sessionId: 'sess-1',
+      projectId: 'p1',
+      intent: 'still running',
+      command: 'sleep 60',
+      commandHash: 'running-notified'
+    })
+    await repo.update('job-running-notified', {
+      status: 'running',
+      notifiedAt: new Date('2026-01-01')
+    })
+
+    expect(await repo.findPendingNotifications('sess-1')).toEqual([])
+  })
+
+  it('reports raw persistence incompatibilities without hiding unknown statuses', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-jobs-integrity-scan-'))
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+    await migrateApplicationDatabase(client)
+    const repo = new ComputeJobRepository(() => Promise.resolve(client))
+    const create = async (id: string): Promise<void> => {
+      await repo.create({
+        id,
+        providerId: 'ssh:test',
+        shape: 'direct_ssh',
+        sessionId: 'sess-integrity',
+        projectId: 'p1',
+        intent: id,
+        command: 'true',
+        commandHash: id,
+        remoteWorkdir: `/remote/jobs/${id}`
+      })
+    }
+
+    await create('unknown-status')
+    await create('unknown-error')
+    await create('partial-handle')
+    await create('consumed-without-notified')
+    await client.$executeRawUnsafe('PRAGMA ignore_check_constraints = ON')
+    await client.$executeRawUnsafe(
+      `UPDATE ComputeJob SET status = 'future_state', notifiedAt = ? WHERE id = 'unknown-status'`,
+      new Date('2026-01-01').toISOString()
+    )
+    await client.$executeRawUnsafe(
+      `UPDATE ComputeJob SET status = 'failed', errorCode = 'future_error', finishedAt = ? WHERE id = 'unknown-error'`,
+      new Date('2026-01-01').toISOString()
+    )
+    await client.$executeRawUnsafe(
+      `UPDATE ComputeJob SET status = 'running', remoteHandle = ? WHERE id = 'partial-handle'`,
+      JSON.stringify({ pid: 321, workdir: '/remote/jobs/partial-handle' })
+    )
+    await client.$executeRawUnsafe(
+      `UPDATE ComputeJob SET notificationConsumedAt = ? WHERE id = 'consumed-without-notified'`,
+      new Date('2026-01-02').toISOString()
+    )
+
+    const report = await repo.scanIntegrity()
+
+    expect(report).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          jobId: 'unknown-status',
+          code: 'unknown-status',
+          rawStatus: 'future_state',
+          disposition: 'quarantined'
+        }),
+        expect.objectContaining({
+          jobId: 'unknown-error',
+          code: 'unknown-error-code',
+          rawErrorCode: 'future_error',
+          disposition: 'needs-attention'
+        }),
+        expect.objectContaining({
+          jobId: 'partial-handle',
+          code: 'malformed-remote-handle',
+          disposition: 'recovery-required'
+        }),
+        expect.objectContaining({
+          jobId: 'consumed-without-notified',
+          code: 'consumed-without-notification',
+          disposition: 'quarantined'
+        })
+      ])
+    )
+    expect((await repo.get('unknown-status'))?.raw_status).toBe('future_state')
+    expect(await repo.findPendingNotifications('sess-integrity')).toEqual([])
   })
 
   it('markNotificationsConsumed sets notificationConsumedAt and is idempotent', async () => {

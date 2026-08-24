@@ -84,6 +84,44 @@ describe('buildAnalysisPrompt', () => {
 // ── createJobAnalysisTrigger ──────────────────────────────────────────────────
 
 describe('createJobAnalysisTrigger — immediate send', () => {
+  it.each(['queued', 'submitted', 'running'] as const)(
+    'does not treat notified %s compatibility rows as finished',
+    async (status) => {
+      const deps = createDeps()
+      const trigger = createJobAnalysisTrigger(deps)
+
+      trigger.onJobDone(makeJob({ status }))
+      await flushMicrotasks()
+
+      expect(deps.sendPrompt).not.toHaveBeenCalled()
+    }
+  )
+
+  it('does not analyze quarantined integrity rows', async () => {
+    const deps = createDeps()
+    const trigger = createJobAnalysisTrigger(deps)
+
+    trigger.onJobDone(
+      makeJob({
+        needs_attention: true,
+        raw_status: 'future_state',
+        integrity_issues: [
+          {
+            jobId: 'job-1',
+            sessionId: 'sess-1',
+            projectId: 'project-1',
+            code: 'unknown-status',
+            disposition: 'quarantined',
+            rawStatus: 'future_state'
+          }
+        ]
+      })
+    )
+    await flushMicrotasks()
+
+    expect(deps.sendPrompt).not.toHaveBeenCalled()
+  })
+
   it('sends a prompt immediately when session is not in flight', async () => {
     const deps = createDeps()
     const trigger = createJobAnalysisTrigger(deps)

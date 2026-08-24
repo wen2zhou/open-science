@@ -303,6 +303,24 @@ export type ComputeApprovalRequest = {
 export type ComputeJobStatus =
   'queued' | 'submitted' | 'running' | 'success' | 'failed' | 'timeout' | 'error'
 
+export type ComputeJobIntegrityIssueCode =
+  | 'unknown-status'
+  | 'unknown-error-code'
+  | 'malformed-remote-handle'
+  | 'consumed-without-notification'
+  | 'consumed-before-notified'
+  | 'notified-before-terminal'
+
+export type ComputeJobIntegrityIssue = Readonly<{
+  jobId: string
+  sessionId: string
+  projectId: string
+  code: ComputeJobIntegrityIssueCode
+  disposition: 'quarantined' | 'needs-attention' | 'recovery-required'
+  rawStatus: string
+  rawErrorCode?: string
+}>
+
 // A compute job record, normalized for cross-process sharing (main → renderer via IPC, main → repl
 // via JSON RPC). Timestamps are epoch milliseconds; JSON columns are parsed at the repository
 // boundary to their respective types.
@@ -313,6 +331,11 @@ export type ComputeJob = {
   session_id: string
   project_id: string
   status: ComputeJobStatus
+  // Additive compatibility diagnostics. Unknown persisted status values keep their raw spelling and
+  // are quarantined from lifecycle scans; status remains the legacy closed projection for callers.
+  raw_status?: string
+  integrity_issues?: ComputeJobIntegrityIssue[]
+  needs_attention?: boolean
   intent: string
   command: string
   command_hash: string
@@ -415,6 +438,9 @@ export type JobSummary = {
   // Session the job was submitted in — needed for the renderer store to filter by active session.
   session_id: string
   status: ComputeJobStatus
+  raw_status?: string
+  integrity_issues?: ComputeJobIntegrityIssue[]
+  needs_attention?: boolean
   intent: string
   created_at: number
   started_at: number | undefined

@@ -135,7 +135,13 @@ export const createJobAnalysisTrigger = (deps: JobAnalysisTriggerDeps): JobAnaly
   const deliveryKeyByJobId = new Map<string, string>()
 
   const isDoneState = (job: JobSummary): boolean =>
-    job.notified_at !== undefined && job.notified_at !== null
+    (job.status === 'success' ||
+      job.status === 'failed' ||
+      job.status === 'timeout' ||
+      job.status === 'error') &&
+    job.notified_at !== undefined &&
+    job.notified_at !== null &&
+    !job.integrity_issues?.some((issue) => issue.disposition === 'quarantined')
 
   const isAlreadyConsumed = (job: JobSummary): boolean =>
     job.notification_consumed_at !== undefined && job.notification_consumed_at !== null

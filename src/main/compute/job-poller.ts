@@ -85,6 +85,7 @@ export type JobPollerDeps = {
    */
   storageRoot?: string
   now?: () => number
+  onIntegrityIssues?: (issues: Awaited<ReturnType<ComputeJobRepository['scanIntegrity']>>) => void
 }
 
 // Per-job vanish counter (lives here because the poller is the only thing that increments it).
@@ -116,6 +117,7 @@ export class JobPoller {
   //   inFlightErrorNotifs: jobIds whose error-notification emit is in progress — prevents a second
   //   overlapping tick from re-emitting before notified_at is persisted (ticks are not serialized)
   private readonly inFlightErrorNotifs = new Set<string>()
+  private integrityScanComplete = false
 
   constructor(private readonly deps: JobPollerDeps) {
     this.setIntervalFn = deps.setInterval ?? ((fn, ms) => setInterval(fn, ms))
@@ -182,6 +184,20 @@ export class JobPoller {
   // One poll cycle: group non-terminal jobs by provider, poll each provider's jobs.
   // Also runs the restart-recovery harvest scan (design §3): re-queues terminal+unharvested jobs.
   async tick(): Promise<void> {
+    if (
+      !this.integrityScanComplete &&
+      typeof this.deps.jobRepository.scanIntegrity === 'function'
+    ) {
+      try {
+        const issues = await this.deps.jobRepository.scanIntegrity()
+        this.integrityScanComplete = true
+        if (issues.length > 0) this.deps.onIntegrityIssues?.(issues)
+      } catch {
+        // Keep startup live and retry on the next bounded poll interval. The renderer has its own
+        // explicit pending-scan diagnostic; this main-process scan is detect-only hardening.
+      }
+    }
+
     // Restart-recovery harvest scan: re-queue terminal jobs whose harvest was interrupted by restart.
     // harvestFn must be configured; without it, harvest is disabled entirely.
     if (this.harvestScheduler) {

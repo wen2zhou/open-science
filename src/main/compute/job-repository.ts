@@ -1,5 +1,6 @@
 import type { ComputeJob as PrismaComputeJob, PrismaClient } from '@prisma/client'
-import type { ComputeJob, ComputeJobStatus } from '../../shared/compute'
+import type { ComputeJob, ComputeJobIntegrityIssue, ComputeJobStatus } from '../../shared/compute'
+import { classifyComputeJobIntegrity, isKnownComputeJobStatus } from './compute-job-integrity'
 
 // Only ComputeJob persistence and a transaction wrapper are needed.
 type ComputeJobClient = Pick<PrismaClient, '$transaction' | 'computeJob'>
@@ -24,53 +25,51 @@ const sessionOwnerKey = (projectId: string, sessionId: string): string =>
   JSON.stringify([projectId, sessionId])
 
 const asStatus = (value: string): ComputeJobStatus => {
-  const valid: ComputeJobStatus[] = [
-    'queued',
-    'submitted',
-    'running',
-    'success',
-    'failed',
-    'timeout',
-    'error'
-  ]
-  return valid.includes(value as ComputeJobStatus) ? (value as ComputeJobStatus) : 'error'
+  return isKnownComputeJobStatus(value) ? value : 'error'
 }
 
 // Maps a Prisma row to the shared ComputeJob type.
-const toJob = (row: PrismaComputeJob): ComputeJob => ({
-  job_id: row.id,
-  provider_id: row.providerId,
-  shape: row.shape,
-  session_id: row.sessionId,
-  project_id: row.projectId,
-  status: asStatus(row.status),
-  intent: row.intent,
-  command: row.command,
-  command_hash: row.commandHash,
-  environment: row.environment ?? undefined,
-  resource_request: row.resourceRequest ?? undefined,
-  input_manifest: row.inputManifest ?? undefined,
-  output_manifest: row.outputManifest ?? undefined,
-  harvest_config: row.harvestConfig ?? undefined,
-  timeout_seconds: row.timeoutSeconds ?? undefined,
-  remote_workdir: row.remoteWorkdir ?? undefined,
-  remote_handle: row.remoteHandle ?? undefined,
-  exit_code: row.exitCode ?? undefined,
-  stdout_tail: row.stdoutTail ?? undefined,
-  stderr_tail: row.stderrTail ?? undefined,
-  error_code: row.errorCode ?? undefined,
-  last_poll_error: row.lastPollError ?? undefined,
-  // Phase 3b harvest fields
-  harvest_error: row.harvestError ?? undefined,
-  left_on_remote: row.leftOnRemote ?? undefined,
-  notified_at: row.notifiedAt?.getTime(),
-  notification_consumed_at: row.notificationConsumedAt?.getTime(),
-  created_at: row.createdAt.getTime(),
-  submitted_at: row.submittedAt?.getTime(),
-  started_at: row.startedAt?.getTime(),
-  finished_at: row.finishedAt?.getTime(),
-  harvested_at: row.harvestedAt?.getTime()
-})
+const toJob = (row: PrismaComputeJob): ComputeJob => {
+  const integrityIssues = classifyComputeJobIntegrity(row)
+  return {
+    job_id: row.id,
+    provider_id: row.providerId,
+    shape: row.shape,
+    session_id: row.sessionId,
+    project_id: row.projectId,
+    status: asStatus(row.status),
+    ...(!isKnownComputeJobStatus(row.status) ? { raw_status: row.status } : {}),
+    ...(integrityIssues.length > 0
+      ? { integrity_issues: integrityIssues, needs_attention: true }
+      : {}),
+    intent: row.intent,
+    command: row.command,
+    command_hash: row.commandHash,
+    environment: row.environment ?? undefined,
+    resource_request: row.resourceRequest ?? undefined,
+    input_manifest: row.inputManifest ?? undefined,
+    output_manifest: row.outputManifest ?? undefined,
+    harvest_config: row.harvestConfig ?? undefined,
+    timeout_seconds: row.timeoutSeconds ?? undefined,
+    remote_workdir: row.remoteWorkdir ?? undefined,
+    remote_handle: row.remoteHandle ?? undefined,
+    exit_code: row.exitCode ?? undefined,
+    stdout_tail: row.stdoutTail ?? undefined,
+    stderr_tail: row.stderrTail ?? undefined,
+    error_code: row.errorCode ?? undefined,
+    last_poll_error: row.lastPollError ?? undefined,
+    // Phase 3b harvest fields
+    harvest_error: row.harvestError ?? undefined,
+    left_on_remote: row.leftOnRemote ?? undefined,
+    notified_at: row.notifiedAt?.getTime(),
+    notification_consumed_at: row.notificationConsumedAt?.getTime(),
+    created_at: row.createdAt.getTime(),
+    submitted_at: row.submittedAt?.getTime(),
+    started_at: row.startedAt?.getTime(),
+    finished_at: row.finishedAt?.getTime(),
+    harvested_at: row.harvestedAt?.getTime()
+  }
+}
 
 export type CreateJobRequest = {
   id: string
@@ -400,12 +399,21 @@ export class ComputeJobRepository {
     const rows = await client.computeJob.findMany({
       where: {
         sessionId,
+        status: { in: ['success', 'failed', 'timeout', 'error'] },
         notifiedAt: { not: null },
         notificationConsumedAt: null
       },
       orderBy: { createdAt: 'asc' }
     })
     return rows.map(toJob)
+  }
+
+  // Detect-only startup seam over raw rows. It never guesses a future enum value and never mutates
+  // historical jobs; operational scans quarantine unknown status and notification-invariant rows.
+  async scanIntegrity(): Promise<ComputeJobIntegrityIssue[]> {
+    const client = await this.getClient()
+    const rows = await client.computeJob.findMany({ orderBy: { createdAt: 'asc' } })
+    return rows.flatMap(classifyComputeJobIntegrity)
   }
 
   // Marks a batch of jobs as notification-consumed by setting notificationConsumedAt to now.
