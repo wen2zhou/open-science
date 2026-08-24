@@ -202,9 +202,14 @@ describe('workspace conversation timeline', () => {
     expect(timelineIds(input)).not.toContain('turn-completion-reply-1')
   })
 
-  it('omits completion for an interrupted Prompt', () => {
+  it('omits completion while an interrupted Prompt still requires resume', () => {
     const input = session({
       status: 'error',
+      resumeRecovery: {
+        kind: 'resume-required',
+        cause: 'cancelled',
+        promptMessageId: 'prompt-1'
+      },
       messages: [
         message({ interrupted: true, sortIndex: 1 }),
         message({
@@ -221,6 +226,40 @@ describe('workspace conversation timeline', () => {
     })
 
     expect(timelineIds(input)).not.toContain('turn-completion-reply-1')
+  })
+
+  it('places one completion on the final resumed reply', () => {
+    const input = session({
+      messages: [
+        message({ interrupted: true, sortIndex: 1 }),
+        message({
+          id: 'reply-before-interrupt',
+          role: 'agent',
+          status: 'error',
+          responseToMessageId: 'prompt-1',
+          sortIndex: 2,
+          createdAt: 200,
+          failedAt: 300,
+          updatedAt: 300
+        }),
+        message({
+          id: 'reply-after-resume',
+          role: 'agent',
+          responseToMessageId: 'prompt-1',
+          sortIndex: 3,
+          createdAt: 400,
+          completedAt: 500,
+          updatedAt: 500,
+          turnUsage: { inputTokens: 20, cacheTokens: 5, outputTokens: 10 }
+        })
+      ]
+    })
+
+    expect(
+      createWorkspaceConversationTimeline(input)
+        .filter(({ type }) => type === 'turn-completion')
+        .map(({ id }) => id)
+    ).toEqual(['turn-completion-reply-after-resume'])
   })
 
   it('uses active-Branch Conversation Graph ownership for a historical flat activity', () => {

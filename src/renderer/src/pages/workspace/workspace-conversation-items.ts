@@ -282,13 +282,25 @@ const createConversationItems = (
 // the chronologically last fragment owns the whole-turn surface — footer, usage, and the projected
 // child Versions. This resolves that terminal fragment id set from raw chat messages so the
 // transcript scroller and the artifact visibility hook share one definition.
-const resolveTurnTerminalAgentMessageIds = (messages: readonly ChatMessage[]): Set<string> => {
+type TurnTerminalSelectionInput = Pick<
+  ChatSession,
+  'messages' | 'resumeRecovery' | 'activeRun' | 'agentPromptInFlight' | 'status'
+>
+
+const openPromptMessageId = (session: TurnTerminalSelectionInput): string | undefined =>
+  session.activeRun || session.agentPromptInFlight || session.status.startsWith('waiting-')
+    ? (session.activeRun?.promptMessageId ??
+      session.messages.findLast((message) => message.role === 'user')?.id)
+    : undefined
+
+const resolveTurnTerminalAgentMessageIds = (session: TurnTerminalSelectionInput): Set<string> => {
+  const { messages } = session
   const footerIds = new Set<string>()
   const footerByPrompt = new Map<string, string>()
-  const interruptedPromptIds = new Set(
-    messages
-      .filter((message) => message.role === 'user' && message.interrupted)
-      .map((message) => message.id)
+  const blockedPromptIds = new Set(
+    [session.resumeRecovery?.promptMessageId, openPromptMessageId(session)].filter(
+      (promptMessageId): promptMessageId is string => promptMessageId !== undefined
+    )
   )
   const ordered = messages.map((message, index) => ({
     id: message.id,
@@ -310,7 +322,7 @@ const resolveTurnTerminalAgentMessageIds = (messages: readonly ChatMessage[]): S
       footerIds.add(message.id)
       continue
     }
-    if (interruptedPromptIds.has(promptId)) continue
+    if (blockedPromptIds.has(promptId)) continue
     const previousId = footerByPrompt.get(promptId)
     if (previousId) footerIds.delete(previousId)
     footerByPrompt.set(promptId, message.id)

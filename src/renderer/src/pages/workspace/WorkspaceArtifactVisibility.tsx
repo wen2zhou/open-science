@@ -205,8 +205,8 @@ const useWorkspaceArtifactVisibility = (
   // The terminal agent fragment of each turn is the only place projected child Versions render,
   // mirroring how main-agent artifacts attach to the turn's final assistant message.
   const terminalAgentMessageIds = useMemo(
-    () => resolveTurnTerminalAgentMessageIds(messages ?? []),
-    [messages]
+    () => (activeSession ? resolveTurnTerminalAgentMessageIds(activeSession) : new Set<string>()),
+    [activeSession]
   )
   const historicalArtifacts = useHistoricalArtifactDescriptors(
     sessionId,

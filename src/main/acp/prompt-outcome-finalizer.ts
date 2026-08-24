@@ -52,6 +52,7 @@ type ObservedPromptStop = Readonly<{
   turnUsage?: Extract<ProviderPromptOutcome, { kind: 'stopped' }>['facts']['turnUsage']
   modelTurnCount?: number
   terminalContextWindow?: AcpTerminalContextWindow
+  preserveTurnUsage?: true
 }>
 
 type LogicalTurnUsage = Readonly<{
@@ -181,11 +182,9 @@ export class AcpPromptOutcomeFinalizer {
           : { modelTurnCount: observedStop.modelTurnCount })
       })
       if (!terminal) return false
-      const turnUsage = this.accumulateTurnUsage(
-        sessionId,
-        handles.promptMessageId,
-        terminal.turnUsage
-      )
+      const turnUsage = observedStop.preserveTurnUsage
+        ? undefined
+        : this.accumulateTurnUsage(sessionId, handles.promptMessageId, terminal.turnUsage)
       handles.pushEvent({
         kind: 'stop',
         level: 'info',
@@ -211,6 +210,7 @@ export class AcpPromptOutcomeFinalizer {
         const capturedContext = context?.captureTerminal()
         observedStop = {
           response,
+          preserveTurnUsage: true,
           ...(capturedContext
             ? {
                 terminalContextWindow: {

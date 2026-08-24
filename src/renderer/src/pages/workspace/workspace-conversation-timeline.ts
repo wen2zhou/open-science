@@ -27,12 +27,6 @@ const terminalTimestamp = (message: ChatMessage): number | undefined =>
       ? message.failedAt
       : undefined
 
-const openPromptMessageId = (session: ChatSession): string | undefined =>
-  session.activeRun || session.agentPromptInFlight || session.status.startsWith('waiting-')
-    ? (session.activeRun?.promptMessageId ??
-      session.messages.findLast((message) => message.role === 'user')?.id)
-    : undefined
-
 const createActivityPromptResolver = (
   session: ChatSession
 ): ((activity: ToolActivity) => string | undefined) => {
@@ -94,8 +88,7 @@ const createWorkspaceConversationTimeline = (
   )
   if (!session) return groupedItems
 
-  const terminalMessageIds = resolveTurnTerminalAgentMessageIds(session.messages)
-  const activePromptMessageId = openPromptMessageId(session)
+  const terminalMessageIds = resolveTurnTerminalAgentMessageIds(session)
   const resolveActivityPrompt = createActivityPromptResolver(session)
   const promptByItemIndex = groupedItems.map((item) =>
     resolveTimelineItemPrompt(item, resolveActivityPrompt)
@@ -108,8 +101,6 @@ const createWorkspaceConversationTimeline = (
     if (!terminalMessageIds.has(message.id) || completedAt === undefined) continue
 
     const promptMessageId = message.responseToMessageId
-    if (promptMessageId && promptMessageId === activePromptMessageId) continue
-
     const messageIndex = itemIndexById.get(message.id)
     if (messageIndex === undefined) continue
     let completionIndex = messageIndex

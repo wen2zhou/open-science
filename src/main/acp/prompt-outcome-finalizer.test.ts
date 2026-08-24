@@ -456,4 +456,57 @@ describe('AcpPromptOutcomeFinalizer', () => {
     expect(harness.context.fail).toHaveBeenCalledOnce()
     expect(harness.handles.skill.close).toHaveBeenCalledWith('cancelled')
   })
+
+  it('keeps prior turn usage when an interrupted Attempt resumes after a cancelled stop without usage', async () => {
+    const finalizer = new AcpPromptOutcomeFinalizer()
+    const beforeInterruption = createHarness()
+    expect(
+      beforeInterruption.interactions.captureTerminal(beforeInterruption.interaction, 'stop')
+    ).toBe(true)
+    await finalizer.finalize(beforeInterruption.handles, stopped())
+
+    const interruption = createHarness()
+    await finalizer.finalize(interruption.handles, { kind: 'not-dispatched' })
+
+    const resumed = createHarness()
+    expect(resumed.interactions.captureTerminal(resumed.interaction, 'stop')).toBe(true)
+    await finalizer.finalize(resumed.handles, stopped())
+
+    expect(resumed.events).toContainEqual(
+      expect.objectContaining({
+        kind: 'stop',
+        turnUsage: {
+          inputTokens: 20,
+          cacheTokens: 4,
+          outputTokens: 6,
+          turnCount: 8
+        }
+      })
+    )
+  })
+
+  it('keeps turn usage unavailable when a dispatched cancelled Attempt omits usage', async () => {
+    const finalizer = new AcpPromptOutcomeFinalizer()
+    const beforeCancellation = createHarness()
+    expect(
+      beforeCancellation.interactions.captureTerminal(beforeCancellation.interaction, 'stop')
+    ).toBe(true)
+    await finalizer.finalize(beforeCancellation.handles, stopped())
+
+    const cancelled = createHarness()
+    expect(cancelled.interactions.captureTerminal(cancelled.interaction, 'cancelled')).toBe(true)
+    await finalizer.finalize(cancelled.handles, {
+      kind: 'stopped',
+      response: { stopReason: 'cancelled' },
+      facts: {}
+    })
+
+    const resumed = createHarness()
+    expect(resumed.interactions.captureTerminal(resumed.interaction, 'stop')).toBe(true)
+    await finalizer.finalize(resumed.handles, stopped())
+
+    expect(resumed.events).toContainEqual(
+      expect.objectContaining({ kind: 'stop', turnUsage: undefined })
+    )
+  })
 })
