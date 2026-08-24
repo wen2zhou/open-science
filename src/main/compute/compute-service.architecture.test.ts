@@ -287,7 +287,8 @@ describe('Compute service architecture', () => {
       'src/main/compute/concurrency-manager.ts',
       'src/main/compute/job-deletion-owner.ts',
       'src/main/compute/job-dispatcher.ts',
-      'src/main/compute/job-poller.ts'
+      'src/main/compute/job-poller.ts',
+      'src/main/compute/submitted-job-recovery.ts'
     ])
 
     for (const calls of [

@@ -19,7 +19,7 @@ import {
   probeRemoteJobProcessOwnership,
   terminateRemoteJobProcessIfOwned
 } from './remote-job-process'
-import { classifyRecoveredExit, probeRemoteLaunch } from './remote-launch-recovery'
+import { SubmittedJobRecovery, type SubmittedJobRecoveryResult } from './submitted-job-recovery'
 
 // Polling interval: 15 seconds (design.md §8).
 export const POLL_INTERVAL_MS = 15_000
@@ -29,10 +29,6 @@ const TAIL_MAX_BYTES = 65536
 
 // Consecutive ticks without exit_code before declaring process_vanished (design.md §8 §3).
 const PROCESS_VANISHED_TICKS = 2
-
-// A valid recovery witness may observe the deterministic directory after mkdir but before job.pid
-// is written. Require two consecutive observations before proving that launch was interrupted.
-const DISPATCH_RECOVERY_PENDING_TICKS = 2
 
 // Timeout for the per-host poll SSH command.
 const POLL_TIMEOUT_MS = 30_000
@@ -108,7 +104,6 @@ export class JobPoller {
   private readonly activeTicks = new Set<Promise<void>>()
   private readonly backgroundTasks = new Set<Promise<void>>()
   private readonly vanishCounters = new Map<string, VanishState>()
-  private readonly dispatchRecoveryPendingTicks = new Map<string, number>()
   private readonly pollResultChains = new Map<string, Promise<void>>()
 
   // Injectable timers (tests override to control ticks synchronously).
@@ -121,6 +116,7 @@ export class JobPoller {
   // Optional injectable harvest function (design §3).
   private readonly harvestFn: HarvestFn | undefined
   private readonly lifecycle: ComputeJobLifecycle
+  private readonly submittedJobRecovery: SubmittedJobRecovery
 
   // Harvest concurrency state (design §3):
   //   inFlightHarvests: jobIds whose harvest is currently running — prevents duplicate dispatches
@@ -140,6 +136,7 @@ export class JobPoller {
     this.dispatchTracker = deps.dispatchTracker ?? sharedDispatchTracker
     this.harvestFn = deps.harvestFn
     this.lifecycle = new ComputeJobLifecycle(deps.jobRepository, deps.onJobUpdated)
+    this.submittedJobRecovery = new SubmittedJobRecovery(this.lifecycle)
   }
 
   // Starts the poller. Polls once immediately (picks up jobs that were running before restart),
@@ -301,9 +298,6 @@ export class JobPoller {
 
   // Polls all jobs for one provider in a single SSH round-trip (where possible).
   private async _pollProvider(providerId: string, jobs: ComputeJob[]): Promise<void> {
-    // submitted+no-handle may be a long live dispatch or a restart orphan. Tracked jobs stay alone;
-    // untracked rows are probed through their deterministic workdir. Only a proven non-launch (or
-    // an unrecoverable legacy row) becomes dispatch_failed.
     const noHandle: ComputeJob[] = []
     const withHandle: ComputeJob[] = []
     for (const job of jobs) {
@@ -317,99 +311,47 @@ export class JobPoller {
     }
     const recoverableNoHandle = noHandle.filter((job) => job.remote_workdir)
     const legacyNoHandle = noHandle.filter((job) => !job.remote_workdir)
-    for (const job of legacyNoHandle) await this._markInterruptedDispatch(job)
+    for (const job of legacyNoHandle) {
+      this._applySubmittedRecoveryResult(await this.submittedJobRecovery.interrupt(job))
+    }
     if (withHandle.length === 0 && recoverableNoHandle.length === 0) return
     let connection: ComputeConnectionLease
     try {
       connection = await this.deps.connectionBroker.acquire(providerId, { intent: 'job_poll' })
     } catch (error) {
       const errorCode = error instanceof ComputeConnectionError ? error.code : 'host_unreachable'
-      for (const job of recoverableNoHandle) {
-        this.dispatchRecoveryPendingTicks.delete(job.job_id)
-      }
-      await this._recordPollError([...withHandle, ...recoverableNoHandle], errorCode)
+      await this.submittedJobRecovery.recordUnavailable(recoverableNoHandle, errorCode)
+      await this._recordPollError(withHandle, errorCode)
       return
     }
     for (const job of recoverableNoHandle) {
-      let observation
-      try {
-        observation = await probeRemoteLaunch(connection, job.remote_workdir!)
-      } catch (error) {
-        const errorCode = error instanceof ComputeConnectionError ? error.code : 'host_unreachable'
-        this.dispatchRecoveryPendingTicks.delete(job.job_id)
-        await this._recordPollError([job], errorCode)
-        continue
-      }
-      if (observation.kind === 'running') {
-        this.dispatchRecoveryPendingTicks.delete(job.job_id)
-        await this.lifecycle.dispatchRunning(job.job_id, JSON.stringify(observation.handle))
-      } else if (observation.kind === 'exited') {
-        this.dispatchRecoveryPendingTicks.delete(job.job_id)
-        await this._finishRecoveredExit(job, observation.exitCode)
-      } else if (observation.kind === 'vanished') {
-        this.dispatchRecoveryPendingTicks.delete(job.job_id)
-        const transition = await this.lifecycle.finishPolled(job.job_id, {
-          status: 'failed',
-          errorCode: 'process_vanished',
-          stdoutTail: null,
-          stderrTail: null
-        })
-        if (transition.kind === 'applied') this._dispatchHarvest(transition.job)
-      } else if (observation.kind === 'not_started') {
-        this.dispatchRecoveryPendingTicks.delete(job.job_id)
-        await this._markInterruptedDispatch(job)
-      } else if (observation.kind === 'pending') {
-        const ticks = (this.dispatchRecoveryPendingTicks.get(job.job_id) ?? 0) + 1
-        if (ticks >= DISPATCH_RECOVERY_PENDING_TICKS) {
-          this.dispatchRecoveryPendingTicks.delete(job.job_id)
-          await this._markInterruptedDispatch(job)
-        } else {
-          this.dispatchRecoveryPendingTicks.set(job.job_id, ticks)
-          await this._recordPollError([job], 'dispatch_recovery_pending')
-        }
-      } else {
-        this.dispatchRecoveryPendingTicks.delete(job.job_id)
-        await this._recordPollError([job], 'dispatch_recovery_ambiguous')
-      }
+      this._applySubmittedRecoveryResult(await this.submittedJobRecovery.recover(job, connection))
     }
     if (withHandle.length === 0) return
 
-    // Poll in sub-batches so the SSH output cap always fits every job's section. Each sub-batch is
-    // one SSH round-trip; batches for the same provider run sequentially to reuse one connection and
-    // avoid a fan-out of concurrent ssh processes per provider.
+    // Poll bounded batches sequentially so every section fits without a per-provider SSH fan-out.
     for (let i = 0; i < withHandle.length; i += POLL_BATCH_MAX_JOBS) {
       const batch = withHandle.slice(i, i + POLL_BATCH_MAX_JOBS)
       await this._pollBatch(batch, connection)
     }
   }
 
-  private async _markInterruptedDispatch(job: ComputeJob): Promise<void> {
-    const transition = await this.lifecycle.recoverInterruptedDispatch(job.job_id)
-    if (transition.kind === 'ignored') return
-    const updated = transition.job
-    if (this.deps.broadcast && this.deps.storageRoot) {
-      const task = emitJobNotification(updated, {
-        jobRepository: this.deps.jobRepository,
-        hostRepository: this.deps.hostRepository,
-        storageRoot: this.deps.storageRoot,
-        broadcast: this.deps.broadcast
-      }).catch(() => {
-        // Non-fatal: job status is already persisted.
-      })
-      this.trackBackground(task)
-    }
+  private _applySubmittedRecoveryResult(result: SubmittedJobRecoveryResult): void {
+    if (result.kind === 'harvest') this._dispatchHarvest(result.job)
+    if (result.kind === 'notification') this._dispatchErrorNotification(result.job)
   }
 
-  private async _finishRecoveredExit(job: ComputeJob, exitCode: number): Promise<void> {
-    const { status, errorCode } = classifyRecoveredExit(job, exitCode)
-    const transition = await this.lifecycle.finishPolled(job.job_id, {
-      status,
-      exitCode,
-      stdoutTail: null,
-      stderrTail: null,
-      errorCode
+  private _dispatchErrorNotification(job: ComputeJob): void {
+    if (!this.deps.broadcast || !this.deps.storageRoot) return
+    const task = emitJobNotification(job, {
+      jobRepository: this.deps.jobRepository,
+      hostRepository: this.deps.hostRepository,
+      storageRoot: this.deps.storageRoot,
+      broadcast: this.deps.broadcast
+    }).catch(() => {
+      // Non-fatal: job status is already persisted.
     })
-    if (transition.kind === 'applied') this._dispatchHarvest(transition.job)
+    this.trackBackground(task)
   }
 
   // Polls one sub-batch of jobs (all with handles) in a single SSH round-trip, sizing the output cap
