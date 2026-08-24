@@ -10,7 +10,7 @@
  *             §6 (enumeration), §9 (harvest_failed).
  */
 
-import { mkdir, readFile, readdir, rename, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, readdir, rename, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { randomBytes } from 'node:crypto'
@@ -39,6 +39,8 @@ const mkTmp = async (): Promise<string> => {
   await mkdir(base, { recursive: true })
   return base
 }
+
+const MIB_BYTES_FOR_TEST = 1024 * 1024
 
 const makeJob = (overrides: Partial<ComputeJob> = {}): ComputeJob => ({
   job_id: 'job-1',
@@ -827,6 +829,78 @@ describe('harvestJob — compute_done notification (issue 06)', () => {
 })
 
 describe('harvestJob - bounded logs and disk reserve', () => {
+  it('uses one canonical budget for aliases of the same storage root', async () => {
+    const storageRoot = await mkTmp()
+    const aliasRoot = `${storageRoot}-alias`
+    await symlink(storageRoot, aliasRoot, 'dir')
+    const firstJob = makeJob({
+      job_id: 'job-budget-1',
+      remote_workdir: '~/.openscience/jobs/job-budget-1',
+      output_manifest: JSON.stringify(['*.result']),
+      harvest_config: JSON.stringify({ max_file_mb: 1, max_total_mb: 1 })
+    })
+    const secondJob = makeJob({
+      job_id: 'job-budget-2',
+      remote_workdir: '~/.openscience/jobs/job-budget-2',
+      output_manifest: JSON.stringify(['*.result']),
+      harvest_config: JSON.stringify({ max_file_mb: 1, max_total_mb: 1 })
+    })
+    let releaseFirst!: () => void
+    const firstReleased = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    const firstDownload = vi.fn(async (_remotePath: string, localPath: string) => {
+      await firstReleased
+      await mkdir(dirname(localPath), { recursive: true })
+      await writeFile(localPath, 'first')
+      return {
+        exitCode: 0,
+        stderr: '',
+        timedOut: false,
+        bytesWritten: 5,
+        exceeded: false
+      }
+    })
+    const secondDownload = vi.fn(async () => ({
+      exitCode: 0,
+      stderr: '',
+      timedOut: false,
+      bytesWritten: 0,
+      exceeded: false
+    }))
+    const lease = (filename: string, download: ComputeConnectionLease['download']) => ({
+      run: vi.fn(async () => ({
+        exitCode: 0,
+        stdout: findOutput([{ path: filename, size_bytes: 1 }]),
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      })),
+      upload: vi.fn(async () => undefined),
+      download
+    })
+    const freeBytes = HARVEST_FREE_DISK_RESERVE_BYTES + MIB_BYTES_FOR_TEST
+    const firstHarvest = harvestJob(firstJob, {
+      connectionBroker: { acquire: vi.fn(async () => lease('first.result', firstDownload)) },
+      hostRepository: makeHostRepo(sampleHost()),
+      jobRepository: makeJobRepo(firstJob).repo,
+      storageRoot,
+      getFreeDiskBytesFn: async () => freeBytes
+    })
+    await vi.waitFor(() => expect(firstDownload).toHaveBeenCalledOnce())
+
+    await harvestJob(secondJob, {
+      connectionBroker: { acquire: vi.fn(async () => lease('second.result', secondDownload)) },
+      hostRepository: makeHostRepo(sampleHost()),
+      jobRepository: makeJobRepo(secondJob).repo,
+      storageRoot: aliasRoot,
+      getFreeDiskBytesFn: async () => freeBytes
+    })
+
+    expect(secondDownload).not.toHaveBeenCalled()
+    releaseFirst()
+    await firstHarvest
+  })
   it('fails closed when the remote copy runner cannot enforce a byte limit', async () => {
     const storageRoot = await mkTmp()
     const job = makeJob({
