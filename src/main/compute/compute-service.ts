@@ -213,4 +213,12 @@ export class ComputeService {
   handleJobUpdated = (job: ComputeJob): void => {
     this.jobWorkflow.handleJobUpdated(job)
   }
+
+  startQueueReconciliation = (): void => {
+    this.concurrencyManager?.startQueueReconciliation()
+  }
+
+  stopQueueReconciliation = async (): Promise<void> => {
+    await this.concurrencyManager?.stopQueueReconciliation()
+  }
 }

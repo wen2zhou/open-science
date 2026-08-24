@@ -238,6 +238,7 @@ export class JobPoller {
     // Group by provider.
     const byProvider = new Map<string, ComputeJob[]>()
     for (const job of jobs) {
+      if (job.status === 'queued') continue
       const list = byProvider.get(job.provider_id) ?? []
       list.push(job)
       byProvider.set(job.provider_id, list)
