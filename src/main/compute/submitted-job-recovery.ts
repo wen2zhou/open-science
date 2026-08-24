@@ -25,8 +25,9 @@ export class SubmittedJobRecovery {
 
   async recordUnavailable(jobs: ComputeJob[], errorCode: string): Promise<void> {
     for (const job of jobs) {
+      if (job.status !== 'submitted' && job.status !== 'running') continue
       this.pendingTicks.delete(job.job_id)
-      await this.lifecycle.recordPollError(job.job_id, 'submitted', errorCode)
+      await this.lifecycle.recordPollError(job.job_id, job.status, errorCode)
     }
   }
 
@@ -34,6 +35,8 @@ export class SubmittedJobRecovery {
     job: ComputeJob,
     connection: ComputeConnectionLease
   ): Promise<SubmittedJobRecoveryResult> {
+    if (job.status !== 'submitted' && job.status !== 'running') return { kind: 'none' }
+    const observedStatus = job.status
     let observation
     try {
       observation = await probeRemoteLaunch(connection, job.remote_workdir!)
@@ -41,7 +44,7 @@ export class SubmittedJobRecovery {
       this.pendingTicks.delete(job.job_id)
       await this.lifecycle.recordPollError(
         job.job_id,
-        'submitted',
+        observedStatus,
         error instanceof ComputeConnectionError ? error.code : 'host_unreachable'
       )
       return { kind: 'none' }
@@ -49,7 +52,11 @@ export class SubmittedJobRecovery {
 
     if (observation.kind === 'running') {
       this.pendingTicks.delete(job.job_id)
-      await this.lifecycle.dispatchRunning(job.job_id, JSON.stringify(observation.handle))
+      await this.lifecycle.recoverRemoteHandle(
+        job.job_id,
+        observedStatus,
+        JSON.stringify(observation.handle)
+      )
       return { kind: 'none' }
     }
 
@@ -93,16 +100,41 @@ export class SubmittedJobRecovery {
         return this.interrupt(job)
       }
       this.pendingTicks.set(job.job_id, ticks)
-      await this.lifecycle.recordPollError(job.job_id, 'submitted', 'dispatch_recovery_pending')
+      await this.lifecycle.recordPollError(
+        job.job_id,
+        observedStatus,
+        observedStatus === 'submitted'
+          ? 'dispatch_recovery_pending'
+          : 'remote_handle_recovery_pending',
+        false
+      )
       return { kind: 'none' }
     }
 
     this.pendingTicks.delete(job.job_id)
-    await this.lifecycle.recordPollError(job.job_id, 'submitted', 'dispatch_recovery_ambiguous')
+    await this.lifecycle.recordPollError(
+      job.job_id,
+      observedStatus,
+      observedStatus === 'submitted'
+        ? 'dispatch_recovery_ambiguous'
+        : 'remote_handle_recovery_ambiguous',
+      false
+    )
     return { kind: 'none' }
   }
 
   async interrupt(job: ComputeJob): Promise<SubmittedJobRecoveryResult> {
+    if (job.status === 'running') {
+      const transition = await this.lifecycle.finishPolled(job.job_id, {
+        status: 'failed',
+        errorCode: 'process_vanished',
+        stdoutTail: job.stdout_tail ?? null,
+        stderrTail: job.stderr_tail ?? null
+      })
+      return transition.kind === 'applied'
+        ? { kind: 'harvest', job: transition.job }
+        : { kind: 'none' }
+    }
     const transition = await this.lifecycle.recoverInterruptedDispatch(job.job_id)
     return transition.kind === 'applied'
       ? { kind: 'notification', job: transition.job }

@@ -42,7 +42,11 @@ const NONCE = 'NONCE123_'
 // Prefixes structural marker lines with the fixed nonce, mirroring what the poller emits/parses.
 const withNonce = (lines: string[]): string =>
   lines
-    .map((l) => (/^(JOB_START:|alive:|STDOUT_END:|STDERR_END:)/.test(l) ? NONCE + l : l))
+    .map((line, index) => {
+      if (/^(JOB_START:|alive:|STDOUT_END:|STDERR_END:)/.test(line)) return NONCE + line
+      if (index > 0 && lines[index - 1]?.startsWith('alive:')) return `${NONCE}exit:${line}`
+      return line
+    })
     .join('\n')
 
 const noLaunchRecoveryOutput = [
@@ -229,6 +233,48 @@ describe('JobPoller', () => {
     expect(onJobUpdated).toHaveBeenCalled()
   })
 
+  it('keeps lifecycle unchanged and records an automatic retry for truncated output', async () => {
+    const job = makeJob()
+    const update = vi.fn((_id: string, updates: unknown) =>
+      Promise.resolve({ ...job, ...(updates as object) })
+    )
+    const jobRepository = {
+      findNonTerminal: vi.fn(async () => [job]),
+      updateIfStatus: guardStatusUpdate(update)
+    } as unknown as ComputeJobRepository
+    const runner = makeSshRunner({
+      exitCode: 0,
+      stdout: withNonce([
+        'JOB_START:job-1',
+        'alive:0',
+        '0',
+        'done',
+        'STDOUT_END:job-1',
+        '',
+        'STDERR_END:job-1'
+      ]),
+      stderr: '',
+      truncated: true,
+      timedOut: false
+    })
+
+    await new JobPoller({
+      connectionBroker: brokerFromRunner(runner),
+      hostRepository: {} as ComputeHostRepository,
+      jobRepository,
+      makeNonce: () => NONCE
+    }).tick()
+
+    expect(update).toHaveBeenCalledWith(
+      'job-1',
+      expect.objectContaining({
+        lastPollError: 'poll_protocol_incomplete',
+        retryAfterUserAction: false
+      })
+    )
+    expect(update).not.toHaveBeenCalledWith('job-1', expect.objectContaining({ status: 'success' }))
+  })
+
   it('parses protocol markers before redacting persisted job tails', async () => {
     const job = makeJob()
     const update = vi.fn((_id: string, updates: unknown) =>
@@ -282,12 +328,12 @@ describe('JobPoller', () => {
       expect.objectContaining({
         status: 'success',
         exitCode: 0,
-        stdoutTail: 'stdout contains [redacted]\n',
+        stdoutTail: 'existing first-line fixture\nstdout contains [redacted]\n',
         stderrTail: 'stderr contains [redacted]'
       })
     )
     expect(redactSensitiveOutputs).toHaveBeenCalledWith([
-      'stdout contains 1\n',
+      'existing first-line fixture\nstdout contains 1\n',
       'stderr contains 1'
     ])
   })
@@ -545,7 +591,7 @@ describe('JobPoller', () => {
     const pollOutput = [
       `${NONCE}JOB_START:job-1`,
       `${NONCE}alive:1`,
-      '0',
+      `${NONCE}exit:0`,
       'JOB_START:job-1', // adversarial line inside the stdout tail
       'alive:0', // adversarial line inside the stdout tail
       `${NONCE}STDOUT_END:job-1`,
@@ -1926,6 +1972,7 @@ describe('JobPoller sub-batching (per-job output budget)', () => {
     const jobs = Array.from({ length: 10 }, (_, i) =>
       makeJob({
         job_id: `job-${i}`,
+        remote_workdir: `~/.openscience/jobs/job-${i}`,
         remote_handle: JSON.stringify({
           pid: 1000 + i,
           exit_code_path: `~/.openscience/jobs/job-${i}/exit_code`,
@@ -1985,6 +2032,7 @@ describe('JobPoller sub-batching (per-job output budget)', () => {
     const jobs = Array.from({ length: 10 }, (_, i) =>
       makeJob({
         job_id: `job-${i}`,
+        remote_workdir: `~/.openscience/jobs/job-${i}`,
         remote_handle: JSON.stringify({
           pid: 1000 + i,
           exit_code_path: `~/.openscience/jobs/job-${i}/exit_code`,

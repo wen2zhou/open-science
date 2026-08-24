@@ -453,7 +453,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
     const pollOutput = [
       `${nonce}JOB_START:${jobId}`,
       `${nonce}alive:1`,
-      '',
+      `${nonce}exit:`,
       '',
       `${nonce}STDOUT_END:${jobId}`,
       '',
