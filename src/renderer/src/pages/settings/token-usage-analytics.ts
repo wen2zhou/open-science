@@ -30,6 +30,7 @@ export type TokenUsageDailyPoint = {
   newProjects: number
   newArtifacts: number
   runs: number
+  incompleteUsageReports: number
 }
 
 type TokenUsageEvent = {
@@ -117,7 +118,8 @@ const createEmptyDailyPoint = (dayStart: number): TokenUsageDailyPoint => ({
   newConversations: 0,
   newProjects: 0,
   newArtifacts: 0,
-  runs: 0
+  runs: 0,
+  incompleteUsageReports: 0
 })
 
 const buildAnalyticsFromProjection = (
@@ -163,6 +165,7 @@ const buildAnalyticsFromProjection = (
     point.cacheTokens += event.cacheTokens
     point.outputTokens += event.outputTokens
     point.totalTokens += event.inputTokens + event.cacheTokens + event.outputTokens
+    if (event.incomplete) point.incompleteUsageReports += 1
   }
   return analytics
 }

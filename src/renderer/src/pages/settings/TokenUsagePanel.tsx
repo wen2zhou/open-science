@@ -82,6 +82,12 @@ const tokenScaleMaximum = (maximum: number): number => {
 const metricLabel = (metric: TokenUsageHeatmapMetric): string =>
   HEATMAP_METRICS.find((candidate) => candidate.value === metric)?.label ?? 'Total tokens'
 
+const isTokenMetric = (metric: TokenUsageHeatmapMetric): boolean =>
+  metric === 'totalTokens' ||
+  metric === 'inputTokens' ||
+  metric === 'outputTokens' ||
+  metric === 'cacheTokens'
+
 function TokenUsagePanel({
   sessions,
   projects,
@@ -191,8 +197,10 @@ function TokenUsagePanel({
   )
 
   const formatNumber = (value: number): string => numberFormatter.format(value)
+  const formatKnownNumber = (value: number, incomplete: boolean): string =>
+    `${incomplete ? '≥' : ''}${formatNumber(value)}`
   const formatTokenTotal = (value: number): string =>
-    `${summary.incompleteUsageReports > 0 ? '≥' : ''}${formatNumber(value)}`
+    formatKnownNumber(value, summary.incompleteUsageReports > 0)
   const formatTokenAxisValue = (value: number): string => {
     const units = [
       { threshold: 1_000_000_000, suffix: 'B' },
@@ -213,6 +221,9 @@ function TokenUsagePanel({
   const last30DaysTotal = analytics.last30Days.reduce(
     (total, point) => total + point.totalTokens,
     0
+  )
+  const last30DaysIncomplete = analytics.last30Days.some(
+    (point) => point.incompleteUsageReports > 0
   )
   const tokenSummaryItems: ReadonlyArray<{
     label: string
@@ -266,16 +277,19 @@ function TokenUsagePanel({
   const heatmapCellLabel = (point: TokenUsageDailyPoint): string =>
     t('{{date}}: {{value}} {{metric}}', {
       date: fullDateFormatter.format(point.dayStart),
-      value: formatNumber(tokenUsageMetricValue(point, heatmapMetric)),
+      value: formatKnownNumber(
+        tokenUsageMetricValue(point, heatmapMetric),
+        isTokenMetric(heatmapMetric) && point.incompleteUsageReports > 0
+      ),
       metric: t(metricLabel(heatmapMetric)).toLocaleLowerCase(i18n.language)
     })
 
   const stackedBarLabel = (point: TokenUsageDailyPoint): string =>
     t('{{date}}: {{input}} input, {{cache}} cache, {{output}} output', {
       date: fullDateFormatter.format(point.dayStart),
-      input: formatNumber(point.inputTokens),
-      cache: formatNumber(point.cacheTokens),
-      output: formatNumber(point.outputTokens)
+      input: formatKnownNumber(point.inputTokens, point.incompleteUsageReports > 0),
+      cache: formatKnownNumber(point.cacheTokens, point.incompleteUsageReports > 0),
+      output: formatKnownNumber(point.outputTokens, point.incompleteUsageReports > 0)
     })
 
   const refreshUsageProjection = (): void => {
@@ -631,7 +645,7 @@ function TokenUsagePanel({
             >
               <span className="font-medium text-foreground">{t('Total tokens')}</span>
               <span className="tabular-nums text-muted-foreground">
-                {formatNumber(last30DaysTotal)}
+                {formatKnownNumber(last30DaysTotal, last30DaysIncomplete)}
               </span>
             </div>
             <div className="grid min-w-0 grid-cols-[auto_minmax(0,1fr)] gap-x-3">
@@ -712,7 +726,10 @@ function TokenUsagePanel({
                             <div className="flex items-baseline justify-between gap-5">
                               <span className="font-semibold tabular-nums">{point.dateKey}</span>
                               <span className="font-semibold tabular-nums">
-                                {formatNumber(point.totalTokens)}
+                                {formatKnownNumber(
+                                  point.totalTokens,
+                                  point.incompleteUsageReports > 0
+                                )}
                               </span>
                             </div>
                             <div className="mt-3 grid gap-2">
@@ -745,7 +762,7 @@ function TokenUsagePanel({
                                     {t(row.label)}
                                   </span>
                                   <span className="tabular-nums text-foreground">
-                                    {formatNumber(row.value)}
+                                    {formatKnownNumber(row.value, point.incompleteUsageReports > 0)}
                                   </span>
                                 </div>
                               ))}

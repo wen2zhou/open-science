@@ -302,6 +302,7 @@ describe('token usage analytics', () => {
     expect(tokenUsageMetricValue(analytics.last30Days.at(-1)!, 'newProjects')).toBe(1)
     expect(tokenUsageMetricValue(analytics.last30Days.at(-1)!, 'newArtifacts')).toBe(0)
     expect(tokenUsageMetricValue(analytics.last30Days.at(-1)!, 'runs')).toBe(1)
+    expect(analytics.last30Days.at(-1)?.incompleteUsageReports).toBe(1)
     expect(selectTokenUsageSummary(analytics, '30-days')).toMatchObject({
       totalTokens: 60_007,
       newRuns: 2,

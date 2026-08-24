@@ -179,6 +179,23 @@ describe('TokenUsagePanel', () => {
     expect(
       document.body.querySelector('[data-slot="token-usage-coverage"]')?.textContent
     ).toContain('Known token totals include 1 incomplete usage report in this period.')
+    expect(
+      document.body.querySelector('[data-slot="token-usage-30-day-total"]')?.textContent
+    ).toContain('Total tokens≥999')
+    expect(
+      Array.from(document.body.querySelectorAll('[aria-label*="total tokens"]'))
+        .at(-1)
+        ?.getAttribute('aria-label')
+    ).toContain('≥999')
+    expect(
+      Array.from(
+        document.body.querySelectorAll(
+          '[aria-label="Stacked daily token usage for the last 30 days"] button'
+        )
+      )
+        .at(-1)
+        ?.getAttribute('aria-label')
+    ).toContain('≥900 input')
   })
 
   it('shows a retryable error instead of partial hydrated usage when the projection fails', async () => {
