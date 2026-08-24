@@ -3524,5 +3524,10 @@
   "{{count}} lines of output_many": "{{count}} lignes de sortie",
   "{{count}} lines of output_other": "{{count}} lignes de sortie",
   "done": "terminé",
-  "Esc to close": "Échap pour fermer"
+  "Esc to close": "Échap pour fermer",
+  "Waiting in queue": "En attente dans la file",
+  "Submitting": "Envoi en cours",
+  "Unable to load remote jobs.": "Impossible de charger les tâches distantes.",
+  "Harvest pending. Open Science will retry automatically.": "Collecte en attente. Open Science réessaiera automatiquement.",
+  "Harvest failed. Remote files were left untouched.": "Échec de la collecte. Les fichiers distants n’ont pas été modifiés."
 }

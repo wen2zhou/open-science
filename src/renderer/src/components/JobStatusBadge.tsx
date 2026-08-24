@@ -10,12 +10,12 @@ import type { ComputeJobStatus } from '../../../shared/compute'
 // compile-time key checking, while `satisfies` still forces every ComputeJobStatus to be covered.
 const STATUS_STYLE = {
   queued: {
-    labelKey: 'Queued',
+    labelKey: 'Waiting in queue',
     className:
       'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-950/40 dark:text-slate-400 dark:border-slate-800/50'
   },
   submitted: {
-    labelKey: 'Queued',
+    labelKey: 'Submitting',
     className:
       'bg-slate-100 text-slate-600 border-slate-200 dark:bg-slate-950/40 dark:text-slate-400 dark:border-slate-800/50'
   },

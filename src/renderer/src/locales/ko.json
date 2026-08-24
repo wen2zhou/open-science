@@ -3248,5 +3248,10 @@
   "Figure {{index}}": "그림 {{index}}",
   "{{count}} lines of output_other": "출력 {{count}}줄",
   "done": "완료",
-  "Esc to close": "Esc로 닫기"
+  "Esc to close": "Esc로 닫기",
+  "Waiting in queue": "대기열에서 기다리는 중",
+  "Submitting": "제출 중",
+  "Unable to load remote jobs.": "원격 작업을 불러올 수 없습니다.",
+  "Harvest pending. Open Science will retry automatically.": "결과 수집이 보류 중입니다. Open Science가 자동으로 다시 시도합니다.",
+  "Harvest failed. Remote files were left untouched.": "결과 수집에 실패했습니다. 원격 파일은 변경하지 않았습니다."
 }

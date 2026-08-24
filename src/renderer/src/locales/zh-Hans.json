@@ -3250,5 +3250,10 @@
   "Figure {{index}}": "图表 {{index}}",
   "{{count}} lines of output_other": "{{count}} 行输出",
   "done": "完成",
-  "Esc to close": "按 Esc 关闭"
+  "Esc to close": "按 Esc 关闭",
+  "Waiting in queue": "正在队列中等待",
+  "Submitting": "正在提交",
+  "Unable to load remote jobs.": "无法加载远程作业。",
+  "Harvest pending. Open Science will retry automatically.": "结果收集待处理。Open Science 将自动重试。",
+  "Harvest failed. Remote files were left untouched.": "结果收集失败。远程文件保持不变。"
 }

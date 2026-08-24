@@ -114,6 +114,59 @@ afterEach(() => {
 })
 
 describe('JobDetailModal — detail view', () => {
+  it('refreshes details by fetching the Session job list', async () => {
+    const { JobDetailModal } = await import('./JobDetailModal')
+    const job = makeJob({ status: 'running', stdout_tail: 'old output' })
+    const refreshed = makeJob({ status: 'success', stdout_tail: 'fresh output' })
+    const jobsList = vi.fn(async () => [refreshed])
+    ;(window as unknown as { api: { compute: { jobsList: typeof jobsList } } }).api = {
+      compute: { jobsList }
+    }
+    useSessionJobStore.getState().applyUpdate(job)
+
+    act(() => {
+      root.render(
+        <JobDetailModal open={true} sessionId="sess-1" initialJob={job} onClose={vi.fn()} />
+      )
+    })
+    await act(async () => {
+      ;(container.querySelector('[data-testid="job-detail-refresh"]') as HTMLButtonElement).click()
+    })
+
+    expect(jobsList).toHaveBeenCalledWith({ sessionId: 'sess-1' })
+    expect(container.textContent).toContain('fresh output')
+  })
+
+  it('shows a retry control for hydration and harvest failures', async () => {
+    const { JobDetailModal } = await import('./JobDetailModal')
+    const job = makeJob({
+      status: 'success',
+      harvest_error: 'harvest pending: host_unreachable'
+    })
+    const state = useSessionJobStore.getState()
+    useSessionJobStore.setState({
+      ...state,
+      jobsById: new Map([[job.job_id, job]]),
+      loadErrorBySession: new Map([['sess-1', 'database busy']])
+    })
+
+    act(() => {
+      root.render(
+        <JobDetailModal open={true} sessionId="sess-1" initialJob={job} onClose={vi.fn()} />
+      )
+    })
+
+    expect(container.textContent).toContain('Unable to load remote jobs.')
+    expect(container.textContent).toContain(
+      'Harvest pending. Open Science will retry automatically.'
+    )
+    expect(
+      Array.from(container.querySelectorAll('button')).some(
+        (button) => button.textContent === 'Retry'
+      )
+    ).toBe(true)
+  })
+
   it('renders job meta info when opened with a job', async () => {
     const { JobDetailModal } = await import('./JobDetailModal')
     const job = makeJob({ intent: 'Run EDA analysis', display_name: 'biowulf' })

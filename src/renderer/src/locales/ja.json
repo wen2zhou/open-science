@@ -3250,5 +3250,10 @@
   "Figure {{index}}": "図 {{index}}",
   "{{count}} lines of output_other": "{{count}} 行の出力",
   "done": "完了",
-  "Esc to close": "Esc で閉じる"
+  "Esc to close": "Esc で閉じる",
+  "Waiting in queue": "キューで待機中",
+  "Submitting": "送信中",
+  "Unable to load remote jobs.": "リモートジョブを読み込めません。",
+  "Harvest pending. Open Science will retry automatically.": "結果の収集は保留中です。Open Science が自動的に再試行します。",
+  "Harvest failed. Remote files were left untouched.": "結果の収集に失敗しました。リモートファイルは変更されていません。"
 }

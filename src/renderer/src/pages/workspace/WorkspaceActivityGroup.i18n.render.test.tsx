@@ -5,6 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { i18next } from '@/i18n'
 import type { NotebookRunRecord } from '../../../../shared/notebook'
+import type { JobSummary } from '../../../../shared/compute'
 import { WorkspaceActivityGroup } from './WorkspaceActivityGroup'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -33,6 +34,65 @@ afterEach(async () => {
 })
 
 describe('WorkspaceActivityGroup i18n', () => {
+  it('keeps a bound terminal Compute Job at its originating activity', () => {
+    const job: JobSummary = {
+      job_id: 'job-terminal',
+      provider_id: 'ssh:host',
+      display_name: 'Host',
+      shape: 'direct_ssh',
+      session_id: 'session-1',
+      status: 'success',
+      intent: 'Finished analysis',
+      created_at: 1,
+      started_at: 2,
+      finished_at: 3,
+      exit_code: 0,
+      error_code: undefined,
+      remote_workdir: '/remote/job-terminal',
+      stdout_tail: 'done',
+      stderr_tail: '',
+      notified_at: 4,
+      notification_consumed_at: undefined
+    }
+    act(() => {
+      root.render(
+        <WorkspaceActivityGroup
+          group={{
+            id: 'group-job',
+            type: 'activity-group',
+            createdAt: 1,
+            sortIndex: 1,
+            activities: [
+              {
+                id: 'activity-job',
+                kind: 'tool',
+                title: 'Submit job',
+                status: 'completed',
+                eventIds: [],
+                sortIndex: 1,
+                createdAt: 1,
+                updatedAt: 2,
+                rawOutput: {
+                  result: JSON.stringify({ job_id: 'job-terminal' }),
+                  stdout: '',
+                  stderr: ''
+                }
+              }
+            ]
+          }}
+          isExpanded={true}
+          onToggleGroup={vi.fn()}
+          expansionOverrides={{}}
+          onToggleRow={vi.fn()}
+          jobsByActivityId={new Map([[job.job_id, job]])}
+        />
+      )
+    })
+
+    expect(container.querySelector('[data-testid="remote-job-row"]')).not.toBeNull()
+    expect(container.textContent).toContain('finished')
+  })
+
   it('anchors the group in view before toggling its height', () => {
     const onToggleGroup = vi.fn()
     act(() => {

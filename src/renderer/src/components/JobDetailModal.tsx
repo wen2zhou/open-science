@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useRef, useState } from 'react'
+import { useCallback, useEffect, useState } from 'react'
 import { ArrowLeft, ExternalLink, X } from 'lucide-react'
 import { Dialog } from 'radix-ui'
 import { useTranslation } from 'react-i18next'
@@ -115,6 +115,17 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
 
   // Pull latest data from the store on every render (store subscribes to compute:job-updated).
   const latestJob = useSessionJobStore((s) => s.jobsById.get(job.job_id)) ?? job
+  const hydrateJobs = useSessionJobStore((s) => s.hydrate)
+  const loadError = useSessionJobStore((s) => s.loadErrorBySession.get(job.session_id))
+  const [isRefreshing, setIsRefreshing] = useState(false)
+  const refreshJob = useCallback(async (): Promise<void> => {
+    setIsRefreshing(true)
+    try {
+      await hydrateJobs(job.session_id, { activate: false })
+    } finally {
+      setIsRefreshing(false)
+    }
+  }, [hydrateJobs, job.session_id])
   const openSettingsToComputeAuthentication = useSettingsStore(
     (state) => state.openSettingsToComputeAuthentication
   )
@@ -135,26 +146,12 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
     return () => clearInterval(id)
   }, [isRunning])
 
-  // ≈15s refresh trigger for terminal output (store already updates via compute:job-updated broadcast
-  // which the app subscribes to; this force-tick ensures the component re-renders with fresh tail).
-  const [refreshTick, setRefreshTick] = useState(0)
-  const refreshTimerRef = useRef<ReturnType<typeof setInterval> | null>(null)
-
+  // Broadcasts are the fast path; a real list fetch repairs a missed renderer event or stale tail.
   useEffect(() => {
-    if (!isRunning) {
-      if (refreshTimerRef.current) clearInterval(refreshTimerRef.current)
-      return
-    }
-    refreshTimerRef.current = setInterval(() => {
-      setRefreshTick((t) => t + 1)
-    }, TERMINAL_REFRESH_MS)
-    return () => {
-      if (refreshTimerRef.current) clearInterval(refreshTimerRef.current)
-    }
-  }, [isRunning])
-
-  // Suppress unused variable warning — refreshTick is consumed to trigger re-render cycle
-  void refreshTick
+    if (!isRunning) return undefined
+    const timer = setInterval(() => void refreshJob(), TERMINAL_REFRESH_MS)
+    return () => clearInterval(timer)
+  }, [isRunning, refreshJob])
 
   // Compute runtime display
   const runtimeDisplay = (): string => {
@@ -183,6 +180,16 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
           {t('Back')}
         </button>
         <span className="flex-1 min-w-0 truncate text-[13px] font-medium">{latestJob.intent}</span>
+        <Button
+          type="button"
+          variant="ghost"
+          size="sm"
+          data-testid="job-detail-refresh"
+          disabled={isRefreshing}
+          onClick={() => void refreshJob()}
+        >
+          {t('Refresh')}
+        </Button>
         <JobStatusBadge status={latestJob.status} />
       </div>
 
@@ -231,6 +238,46 @@ function JobDetailView({ job, onBack, onOpenFileBrowser }: JobDetailViewProps): 
             }
           >
             {computeRuntimeRecoveryAction(runtimeErrorCode, t)}
+          </Button>
+        </div>
+      ) : null}
+
+      {loadError ? (
+        <div
+          role="alert"
+          className="m-3 rounded-lg border border-status-warning-border bg-status-warning-subtle/50 px-3 py-2 text-sm text-status-warning-strong"
+        >
+          <p>{t('Unable to load remote jobs.')}</p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={() => void refreshJob()}
+          >
+            {t('Retry')}
+          </Button>
+        </div>
+      ) : null}
+
+      {latestJob.harvest_error && !runtimeErrorCode ? (
+        <div
+          role="alert"
+          className="m-3 rounded-lg border border-status-warning-border bg-status-warning-subtle/50 px-3 py-2 text-sm text-status-warning-strong"
+        >
+          <p>
+            {latestJob.harvest_error.startsWith('harvest pending:')
+              ? t('Harvest pending. Open Science will retry automatically.')
+              : t('Harvest failed. Remote files were left untouched.')}
+          </p>
+          <Button
+            type="button"
+            variant="outline"
+            size="sm"
+            className="mt-2"
+            onClick={() => void refreshJob()}
+          >
+            {t('Refresh')}
           </Button>
         </div>
       ) : null}

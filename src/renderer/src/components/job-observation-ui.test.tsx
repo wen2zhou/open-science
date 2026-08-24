@@ -164,7 +164,7 @@ afterEach(() => {
 
 describe('JobStatusBadge', () => {
   it.each([
-    ['submitted', 'Queued'],
+    ['submitted', 'Submitting'],
     ['running', 'Running'],
     ['success', 'Done'],
     ['failed', 'Failed'],
@@ -260,15 +260,33 @@ describe('RemoteJobRow', () => {
     act(() => {
       root.render(<RemoteJobRow job={job} onOpen={vi.fn()} />)
     })
-    expect(container.textContent).toContain('running')
+    expect(container.textContent).toContain('Running')
   })
 
-  it('shows "queued" status text for submitted jobs', () => {
+  it('distinguishes waiting, submitting, and running states', () => {
+    const queued = makeJob({ status: 'queued' })
+    act(() => {
+      root.render(<RemoteJobRow job={queued} onOpen={vi.fn()} />)
+    })
+    expect(container.textContent).toContain('Waiting in queue')
+
     const job = makeJob({ status: 'submitted' })
     act(() => {
       root.render(<RemoteJobRow job={job} onOpen={vi.fn()} />)
     })
-    expect(container.textContent).toContain('queued')
+    expect(container.textContent).toContain('Submitting')
+
+    act(() => {
+      root.render(<RemoteJobRow job={makeJob({ status: 'running' })} onOpen={vi.fn()} />)
+    })
+    expect(container.textContent).toContain('Running')
+  })
+
+  it('keeps a terminal job readable in its bound row', () => {
+    act(() => {
+      root.render(<RemoteJobRow job={makeJob({ status: 'success' })} onOpen={vi.fn()} />)
+    })
+    expect(container.textContent).toContain('finished')
   })
 
   it('calls onOpen when clicked', () => {
