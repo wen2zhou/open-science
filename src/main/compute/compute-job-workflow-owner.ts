@@ -407,6 +407,9 @@ export class ComputeJobWorkflowOwner {
     if (!this.storageRoot) {
       return jobResultWithFiles(job, [], [], leftOnRemote)
     }
+    if (job.harvest_error) {
+      return jobResultWithFiles(job, [], [], leftOnRemote)
+    }
 
     const harvestDir = getJobHarvestDir(
       this.storageRoot,

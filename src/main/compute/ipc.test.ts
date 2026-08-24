@@ -1468,6 +1468,20 @@ describe('toJobSummary — harvest features and left_on_remote parsing', () => {
     expect(summary.featured_file_count).toBe(2)
   })
 
+  it('does not project stale featured files for a failed replacement harvest', async () => {
+    const featuredDir = featuredDirFor('proj-1', 'sess-1', 'job-harvest')
+    await mkdir(featuredDir, { recursive: true })
+    await writeFile(join(featuredDir, 'old.csv'), 'older successful generation')
+
+    const summary = await toJobSummary(
+      sampleJob({ harvest_error: 'harvest_failed: connection reset', harvested_at: 10 }),
+      'Biowulf HPC',
+      storageRoot
+    )
+
+    expect(summary.featured_files).toEqual([])
+  })
+
   it('scans the relocated data-root workspace rather than a separate config root', async () => {
     const configRoot = await mkdtemp(join(tmpdir(), 'compute-ipc-config-root-'))
     const dataRoot = await mkdtemp(join(tmpdir(), 'compute-ipc-data-root-'))

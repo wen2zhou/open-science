@@ -1003,7 +1003,7 @@ describe('ComputeJobWorkflowOwner.getJobResult', () => {
     }
   })
 
-  it('harvest_failed: partial files returned, remote_workdir preserved', async () => {
+  it('harvest_failed: does not expose stale local files and preserves remote_workdir', async () => {
     const harvestDir = join(tmpDir, 'notebooks', 'proj-1', 'sess-1', 'hpc', 'job-result-1')
     await mkdir(join(harvestDir, 'featured'), { recursive: true })
     await writeFile(join(harvestDir, 'featured', 'partial.result'), 'partial')
@@ -1021,7 +1021,7 @@ describe('ComputeJobWorkflowOwner.getJobResult', () => {
     const result = await service.getJobResult('job-result-1')
 
     expect(result.status).toBe('success')
-    expect(result.featured_files).toContain('hpc/job-result-1/featured/partial.result')
+    expect(result.featured_files).toEqual([])
     expect(result.remote_workdir).toBe('~/.openscience/jobs/job-result-1')
     expect(result.left_on_remote).toHaveLength(1)
     expect(result.left_on_remote[0].uri).toBe('ssh://biowulf/tmp/big.bin')
