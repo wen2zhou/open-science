@@ -184,6 +184,7 @@ describe('workspace page architecture', () => {
     ])
     expect(importersOf(ownerPaths.messageQueue)).toEqual([
       'App.tsx',
+      'lib/compute/WorkspaceComputeRecoveryBridge.tsx',
       'pages/workspace/ComposerMessageQueue.tsx',
       'pages/workspace/workspace-conversation-controller.ts'
     ])
