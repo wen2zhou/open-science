@@ -80,6 +80,20 @@ export class ComputeJobLifecycle {
     })
   }
 
+  async failRemoteHandleRecovery(
+    jobId: string,
+    observedStatus: ActiveJobStatus,
+    diagnostic: string
+  ): Promise<ComputeJobTransitionResult> {
+    return this.apply(jobId, [observedStatus], {
+      status: 'error',
+      errorCode: 'dispatch_failed',
+      lastPollError: diagnostic,
+      retryAfterUserAction: false,
+      finishedAt: new Date()
+    })
+  }
+
   async finishPolled(jobId: string, result: PolledJobFinish): Promise<ComputeJobTransitionResult> {
     return this.apply(jobId, ['submitted', 'running'], {
       status: result.status,

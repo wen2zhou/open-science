@@ -35,6 +35,21 @@ export class SubmittedJobRecovery {
     job: ComputeJob,
     connection: ComputeConnectionLease
   ): Promise<SubmittedJobRecoveryResult> {
+    return this.recoverObservedLaunch(job, connection, false)
+  }
+
+  async recoverInvalidHandle(
+    job: ComputeJob,
+    connection: ComputeConnectionLease
+  ): Promise<SubmittedJobRecoveryResult> {
+    return this.recoverObservedLaunch(job, connection, true)
+  }
+
+  private async recoverObservedLaunch(
+    job: ComputeJob,
+    connection: ComputeConnectionLease,
+    invalidHandle: boolean
+  ): Promise<SubmittedJobRecoveryResult> {
     if (job.status !== 'submitted' && job.status !== 'running') return { kind: 'none' }
     const observedStatus = job.status
     let observation
@@ -112,14 +127,22 @@ export class SubmittedJobRecovery {
     }
 
     this.pendingTicks.delete(job.job_id)
-    await this.lifecycle.recordPollError(
-      job.job_id,
-      observedStatus,
-      observedStatus === 'submitted'
+    const errorCode = invalidHandle
+      ? 'remote_handle_recovery_ambiguous'
+      : observedStatus === 'submitted'
         ? 'dispatch_recovery_ambiguous'
-        : 'remote_handle_recovery_ambiguous',
-      false
-    )
+        : 'remote_handle_recovery_ambiguous'
+    if (invalidHandle && job.last_poll_error === errorCode) {
+      const transition = await this.lifecycle.failRemoteHandleRecovery(
+        job.job_id,
+        observedStatus,
+        errorCode
+      )
+      return transition.kind === 'applied'
+        ? { kind: 'notification', job: transition.job }
+        : { kind: 'none' }
+    }
+    await this.lifecycle.recordPollError(job.job_id, observedStatus, errorCode, false)
     return { kind: 'none' }
   }
 

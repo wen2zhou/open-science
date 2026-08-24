@@ -264,56 +264,59 @@ export class ConcurrencyManager {
   // Processes queued jobs in FIFO order (createdAt ASC) and dispatches any that satisfy both limits.
   private async tryDispatchNext(): Promise<void> {
     do {
-        this.reconciliationRequested = false
-        const queuedJobs = await this.jobRepository.findQueuedJobs()
-        if (this.queueStopped) return
-        const dispatchOperations: Promise<void>[] = []
+      this.reconciliationRequested = false
+      const queuedJobs = await this.jobRepository.findQueuedJobs()
+      if (this.queueStopped) return
+      const dispatchOperations: Promise<void>[] = []
 
-        for (const job of queuedJobs) {
-          if (this.queueStopped) break
-          const owner = { projectId: job.project_id, sessionId: job.session_id }
-          if (this.isOwnerPaused(owner)) continue
-          const reservation = this.runExclusive(async () => {
-            if (this.queueStopped || this.isOwnerPaused(owner)) return false
-            if (await this.overActiveLimits(job.session_id, job.provider_id)) return false
-            if (this.queueStopped || this.isOwnerPaused(owner)) return false
-            this.dispatchTracker.begin(job.job_id)
-            try {
-              const promotion = await this.lifecycle.promoteQueued(job.job_id)
-              if (promotion.kind === 'applied') return true
-            } catch (error) {
-              this.dispatchTracker.end(job.job_id)
-              throw error
-            }
-            this.dispatchTracker.end(job.job_id)
-            return false
-          })
-          this.ownerOperations.set(reservation, owner)
-          let reserved: boolean
+      for (const job of queuedJobs) {
+        if (this.queueStopped) break
+        const owner = { projectId: job.project_id, sessionId: job.session_id }
+        if (this.isOwnerPaused(owner)) continue
+        const reservation = this.runExclusive(async () => {
+          if (this.queueStopped || this.isOwnerPaused(owner)) return false
+          if (await this.overActiveLimits(job.session_id, job.provider_id)) return false
+          if (this.queueStopped || this.isOwnerPaused(owner)) return false
+          this.dispatchTracker.begin(job.job_id)
           try {
-            reserved = await reservation
-          } finally {
-            this.ownerOperations.delete(reservation)
+            const promotion = await this.lifecycle.promoteQueued(job.job_id)
+            if (promotion.kind === 'applied') return true
+          } catch (error) {
+            this.dispatchTracker.end(job.job_id)
+            throw error
           }
-          if (!reserved) continue
-
-          const operation = (async (): Promise<void> => {
-            try {
-              const dispatch = this.dispatchJob(job.job_id, this.handleJobUpdated)
-              this.dispatchTracker.end(job.job_id)
-              await dispatch
-            } catch {
-              this.dispatchTracker.end(job.job_id)
-              // If dispatch fails, mark job as error and continue to next queued job.
-              await this.lifecycle.dispatchError(job.job_id, { errorCode: 'dispatch_failed' })
-            }
-          })()
-          this.ownerOperations.set(operation, owner)
-          dispatchOperations.push(operation)
-          void operation.finally(() => this.ownerOperations.delete(operation))
+          this.dispatchTracker.end(job.job_id)
+          return false
+        })
+        this.ownerOperations.set(reservation, owner)
+        let reserved: boolean
+        try {
+          reserved = await reservation
+        } finally {
+          this.ownerOperations.delete(reservation)
         }
-        await Promise.allSettled(dispatchOperations)
-      } while (!this.queueStopped && this.reconciliationRequested)
+        if (!reserved) continue
+
+        const operation = (async (): Promise<void> => {
+          try {
+            const dispatch = this.dispatchJob(job.job_id, this.handleJobUpdated)
+            this.dispatchTracker.end(job.job_id)
+            await dispatch
+          } catch {
+            this.dispatchTracker.end(job.job_id)
+            // If dispatch fails, mark job as error and continue to next queued job.
+            await this.lifecycle.dispatchError(job.job_id, { errorCode: 'dispatch_failed' })
+          }
+        })()
+        this.ownerOperations.set(operation, owner)
+        dispatchOperations.push(operation)
+        void operation.then(
+          () => this.ownerOperations.delete(operation),
+          () => this.ownerOperations.delete(operation)
+        )
+      }
+      await Promise.allSettled(dispatchOperations)
+    } while (!this.queueStopped && this.reconciliationRequested)
   }
 
   private isOwnerPaused(owner: ComputeJobOwner): boolean {

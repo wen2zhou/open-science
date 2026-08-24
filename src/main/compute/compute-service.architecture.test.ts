@@ -264,6 +264,7 @@ describe('Compute service architecture', () => {
         'deleteOwnerRows',
         'dispatchError',
         'dispatchRunning',
+        'failRemoteHandleRecovery',
         'finishPolled',
         'observeRunning',
         'promoteQueued',
