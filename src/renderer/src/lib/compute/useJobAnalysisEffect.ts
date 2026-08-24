@@ -101,7 +101,7 @@ export const useJobAnalysisEffect = ({
         if (typeof window.api?.compute?.jobsMarkConsumed === 'function') {
           await window.api.compute.jobsMarkConsumed(sessionId, jobIds)
           // Refresh the in-memory job store so CompletedJobCard re-renders with consumed state.
-          void useSessionJobStore.getState().hydrate(sessionId)
+          void useSessionJobStore.getState().hydrate(sessionId, { activate: false })
         }
       },
       onTurnEnd: (sessionId, callback) => {
