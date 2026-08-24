@@ -526,6 +526,9 @@ describe('Compute service architecture', () => {
       'src/main/compute/job-poller.ts',
       'src/main/compute/job-poll-output.ts',
       'src/main/compute/job-repository.ts',
+      'src/main/compute/remote-job-process.ts',
+      'src/main/compute/remote-launch-recovery.ts',
+      'src/main/compute/submitted-job-recovery.ts',
       'src/main/compute/enabled-hosts-registry.ts',
       'src/main/compute/session-enabled-hosts-owner.ts',
       'src/main/compute/permission-grant-adapter.ts',
@@ -554,7 +557,10 @@ describe('Compute service architecture', () => {
         'src/main/compute/compute-service.test.ts',
         'src/main/compute/compute-auth-owner.test.ts',
         'src/main/compute/credential-vault.test.ts',
-        'src/main/compute/compute-password-auth.architecture.test.ts'
+        'src/main/compute/compute-password-auth.architecture.test.ts',
+        'src/main/compute/ambiguous-dispatch-recovery.integration.test.ts',
+        'src/main/compute/job-deletion-runtime-drain.test.ts',
+        'src/main/compute/job-deletion-runtime-isolation.test.ts'
       ])
     )
     expect(computeService.testFiles.contract).toEqual(
