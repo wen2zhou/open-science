@@ -19,6 +19,7 @@ import {
   probeRemoteJobProcessOwnership,
   terminateRemoteJobProcessIfOwned
 } from './remote-job-process'
+import { classifyComputeJobExit } from './remote-launch-recovery'
 import { SubmittedJobRecovery, type SubmittedJobRecoveryResult } from './submitted-job-recovery'
 
 // Polling interval: 15 seconds (design.md §8).
@@ -515,37 +516,14 @@ export class JobPoller {
       // Reset vanish counter since we have a definitive result.
       this.vanishCounters.delete(job.job_id)
 
-      let status: 'success' | 'failed' | 'timeout'
-      let errorCode: string | undefined
-
-      if (exitCode === 0) {
-        status = 'success'
-      } else if (exitCode === 124) {
-        status = 'timeout'
-        errorCode = 'timeout'
-      } else if (exitCode === 137) {
-        // SIGKILL: check elapsed time to disambiguate timeout vs OOM kill.
-        const startedAt = job.started_at
-        const timeoutSecs = job.timeout_seconds ?? 86400
-        const elapsed = startedAt ? (Date.now() - startedAt) / 1000 : 0
-        if (elapsed >= timeoutSecs) {
-          status = 'timeout'
-          errorCode = 'timeout'
-        } else {
-          status = 'failed'
-          errorCode = 'job_failed'
-        }
-      } else {
-        status = 'failed'
-        errorCode = 'job_failed'
-      }
+      const { status, errorCode } = classifyComputeJobExit(job, exitCode)
 
       const transition = await this.lifecycle.finishPolled(job.job_id, {
         status,
         exitCode,
         stdoutTail: stdoutTail || null,
         stderrTail: stderrTail || null,
-        errorCode: errorCode ?? null
+        errorCode
       })
       if (transition.kind === 'ignored') return
       // Async-dispatch harvest for success/failed/timeout (design §3). Not awaited — must not

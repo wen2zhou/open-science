@@ -82,7 +82,7 @@ const activeRemoteHandle = (job: ComputeJob, workdir: string): RemoteHandle | un
   }
   try {
     const handle = JSON.parse(job.remote_handle) as RemoteHandle
-    if (!Number.isSafeInteger(handle.pid) || handle.pid <= 0 || handle.workdir !== workdir) {
+    if (!Number.isSafeInteger(handle.pid) || handle.pid <= 1 || handle.workdir !== workdir) {
       throw new Error('invalid handle')
     }
     return handle

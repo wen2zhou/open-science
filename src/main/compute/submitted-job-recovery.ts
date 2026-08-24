@@ -1,7 +1,7 @@
 import type { ComputeJob } from '../../shared/compute'
 import { ComputeConnectionError, type ComputeConnectionLease } from './connection-broker'
 import type { ComputeJobLifecycle } from './compute-job-lifecycle'
-import { classifyRecoveredExit, probeRemoteLaunch } from './remote-launch-recovery'
+import { classifyComputeJobExit, probeRemoteLaunch } from './remote-launch-recovery'
 
 // A valid recovery witness may observe the deterministic directory after mkdir but before job.pid
 // is written. Require two consecutive observations before proving that launch was interrupted.
@@ -55,7 +55,7 @@ export class SubmittedJobRecovery {
 
     if (observation.kind === 'exited') {
       this.pendingTicks.delete(job.job_id)
-      const { status, errorCode } = classifyRecoveredExit(job, observation.exitCode)
+      const { status, errorCode } = classifyComputeJobExit(job, observation.exitCode)
       const transition = await this.lifecycle.finishPolled(job.job_id, {
         status,
         exitCode: observation.exitCode,

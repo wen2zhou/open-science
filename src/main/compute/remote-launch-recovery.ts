@@ -3,6 +3,7 @@ import { quoteRemotePath } from './remote-path-security'
 
 import type { ComputeJob } from '../../shared/compute'
 import type { RemoteHandle } from './job-dispatcher'
+import { remoteJobPidOwnershipFunctionLines } from './remote-job-process'
 
 const RECOVERY_PROTOCOL = 'OPEN_SCIENCE_DISPATCH_RECOVERY_V1'
 const RECOVERY_TIMEOUT_MS = 30_000
@@ -24,7 +25,7 @@ export type RecoveredExitState = {
 const positiveInteger = (value: string): number | undefined => {
   if (!/^[1-9]\d*$/.test(value)) return undefined
   const parsed = Number(value)
-  return Number.isSafeInteger(parsed) ? parsed : undefined
+  return Number.isSafeInteger(parsed) && parsed > 1 ? parsed : undefined
 }
 
 const exitCodeInteger = (value: string): number | undefined => {
@@ -41,7 +42,7 @@ export const remoteHandleFor = (workdir: string, pid: number): RemoteHandle => (
   workdir
 })
 
-export const classifyRecoveredExit = (
+export const classifyComputeJobExit = (
   job: Pick<ComputeJob, 'started_at' | 'submitted_at' | 'timeout_seconds'>,
   exitCode: number
 ): RecoveredExitState => {
@@ -62,18 +63,18 @@ const buildRecoveryProbe = (workdir: string): string => {
   const quotedExitCodeFile = quoteRemotePath(`${workdir}/exit_code`)
   return [
     `echo ${RECOVERY_PROTOCOL}`,
+    `[ ! -L ${quotedWorkdir} ] || { echo workdir:1; echo exit_code:; echo pid:; echo cwd_match:unknown; exit 0; }`,
     `if [ -d ${quotedWorkdir} ]; then echo workdir:1; else echo workdir:0; echo exit_code:; echo pid:; echo cwd_match:0; exit 0; fi`,
     `if [ -f ${quotedExitCodeFile} ]; then RECOVERY_EXIT_CODE=$(cat ${quotedExitCodeFile}); else RECOVERY_EXIT_CODE=; fi`,
-    `case "$RECOVERY_EXIT_CODE" in ''|*[!0-9]*) echo exit_code: ;; *) echo exit_code:$RECOVERY_EXIT_CODE ;; esac`,
+    `printf 'exit_code:%s\n' "$RECOVERY_EXIT_CODE"`,
     `if [ -f ${quotedPidFile} ]; then RECOVERY_PID=$(cat ${quotedPidFile}); else RECOVERY_PID=; fi`,
-    `case "$RECOVERY_PID" in ''|*[!0-9]*) echo pid:; echo cwd_match:0 ;; *)`,
-    '  echo pid:$RECOVERY_PID',
+    `printf 'pid:%s\n' "$RECOVERY_PID"`,
     `  RECOVERY_EXPECTED_CWD=$(cd ${quotedWorkdir} 2>/dev/null && pwd -P)`,
-    '  RECOVERY_ACTUAL_CWD=$(readlink -f /proc/$RECOVERY_PID/cwd 2>/dev/null)',
-    '  if [ -z "$RECOVERY_ACTUAL_CWD" ] && command -v lsof >/dev/null 2>&1; then',
-    `    RECOVERY_ACTUAL_CWD=$(lsof -a -p "$RECOVERY_PID" -d cwd -Fn 2>/dev/null | sed -n 's/^n//p' | head -n 1)`,
-    '  fi',
-    '  if kill -0 "$RECOVERY_PID" 2>/dev/null && [ -n "$RECOVERY_EXPECTED_CWD" ] && [ "$RECOVERY_ACTUAL_CWD" = "$RECOVERY_EXPECTED_CWD" ]; then echo cwd_match:1; else echo cwd_match:0; fi',
+    'workdir=$RECOVERY_EXPECTED_CWD',
+    ...remoteJobPidOwnershipFunctionLines(),
+    `case "$RECOVERY_PID" in '' ) echo cwd_match:0 ;; *[!0-9]*) echo cwd_match:unknown ;; *)`,
+    '  if ! kill -0 "$RECOVERY_PID" 2>/dev/null; then echo cwd_match:0',
+    '  else job_pid_is_owned "$RECOVERY_PID"; case $? in 0) echo cwd_match:1 ;; 1) echo cwd_match:0 ;; *) echo cwd_match:unknown ;; esac; fi',
     ';; esac'
   ].join('\n')
 }

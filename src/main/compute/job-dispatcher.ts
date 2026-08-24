@@ -13,7 +13,7 @@ import type { ComputeJobRepository } from './job-repository'
 import type { ComputeHostRepository } from './repository'
 import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
 import { ComputeJobLifecycle } from './compute-job-lifecycle'
-import { classifyRecoveredExit, probeRemoteLaunch } from './remote-launch-recovery'
+import { classifyComputeJobExit, probeRemoteLaunch } from './remote-launch-recovery'
 
 // Maximum number of bytes for the per-job dispatch SSH command (enough for base64 of large scripts).
 const DISPATCH_MAX_OUTPUT_BYTES = 4 * 1024
@@ -273,7 +273,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
   // parseInt prefixes are ambiguous because adopting the wrong PID can later target another job.
   const pidOutput = runResult.stdout.trim()
   const pid = /^[1-9]\d*$/.test(pidOutput) ? Number(pidOutput) : Number.NaN
-  if (runResult.truncated || !Number.isSafeInteger(pid)) {
+  if (runResult.truncated || !Number.isSafeInteger(pid) || pid <= 1) {
     await recoverAmbiguousRemoteLaunch(job, connection, workdir, lifecycle, runResult.stdout)
     return
   }
@@ -337,7 +337,7 @@ const recoverAmbiguousRemoteLaunch = async (
   }
   if (observation.kind === 'exited') {
     const exitCode = observation.exitCode
-    const { status, errorCode } = classifyRecoveredExit(job, exitCode)
+    const { status, errorCode } = classifyComputeJobExit(job, exitCode)
     await lifecycle.finishPolled(job.job_id, {
       status,
       exitCode,
