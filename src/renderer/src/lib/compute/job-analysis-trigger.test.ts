@@ -40,6 +40,8 @@ const makeJob = (overrides: Partial<JobSummary> = {}): JobSummary => ({
 const createDeps = (overrides: Partial<JobAnalysisTriggerDeps> = {}): JobAnalysisTriggerDeps => ({
   isSessionInFlight: vi.fn().mockReturnValue(false),
   sendPrompt: vi.fn().mockResolvedValue({ sessionId: 'sess-1', messageId: 'msg-1' }),
+  findPersistedDelivery: vi.fn().mockReturnValue(undefined),
+  flushPersistence: vi.fn().mockResolvedValue(undefined),
   markConsumed: vi.fn().mockResolvedValue(undefined),
   onTurnEnd: vi.fn(),
   log: vi.fn(),
@@ -95,6 +97,13 @@ describe('createJobAnalysisTrigger — immediate send', () => {
     ]
     expect(sessionId).toBe('sess-1')
     expect(text).toContain('job-1')
+    expect((deps.sendPrompt as ReturnType<typeof vi.fn>).mock.calls[0]?.[2]).toEqual({
+      kind: 'application',
+      feature: 'compute',
+      purpose: 'job-completion-analysis',
+      deliveryKey: 'compute_done:sess-1:job-1',
+      jobIds: ['job-1']
+    })
   })
 
   it('calls markConsumed after sendPrompt resolves and turn ends', async () => {
@@ -116,7 +125,8 @@ describe('createJobAnalysisTrigger — immediate send', () => {
     // Simulate turn completion by invoking the callback
     await callback()
 
-    // Now markConsumed should be called
+    // Durable Session flush is the commit point before the job inbox ACK.
+    expect(deps.flushPersistence).toHaveBeenCalledOnce()
     expect(deps.markConsumed).toHaveBeenCalledWith('sess-1', ['job-1'])
   })
 
@@ -144,6 +154,123 @@ describe('createJobAnalysisTrigger — immediate send', () => {
     await flushMicrotasks()
 
     expect(deps.markConsumed).not.toHaveBeenCalled()
+  })
+})
+
+describe('createJobAnalysisTrigger — durable delivery recovery', () => {
+  it('ACKs a successful persisted delivery after restart without resending analysis', async () => {
+    const deps = createDeps({
+      findPersistedDelivery: vi.fn().mockReturnValue({
+        messageId: 'persisted-message-1',
+        outcome: 'succeeded'
+      })
+    })
+    const trigger = createJobAnalysisTrigger(deps)
+
+    trigger.onJobDone(makeJob())
+    await flushMicrotasks()
+    await flushMicrotasks()
+
+    expect(deps.sendPrompt).not.toHaveBeenCalled()
+    expect(deps.flushPersistence).toHaveBeenCalledOnce()
+    expect(deps.markConsumed).toHaveBeenCalledWith('sess-1', ['job-1'])
+  })
+
+  it('does not ACK when the Session flush fails and retries only the ACK path', async () => {
+    const flushPersistence = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('disk full'))
+      .mockResolvedValueOnce(undefined)
+    const deps = createDeps({
+      findPersistedDelivery: vi.fn().mockReturnValue({
+        messageId: 'persisted-message-1',
+        outcome: 'succeeded'
+      }),
+      flushPersistence
+    })
+    const trigger = createJobAnalysisTrigger(deps)
+
+    trigger.onJobDone(makeJob())
+    await flushMicrotasks()
+    await flushMicrotasks()
+    expect(deps.markConsumed).not.toHaveBeenCalled()
+
+    trigger.onJobDone(makeJob())
+    await flushMicrotasks()
+    await flushMicrotasks()
+
+    expect(deps.sendPrompt).not.toHaveBeenCalled()
+    expect(flushPersistence).toHaveBeenCalledTimes(2)
+    expect(deps.markConsumed).toHaveBeenCalledOnce()
+  })
+
+  it('retries a failed inbox ACK without resending the persisted analysis', async () => {
+    const markConsumed = vi
+      .fn()
+      .mockRejectedValueOnce(new Error('database busy'))
+      .mockResolvedValueOnce(undefined)
+    const deps = createDeps({
+      findPersistedDelivery: vi.fn().mockReturnValue({
+        messageId: 'persisted-message-1',
+        outcome: 'succeeded'
+      }),
+      markConsumed
+    })
+    const trigger = createJobAnalysisTrigger(deps)
+
+    trigger.onJobDone(makeJob())
+    await flushMicrotasks()
+    await flushMicrotasks()
+    trigger.onJobDone(makeJob())
+    await flushMicrotasks()
+    await flushMicrotasks()
+
+    expect(deps.sendPrompt).not.toHaveBeenCalled()
+    expect(markConsumed).toHaveBeenCalledTimes(2)
+  })
+
+  it.each(['failed', 'cancelled'] as const)(
+    'does not ACK or resend a persisted %s analysis turn',
+    async (outcome) => {
+      const deps = createDeps({
+        findPersistedDelivery: vi.fn().mockReturnValue({
+          messageId: 'persisted-message-1',
+          outcome
+        })
+      })
+      const trigger = createJobAnalysisTrigger(deps)
+
+      trigger.onJobDone(makeJob())
+      await flushMicrotasks()
+      await flushMicrotasks()
+
+      expect(deps.sendPrompt).not.toHaveBeenCalled()
+      expect(deps.flushPersistence).not.toHaveBeenCalled()
+      expect(deps.markConsumed).not.toHaveBeenCalled()
+    }
+  )
+
+  it('waits through Plan approval and ACKs only after the same delivery succeeds', async () => {
+    let outcome: 'pending' | 'succeeded' = 'pending'
+    let turnEnd: (() => void) | undefined
+    const deps = createDeps({
+      findPersistedDelivery: vi.fn(() => ({ messageId: 'persisted-message-1', outcome })),
+      onTurnEnd: vi.fn((_sessionId, callback) => {
+        turnEnd = callback
+      })
+    })
+    const trigger = createJobAnalysisTrigger(deps)
+
+    trigger.onJobDone(makeJob())
+    await flushMicrotasks()
+    expect(deps.markConsumed).not.toHaveBeenCalled()
+
+    outcome = 'succeeded'
+    await turnEnd?.()
+    await flushMicrotasks()
+
+    expect(deps.sendPrompt).not.toHaveBeenCalled()
+    expect(deps.markConsumed).toHaveBeenCalledWith('sess-1', ['job-1'])
   })
 })
 
@@ -205,6 +332,29 @@ describe('createJobAnalysisTrigger — batching', () => {
     )
     expect(sessions).toContain('sess-1')
     expect(sessions).toContain('sess-2')
+  })
+
+  it('keeps overlapping completion batches distinct until both turns are durable', async () => {
+    const callbacks: Array<() => void> = []
+    const deps = createDeps({
+      onTurnEnd: vi.fn((_sessionId, callback) => callbacks.push(callback))
+    })
+    const trigger = createJobAnalysisTrigger(deps)
+
+    trigger.onJobDone(makeJob({ job_id: 'job-1' }))
+    await flushMicrotasks()
+    await flushMicrotasks()
+    trigger.onJobDone(makeJob({ job_id: 'job-2' }))
+    await flushMicrotasks()
+    await flushMicrotasks()
+
+    expect(deps.sendPrompt).toHaveBeenCalledTimes(2)
+    expect(callbacks).toHaveLength(2)
+    await callbacks[0]?.()
+    await callbacks[1]?.()
+
+    expect(deps.markConsumed).toHaveBeenCalledWith('sess-1', ['job-1'])
+    expect(deps.markConsumed).toHaveBeenCalledWith('sess-1', ['job-2'])
   })
 })
 
