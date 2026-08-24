@@ -77,12 +77,13 @@ export const buildComputeDonePayload = async (
 
   // Scan featured dir — may not exist for error jobs or if harvest failed before creating it.
   let featuredFiles: string[] = []
-  try {
-    const entries = await readdirRecursive(featuredDir)
-    featuredFiles = entries.map((abs) => workspaceRelativePath(workspaceCwd, abs))
-  } catch {
-    // Directory does not exist or is unreadable — emit empty list (execution-error / harvest_failed
-    // before any files were pulled). This is correct per design §8 and the acceptance criteria.
+  if (!job.harvest_error) {
+    try {
+      const entries = await readdirRecursive(featuredDir)
+      featuredFiles = entries.map((abs) => workspaceRelativePath(workspaceCwd, abs))
+    } catch {
+      // Directory does not exist or is unreadable — emit an empty list.
+    }
   }
 
   // Parse left_on_remote from the job DB column (JSON array).

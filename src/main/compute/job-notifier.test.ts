@@ -131,7 +131,7 @@ describe('emitJobNotification', () => {
     expect(summary.notification_consumed_at).toBeUndefined()
   })
 
-  it('harvest_failed: sets notifiedAt, featured_files from partial harvest dir', async () => {
+  it('harvest_failed: never exposes files from an older or partial generation', async () => {
     const storageRoot = await mkTmp()
 
     // Only one file was harvested before error
@@ -163,8 +163,8 @@ describe('emitJobNotification', () => {
     expect(mockUpdate).toHaveBeenCalledOnce()
     const summary = broadcast.mock.calls[0][0]
     expect(summary.status).toBe('failed')
-    expect(summary.featured_files).toEqual(['hpc/job-1/featured/partial.csv'])
-    expect(summary.featured_file_count).toBe(1)
+    expect(summary.featured_files).toEqual([])
+    expect(summary.featured_file_count).toBe(0)
     expect(summary.notified_at).toBeDefined()
   })
 
