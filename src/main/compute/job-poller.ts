@@ -593,47 +593,37 @@ export class JobPoller {
         const handle = this._parseHandle(current.remote_handle)
         const workdir = current.remote_workdir
         if (
-          handle &&
-          workdir &&
-          handle.workdir === workdir &&
-          Number.isSafeInteger(handle.pid) &&
-          handle.pid > 0
+          !handle ||
+          !workdir ||
+          handle.workdir !== workdir ||
+          !Number.isSafeInteger(handle.pid) ||
+          handle.pid <= 1
         ) {
-          // Probe failures are unknown ownership and fail closed. The termination operation repeats
-          // the same cwd guard before signalling, closing the probe-to-signal PID reuse window.
-          try {
-            const ownership = await probeRemoteJobProcessOwnership(handle.pid, workdir, connection)
-            if (ownership === 'unknown') {
-              await this.lifecycle.recordPollError(
-                current.job_id,
-                current.status,
-                'timeout_termination_unconfirmed'
-              )
-              return
-            }
-            if (ownership === 'owned') {
-              const terminated = await terminateRemoteJobProcessIfOwned(
-                handle.pid,
-                workdir,
-                connection
-              )
-              if (!terminated) {
-                await this.lifecycle.recordPollError(
-                  current.job_id,
-                  current.status,
-                  'timeout_termination_unconfirmed'
-                )
-                return
-              }
-            }
-          } catch {
-            await this.lifecycle.recordPollError(
-              current.job_id,
-              current.status,
-              'timeout_termination_unconfirmed'
-            )
+          await this._recordTimeoutTerminationUnconfirmed(current)
+          return
+        }
+        // Probe failures are unknown ownership and fail closed. The termination operation repeats
+        // the same cwd guard before signalling, closing the probe-to-signal PID reuse window.
+        try {
+          const ownership = await probeRemoteJobProcessOwnership(handle.pid, workdir, connection)
+          if (ownership === 'unknown') {
+            await this._recordTimeoutTerminationUnconfirmed(current)
             return
           }
+          if (ownership === 'owned') {
+            const terminated = await terminateRemoteJobProcessIfOwned(
+              handle.pid,
+              workdir,
+              connection
+            )
+            if (!terminated) {
+              await this._recordTimeoutTerminationUnconfirmed(current)
+              return
+            }
+          }
+        } catch {
+          await this._recordTimeoutTerminationUnconfirmed(current)
+          return
         }
         const transition = await this.lifecycle.finishPolled(job.job_id, {
           status: 'timeout',
@@ -655,5 +645,10 @@ export class JobPoller {
       stdoutTail: stdoutTail || null,
       stderrTail: stderrTail || null
     })
+  }
+
+  private async _recordTimeoutTerminationUnconfirmed(job: ComputeJob): Promise<void> {
+    if (job.status !== 'submitted' && job.status !== 'running') return
+    await this.lifecycle.recordPollError(job.job_id, job.status, 'timeout_termination_unconfirmed')
   }
 }
