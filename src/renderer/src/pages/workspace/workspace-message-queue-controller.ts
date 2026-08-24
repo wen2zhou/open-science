@@ -17,11 +17,16 @@ import { useSpecialistStore } from '@/stores/specialist-store'
 import { useWorkspaceAgentRuntime } from '@/lib/acp/useWorkspaceAgentRuntime'
 
 import { useOpenSideChatParentSessionIds } from './use-side-chat-controller'
-import { enqueueQueuedMessage, queueBlocksImmediateSend } from './workspace-message-queue-admission'
+import {
+  enqueueApplicationMessage,
+  enqueueQueuedMessage,
+  queueBlocksImmediateSend
+} from './workspace-message-queue-admission'
 import { drainQueuedSessions, sendQueuedItemNow } from './workspace-message-queue-drain'
 import {
   WorkspaceMessageQueueOwner,
   type MessageQueueAdmission,
+  type ApplicationMessageQueueAdmission,
   type MessageQueuePhase,
   type WorkspaceMessageQueueControllerOptions
 } from './workspace-message-queue-owner'
@@ -51,6 +56,9 @@ type WorkspaceMessageQueueController = {
   }
   lifecycle: {
     enqueue: (admission: MessageQueueAdmission) => boolean
+    enqueueApplication: (
+      admission: ApplicationMessageQueueAdmission
+    ) => Promise<{ sessionId: string; messageId: string } | undefined>
     blocksImmediateSend: (sessionId: string) => boolean
   }
 }
@@ -71,6 +79,16 @@ const useProvidedWorkspaceMessageQueueOwner = (): WorkspaceMessageQueueOwner => 
   const owner = useContext(WorkspaceMessageQueueContext)
   if (!owner) throw new Error('Workspace message queue provider is missing.')
   return owner
+}
+
+const useWorkspaceApplicationMessageQueue = (): ((
+  admission: ApplicationMessageQueueAdmission
+) => Promise<{ sessionId: string; messageId: string } | undefined>) => {
+  const owner = useProvidedWorkspaceMessageQueueOwner()
+  return useCallback(
+    (admission: ApplicationMessageQueueAdmission) => enqueueApplicationMessage(owner, admission),
+    [owner]
+  )
 }
 
 const WorkspaceMessageQueueProvider = ({ children }: PropsWithChildren): ReactElement => {
@@ -159,6 +177,10 @@ const useWorkspaceMessageQueueController = (
     (sessionId: string): boolean => queueBlocksImmediateSend(owner, optionsRef.current, sessionId),
     [owner]
   )
+  const enqueueApplication = useCallback(
+    (admission: ApplicationMessageQueueAdmission) => enqueueApplicationMessage(owner, admission),
+    [owner]
+  )
   const drainQueues = useCallback((): void => {
     drainQueuedSessions(owner, optionsRef)
   }, [owner])
@@ -198,7 +220,7 @@ const useWorkspaceMessageQueueController = (
   useEffect(() => drainQueues(), [drainQueues, options, queueSnapshot])
 
   return {
-    lifecycle: { enqueue, blocksImmediateSend },
+    lifecycle: { enqueue, enqueueApplication, blocksImmediateSend },
     actions: { move, moveTo, remove, edit, sendNow },
     items: projectActiveQueueItems(queueSnapshot, options.activeSession?.id),
     announcement
@@ -207,11 +229,13 @@ const useWorkspaceMessageQueueController = (
 
 export {
   useWorkspaceMessageQueueController,
+  useWorkspaceApplicationMessageQueue,
   WorkspaceMessageQueueProvider,
   WorkspaceMessageQueueRuntimeBridge
 }
 export type {
   MessageQueueAdmission,
+  ApplicationMessageQueueAdmission,
   MessageQueueItemView,
   MessageQueuePhase,
   WorkspaceMessageQueueController,

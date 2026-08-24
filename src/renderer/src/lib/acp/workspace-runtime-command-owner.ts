@@ -40,6 +40,7 @@ type SendWorkspaceMessageIntent = {
   branchSourceMessageId?: string
   text: string
   attribution?: MessageAttribution
+  requireExistingSession?: boolean
   turnIntent?: 'plan-first'
   planContinuation?: Pick<ActivePlanProjection, 'artifactVersionId' | 'revision'> & {
     pendingAction?: 'review' | 'approve' | 'reject'
@@ -66,7 +67,6 @@ type SendWorkspaceMessageCommand = SendWorkspaceMessageIntent & {
   supportsImageRelay?: boolean
   truncateFromMessageId?: string
   allowCompactionRecovery?: boolean
-  requireExistingSession?: boolean
 }
 type SendWorkspaceMessageResult = { sessionId: string; messageId: string }
 type SendPreparationStateChange = (sessionId: string, inFlight: boolean) => void
