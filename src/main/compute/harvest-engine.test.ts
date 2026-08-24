@@ -948,9 +948,7 @@ describe('harvestJob - bounded logs and disk reserve', () => {
     const freeBytes = HARVEST_FREE_DISK_RESERVE_BYTES + MIB_BYTES_FOR_TEST
     const firstHarvest = harvestJob(firstJob, {
       connectionBroker: {
-        acquire: vi.fn(async () =>
-          lease('first.result', MIB_BYTES_FOR_TEST, firstDownload)
-        )
+        acquire: vi.fn(async () => lease('first.result', MIB_BYTES_FOR_TEST, firstDownload))
       },
       hostRepository: makeHostRepo(sampleHost()),
       jobRepository: makeJobRepo(firstJob).repo,
