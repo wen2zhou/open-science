@@ -637,8 +637,8 @@ const harvestJobUnchecked = async (
       await safeDownload(relativePath, localPath)
     }
 
-  // ── 6. Build left_on_remote JSON and finalize ────────────────────────────────
-  // Download full logs last; bounded tails remain available when the budget excludes them.
+    // ── 6. Build left_on_remote JSON and finalize ────────────────────────────────
+    // Download full logs last; bounded tails remain available when the budget excludes them.
     for (const relativePath of classification.logs) {
       await safeDownload(relativePath, join(attemptDir, relativePath))
     }
