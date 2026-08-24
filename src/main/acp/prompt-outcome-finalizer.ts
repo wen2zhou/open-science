@@ -103,6 +103,14 @@ export class AcpPromptOutcomeFinalizer {
   // Retain a bounded running total so every later stop describes that complete visible user turn.
   private readonly logicalTurnUsage = new Map<string, LogicalTurnUsage>()
 
+  private rememberLogicalTurnUsage(key: string, usage: LogicalTurnUsage): void {
+    this.logicalTurnUsage.delete(key)
+    this.logicalTurnUsage.set(key, usage)
+    if (this.logicalTurnUsage.size <= MAX_LOGICAL_TURN_USAGE_ENTRIES) return
+    const oldestKey = this.logicalTurnUsage.keys().next().value
+    if (oldestKey) this.logicalTurnUsage.delete(oldestKey)
+  }
+
   restoreLogicalTurnUsageIfAbsent(
     sessionId: string,
     promptMessageId: string,
@@ -110,7 +118,7 @@ export class AcpPromptOutcomeFinalizer {
   ): void {
     const key = `${sessionId.length}:${sessionId}${promptMessageId}`
     if (this.logicalTurnUsage.has(key)) return
-    this.logicalTurnUsage.set(
+    this.rememberLogicalTurnUsage(
       key,
       baseline.turnUsage ? { turnUsage: { ...baseline.turnUsage } } : { unavailable: true }
     )
@@ -134,12 +142,7 @@ export class AcpPromptOutcomeFinalizer {
     const next: LogicalTurnUsage = accumulated ? { turnUsage: accumulated } : { unavailable: true }
 
     // Refresh insertion order so an active continuation is never the oldest retained entry.
-    this.logicalTurnUsage.delete(key)
-    this.logicalTurnUsage.set(key, next)
-    if (this.logicalTurnUsage.size > MAX_LOGICAL_TURN_USAGE_ENTRIES) {
-      const oldestKey = this.logicalTurnUsage.keys().next().value
-      if (oldestKey) this.logicalTurnUsage.delete(oldestKey)
-    }
+    this.rememberLogicalTurnUsage(key, next)
     return accumulated
   }
 

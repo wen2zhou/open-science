@@ -90,6 +90,14 @@ type PromptAcceptance = {
   settled: boolean
 }
 
+type PromptDispatchOptions = {
+  pinnedRuntime?: AcpRuntime
+  retainAsLatestUserPrompt?: boolean
+  attribution?: MessageAttribution
+  onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void
+  logicalTurnUsageBaseline?: LogicalTurnUsage
+}
+
 const observePromptAcceptance = (onAccepted: () => void): PromptAcceptance => {
   const acceptance: PromptAcceptance = {
     resolve: () => undefined,
@@ -788,14 +796,10 @@ class AcpRuntimeCoordinator {
     attribution: MessageAttribution
   ): ReturnType<AcpRuntime['sendApplicationPrompt']> {
     return this.linearizeRootAdmission(request.sessionId, () =>
-      this.dispatchPrompt(
-        request,
-        undefined,
-        'sendApplicationPrompt',
-        undefined,
-        false,
+      this.dispatchPrompt(request, undefined, 'sendApplicationPrompt', {
+        retainAsLatestUserPrompt: false,
         attribution
-      )
+      })
     )
   }
 
@@ -814,15 +818,9 @@ class AcpRuntimeCoordinator {
     if (this.promptAdmissionClosedForQuit) return this.rejectPromptForQuit()
     const dispatch = (): ReturnType<AcpRuntime['sendPrompt']> =>
       this.linearizeRootAdmission(request.sessionId, () =>
-        this.dispatchPrompt(
-          request,
-          acceptance,
-          'sendPrompt',
-          undefined,
-          true,
-          undefined,
+        this.dispatchPrompt(request, acceptance, 'sendPrompt', {
           onApplicationPromptAdmitted
-        ).finally(() => this.delegatedWork?.wakeMessages?.(request.sessionId))
+        }).finally(() => this.delegatedWork?.wakeMessages?.(request.sessionId))
       )
     const admission = this.promptAdmissionGuard?.(request.sessionId)
     return admission ? admission.then(dispatch) : dispatch()
@@ -955,26 +953,12 @@ class AcpRuntimeCoordinator {
         )
       }
       await (dispatchAdmitted
-        ? this.dispatchAdmittedPrompt(
-            request,
-            acceptance,
-            'sendAppContinuation',
-            undefined,
-            false,
-            undefined,
-            undefined,
-            baseline || undefined
-          )
-        : this.dispatchPrompt(
-            request,
-            acceptance,
-            'sendAppContinuation',
-            undefined,
-            false,
-            undefined,
-            undefined,
-            baseline || undefined
-          ))
+        ? this.dispatchAdmittedPrompt(request, acceptance, 'sendAppContinuation', {
+            logicalTurnUsageBaseline: baseline || undefined
+          })
+        : this.dispatchPrompt(request, acceptance, 'sendAppContinuation', {
+            logicalTurnUsageBaseline: baseline || undefined
+          }))
       if (!acceptance.settled) {
         acceptance.settled = true
         resolve('provider_prompt_completed')
@@ -987,25 +971,12 @@ class AcpRuntimeCoordinator {
     request: AcpPromptRequest,
     acceptance: PromptAcceptance | undefined,
     operation: 'sendPrompt' | 'sendAppContinuation' | 'sendApplicationPrompt',
-    pinnedRuntime?: AcpRuntime,
-    retainAsLatestUserPrompt = operation === 'sendPrompt',
-    attribution?: MessageAttribution,
-    onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void,
-    logicalTurnUsageBaseline?: LogicalTurnUsage
+    options: PromptDispatchOptions = {}
   ): ReturnType<AcpRuntime['sendPrompt']> {
     let dispatchStarted = false
     const dispatch = (): ReturnType<AcpRuntime['sendPrompt']> => {
       dispatchStarted = true
-      return this.dispatchAdmittedPrompt(
-        request,
-        acceptance,
-        operation,
-        pinnedRuntime,
-        retainAsLatestUserPrompt,
-        attribution,
-        onApplicationPromptAdmitted,
-        logicalTurnUsageBaseline
-      )
+      return this.dispatchAdmittedPrompt(request, acceptance, operation, options)
     }
     if (!this.promptDispatchAdmissionGuard) return dispatch()
     return this.promptDispatchAdmissionGuard(request.sessionId, dispatch).catch((error) => {
@@ -1021,12 +992,11 @@ class AcpRuntimeCoordinator {
     request: AcpPromptRequest,
     acceptance: PromptAcceptance | undefined,
     operation: 'sendPrompt' | 'sendAppContinuation' | 'sendApplicationPrompt',
-    pinnedRuntime?: AcpRuntime,
-    retainAsLatestUserPrompt = operation === 'sendPrompt',
-    attribution?: MessageAttribution,
-    onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void,
-    logicalTurnUsageBaseline?: LogicalTurnUsage
+    options: PromptDispatchOptions = {}
   ): ReturnType<AcpRuntime['sendPrompt']> {
+    const { pinnedRuntime, attribution, onApplicationPromptAdmitted, logicalTurnUsageBaseline } =
+      options
+    const retainAsLatestUserPrompt = options.retainAsLatestUserPrompt ?? operation === 'sendPrompt'
     if (this.promptAdmissionClosedForQuit) return this.rejectPromptForQuit()
     const owner = pinnedRuntime ?? this.findRuntimeForSession(request.sessionId)
     if (!pinnedRuntime && owner && this.retiredRuntimes.has(owner)) {
@@ -1450,8 +1420,7 @@ class AcpRuntimeCoordinator {
             : request,
           undefined,
           'sendPrompt',
-          runtime,
-          false
+          { pinnedRuntime: runtime, retainAsLatestUserPrompt: false }
         )
       },
       sendApplicationPrompt: (request, attribution) =>
@@ -1470,9 +1439,7 @@ class AcpRuntimeCoordinator {
               : request,
             undefined,
             'sendApplicationPrompt',
-            runtime,
-            false,
-            attribution
+            { pinnedRuntime: runtime, retainAsLatestUserPrompt: false, attribution }
           )
         })
     }
