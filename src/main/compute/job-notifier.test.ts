@@ -208,6 +208,35 @@ describe('emitJobNotification', () => {
     expect(summary.notified_at).toBeDefined()
   })
 
+  it('builds the notification from the row won by the delivery claim', async () => {
+    const storageRoot = await mkTmp()
+    const staleJob = makeJob({
+      left_on_remote: JSON.stringify([
+        { uri: 'ssh://biowulf/stale.dat', size_mb: 1, reason: 'stale' }
+      ])
+    })
+    const currentJob = {
+      ...staleJob,
+      notified_at: Date.now(),
+      left_on_remote: JSON.stringify([
+        { uri: 'ssh://biowulf/current.dat', size_mb: 20, reason: 'exceeds_max_file_mb' }
+      ])
+    }
+    const broadcast = vi.fn()
+
+    await emitJobNotification(staleJob, {
+      jobRepository: { claimNotification: vi.fn().mockResolvedValue(currentJob) },
+      hostRepository: makeMockHostRepository(),
+      storageRoot,
+      broadcast
+    })
+
+    expect(broadcast).toHaveBeenCalledOnce()
+    expect(broadcast.mock.calls[0][0].left_on_remote).toEqual([
+      { uri: 'ssh://biowulf/current.dat', size_mb: 20, reason: 'exceeds_max_file_mb' }
+    ])
+  })
+
   it('idempotent: already-notified job is not re-emitted', async () => {
     const storageRoot = await mkTmp()
 

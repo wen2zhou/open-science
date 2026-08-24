@@ -132,8 +132,8 @@ const readdirRecursive = async (dir: string): Promise<string[]> => {
  *
  * Steps:
  *  1. Check idempotency guard.
- *  2. Build payload (scan harvest dir + parse leftOnRemote column).
- *  3. Write notifiedAt to DB.
+ *  2. Claim notification delivery and read the current row.
+ *  3. Build payload from that claimed row (scan harvest dir + parse leftOnRemote column).
  *  4. Broadcast updated job summary (carrying payload fields + notified_at).
  *
  * This is EMIT-ONLY — does not touch notificationConsumedAt (issue 05).
@@ -147,23 +147,24 @@ export const emitJobNotification = async (
   // Idempotency: do not re-emit if already notified.
   if (job.notified_at != null) return
 
+  // Persist notifiedAt as a compare-and-set claim. Every notification entrance uses this seam, so
+  // overlapping stale projections cannot both broadcast. The returned row is also the freshness
+  // fence for every field used below: a caller may have entered with a pre-harvest projection.
+  const notifiedAt = new Date()
+  const updatedJob = await jobRepository.claimNotification(job.job_id, notifiedAt)
+  if (!updatedJob) return
+
   // Look up the host to get its displayName (fix: was using raw provider_id causing card flip).
-  let displayName = job.provider_id
+  let displayName = updatedJob.provider_id
   try {
-    const host = await hostRepository.get(job.provider_id)
+    const host = await hostRepository.get(updatedJob.provider_id)
     if (host) displayName = host.displayName
   } catch {
     // Transient lookup failure — fall back to provider_id so the broadcast always happens.
   }
 
   // Build the payload (scan harvest dir + parse leftOnRemote column).
-  const payload = await buildComputeDonePayload(job, storageRoot)
-
-  // Persist notifiedAt as a compare-and-set claim. Every notification entrance uses this seam, so
-  // overlapping stale projections cannot both broadcast.
-  const notifiedAt = new Date()
-  const updatedJob = await jobRepository.claimNotification(job.job_id, notifiedAt)
-  if (!updatedJob) return
+  const payload = await buildComputeDonePayload(updatedJob, storageRoot)
 
   // Broadcast the summary with notification payload fields embedded.
   // Reuses COMPUTE_JOB_UPDATED_CHANNEL via the injected broadcast fn (no new IPC channel).
