@@ -266,7 +266,6 @@ class SettingsService {
       this.backendResolver
     )
   }
-
   // Returns the raw stored settings document (unmasked), for main-process bootstrap needs (e.g. priming
   // the data-root cache) that shouldn't go through the renderer-safe view.
   async getStoredSettings(): Promise<StoredSettings> {
