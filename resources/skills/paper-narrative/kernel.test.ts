@@ -1,5 +1,5 @@
 import { execFileSync } from 'node:child_process'
-import { existsSync } from 'node:fs'
+import { existsSync, readFileSync } from 'node:fs'
 import { mkdtemp, readFile, rm } from 'node:fs/promises'
 import { dirname, join, resolve } from 'node:path'
 import { fileURLToPath } from 'node:url'
@@ -13,15 +13,14 @@ const skillDir = dirname(fileURLToPath(import.meta.url))
 const kernelPath = join(skillDir, 'kernel.py')
 const skillPath = join(skillDir, 'SKILL.md')
 const contractPath = join(skillDir, 'test_kernel.py')
+const descriptorPath = join(skillDir, 'open-science.json')
 const python3 = ['/usr/bin/python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3'].find(
   existsSync
 )
 const pythonGate = python3 ? describe : describe.skip
-const helperExports = [
-  'paper_brief_schema',
-  'narrative_review_schema',
-  'narrative_review_task'
-] as const
+const helperExports = (
+  JSON.parse(readFileSync(descriptorPath, 'utf8')) as { helpers: Array<{ exports: string[] }> }
+).helpers[0]!.exports
 
 type HostReview = Readonly<{
   hook_verdict: {

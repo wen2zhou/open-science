@@ -1,6 +1,7 @@
 import builtins
 import importlib.util
 import inspect
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -9,19 +10,8 @@ import unittest
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 KERNEL_PATH = Path(__file__).with_name("kernel.py")
-EXPORTS = (
-    "figure_outline_schema",
-    "grid_geom",
-    "panel_px",
-    "panel_xy",
-    "panel_task",
-    "compose_crops",
-    "compose_figure",
-    "group_fixes_by_panel",
-    "review_schema",
-    "composite_review_task",
-    "apply_outline_revisions",
-)
+DESCRIPTOR_PATH = Path(__file__).with_name("open-science.json")
+EXPORTS = tuple(json.loads(DESCRIPTOR_PATH.read_text(encoding="utf-8"))["helpers"][0]["exports"])
 SIGNATURES = {
     "figure_outline_schema": "()",
     "grid_geom": "(outline, dpi=300, gutter_mm=4)",
@@ -63,6 +53,7 @@ def outline():
 class FigureComposerKernelContractTests(unittest.TestCase):
     def test_exports_are_deterministic_and_keep_published_signatures(self):
         kernel = load_kernel()
+        self.assertEqual(set(SIGNATURES), set(EXPORTS))
         self.assertEqual(
             tuple(name for name in EXPORTS if callable(getattr(kernel, name, None))), EXPORTS
         )

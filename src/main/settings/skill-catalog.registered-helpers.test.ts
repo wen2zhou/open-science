@@ -1,6 +1,8 @@
+import { createHash } from 'node:crypto'
+import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, resolve } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
@@ -12,14 +14,20 @@ vi.mock('electron', () => ({
   }
 }))
 
-import type { BundledSkill, SkillRegistry } from '../skills/registry'
+import { SkillRegistry, type BundledSkill } from '../skills/registry'
 import type { UserSkillRepository } from '../skills/user-skill-repository'
+import { NotebookHelperModuleHost } from '../notebook/helper-module-host'
+import { NotebookKernelExecutor } from '../notebook/kernel-executor'
 import { NotebookRuntimeService, type NotebookExecutionRequest } from '../notebook/runtime-service'
 import { NotebookRunRepository } from '../notebook/repository'
 import { SettingsRepository } from './repository'
 import { SkillCatalogModule } from './skill-catalog'
 
 const roots: string[] = []
+const python3 = ['/usr/bin/python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3'].find(
+  existsSync
+)
+const pythonGate = python3 ? describe : describe.skip
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
@@ -51,6 +59,111 @@ const skill = async (source: BundledSkill['source'], id: string): Promise<Bundle
 }
 
 describe('SkillCatalogModule registered helper projection', () => {
+  pythonGate('production bundled helpers', () => {
+    it('materializes and executes the three bundled helpers from stable IDs outside the resource cwd', async () => {
+      const storageRoot = await mkdtemp(join(tmpdir(), 'bundled-helper-catalog-'))
+      const executionRoot = await mkdtemp(join(tmpdir(), 'bundled-helper-execution-'))
+      roots.push(storageRoot, executionRoot)
+      const skillsRoot = resolve(__dirname, '../../../resources/skills')
+      const pythonLoopPath = resolve(__dirname, '../../../resources/notebook/python_loop.py')
+      const skillRegistry = new SkillRegistry(skillsRoot)
+      const catalog = new SkillCatalogModule({
+        repository: new SettingsRepository(storageRoot),
+        storageRoot,
+        skillRegistry
+      })
+      const registered = catalog.registeredHelperCatalog()
+      const bundled = new Map((await skillRegistry.list()).map((entry) => [entry.id, entry]))
+      const helperIds = ['figure-style', 'figure-composer', 'paper-narrative'] as const
+      const publicSkills = await catalog.listSkills()
+
+      for (const id of helperIds) {
+        const publicSkill = publicSkills.find((entry) => entry.id === id)
+        expect(publicSkill).toBeDefined()
+        expect(publicSkill).not.toHaveProperty('helpers')
+        expect(publicSkill).not.toHaveProperty('sourceDir')
+        expect(JSON.stringify(publicSkill)).not.toContain('kernel.py')
+      }
+
+      for (const id of helperIds) {
+        const helper = await registered.resolve(id)
+        const descriptor = bundled.get(id)?.helpers?.[0]
+        if (!descriptor) throw new Error(`Missing production descriptor for ${id}`)
+        const source = await readFile(join(skillsRoot, id, 'kernel.py'))
+        const digest = `sha256:${createHash('sha256').update(source).digest('hex')}`
+        const generation = `sha256:${createHash('sha256')
+          .update(
+            JSON.stringify({
+              skillId: id,
+              origin: 'builtin',
+              helpers: [{ ...descriptor, digest }]
+            })
+          )
+          .digest('hex')}`
+
+        expect(helper).toMatchObject({
+          id,
+          skillId: id,
+          origin: 'builtin',
+          language: 'python',
+          interfaceRevision: 1,
+          exports: descriptor?.exports,
+          dependencies: [],
+          digest,
+          generation
+        })
+      }
+
+      const helperHost = new NotebookHelperModuleHost(registered)
+      const epoch = { id: 'bundled-helpers', processKey: 'python:system-python' }
+      const request = await helperHost.preflight('python', helperIds, epoch)
+      const plan = await helperHost.plan(epoch, request)
+      helperHost.commitInitialized(
+        epoch,
+        plan.injections.map(({ id }) => id)
+      )
+      const executor = new NotebookKernelExecutor({ pythonLoopPath, platform: process.platform })
+      try {
+        const result = await executor.execute({
+          cwd: executionRoot,
+          notebookSessionRoot: join(executionRoot, 'notebook'),
+          dataRoot: join(executionRoot, 'notebook', 'data'),
+          runtimeRoot: join(executionRoot, 'runtime'),
+          language: 'python',
+          resolvedInterpreter: { command: python3 as string },
+          helperModules: plan.injections,
+          code: [
+            'import json',
+            'result = {',
+            '  "style": two_tier_label("Accuracy", "n=6"),',
+            '  "composer": figure_outline_schema()["required"],',
+            '  "narrative": paper_brief_schema()["required"],',
+            '}',
+            'print(json.dumps(result))'
+          ].join('\n')
+        })
+        expect(result.status, result.traceback).toBe('completed')
+        expect(JSON.parse(result.stdout.trim())).toEqual({
+          style: 'Accuracy\nn=6',
+          composer: ['claim', 'width_mm', 'ncol', 'row_heights_mm', 'panels'],
+          narrative: ['pitch', 'vision', 'figures']
+        })
+      } finally {
+        await executor.shutdown()
+      }
+
+      for (const requestId of [
+        'unknown-helper',
+        '../kernel.py',
+        'def helper(): pass',
+        `sha256:${'a'.repeat(64)}`,
+        'mcp-connector-helper'
+      ]) {
+        await expect(helperHost.preflight('python', [requestId])).rejects.toThrow()
+      }
+    }, 30_000)
+  })
+
   it('derives Built-in, Personal and Imported helpers from one catalog', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'helper-skill-catalog-'))
     roots.push(storageRoot)

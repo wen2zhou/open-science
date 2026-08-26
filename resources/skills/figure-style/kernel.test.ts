@@ -14,6 +14,7 @@ const skillDir = dirname(fileURLToPath(import.meta.url))
 const kernelPath = join(skillDir, 'kernel.py')
 const skillPath = join(skillDir, 'SKILL.md')
 const contractPath = join(skillDir, 'test_kernel.py')
+const descriptorPath = join(skillDir, 'open-science.json')
 const contractDescriptorPath = join(skillDir, 'fixtures', 'helper-contract.json')
 const replacementPath = join(skillDir, 'fixtures', 'compatible_kernel.py')
 const python3 = ['/usr/bin/python3', '/opt/homebrew/bin/python3', '/usr/local/bin/python3'].find(
@@ -24,7 +25,16 @@ const helperContract = JSON.parse(readFileSync(contractDescriptorPath, 'utf8')) 
   helperId: string
   exports: Array<{ name: string; signature: string }>
 }
-const helperExports = helperContract.exports.map(({ name }) => name)
+const helperDescriptor = (
+  JSON.parse(readFileSync(descriptorPath, 'utf8')) as {
+    helpers: Array<{ id: string; exports: string[] }>
+  }
+).helpers[0]!
+const helperExports = helperDescriptor.exports
+
+if (helperContract.helperId !== helperDescriptor.id) {
+  throw new Error('figure-style signature fixture must describe the production helper ID')
+}
 
 let smokeRoot: string | undefined
 
@@ -73,11 +83,11 @@ describe('figure-style helper contract', () => {
         const source = await readFile(sourcePath, 'utf8')
         const helperHost = new NotebookHelperModuleHost({
           resolve: async (id) =>
-            id === helperContract.helperId
+            id === helperDescriptor.id
               ? { id, language: 'python' as const, source, exports: helperExports }
               : undefined
         })
-        const helperRequest = await helperHost.preflight('python', [helperContract.helperId])
+        const helperRequest = await helperHost.preflight('python', [helperDescriptor.id])
         const helperModules = (
           await helperHost.plan(
             { id: 'figure-style-smoke-epoch', processKey: 'python:default-python' },

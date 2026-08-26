@@ -2,8 +2,13 @@
 
 import inspect
 import json
+from pathlib import Path
 
 from kernel import narrative_review_schema, narrative_review_task, paper_brief_schema
+
+
+DESCRIPTOR_PATH = Path(__file__).with_name("open-science.json")
+EXPORTS = tuple(json.loads(DESCRIPTOR_PATH.read_text(encoding="utf-8"))["helpers"][0]["exports"])
 
 
 def assert_required_fields(schema, value):
@@ -13,6 +18,11 @@ def assert_required_fields(schema, value):
 
 
 def test_public_signatures():
+    assert EXPORTS == (
+        "paper_brief_schema",
+        "narrative_review_schema",
+        "narrative_review_task",
+    )
     assert str(inspect.signature(paper_brief_schema)) == "()"
     assert str(inspect.signature(narrative_review_schema)) == "()"
     assert str(inspect.signature(narrative_review_task)) == "(brief, deck_vid, rules_vid)"

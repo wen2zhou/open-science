@@ -10,9 +10,11 @@ import unittest
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 KERNEL_PATH = Path(__file__).with_name("kernel.py")
+DESCRIPTOR_PATH = Path(__file__).with_name("open-science.json")
 CONTRACT_PATH = Path(__file__).with_name("fixtures") / "helper-contract.json"
+DESCRIPTOR = json.loads(DESCRIPTOR_PATH.read_text(encoding="utf-8"))["helpers"][0]
 CONTRACT = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
-EXPORTS = tuple(entry["name"] for entry in CONTRACT["exports"])
+EXPORTS = tuple(DESCRIPTOR["exports"])
 SIGNATURES = {entry["name"]: entry["signature"] for entry in CONTRACT["exports"]}
 
 
@@ -29,6 +31,7 @@ class FigureStyleKernelContractTests(unittest.TestCase):
     def test_exports_keep_the_published_signatures(self) -> None:
         kernel = load_kernel()
 
+        self.assertEqual(set(SIGNATURES), set(EXPORTS))
         self.assertEqual(tuple(name for name in EXPORTS if callable(getattr(kernel, name, None))), EXPORTS)
         self.assertEqual(
             {name: str(inspect.signature(getattr(kernel, name))) for name in EXPORTS},

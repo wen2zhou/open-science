@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import { describe, expect, it } from 'vitest'
 
 import { SkillRegistry } from './registry'
+import { toUnpackedAsarPath } from './resource-path'
 
 const seedRoot = async (): Promise<string> => {
   const root = await mkdtemp(join(tmpdir(), 'skills-reg-'))
@@ -40,6 +41,91 @@ const seedRoot = async (): Promise<string> => {
 }
 
 describe('SkillRegistry', () => {
+  it('resolves packaged Skill resources outside app.asar without consulting the cwd', () => {
+    expect(
+      toUnpackedAsarPath(
+        '/Applications/Open Science.app/Contents/Resources/app.asar/resources/skills'
+      )
+    ).toBe('/Applications/Open Science.app/Contents/Resources/app.asar.unpacked/resources/skills')
+    expect(toUnpackedAsarPath('/workspace/resources/skills')).toBe('/workspace/resources/skills')
+  })
+
+  it('discovers the bundled figure helper descriptors from the production manifest', async () => {
+    const skillsRoot = join(__dirname, '..', '..', '..', 'resources', 'skills')
+    const skills = await new SkillRegistry(skillsRoot).list()
+
+    expect(
+      Object.fromEntries(
+        skills
+          .filter(({ id }) => ['figure-style', 'figure-composer', 'paper-narrative'].includes(id))
+          .map(({ id, source, helpers }) => [id, { source, helpers }])
+      )
+    ).toEqual({
+      'figure-style': {
+        source: 'featured',
+        helpers: [
+          {
+            id: 'figure-style',
+            language: 'python',
+            interfaceRevision: 1,
+            implementation: 'kernel.py',
+            exports: [
+              'apply_figure_style',
+              'set_frame',
+              'panel_letter',
+              'focal_palette',
+              'bar_with_points',
+              'strip_with_median',
+              'goodness_arrow',
+              'two_tier_label',
+              'end_of_line_labels',
+              'panel_crops'
+            ],
+            dependencies: []
+          }
+        ]
+      },
+      'figure-composer': {
+        source: 'featured',
+        helpers: [
+          {
+            id: 'figure-composer',
+            language: 'python',
+            interfaceRevision: 1,
+            implementation: 'kernel.py',
+            exports: [
+              'figure_outline_schema',
+              'grid_geom',
+              'panel_px',
+              'panel_xy',
+              'panel_task',
+              'compose_crops',
+              'compose_figure',
+              'group_fixes_by_panel',
+              'review_schema',
+              'composite_review_task',
+              'apply_outline_revisions'
+            ],
+            dependencies: []
+          }
+        ]
+      },
+      'paper-narrative': {
+        source: 'featured',
+        helpers: [
+          {
+            id: 'paper-narrative',
+            language: 'python',
+            interfaceRevision: 1,
+            implementation: 'kernel.py',
+            exports: ['paper_brief_schema', 'narrative_review_schema', 'narrative_review_task'],
+            dependencies: []
+          }
+        ]
+      }
+    })
+  })
+
   it('lists skills merging manifest metadata with SKILL.md description', async () => {
     const registry = new SkillRegistry(await seedRoot())
     const skills = await registry.list()
