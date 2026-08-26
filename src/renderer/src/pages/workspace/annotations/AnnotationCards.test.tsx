@@ -67,4 +67,73 @@ describe('AnnotationCards image projection', () => {
     expect(container.textContent).toContain('Point 1 at 500, 100')
     expect(container.textContent).toContain('Inspect the peak.')
   })
+
+  it('omits the source line from draft chips', async () => {
+    await act(async () =>
+      root.render(
+        <AnnotationDraftCards
+          annotations={annotations}
+          disabled={false}
+          onUpdateNote={vi.fn()}
+          onRemove={vi.fn()}
+        />
+      )
+    )
+    // The chip sits next to the message it annotates and the quote preview
+    // jumps back to the source text, so a source line only adds noise.
+    expect(container.textContent).not.toContain('Source:')
+    expect(container.textContent).not.toContain('Agent Message')
+  })
+
+  it('compresses the draft quote preview to a single line', async () => {
+    await act(async () =>
+      root.render(
+        <AnnotationDraftCards
+          annotations={[
+            {
+              id: 'long-quote',
+              kind: 'text',
+              target: 'agent',
+              quote:
+                'A very long quoted passage that would wrap across multiple lines when the card still showed the full text.',
+              source: { kind: 'agent-message', sessionId: 'session-1', messageId: 'message-1' }
+            }
+          ]}
+          disabled={false}
+          onUpdateNote={vi.fn()}
+          onRemove={vi.fn()}
+        />
+      )
+    )
+
+    const quoteLine = container.querySelector('[data-annotation-quote]')
+    expect(quoteLine?.textContent).toContain('A very long quoted passage')
+    expect(quoteLine?.className).toContain('truncate')
+    expect(quoteLine?.className).not.toContain('line-clamp-2')
+  })
+
+  it('reveals the quoted text when the quote preview is clicked', async () => {
+    const onReveal = vi.fn()
+    await act(async () =>
+      root.render(
+        <AnnotationDraftCards
+          annotations={annotations}
+          disabled={false}
+          onUpdateNote={vi.fn()}
+          onRemove={vi.fn()}
+          onReveal={onReveal}
+        />
+      )
+    )
+
+    const quoteButtons = container.querySelectorAll<HTMLButtonElement>(
+      'button[data-annotation-quote]'
+    )
+    // Only the text annotation jumps to its quoted text; the image point has
+    // no textual source to reveal.
+    expect(quoteButtons).toHaveLength(1)
+
+    await act(async () => quoteButtons[0]?.click())
+    expect(onReveal).toHaveBeenCalledWith('quote-1')
+  })
 })

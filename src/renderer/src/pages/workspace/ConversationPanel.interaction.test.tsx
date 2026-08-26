@@ -360,6 +360,17 @@ describe('ConversationPanel annotation composer integration', () => {
     expect(card?.textContent).toContain('Quoted Agent evidence')
     expect(card?.textContent).toContain('Explain this evidence.')
 
+    // The draft cards live INSIDE the composer input card, above the editor —
+    // like the attachments strip — not above the composer box.
+    const form = container.querySelector('[data-testid="ordinary-composer-form"]')
+    expect(form).not.toBeNull()
+    expect(form?.contains(card!)).toBe(true)
+
+    // Clicking the quote preview jumps back to the quoted text on its
+    // reading surface, so the preview must be an interactive control here.
+    const quote = card?.querySelector('[data-annotation-quote]')
+    expect(quote?.tagName).toBe('BUTTON')
+
     const edit = card?.querySelector<HTMLButtonElement>('[aria-label="Edit annotation note"]')
     await act(async () => edit?.click())
     const note = card?.querySelector<HTMLTextAreaElement>('textarea[id^="edit-annotation-"]')

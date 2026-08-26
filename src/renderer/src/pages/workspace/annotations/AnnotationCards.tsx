@@ -21,12 +21,14 @@ const AnnotationDraftCards = ({
   annotations,
   disabled,
   onUpdateNote,
-  onRemove
+  onRemove,
+  onReveal
 }: {
   annotations: readonly Annotation[]
   disabled: boolean
   onUpdateNote: (id: string, note: string) => AnnotationValidationError | undefined
   onRemove: (id: string) => void
+  onReveal?: (id: string) => void
 }): React.JSX.Element | null => {
   const { t } = useTranslation()
   const [editingId, setEditingId] = useState<string>()
@@ -46,13 +48,16 @@ const AnnotationDraftCards = ({
 
   return (
     <TooltipProvider>
-      <section className="mb-2 space-y-2" aria-label={t('Annotations for Agent')}>
+      <section
+        className="max-h-[132px] space-y-2 overflow-y-auto border-b border-border-200 pb-2"
+        aria-label={t('Annotations for Agent')}
+      >
         {annotations.map((annotation) => {
           const imagePoint = imagePoints.get(annotation.id)
           return (
             <article
               key={annotation.id}
-              className="rounded-lg border border-border bg-muted/60 px-3 py-2 text-xs"
+              className="rounded-lg border border-border bg-muted/60 px-2.5 py-1.5 text-xs"
             >
               <div className="flex items-start gap-2">
                 {imagePoint ? (
@@ -66,16 +71,33 @@ const AnnotationDraftCards = ({
                       ? t('Image point {{number}}', { number: imagePoint.number })
                       : t('Text quote')}
                   </div>
-                  <div className="mt-0.5 line-clamp-2 break-words text-muted-foreground">
-                    {imagePoint
-                      ? t('Point {{number}} at {{x}}, {{y}}', imagePoint)
-                      : annotation.kind === 'text'
-                        ? annotation.quote
-                        : annotation.source.name}
-                  </div>
-                  <div className="mt-1 text-[11px] text-muted-foreground">
-                    {t('Source: {{source}}', { source: annotationSourceLabel(annotation, t) })}
-                  </div>
+                  {/* The quoted text stays highlighted on its reading surface;
+                      the chip keeps only a one-line preview, and clicking it
+                      jumps back to that text. */}
+                  {onReveal && annotation.kind === 'text' && !imagePoint ? (
+                    <button
+                      type="button"
+                      data-annotation-quote="true"
+                      className="mt-0.5 block w-full truncate text-left text-muted-foreground hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+                      title={annotation.quote}
+                      aria-label={t('Show quoted text')}
+                      onClick={() => onReveal(annotation.id)}
+                    >
+                      {annotation.quote}
+                    </button>
+                  ) : (
+                    <div
+                      data-annotation-quote="true"
+                      className="mt-0.5 truncate text-muted-foreground"
+                      title={annotation.kind === 'text' ? annotation.quote : annotation.source.name}
+                    >
+                      {imagePoint
+                        ? t('Point {{number}} at {{x}}, {{y}}', imagePoint)
+                        : annotation.kind === 'text'
+                          ? annotation.quote
+                          : annotation.source.name}
+                    </div>
+                  )}
                   {annotation.note ? (
                     <div className="mt-1 break-words">{annotation.note}</div>
                   ) : null}

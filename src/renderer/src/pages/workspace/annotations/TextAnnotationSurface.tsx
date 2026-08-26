@@ -1,4 +1,4 @@
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useId, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Quote } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import type { AnnotationValidationError, TextAnnotation } from '../../../../../shared/annotations'
 import { anchorSelectionTrigger } from './annotation-trigger-anchor'
 import { createAnnotationId } from './annotation-id'
+import { revealTextAnnotationRange, subscribeTextAnnotationReveal } from './annotation-reveal'
 import { reconcileTextAnnotationRanges } from './text-annotation-range'
 
 type SelectionDraft = { quote: string; left: number; top: number; range: Range }
@@ -48,6 +49,7 @@ const TextAnnotationSurface = ({
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const contentRef = useRef<HTMLDivElement | null>(null)
   const ownedHighlightIds = useRef(new Set<string>())
+  const pendingHighlightKey = `pending-${useId()}`
   const [selection, setSelection] = useState<SelectionDraft>()
   const [open, setOpen] = useState(false)
   const [note, setNote] = useState('')
@@ -62,11 +64,16 @@ const TextAnnotationSurface = ({
     [activeAnnotations, messageId, sessionId]
   )
 
-  const clearDraft = (): void => {
+  const clearDraft = useCallback((): void => {
+    // Only the surface whose editor is open owns a stale native selection
+    // (a keyboard-opened editor never let the browser collapse it); clearing
+    // it unconditionally would destroy a selection another surface is
+    // building with this very pointerdown.
+    if (open) window.getSelection()?.removeAllRanges()
     setSelection(undefined)
     setOpen(false)
     setNote('')
-  }
+  }, [open])
 
   const captureSelection = (): void => {
     // While the note editor is open the draft is frozen; stray mouseup/keyup
@@ -110,7 +117,18 @@ const TextAnnotationSurface = ({
     }
     document.addEventListener('pointerdown', onPointerDown, true)
     return () => document.removeEventListener('pointerdown', onPointerDown, true)
-  }, [])
+  }, [clearDraft])
+
+  useEffect(
+    () =>
+      // The composer card reveals a quote by id; only the surface owning that
+      // annotation's range answers.
+      subscribeTextAnnotationReveal((annotationId) => {
+        const range = draftHighlightRanges.get(annotationId)
+        if (range) revealTextAnnotationRange(range)
+      }),
+    []
+  )
 
   useLayoutEffect(() => {
     const existing = new Map<string, Range>()
@@ -134,10 +152,20 @@ const TextAnnotationSurface = ({
   useLayoutEffect(
     () => () => {
       for (const id of ownedHighlightIds.current) draftHighlightRanges.delete(id)
+      draftHighlightRanges.delete(pendingHighlightKey)
       syncDraftHighlights()
     },
-    []
+    [pendingHighlightKey]
   )
+
+  // Opening the note editor collapses the native selection; the quoted text
+  // must stay visible through the draft highlight until the draft resolves,
+  // so the editor itself never needs to repeat the quote.
+  useLayoutEffect(() => {
+    if (open && selection) draftHighlightRanges.set(pendingHighlightKey, selection.range)
+    else draftHighlightRanges.delete(pendingHighlightKey)
+    syncDraftHighlights()
+  }, [open, selection, pendingHighlightKey])
 
   const add = (): void => {
     if (!selection) return
@@ -157,7 +185,9 @@ const TextAnnotationSurface = ({
     ownedHighlightIds.current.add(annotation.id)
     draftHighlightRanges.set(annotation.id, selection.range)
     syncDraftHighlights()
-    surfaceRef.current?.setAttribute('data-annotation-active', 'true')
+    // The active outline stays prop-driven: setting the attribute by hand
+    // here would survive the annotation's removal, because React sees the
+    // same undefined prop on both renders and never rewrites the DOM.
     clearDraft()
     window.getSelection()?.removeAllRanges()
   }
@@ -185,7 +215,12 @@ const TextAnnotationSurface = ({
           open={open}
           onOpenChange={(next) => {
             setOpen(next)
-            if (!next) setNote('')
+            if (!next) {
+              setNote('')
+              // Escape keeps the draft (the trigger returns) but must still
+              // withdraw a keyboard-triggered native selection.
+              window.getSelection()?.removeAllRanges()
+            }
           }}
         >
           <PopoverAnchor asChild>
@@ -219,9 +254,6 @@ const TextAnnotationSurface = ({
             <div className="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">
               {t('To Agent')}
             </div>
-            <blockquote className="max-h-28 overflow-auto rounded-md border-l-2 border-primary bg-muted px-3 py-2 text-xs leading-5">
-              {selection.quote}
-            </blockquote>
             <label className="block text-xs font-medium" htmlFor={`annotation-note-${messageId}`}>
               {t('Note (optional)')}
             </label>

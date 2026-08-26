@@ -14,6 +14,13 @@
   text-decoration: underline 0.125rem var(--primary);
 }
 
+/* A short, stronger flash when a composer card jumps back to the quoted
+   text; cleared by the reveal module after its timeout. */
+::highlight(agent-annotation-reveal) {
+  background-color: color-mix(in oklab, var(--primary) 45%, transparent);
+  text-decoration: underline 0.125rem var(--primary);
+}
+
 @theme inline {
   --color-background: var(--background);
   --color-foreground: var(--foreground);

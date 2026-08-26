@@ -4,6 +4,7 @@ import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { TextAnnotation } from '../../../../../shared/annotations'
+import { requestTextAnnotationReveal } from './annotation-reveal'
 import { TextAnnotationSurface } from './TextAnnotationSurface'
 
 ;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
@@ -109,6 +110,269 @@ describe('TextAnnotationSurface highlight restoration', () => {
     const range = Array.from(highlights.get('agent-annotation-draft') ?? [])[0]
     expect(range?.toString()).toBe('repeat')
     expect(range?.startOffset).toBe(7)
+  })
+})
+
+class EditorTestHighlight extends Set<Range> {
+  constructor(...ranges: Range[]) {
+    super(ranges)
+  }
+}
+
+describe('TextAnnotationSurface note editor highlight', () => {
+  let container: HTMLDivElement
+  let root: Root
+  let highlights: Map<string, Set<Range>>
+
+  beforeEach(() => {
+    highlights = new Map()
+    vi.stubGlobal('Highlight', EditorTestHighlight)
+    vi.stubGlobal('CSS', { highlights })
+    container = document.createElement('div')
+    document.body.appendChild(container)
+    root = createRoot(container)
+  })
+
+  afterEach(async () => {
+    await act(async () => root.unmount())
+    vi.unstubAllGlobals()
+    container.remove()
+    window.getSelection()?.removeAllRanges()
+  })
+
+  const renderSurface = async (): Promise<HTMLParagraphElement> => {
+    await act(async () =>
+      root.render(
+        <TextAnnotationSurface
+          sessionId="session-1"
+          messageId="message-1"
+          activeAnnotations={[]}
+          onAdd={vi.fn()}
+          onError={vi.fn()}
+        >
+          <p>selectable agent reply</p>
+        </TextAnnotationSurface>
+      )
+    )
+    return container.querySelector('p')!
+  }
+
+  const commitSelection = async (paragraph: HTMLParagraphElement): Promise<void> => {
+    const range = document.createRange()
+    range.selectNodeContents(paragraph.firstChild!)
+    Object.defineProperty(range, 'getBoundingClientRect', {
+      configurable: true,
+      value: () =>
+        ({
+          left: 10,
+          right: 120,
+          top: 20,
+          bottom: 40,
+          width: 110,
+          height: 20,
+          x: 10,
+          y: 20,
+          toJSON: () => ({})
+        }) as DOMRect
+    })
+    const selection = window.getSelection()!
+    selection.removeAllRanges()
+    selection.addRange(range)
+    await act(async () => paragraph.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })))
+  }
+
+  const annotateTrigger = (): HTMLButtonElement | undefined =>
+    Array.from(container.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Annotate'
+    )
+
+  const draftRanges = (): Range[] => Array.from(highlights.get('agent-annotation-draft') ?? [])
+
+  it('keeps the selection highlighted while the note editor is open', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    expect(draftRanges()).toHaveLength(0)
+
+    await act(async () => annotateTrigger()?.click())
+    expect(draftRanges().map((range) => range.toString())).toContain('selectable agent reply')
+  })
+
+  it('clears the pending highlight when the editor is dismissed', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+    expect(draftRanges()).toHaveLength(1)
+
+    const cancel = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Cancel'
+    )
+    await act(async () => cancel?.click())
+
+    expect(draftRanges()).toHaveLength(0)
+  })
+
+  it('does not repeat the selected quote inside the note editor', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+
+    const editor = document.querySelector('[data-radix-popper-content-wrapper]')
+    expect(editor).not.toBeNull()
+    expect(editor?.textContent).toContain('To Agent')
+    // The selection stays highlighted in the message itself; the editor never
+    // repeats the quote.
+    expect(editor?.textContent).not.toContain('selectable agent reply')
+  })
+
+  it('reveals the quoted text when the composer card requests it', async () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const onAdd = vi.fn<(annotation: TextAnnotation) => undefined>(() => undefined)
+    await act(async () =>
+      root.render(
+        <TextAnnotationSurface
+          sessionId="session-1"
+          messageId="message-1"
+          activeAnnotations={[]}
+          onAdd={onAdd}
+          onError={vi.fn()}
+        >
+          <p>selectable agent reply</p>
+        </TextAnnotationSurface>
+      )
+    )
+    const paragraph = container.querySelector('p')!
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+    const confirm = Array.from(document.querySelectorAll('button'))
+      .filter((button) => button.textContent === 'Annotate')
+      .at(-1)
+    await act(async () => confirm?.click())
+    const added = onAdd.mock.calls[0]?.[0] as TextAnnotation
+
+    await act(async () => requestTextAnnotationReveal(added.id))
+
+    const revealed = Array.from(highlights.get('agent-annotation-reveal') ?? [])
+    expect(revealed.map((range) => range.toString())).toContain('selectable agent reply')
+    expect(scrollIntoView).toHaveBeenCalled()
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
+  })
+
+  it('clears the native selection when the editor is dismissed by escape', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+    // A keyboard-triggered editor keeps the native selection alive; closing
+    // the editor must withdraw it, not only the pending highlight.
+    expect(window.getSelection()?.rangeCount).toBeGreaterThan(0)
+
+    await act(async () =>
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    )
+    expect(document.querySelector('textarea')).toBeNull()
+    expect(window.getSelection()?.rangeCount).toBe(0)
+    expect(draftRanges()).toHaveLength(0)
+  })
+
+  it('clears the native selection when clicking outside the open editor', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+    expect(window.getSelection()?.rangeCount).toBeGreaterThan(0)
+
+    await act(async () => {
+      const outside = document.createElement('button')
+      document.body.appendChild(outside)
+      outside.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      outside.remove()
+    })
+
+    expect(document.querySelector('textarea')).toBeNull()
+    expect(window.getSelection()?.rangeCount).toBe(0)
+    expect(draftRanges()).toHaveLength(0)
+  })
+
+  it('clears the highlight when the annotation is removed from the draft', async () => {
+    const onAdd = vi.fn<(annotation: TextAnnotation) => undefined>(() => undefined)
+    const renderWith = async (active: readonly TextAnnotation[]): Promise<void> => {
+      await act(async () =>
+        root.render(
+          <TextAnnotationSurface
+            sessionId="session-1"
+            messageId="message-1"
+            activeAnnotations={active}
+            onAdd={onAdd}
+            onError={vi.fn()}
+          >
+            <p>selectable agent reply</p>
+          </TextAnnotationSurface>
+        )
+      )
+    }
+    await renderWith([])
+    const paragraph = container.querySelector('p')!
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+    const confirm = Array.from(document.querySelectorAll('button'))
+      .filter((button) => button.textContent === 'Annotate')
+      .at(-1)
+    await act(async () => confirm?.click())
+    const added = onAdd.mock.calls[0]?.[0]!
+    expect(draftRanges()).toHaveLength(1)
+
+    // The composer drops the annotation (card removed) — the highlight on the
+    // message must withdraw with it.
+    await renderWith([])
+    expect(draftRanges()).toHaveLength(0)
+    expect(container.querySelector('[data-annotation-active="true"]')).toBeNull()
+  })
+
+  it('hands the pending highlight over to the confirmed annotation', async () => {
+    const onAdd = vi.fn<(annotation: TextAnnotation) => undefined>(() => undefined)
+    await act(async () =>
+      root.render(
+        <TextAnnotationSurface
+          sessionId="session-1"
+          messageId="message-1"
+          activeAnnotations={[]}
+          onAdd={onAdd}
+          onError={vi.fn()}
+        >
+          <p>selectable agent reply</p>
+        </TextAnnotationSurface>
+      )
+    )
+    const paragraph = container.querySelector('p')!
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+    const pending = draftRanges()[0]
+
+    const confirm = Array.from(document.querySelectorAll('button'))
+      .filter((button) => button.textContent === 'Annotate')
+      .at(-1)
+    await act(async () => confirm?.click())
+
+    expect(onAdd).toHaveBeenCalledTimes(1)
+    const added = onAdd.mock.calls[0]?.[0]
+    expect(added?.quote).toBe('selectable agent reply')
+    expect(draftRanges()).toEqual([pending])
+    expect(draftRanges()[0]?.toString()).toBe('selectable agent reply')
+
+    // The pending range keeps its highlight across later annotation syncs.
+    await act(async () =>
+      root.render(
+        <TextAnnotationSurface
+          sessionId="session-1"
+          messageId="message-1"
+          activeAnnotations={[added]}
+          onAdd={onAdd}
+          onError={vi.fn()}
+        >
+          <p>selectable agent reply</p>
+        </TextAnnotationSurface>
+      )
+    )
+    expect(draftRanges()).toEqual([pending])
   })
 })
 

@@ -103,6 +103,7 @@ import { WorkspaceElicitationCard } from './WorkspaceElicitationCard'
 import { WorkspaceDelegatedQuestionCard } from './WorkspaceDelegatedQuestionCard'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
 import { AnnotationDraftCards } from './annotations/AnnotationCards'
+import { requestTextAnnotationReveal } from './annotations/annotation-reveal'
 import { annotationValidationMessage } from './annotations/annotation-validation-message'
 import { SessionSwitchSkeleton } from './SessionSwitchSkeleton'
 import { PlanProgressChip, WorkspacePlanCard } from './session-plan/SessionPlanSurfaces'
@@ -999,24 +1000,6 @@ const ConversationPanel = ({
           <div className="px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] md:px-4 md:pb-[6px]">
             {/* Runtime and session errors stay near the composer so recovery is visible. */}
             <div className={composerContentClassName}>
-              <AnnotationDraftCards
-                annotations={annotations}
-                disabled={!canEditDraft}
-                onUpdateNote={(id, note) => {
-                  const error = onUpdateAnnotationNote(id, note)
-                  if (error) onSetComposerError(annotationValidationMessage(error, t))
-                  else onSetComposerError(null)
-                  return error
-                }}
-                onRemove={(id) => {
-                  onRemoveAnnotation(id)
-                  const validation = validateAnnotations(
-                    annotations.filter((annotation) => annotation.id !== id),
-                    docToText(draftDoc)
-                  )
-                  onSetComposerError(validation ? annotationValidationMessage(validation, t) : null)
-                }}
-              />
               <div className="px-1 md:px-3">
                 {composerError ? (
                   <div
@@ -1422,6 +1405,27 @@ const ConversationPanel = ({
                     <ComposerMessageQueueContent
                       {...messageQueue}
                       expanded={messageQueueExpanded}
+                    />
+                    <AnnotationDraftCards
+                      annotations={annotations}
+                      disabled={!canEditDraft}
+                      onReveal={requestTextAnnotationReveal}
+                      onUpdateNote={(id, note) => {
+                        const error = onUpdateAnnotationNote(id, note)
+                        if (error) onSetComposerError(annotationValidationMessage(error, t))
+                        else onSetComposerError(null)
+                        return error
+                      }}
+                      onRemove={(id) => {
+                        onRemoveAnnotation(id)
+                        const validation = validateAnnotations(
+                          annotations.filter((annotation) => annotation.id !== id),
+                          docToText(draftDoc)
+                        )
+                        onSetComposerError(
+                          validation ? annotationValidationMessage(validation, t) : null
+                        )
+                      }}
                     />
                     <div className="flex flex-col gap-2">
                       {attachments.length > 0 || attachmentTransfers.length > 0 ? (

@@ -6,6 +6,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { Annotation, TextAnnotation } from '../../../../../shared/annotations'
 import type { PreviewFileItem } from '@/stores/preview-workbench-store'
 
+import { requestTextAnnotationReveal } from '../annotations/annotation-reveal'
 import { PreviewTextAnnotationSurface } from './PreviewTextAnnotationSurface'
 
 const item = (overrides: Partial<PreviewFileItem> = {}): PreviewFileItem => ({
@@ -54,17 +55,19 @@ describe('PreviewTextAnnotationSurface', () => {
       configurable: true,
       value: TestHighlight
     })
+    // One stable Highlight instance per name, like the real registry: get
+    // returns the same object that was set, so reveal and surface cleanups
+    // operate on the same collection instead of stacked replacements.
+    const singleton = {
+      add: (range: Range) => registeredRanges.add(range),
+      delete: (range: Range) => registeredRanges.delete(range)
+    }
     Object.defineProperty(globalThis, 'CSS', {
       configurable: true,
       value: {
         highlights: {
-          get: vi.fn(() => ({
-            add: (range: Range) => registeredRanges.add(range),
-            delete: (range: Range) => registeredRanges.delete(range)
-          })),
-          set: vi.fn((_name: string, highlight: Set<Range>) => {
-            registeredRanges = highlight
-          }),
+          get: vi.fn(() => singleton),
+          set: vi.fn(() => undefined),
           delete: vi.fn(() => registeredRanges.clear())
         }
       }
@@ -328,5 +331,83 @@ describe('PreviewTextAnnotationSurface', () => {
     )
     expect(document.querySelector<HTMLElement>('[data-annotation-trigger]')).toBeDefined()
     expect(document.querySelector('textarea')).toBeNull()
+  })
+
+  it('keeps the selection highlighted while the note editor is open', async () => {
+    await renderSurface()
+    await selectQuote()
+    const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
+    await act(async () => entry?.click())
+
+    expect(Array.from(registeredRanges).map((range) => range.toString())).toContain(
+      'confidence intervals overlap'
+    )
+
+    const cancel = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Cancel'
+    )
+    await act(async () => cancel?.click())
+    expect(registeredRanges.size).toBe(0)
+  })
+
+  it('hands the pending highlight over to the confirmed annotation', async () => {
+    const onAddAnnotation = vi.fn<(annotation: Annotation) => undefined>(() => undefined)
+    await renderSurface({ onAddAnnotation })
+    await selectQuote()
+    const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
+    await act(async () => entry?.click())
+    const pending = Array.from(registeredRanges)[0]
+    expect(pending?.toString()).toBe('confidence intervals overlap')
+
+    await confirmAnnotation()
+
+    expect(onAddAnnotation).toHaveBeenCalledTimes(1)
+    expect(registeredRanges.size).toBe(1)
+    expect(Array.from(registeredRanges)[0]).toBe(pending)
+  })
+
+  it('does not repeat the selected quote inside the note editor', async () => {
+    await renderSurface()
+    await selectQuote()
+    const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
+    await act(async () => entry?.click())
+
+    const editor = document.querySelector('[data-radix-popper-content-wrapper]')
+    expect(editor).not.toBeNull()
+    expect(editor?.textContent).toContain('To Agent')
+    expect(editor?.textContent).not.toContain('confidence intervals overlap')
+  })
+
+  it('clears the native selection when the editor is dismissed by escape', async () => {
+    await renderSurface()
+    await selectQuote()
+    const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
+    await act(async () => entry?.click())
+    expect(window.getSelection()?.rangeCount).toBeGreaterThan(0)
+
+    await act(async () =>
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    )
+    expect(document.querySelector('textarea')).toBeNull()
+    expect(window.getSelection()?.rangeCount).toBe(0)
+    expect(registeredRanges.size).toBe(0)
+  })
+
+  it('reveals the quoted text when the composer card requests it', async () => {
+    const scrollIntoView = vi.fn()
+    Element.prototype.scrollIntoView = scrollIntoView
+    const onAddAnnotation = vi.fn<(annotation: Annotation) => undefined>(() => undefined)
+    await renderSurface({ onAddAnnotation })
+    await selectQuote()
+    await confirmAnnotation()
+    const added = onAddAnnotation.mock.calls[0]?.[0] as TextAnnotation
+
+    await act(async () => requestTextAnnotationReveal(added.id))
+
+    // Only a surface that owns the annotation's range reaches the reveal
+    // choreography; the scroll call proves the range was found and passed on.
+    expect(scrollIntoView).toHaveBeenCalledTimes(1)
+    expect(scrollIntoView).toHaveBeenCalledWith({ block: 'center', behavior: 'smooth' })
+    delete (Element.prototype as { scrollIntoView?: unknown }).scrollIntoView
   })
 })

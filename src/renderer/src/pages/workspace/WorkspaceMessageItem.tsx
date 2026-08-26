@@ -75,6 +75,7 @@ import { useUnavailablePreviewProbe } from './previews/useUnavailablePreviewProb
 import { resolveSessionProviderId } from './error-report'
 import { SessionMessageMarkdown } from './SessionMessageMarkdown'
 import { AnnotationDraftCards, AnnotationMessageCards } from './annotations/AnnotationCards'
+import { requestTextAnnotationReveal } from './annotations/annotation-reveal'
 import { TextAnnotationSurface } from './annotations/TextAnnotationSurface'
 import {
   validateAnnotations,
@@ -1460,6 +1461,7 @@ const WorkspaceMessageItemImpl = ({
                 <AnnotationDraftCards
                   annotations={editAnnotations}
                   disabled={!canEditMessage || isResendingEdit}
+                  onReveal={requestTextAnnotationReveal}
                   onUpdateNote={(id, note) => {
                     const next = editAnnotations.map((annotation) =>
                       annotation.id === id
