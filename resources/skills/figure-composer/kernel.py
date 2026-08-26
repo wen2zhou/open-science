@@ -93,7 +93,7 @@ Neighbors: {neighbours}
   Fix and re-save until both pass — do not ship a panel that fails either check.
 - Design rules {rules_ref} apply in full.
 
-Publish `panel_{letter}.png` with the Artifact writer using the exact notebook `runId` as `producerRunId`; submit `labelsUsed`. The parent collects the immutable Artifact Version identity from `artifactsCreated`."""
+Publish `panel_{letter}.png` with the Artifact writer using the exact notebook `runId` as `producerRunId`; submit its returned `panelVersionId` plus `labelsUsed`. The parent accepts the identity only when it matches `artifactsCreated`."""
 
 
 def compose_crops(outline, dpi=300, gutter_mm=4, pad_px=4):

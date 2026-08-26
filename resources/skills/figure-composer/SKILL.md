@@ -86,23 +86,50 @@ and retry.
 - `data`: immutable Upload or Artifact Version identities grounding the panels.
 - `width_mm`: venue column width, commonly 85–89 mm single or 174–183 mm double.
 
-## 1. Reason into an outline
-
-Use `figure_outline_schema()` to obtain the contract. In `repl_execute`, ask the
-current Host model for JSON only, then parse it and validate it against that
-schema in Python. `host.llm` is tool-less and accepts no caller-selected model,
-images, or schema, so never pretend it returned enforced structured output:
+Before starting the workflow, fail closed on every required control-plane
+capability. Do not start partial work when one is unavailable:
 
 ```javascript
 const caps = await host.capabilities()
-if (caps.llm !== true) throw new Error('figure-composer requires host.llm for outline reasoning')
-const outlineDraft = await host.llm(
-  `Return JSON only for a 12-column multi-panel outline. Claim: ${claim}. ` +
-    `Immutable data Version identities: ${dataVersionIds.join(', ')}`
-)
+if (caps.llm !== true) throw new Error('figure-composer requires host.llm')
+if (caps.delegate !== true) throw new Error('figure-composer requires host.delegate')
+if (caps.collect !== true) throw new Error('figure-composer requires host.collect')
+if (caps.artifacts !== true) throw new Error('figure-composer requires Artifact discovery')
 ```
 
-Review the parsed outline before fan-out. Panel A is the context-free hook; B
+## 1. Reason into an outline
+
+Use `figure_outline_schema()` in Python to obtain the contract and return that
+JSON value to the control plane as `outlineSchema`. Embed the full schema in the
+reasoning prompt; a method name or prose summary is not enough. `host.llm` is
+tool-less and accepts no caller-selected model, images, or enforced structured
+output, so parse and validate its text explicitly. The control REPL is CommonJS
+and the app includes Ajv 2020:
+
+```javascript
+const Ajv2020 = require('ajv/dist/2020').default
+const validateOutline = new Ajv2020({ allErrors: true }).compile(outlineSchema)
+const outlinePrompt =
+  `Return JSON only for this figure outline. Claim: ${claim}. ` +
+  `Immutable data Version identities: ${dataVersionIds.join(', ')}. ` +
+  `The result MUST satisfy this JSON Schema: ${JSON.stringify(outlineSchema)}`
+let outline
+for (let attempt = 1; attempt <= 2; attempt += 1) {
+  const outlineDraft = await host.llm(outlinePrompt)
+  try {
+    const candidate = JSON.parse(outlineDraft.text)
+    if (validateOutline(candidate)) {
+      outline = candidate
+      break
+    }
+  } catch {}
+  if (attempt === 2) throw new Error('invalid outline after retry')
+}
+```
+
+An invalid outline gets one explicit retry and then fails the workflow; never
+fan out an unparsed or schema-invalid draft. Review the valid outline before
+fan-out. Panel A is the context-free hook; B
 carries the claim; remaining panels add evidence in descending importance. Use
 one row per sub-claim and normally 5–10 panels.
 
@@ -124,25 +151,59 @@ JSON result. Never ask workers to exchange temporary absolute paths.
 const panelOutputSchema = {
   type: 'object',
   additionalProperties: false,
-  required: ['labelsUsed'],
-  properties: { labelsUsed: { type: 'array', items: { type: 'string' } } }
+  required: ['panelVersionId', 'labelsUsed'],
+  properties: {
+    panelVersionId: { type: 'string', minLength: 1 },
+    labelsUsed: { type: 'array', items: { type: 'string' } }
+  }
 }
+const validatePanelOutput = new Ajv2020({ allErrors: true }).compile(panelOutputSchema)
 const requests = panelSpecs.map(({ letter, task, dataVersionId }) => ({
   name: `panel-${letter}-r1`,
-  task: `${task}\nLoad \`figure-style\` independently. Publish the PNG Artifact, then submit labelsUsed.`,
+  task: `${task}\nLoad \`figure-style\` independently. Publish the PNG Artifact, then submit panelVersionId and labelsUsed.`,
   inputs: dataVersionId ? [dataVersionId] : [],
   outputSchema: panelOutputSchema
 }))
-const sent = await host.delegate(requests.slice(0, 4), { wait: false })
-const settled = await host.collect(
-  sent.children.map(({ frameId, attemptId }) => ({ frameId, attemptId })),
-  { returnWhen: 'all', timeoutSeconds: 1800 }
-)
+const panelVersions = []
+for (let offset = 0; offset < requests.length; offset += 4) {
+  const wave = requests.slice(offset, offset + 4)
+  const sent = await host.delegate(wave, { wait: false })
+  if (sent.kind !== 'receipts') throw new Error('panel delegation did not return receipts')
+  const selectors = sent.children.map(({ frameId, attemptId }) => ({ frameId, attemptId }))
+  const settled = await host.collect(selectors, { returnWhen: 'all', timeoutSeconds: 1800 })
+  const byAttempt = new Map(settled.map((child) => [child.attemptId, child]))
+  const checkedWave = sent.children.map((receipt, index) => {
+    const child = byAttempt.get(receipt.attemptId)
+    const expectedName = `panel_${panelSpecs[offset + index].letter}.png`
+    if (!child || child.status !== 'completed' || child.error) {
+      throw new Error(`panel failed: ${receipt.name}`)
+    }
+    if (child.structuredOutputUnsatisfied === true || !child.structuredOutput) {
+      throw new Error(`panel structured output missing: ${receipt.name}`)
+    }
+    if (!validatePanelOutput(child.structuredOutput)) {
+      throw new Error(`panel structured output invalid: ${receipt.name}`)
+    }
+    const pngs = child.artifactsCreated.filter(
+      (artifact) => artifact.name === expectedName && artifact.mimeType === 'image/png'
+    )
+    if (pngs.length !== 1 || pngs[0].versionId !== child.structuredOutput.panelVersionId) {
+      throw new Error(`panel Artifact identity mismatch: ${receipt.name}`)
+    }
+    return { letter: panelSpecs[offset + index].letter, versionId: pngs[0].versionId }
+  })
+  panelVersions.push(...checkedWave)
+}
 ```
 
-Require `status === "completed"` and exactly one intended PNG in each child's
-`artifactsCreated`. Its `versionId` is the immutable Artifact Version identity
-for composition. Keep that identity in the panel map; use
+Here `validatePanelOutput` is an Ajv validator compiled from
+`panelOutputSchema`. The loop handles all 5–10 panels in ordered waves of at
+most four. It validates a whole wave before accepting any identity. Any
+non-completed/error child, unsatisfied/missing/invalid structured output,
+missing or duplicate expected PNG, or mismatch between `structuredOutput` and
+`artifactsCreated` fails the workflow; do not compose a partial panel set. The
+matching PNG's `versionId` is the immutable Artifact Version identity for
+composition. Keep identities in outline order; use
 `host.artifactPath(versionId)` only to resolve bytes locally after collection.
 An Artifact path is an implementation detail, never the Agent-to-Agent contract.
 
@@ -150,10 +211,11 @@ An Artifact path is an implementation detail, never the Agent-to-Agent contract.
 
 Resolve the collected Version identities, place the paths in a small JSON
 handoff under `process.env.OPEN_SCIENCE_HANDOFF_DIR`, and read that manifest from
-the Python producer cell. Call `compose_figure`, and keep the returned notebook
-`runId`. Publish the final PNG with `write_artifact_file` using that exact value
-as `producerRunId`; this binds the composite Artifact to the run that last wrote
-its bytes.
+the Python producer cell. Call `compose_figure`, verify the notebook result is
+completed, and keep the actual returned `runId`. Publish the final PNG with
+`write_artifact_file({ filename: "figure.png", producerRunId: composeResult.runId })`;
+never substitute a round number or locally invented Run identity. This binds the
+composite Artifact to the run that last wrote its bytes.
 
 The current `notebook_execute` request schema has no dynamic `inputFiles` field.
 Therefore newly delegated panel Versions cannot yet be registered as the
@@ -169,6 +231,7 @@ Call `compose_crops` in Python. From `repl_execute`, inspect every crop with the
 current camelCase API:
 
 ```javascript
+if (caps.viewImage !== true) throw new Error('figure-composer requires host.viewImage for QA')
 await host.viewImage(
   { versionId: compositeVersionId },
   { crop: { unit: 'pixels', left: box[0], top: box[1], right: box[2], bottom: box[3] } }
@@ -184,19 +247,29 @@ panel before paying for formal review.
 Run a maximum 3 review rounds, with calibrated violation floors 5 → 4 → 3.
 Generate `composite_review_task(...)` and `review_schema()` in Python, then
 delegate one reviewer with the composite and design-rule Artifact Versions in
-`inputs` and the schema in `outputSchema`.
+`inputs` and the schema in `outputSchema`. Use `wait: false`, collect the exact
+receipt handle, and reject a non-completed/error result,
+`structuredOutputUnsatisfied === true`, missing `structuredOutput`, or output
+that fails the `review_schema()` validator. The validated `structuredOutput` is
+the review object; never scrape the reviewer's response text.
 
 After each result:
 
 1. Accept when the verdict is `accept` or `minor_revision`, there are no
    `BLOCKER`s, and there are at most two `MAJOR`s.
-2. Apply reviewed outline edits explicitly. Use `apply_outline_revisions` only
-   to compute regeneration scope.
-3. Use `group_fixes_by_panel` for `BLOCKER`/`MAJOR` panel fixes.
+2. Send the validated review object back to deterministic Python. Apply reviewed
+   outline edits explicitly, then call
+   `apply_outline_revisions(outline, review["outline_revisions"])` to compute
+   outline scope.
+3. Call `group_fixes_by_panel(review)` for `BLOCKER`/`MAJOR` panel scope. Compute
+   `regen = affected | set(fixb)` from those helper results, never from a
+   hard-coded panel list.
 4. Regenerate only the union of outline-affected and violation-affected panels.
    Give each retry a unique name such as `panel-B-r2`; include the prior panel
    Artifact Version and its immutable data Version in `inputs`.
-5. Preserve every clean panel's exact Version identity. Recompose from the mixed
+5. Preserve every clean panel's exact Version identity. If any regeneration wave
+   fails validation, keep the last complete composite and do not compose a
+   partial revision. Otherwise recompose from the mixed
    map of reused and regenerated Versions, inspect all crops, then publish with
    the new compose run's `producerRunId`.
 
