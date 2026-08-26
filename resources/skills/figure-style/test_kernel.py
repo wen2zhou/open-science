@@ -1,6 +1,7 @@
 import builtins
 import importlib.util
 import inspect
+import json
 import os
 from pathlib import Path
 import tempfile
@@ -9,30 +10,10 @@ import unittest
 os.environ.setdefault("MPLBACKEND", "Agg")
 
 KERNEL_PATH = Path(__file__).with_name("kernel.py")
-EXPORTS = (
-    "apply_figure_style",
-    "set_frame",
-    "panel_letter",
-    "focal_palette",
-    "bar_with_points",
-    "strip_with_median",
-    "goodness_arrow",
-    "two_tier_label",
-    "end_of_line_labels",
-    "panel_crops",
-)
-SIGNATURES = {
-    "apply_figure_style": "(*, frame='open', font=None, sizes=(8, 7, 6), grid=False)",
-    "set_frame": "(ax, style='open')",
-    "panel_letter": "(ax, letter, dx=-0.18, dy=1.02, case='lower', fontsize=None)",
-    "focal_palette": "(labels, focal, focal_color, other='muted', base_colors=None)",
-    "bar_with_points": "(ax, x, ymat, labels, colors, jitter=0.08, show_points=True, errorbar=None, point_alpha=0.5, point_size=8)",
-    "strip_with_median": "(ax, groups, values, colors=None, jitter=0.12)",
-    "goodness_arrow": "(ax, text='higher = better', loc='upper left', axis='y', fontsize=None)",
-    "two_tier_label": "(name, meta)",
-    "end_of_line_labels": "(ax, xs, ys, labels, colors=None, dx=0.01, fontsize=None)",
-    "panel_crops": "(fig, dpi=None, pad_px=6, bbox_inches=None, pad_inches=None)",
-}
+CONTRACT_PATH = Path(__file__).with_name("fixtures") / "helper-contract.json"
+CONTRACT = json.loads(CONTRACT_PATH.read_text(encoding="utf-8"))
+EXPORTS = tuple(entry["name"] for entry in CONTRACT["exports"])
+SIGNATURES = {entry["name"]: entry["signature"] for entry in CONTRACT["exports"]}
 
 
 def load_kernel():
@@ -151,6 +132,39 @@ class FigureStyleKernelContractTests(unittest.TestCase):
             x0, y0, x1, y1 = crops["A"]
             self.assertTrue(0 <= x0 < x1 <= width)
             self.assertTrue(0 <= y0 < y1 <= height)
+        plt.close(fig)
+
+    def test_parallel_sequences_preserve_source_zip_truncation(self) -> None:
+        import matplotlib.pyplot as plt
+
+        kernel = load_kernel()
+        fig, (bar_ax, strip_ax, line_ax) = plt.subplots(1, 3)
+
+        kernel.bar_with_points(
+            bar_ax,
+            [0, 1],
+            [[1, 2], [3, 4]],
+            ["A", "B"],
+            ["#111111", "#222222", "#333333"],
+        )
+        kernel.strip_with_median(
+            strip_ax,
+            ["A", "B"],
+            [[1, 2], [3, 4]],
+            ["#111111"],
+        )
+        kernel.end_of_line_labels(
+            line_ax,
+            [[0, 1], [0, 1]],
+            [[1, 2], [2, 3]],
+            ["only-first"],
+            ["#111111", "#222222"],
+        )
+
+        self.assertEqual(len(bar_ax.patches), 2)
+        self.assertEqual(len(strip_ax.collections), 1)
+        self.assertEqual(len(strip_ax.lines), 1)
+        self.assertEqual([text.get_text() for text in line_ax.texts], ["only-first"])
         plt.close(fig)
 
 
