@@ -90,23 +90,32 @@ const collectStructured = async <T>(
   host: Pick<FakeHost, 'delegate' | 'collect'>,
   request: { name: string; task: string; inputs: string[]; outputSchema: unknown }
 ): Promise<T> => {
-  const receipt = await host.delegate([request], { wait: false })
+  const [output] = await collectStructuredBatch<T>(host, [request])
+  return output
+}
+
+const collectStructuredBatch = async <T>(
+  host: Pick<FakeHost, 'delegate' | 'collect'>,
+  requests: Array<{ name: string; task: string; inputs: string[]; outputSchema: unknown }>
+): Promise<T[]> => {
+  const receipt = await host.delegate(requests, { wait: false })
   const results = await host.collect(receipt.children, {
     returnWhen: 'all',
     timeoutSeconds: 1800
   })
-  const child = results[0]
-  if (!child || child.status !== 'completed') {
-    throw new Error(
-      `Delegated workflow failed: ${child?.error ?? child?.status ?? 'missing child'}`
-    )
-  }
-  if (child.structuredOutputUnsatisfied || child.structuredOutput === undefined) {
-    throw new Error(
-      'Delegated workflow returned no schema-valid structuredOutput; review and retry.'
-    )
-  }
-  return child.structuredOutput as T
+  return results.map((child) => {
+    if (!child || child.status !== 'completed' || child.error) {
+      throw new Error(
+        `Delegated workflow failed: ${child?.error ?? child?.status ?? 'missing child'}`
+      )
+    }
+    if (child.structuredOutputUnsatisfied || child.structuredOutput === undefined) {
+      throw new Error(
+        'Delegated workflow returned no schema-valid structuredOutput; review and retry.'
+      )
+    }
+    return child.structuredOutput as T
+  })
 }
 
 let smokeRoot: string | undefined
@@ -200,6 +209,10 @@ describe('paper-narrative adapter', () => {
     expect(skill).not.toMatch(/pn_sdk\(|derive_paper_brief\(|host\.reasoning_model/)
     expect(skill).toContain('JSON.stringify(briefSchema)')
     expect(skill).toMatch(/invalid paper brief.*retry/i)
+    expect(skill).toContain('collectStructuredBatch')
+    expect(skill).toContain('structuredOutputUnsatisfied')
+    expect(skill).toContain('rebuiltDeckVersionId')
+    expect(skill).not.toContain('deck-v2')
   })
 
   it('converges and hands every arc claim, moved panel, and data reference to figure-composer', async () => {
@@ -337,17 +350,22 @@ describe('paper-narrative adapter', () => {
         outputSchema: { type: 'object' }
       }
     })
-    const composerReceipt = await fakeHost.delegate(composerRequests, { wait: false })
-    const composerResults = await fakeHost.collect(composerReceipt.children, {
-      returnWhen: 'all',
-      timeoutSeconds: 1800
-    })
-    expect(composerResults.every((child) => child.status === 'completed')).toBe(true)
+    const composerOutputs = await collectStructuredBatch<{ versionId: string }>(
+      fakeHost,
+      composerRequests
+    )
+    const composedVersionIds = composerOutputs.map(({ versionId }) => versionId)
+    const publishedDeckInputs: string[][] = []
+    const publishDeck = (versionIds: string[]): string => {
+      publishedDeckInputs.push(versionIds)
+      return `deck-built-from:${versionIds.join('+')}`
+    }
+    const rebuiltDeckVersionId = publishDeck(composedVersionIds)
 
     review = await collectStructured<HostReview>(fakeHost, {
       name: 'paper-narrative-editor-r2',
       task: 'Review the rebuilt full deck',
-      inputs: ['manuscript-v1', 'captions-v1', 'deck-v2', 'rules-v1'],
+      inputs: ['manuscript-v1', 'captions-v1', rebuiltDeckVersionId, 'rules-v1'],
       outputSchema: reviewSchema
     })
 
@@ -374,6 +392,14 @@ describe('paper-narrative adapter', () => {
     ])
     expect(sentComposer.flatMap(({ inputs }) => inputs)).not.toContain('fig1-v1')
     expect(sentComposer.flatMap(({ inputs }) => inputs)).not.toContain('fig2-v1')
+    expect(publishedDeckInputs).toEqual([['compose-Fig1-version', 'compose-Fig2-version']])
+    expect(delegated.find(({ name }) => name === 'paper-narrative-editor-r2')?.inputs).toEqual([
+      'manuscript-v1',
+      'captions-v1',
+      'deck-built-from:compose-Fig1-version+compose-Fig2-version',
+      'rules-v1'
+    ])
+    expect(delegated.flatMap(({ inputs }) => inputs)).not.toContain('deck-v2')
   })
 
   it('fails clearly when brief reasoning returns invalid output', async () => {
@@ -407,5 +433,26 @@ describe('paper-narrative adapter', () => {
         outputSchema: { type: 'object' }
       })
     ).rejects.toThrow(/no schema-valid structuredOutput.*review and retry/i)
+  })
+
+  it.each([
+    ['failed child', { status: 'failed', error: 'composer crashed' }],
+    ['unsatisfied output', { status: 'completed', structuredOutputUnsatisfied: true }],
+    ['missing output', { status: 'completed' }]
+  ])('rejects composer %s instead of building a deck', async (_label, child) => {
+    const host: Pick<FakeHost, 'delegate' | 'collect'> = {
+      delegate: async () => ({ children: [{ frameId: 'f1', attemptId: 'a1' }] }),
+      collect: async () => [child]
+    }
+    await expect(
+      collectStructuredBatch(host, [
+        {
+          name: 'compose-Fig1',
+          task: 'compose',
+          inputs: ['data-v1'],
+          outputSchema: { type: 'object' }
+        }
+      ])
+    ).rejects.toThrow(/delegated workflow|schema-valid structuredOutput/i)
   })
 })

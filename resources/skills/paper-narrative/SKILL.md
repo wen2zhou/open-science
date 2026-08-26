@@ -119,27 +119,32 @@ Generate the task with
 schema makes the expected model result reviewable:
 
 ```javascript
+const collectStructuredBatch = async (requests) => {
+  const receipts = await host.delegate(requests, { wait: false })
+  const children = await host.collect(
+    receipts.children.map(({ frameId, attemptId }) => ({ frameId, attemptId })),
+    { returnWhen: 'all', timeoutSeconds: 1800 }
+  )
+  return children.map((child) => {
+    if (!child || child.status !== 'completed' || child.error) {
+      throw new Error(
+        `delegated workflow failed: ${child?.error ?? child?.status ?? 'missing child'}`
+      )
+    }
+    if (child.structuredOutputUnsatisfied || child.structuredOutput === undefined) {
+      throw new Error('delegated workflow returned no schema-valid structuredOutput')
+    }
+    return child.structuredOutput
+  })
+}
+
 const request = {
   name: 'paper-narrative-editor-r1',
   task: reviewTask,
   inputs: [manuscriptVersionId, captionsVersionId, deckVersionId, rulesVersionId],
   outputSchema: reviewSchema
 }
-const sent = await host.delegate([request], { wait: false })
-const settled = await host.collect(
-  sent.children.map(({ frameId, attemptId }) => ({ frameId, attemptId })),
-  { returnWhen: 'all', timeoutSeconds: 1800 }
-)
-const editor = settled[0]
-if (!editor || editor.status !== 'completed') {
-  throw new Error(
-    `paper-narrative reviewer failed: ${editor?.error ?? editor?.status ?? 'missing'}`
-  )
-}
-if (editor.structuredOutputUnsatisfied || editor.structuredOutput === undefined) {
-  throw new Error('paper-narrative reviewer returned no schema-valid structuredOutput')
-}
-const review = editor.structuredOutput
+const [review] = await collectStructuredBatch([request])
 ```
 
 Require a completed child and a schema-valid result. Human-review the result as
@@ -194,19 +199,23 @@ const composerRequests = review.arc.map((item) => {
     outputSchema: composerOutputSchema
   }
 })
-const composerReceipts = await host.delegate(composerRequests.slice(0, 4), { wait: false })
-const composerResults = await host.collect(
-  composerReceipts.children.map(({ frameId, attemptId }) => ({ frameId, attemptId })),
-  { returnWhen: 'all', timeoutSeconds: 1800 }
+const composerOutputs = await collectStructuredBatch(composerRequests.slice(0, 4))
+const composedVersionIds = composerOutputs.flatMap((output) =>
+  Array.isArray(output.versionIds) ? output.versionIds : [output.versionId]
 )
+if (composedVersionIds.some((versionId) => typeof versionId !== 'string' || !versionId)) {
+  throw new Error('figure-composer returned an invalid immutable output Version identity')
+}
 ```
 
-For every composer result, require `status === 'completed'`, reject `error` or
-`structuredOutputUnsatisfied`, and read the accepted value only from
-`structuredOutput`. Build a new deck from the returned immutable output Version
-identities. Send waves of no more than four. `paper-narrative` does not depend
-on the composer's internal implementation; the identity-bearing request is the
-seam.
+The shared collector requires `status === 'completed'`, rejects `error`,
+`structuredOutputUnsatisfied`, and missing `structuredOutput`, and returns only
+accepted structured values. Build and publish a new deck from
+`composedVersionIds`, retain its immutable `rebuiltDeckVersionId`, and include
+that exact identity in the next review request's `inputs`. Never invent a deck
+identity or hard-code the next revision. Send waves of no more than four.
+`paper-narrative` does not depend on the composer's internal implementation;
+the identity-bearing request is the seam.
 
 The current notebook request schema cannot yet record dynamic delegated
 Artifact Versions as `inputFiles`, and this adapter does not change the central
@@ -216,7 +225,9 @@ manifest or schema. This workflow passes the identities through delegated
 ## 4. Re-review and converge
 
 Review the rebuilt full deck again with the manuscript and captions identities
-still present in `inputs:`. Convergence is exactly:
+still present in
+`inputs: [manuscriptVersionId, captionsVersionId, rebuiltDeckVersionId,
+rulesVersionId]`. Convergence is exactly:
 
 ```javascript
 review.hook_verdict.would_send_for_review === 'yes' &&
