@@ -433,6 +433,16 @@ const notebookExecutionInputFingerprint = (
           ? input.timeoutMs
           : NOTEBOOK_SHELL_DEFAULT_TIMEOUT_MS
         : null
+  // Match host request normalization: omission and [] are equivalent, duplicates collapse, and
+  // first-request order remains significant because it is also helper initialization order.
+  const helperModules =
+    method !== 'execute' || input?.helperModules === undefined
+      ? []
+      : Array.isArray(input.helperModules) &&
+          input.helperModules.every((helperId): helperId is string => typeof helperId === 'string')
+        ? [...new Set(input.helperModules)]
+        : undefined
+  if (helperModules === undefined) return undefined
 
   return createHash('sha256')
     .update(
@@ -445,7 +455,8 @@ const notebookExecutionInputFingerprint = (
           : method === 'execute'
             ? 'python'
             : null,
-        method === 'execute' && typeof input?.cellId === 'string' ? input.cellId : null
+        method === 'execute' && typeof input?.cellId === 'string' ? input.cellId : null,
+        helperModules
       ])
     )
     .digest('hex')

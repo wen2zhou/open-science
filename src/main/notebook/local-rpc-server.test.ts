@@ -331,7 +331,8 @@ describe('notebook local RPC server', () => {
     const connections: Array<Awaited<ReturnType<typeof server.issueSessionConnection>>> = []
     const dispatch = async (
       sessionId: string,
-      code = 'print(1)'
+      code = 'print(1)',
+      helperModules?: string[]
     ): Promise<Record<string, unknown>> => {
       const connection = await server.issueSessionConnection(
         sessionId,
@@ -353,6 +354,7 @@ describe('notebook local RPC server', () => {
               sessionId: 'forged',
               workspaceCwd: '/workspace',
               code,
+              ...(helperModules ? { helperModules } : {}),
               executionInvocationId: 'caller-controlled'
             }
           })
@@ -438,6 +440,30 @@ describe('notebook local RPC server', () => {
       })
       expect(await dispatch('mismatch', 'print(2)')).not.toHaveProperty('executionInvocationId')
       expect(await dispatch('mismatch')).not.toHaveProperty('executionInvocationId')
+
+      setTurn('helper-mismatch')
+      server.authorizeExecution({
+        sessionId: 'helper-mismatch',
+        toolCallId: 'tool-helper-mismatch',
+        promptMessageId: 'prompt-1',
+        method: 'execute',
+        rawInput: { code: 'print(1)', helperModules: ['helper-a'] }
+      })
+      expect(await dispatch('helper-mismatch', 'print(1)', ['helper-b'])).not.toHaveProperty(
+        'executionInvocationId'
+      )
+
+      setTurn('helper-normalized')
+      const normalizedHelperId = server.authorizeExecution({
+        sessionId: 'helper-normalized',
+        toolCallId: 'tool-helper-normalized',
+        promptMessageId: 'prompt-1',
+        method: 'execute',
+        rawInput: { code: 'print(1)', helperModules: ['helper-a', 'helper-a'] }
+      })
+      expect(await dispatch('helper-normalized', 'print(1)', ['helper-a'])).toMatchObject({
+        executionInvocationId: normalizedHelperId
+      })
 
       setTurn('repl-default')
       const replId = server.authorizeExecution({
