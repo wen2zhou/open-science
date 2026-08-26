@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Quote } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
@@ -6,6 +6,8 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import type { AnnotationValidationError, TextAnnotation } from '../../../../../shared/annotations'
+import { createAnnotationId } from './annotation-id'
+import { rangeForTextOccurrence } from './text-annotation-range'
 
 type SelectionDraft = { quote: string; left: number; top: number; range: Range }
 
@@ -20,11 +22,6 @@ const syncDraftHighlights = (): void => {
   }
   CSS.highlights.set(DRAFT_HIGHLIGHT_NAME, new Highlight(...draftHighlightRanges.values()))
 }
-
-const annotationId = (): string =>
-  globalThis.crypto?.randomUUID
-    ? `annotation-${globalThis.crypto.randomUUID()}`
-    : `annotation-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
 const TextAnnotationSurface = ({
   children,
@@ -43,10 +40,21 @@ const TextAnnotationSurface = ({
 }): React.JSX.Element => {
   const { t } = useTranslation()
   const surfaceRef = useRef<HTMLDivElement | null>(null)
+  const contentRef = useRef<HTMLDivElement | null>(null)
   const ownedHighlightIds = useRef(new Set<string>())
   const [selection, setSelection] = useState<SelectionDraft>()
   const [open, setOpen] = useState(false)
   const [note, setNote] = useState('')
+  const matchingAnnotations = useMemo(
+    () =>
+      activeAnnotations.filter(
+        (annotation) =>
+          annotation.source.kind === 'agent-message' &&
+          annotation.source.sessionId === sessionId &&
+          annotation.source.messageId === messageId
+      ),
+    [activeAnnotations, messageId, sessionId]
+  )
 
   const captureSelection = (): void => {
     const selected = window.getSelection()
@@ -75,19 +83,25 @@ const TextAnnotationSurface = ({
     })
   }
 
-  useEffect(() => {
-    const activeIds = new Set(activeAnnotations.map((annotation) => annotation.id))
-    for (const id of ownedHighlightIds.current) {
-      if (activeIds.has(id)) continue
-      ownedHighlightIds.current.delete(id)
-      draftHighlightRanges.delete(id)
+  useLayoutEffect(() => {
+    for (const id of ownedHighlightIds.current) draftHighlightRanges.delete(id)
+    ownedHighlightIds.current.clear()
+    const content = contentRef.current
+    const occurrenceByQuote = new Map<string, number>()
+    if (content) {
+      for (const annotation of matchingAnnotations) {
+        const occurrence = occurrenceByQuote.get(annotation.quote) ?? 0
+        occurrenceByQuote.set(annotation.quote, occurrence + 1)
+        const range = rangeForTextOccurrence(content, annotation.quote, occurrence)
+        if (!range) continue
+        ownedHighlightIds.current.add(annotation.id)
+        draftHighlightRanges.set(annotation.id, range)
+      }
     }
     syncDraftHighlights()
-    if (activeAnnotations.length > 0) return
-    surfaceRef.current?.removeAttribute('data-annotation-active')
-  }, [activeAnnotations])
+  }, [children, matchingAnnotations])
 
-  useEffect(
+  useLayoutEffect(
     () => () => {
       for (const id of ownedHighlightIds.current) draftHighlightRanges.delete(id)
       syncDraftHighlights()
@@ -98,7 +112,7 @@ const TextAnnotationSurface = ({
   const add = (): void => {
     if (!selection) return
     const annotation: TextAnnotation = {
-      id: annotationId(),
+      id: createAnnotationId(),
       kind: 'text',
       target: 'agent',
       quote: selection.quote,
@@ -124,12 +138,15 @@ const TextAnnotationSurface = ({
     <div
       ref={surfaceRef}
       data-annotation-surface="true"
+      data-annotation-active={matchingAnnotations.length > 0 ? 'true' : undefined}
       className="relative rounded-md data-[annotation-active=true]:outline data-[annotation-active=true]:outline-1 data-[annotation-active=true]:outline-offset-4 data-[annotation-active=true]:outline-primary/50"
       onMouseUp={captureSelection}
       onKeyUp={captureSelection}
     >
-      {children}
-      {activeAnnotations.length > 0 ? (
+      <div ref={contentRef} className="contents">
+        {children}
+      </div>
+      {matchingAnnotations.length > 0 ? (
         <div className="mt-2 flex w-fit items-center gap-1 rounded-full border border-primary/40 bg-primary/10 px-2 py-0.5 text-[11px] font-medium text-primary">
           <Quote className="size-3" aria-hidden="true" />
           {t('Annotated for Agent')}

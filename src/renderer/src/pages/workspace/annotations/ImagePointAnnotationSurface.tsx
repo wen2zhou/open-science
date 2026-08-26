@@ -22,6 +22,7 @@ import {
   imagePointAnnotationSourceForPreview,
   type ImagePointAnnotationSource
 } from './image-annotation-source'
+import { createAnnotationId } from './annotation-id'
 
 const IMAGE_POINT_CLICK_THRESHOLD = 4
 
@@ -34,11 +35,6 @@ type PendingPoint = Readonly<{
   annotationId?: string
   number?: number
 }>
-
-const annotationId = (): string =>
-  globalThis.crypto?.randomUUID
-    ? `annotation-${globalThis.crypto.randomUUID()}`
-    : `annotation-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
 const sameImageVersion = (
   annotation: ImagePointAnnotation,
@@ -164,7 +160,7 @@ const ImagePointAnnotationSurface = ({
     const error = pending.annotationId
       ? onUpdateNote?.(pending.annotationId, trimmedNote)
       : onAdd?.({
-          id: annotationId(),
+          id: createAnnotationId(),
           kind: 'image-point',
           target: 'agent',
           note: trimmedNote,
@@ -247,7 +243,7 @@ const ImagePointAnnotationSurface = ({
         <button
           type="button"
           key={annotation.id}
-          className="absolute z-[1] flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-primary-foreground bg-primary text-[11px] font-bold text-primary-foreground shadow outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          className="absolute z-[1] flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-primary-foreground bg-primary text-[11px] font-bold text-primary-foreground shadow outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
           style={markerStyle(annotation.point, localContentRect)}
           aria-label={t('Point {{number}} at {{x}}, {{y}}', {
             number,

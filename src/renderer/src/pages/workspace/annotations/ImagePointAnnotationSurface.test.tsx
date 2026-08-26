@@ -219,6 +219,8 @@ describe('ImagePointAnnotationSurface', () => {
     const marker = Array.from(container.querySelectorAll('button')).find(
       (button) => button.textContent === '1'
     )!
+    expect(marker.className).toContain('focus-visible:ring-[3px]')
+    expect(marker.className).toContain('focus-visible:ring-ring/50')
     await act(async () => marker.click())
     const note = document.querySelector('textarea')!
     expect(note.value).toBe('Original note')

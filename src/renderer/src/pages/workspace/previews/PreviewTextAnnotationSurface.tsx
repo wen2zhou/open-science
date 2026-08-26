@@ -8,17 +8,14 @@ import { Textarea } from '@/components/ui/textarea'
 import type { PreviewFileItem } from '@/stores/preview-workbench-store'
 import type { TextAnnotation } from '../../../../../shared/annotations'
 import type { PreviewFileRendererProps } from './preview-types'
+import { createAnnotationId } from '../annotations/annotation-id'
+import { rangeForTextOccurrence } from '../annotations/text-annotation-range'
 
 type SelectionDraft = Readonly<{ quote: string; left: number; top: number; range: Range }>
 
 const DRAFT_HIGHLIGHT_NAME = 'preview-annotation-draft'
 const DRAFT_HIGHLIGHT_STYLE_ID = 'preview-annotation-draft-style'
 const NO_ANNOTATIONS: readonly never[] = []
-
-const annotationId = (): string =>
-  globalThis.crypto?.randomUUID
-    ? `annotation-${globalThis.crypto.randomUUID()}`
-    : `annotation-${Date.now()}-${Math.random().toString(36).slice(2)}`
 
 const projectFileSource = (item: PreviewFileItem): TextAnnotation['source'] | undefined => {
   if (!item.projectId) return undefined
@@ -40,43 +37,6 @@ const belongsToPreview = (annotation: TextAnnotation, item: PreviewFileItem): bo
     return source.versionId === item.selectedVersionId
   }
   return true
-}
-
-const rangeForQuote = (surface: HTMLElement, quote: string): Range | undefined => {
-  const walker = document.createTreeWalker(surface, NodeFilter.SHOW_TEXT)
-  const nodes: Text[] = []
-  let text = ''
-  for (let node = walker.nextNode(); node; node = walker.nextNode()) {
-    const textNode = node as Text
-    nodes.push(textNode)
-    text += textNode.data
-  }
-  const start = text.indexOf(quote)
-  if (start < 0) return undefined
-  const end = start + quote.length
-  let offset = 0
-  let startNode: Text | undefined
-  let endNode: Text | undefined
-  let startOffset = 0
-  let endOffset = 0
-  for (const node of nodes) {
-    const nextOffset = offset + node.data.length
-    if (!startNode && start >= offset && start <= nextOffset) {
-      startNode = node
-      startOffset = start - offset
-    }
-    if (endNode === undefined && end >= offset && end <= nextOffset) {
-      endNode = node
-      endOffset = end - offset
-      break
-    }
-    offset = nextOffset
-  }
-  if (!startNode || !endNode) return undefined
-  const range = document.createRange()
-  range.setStart(startNode, startOffset)
-  range.setEnd(endNode, endOffset)
-  return range
 }
 
 const getDraftHighlight = (): Highlight | undefined => {
@@ -127,13 +87,16 @@ export const PreviewTextAnnotationSurface = ({
     ownedRanges.current.clear()
     const surface = surfaceRef.current
     if (!surface) return
+    const occurrenceByQuote = new Map<string, number>()
     for (const annotation of matchingAnnotations) {
-      const range = rangeForQuote(surface, annotation.quote)
+      const occurrence = occurrenceByQuote.get(annotation.quote) ?? 0
+      occurrenceByQuote.set(annotation.quote, occurrence + 1)
+      const range = rangeForTextOccurrence(surface, annotation.quote, occurrence)
       if (!range) continue
       ownedRanges.current.set(annotation.id, range)
       highlight.add(range)
     }
-  }, [matchingAnnotations])
+  }, [children, matchingAnnotations])
 
   useLayoutEffect(
     () => () => {
@@ -179,7 +142,7 @@ export const PreviewTextAnnotationSurface = ({
   const add = (): void => {
     if (!selection || !source || !onAddAnnotation) return
     const annotation: TextAnnotation = {
-      id: annotationId(),
+      id: createAnnotationId(),
       kind: 'text',
       target: 'agent',
       quote: selection.quote,

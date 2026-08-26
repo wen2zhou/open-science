@@ -668,6 +668,18 @@ describe('ConversationPanel header spacing', () => {
   })
 })
 
+describe('ConversationPanel composer errors', () => {
+  it('uses the shared ErrorNotice with the semantic failure tone', () => {
+    renderPanel({ composer: { view: { error: 'Annotation payload is too large.' } } })
+
+    const alert = container.querySelector('[role="alert"]')
+    expect(alert?.textContent).toContain('Annotation payload is too large.')
+    expect(alert?.querySelector('section')).not.toBeNull()
+    expect(alert?.querySelector('.bg-status-failure-surface')).not.toBeNull()
+    expect(alert?.className).not.toContain('bg-red-50')
+  })
+})
+
 describe('ConversationPanel session loading presentation', () => {
   it('replaces the transcript with a skeleton until lazy Session content is hydrated', () => {
     const loadingSession: ChatSession = {

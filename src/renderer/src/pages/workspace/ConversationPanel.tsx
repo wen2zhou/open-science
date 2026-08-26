@@ -53,6 +53,7 @@ import { isUnsupportedCodexAcpVersionError } from '../../../../shared/codex-runt
 import { validateAnnotations } from '../../../../shared/annotations'
 
 import { FileDropOverlay } from '@/components/FileDropOverlay'
+import { ErrorNotice } from '@/components/error-notice'
 import { RemoteJobBadge } from '@/components/RemoteJobBadge'
 import { Button } from '@/components/ui/button'
 import { ResizablePanel } from '@/components/ui/resizable'
@@ -1020,9 +1021,9 @@ const ConversationPanel = ({
                 {composerError ? (
                   <div
                     role="alert"
-                    className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[12px] leading-5 text-red-700 dark:border-red-800/50 dark:bg-red-950/20 dark:text-red-300"
+                    className="mb-2 [&>section]:max-w-none [&>section]:items-start [&>section]:gap-2 [&>section>svg]:hidden [&_h1]:text-xs"
                   >
-                    {composerError}
+                    <ErrorNotice icon={AlertTriangle} tone="red" title={composerError} />
                   </div>
                 ) : null}
                 {/* Interrupted sessions get a neutral banner with a Resume action instead of the
