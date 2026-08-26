@@ -7,14 +7,16 @@ import type {
   GetArtifactCodeReconstructionRequest
 } from '../../shared/artifact-code-reconstruction'
 import type {
-  ArtifactVersionProvenance,
   ProvenanceNotebookOutput,
   ProvenanceNotebookRun
 } from '../../shared/artifact-provenance'
 import { isArtifactNotebookProducer } from '../../shared/artifact-provenance'
 import type { NotebookKernelKind } from '../../shared/notebook'
+import type { NotebookHelperModuleEvidence } from '../../shared/notebook'
 import type { AgentFrameworkId } from '../../shared/settings'
 import type { ExplicitAgentBackendTarget } from '../settings/backend-resolver'
+import type { ArtifactVersionReconstructionProvenance } from './provenance-read-model'
+import { readArtifactReconstructionEvidence } from './provenance-reconstruction-evidence'
 
 const CONTEXT_MAX_BYTES = 256 * 1024
 const PRODUCER_SCRIPT_MAX_BYTES = 160 * 1024
@@ -24,7 +26,7 @@ const PROMPT_VERSION = 'artifact-code-reconstruction-v2'
 
 type CodeReconstructionRepository = Pick<
   import('./provenance-repository').ArtifactProvenanceRepository,
-  'getVersionProvenance' | 'readCodeReconstructionCache' | 'writeCodeReconstructionCache'
+  'readCodeReconstructionCache' | 'writeCodeReconstructionCache'
 >
 
 type CodeReconstructionRunner = {
@@ -37,12 +39,15 @@ type CodeReconstructionRunner = {
 
 type ArtifactCodeReconstructionServiceOptions = {
   provenance: CodeReconstructionRepository
+  loadProvenance?: (
+    request: GetArtifactCodeReconstructionRequest
+  ) => Promise<ArtifactVersionReconstructionProvenance>
   runner: CodeReconstructionRunner
   now?: () => Date
 }
 
 type ReconstructionSource = {
-  provenance: ArtifactVersionProvenance
+  provenance: ArtifactVersionReconstructionProvenance
   producerRun: ProvenanceNotebookRun
   language: NotebookKernelKind
   sourceChecksum: string
@@ -176,7 +181,7 @@ const projectRun = (run: ProvenanceNotebookRun, maxScriptBytes: number): Reconst
 }
 
 const sourceState = (
-  provenance: ArtifactVersionProvenance
+  provenance: ArtifactVersionReconstructionProvenance
 ): ReconstructionSource | ArtifactCodeReconstructionState => {
   if (!provenance.execution || !provenance.evidence.execution_snapshot_checksum) {
     return { state: 'unavailable', reason: 'execution-unavailable' }
@@ -191,6 +196,40 @@ const sourceState = (
   if (!producerRun?.script.trim()) {
     return { state: 'unavailable', reason: 'producer-script-missing' }
   }
+  const hasHelperKeys = provenance.execution.runs.some(
+    (run) => (run.helperModuleKeys?.length ?? 0) > 0
+  )
+  if (
+    (hasHelperKeys &&
+      (!provenance.execution.helperModules || !provenance.execution.helperEvidenceStatus)) ||
+    (provenance.execution.helperModules?.length && !provenance.execution.helperEvidenceStatus) ||
+    (provenance.execution.helperEvidenceStatus?.state === 'complete' &&
+      !provenance.execution.helperModules?.length)
+  ) {
+    return { state: 'unavailable', reason: 'helper-evidence-incomplete' }
+  }
+  if (provenance.execution.helperEvidenceStatus?.state === 'incomplete') {
+    return { state: 'unavailable', reason: 'helper-evidence-incomplete' }
+  }
+  if (provenance.execution.helperModules?.length) {
+    const helperKeys = new Set(
+      provenance.execution.helperModules.map((helper) =>
+        [
+          helper.skillIdentity,
+          helper.helperId,
+          helper.registeredGeneration,
+          helper.sourceDigest
+        ].join('\0')
+      )
+    )
+    if (
+      producerRun.helperModuleKeys?.some((key) => !helperKeys.has(key)) ||
+      producerRun.scriptTruncated ||
+      provenance.execution.truncation?.omittedLeadingRunCount
+    ) {
+      return { state: 'unavailable', reason: 'supporting-code-incomplete' }
+    }
+  }
   return {
     provenance,
     producerRun,
@@ -204,6 +243,102 @@ const sourceState = (
       producerRun.omittedOutputCount
     )
   }
+}
+
+const orderedHelpers = (
+  helpers: readonly NotebookHelperModuleEvidence[]
+): NotebookHelperModuleEvidence[] => {
+  const byId = new Map(helpers.map((helper) => [helper.helperId, helper]))
+  const ordered: NotebookHelperModuleEvidence[] = []
+  const visited = new Set<string>()
+  const visiting = new Set<string>()
+  const visit = (helper: NotebookHelperModuleEvidence): void => {
+    if (visited.has(helper.helperId)) return
+    if (visiting.has(helper.helperId))
+      throw new Error('Helper evidence contains a dependency cycle.')
+    visiting.add(helper.helperId)
+    for (const dependency of helper.dependencies ?? []) {
+      const value = byId.get(dependency)
+      if (!value) throw new Error(`Helper evidence is missing dependency: ${dependency}`)
+      visit(value)
+    }
+    visiting.delete(helper.helperId)
+    visited.add(helper.helperId)
+    ordered.push(helper)
+  }
+  for (const helper of [...helpers].sort((left, right) =>
+    left.helperId.localeCompare(right.helperId)
+  )) {
+    visit(helper)
+  }
+  return ordered
+}
+
+const buildFreshReplayCode = (source: ReconstructionSource): string | undefined => {
+  const producer = source.producerRun
+  const allHelpers = source.provenance.execution?.helperModules
+  if (!allHelpers?.length || source.language !== 'python') return undefined
+  const producerKeys = new Set(producer.helperModuleKeys ?? [])
+  if (producerKeys.size === 0) return undefined
+  const helpers = allHelpers.filter((helper) =>
+    producerKeys.has(
+      [
+        helper.skillIdentity,
+        helper.helperId,
+        helper.registeredGeneration,
+        helper.sourceDigest
+      ].join('\0')
+    )
+  )
+  if (helpers.length !== producerKeys.size) {
+    throw new Error('Producer helper evidence is incomplete.')
+  }
+  const earlierRuns = source.provenance
+    .execution!.runs.filter(
+      (run) =>
+        run.runId !== producer.runId &&
+        run.runIndex <= producer.runIndex &&
+        run.status === 'completed' &&
+        run.kernelKind === producer.kernelKind &&
+        (!producer.kernelEpochId ||
+          !run.kernelEpochId ||
+          run.kernelEpochId === producer.kernelEpochId)
+    )
+    .sort((left, right) => left.runIndex - right.runIndex)
+  if (earlierRuns.some((run) => run.scriptTruncated)) {
+    throw new Error('Supporting cell evidence is incomplete.')
+  }
+  const byId = new Map(helpers.map((helper) => [helper.helperId, helper]))
+  const helperSections = orderedHelpers(helpers).map((helper) => {
+    const dependencyExports = (helper.dependencies ?? []).flatMap(
+      (dependency) => byId.get(dependency)?.exports ?? []
+    )
+    return [
+      `# === Supporting helper source: ${helper.helperId} (${helper.registeredGeneration}, sha256:${helper.sourceDigest}) ===`,
+      `__os_helper_source = ${JSON.stringify(helper.source)}`,
+      `__os_dependency_names = ${JSON.stringify(dependencyExports)}`,
+      '__os_private = {"__builtins__": __builtins__, **{name: globals()[name] for name in __os_dependency_names}}',
+      `exec(compile(__os_helper_source, ${JSON.stringify(`<open-science-helper:${helper.helperId}>`)}, "exec"), __os_private, __os_private)`,
+      `__os_exports = ${JSON.stringify(helper.exports)}`,
+      '__os_missing = [name for name in __os_exports if name not in __os_private or not callable(__os_private[name])]',
+      'if __os_missing:',
+      '    raise RuntimeError("OPEN_SCIENCE_HELPER_MISSING_EXPORT")',
+      'globals().update({name: __os_private[name] for name in __os_exports})',
+      'del __os_helper_source, __os_dependency_names, __os_private, __os_exports, __os_missing'
+    ].join('\n')
+  })
+  const earlierSections = earlierRuns.map((run) =>
+    [`# === Earlier successful cell: ${run.runId} ===`, run.script].join('\n')
+  )
+  const code = [
+    ...helperSections,
+    ...earlierSections,
+    `# === Producer cell: ${producer.runId} ===\n${producer.script}`
+  ].join('\n\n')
+  if (byteLength(code) > RESPONSE_MAX_BYTES) {
+    throw new Error('Fresh replay evidence exceeds the bounded reconstruction limit.')
+  }
+  return code
 }
 
 const isSource = (
@@ -452,20 +587,32 @@ export class ArtifactCodeReconstructionService {
     )
     if (existing) return { state: 'cached', value: existing }
 
-    const context = buildContext(source)
-    const result = await this.options.runner.run(buildPrompt(context.serialized), target)
-    const code = normalizeResponse(result.text)
+    let replayCode: string | undefined
+    try {
+      replayCode = buildFreshReplayCode(source)
+    } catch {
+      return { state: 'unavailable', reason: 'supporting-code-incomplete' }
+    }
+    const context = replayCode ? undefined : buildContext(source)
+    const result = replayCode
+      ? {
+          text: replayCode,
+          frameworkId: target.frameworkId,
+          model: target.model.kind === 'required' ? target.model.id : 'provider-default'
+        }
+      : await this.options.runner.run(buildPrompt(context!.serialized), target)
+    const code = replayCode ?? normalizeResponse(result.text)
     const cache: ReconstructionCache = {
       schemaVersion: 1,
       artifactVersionId: source.provenance.evidence.version_id,
       sourceExecutionChecksum: source.sourceChecksum,
-      contextChecksum: context.checksum,
+      contextChecksum: context?.checksum ?? sha256(code),
       promptVersion: PROMPT_VERSION,
       frameworkId: result.frameworkId,
       model: result.model,
       language: source.language,
       generatedAt: this.now().toISOString(),
-      sourceTruncated: source.sourceTruncated || context.truncated,
+      sourceTruncated: source.sourceTruncated || context?.truncated === true,
       codeChecksum: sha256(code),
       code
     }
@@ -490,13 +637,10 @@ export class ArtifactCodeReconstructionService {
     request: GetArtifactCodeReconstructionRequest
   ): Promise<ReconstructionSource | ArtifactCodeReconstructionState> {
     return sourceState(
-      await this.options.provenance.getVersionProvenance(request, {
-        execution: true,
-        messages: false,
-        review: false
-      })
+      await (this.options.loadProvenance?.(request) ??
+        readArtifactReconstructionEvidence(this.options.provenance, request))
     )
   }
 }
 
-export { CONTEXT_MAX_BYTES, PROMPT_VERSION, buildContext, normalizeResponse }
+export { CONTEXT_MAX_BYTES, PROMPT_VERSION, buildContext, buildFreshReplayCode, normalizeResponse }

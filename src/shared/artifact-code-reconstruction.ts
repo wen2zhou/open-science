@@ -23,7 +23,12 @@ export type ArtifactCodeReconstructionState =
     }
   | {
       state: 'unavailable'
-      reason: 'execution-unavailable' | 'producer-unavailable' | 'producer-script-missing'
+      reason:
+        | 'execution-unavailable'
+        | 'producer-unavailable'
+        | 'producer-script-missing'
+        | 'helper-evidence-incomplete'
+        | 'supporting-code-incomplete'
     }
 
 export type GetArtifactCodeReconstructionRequest = GetArtifactVersionProvenanceRequest

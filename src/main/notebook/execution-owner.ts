@@ -113,7 +113,10 @@ type NotebookExecutionOwnerOptions = {
     run: NotebookRunRecord,
     interpreter?: NotebookDependencyInterpreter
   ) => Promise<NotebookDependencyProjection>
-  helperModules: Pick<NotebookHelperModuleHost, 'preflight' | 'plan' | 'commitInitialized'>
+  helperModules: Pick<
+    NotebookHelperModuleHost,
+    'preflight' | 'plan' | 'commitInitialized' | 'loadedEvidence'
+  >
   platform?: NodeJS.Platform
   shellProcess?: NotebookShellProcess
 }
@@ -307,10 +310,14 @@ class NotebookExecutionOwner {
             kernelEpoch,
             executionResult.helperModulesInitialized ?? []
           )
+          const resultWithEvidence = {
+            ...executionResult,
+            ...this.options.helperModules.loadedEvidence(kernelEpoch)
+          }
           const result =
-            executionResult.kernelDispatched === undefined
-              ? { ...executionResult, kernelDispatched: true }
-              : executionResult
+            resultWithEvidence.kernelDispatched === undefined
+              ? { ...resultWithEvidence, kernelDispatched: true }
+              : resultWithEvidence
           if (result.status !== 'completed') return result
           try {
             const capture = await this.options.environmentStateTracker.captureCompletedRun(

@@ -80,6 +80,37 @@ describe('RegisteredSkillHelperCatalog', () => {
     }
   })
 
+  it('carries registered descriptor identity, origin, revision, generation, and dependencies into evidence', async () => {
+    const root = await packageFixture('personal', 'root')
+    const dependency = await packageFixture('builtin', 'dependency')
+    root.helpers[0] = { ...root.helpers[0]!, dependencies: ['dependency-helper'] }
+    const catalog = await createCatalog(async () => [root, dependency])
+    const host = new NotebookHelperModuleHost(catalog)
+    const epoch = { id: 'evidence-epoch', processKey: 'python:default-python' }
+    const plan = await host.plan(epoch, await host.preflight('python', ['root-helper']))
+    host.commitInitialized(
+      epoch,
+      plan.injections.map(({ id }) => id)
+    )
+
+    expect(plan.injections.find(({ id }) => id === 'root-helper')).toMatchObject({
+      skillId: 'root',
+      origin: 'personal',
+      interfaceRevision: 1,
+      dependencies: ['dependency-helper']
+    })
+    expect(host.loadedEvidence(epoch).helperModules).toContainEqual(
+      expect.objectContaining({
+        helperId: 'root-helper',
+        skillIdentity: 'root',
+        packageOrigin: 'personal',
+        interfaceRevision: '1',
+        registeredGeneration: expect.stringMatching(/^sha256:[0-9a-f]{64}$/),
+        dependencies: ['dependency-helper']
+      })
+    )
+  })
+
   it('executes every origin through the real persistent Python loop after source loss', async () => {
     const origins = ['builtin', 'personal', 'imported'] as const
     const packages = await Promise.all(

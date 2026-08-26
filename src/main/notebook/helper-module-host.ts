@@ -1,10 +1,14 @@
-import { createHash } from 'node:crypto'
-
-import type { NotebookLanguage } from '../../shared/notebook'
+import type {
+  NotebookHelperEvidenceStatus,
+  NotebookHelperModuleEvidence,
+  NotebookLanguage
+} from '../../shared/notebook'
 import type { NotebookKernelEpochOwnership } from './session-aggregate'
+import { digestNotebookHelperSource } from './helper-evidence'
 
 const HELPER_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const PYTHON_EXPORT = /^[A-Za-z_][A-Za-z0-9_]*$/
+const NOTEBOOK_HELPER_EVIDENCE_MAX_SOURCE_BYTES = 512 * 1024
 
 type RegisteredNotebookHelperModule = Readonly<{
   id: string
@@ -13,11 +17,13 @@ type RegisteredNotebookHelperModule = Readonly<{
   sourceDigest?: string
   exports: readonly string[]
   dependencies?: readonly string[]
+  skillIdentity?: string
+  packageOrigin?: string
   registeredGeneration?: string
   generationRoot?: string
   skillId?: string
   origin?: 'builtin' | 'personal' | 'imported'
-  interfaceRevision?: number
+  interfaceRevision?: string | number
   generation?: string
   digest?: string
 }>
@@ -43,6 +49,9 @@ type PinnedNotebookHelperModule = Readonly<{
   digest: string
   exports: readonly string[]
   dependencies: readonly string[]
+  skillIdentity: string
+  packageOrigin: string
+  evidenceInterfaceRevision: string
   registeredGeneration: string
   generationRoot?: string
   skillId?: string
@@ -76,13 +85,17 @@ type NotebookHelperModulePlan = Readonly<{
   protectedGenerationRoots: readonly string[]
 }>
 
+type LoadedNotebookHelperEvidence = Readonly<{
+  helperModules: NotebookHelperModuleEvidence[]
+  helperEvidenceStatus?: NotebookHelperEvidenceStatus
+}>
+
 type EpochState = {
   pinned: Map<string, PinnedNotebookHelperModule>
   loaded: Set<string>
 }
 
 const emptyCatalog: NotebookHelperModuleCatalog = { resolve: async () => undefined }
-const sha256 = (source: string): string => createHash('sha256').update(source).digest('hex')
 
 const assertHelperId: (id: unknown) => asserts id is string = (id) => {
   if (typeof id !== 'string' || id.length > 128 || !HELPER_ID.test(id)) {
@@ -119,7 +132,22 @@ const pinDescriptor = (
       `HELPER_SOURCE_VALIDATION_FAILED: helper "${expectedId}" has duplicate dependencies.`
     )
   }
-  const digest = sha256(helper.source)
+  const digest = digestNotebookHelperSource(helper.source)
+  for (const [label, value] of [
+    ['Skill identity', helper.skillIdentity ?? helper.skillId ?? expectedId],
+    ['package origin', helper.packageOrigin ?? helper.origin ?? 'registered'],
+    ['Interface revision', String(helper.interfaceRevision ?? '1')],
+    [
+      'registered generation',
+      helper.generation ?? helper.registeredGeneration ?? `source-${digest}`
+    ]
+  ] as const) {
+    if (!value.trim() || value.length > 256) {
+      throw new Error(
+        `HELPER_SOURCE_VALIDATION_FAILED: helper "${expectedId}" has invalid ${label}.`
+      )
+    }
+  }
   if (helper.sourceDigest !== undefined && helper.sourceDigest !== digest) {
     throw new Error(
       `HELPER_GENERATION_MISMATCH: helper "${expectedId}" does not match its registered digest.`
@@ -137,11 +165,16 @@ const pinDescriptor = (
     digest,
     exports,
     dependencies: dependencies.sort(),
+    skillIdentity: helper.skillIdentity ?? helper.skillId ?? expectedId,
+    packageOrigin: helper.packageOrigin ?? helper.origin ?? 'registered',
+    evidenceInterfaceRevision: String(helper.interfaceRevision ?? '1'),
     registeredGeneration: helper.generation ?? helper.registeredGeneration ?? `source-${digest}`,
     ...(helper.generationRoot ? { generationRoot: helper.generationRoot } : {}),
     ...(helper.skillId ? { skillId: helper.skillId } : {}),
     ...(helper.origin ? { origin: helper.origin } : {}),
-    ...(helper.interfaceRevision ? { interfaceRevision: helper.interfaceRevision } : {})
+    ...(typeof helper.interfaceRevision === 'number'
+      ? { interfaceRevision: helper.interfaceRevision }
+      : {})
   }
 }
 
@@ -307,9 +340,45 @@ class NotebookHelperModuleHost {
       if (state.pinned.has(id)) state.loaded.add(id)
     }
   }
+
+  loadedEvidence(epoch: NotebookKernelEpochOwnership): LoadedNotebookHelperEvidence {
+    const state = this.epochs.get(epoch)
+    if (!state || state.loaded.size === 0) return { helperModules: [] }
+    let sourceBytes = 0
+    let omitted = false
+    const helperModules = [...state.loaded].sort().flatMap((id) => {
+      const helper = state.pinned.get(id)
+      if (!helper) return []
+      const helperSourceBytes = Buffer.byteLength(helper.source, 'utf8')
+      if (sourceBytes + helperSourceBytes > NOTEBOOK_HELPER_EVIDENCE_MAX_SOURCE_BYTES) {
+        omitted = true
+        return []
+      }
+      sourceBytes += helperSourceBytes
+      return [
+        {
+          helperId: helper.id,
+          skillIdentity: helper.skillIdentity,
+          packageOrigin: helper.packageOrigin,
+          interfaceRevision: helper.evidenceInterfaceRevision,
+          registeredGeneration: helper.registeredGeneration,
+          exports: [...helper.exports],
+          ...(helper.dependencies.length ? { dependencies: [...helper.dependencies] } : {}),
+          source: helper.source,
+          sourceDigest: helper.digest
+        }
+      ]
+    })
+    return {
+      helperModules,
+      helperEvidenceStatus: omitted
+        ? { state: 'incomplete', reasons: ['payload-limit'] }
+        : { state: 'complete' }
+    }
+  }
 }
 
-export { NotebookHelperModuleHost }
+export { NOTEBOOK_HELPER_EVIDENCE_MAX_SOURCE_BYTES, NotebookHelperModuleHost }
 export type {
   NotebookHelperModuleCatalog,
   NotebookHelperModuleInjection,

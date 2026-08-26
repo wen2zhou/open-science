@@ -162,6 +162,10 @@ const codeReconstructionUnavailableLabel = (
       return t('The producer run could not be identified from the captured evidence.')
     case 'producer-script-missing':
       return t('The producer run did not retain a script to reconstruct.')
+    case 'helper-evidence-incomplete':
+      return t('Helper source evidence is incomplete for this version.')
+    case 'supporting-code-incomplete':
+      return t('Supporting code evidence is incomplete for this version.')
   }
 }
 

@@ -6,6 +6,10 @@ import {
   decodeVersionedJson,
   type VersionedJsonDecodeResult
 } from '../storage/versioned-json-decoder'
+import {
+  decodeNotebookHelperEvidence,
+  notebookHelperEvidenceKey
+} from '../notebook/helper-evidence'
 
 const recordValue = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -114,6 +118,7 @@ const executionRunValue = (value: unknown): boolean => {
     typeof run.messageBranchId === 'string' &&
     typeof run.runtimeSegmentId === 'string' &&
     typeof run.promptMessageId === 'string' &&
+    (run.kernelEpochId === undefined || typeof run.kernelEpochId === 'string') &&
     (run.kernelKind === 'python' ||
       run.kernelKind === 'r' ||
       run.kernelKind === 'repl' ||
@@ -139,7 +144,10 @@ const executionRunValue = (value: unknown): boolean => {
     (run.hasOmittedFiles === undefined || run.hasOmittedFiles === true) &&
     (run.hasOmittedInputs === undefined || run.hasOmittedInputs === true) &&
     (run.omittedOutputCount === undefined ||
-      (Number.isSafeInteger(run.omittedOutputCount) && Number(run.omittedOutputCount) >= 0))
+      (Number.isSafeInteger(run.omittedOutputCount) && Number(run.omittedOutputCount) >= 0)) &&
+    (run.helperModuleKeys === undefined ||
+      (Array.isArray(run.helperModuleKeys) &&
+        run.helperModuleKeys.every((key) => typeof key === 'string')))
   )
 }
 
@@ -173,8 +181,74 @@ const executionSnapshotValue = (value: unknown): PersistedArtifactExecutionSnaps
     return undefined
   }
   const normalized = value as PersistedArtifactExecutionSnapshot
+  const rawHelpers = Array.isArray(snapshot.helperModules) ? snapshot.helperModules : []
+  const invalidHelperReasons = new Set<'source-missing' | 'source-corrupt'>()
+  const helperModules = rawHelpers.flatMap((helper) => {
+    const decoded = decodeNotebookHelperEvidence(helper)
+    if (decoded.state === 'valid') return [decoded.value]
+    invalidHelperReasons.add(decoded.reason)
+    return []
+  })
+  const persistedStatus = recordValue(snapshot.helperEvidenceStatus)
+  const persistedReasons =
+    persistedStatus?.state === 'incomplete' && Array.isArray(persistedStatus.reasons)
+      ? persistedStatus.reasons.filter(
+          (reason): reason is 'source-missing' | 'source-corrupt' | 'payload-limit' =>
+            reason === 'source-missing' || reason === 'source-corrupt' || reason === 'payload-limit'
+        )
+      : []
+  const reasons = new Set(persistedReasons)
+  for (const reason of invalidHelperReasons) reasons.add(reason)
+  const hasHelperKeys = (snapshot.runs as PersistedArtifactExecutionSnapshot['runs']).some(
+    (run) => (run.helperModuleKeys?.length ?? 0) > 0
+  )
+  if (
+    (hasHelperKeys && snapshot.helperModules === undefined) ||
+    ((hasHelperKeys || rawHelpers.length > 0) && snapshot.helperEvidenceStatus === undefined) ||
+    (persistedStatus?.state === 'complete' && rawHelpers.length === 0)
+  ) {
+    reasons.add('source-missing')
+  }
+  if (snapshot.helperModules !== undefined && !Array.isArray(snapshot.helperModules)) {
+    reasons.add('source-corrupt')
+  }
+  if (
+    snapshot.helperEvidenceStatus !== undefined &&
+    persistedStatus?.state !== 'complete' &&
+    persistedStatus?.state !== 'incomplete'
+  ) {
+    reasons.add('source-corrupt')
+  }
+  if (
+    persistedStatus?.state === 'incomplete' &&
+    (!Array.isArray(persistedStatus.reasons) ||
+      persistedReasons.length !== persistedStatus.reasons.length)
+  ) {
+    reasons.add('source-corrupt')
+  }
+  const availableKeys = new Set(helperModules.map(notebookHelperEvidenceKey))
+  if (
+    rawHelpers.length === helperModules.length &&
+    !reasons.has('payload-limit') &&
+    (snapshot.runs as PersistedArtifactExecutionSnapshot['runs']).some((run) =>
+      run.helperModuleKeys?.some((key) => !availableKeys.has(key))
+    )
+  ) {
+    reasons.add('source-missing')
+  }
   return {
     ...normalized,
+    ...(hasHelperKeys ||
+    snapshot.helperModules !== undefined ||
+    snapshot.helperEvidenceStatus !== undefined
+      ? {
+          helperModules,
+          helperEvidenceStatus:
+            reasons.size > 0
+              ? { state: 'incomplete' as const, reasons: [...reasons].sort() }
+              : { state: 'complete' as const }
+        }
+      : {}),
     runs: normalized.runs.map((run) => ({
       ...run,
       outputs: (run.outputs as unknown[]).flatMap(normalizeStoredProvenanceOutput)

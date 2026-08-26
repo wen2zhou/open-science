@@ -3,6 +3,8 @@ import { randomUUID } from 'node:crypto'
 import type {
   NotebookCell,
   NotebookEnvironmentManifest,
+  NotebookHelperModuleEvidence,
+  NotebookHelperEvidenceStatus,
   NotebookKernelInstanceIdentity,
   NotebookKernelMetadata,
   NotebookLanguage,
@@ -83,6 +85,8 @@ export type NotebookSessionExecutionResult = {
   // Exact helper initializations acknowledged by the persistent loop before producer dispatch.
   // The host uses this even when the producer later fails, so same-epoch retries stay idempotent.
   helperModulesInitialized?: readonly string[]
+  helperModules?: NotebookHelperModuleEvidence[]
+  helperEvidenceStatus?: NotebookHelperEvidenceStatus
 }
 
 export type NotebookSessionExecutor<

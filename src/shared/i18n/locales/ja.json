@@ -889,6 +889,8 @@
     "Generated files": "生成されたファイル",
     "Generated from the name when possible. Edit it now or leave it blank to generate automatically; it cannot be changed after creation.": "可能な場合は名前から生成されます。今すぐ編集するか、空白のままにして自動的に生成します。作成後に変更することはできません。",
     "Generating reconstructed script": "再構築されたスクリプトの生成",
+    "Helper source evidence is incomplete for this version.": "このバージョンのヘルパーソースの証拠は不完全です。",
+    "Supporting code evidence is incomplete for this version.": "このバージョンの補助コードの証拠は不完全です。",
     "Generating script…": "スクリプトを生成中…",
     "Generating…": "生成中…",
     "Get a desktop notification when a task finishes, fails, or waits for your approval while you're away from the app.": "アプリを使用していないときにタスクが完了したとき、失敗したとき、または承認を待っているときにデスクトップ通知を受け取ります。",

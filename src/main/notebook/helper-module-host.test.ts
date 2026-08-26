@@ -2,7 +2,11 @@ import { createHash } from 'node:crypto'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import { NotebookHelperModuleHost, type RegisteredNotebookHelperModule } from './helper-module-host'
+import {
+  NOTEBOOK_HELPER_EVIDENCE_MAX_SOURCE_BYTES,
+  NotebookHelperModuleHost,
+  type RegisteredNotebookHelperModule
+} from './helper-module-host'
 import type { NotebookKernelEpochOwnership } from './session-aggregate'
 
 const digest = (source: string): string => createHash('sha256').update(source).digest('hex')
@@ -19,6 +23,9 @@ const helper = (
   sourceDigest: digest(source),
   exports: [id.replaceAll('-', '_')],
   dependencies,
+  skillIdentity: `skill:${id}`,
+  packageOrigin: 'built-in',
+  interfaceRevision: '1',
   registeredGeneration,
   generationRoot: `/registered/${registeredGeneration}`
 })
@@ -52,6 +59,23 @@ describe('NotebookHelperModuleHost', () => {
     expect(second.injections).toEqual([])
     expect(first.protectedGenerationRoots).toEqual(['/registered/generation-1'])
     expect(helperFree.protectedGenerationRoots).toEqual(['/registered/generation-1'])
+    expect(host.loadedEvidence(ownership)).toEqual({
+      helperEvidenceStatus: { state: 'complete' },
+      helperModules: [
+        expect.objectContaining({
+          helperId: 'root-a',
+          skillIdentity: 'skill:root-a',
+          packageOrigin: 'built-in',
+          interfaceRevision: '1',
+          registeredGeneration: 'generation-1',
+          exports: ['root_a'],
+          source: expect.stringContaining('def root_a'),
+          sourceDigest: digest('def root_a():\n    return "root-a"')
+        }),
+        expect.objectContaining({ helperId: 'root-b' }),
+        expect.objectContaining({ helperId: 'shared' })
+      ]
+    })
   })
 
   it('fails missing dependencies and cycles before returning an injection plan', async () => {
@@ -167,5 +191,35 @@ describe('NotebookHelperModuleHost', () => {
     const failure = await host.preflight('python', ['secret']).catch((error: unknown) => error)
     expect(String(failure)).toMatch(/HELPER_GENERATION_MISMATCH.*secret/)
     expect(String(failure)).not.toContain('protected source marker')
+  })
+
+  it('marks epoch evidence incomplete instead of repeating unbounded helper source', async () => {
+    const firstSource = `def first():\n    return ${JSON.stringify('a'.repeat(300 * 1024))}`
+    const secondSource = `def second():\n    return ${JSON.stringify('b'.repeat(300 * 1024))}`
+    const descriptors = new Map([
+      ['first', helper('first', firstSource)],
+      ['second', helper('second', secondSource)]
+    ])
+    const host = new NotebookHelperModuleHost({ resolve: async (id) => descriptors.get(id) })
+    const ownership = epoch('bounded-epoch')
+    const plan = await host.plan(
+      ownership,
+      await host.preflight('python', ['first', 'second'], ownership)
+    )
+    host.commitInitialized(
+      ownership,
+      plan.injections.map(({ id }) => id)
+    )
+
+    const evidence = host.loadedEvidence(ownership)
+
+    expect(
+      evidence.helperModules.reduce((bytes, item) => bytes + Buffer.byteLength(item.source), 0)
+    ).toBeLessThanOrEqual(NOTEBOOK_HELPER_EVIDENCE_MAX_SOURCE_BYTES)
+    expect(evidence.helperModules.map(({ helperId }) => helperId)).toEqual(['first'])
+    expect(evidence.helperEvidenceStatus).toEqual({
+      state: 'incomplete',
+      reasons: ['payload-limit']
+    })
   })
 })
