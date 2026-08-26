@@ -9,7 +9,7 @@ type RegisteredNotebookHelperModule = Readonly<{
   exports: readonly string[]
   dependencies?: readonly string[]
   skillId?: string
-  origin?: 'builtin' | 'personal' | 'imported' | 'connector'
+  origin?: 'builtin' | 'personal' | 'imported'
   interfaceRevision?: number
   generation?: string
   digest?: string
@@ -22,7 +22,6 @@ type NotebookHelperModuleCatalog = {
       projectId?: string
       sessionId?: string
       allowedSkillIds?: readonly string[]
-      allowedConnectorNames?: readonly string[]
     }>
   ): Promise<RegisteredNotebookHelperModule | undefined>
   protectedDirectories?(): readonly string[]
@@ -35,7 +34,7 @@ type NotebookHelperModuleInjection = Readonly<{
   code: string
   dependencies?: readonly string[]
   skillId?: string
-  origin?: 'builtin' | 'personal' | 'imported' | 'connector'
+  origin?: 'builtin' | 'personal' | 'imported'
   interfaceRevision?: number
   generation?: string
   digest?: string
@@ -78,14 +77,10 @@ class NotebookHelperModuleHost {
     const trustedSkillIds = request.executionInvocationId
       ? request.registeredHelperSkillIds
       : undefined
-    const trustedConnectorNames = request.executionInvocationId
-      ? request.registeredHelperConnectorNames
-      : undefined
     return this.resolve(request.language ?? 'python', request.helperModules, {
       projectId: request.projectId,
       sessionId: request.sessionId,
-      ...(trustedSkillIds ? { allowedSkillIds: trustedSkillIds } : {}),
-      ...(trustedConnectorNames ? { allowedConnectorNames: trustedConnectorNames } : {})
+      ...(trustedSkillIds ? { allowedSkillIds: trustedSkillIds } : {})
     })
   }
 
@@ -96,7 +91,6 @@ class NotebookHelperModuleHost {
       projectId?: string
       sessionId?: string
       allowedSkillIds?: readonly string[]
-      allowedConnectorNames?: readonly string[]
     }>
   ): Promise<readonly NotebookHelperModuleInjection[]> {
     if (requested === undefined) return []

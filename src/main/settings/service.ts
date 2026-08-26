@@ -93,7 +93,6 @@ import { NotebookRuntimeSettingsModule } from './notebook-runtime-settings'
 import { SkillCatalogModule } from './skill-catalog'
 import { ConnectorSettingsModule, type CustomServerSecurityChangeGuard } from './connector-settings'
 import type { CustomServerRuntimeProjectionProvider } from './connector-settings'
-import type { ConnectorSettingsServiceOptions } from './connector-settings'
 import { ProviderAccountsModule } from './provider-accounts'
 import { AgentRuntimeManager, type ExecuteClaudeProbe } from './agent-runtime-manager'
 import {
@@ -146,7 +145,6 @@ export type SettingsServiceOptions = {
   skillRegistry?: SkillRegistry
   userSkills?: UserSkillRepository
   githubFetch?: FetchLike
-  connectorRegisteredSkillOwner?: ConnectorSettingsServiceOptions['connectorRegisteredSkillOwner']
   // One-shot Claude command runner, injectable so validation tests can inspect the exact auth env.
   executeClaudeProbe?: ExecuteClaudeProbe
   // One-shot managed Claude installer, injectable so tests avoid real network/fs.
@@ -206,7 +204,7 @@ class SettingsService {
     this.log = options.log ?? createLogger('settings')
     this.preferences = new SettingsPreferencesModule(this.repository)
     this.notebookRuntimeSettings = new NotebookRuntimeSettingsModule(this.repository)
-    this.connectors = new ConnectorSettingsModule(this.repository, options)
+    this.connectors = new ConnectorSettingsModule(this.repository)
     this.userClaudeDir = options.userClaudeDir ?? getUserClaudeConfigDir()
     const userCodexDir = options.userCodexDir ?? join(homedir(), '.codex')
     this.skills = new SkillCatalogModule({
@@ -217,8 +215,7 @@ class SettingsService {
       userAgentsDir: options.userAgentsDir ?? join(homedir(), '.agents'),
       skillRegistry: options.skillRegistry ?? new SkillRegistry(),
       userSkills: options.userSkills,
-      githubFetch: options.githubFetch,
-      registeredConnectorOwner: this.connectors
+      githubFetch: options.githubFetch
     })
     const allocateSettingsIdSequence = createSettingsIdSequence()
     this.runtimeManager = new AgentRuntimeManager({

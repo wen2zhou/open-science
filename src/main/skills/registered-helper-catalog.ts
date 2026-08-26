@@ -15,7 +15,7 @@ const SAFE_HELPER_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const SAFE_EXPORT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 const SHA256_GENERATION = /^sha256:([0-9a-f]{64})$/
 
-type RegisteredSkillOrigin = 'builtin' | 'personal' | 'imported' | 'connector'
+type RegisteredSkillOrigin = 'builtin' | 'personal' | 'imported'
 
 type SkillHelperDescriptor = {
   id: string
@@ -37,7 +37,6 @@ type RegisteredHelperScope = Readonly<{
   projectId?: string
   sessionId?: string
   allowedSkillIds?: readonly string[]
-  allowedConnectorNames?: readonly string[]
 }>
 
 type RegisteredSkillHelper = Readonly<{
@@ -324,7 +323,7 @@ const generationDigest = (
 
 const preparePackage = async (entry: RegisteredSkillPackage): Promise<PreparedHelper[]> => {
   const skillId = assertStableId(entry.skillId, 'Skill identity')
-  if (!['builtin', 'personal', 'imported', 'connector'].includes(entry.origin)) {
+  if (!['builtin', 'personal', 'imported'].includes(entry.origin)) {
     fail(`Skill "${skillId}" has an invalid origin`)
   }
   const helpers = entry.helpers
@@ -522,7 +521,7 @@ class RegisteredSkillHelperCatalog {
     const id = assertStableId(record.id, 'helper id')
     const skillId = assertStableId(record.skillId, 'Skill identity')
     if (record.language !== 'python') fail(`helper "${id}" has an unsupported language`)
-    if (!['builtin', 'personal', 'imported', 'connector'].includes(String(record.origin))) {
+    if (!['builtin', 'personal', 'imported'].includes(String(record.origin))) {
       fail(`Skill "${skillId}" has an invalid origin`)
     }
     if (!Number.isSafeInteger(record.interfaceRevision) || Number(record.interfaceRevision) < 1) {

@@ -53,11 +53,9 @@ const createCatalog = async (
 }
 
 describe('RegisteredSkillHelperCatalog', () => {
-  it('normalizes all four origins through one catalog port and materializes app-owned generations', async () => {
+  it('normalizes all three supported origins through one catalog port and materializes app-owned generations', async () => {
     const packages = await Promise.all(
-      (['builtin', 'personal', 'imported', 'connector'] as const).map((origin) =>
-        packageFixture(origin, origin)
-      )
+      (['builtin', 'personal', 'imported'] as const).map((origin) => packageFixture(origin, origin))
     )
     const catalog = await createCatalog(async () => packages)
 
@@ -83,7 +81,7 @@ describe('RegisteredSkillHelperCatalog', () => {
   })
 
   it('executes every origin through the real persistent Python loop after source loss', async () => {
-    const origins = ['builtin', 'personal', 'imported', 'connector'] as const
+    const origins = ['builtin', 'personal', 'imported'] as const
     const packages = await Promise.all(
       origins.map(async (origin, index) => {
         const exported = `${origin}_value`
@@ -148,7 +146,7 @@ describe('RegisteredSkillHelperCatalog', () => {
     ).resolves.toContain('public_value')
   })
 
-  it.each(['builtin', 'personal', 'imported', 'connector'] as const)(
+  it.each(['builtin', 'personal', 'imported'] as const)(
     'keeps the old immutable %s generation after replacement and never rereads its source',
     async (origin) => {
       const entry = await packageFixture(origin, 'plot')
@@ -257,7 +255,7 @@ describe('RegisteredSkillHelperCatalog', () => {
     ]
 
     for (const [index, testCase] of cases.entries()) {
-      const entry = await packageFixture('connector', `bad-${index}`)
+      const entry = await packageFixture('imported', `bad-${index}`)
       await testCase.mutate(entry)
       const catalog = await createCatalog(async () => [entry])
       await expect(catalog.resolve(`bad-${index}-helper`)).rejects.toThrow(testCase.error)
@@ -307,12 +305,20 @@ describe('RegisteredSkillHelperCatalog', () => {
     ['subprocess', 'import subprocess\ndef public_value():\n    return subprocess.run([])\n'],
     ['third-party', 'import definitely_not_a_real_package\ndef public_value():\n    return 1\n']
   ])('rejects %s imports during callable validation', async (_caseName, source) => {
-    const entry = await packageFixture('connector', 'unsafe-import', source)
+    const entry = await packageFixture('imported', 'unsafe-import', source)
     const catalog = await createCatalog(async () => [entry])
 
     await expect(catalog.resolve('unsafe-import-helper')).rejects.toThrow(
       /host access|not allowed|No module named/
     )
+  })
+
+  it('rejects Connector registered-helper packages as unsupported', async () => {
+    const entry = await packageFixture('imported', 'unsupported-connector')
+    const unsupported = { ...entry, origin: 'connector' } as unknown as RegisteredSkillPackage
+    const catalog = await createCatalog(async () => [unsupported])
+
+    await expect(catalog.resolve('unsupported-connector-helper')).rejects.toThrow('invalid origin')
   })
 
   it('fails closed on duplicate IDs, missing dependencies, cycles, and non-callable dependencies', async () => {
@@ -330,7 +336,7 @@ describe('RegisteredSkillHelperCatalog', () => {
     ).rejects.toThrow('unknown dependency')
 
     const left = await packageFixture('builtin', 'left')
-    const right = await packageFixture('connector', 'right')
+    const right = await packageFixture('imported', 'right')
     left.helpers[0] = { ...left.helpers[0]!, dependencies: ['right-helper'] }
     right.helpers[0] = { ...right.helpers[0]!, dependencies: ['left-helper'] }
     await expect(

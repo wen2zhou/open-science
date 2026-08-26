@@ -78,7 +78,6 @@ const withoutTrustedTurnContext = <
     executionInvocationId,
     registeredInputFiles,
     registeredHelperSkillIds,
-    registeredHelperConnectorNames,
     inputRunLeaseId,
     ...publicRequest
   } = request
@@ -86,7 +85,6 @@ const withoutTrustedTurnContext = <
   void executionInvocationId
   void registeredInputFiles
   void registeredHelperSkillIds
-  void registeredHelperConnectorNames
   void inputRunLeaseId
   return publicRequest as Request
 }

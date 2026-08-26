@@ -93,7 +93,6 @@ type NotebookLocalRpcServerOptions = {
   now?: () => number
   onSessionReleased?: (sessionId: string) => void
   resolveSpecialistSkillIds?: (specialistId: string) => Promise<readonly string[]>
-  resolveSpecialistConnectorNames?: (specialistId: string) => Promise<readonly string[]>
   transport?: LocalRpcListenOptions['transport']
   connectorService?: {
     call(
@@ -503,7 +502,6 @@ class NotebookLocalRpcServer {
   private readonly hostModel: NotebookLocalRpcServerOptions['hostModel']
   private readonly hostViewImage: NotebookLocalRpcServerOptions['hostViewImage']
   private readonly resolveSpecialistSkillIds: NotebookLocalRpcServerOptions['resolveSpecialistSkillIds']
-  private readonly resolveSpecialistConnectorNames: NotebookLocalRpcServerOptions['resolveSpecialistConnectorNames']
   private server: Server | undefined
   private serverLifecycle: NotebookRpcServerLifecycle | undefined
   private startPromise: Promise<NotebookRpcConnection> | undefined
@@ -543,7 +541,6 @@ class NotebookLocalRpcServer {
     this.now = options.now ?? Date.now
     this.onSessionReleased = options.onSessionReleased
     this.resolveSpecialistSkillIds = options.resolveSpecialistSkillIds
-    this.resolveSpecialistConnectorNames = options.resolveSpecialistConnectorNames
     this.transport = options.transport
     this.connectorService = options.connectorService
     this.computeService = options.computeService
@@ -2593,13 +2590,9 @@ class NotebookLocalRpcServer {
         const allowedSkillIds = this.resolveSpecialistSkillIds
           ? await this.resolveSpecialistSkillIds(specialistId).catch(() => [])
           : []
-        const allowedConnectorNames = this.resolveSpecialistConnectorNames
-          ? await this.resolveSpecialistConnectorNames(specialistId).catch(() => [])
-          : []
         trustedParams = {
           ...params,
-          registeredHelperSkillIds: [...allowedSkillIds],
-          registeredHelperConnectorNames: [...allowedConnectorNames]
+          registeredHelperSkillIds: [...allowedSkillIds]
         }
       }
     }

@@ -103,13 +103,6 @@ type SkillCatalogModuleOptions = {
   skillRegistry?: SkillRegistry
   userSkills?: UserSkillRepository
   githubFetch?: FetchLike
-  // Canonical Connector registration owner. This is intentionally not the framework runtime
-  // projection: helper registration must never reverse-scan materialized mcp-* directories.
-  registeredConnectorPackages?: () => Promise<readonly RegisteredSkillPackage[]>
-  registeredConnectorOwner?: {
-    registeredHelperPackages(): Promise<readonly RegisteredSkillPackage[]>
-    setRegisteredHelperRefresh(refresh: () => Promise<void>): void
-  }
   authorizeRegisteredHelper?: (
     skillId: string,
     scope: RegisteredHelperScope | undefined
@@ -136,16 +129,13 @@ class SkillCatalogModule {
     this.registeredHelpers = new RegisteredSkillHelperCatalog({
       storageRoot: options.storageRoot,
       packages: () => this.registeredHelperPackages(),
-      authorize: async ({ skillId, origin }, scope) => {
+      authorize: async ({ skillId }, scope) => {
         if (options.authorizeRegisteredHelper) {
           return options.authorizeRegisteredHelper(skillId, scope)
         }
-        const isSpecialistScope =
-          scope?.allowedSkillIds !== undefined || scope?.allowedConnectorNames !== undefined
+        const isSpecialistScope = scope?.allowedSkillIds !== undefined
         if (isSpecialistScope) {
-          return origin === 'connector'
-            ? Boolean(scope?.allowedConnectorNames?.includes(skillId))
-            : Boolean(scope?.allowedSkillIds?.includes(skillId))
+          return Boolean(scope?.allowedSkillIds?.includes(skillId))
         }
         const disabled = new Set(
           (await this.options.repository.getSettings()).disabledSkillIds ?? []
@@ -155,9 +145,6 @@ class SkillCatalogModule {
         return !disabled.has(skillId)
       }
     })
-    options.registeredConnectorOwner?.setRegisteredHelperRefresh(() =>
-      this.refreshRegisteredHelpers()
-    )
   }
 
   registeredHelperCatalog(): Pick<
@@ -186,10 +173,7 @@ class SkillCatalogModule {
         packageRoot: skill.sourceDir,
         helpers: [...(skill.helpers ?? [])]
       }))
-    const connectors = await (this.options.registeredConnectorOwner?.registeredHelperPackages() ??
-      this.options.registeredConnectorPackages?.() ??
-      [])
-    return [...installed, ...connectors]
+    return installed
   }
 
   private async validatePromotedRegisteredHelpers(user: readonly BundledSkill[]): Promise<void> {

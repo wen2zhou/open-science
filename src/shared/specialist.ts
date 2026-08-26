@@ -209,33 +209,6 @@ export const filterSpecialistConnectorSkills = (
   })
 }
 
-export type SpecialistConnectorCapability = Readonly<{
-  id: string
-  canonicalName: string
-}>
-
-// Maps authenticated durable Connector ids to the canonical mcp-* Skill identities used by the
-// registered-helper catalog. Display/framework names from the ordinary Skill catalog never enter
-// this authority path, so a colliding Skill name cannot grant Connector helper access.
-export const resolveSpecialistConnectorSkillNames = (
-  connectors: readonly SpecialistConnectorCapability[],
-  specialist: Pick<SpecialistProfileView, 'capabilityMode' | 'fullAccess' | 'selectedCapabilities'>
-): string[] => {
-  const selected = new Set(
-    specialist.capabilityMode === 'full'
-      ? specialist.fullAccess.excludedConnectorIds
-      : specialist.selectedCapabilities.connectorIds
-  )
-  return connectors
-    .filter(({ id, canonicalName }) =>
-      specialist.capabilityMode === 'full'
-        ? !selected.has(id) && !selected.has(canonicalName)
-        : selected.has(id) || selected.has(canonicalName)
-    )
-    .map(({ canonicalName }) => `mcp-${canonicalName}`)
-    .filter((name, index, names) => names.indexOf(name) === index)
-}
-
 // Renderer-safe view of one specialist profile (no secret fields).
 export type SpecialistProfileView = {
   id: string

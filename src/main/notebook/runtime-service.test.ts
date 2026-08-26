@@ -303,8 +303,7 @@ describe('notebook runtime service', () => {
       workspaceCwd: root,
       code: 'public_value()',
       helperModules: ['scope-helper'],
-      registeredHelperSkillIds: ['forged-skill'],
-      registeredHelperConnectorNames: ['mcp-forged']
+      registeredHelperSkillIds: ['forged-skill']
     }
 
     await service.execute(base)
@@ -319,8 +318,7 @@ describe('notebook runtime service', () => {
       {
         projectId: 'default-project',
         sessionId: 'session-1',
-        allowedSkillIds: ['forged-skill'],
-        allowedConnectorNames: ['mcp-forged']
+        allowedSkillIds: ['forged-skill']
       }
     ])
   })

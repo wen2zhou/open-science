@@ -75,7 +75,6 @@ import { SessionEnabledComputeHostsOwner } from './compute/session-enabled-hosts
 import { createComputeJobRuntime } from './compute/job-runtime'
 import { waitForInitialConnectorRefresh } from './connector-reload'
 import { createConnectorApplicationModule } from './connectors/application'
-import { ConnectorRegisteredSkillOwner } from './connectors/registered-skill-owner'
 import { isCustomMcpServerRouteSafe } from './connectors/custom-mcp-bootstrap'
 import { createMoleculePreviewHandler } from './connectors/molecule-preview'
 import { ALL_CONNECTOR_IDS } from './connectors/registry'
@@ -124,10 +123,7 @@ import {
 import { ManagedPreviewResources } from './managed-preview-resources'
 import type { PreviewProtocolRegistrar } from './managed-preview-protocol'
 import type { ManagedPreviewSource } from '../shared/preview-resources'
-import {
-  resolveEffectiveSpecialistSkills,
-  resolveSpecialistConnectorSkillNames
-} from '../shared/specialist'
+import { resolveEffectiveSpecialistSkills } from '../shared/specialist'
 import {
   createOfficePreviewFrameProcessResolver,
   createOfficePreviewProcessMemoryReader
@@ -437,7 +433,6 @@ const createApplicationModules = async (
     settingsStore ?? resolveStorageRoot(),
     (operation) => specialistPackageSkillAdapter.runMutationExclusive(operation)
   )
-  const connectorRegisteredSkillOwner = new ConnectorRegisteredSkillOwner(resolveStorageRoot())
   const networkProxyRuntime = new NetworkProxyRuntime({
     setProxy: (config) => session.defaultSession.setProxy(config)
   })
@@ -447,8 +442,7 @@ const createApplicationModules = async (
       skillRuntimeMcpEntryPath: mainEntryPath,
       applyNetworkProxy: (settings) => networkProxyRuntime.apply(settings).then(() => undefined),
       resolveCodexProxyEnvironment: () =>
-        Promise.resolve(networkProxyRuntime.getChildProcessProxyEnvironment()),
-      connectorRegisteredSkillOwner
+        Promise.resolve(networkProxyRuntime.getChildProcessProxyEnvironment())
     })
   }))
   const resolveSessionAgentTarget: SessionAgentTargetResolver = async (source) =>
@@ -1921,21 +1915,6 @@ const createApplicationModules = async (
           await settingsService.listSpecialistSkillCatalog()
         )
         return effective.kind === 'specialist' ? [...new Set(effective.skillIds)] : []
-      },
-      resolveSpecialistConnectorNames: async (specialistId) => {
-        const profile = await profileService.resolveRunnableById(specialistId)
-        if (!profile.enabled) return []
-        const connectorSettings = await settingsService.getConnectors()
-        const customServers = connectorSettings?.customMcpServers ?? []
-        return resolveSpecialistConnectorSkillNames(
-          [
-            ...ALL_CONNECTOR_IDS.map((id) => ({ id, canonicalName: id })),
-            ...customServers
-              .filter((server) => isCustomMcpServerRouteSafe(server, customServers))
-              .map((server) => ({ id: server.id, canonicalName: server.name }))
-          ],
-          profile
-        )
       },
       connectorService,
       computeService: agentComputeService,

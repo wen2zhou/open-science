@@ -14,16 +14,10 @@ vi.mock('electron', () => ({
 
 import type { BundledSkill, SkillRegistry } from '../skills/registry'
 import type { UserSkillRepository } from '../skills/user-skill-repository'
-import type { RegisteredSkillPackage } from '../skills/registered-helper-catalog'
-import { ConnectorRegisteredSkillOwner } from '../connectors/registered-skill-owner'
-import { NotebookHelperModuleHost } from '../notebook/helper-module-host'
-import { NotebookKernelExecutor } from '../notebook/kernel-executor'
-import { resolvePythonCommand } from '../notebook/python-command'
 import { NotebookRuntimeService, type NotebookExecutionRequest } from '../notebook/runtime-service'
 import { NotebookRunRepository } from '../notebook/repository'
 import { SettingsRepository } from './repository'
 import { SkillCatalogModule } from './skill-catalog'
-import { SettingsService } from './service'
 
 const roots: string[] = []
 
@@ -57,108 +51,19 @@ const skill = async (source: BundledSkill['source'], id: string): Promise<Bundle
 }
 
 describe('SkillCatalogModule registered helper projection', () => {
-  it('executes a canonical Connector helper through the production Settings composition', async () => {
-    const storageRoot = await mkdtemp(join(tmpdir(), 'helper-settings-composition-'))
-    roots.push(storageRoot)
-    const connectorOwner = new ConnectorRegisteredSkillOwner(storageRoot)
-    const connectorSource = await mkdtemp(join(tmpdir(), 'helper-connector-source-'))
-    roots.push(connectorSource)
-    await writeFile(
-      join(connectorSource, 'kernel.py'),
-      'def canonical_connector():\n    return "from-canonical-owner"\n'
-    )
-    await writeFile(
-      join(connectorSource, 'open-science.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        helpers: [
-          {
-            id: 'canonical-connector-helper',
-            language: 'python',
-            interfaceRevision: 1,
-            implementation: 'kernel.py',
-            exports: ['canonical_connector'],
-            dependencies: []
-          }
-        ]
-      })
-    )
-    await connectorOwner.registerPackage('canonical', connectorSource)
-    const connectorRoot = connectorOwner.packageRoot('canonical')
-    const service = new SettingsService({
-      repository: new SettingsRepository(storageRoot),
-      storageRoot,
-      skillRegistry: { list: async () => [] } as unknown as SkillRegistry,
-      userSkills: { list: async () => [] } as unknown as UserSkillRepository,
-      connectorRegisteredSkillOwner: connectorOwner
-    })
-
-    const first = await service.registeredHelperCatalog().resolve('canonical-connector-helper')
-    expect(first).toMatchObject({ skillId: 'mcp-canonical', origin: 'connector' })
-
-    const helperModules = await new NotebookHelperModuleHost(
-      service.registeredHelperCatalog()
-    ).resolve('python', ['canonical-connector-helper'])
-    await rm(connectorRoot, { recursive: true, force: true })
-    const executor = new NotebookKernelExecutor({
-      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py')
-    })
-    try {
-      const result = await executor.execute({
-        cwd: storageRoot,
-        notebookSessionRoot: join(storageRoot, 'notebook'),
-        dataRoot: join(storageRoot, 'notebook', 'data'),
-        runtimeRoot: join(storageRoot, 'runtime'),
-        language: 'python',
-        resolvedInterpreter: await resolvePythonCommand(),
-        helperModules,
-        code: 'print(canonical_connector())'
-      })
-      expect(result).toMatchObject({ status: 'completed', stdout: 'from-canonical-owner\n' })
-    } finally {
-      await executor.shutdown()
-    }
-
-    const replacementSource = await mkdtemp(join(tmpdir(), 'helper-connector-replacement-'))
-    roots.push(replacementSource)
-    await writeFile(
-      join(replacementSource, 'kernel.py'),
-      'def canonical_connector():\n    return "replacement"\n'
-    )
-    await writeFile(
-      join(replacementSource, 'open-science.json'),
-      await readFile(join(connectorSource, 'open-science.json'))
-    )
-    await connectorOwner.registerPackage('canonical', replacementSource)
-    await expect(
-      service.registeredHelperCatalog().resolve('canonical-connector-helper')
-    ).resolves.toMatchObject({
-      source: expect.stringContaining('return "replacement"'),
-      generation: expect.not.stringMatching(first!.generation)
-    })
-  }, 30_000)
-
-  it('derives Built-in, Personal, Imported and canonical Connector helpers from one catalog', async () => {
+  it('derives Built-in, Personal and Imported helpers from one catalog', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'helper-skill-catalog-'))
     roots.push(storageRoot)
     await mkdir(storageRoot, { recursive: true })
     const builtin = await skill('featured', 'builtin-skill')
     const personal = await skill('personal', 'personal-skill')
     const imported = await skill('imported', 'imported-skill')
-    const connectorSkill = await skill('featured', 'connector-skill')
-    const connectorPackage: RegisteredSkillPackage = {
-      skillId: connectorSkill.id,
-      origin: 'connector',
-      packageRoot: connectorSkill.sourceDir,
-      helpers: [...(connectorSkill.helpers ?? [])]
-    }
     const repository = new SettingsRepository(storageRoot)
     const catalog = new SkillCatalogModule({
       repository,
       storageRoot,
       skillRegistry: { list: async () => [builtin] } as unknown as SkillRegistry,
-      userSkills: { list: async () => [personal, imported] } as unknown as UserSkillRepository,
-      registeredConnectorPackages: async () => [connectorPackage]
+      userSkills: { list: async () => [personal, imported] } as unknown as UserSkillRepository
     })
     const registry = catalog.registeredHelperCatalog()
 
@@ -173,10 +78,6 @@ describe('SkillCatalogModule registered helper projection', () => {
     await expect(registry.resolve('imported-skill-helper')).resolves.toMatchObject({
       skillId: 'imported-skill',
       origin: 'imported'
-    })
-    await expect(registry.resolve('connector-skill-helper')).resolves.toMatchObject({
-      skillId: 'connector-skill',
-      origin: 'connector'
     })
 
     const executions: NotebookExecutionRequest[] = []
@@ -204,8 +105,7 @@ describe('SkillCatalogModule registered helper projection', () => {
     for (const helperId of [
       'builtin-skill-helper',
       'personal-skill-helper',
-      'imported-skill-helper',
-      'connector-skill-helper'
+      'imported-skill-helper'
     ]) {
       await notebook.execute({
         projectId: 'project-1',
@@ -219,8 +119,7 @@ describe('SkillCatalogModule registered helper projection', () => {
     expect(executions.map((request) => request.helperModules?.[0]?.origin)).toEqual([
       'builtin',
       'personal',
-      'imported',
-      'connector'
+      'imported'
     ])
 
     await repository.setSkillEnabled('personal-skill', false)
@@ -237,70 +136,6 @@ describe('SkillCatalogModule registered helper projection', () => {
         allowedSkillIds: ['personal-skill']
       })
     ).rejects.toThrow('not authorized')
-  })
-
-  it('does not authorize a durable Skill ID through a colliding Connector framework name', async () => {
-    const storageRoot = await mkdtemp(join(tmpdir(), 'helper-authority-collision-'))
-    roots.push(storageRoot)
-    const durable = await skill('featured', 'mcp-collision')
-    const connector = await skill('featured', 'connector-source')
-    const catalog = new SkillCatalogModule({
-      repository: new SettingsRepository(storageRoot),
-      storageRoot,
-      skillRegistry: { list: async () => [durable] } as unknown as SkillRegistry,
-      userSkills: { list: async () => [] } as unknown as UserSkillRepository,
-      registeredConnectorPackages: async () => [
-        {
-          skillId: 'mcp-collision',
-          origin: 'connector',
-          packageRoot: connector.sourceDir,
-          helpers: [{ ...connector.helpers![0]!, id: 'connector-collision-helper' }]
-        }
-      ]
-    })
-    const registry = catalog.registeredHelperCatalog()
-    const connectorOnlyScope = { allowedSkillIds: [], allowedConnectorNames: ['mcp-collision'] }
-
-    await expect(registry.resolve('mcp-collision-helper', connectorOnlyScope)).rejects.toThrow(
-      'not authorized'
-    )
-    await expect(
-      registry.resolve('connector-collision-helper', connectorOnlyScope)
-    ).resolves.toMatchObject({ origin: 'connector' })
-
-    const executeWithConnectorScope = async (allowedConnectorNames: string[]): Promise<void> => {
-      const notebook = new NotebookRuntimeService({
-        configRoot: storageRoot,
-        dataRoot: storageRoot,
-        projectId: 'project-1',
-        repository: new NotebookRunRepository(storageRoot),
-        helperModuleCatalog: registry,
-        executorFactory: () => ({
-          execute: async (request) => ({
-            status: 'completed' as const,
-            stdout: '',
-            stderr: '',
-            traceback: '',
-            cwdAfter: request.cwd,
-            outputs: []
-          }),
-          shutdown: async () => ({ reaped: true })
-        })
-      })
-      await notebook.execute({
-        projectId: 'project-1',
-        sessionId: `specialist-${allowedConnectorNames.length}`,
-        workspaceCwd: storageRoot,
-        code: 'connector_source()',
-        helperModules: ['connector-collision-helper'],
-        executionInvocationId: `invocation-${allowedConnectorNames.length}`,
-        registeredHelperSkillIds: [],
-        registeredHelperConnectorNames: allowedConnectorNames
-      })
-    }
-
-    await expect(executeWithConnectorScope([])).rejects.toThrow('not authorized')
-    await expect(executeWithConnectorScope(['mcp-collision'])).resolves.toBeUndefined()
   })
 
   it('rolls back a promoted Personal candidate that conflicts with the live helper graph', async () => {
