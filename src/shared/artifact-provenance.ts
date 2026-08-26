@@ -1,6 +1,7 @@
 import type { ArtifactFile, ArtifactSourceFileObservation, ArtifactWriteSource } from './artifacts'
 import type {
   NotebookInputAssociation,
+  NotebookHelperModuleEvidence,
   NotebookKernelKind,
   NotebookInputFileSummary,
   NotebookRunEnvironmentCapture,
@@ -429,6 +430,7 @@ export type ProvenanceNotebookRun = {
   messageBranchId: string
   runtimeSegmentId: string
   promptMessageId: string
+  kernelEpochId?: string
   kernelKind: NotebookKernelKind
   environmentName?: string
   script: string
@@ -445,7 +447,15 @@ export type ProvenanceNotebookRun = {
   hasOmittedFiles?: true
   hasOmittedInputs?: true
   omittedOutputCount?: number
+  helperModuleKeys?: string[]
 }
+
+export type ArtifactHelperEvidenceStatus =
+  | { state: 'complete' }
+  | {
+      state: 'incomplete'
+      reasons: Array<'source-missing' | 'source-corrupt' | 'payload-limit'>
+    }
 
 export type ArtifactExecutionInputAvailability =
   | { state: 'available' }
@@ -471,6 +481,8 @@ export type PersistedArtifactExecutionSnapshot = {
   createdAt: string
   inputFiles: NotebookRunInputFile[]
   runs: ProvenanceNotebookRun[]
+  helperModules?: NotebookHelperModuleEvidence[]
+  helperEvidenceStatus?: ArtifactHelperEvidenceStatus
   truncation?: {
     reason: 'payload-limit'
     omittedLeadingRunCount: number

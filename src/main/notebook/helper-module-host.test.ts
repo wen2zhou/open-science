@@ -19,6 +19,9 @@ const helper = (
   sourceDigest: digest(source),
   exports: [id.replaceAll('-', '_')],
   dependencies,
+  skillIdentity: `skill:${id}`,
+  packageOrigin: 'built-in',
+  interfaceRevision: '1',
   registeredGeneration,
   generationRoot: `/registered/${registeredGeneration}`
 })
@@ -52,6 +55,20 @@ describe('NotebookHelperModuleHost', () => {
     expect(second.injections).toEqual([])
     expect(first.protectedGenerationRoots).toEqual(['/registered/generation-1'])
     expect(helperFree.protectedGenerationRoots).toEqual(['/registered/generation-1'])
+    expect(host.loadedEvidence(ownership)).toEqual([
+      expect.objectContaining({
+        helperId: 'root-a',
+        skillIdentity: 'skill:root-a',
+        packageOrigin: 'built-in',
+        interfaceRevision: '1',
+        registeredGeneration: 'generation-1',
+        exports: ['root_a'],
+        source: expect.stringContaining('def root_a'),
+        sourceDigest: digest('def root_a():\n    return "root-a"')
+      }),
+      expect.objectContaining({ helperId: 'root-b' }),
+      expect.objectContaining({ helperId: 'shared' })
+    ])
   })
 
   it('fails missing dependencies and cycles before returning an injection plan', async () => {

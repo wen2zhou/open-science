@@ -211,11 +211,12 @@ describe('notebook runtime service', () => {
     const executions: NotebookExecutionRequest[] = []
     let generation = 1
     let terminateKernel!: () => Promise<void>
+    const repository = new NotebookRunRepository(root)
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
       projectId: 'default-project',
-      repository: new NotebookRunRepository(root),
+      repository,
       environmentStateTracker: verifiedPackageMutationTracker(),
       helperModuleCatalog: {
         resolve: async (id: string) =>
@@ -227,6 +228,9 @@ describe('notebook runtime service', () => {
                   `PRIVATE_CONSTANT = ${generation === 1 ? 40 : 50}\n` +
                   'def public_add(value):\n    return PRIVATE_CONSTANT + value',
                 exports: ['public_add'],
+                skillIdentity: 'skill:registered-test-helper',
+                packageOrigin: 'personal',
+                interfaceRevision: '2026-08-01',
                 registeredGeneration: `generation-${generation}`,
                 generationRoot: join(root, 'registered', `generation-${generation}`)
               }
@@ -267,8 +271,7 @@ describe('notebook runtime service', () => {
       sessionId: 'session-1',
       workspaceCwd: root,
       language: 'python',
-      code: 'print(public_add(3))',
-      helperModules: ['registered-test-helper']
+      code: 'print(public_add(3))'
     } as Parameters<NotebookRuntimeService['execute']>[0])
     await terminateKernel()
     await service.execute({
@@ -311,6 +314,21 @@ describe('notebook runtime service', () => {
     })
     expect(executions[0]?.protectedDirs).toContain(join(root, 'registered', 'generation-1'))
     expect(executions[1]?.helperModules).toBeUndefined()
+    const persistedRuns = await repository.readSessionRuns('default-project', 'session-1')
+    expect(persistedRuns[0]?.helperModules).toEqual(persistedRuns[1]?.helperModules)
+    expect(persistedRuns[1]?.helperModules).toEqual([
+      {
+        helperId: 'registered-test-helper',
+        skillIdentity: 'skill:registered-test-helper',
+        packageOrigin: 'personal',
+        interfaceRevision: '2026-08-01',
+        registeredGeneration: 'generation-1',
+        exports: ['public_add'],
+        source:
+          'PRIVATE_CONSTANT = 40\ndef public_add(value):\n    return PRIVATE_CONSTANT + value',
+        sourceDigest: expect.stringMatching(/^[a-f0-9]{64}$/)
+      }
+    ])
     expect(executions[1]?.protectedDirs).toContain(join(root, 'registered', 'generation-1'))
     expect(executions[2]?.helperModules?.[0]).toMatchObject({
       registeredGeneration: 'generation-2'

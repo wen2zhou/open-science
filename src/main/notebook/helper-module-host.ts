@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 
-import type { NotebookLanguage } from '../../shared/notebook'
+import type { NotebookHelperModuleEvidence, NotebookLanguage } from '../../shared/notebook'
 import type { NotebookKernelEpochOwnership } from './session-aggregate'
 
 const HELPER_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
@@ -13,6 +13,9 @@ type RegisteredNotebookHelperModule = Readonly<{
   sourceDigest?: string
   exports: readonly string[]
   dependencies?: readonly string[]
+  skillIdentity?: string
+  packageOrigin?: string
+  interfaceRevision?: string
   registeredGeneration?: string
   generationRoot?: string
 }>
@@ -28,6 +31,9 @@ type PinnedNotebookHelperModule = Readonly<{
   digest: string
   exports: readonly string[]
   dependencies: readonly string[]
+  skillIdentity: string
+  packageOrigin: string
+  interfaceRevision: string
   registeredGeneration: string
   generationRoot?: string
 }>
@@ -97,6 +103,18 @@ const pinDescriptor = (
     )
   }
   const digest = sha256(helper.source)
+  for (const [label, value] of [
+    ['Skill identity', helper.skillIdentity ?? expectedId],
+    ['package origin', helper.packageOrigin ?? 'registered'],
+    ['Interface revision', helper.interfaceRevision ?? '1'],
+    ['registered generation', helper.registeredGeneration ?? `source-${digest}`]
+  ] as const) {
+    if (!value.trim() || value.length > 256) {
+      throw new Error(
+        `HELPER_SOURCE_VALIDATION_FAILED: helper "${expectedId}" has invalid ${label}.`
+      )
+    }
+  }
   if (helper.sourceDigest !== undefined && helper.sourceDigest !== digest) {
     throw new Error(
       `HELPER_GENERATION_MISMATCH: helper "${expectedId}" does not match its registered digest.`
@@ -109,6 +127,9 @@ const pinDescriptor = (
     digest,
     exports,
     dependencies: dependencies.sort(),
+    skillIdentity: helper.skillIdentity ?? expectedId,
+    packageOrigin: helper.packageOrigin ?? 'registered',
+    interfaceRevision: helper.interfaceRevision ?? '1',
     registeredGeneration: helper.registeredGeneration ?? `source-${digest}`,
     ...(helper.generationRoot ? { generationRoot: helper.generationRoot } : {})
   }
@@ -252,6 +273,29 @@ class NotebookHelperModuleHost {
     for (const id of ids) {
       if (state.pinned.has(id)) state.loaded.add(id)
     }
+  }
+
+  loadedEvidence(epoch: NotebookKernelEpochOwnership): NotebookHelperModuleEvidence[] {
+    const state = this.epochs.get(epoch)
+    if (!state) return []
+    return [...state.loaded].sort().flatMap((id) => {
+      const helper = state.pinned.get(id)
+      return helper
+        ? [
+            {
+              helperId: helper.id,
+              skillIdentity: helper.skillIdentity,
+              packageOrigin: helper.packageOrigin,
+              interfaceRevision: helper.interfaceRevision,
+              registeredGeneration: helper.registeredGeneration,
+              exports: [...helper.exports],
+              ...(helper.dependencies.length ? { dependencies: [...helper.dependencies] } : {}),
+              source: helper.source,
+              sourceDigest: helper.digest
+            }
+          ]
+        : []
+    })
   }
 }
 

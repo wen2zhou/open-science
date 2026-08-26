@@ -1,3 +1,7 @@
+import { execFile } from 'node:child_process'
+import { createHash } from 'node:crypto'
+import { promisify } from 'node:util'
+
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ArtifactVersionProvenance } from '../../shared/artifact-provenance'
@@ -14,6 +18,9 @@ const request = {
   artifactId: 'artifact-1',
   versionId: 'version-1'
 }
+
+const execFileAsync = promisify(execFile)
+const digest = (source: string): string => createHash('sha256').update(source).digest('hex')
 
 const provenance = (): ArtifactVersionProvenance => ({
   descriptor: {
@@ -268,6 +275,117 @@ describe('ArtifactCodeReconstructionService', () => {
     expect(context.execution.runs[0]?.runId).toBe('run-2')
     expect(context.omissions.reasons).toContain('context-byte-limit')
     expect(generated).toMatchObject({ state: 'cached', value: { sourceTruncated: true } })
+  })
+
+  it('replays exact helpers, earlier definitions, then the producer in a fresh Python process', async () => {
+    const value = provenance()
+    const doubleSource = 'def double(value):\n    return value * 2'
+    const secondSource = 'def second(value):\n    return double(value) + 1'
+    const helperKey = (id: string, source: string): string =>
+      [`skill:${id}`, id, 'generation-1', digest(source)].join('\0')
+    value.execution!.helperModules = [
+      {
+        helperId: 'double-helper',
+        skillIdentity: 'skill:double-helper',
+        packageOrigin: 'built-in',
+        interfaceRevision: '1',
+        registeredGeneration: 'generation-0',
+        exports: ['double'],
+        source: 'def double(value):\n    return 100',
+        sourceDigest: digest('def double(value):\n    return 100')
+      },
+      {
+        helperId: 'double-helper',
+        skillIdentity: 'skill:double-helper',
+        packageOrigin: 'built-in',
+        interfaceRevision: '1',
+        registeredGeneration: 'generation-1',
+        exports: ['double'],
+        source: doubleSource,
+        sourceDigest: digest(doubleSource)
+      },
+      {
+        helperId: 'second-helper',
+        skillIdentity: 'skill:second-helper',
+        packageOrigin: 'imported',
+        interfaceRevision: '1',
+        registeredGeneration: 'generation-1',
+        exports: ['second'],
+        dependencies: ['double-helper'],
+        source: secondSource,
+        sourceDigest: digest(secondSource)
+      }
+    ]
+    value.execution!.helperEvidenceStatus = { state: 'complete' }
+    value.execution!.runs[0]!.kernelEpochId = 'epoch-1'
+    value.execution!.runs[0]!.script = 'import math\nscale = math.sqrt(16)'
+    value.execution!.runs[0]!.helperModuleKeys = [helperKey('double-helper', doubleSource)]
+    value.execution!.runs[1]!.kernelEpochId = 'epoch-1'
+    value.execution!.runs[1]!.script = 'print(second(scale))'
+    value.execution!.runs[1]!.helperModuleKeys = [
+      helperKey('double-helper', doubleSource),
+      helperKey('second-helper', secondSource)
+    ]
+    const harness = makeHarness(value)
+
+    const generated = await harness.service.generate(request)
+
+    expect(generated).toMatchObject({ state: 'cached', value: { sourceTruncated: false } })
+    if (generated.state !== 'cached') throw new Error('expected cached replay')
+    expect(harness.run).not.toHaveBeenCalled()
+    const code = generated.value.code
+    expect(code.indexOf('Supporting helper source: double-helper')).toBeLessThan(
+      code.indexOf('Supporting helper source: second-helper')
+    )
+    expect(code).not.toContain('return 100')
+    expect(code.indexOf('Earlier successful cell: run-1')).toBeLessThan(
+      code.indexOf('Producer cell: run-2')
+    )
+    const replay = await execFileAsync('python3', ['-c', code])
+    expect(replay.stdout.trim()).toBe('9.0')
+  })
+
+  it('refuses to present incomplete helper evidence as replayable code', async () => {
+    const value = provenance()
+    value.execution!.helperEvidenceStatus = {
+      state: 'incomplete',
+      reasons: ['payload-limit']
+    }
+    const harness = makeHarness(value)
+
+    await expect(harness.service.generate(request)).resolves.toEqual({
+      state: 'unavailable',
+      reason: 'helper-evidence-incomplete'
+    })
+    expect(harness.run).not.toHaveBeenCalled()
+  })
+
+  it('fails closed when a producer helper dependency is missing', async () => {
+    const value = provenance()
+    const source = 'def dependent():\n    return missing_export()'
+    const key = ['skill:dependent', 'dependent', 'generation-1', digest(source)].join('\0')
+    value.execution!.helperModules = [
+      {
+        helperId: 'dependent',
+        skillIdentity: 'skill:dependent',
+        packageOrigin: 'connector',
+        interfaceRevision: '1',
+        registeredGeneration: 'generation-1',
+        exports: ['dependent'],
+        dependencies: ['missing-helper'],
+        source,
+        sourceDigest: digest(source)
+      }
+    ]
+    value.execution!.helperEvidenceStatus = { state: 'complete' }
+    value.execution!.runs[1]!.helperModuleKeys = [key]
+    const harness = makeHarness(value)
+
+    await expect(harness.service.generate(request)).resolves.toEqual({
+      state: 'unavailable',
+      reason: 'supporting-code-incomplete'
+    })
+    expect(harness.run).not.toHaveBeenCalled()
   })
 
   it('prevents evidence values from closing the prompt envelope', async () => {
