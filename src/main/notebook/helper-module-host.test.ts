@@ -46,10 +46,12 @@ describe('NotebookHelperModuleHost', () => {
       first.injections.map(({ id }) => id)
     )
     const second = await host.plan(ownership, await host.preflight('python', ['root-a', 'root-b']))
+    const helperFree = await host.plan(ownership, await host.preflight('python', undefined))
 
     expect(first.injections.map(({ id }) => id)).toEqual(['shared', 'root-a', 'root-b'])
     expect(second.injections).toEqual([])
     expect(first.protectedGenerationRoots).toEqual(['/registered/generation-1'])
+    expect(helperFree.protectedGenerationRoots).toEqual(['/registered/generation-1'])
   })
 
   it('fails missing dependencies and cycles before returning an injection plan', async () => {
@@ -73,6 +75,35 @@ describe('NotebookHelperModuleHost', () => {
     ).rejects.toThrow(/HELPER_DEPENDENCY_CYCLE.*a -> b -> a/)
   })
 
+  it('keeps earlier generation roots protected when a later request adds another helper', async () => {
+    const descriptors = new Map([
+      ['helper-a', { ...helper('helper-a'), generationRoot: '/registered/generation-a' }],
+      ['helper-b', { ...helper('helper-b'), generationRoot: '/registered/generation-b' }]
+    ])
+    const host = new NotebookHelperModuleHost({
+      resolve: async (id) => descriptors.get(id)
+    })
+    const ownership = epoch('multi-root-epoch')
+    const first = await host.plan(
+      ownership,
+      await host.preflight('python', ['helper-a'], ownership)
+    )
+    host.commitInitialized(
+      ownership,
+      first.injections.map(({ id }) => id)
+    )
+    const second = await host.plan(
+      ownership,
+      await host.preflight('python', ['helper-b'], ownership)
+    )
+
+    expect(second.injections.map(({ id }) => id)).toEqual(['helper-b'])
+    expect(second.protectedGenerationRoots).toEqual([
+      '/registered/generation-a',
+      '/registered/generation-b'
+    ])
+  })
+
   it('keeps the first registered generation pinned until the aggregate rotates the epoch', async () => {
     let current = helper('stable', 'def stable():\n    return 1', [], 'generation-1')
     const host = new NotebookHelperModuleHost({ resolve: async () => current })
@@ -81,7 +112,10 @@ describe('NotebookHelperModuleHost', () => {
     const first = await host.plan(firstEpoch, await host.preflight('python', ['stable']))
     host.commitInitialized(firstEpoch, ['stable'])
     current = helper('stable', 'def stable():\n    return 2', [], 'generation-2')
-    const pinned = await host.plan(firstEpoch, await host.preflight('python', ['stable']))
+    const pinned = await host.plan(
+      firstEpoch,
+      await host.preflight('python', ['stable'], firstEpoch)
+    )
     const replacement = await host.plan(
       epoch('epoch-2'),
       await host.preflight('python', ['stable'])
@@ -90,6 +124,38 @@ describe('NotebookHelperModuleHost', () => {
     expect(first.injections[0]).toMatchObject({ registeredGeneration: 'generation-1' })
     expect(pinned.injections).toEqual([])
     expect(replacement.injections[0]).toMatchObject({ registeredGeneration: 'generation-2' })
+  })
+
+  it('reuses the complete pinned closure before consulting a removed or invalid catalog entry', async () => {
+    let descriptors = new Map([
+      ['root', helper('root', undefined, ['dependency'])],
+      ['dependency', helper('dependency')]
+    ])
+    const resolve = vi.fn(async (id: string) => descriptors.get(id))
+    const host = new NotebookHelperModuleHost({ resolve })
+    const ownership = epoch('pinned-epoch')
+    const first = await host.plan(ownership, await host.preflight('python', ['root']))
+    host.commitInitialized(
+      ownership,
+      first.injections.map(({ id }) => id)
+    )
+    const callsAfterPin = resolve.mock.calls.length
+
+    descriptors = new Map()
+    const removed = await host.plan(ownership, await host.preflight('python', ['root'], ownership))
+    descriptors.set('root', {
+      ...helper('root', 'def root():\n    return "invalid replacement"'),
+      sourceDigest: '0'.repeat(64)
+    })
+    const invalidReplacement = await host.plan(
+      ownership,
+      await host.preflight('python', ['root'], ownership)
+    )
+
+    expect(removed.injections).toEqual([])
+    expect(invalidReplacement.injections).toEqual([])
+    expect(removed.protectedGenerationRoots).toEqual(['/registered/generation-1'])
+    expect(resolve).toHaveBeenCalledTimes(callsAfterPin)
   })
 
   it('rejects a catalog digest mismatch without exposing source text', async () => {

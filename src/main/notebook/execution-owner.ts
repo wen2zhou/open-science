@@ -31,6 +31,7 @@ import type {
   NotebookSessionResolvedInterpreter,
   NotebookSessionRuntimeBinding
 } from './session-aggregate'
+import { notebookInterpreterIdentity } from './session-aggregate'
 import {
   NotebookShellProcessAdapter,
   type NotebookShellProcess,
@@ -43,7 +44,7 @@ import {
   type NotebookDependencyInterpreter,
   type NotebookDependencyProjection
 } from './dependency-analysis'
-import type { NotebookHelperModuleHost, NotebookHelperModuleRequest } from './helper-module-host'
+import type { NotebookHelperModuleHost } from './helper-module-host'
 
 type NotebookControlResult = Pick<
   NotebookSessionExecutionResult,
@@ -112,7 +113,7 @@ type NotebookExecutionOwnerOptions = {
     run: NotebookRunRecord,
     interpreter?: NotebookDependencyInterpreter
   ) => Promise<NotebookDependencyProjection>
-  helperModules: Pick<NotebookHelperModuleHost, 'plan' | 'commitInitialized'>
+  helperModules: Pick<NotebookHelperModuleHost, 'preflight' | 'plan' | 'commitInitialized'>
   platform?: NodeJS.Platform
   shellProcess?: NotebookShellProcess
 }
@@ -162,7 +163,7 @@ class NotebookExecutionOwner {
     session: NotebookSessionAggregate,
     request: RunNotebookCellRequest,
     signal?: AbortSignal,
-    helperModules?: NotebookHelperModuleRequest
+    helperModuleIds?: readonly string[]
   ): Promise<{ run: NotebookRunRecord; dependencyProjection: NotebookDependencyProjection }> {
     const cell = session.cellView(request.cellId)
     if (session.isCellReceiving(cell.id)) {
@@ -171,7 +172,7 @@ class NotebookExecutionOwner {
     const route = this.options.dataExecutionAdmission.route(session, cell.language)
     return session.enqueueExecution(
       route.processKey,
-      () => this.executeDataCellExclusive(session, cell, request, signal, helperModules),
+      () => this.executeDataCellExclusive(session, cell, request, signal, helperModuleIds),
       signal
     )
   }
@@ -180,7 +181,7 @@ class NotebookExecutionOwner {
     cell: Readonly<NotebookCell>,
     request: RunNotebookCellRequest,
     signal?: AbortSignal,
-    helperModules?: NotebookHelperModuleRequest
+    helperModuleIds?: readonly string[]
   ): Promise<{ run: NotebookRunRecord; dependencyProjection: NotebookDependencyProjection }> {
     this.options.notifyAvailable(session, request.source ?? 'agent')
     const { runId } = this.options.runTerminalization.allocateRunIdentity()
@@ -194,11 +195,18 @@ class NotebookExecutionOwner {
       session.isKernelTerminated(processKey) ||
       session.kernelStatus(processKey) === 'terminated' ||
       session.hasDurableKernelTermination(processKey)
-    const kernelEpoch = session.kernelEpoch(processKey, kernelWasTerminated)
+    const kernelEpoch = session.kernelEpoch(
+      processKey,
+      kernelWasTerminated,
+      notebookInterpreterIdentity(resolvedInterpreter)
+    )
     const kernelEpochId = kernelEpoch.id
-    const helperPlan = helperModules
-      ? await this.options.helperModules.plan(kernelEpoch, helperModules)
-      : { injections: [], protectedGenerationRoots: [] }
+    const helperRequest = await this.options.helperModules.preflight(
+      cell.language,
+      helperModuleIds,
+      kernelEpoch
+    )
+    const helperPlan = await this.options.helperModules.plan(kernelEpoch, helperRequest)
     session.markCellRunning(cell.id, runId, executionCount)
     const runningRun: NotebookRunRecord = {
       runId,

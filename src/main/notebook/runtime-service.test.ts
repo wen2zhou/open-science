@@ -322,10 +322,11 @@ describe('notebook runtime service', () => {
     expect(executions[3]?.protectedDirs).toContain(join(root, 'registered', 'generation-3'))
   })
 
-  it('rejects unknown, illegal, structured, and R helper requests before creating an executor', async () => {
+  it('rejects unknown, illegal, structured, and R helper requests before kernel dispatch', async () => {
     const root = await createStorageRoot()
+    const execute = vi.fn()
     const executorFactory = vi.fn(() => ({
-      execute: vi.fn(),
+      execute,
       shutdown: async () => ({ reaped: true })
     }))
     const catalogResolve = vi.fn(async () => undefined)
@@ -375,7 +376,8 @@ describe('notebook runtime service', () => {
     ).rejects.toThrow(/UNSUPPORTED_HELPER_LANGUAGE/)
 
     expect(catalogResolve).toHaveBeenCalledTimes(1)
-    expect(executorFactory).not.toHaveBeenCalled()
+    expect(executorFactory).toHaveBeenCalledTimes(1)
+    expect(execute).not.toHaveBeenCalled()
   })
 
   it('routes root and child Frames through isolated owners while aggregating attributed history', async () => {

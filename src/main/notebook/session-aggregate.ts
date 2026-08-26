@@ -27,6 +27,13 @@ export type NotebookSessionResolvedInterpreter = {
   condaPrefix?: string
 }
 
+export const notebookInterpreterIdentity = (
+  interpreter: NotebookSessionResolvedInterpreter | undefined
+): string =>
+  interpreter
+    ? [interpreter.command, ...(interpreter.args ?? []), interpreter.condaPrefix ?? ''].join('\n')
+    : ''
+
 export type NotebookSessionRuntimeBinding = NotebookRuntimeBinding & {
   resolvedInterpreter?: NotebookSessionResolvedInterpreter
   envName?: string
@@ -97,6 +104,11 @@ export type NotebookKernelEpochOwnership = Readonly<{
   id: string
   processKey: string
 }>
+
+type NotebookKernelEpochSlot = {
+  ownership: NotebookKernelEpochOwnership
+  interpreterIdentity?: string
+}
 
 export type NotebookSessionOwnedExecutor<
   Request = NotebookSessionExecutionRequest,
@@ -203,7 +215,7 @@ export class NotebookSessionAggregate<
   private durableUnknownKernelTermination: boolean
   private readonly runtimeBindings = new Map<NotebookLanguage, NotebookSessionRuntimeBinding>()
   private readonly forceStoppedKeys = new Set<string>()
-  private readonly kernelEpochs = new Map<string, NotebookKernelEpochOwnership>()
+  private readonly kernelEpochs = new Map<string, NotebookKernelEpochSlot>()
 
   constructor(init: NotebookSessionAggregateInit<Request, Result>) {
     this.id = `notebook-session-${init.sessionId}`
@@ -501,13 +513,24 @@ export class NotebookSessionAggregate<
     return this.kernelEpoch(processKey, reset).id
   }
 
-  kernelEpoch(processKey: string, reset = false): NotebookKernelEpochOwnership {
+  kernelEpoch(
+    processKey: string,
+    reset = false,
+    interpreterIdentity?: string
+  ): NotebookKernelEpochOwnership {
     if (reset) this.kernelEpochs.delete(processKey)
     const existing = this.kernelEpochs.get(processKey)
-    if (existing) return existing
-    const epoch = { id: randomUUID(), processKey }
-    this.kernelEpochs.set(processKey, epoch)
-    return epoch
+    if (existing) {
+      if (interpreterIdentity === undefined) return existing.ownership
+      if (existing.interpreterIdentity === undefined) {
+        existing.interpreterIdentity = interpreterIdentity
+        return existing.ownership
+      }
+      if (existing.interpreterIdentity === interpreterIdentity) return existing.ownership
+    }
+    const ownership = { id: randomUUID(), processKey }
+    this.kernelEpochs.set(processKey, { ownership, interpreterIdentity })
+    return ownership
   }
 
   retireKernelEpoch(processKey: string): void {

@@ -17,8 +17,10 @@ import {
 } from './runtime-paths'
 import { TimeoutController } from './timeout-controller'
 import { NOTEBOOK_PROTOCOL_LINE_LIMIT_BYTES, NOTEBOOK_TEXT_LIMIT_BYTES } from './content-limits'
-import type { NotebookExecutionRequest } from './runtime-service'
+import type { NotebookExecutionRequest, NotebookExecutionResult } from './runtime-service'
 import { NotebookHelperModuleHost } from './helper-module-host'
+import { createRootNotebookLane } from './lane-identity'
+import { NotebookSessionAggregate, notebookInterpreterIdentity } from './session-aggregate'
 import {
   startWorkingFileObservation,
   toPortableNotebookRelativePath
@@ -1200,6 +1202,94 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
     }
   })
 
+  it('rotates helper ownership and reinjects when the interpreter identity drifts', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-identity-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    const session = new NotebookSessionAggregate({
+      sessionId: 'identity-session',
+      projectId: 'default-project',
+      lane: createRootNotebookLane(
+        'default-project',
+        'identity-session',
+        'root-frame-identity-session'
+      ),
+      cwd: request.cwd,
+      notebookSessionRoot: request.notebookSessionRoot,
+      dataRoot: request.dataRoot,
+      runtimeRoot: request.runtimeRoot,
+      runJsonPath: join(request.notebookSessionRoot, 'run.json'),
+      executionCount: 0,
+      executor,
+      executorGeneration: Symbol('identity-executor')
+    })
+    const helperHost = new NotebookHelperModuleHost({
+      resolve: async (id) => ({
+        id,
+        language: 'python',
+        source: 'def identity_answer():\n    return 42',
+        exports: ['identity_answer']
+      })
+    })
+    const processKey = 'python:default-python'
+    const managedEpoch = session.kernelEpoch(
+      processKey,
+      false,
+      notebookInterpreterIdentity(undefined)
+    )
+
+    try {
+      const managedPlan = await helperHost.plan(
+        managedEpoch,
+        await helperHost.preflight('python', ['identity-helper'], managedEpoch)
+      )
+      const managed = await session.execute({
+        ...request,
+        language: 'python',
+        helperModules: managedPlan.injections,
+        code: 'print(identity_answer())'
+      })
+      helperHost.commitInitialized(managedEpoch, managed.helperModulesInitialized ?? [])
+
+      const resolvedInterpreter = { command: python3 as string }
+      const externalEpoch = session.kernelEpoch(
+        processKey,
+        false,
+        notebookInterpreterIdentity(resolvedInterpreter)
+      )
+      const externalPlan = await helperHost.plan(
+        externalEpoch,
+        await helperHost.preflight('python', ['identity-helper'], externalEpoch)
+      )
+      const external = await session.execute({
+        ...request,
+        language: 'python',
+        resolvedInterpreter,
+        helperModules: externalPlan.injections,
+        code: 'print(identity_answer())'
+      })
+
+      expect(externalEpoch).not.toBe(managedEpoch)
+      expect(managed).toMatchObject({
+        status: 'completed',
+        stdout: '42\n',
+        helperModulesInitialized: ['identity-helper']
+      })
+      expect(externalPlan.injections).toHaveLength(1)
+      expect(external).toMatchObject({
+        status: 'completed',
+        stdout: '42\n',
+        helperModulesInitialized: ['identity-helper']
+      })
+    } finally {
+      await session.shutdownExecutor()
+    }
+  })
+
   it('protects the registered generation parent while injected exports remain usable', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-protected-'))
     const request = baseRequest(cwdDir)
@@ -1230,6 +1320,11 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
     })
 
     try {
+      await executor.execute({
+        ...request,
+        language: 'python',
+        code: 'kernel_warmed_before_helper = True'
+      })
       const blocked = await executor.execute({
         ...request,
         language: 'python',
@@ -1238,9 +1333,35 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
         code: `open(${JSON.stringify(sourcePath)}).read()`
       })
       helperHost.commitInitialized(ownership, blocked.helperModulesInitialized ?? [])
+      const helperFreePlan = await helperHost.plan(
+        ownership,
+        await helperHost.preflight('python', undefined, ownership)
+      )
+      const attempts = [
+        `open(${JSON.stringify(sourcePath)}).read()`,
+        [
+          'import importlib.util',
+          `spec = importlib.util.spec_from_file_location("protected_kernel", ${JSON.stringify(sourcePath)})`,
+          'module = importlib.util.module_from_spec(spec)',
+          'spec.loader.exec_module(module)'
+        ].join('\n'),
+        `import shutil; shutil.copyfile(${JSON.stringify(sourcePath)}, ${JSON.stringify(join(cwdDir, 'copied.py'))})`
+      ]
+      const blockedFollowups: NotebookExecutionResult[] = []
+      for (const code of attempts) {
+        blockedFollowups.push(
+          await executor.execute({
+            ...request,
+            language: 'python',
+            protectedDirs: [...helperFreePlan.protectedGenerationRoots],
+            code
+          })
+        )
+      }
       const usable = await executor.execute({
         ...request,
         language: 'python',
+        protectedDirs: [...helperFreePlan.protectedGenerationRoots],
         code: 'print(protected_answer())'
       })
 
@@ -1250,6 +1371,13 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
       })
       expect(blocked.traceback).toContain('Access to protected application files is not allowed')
       expect(blocked.traceback).not.toContain(source)
+      expect(helperFreePlan.protectedGenerationRoots).toEqual([generationRoot])
+      expect(blockedFollowups).toHaveLength(3)
+      for (const followup of blockedFollowups) {
+        expect(followup.status).toBe('failed')
+        expect(followup.traceback).toContain('Access to protected application files is not allowed')
+        expect(followup.traceback).not.toContain(source)
+      }
       expect(usable).toMatchObject({ status: 'completed', stdout: '42\n' })
     } finally {
       await executor.shutdown()

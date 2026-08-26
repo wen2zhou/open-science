@@ -47,6 +47,7 @@ import {
   NOTEBOOK_TEXT_LIMIT_ENV
 } from './content-limits'
 import type { NotebookHelperModuleInjection } from './helper-module-host'
+import { notebookInterpreterIdentity } from './session-aggregate'
 
 // Driver-internal process kind. 'python'/'r' are the data kernels selected by the agent-facing
 // NotebookLanguage; 'repl' is the control-plane Node kernel reached only via the control path. The
@@ -271,11 +272,6 @@ const resolveProcessKey = (request: NotebookExecutionRequest): ProcessKey => {
 // whose runtime changed (managed <-> external, or a different external interpreter) tears the old kernel
 // down instead of reusing its process + stale in-memory state. Kept OUT of the process key so there is
 // still exactly ONE proc per (kind, env), matching the (kind, env)-keyed status/lock tracking upstream.
-const interpreterIdentity = (request: NotebookExecutionRequest): string => {
-  const ri = request.resolvedInterpreter
-  return ri ? [ri.command, ...(ri.args ?? []), ri.condaPrefix ?? ''].join('\n') : ''
-}
-
 // Converts process, spawn, timeout, and loop errors into normal notebook execution results.
 const errorToExecutionResult = (
   error: unknown,
@@ -565,7 +561,7 @@ class NotebookKernelExecutor implements NotebookExecutor {
     env: string,
     request: NotebookExecutionRequest
   ): Promise<ProcState> {
-    const identity = interpreterIdentity(request)
+    const identity = notebookInterpreterIdentity(request.resolvedInterpreter)
     const existing = this.procs.get(key)
     if (existing && existing.alive) {
       if (existing.interpreterIdentity === identity) {
@@ -863,7 +859,12 @@ class NotebookKernelExecutor implements NotebookExecutor {
         } else {
           // Python and the repl (JS) loop share the same JSON-lines request framing.
           proc.child.stdin.write(
-            framePythonRequest(reqId, request.code, request.controlInvocationId)
+            framePythonRequest(
+              reqId,
+              request.code,
+              request.controlInvocationId,
+              request.protectedDirs
+            )
           )
         }
         onDispatch()

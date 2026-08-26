@@ -111,6 +111,16 @@ _protected_dirs = [
     for entry in os.environ.get("OPEN_SCIENCE_PROTECTED_DIRS", "").split(os.pathsep)
     if entry
 ]
+
+def _extend_protected_dirs(entries, _guard_path=_guard_path, _protected_dirs=_protected_dirs):
+    if not isinstance(entries, list):
+        return
+    for entry in entries:
+        if not isinstance(entry, str) or not entry:
+            continue
+        protected = _guard_path(entry)
+        if protected not in _protected_dirs:
+            _protected_dirs.append(protected)
 _runtime_dir_value = os.environ.get("OPEN_SCIENCE_RUNTIME_DIR", "")
 _managed_runtime_dir = _guard_path(_runtime_dir_value) if _runtime_dir_value else ""
 
@@ -316,7 +326,9 @@ def _command_writes_managed_runtime(command):
         return _text_references_managed_runtime(text) and bool(_runtime_write_command.search(text))
     return _shell_writes_managed_runtime(_command_text(command))
 
-def _protected_paths_audit(event, args):
+def _protected_paths_audit(
+    event, args, _guard_path=_guard_path, _protected_dirs=_protected_dirs
+):
     if event in ("subprocess.Popen", "os.system", "os.posix_spawn", "os.exec") and args:
         command = args[1] if event in ("subprocess.Popen", "os.posix_spawn", "os.exec") and len(args) > 1 else args[0]
         if _command_mutates_packages(command):
@@ -421,6 +433,7 @@ except ImportError:
 
 _globals = {"__name__": "__main__"}
 exec(compile(_BOOTSTRAP, "<bootstrap>", "exec"), _globals)
+_extend_protected_dirs = _globals["_extend_protected_dirs"]
 
 
 # Renders every open matplotlib figure to a content-addressed PNG (inline-backend semantics), then
@@ -552,6 +565,7 @@ def main():
             # SIGINT (KeyboardInterrupt) can land at any point while handling a request,
             # including during figure capture or the response write itself. Catching it
             # here means the loop always survives instead of dying mid-request.
+            _extend_protected_dirs(request.get("protected_dirs", []))
             response = _run(request.get("code", ""))
             response["req_id"] = req_id
             _protocol_out.write(json.dumps(response) + "\n")

@@ -148,7 +148,8 @@ class NotebookHelperModuleHost {
 
   async preflight(
     language: NotebookLanguage,
-    requested: readonly string[] | undefined
+    requested: readonly string[] | undefined,
+    epoch?: NotebookKernelEpochOwnership
   ): Promise<NotebookHelperModuleRequest> {
     if (requested === undefined) return { language, requestedIds: [], roots: new Map() }
     if (!Array.isArray(requested)) {
@@ -162,8 +163,14 @@ class NotebookHelperModuleHost {
 
     const ids = [...new Set(requested)].sort()
     const roots = new Map<string, PinnedNotebookHelperModule>()
+    const pinned = epoch ? this.epochs.get(epoch)?.pinned : undefined
     for (const id of ids) {
       assertHelperId(id)
+      const existing = pinned?.get(id)
+      if (existing) {
+        roots.set(id, existing)
+        continue
+      }
       roots.set(
         id,
         pinDescriptor(
@@ -219,7 +226,7 @@ class NotebookHelperModuleHost {
     for (const id of request.requestedIds) await visit(id)
 
     const roots = new Set<string>()
-    for (const helper of ordered) {
+    for (const helper of state.pinned.values()) {
       if (helper.generationRoot) roots.add(helper.generationRoot)
     }
     const injections = ordered
