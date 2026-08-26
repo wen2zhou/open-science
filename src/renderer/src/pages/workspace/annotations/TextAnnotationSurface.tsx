@@ -7,7 +7,7 @@ import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover
 import { Textarea } from '@/components/ui/textarea'
 import type { AnnotationValidationError, TextAnnotation } from '../../../../../shared/annotations'
 import { createAnnotationId } from './annotation-id'
-import { rangeForTextOccurrence } from './text-annotation-range'
+import { reconcileTextAnnotationRanges } from './text-annotation-range'
 
 type SelectionDraft = { quote: string; left: number; top: number; range: Range }
 
@@ -84,18 +84,19 @@ const TextAnnotationSurface = ({
   }
 
   useLayoutEffect(() => {
+    const existing = new Map<string, Range>()
+    for (const id of ownedHighlightIds.current) {
+      const range = draftHighlightRanges.get(id)
+      if (range) existing.set(id, range)
+    }
     for (const id of ownedHighlightIds.current) draftHighlightRanges.delete(id)
     ownedHighlightIds.current.clear()
     const content = contentRef.current
-    const occurrenceByQuote = new Map<string, number>()
     if (content) {
-      for (const annotation of matchingAnnotations) {
-        const occurrence = occurrenceByQuote.get(annotation.quote) ?? 0
-        occurrenceByQuote.set(annotation.quote, occurrence + 1)
-        const range = rangeForTextOccurrence(content, annotation.quote, occurrence)
-        if (!range) continue
-        ownedHighlightIds.current.add(annotation.id)
-        draftHighlightRanges.set(annotation.id, range)
+      const next = reconcileTextAnnotationRanges(content, matchingAnnotations, existing)
+      for (const [id, range] of next) {
+        ownedHighlightIds.current.add(id)
+        draftHighlightRanges.set(id, range)
       }
     }
     syncDraftHighlights()

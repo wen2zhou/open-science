@@ -44,4 +44,32 @@ const rangeForTextOccurrence = (
   return range
 }
 
-export { rangeForTextOccurrence }
+type TextAnnotationRangeTarget = Readonly<{ id: string; quote: string }>
+
+const rangeBelongsToSurface = (range: Range, surface: HTMLElement): boolean => {
+  const ancestor = range.commonAncestorContainer
+  const contained = ancestor.nodeType === Node.TEXT_NODE ? ancestor.parentNode : ancestor
+  return contained !== null && surface.contains(contained)
+}
+
+const reconcileTextAnnotationRanges = (
+  surface: HTMLElement,
+  annotations: readonly TextAnnotationRangeTarget[],
+  existing: ReadonlyMap<string, Range>
+): Map<string, Range> => {
+  const next = new Map<string, Range>()
+  const occurrenceByQuote = new Map<string, number>()
+  for (const annotation of annotations) {
+    const occurrence = occurrenceByQuote.get(annotation.quote) ?? 0
+    occurrenceByQuote.set(annotation.quote, occurrence + 1)
+    const exact = existing.get(annotation.id)
+    const range =
+      exact && rangeBelongsToSurface(exact, surface)
+        ? exact
+        : rangeForTextOccurrence(surface, annotation.quote, occurrence)
+    if (range) next.set(annotation.id, range)
+  }
+  return next
+}
+
+export { rangeForTextOccurrence, reconcileTextAnnotationRanges }

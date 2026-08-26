@@ -9,7 +9,7 @@ import type { PreviewFileItem } from '@/stores/preview-workbench-store'
 import type { TextAnnotation } from '../../../../../shared/annotations'
 import type { PreviewFileRendererProps } from './preview-types'
 import { createAnnotationId } from '../annotations/annotation-id'
-import { rangeForTextOccurrence } from '../annotations/text-annotation-range'
+import { reconcileTextAnnotationRanges } from '../annotations/text-annotation-range'
 
 type SelectionDraft = Readonly<{ quote: string; left: number; top: number; range: Range }>
 
@@ -84,18 +84,17 @@ export const PreviewTextAnnotationSurface = ({
     const highlight = getDraftHighlight()
     if (!highlight) return
     for (const range of ownedRanges.current.values()) highlight.delete(range)
-    ownedRanges.current.clear()
     const surface = surfaceRef.current
-    if (!surface) return
-    const occurrenceByQuote = new Map<string, number>()
-    for (const annotation of matchingAnnotations) {
-      const occurrence = occurrenceByQuote.get(annotation.quote) ?? 0
-      occurrenceByQuote.set(annotation.quote, occurrence + 1)
-      const range = rangeForTextOccurrence(surface, annotation.quote, occurrence)
-      if (!range) continue
-      ownedRanges.current.set(annotation.id, range)
-      highlight.add(range)
+    if (!surface) {
+      ownedRanges.current.clear()
+      return
     }
+    ownedRanges.current = reconcileTextAnnotationRanges(
+      surface,
+      matchingAnnotations,
+      ownedRanges.current
+    )
+    for (const range of ownedRanges.current.values()) highlight.add(range)
   }, [children, matchingAnnotations])
 
   useLayoutEffect(

@@ -80,11 +80,13 @@ describe('PreviewTextAnnotationSurface', () => {
   const renderSurface = async ({
     activeAnnotations = [],
     onAddAnnotation = vi.fn(() => undefined),
-    previewItem = item()
+    previewItem = item(),
+    content = 'Experiment result: confidence intervals overlap.'
   }: {
     activeAnnotations?: readonly Annotation[]
     onAddAnnotation?: (annotation: Annotation) => undefined
     previewItem?: PreviewFileItem
+    content?: string
   } = {}): Promise<void> => {
     await act(async () => {
       root.render(
@@ -94,18 +96,18 @@ describe('PreviewTextAnnotationSurface', () => {
           onAddAnnotation={onAddAnnotation}
           onAnnotationError={vi.fn()}
         >
-          <p>Experiment result: confidence intervals overlap.</p>
+          <p>{content}</p>
         </PreviewTextAnnotationSurface>
       )
     })
   }
 
-  const selectQuote = async (): Promise<void> => {
+  const selectRange = async (start: number, end: number): Promise<void> => {
     const text = container.querySelector('p')?.firstChild
     if (!text) throw new Error('Preview text was not rendered')
     const range = document.createRange()
-    range.setStart(text, 19)
-    range.setEnd(text, 47)
+    range.setStart(text, start)
+    range.setEnd(text, end)
     Object.defineProperty(range, 'getBoundingClientRect', {
       configurable: true,
       value: () => ({
@@ -129,8 +131,21 @@ describe('PreviewTextAnnotationSurface', () => {
     })
   }
 
+  const selectQuote = (): Promise<void> => selectRange(19, 47)
+
+  const confirmAnnotation = async (): Promise<void> => {
+    const entry = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Annotate'
+    )
+    await act(async () => entry?.click())
+    const actions = Array.from(document.querySelectorAll('button')).filter(
+      (button) => button.textContent === 'Annotate'
+    )
+    await act(async () => actions.at(-1)?.click())
+  }
+
   it('creates a versioned project-file annotation only after confirmation', async () => {
-    const onAddAnnotation = vi.fn(() => undefined)
+    const onAddAnnotation = vi.fn<(annotation: Annotation) => undefined>(() => undefined)
     await renderSurface({ onAddAnnotation })
     await selectQuote()
 
@@ -223,6 +238,31 @@ describe('PreviewTextAnnotationSurface', () => {
     await renderSurface({ activeAnnotations: [] })
     expect(container.querySelector('[data-annotation-active="true"]')).toBeNull()
     expect(registeredRanges.size).toBe(0)
+  })
+
+  it('preserves exact duplicate ranges until deletion and falls back only after reopening', async () => {
+    const onAddAnnotation = vi.fn<(annotation: Annotation) => undefined>(() => undefined)
+    const content = 'repeat then repeat'
+    await renderSurface({ onAddAnnotation, content })
+    await selectRange(12, 18)
+    await confirmAnnotation()
+    const second = onAddAnnotation.mock.calls[0]?.[0] as TextAnnotation
+
+    await renderSurface({ activeAnnotations: [second], onAddAnnotation, content })
+    expect(Array.from(registeredRanges).map((range) => range.startOffset)).toEqual([12])
+
+    await selectRange(0, 6)
+    await confirmAnnotation()
+    const first = onAddAnnotation.mock.calls[1]?.[0] as TextAnnotation
+    await renderSurface({ activeAnnotations: [second, first], onAddAnnotation, content })
+    expect(Array.from(registeredRanges).map((range) => range.startOffset)).toEqual([12, 0])
+
+    await renderSurface({ activeAnnotations: [second], onAddAnnotation, content })
+    expect(Array.from(registeredRanges).map((range) => range.startOffset)).toEqual([12])
+
+    await act(async () => root.render(<div>Preview closed</div>))
+    await renderSurface({ activeAnnotations: [second], onAddAnnotation, content })
+    expect(Array.from(registeredRanges).map((range) => range.startOffset)).toEqual([0])
   })
 
   it('does not expose annotation controls without a project identity', async () => {
