@@ -9,8 +9,9 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { ChatMessage } from '@/stores/session-store'
 
-import type { ComposerDoc } from './composer/composer-doc'
-import type { TextAnnotation } from '../../../../shared/annotations'
+import type { SendEditedMessage } from './workspace-edited-message'
+import type { EditAnnotationTarget } from './WorkspaceMessageItem'
+import type { Annotation, TextAnnotation } from '../../../../shared/annotations'
 import { WorkspaceMessageItem } from './WorkspaceMessageItem'
 
 // Keep the transcript row and markdown surface as thin wrappers so the test never loads Shiki.
@@ -59,7 +60,11 @@ const renderItem = async (
   options: {
     canEditMessage?: boolean
     showUserActions?: boolean
-    onSendEditedMessage?: (messageId: string, doc: ComposerDoc) => void
+    onSendEditedMessage?: SendEditedMessage
+    onEditAnnotationTargetChange?: (
+      messageId: string,
+      target: EditAnnotationTarget | undefined
+    ) => void
     canBranchInNewSession?: boolean
     onBranchInNewSession?: (messageId: string) => void
     subsequentTurns?: number
@@ -85,6 +90,7 @@ const renderItem = async (
         canEditMessage={options.canEditMessage ?? false}
         showUserActions={options.showUserActions}
         onSendEditedMessage={options.onSendEditedMessage}
+        onEditAnnotationTargetChange={options.onEditAnnotationTargetChange}
         canBranchInNewSession={options.canBranchInNewSession}
         onBranchInNewSession={options.onBranchInNewSession}
         subsequentTurns={options.subsequentTurns ?? 0}
@@ -279,6 +285,153 @@ describe('WorkspaceMessageItem user message actions', () => {
     expect(container.textContent).toContain('Quoted evidence')
     expect(container.textContent).toContain('A note')
     expect(container.querySelector('[aria-label="Sent annotations"]')).not.toBeNull()
+  })
+
+  it('hydrates mixed sent annotations into the inline editor without losing fixed source data', async () => {
+    const annotations: Annotation[] = [
+      {
+        id: 'quote-1',
+        kind: 'text',
+        target: 'agent',
+        quote: 'Quoted evidence',
+        note: 'Original note',
+        source: {
+          kind: 'project-file',
+          projectId: 'project-1',
+          path: 'results/report.md',
+          name: 'report.md',
+          versionId: 'text-version-1',
+          sessionId: 'session-1'
+        }
+      },
+      {
+        id: 'point-1',
+        kind: 'image-point',
+        target: 'agent',
+        note: 'Inspect this peak.',
+        source: {
+          kind: 'artifact-version',
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          versionId: 'image-version-7',
+          name: 'figure.png',
+          path: 'artifact-version:project-1/session-1/artifact-1/image-version-7',
+          mimeType: 'image/png'
+        },
+        point: { x: 0.375, y: 0.25 },
+        naturalSize: { width: 1600, height: 800 }
+      }
+    ]
+    const message = createMessage({ content: '', annotations })
+    const onSendEditedMessage = vi
+      .fn()
+      .mockResolvedValue({ ok: true, disposition: 'sent' } as const)
+    await renderItem(message, { canEditMessage: true, onSendEditedMessage })
+
+    await click(getButton('Edit message'))
+    expect(container.querySelector('[aria-label="Annotations for Agent"]')).not.toBeNull()
+    expect(container.textContent).toContain('Quoted evidence')
+    expect(container.textContent).toContain('Point 1 at 600, 200')
+
+    await click(getEditorCardButton('Send'))
+
+    expect(onSendEditedMessage).toHaveBeenCalledWith('message-1', { nodes: [] }, annotations)
+    expect(message.annotations).toEqual(annotations)
+    expect(getEditor()).toBeNull()
+  })
+
+  it('keeps a failed annotation resend editable after local note and removal changes', async () => {
+    const annotations: Annotation[] = [
+      {
+        id: 'quote-1',
+        kind: 'text',
+        target: 'agent',
+        quote: 'First quote',
+        source: { kind: 'agent-message', sessionId: 'session-1', messageId: 'agent-1' }
+      },
+      {
+        id: 'quote-2',
+        kind: 'text',
+        target: 'agent',
+        quote: 'Second quote',
+        note: 'Keep me',
+        source: { kind: 'agent-message', sessionId: 'session-1', messageId: 'agent-2' }
+      }
+    ]
+    const onSendEditedMessage = vi.fn().mockResolvedValue({ ok: false } as const)
+    await renderItem(createMessage({ annotations }), {
+      canEditMessage: true,
+      onSendEditedMessage
+    })
+    await click(getButton('Edit message'))
+
+    await click(getButton('Edit annotation note'))
+    const note = container.querySelector<HTMLTextAreaElement>('#edit-annotation-quote-1')
+    if (!note) throw new Error('annotation note editor not found')
+    await act(async () => {
+      Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set?.call(
+        note,
+        'Updated note'
+      )
+      note.dispatchEvent(new InputEvent('input', { bubbles: true }))
+    })
+    await click(getEditorCardButton('Save'))
+    const removeButtons = container.querySelectorAll<HTMLButtonElement>(
+      '[aria-label="Remove annotation"]'
+    )
+    await click(removeButtons[1])
+    await click(getEditorCardButton('Send'))
+
+    expect(onSendEditedMessage).toHaveBeenCalledWith(
+      'message-1',
+      { nodes: [{ type: 'text', text: 'Prompt text' }] },
+      [{ ...annotations[0], note: 'Updated note' }]
+    )
+    expect(getEditor()).not.toBeNull()
+    expect(container.querySelector('[role="alert"]')?.textContent).toContain('Try again')
+  })
+
+  it('mixes a newly selected annotation into the active inline revision', async () => {
+    let target: EditAnnotationTarget | undefined
+    const onSendEditedMessage = vi.fn(() => ({ ok: true, disposition: 'sent' as const }))
+    await renderItem(createMessage(), {
+      canEditMessage: true,
+      onSendEditedMessage,
+      onEditAnnotationTargetChange: (_messageId, next) => {
+        target = next
+      }
+    })
+    await click(getButton('Edit message'))
+    const annotation: TextAnnotation = {
+      id: 'new-quote',
+      kind: 'text',
+      target: 'agent',
+      quote: 'New evidence',
+      source: { kind: 'agent-message', sessionId: 'session-1', messageId: 'agent-1' }
+    }
+
+    act(() => {
+      target?.add(annotation)
+    })
+    expect(container.textContent).toContain('New evidence')
+    await click(getEditorCardButton('Send'))
+
+    expect(onSendEditedMessage).toHaveBeenCalledWith(
+      'message-1',
+      { nodes: [{ type: 'text', text: 'Prompt text' }] },
+      [annotation]
+    )
+  })
+
+  it('moves focus into the inline editor and restores it to Edit on cancel', async () => {
+    await renderItem(createMessage(), { canEditMessage: true })
+    const editButton = getButton('Edit message')
+
+    await click(editButton)
+    expect(document.activeElement).toBe(getEditor())
+    await click(getEditorCardButton('Cancel'))
+
+    expect(document.activeElement).toBe(getButton('Edit message'))
   })
 
   it('groups Copy tightly before Branch in a completed Agent Message footer', async () => {
@@ -775,7 +928,7 @@ describe('WorkspaceMessageItem user message actions', () => {
   })
 
   it('resends the adjusted prompt and closes the editor when few turns follow', async () => {
-    const onSendEditedMessage = vi.fn()
+    const onSendEditedMessage = vi.fn(() => ({ ok: true, disposition: 'sent' as const }))
     await renderItem(createMessage(), {
       canEditMessage: true,
       onSendEditedMessage,
@@ -791,14 +944,18 @@ describe('WorkspaceMessageItem user message actions', () => {
 
     // With fewer than two later turns the resend proceeds without the destructive warning.
     expect(getDialog()).toBeNull()
-    expect(onSendEditedMessage).toHaveBeenCalledWith('message-1', {
-      nodes: [{ type: 'text', text: 'edited prompt' }]
-    })
+    expect(onSendEditedMessage).toHaveBeenCalledWith(
+      'message-1',
+      {
+        nodes: [{ type: 'text', text: 'edited prompt' }]
+      },
+      []
+    )
     expect(getEditor()).toBeNull()
   })
 
   it('warns before a destructive resend when several turns follow the edited message', async () => {
-    const onSendEditedMessage = vi.fn()
+    const onSendEditedMessage = vi.fn(() => ({ ok: true, disposition: 'sent' as const }))
     await renderItem(createMessage(), {
       canEditMessage: true,
       onSendEditedMessage,
@@ -815,9 +972,13 @@ describe('WorkspaceMessageItem user message actions', () => {
 
     await click(getDialogButton('Branch and resend'))
 
-    expect(onSendEditedMessage).toHaveBeenCalledWith('message-1', {
-      nodes: [{ type: 'text', text: 'Prompt text' }]
-    })
+    expect(onSendEditedMessage).toHaveBeenCalledWith(
+      'message-1',
+      {
+        nodes: [{ type: 'text', text: 'Prompt text' }]
+      },
+      []
+    )
     expect(getDialog()).toBeNull()
     expect(getEditor()).toBeNull()
   })

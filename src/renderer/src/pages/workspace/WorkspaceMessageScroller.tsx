@@ -61,7 +61,7 @@ import { WorkspaceAgentLoadingRow } from './WorkspaceAgentLoadingRow'
 import { EmptyConversationBanner } from './EmptyConversationBanner'
 import { WorkspaceAssistantTurnCompletion, WorkspaceMessageItem } from './WorkspaceMessageItem'
 import { WorkspaceRunMarks } from './WorkspaceRunMarks'
-import type { ArtifactMentionPart } from './WorkspaceMessageItem'
+import type { ArtifactMentionPart, EditAnnotationTarget } from './WorkspaceMessageItem'
 import { useWorkspaceArtifactVisibility, type MessageArtifact } from './WorkspaceArtifactVisibility'
 import { useWorkspaceMessageEditState } from './workspace-message-edit-state-context'
 import { createConversationItems } from './workspace-conversation-items'
@@ -69,7 +69,7 @@ import type { ActivityExpansionOverrides } from './workspace-tool-activity-group
 import { createWorkspaceConversationTimeline } from './workspace-conversation-timeline'
 import { useSessionJobStore } from '@/stores/session-job-store'
 import type { GoToTranscriptIntent, ReviewWithChecks } from '../../../../shared/reviewer'
-import type { ComposerDoc } from './composer/composer-doc'
+import type { SendEditedMessage } from './workspace-edited-message'
 import type {
   Annotation,
   AnnotationValidationError,
@@ -95,7 +95,7 @@ type WorkspaceMessageScrollerProps = {
   activeSession: ChatSession | undefined
   isResumingSession?: boolean
   notebookReference?: NotebookSessionReference
-  onSendEditedMessage: (messageId: string, doc: ComposerDoc) => void
+  onSendEditedMessage: SendEditedMessage
   optimisticMessage?: ChatMessage
   annotations?: readonly Annotation[]
   onAddAnnotation?: (annotation: TextAnnotation) => AnnotationValidationError | undefined
@@ -389,6 +389,20 @@ const WorkspaceMessageScrollerImpl = ({
   reportPresentationRevealing = false
 }: WorkspaceMessageScrollerProps): React.JSX.Element => {
   const { t } = useTranslation()
+  const editAnnotationTargetRef = useRef<EditAnnotationTarget | undefined>(undefined)
+  const handleEditAnnotationTargetChange = useCallback(
+    (messageId: string, target: EditAnnotationTarget | undefined): void => {
+      if (target || editAnnotationTargetRef.current?.messageId === messageId) {
+        editAnnotationTargetRef.current = target
+      }
+    },
+    []
+  )
+  const handleAddTextAnnotation = useCallback(
+    (annotation: TextAnnotation): AnnotationValidationError | undefined =>
+      editAnnotationTargetRef.current?.add(annotation) ?? onAddAnnotation?.(annotation),
+    [onAddAnnotation]
+  )
   const currentSessionId = activeSession?.id
   const currentProjectId = activeSession?.projectId
   const statusAllowsScrollToFirstMessage = Boolean(
@@ -1262,6 +1276,9 @@ const WorkspaceMessageScrollerImpl = ({
                     onOpenSkillMention,
                     onPreviewMentionArtifact,
                     onSendEditedMessage,
+                    onEditAnnotationTargetChange: isHumanUser
+                      ? handleEditAnnotationTargetChange
+                      : undefined,
                     annotationSessionId: currentSessionId,
                     activeTextAnnotations: annotations.filter(
                       (annotation): annotation is TextAnnotation =>
@@ -1269,7 +1286,7 @@ const WorkspaceMessageScrollerImpl = ({
                         annotation.source.kind === 'agent-message' &&
                         annotation.source.messageId === item.message.id
                     ),
-                    onAddTextAnnotation: onAddAnnotation,
+                    onAddTextAnnotation: handleAddTextAnnotation,
                     onAnnotationError,
                     canBranchInNewSession,
                     onBranchInNewSession,

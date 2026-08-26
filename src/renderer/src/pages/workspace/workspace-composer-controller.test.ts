@@ -239,6 +239,27 @@ describe('workspace composer controller', () => {
     ])
   })
 
+  it('captures an inline revision without mutating the active composer draft', () => {
+    const hook = renderController()
+    mounted.push(hook)
+    act(() => hook.result.current.actions.changeDoc(textDoc('Unrelated composer draft')))
+    const revisionDoc = textDoc('Edited historical prompt')
+    const revisionAnnotation = annotation('revision-annotation')
+
+    const snapshot = hook.result.current.lifecycle.captureRevision(revisionDoc, [
+      revisionAnnotation
+    ])
+
+    expect(snapshot).toMatchObject({
+      draftKey: 'session-a',
+      doc: revisionDoc,
+      annotations: [revisionAnnotation],
+      attachments: []
+    })
+    expect(hook.result.current.view.doc).toEqual(textDoc('Unrelated composer draft'))
+    expect(hook.result.current.view.annotations).toEqual([])
+  })
+
   it('drops deleted Session drafts only after deletion succeeds', () => {
     const hook = renderController()
     mounted.push(hook)

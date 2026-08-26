@@ -39,7 +39,6 @@ import {
 } from './workspace-runtime-attachment-owner'
 import type { useAcpRuntime } from './useAcpRuntime'
 import { validateImageAnnotationSourcesBeforeSend } from '../../pages/workspace/annotations/image-annotation-source-validation'
-
 type SendWorkspaceMessageIntent = {
   sessionId?: string
   branchSourceSessionId?: string
@@ -75,15 +74,14 @@ type SendWorkspaceMessageCommand = SendWorkspaceMessageIntent & {
   requireExistingSession?: boolean
 }
 type SendWorkspaceMessageResult = { sessionId: string; messageId: string }
-type SendPreparationStateChange = (sessionId: string, inFlight: boolean) => void
-type RuntimeEventDrain = (sessionId?: string) => Promise<void>
 type WorkspaceCommandLifecycle = {
-  onSendPreparationStateChange?: SendPreparationStateChange
-  drainRuntimeEvents?: RuntimeEventDrain
+  onSendPreparationStateChange?: (sessionId: string, inFlight: boolean) => void
+  drainRuntimeEvents?: (sessionId?: string) => Promise<void>
   onSessionBound?: (pendingSessionId: string, sessionId: string) => void
 }
 type ResendEditedMessageInput = {
   text: string
+  annotations?: annotationProtocol.Annotation[]
   parts?: MessagePart[]
   forcedSkillIds?: string[]
   referencedArtifacts?: FileReference[]
@@ -672,15 +670,15 @@ const resendEditedWorkspaceMessage = async (
   const session = useSessionStore.getState().sessions.find((item) => item.id === input.sessionId)
   if (!session) return false
   const sourceMessage = session.messages.find((message) => message.id === input.messageId)
+  const annotations = input.annotations ?? sourceMessage?.annotations ?? []
   const cwd = session.cwd || runtime.state.cwd
   if (
     !cwd ||
-    !input.text.trim() ||
+    (!input.text.trim() && annotations.length === 0) ||
     !sourceMessage ||
     runtime.state.promptInFlightSessionIds.includes(input.sessionId)
-  ) {
+  )
     return false
-  }
   let attachments: UploadedAttachment[]
   try {
     attachments = (sourceMessage.uploads ?? []).map((upload) =>
@@ -697,6 +695,7 @@ const resendEditedWorkspaceMessage = async (
         sessionId: input.sessionId,
         text: input.text.trim(),
         attachments,
+        annotations,
         parts: input.parts,
         cwd,
         projectId: session.projectId,

@@ -95,6 +95,7 @@ type WorkspaceComposerController = {
   }
   lifecycle: {
     captureSend: () => ComposerSendSnapshot
+    captureRevision: (doc: ComposerDoc, annotations: Annotation[]) => ComposerSendSnapshot
     clearDraft: (draftKey: string, expectedVersion?: number) => boolean
     restoreFailedSend: (snapshot: ComposerSendSnapshot, preserveOnConflict?: boolean) => boolean
     discardSnapshot: (snapshot: ComposerSendSnapshot) => void
@@ -536,6 +537,17 @@ const useWorkspaceComposerController = ({
       transfers.length
     ]
   )
+
+  const captureRevision = useCallback(
+    (revisionDoc: ComposerDoc, revisionAnnotations: Annotation[]): ComposerSendSnapshot => ({
+      draftKey: currentDraftKey,
+      version: versionsRef.current[currentDraftKey] ?? 0,
+      doc: revisionDoc,
+      annotations: [...revisionAnnotations],
+      attachments: []
+    }),
+    [currentDraftKey]
+  )
   return {
     view: {
       doc,
@@ -590,6 +602,7 @@ const useWorkspaceComposerController = ({
     },
     lifecycle: {
       captureSend,
+      captureRevision,
       clearDraft,
       restoreFailedSend,
       discardSnapshot: (snapshot) => deleteAttachmentFiles(snapshot.attachments),

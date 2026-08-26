@@ -334,6 +334,38 @@ describe('workspace message queue controller', () => {
     )
   })
 
+  it('dispatches a queued revision through the unified edited-message runtime seam', async () => {
+    let currentSession = session()
+    const resendEditedMessage = vi.fn(async () => true)
+    const input = options(currentSession, {
+      promptInFlightSessionIds: [],
+      runtime: {
+        sendMessage: vi.fn(async () => ({ sessionId: 'session-a', messageId: 'message-sent' })),
+        resendEditedMessage,
+        cancelRun: vi.fn(async () => undefined)
+      },
+      getSession: () => currentSession
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    const queued = admission('revised prompt')
+    queued.revisionMessageId = 'message-user-a'
+
+    act(() => hook.result.current.lifecycle.enqueue(queued))
+    currentSession = session('idle')
+    hook.rerender({ ...input, activeSession: currentSession, getSession: () => currentSession })
+
+    await vi.waitFor(() => expect(resendEditedMessage).toHaveBeenCalledOnce())
+    expect(resendEditedMessage).toHaveBeenCalledWith('session-a', 'message-user-a', {
+      text: 'revised prompt',
+      annotations: [],
+      referencedArtifacts: [],
+      parts: [{ type: 'text', text: 'revised prompt' }],
+      forcedSkillIds: []
+    })
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+  })
+
   it('resumes background draining when a Specialist barrier settles', async () => {
     let currentSession = session()
     let notifySessionChanged: (() => void) | undefined

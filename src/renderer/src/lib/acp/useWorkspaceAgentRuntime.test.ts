@@ -8347,6 +8347,54 @@ describe('edit resend reply streaming', () => {
     vi.unstubAllGlobals()
   })
 
+  const seedEditableConversation = (): void => {
+    const createdAt = 1710000000000
+    useSessionStore.setState({
+      ...createInitialSessionState(),
+      sessions: [
+        {
+          id: 'session-1',
+          projectId: 'default-project',
+          title: 'Conversation',
+          cwd: '/workspace/project',
+          status: 'idle',
+          messages: [
+            {
+              id: 'user-1',
+              role: 'user',
+              content: 'first prompt',
+              status: 'complete',
+              eventIds: [],
+              createdAt,
+              updatedAt: createdAt
+            },
+            {
+              id: 'agent-1',
+              role: 'agent',
+              content: 'first answer',
+              status: 'complete',
+              eventIds: [],
+              createdAt: createdAt + 100,
+              updatedAt: createdAt + 100
+            },
+            {
+              id: 'user-2',
+              role: 'user',
+              content: 'second prompt',
+              status: 'complete',
+              eventIds: [],
+              createdAt: createdAt + 200,
+              updatedAt: createdAt + 200
+            }
+          ],
+          createdAt,
+          updatedAt: createdAt + 200
+        }
+      ],
+      selectedSessionId: 'session-1'
+    })
+  }
+
   it('grows an agent bubble from streamed reply events after the truncate-and-resend', async () => {
     const baseTime = 1710000000000
     useSessionStore.setState({
@@ -8440,6 +8488,96 @@ describe('edit resend reply streaming', () => {
       status: 'streaming',
       responseToMessageId: afterResend?.activeRun?.promptMessageId
     })
+  })
+
+  it('resends an annotation-only revision through the unified prompt pipeline', async () => {
+    seedEditableConversation()
+    const annotation = {
+      id: 'quote-1',
+      kind: 'text' as const,
+      target: 'agent' as const,
+      quote: 'Quoted evidence',
+      note: 'Updated note',
+      source: {
+        kind: 'agent-message' as const,
+        sessionId: 'session-1',
+        messageId: 'agent-1'
+      }
+    }
+    const runtime = {
+      state: createSnapshot(['session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn().mockResolvedValue({
+        sessionId: 'session-1',
+        cwd: '/workspace/project',
+        contextReset: true
+      }),
+      sendPrompt: vi.fn().mockResolvedValue(createSnapshot(['session-1']))
+    }
+
+    const resent = await resendEditedWorkspaceMessage(runtime, {
+      sessionId: 'session-1',
+      messageId: 'user-2',
+      text: '',
+      annotations: [annotation]
+    })
+    await flushRuntimeTasks()
+
+    expect(resent).toBe(true)
+    expect(useSessionStore.getState().sessions[0]?.messages.at(-1)).toMatchObject({
+      role: 'user',
+      content: '',
+      annotations: [annotation]
+    })
+    expect(runtime.sendPrompt.mock.calls[0]?.[1]).toContain('"quote":"Quoted evidence"')
+  })
+
+  it('revalidates a fixed image source before truncating an edited message branch', async () => {
+    seedEditableConversation()
+    const acquire = vi.fn().mockRejectedValue(new Error('missing fixed version'))
+    vi.stubGlobal('window', {
+      api: { previewResources: { acquire, release: vi.fn().mockResolvedValue(undefined) } }
+    })
+    const runtime = {
+      state: createSnapshot(['session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt: vi.fn()
+    }
+    const messagesBefore = useSessionStore.getState().sessions[0]?.messages
+    const annotation = {
+      id: 'point-1',
+      kind: 'image-point' as const,
+      target: 'agent' as const,
+      note: 'Inspect the fixed point.',
+      source: {
+        kind: 'artifact-version' as const,
+        projectId: 'default-project',
+        sessionId: 'session-1',
+        versionId: 'deleted-version',
+        name: 'figure.png',
+        path: 'artifact-version:default-project/session-1/artifact-1/deleted-version',
+        mimeType: 'image/png'
+      },
+      point: { x: 0.25, y: 0.75 },
+      naturalSize: { width: 1200, height: 800 }
+    }
+
+    await expect(
+      resendEditedWorkspaceMessage(runtime, {
+        sessionId: 'session-1',
+        messageId: 'user-2',
+        text: 'edited prompt',
+        annotations: [annotation]
+      })
+    ).rejects.toThrow('An annotated image is no longer available')
+
+    expect(acquire).toHaveBeenCalledWith(expect.objectContaining({ path: annotation.source.path }))
+    expect(runtime.resetSessionContext).not.toHaveBeenCalled()
+    expect(runtime.sendPrompt).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions[0]?.messages).toEqual(messagesBefore)
   })
 })
 

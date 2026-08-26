@@ -2,6 +2,7 @@ import { useLayoutEffect, useRef, useState } from 'react'
 
 import type { PermissionProfileId } from '../../../../shared/permission-profiles'
 import type { SessionAgentConfiguration } from '../../../../shared/settings'
+import type { Annotation } from '../../../../shared/annotations'
 import { VISION_MODEL_NOT_CONFIGURED_MESSAGE } from '../../../../shared/run-error-classification'
 import type {
   ChatMessage,
@@ -21,6 +22,7 @@ import {
 import { selectActiveBranchPlan } from './session-plan/active-branch-plan'
 import { respondToSessionPlan } from './session-plan/respond-to-session-plan'
 import type { WorkspaceComposerController } from './workspace-composer-controller'
+import type { EditedMessageSendResult } from './workspace-edited-message'
 import {
   useWorkspaceMessageQueueController,
   type WorkspaceMessageQueueController
@@ -53,7 +55,7 @@ type ConversationComposer = {
   actions: Pick<WorkspaceComposerController['actions'], 'setError'>
   lifecycle: Pick<
     WorkspaceComposerController['lifecycle'],
-    'captureSend' | 'clearDraft' | 'restoreFailedSend' | 'discardSnapshot'
+    'captureSend' | 'clearDraft' | 'restoreFailedSend' | 'discardSnapshot' | 'captureRevision'
   >
 }
 
@@ -119,7 +121,11 @@ type WorkspaceConversationController = {
       draft: (intent: DraftSubmitIntent) => void
       restoredPlan: (response: RestoredPlanResponse) => Promise<void>
     }
-    revise: (messageId: string, doc: ComposerDoc) => void
+    revise: (
+      messageId: string,
+      doc: ComposerDoc,
+      annotations: Annotation[]
+    ) => Promise<EditedMessageSendResult>
     branch: (messageId: string) => void
     sideChat: { start: () => void }
     resume: () => Promise<void>
@@ -195,6 +201,25 @@ const canRevise = (options: WorkspaceConversationControllerOptions): boolean => 
     !activeSession?.conversationGraphSyncBlocked &&
     !activeSession?.compacting &&
     !session.view.deletingIds.has(activeSession?.id ?? '')
+  )
+}
+
+const canQueueRevision = (options: WorkspaceConversationControllerOptions): boolean => {
+  const { activeSession, composer, session } = options
+  return Boolean(
+    options.isPersistenceReady &&
+    options.agentConfigurationReady &&
+    !options.sideChatOpen &&
+    activeSession?.status === 'running' &&
+    composer.view.transfers.length === 0 &&
+    !options.isReviewing &&
+    !options.sendPreparationInFlightSessionIds.includes(activeSession.id) &&
+    !options.saveAsSkillInFlightSessionIds.includes(activeSession.id) &&
+    !activeSession.fixLoopActive &&
+    !activeSession.conversationGraphSyncBlocked &&
+    !activeSession.compacting &&
+    !session.lifecycle.isBarrierInFlight(activeSession.id) &&
+    !session.view.deletingIds.has(activeSession.id)
   )
 }
 
@@ -432,22 +457,50 @@ const useWorkspaceConversationController = (
 
     return {
       submit: { draft: submitDraft, restoredPlan: submitRestoredPlan },
-      revise: (messageId, doc): void => {
+      revise: async (messageId, doc, annotations = []): Promise<EditedMessageSendResult> => {
         const current = optionsRef.current
         const sessionId = current.activeSession?.id
+        if (!sessionId || (docIsEmpty(doc) && annotations.length === 0)) return { ok: false }
         if (
-          !sessionId ||
-          messageQueue.lifecycle.blocksImmediateSend(sessionId) ||
-          !canRevise(current) ||
-          docIsEmpty(doc)
-        )
-          return
-        void current.runtime.resendEditedMessage(sessionId, messageId, {
-          text: docToText(doc),
-          parts: docToMessageParts(doc),
-          forcedSkillIds: docToSkillIds(doc),
-          referencedArtifacts: docToArtifactRefs(doc)
-        })
+          current.supportsImageInput !== true &&
+          annotations.some((annotation) => annotation.kind === 'image-point')
+        ) {
+          current.composer.actions.setError(VISION_MODEL_NOT_CONFIGURED_MESSAGE)
+          return { ok: false, displayMessage: VISION_MODEL_NOT_CONFIGURED_MESSAGE }
+        }
+        const queueRevision =
+          messageQueue.lifecycle.blocksImmediateSend(sessionId) || canQueueRevision(current)
+        if (queueRevision) {
+          if (!current.agentConfiguration || (!canRevise(current) && !canQueueRevision(current)))
+            return { ok: false }
+          const snapshot = current.composer.lifecycle.captureRevision(doc, annotations)
+          const queued = messageQueue.lifecycle.enqueue({
+            session: current.activeSession!,
+            snapshot,
+            text: docToText(doc),
+            forcedSkillIds: docToSkillIds(doc),
+            permissionProfile: current.permissionProfile,
+            agentConfiguration: current.agentConfiguration,
+            specialistId: current.activeSession?.specialistId,
+            revisionMessageId: messageId
+          })
+          return queued ? { ok: true, disposition: 'queued' } : { ok: false }
+        }
+        if (!canRevise(current)) return { ok: false }
+        try {
+          const sent = await current.runtime.resendEditedMessage(sessionId, messageId, {
+            text: docToText(doc),
+            annotations,
+            parts: docToMessageParts(doc),
+            forcedSkillIds: docToSkillIds(doc),
+            referencedArtifacts: docToArtifactRefs(doc)
+          })
+          return sent ? { ok: true, disposition: 'sent' } : { ok: false }
+        } catch (error) {
+          const message = errorMessage(error)
+          current.composer.actions.setError(message)
+          return { ok: false, displayMessage: message }
+        }
       },
       branch: (messageId): void => {
         const current = optionsRef.current
@@ -516,7 +569,7 @@ const useWorkspaceConversationController = (
     availability: {
       submit: submitImmediately || queueDraft,
       submitMode: submitImmediately ? 'send' : queueDraft ? 'queue' : undefined,
-      revise: !queueBlocksActiveSession && canRevise(options),
+      revise: canRevise(options) || canQueueRevision(options),
       resume: options.isPersistenceReady && !options.sideChatOpen,
       branch: canBranch(options)
     },

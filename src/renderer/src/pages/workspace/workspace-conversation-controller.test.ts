@@ -113,6 +113,13 @@ const options = (
           annotations: [],
           attachments: []
         })),
+        captureRevision: vi.fn((revisionDoc, annotations) => ({
+          draftKey: 'session-a',
+          version: 1,
+          doc: revisionDoc,
+          annotations,
+          attachments: []
+        })),
         clearDraft: vi.fn(),
         restoreFailedSend: vi.fn(() => true),
         discardSnapshot: vi.fn()
@@ -553,7 +560,9 @@ describe('workspace conversation controller', () => {
 
     expect(hook.result.current.availability).toMatchObject({ submit: false, revise: false })
     act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
-    act(() => hook.result.current.actions.revise('message-a', textDoc('changed')))
+    act(() => {
+      void hook.result.current.actions.revise('message-a', textDoc('changed'), [])
+    })
     expect(input.runtime.sendMessage).not.toHaveBeenCalled()
     expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
   })
@@ -730,7 +739,9 @@ describe('workspace conversation controller', () => {
 
     expect(hook.result.current.availability).toMatchObject({ submit: false, revise: false })
     act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
-    act(() => hook.result.current.actions.revise('message-user-a', textDoc('changed')))
+    act(() => {
+      void hook.result.current.actions.revise('message-user-a', textDoc('changed'), [])
+    })
     expect(input.runtime.sendMessage).toHaveBeenCalledOnce()
     expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
 
@@ -744,7 +755,9 @@ describe('workspace conversation controller', () => {
 
     expect(hook.result.current.availability).toMatchObject({ submit: false, revise: false })
     act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
-    act(() => hook.result.current.actions.revise('message-a', textDoc('changed')))
+    act(() => {
+      void hook.result.current.actions.revise('message-a', textDoc('changed'), [])
+    })
     expect(input.runtime.sendMessage).not.toHaveBeenCalled()
     expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
   })
@@ -808,7 +821,9 @@ describe('workspace conversation controller', () => {
     mounted.push(hook)
 
     act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
-    act(() => hook.result.current.actions.revise('message-user-a', textDoc('changed')))
+    act(() => {
+      void hook.result.current.actions.revise('message-user-a', textDoc('changed'), [])
+    })
     await act(async () => hook.result.current.actions.resume())
     await act(async () => hook.result.current.actions.cancel())
 
@@ -991,18 +1006,134 @@ describe('workspace conversation controller', () => {
       session: input.session
     })
     hook.rerender(blocked)
-    act(() => revise('message-a', textDoc('changed')))
+    act(() => {
+      void revise('message-a', textDoc('changed'), [])
+    })
     expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
 
     hook.rerender(input)
-    act(() => revise('message-a', textDoc('changed')))
+    act(() => {
+      void revise('message-a', textDoc('changed'), [])
+    })
     expect(input.runtime.resendEditedMessage).toHaveBeenCalledWith('session-a', 'message-a', {
       text: 'changed',
+      annotations: [],
       parts: textDoc('changed').nodes,
       forcedSkillIds: [],
       referencedArtifacts: []
     })
     expect(hook.result.current.actions.revise).toBe(revise)
+  })
+
+  it('resends an annotation-only edit through the existing message revision seam', async () => {
+    const annotations = [
+      {
+        id: 'quote-1',
+        kind: 'text' as const,
+        target: 'agent' as const,
+        quote: 'Quoted evidence',
+        note: 'Updated note',
+        source: {
+          kind: 'project-file' as const,
+          projectId: 'project-a',
+          path: 'results/report.md',
+          versionId: 'version-1'
+        }
+      }
+    ]
+    const input = options()
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    let result: Awaited<ReturnType<WorkspaceConversationController['actions']['revise']>> = {
+      ok: false
+    }
+    await act(async () => {
+      result = await hook.result.current.actions.revise(
+        'message-user-a',
+        { nodes: [] },
+        annotations
+      )
+    })
+
+    expect(result).toEqual({ ok: true, disposition: 'sent' })
+    expect(input.runtime.resendEditedMessage).toHaveBeenCalledWith('session-a', 'message-user-a', {
+      text: '',
+      annotations,
+      parts: [],
+      forcedSkillIds: [],
+      referencedArtifacts: []
+    })
+  })
+
+  it('captures an edited annotation message for the existing queue while a turn is running', async () => {
+    const activeSession = runningSession()
+    const input = options({
+      activeSession,
+      getSession: (sessionId) => (sessionId === activeSession.id ? activeSession : undefined)
+    })
+    const annotation = {
+      id: 'queued-quote',
+      kind: 'text' as const,
+      target: 'agent' as const,
+      quote: 'Queued evidence',
+      source: {
+        kind: 'agent-message' as const,
+        sessionId: 'session-a',
+        messageId: 'agent-message-a'
+      }
+    }
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    expect(hook.result.current.availability.revise).toBe(true)
+    await expect(
+      hook.result.current.actions.revise('message-user-a', { nodes: [] }, [annotation])
+    ).resolves.toEqual({ ok: true, disposition: 'queued' })
+
+    expect(input.composer.lifecycle.captureRevision).toHaveBeenCalledWith({ nodes: [] }, [
+      annotation
+    ])
+    expect(hook.result.current.queue.items).toEqual([
+      expect.objectContaining({ text: '', attachmentCount: 0, phase: 'queued' })
+    ])
+    expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
+  })
+
+  it('blocks an edited image annotation when the selected model cannot read images', async () => {
+    const input = options({ supportsImageInput: false })
+    const hook = renderController(input)
+    mounted.push(hook)
+    const annotation = {
+      id: 'point-1',
+      kind: 'image-point' as const,
+      target: 'agent' as const,
+      note: 'Inspect this point.',
+      source: {
+        kind: 'artifact-version' as const,
+        projectId: 'project-a',
+        sessionId: 'session-a',
+        versionId: 'version-1',
+        name: 'figure.png',
+        path: 'artifact-version:project-a/session-a/artifact-1/version-1',
+        mimeType: 'image/png'
+      },
+      point: { x: 0.5, y: 0.25 },
+      naturalSize: { width: 800, height: 400 }
+    }
+
+    await expect(
+      hook.result.current.actions.revise('message-user-a', { nodes: [] }, [annotation])
+    ).resolves.toEqual({
+      ok: false,
+      displayMessage:
+        "The selected model doesn't support images. Configure a Vision model in Settings > Model to enable image support."
+    })
+
+    expect(input.composer.actions.setError).toHaveBeenCalledWith(
+      "The selected model doesn't support images. Configure a Vision model in Settings > Model to enable image support."
+    )
+    expect(input.runtime.resendEditedMessage).not.toHaveBeenCalled()
   })
 
   it('aborts an active Fix Loop before cancelling the runtime run', async () => {

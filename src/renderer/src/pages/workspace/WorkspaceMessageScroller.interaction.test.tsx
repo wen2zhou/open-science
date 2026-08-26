@@ -1404,6 +1404,7 @@ describe('WorkspaceMessageScroller artifact click behavior', () => {
       const onSendEditedMessage = useCallback(
         (messageId: string, doc: ComposerDoc) => {
           if (activeSessionId) resendEditedMessage(activeSessionId, messageId, doc)
+          return { ok: true, disposition: 'sent' as const }
         },
         [activeSessionId]
       )
