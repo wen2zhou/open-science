@@ -85,4 +85,36 @@ describe('text annotation range reconciliation', () => {
     expect(Array.from(fallback.values()).map((range) => range.startOffset)).toEqual([0, 12])
     remounted.surface.remove()
   })
+
+  it('rejects a stale owned Range after its text node mutates and falls back to the moved quote', () => {
+    const { surface, text } = surfaceWithDuplicates()
+    const stale = rangeAt(text, 12)
+    text.data = 'prefix repeat then repeat'
+
+    const result = reconcileTextAnnotationRanges(
+      surface,
+      [{ id: 'point', quote: 'repeat' }],
+      new Map([['point', stale]])
+    )
+
+    expect(result.get('point')).not.toBe(stale)
+    expect(result.get('point')?.toString()).toBe('repeat')
+    expect(result.get('point')?.startOffset).toBe(7)
+    surface.remove()
+  })
+
+  it('drops a stale owned Range when the quote disappears from the current content', () => {
+    const { surface, text } = surfaceWithDuplicates()
+    const stale = rangeAt(text, 12)
+    text.data = 'content replaced while streaming'
+
+    const result = reconcileTextAnnotationRanges(
+      surface,
+      [{ id: 'point', quote: 'repeat' }],
+      new Map([['point', stale]])
+    )
+
+    expect(result.size).toBe(0)
+    surface.remove()
+  })
 })

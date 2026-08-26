@@ -64,7 +64,7 @@ const reconcileTextAnnotationRanges = (
     occurrenceByQuote.set(annotation.quote, occurrence + 1)
     const exact = existing.get(annotation.id)
     const range =
-      exact && rangeBelongsToSurface(exact, surface)
+      exact && rangeBelongsToSurface(exact, surface) && exact.toString() === annotation.quote
         ? exact
         : rangeForTextOccurrence(surface, annotation.quote, occurrence)
     if (range) next.set(annotation.id, range)

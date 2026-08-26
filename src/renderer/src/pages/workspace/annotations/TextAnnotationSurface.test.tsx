@@ -94,5 +94,20 @@ describe('TextAnnotationSurface highlight restoration', () => {
 
     await renderSurface(active, 'message-1', 'no longer present')
     expect(Array.from(highlights.get('agent-annotation-draft') ?? [])).toHaveLength(1)
+
+    await renderSurface(active, 'message-1', 'stream replaced the quote')
+    expect(Array.from(highlights.get('agent-annotation-draft') ?? [])).toHaveLength(0)
+    expect(container.querySelector('[data-annotation-active="true"]')).not.toBeNull()
+  })
+
+  it('reprojects an Agent quote when streaming mutates the mounted text node in place', async () => {
+    const active = [annotation('streaming', 'repeat')]
+    await renderSurface(active)
+    expect(Array.from(highlights.get('agent-annotation-draft') ?? [])[0]?.startOffset).toBe(0)
+
+    await renderSurface(active, 'message-1', 'prefix repeat then repeat')
+    const range = Array.from(highlights.get('agent-annotation-draft') ?? [])[0]
+    expect(range?.toString()).toBe('repeat')
+    expect(range?.startOffset).toBe(7)
   })
 })

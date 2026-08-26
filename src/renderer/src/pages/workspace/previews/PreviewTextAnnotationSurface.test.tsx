@@ -265,6 +265,21 @@ describe('PreviewTextAnnotationSurface', () => {
     expect(Array.from(registeredRanges).map((range) => range.startOffset)).toEqual([0])
   })
 
+  it('reprojects a Preview quote after content mutation and removes stale color when it disappears', async () => {
+    const active = [annotation({ id: 'content-update', quote: 'repeat' })]
+    await renderSurface({ activeAnnotations: active, content: 'repeat then repeat' })
+    expect(Array.from(registeredRanges)[0]?.startOffset).toBe(0)
+
+    await renderSurface({ activeAnnotations: active, content: 'prefix repeat then repeat' })
+    const moved = Array.from(registeredRanges)[0]
+    expect(moved?.toString()).toBe('repeat')
+    expect(moved?.startOffset).toBe(7)
+
+    await renderSurface({ activeAnnotations: active, content: 'quote disappeared' })
+    expect(registeredRanges.size).toBe(0)
+    expect(container.querySelector('[data-annotation-active="true"]')).not.toBeNull()
+  })
+
   it('does not expose annotation controls without a project identity', async () => {
     await renderSurface({ previewItem: item({ projectId: undefined, source: 'local' }) })
     await selectQuote()
