@@ -110,6 +110,17 @@ describe('figure-style helper contract', () => {
           'shared_expected_right = (shared_right.get_tightbbox(shared_renderer).x1 / shared_fig.dpi - shared_saved_box.x0) * float(mpl.rcParams["savefig.dpi"])',
           'shared_crop = panel_crops(shared_fig)["s"]',
           'plt.close(shared_fig)',
+          'shared_x_fig, (shared_top, shared_bottom) = plt.subplots(2, 1, sharex=True, figsize=(3, 6))',
+          'panel_letter(shared_top, "x")',
+          'shared_top.plot([0, 1], [0, 1])',
+          'shared_bottom.plot([0, 1], [1, 0])',
+          'shared_x_fig.canvas.draw()',
+          'shared_x_renderer = shared_x_fig.canvas.get_renderer()',
+          'shared_x_saved_box = shared_x_fig.get_tightbbox(shared_x_renderer).padded(mpl.rcParams["savefig.pad_inches"])',
+          'shared_x_height = shared_x_saved_box.height * float(mpl.rcParams["savefig.dpi"])',
+          'shared_x_expected_bottom = shared_x_height - (shared_bottom.get_tightbbox(shared_x_renderer).y0 / shared_x_fig.dpi - shared_x_saved_box.y0) * float(mpl.rcParams["savefig.dpi"])',
+          'shared_x_crop = panel_crops(shared_x_fig)["x"]',
+          'plt.close(shared_x_fig)',
           'labels = ["Baseline", "Focal", "Comparator"]',
           'colors = focal_palette(labels, "Focal", "#0066CC", other="grey")',
           'fig, ax = plt.subplots(figsize=(4.8, 3.2))',
@@ -120,7 +131,7 @@ describe('figure-style helper contract', () => {
           'ax.set_ylabel("Response (a.u.)")',
           'fig.canvas.draw()',
           `interface_names = ${JSON.stringify(helperExports)}`,
-          'print(json.dumps({"bars": len(ax.patches), "points": sum(len(c.get_offsets()) for c in ax.collections), "colors": colors, "title": ax.get_title(loc="left"), "xlabel": ax.get_xlabel(), "ylabel": ax.get_ylabel(), "crops": panel_crops(fig), "signatures": {name: str(inspect.signature(globals()[name])) for name in interface_names}, "style": style_report, "frame": frame_report, "errors": errors, "shared_crop": shared_crop, "shared_expected_right": shared_expected_right}))'
+          'print(json.dumps({"bars": len(ax.patches), "points": sum(len(c.get_offsets()) for c in ax.collections), "colors": colors, "title": ax.get_title(loc="left"), "xlabel": ax.get_xlabel(), "ylabel": ax.get_ylabel(), "crops": panel_crops(fig), "signatures": {name: str(inspect.signature(globals()[name])) for name in interface_names}, "style": style_report, "frame": frame_report, "errors": errors, "shared_crop": shared_crop, "shared_expected_right": shared_expected_right, "shared_x_crop": shared_x_crop, "shared_x_expected_bottom": shared_x_expected_bottom}))'
         ].join('\n')
 
         try {
@@ -162,6 +173,8 @@ describe('figure-style helper contract', () => {
             errors: Record<string, string>
             shared_crop: [number, number, number, number]
             shared_expected_right: number
+            shared_x_crop: [number, number, number, number]
+            shared_x_expected_bottom: number
           }
           expect(report).toMatchObject({
             bars: 3,
@@ -201,6 +214,9 @@ describe('figure-style helper contract', () => {
           })
           expect(report.shared_crop[2]).toBeGreaterThanOrEqual(
             Math.floor(report.shared_expected_right)
+          )
+          expect(report.shared_x_crop[3]).toBeGreaterThanOrEqual(
+            Math.floor(report.shared_x_expected_bottom)
           )
           const display = result.outputs.find(
             (output) => output.type === 'display' && typeof output.data['image/png'] === 'string'
