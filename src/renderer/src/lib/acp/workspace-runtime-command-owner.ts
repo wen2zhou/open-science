@@ -38,6 +38,7 @@ import {
   partitionWorkspacePromptAttachments
 } from './workspace-runtime-attachment-owner'
 import type { useAcpRuntime } from './useAcpRuntime'
+import { validateImageAnnotationSourcesBeforeSend } from '../../pages/workspace/annotations/image-annotation-source-validation'
 
 type SendWorkspaceMessageIntent = {
   sessionId?: string
@@ -395,6 +396,7 @@ const sendWorkspaceMessage = async (
   const attachments = input.attachments ?? []
   const annotations = input.annotations ?? []
   if (annotationProtocol.validateAnnotations(annotations, content)) return undefined
+  await validateImageAnnotationSourcesBeforeSend(annotations)
   const effectiveAttachments =
     attachments.length > 0 || !replayPrompt?.uploads?.length
       ? attachments

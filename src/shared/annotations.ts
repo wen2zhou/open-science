@@ -1,3 +1,7 @@
+import type { ArtifactReference, FileReference } from './artifacts'
+import { parseArtifactVersionLocator } from './artifact-provenance'
+import { parseUploadVersionReference } from './uploads'
+
 export const ANNOTATION_LIMITS = Object.freeze({
   count: 10,
   quote: 4_000,
@@ -190,6 +194,31 @@ export const sanitizeAnnotations = (value: unknown): Annotation[] => {
 export const imageVersionKey = (source: ImagePointAnnotation['source']): string =>
   [source.kind, source.projectId, source.sessionId, source.versionId].join('\u0000')
 
+const SUPPORTED_ANNOTATION_IMAGE_MIME_TYPES = new Set([
+  'image/png',
+  'image/jpeg',
+  'image/webp',
+  'image/avif'
+])
+
+export const imageAnnotationSourceIsFixed = (source: ImagePointAnnotation['source']): boolean => {
+  if (!SUPPORTED_ANNOTATION_IMAGE_MIME_TYPES.has(source.mimeType.toLowerCase())) return false
+  if (source.kind === 'artifact-version') {
+    const identity = parseArtifactVersionLocator(source.path)
+    return (
+      identity?.projectId === source.projectId &&
+      identity.appSessionId === source.sessionId &&
+      identity.versionId === source.versionId
+    )
+  }
+  const identity = parseUploadVersionReference(source.path)
+  return (
+    identity?.projectId === source.projectId &&
+    identity.sessionId === source.sessionId &&
+    identity.versionId === source.versionId
+  )
+}
+
 export const imageAnnotationFileReference = (
   source: ImagePointAnnotation['source']
 ): ArtifactReference => ({
@@ -311,6 +340,9 @@ export const validateAnnotations = (
   if (annotations.length > ANNOTATION_LIMITS.count) return 'too-many'
   for (const annotation of annotations) {
     if (!sanitizeAnnotation(annotation)) return 'invalid'
+    if (annotation.kind === 'image-point' && !imageAnnotationSourceIsFixed(annotation.source)) {
+      return 'invalid'
+    }
     if (annotation.kind === 'text' && annotation.quote.length > ANNOTATION_LIMITS.quote) {
       return 'quote-too-long'
     }
@@ -333,5 +365,3 @@ export const appendAnnotationsToPrompt = (
   text: string,
   annotations: readonly Annotation[]
 ): string => [text.trim(), annotationPayloadText(annotations)].filter(Boolean).join('\n\n')
-import type { ArtifactReference, FileReference } from './artifacts'
-import { parseArtifactVersionLocator } from './artifact-provenance'

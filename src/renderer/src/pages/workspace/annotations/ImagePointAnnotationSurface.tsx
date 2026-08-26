@@ -25,6 +25,8 @@ import {
 
 const IMAGE_POINT_CLICK_THRESHOLD = 4
 
+type PointerStart = ImageAnnotationPoint & Readonly<{ pointerId: number }>
+
 type PendingPoint = Readonly<{
   point: ImageAnnotationPoint
   source: ImagePointAnnotationSource
@@ -69,7 +71,8 @@ const ImagePointAnnotationSurface = ({
 }): React.JSX.Element => {
   const { t } = useTranslation()
   const surfaceRef = useRef<HTMLDivElement | null>(null)
-  const pointerStart = useRef<ImageAnnotationPoint | undefined>(undefined)
+  const focusReturnRef = useRef<HTMLElement | null>(null)
+  const pointerStart = useRef<PointerStart | undefined>(undefined)
   const [naturalSize, setNaturalSize] = useState<ImageNaturalSize>()
   const [localContentRect, setLocalContentRect] = useState<ImageAnnotationRect>()
   const [pending, setPending] = useState<PendingPoint>()
@@ -92,10 +95,12 @@ const ImagePointAnnotationSurface = ({
   const displayNumber = pending?.number ?? pendingNumber
 
   const clearPending = (): void => {
+    const focusReturn = focusReturnRef.current
+    focusReturnRef.current = null
     setPending(undefined)
     setNote('')
     setNoteRequired(false)
-    queueMicrotask(() => surfaceRef.current?.focus())
+    queueMicrotask(() => (focusReturn?.isConnected ? focusReturn : surfaceRef.current)?.focus())
   }
 
   const measureLocalContent = (size: ImageNaturalSize): void => {
@@ -120,7 +125,17 @@ const ImagePointAnnotationSurface = ({
   const capturePoint = (event: React.PointerEvent<HTMLDivElement>): void => {
     const start = pointerStart.current
     pointerStart.current = undefined
-    if (!start || event.button !== 0 || !naturalSize || !source || !onAdd) return
+    if (
+      !start ||
+      start.pointerId !== event.pointerId ||
+      event.button !== 0 ||
+      event.isPrimary === false ||
+      !naturalSize ||
+      !source ||
+      !onAdd
+    ) {
+      return
+    }
     if (
       Math.hypot(event.clientX - start.x, event.clientY - start.y) > IMAGE_POINT_CLICK_THRESHOLD
     ) {
@@ -133,6 +148,7 @@ const ImagePointAnnotationSurface = ({
     if (!imageRect) return
     const point = viewportPointToNormalized({ x: event.clientX, y: event.clientY }, imageRect)
     if (!point) return
+    focusReturnRef.current = surface
     setPending({ point, source, naturalSize })
     setNote('')
     setNoteRequired(false)
@@ -181,7 +197,30 @@ const ImagePointAnnotationSurface = ({
       className="relative size-full touch-none outline-none"
       tabIndex={-1}
       onPointerDown={(event) => {
-        if (event.button === 0) pointerStart.current = { x: event.clientX, y: event.clientY }
+        if (
+          event.button !== 0 ||
+          event.isPrimary === false ||
+          !naturalSize ||
+          !source ||
+          !onAdd ||
+          (event.target instanceof Element && event.target.closest('button'))
+        ) {
+          return
+        }
+        const surface = surfaceRef.current
+        if (!surface) return
+        const imageRect = fitContainedImageRect(surface.getBoundingClientRect(), naturalSize)
+        if (
+          !imageRect ||
+          !viewportPointToNormalized({ x: event.clientX, y: event.clientY }, imageRect)
+        ) {
+          return
+        }
+        pointerStart.current = {
+          x: event.clientX,
+          y: event.clientY,
+          pointerId: event.pointerId
+        }
       }}
       onPointerCancel={() => {
         pointerStart.current = undefined
@@ -217,7 +256,8 @@ const ImagePointAnnotationSurface = ({
           })}
           onPointerDown={(event) => event.stopPropagation()}
           onPointerUp={(event) => event.stopPropagation()}
-          onClick={() => {
+          onClick={(event) => {
+            focusReturnRef.current = event.currentTarget
             setPending({
               annotationId: annotation.id,
               number,
@@ -246,6 +286,7 @@ const ImagePointAnnotationSurface = ({
           <PopoverContent
             align="start"
             side="bottom"
+            collisionPadding={8}
             className="w-80 space-y-3 border border-border bg-popover p-3 text-popover-foreground"
             onOpenAutoFocus={(event) => {
               // Textarea autoFocus owns the useful first focus target.

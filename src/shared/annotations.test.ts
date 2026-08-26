@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   ANNOTATION_LIMITS,
   annotationPayloadText,
+  imageAnnotationSourceIsFixed,
   sanitizeAnnotations,
   validateAnnotations,
   type TextAnnotation
@@ -77,5 +78,32 @@ describe('annotations', () => {
         { kind: 'future-kind' }
       ])
     ).toEqual([textAnnotation({ note: 'useful note' })])
+  })
+
+  it.each([
+    {
+      kind: 'artifact-version' as const,
+      path: 'artifact-version:project-1/session-1/artifact-1/version-1'
+    },
+    {
+      kind: 'upload-version' as const,
+      path: 'upload-version:project-1/session-1/version-1'
+    }
+  ])('accepts a fixed $kind identity only when every locator field matches', ({ kind, path }) => {
+    const source = {
+      kind,
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      versionId: 'version-1',
+      name: 'figure.png',
+      path,
+      mimeType: 'image/png'
+    }
+    expect(imageAnnotationSourceIsFixed(source)).toBe(true)
+    expect(imageAnnotationSourceIsFixed({ ...source, versionId: 'current-version' })).toBe(false)
+    expect(imageAnnotationSourceIsFixed({ ...source, path: '/mutable/current/figure.png' })).toBe(
+      false
+    )
+    expect(imageAnnotationSourceIsFixed({ ...source, mimeType: 'image/gif' })).toBe(false)
   })
 })

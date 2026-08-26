@@ -59,6 +59,7 @@
   "renderer": {
     "Add context for the Agent": "Ajouter du contexte pour l’Agent",
     "Agent Message": "Message de l’Agent",
+    "An annotated image is no longer available. Restore access to its fixed version or remove the annotation, then try again.": "Une image annotée n’est plus disponible. Restaurez l’accès à sa version fixe ou supprimez l’annotation, puis réessayez.",
     "Annotated for Agent": "Annoté pour l’Agent",
     "Annotate": "Annoter",
     "Annotation note": "Note d’annotation",

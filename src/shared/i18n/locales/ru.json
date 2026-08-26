@@ -60,6 +60,7 @@
   "renderer": {
     "Add context for the Agent": "Добавить контекст для Агента",
     "Agent Message": "Сообщение Агента",
+    "An annotated image is no longer available. Restore access to its fixed version or remove the annotation, then try again.": "Аннотированное изображение больше недоступно. Восстановите доступ к зафиксированной версии или удалите аннотацию и повторите попытку.",
     "Annotated for Agent": "Аннотировано для Агента",
     "Annotate": "Аннотировать",
     "Annotation note": "Примечание к аннотации",

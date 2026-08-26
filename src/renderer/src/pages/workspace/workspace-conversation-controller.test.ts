@@ -891,6 +891,56 @@ describe('workspace conversation controller', () => {
     expect(hook.result.current.optimisticMessage).toBeUndefined()
   })
 
+  it('preserves the complete image annotation draft when fixed-source preflight rejects', async () => {
+    const annotation = {
+      id: 'point-fixed',
+      kind: 'image-point' as const,
+      target: 'agent' as const,
+      note: 'Inspect this fixed point.',
+      source: {
+        kind: 'artifact-version' as const,
+        projectId: 'project-a',
+        sessionId: 'session-a',
+        versionId: 'version-deleted',
+        name: 'figure.png',
+        path: 'artifact-version:project-a/session-a/artifact-1/version-deleted',
+        mimeType: 'image/png'
+      },
+      point: { x: 0.25, y: 0.75 },
+      naturalSize: { width: 800, height: 600 }
+    }
+    const input = options()
+    const snapshot = {
+      draftKey: 'session-a',
+      version: 1,
+      doc: textDoc('keep this explanation'),
+      annotations: [annotation],
+      attachments: []
+    }
+    input.composer.view = { ...input.composer.view, doc: snapshot.doc, annotations: [annotation] }
+    input.composer.lifecycle.captureSend = vi.fn(() => snapshot)
+    input.runtime.sendMessage = vi.fn(() =>
+      Promise.reject(
+        new Error(
+          'An annotated image is no longer available. Restore access to its fixed version or remove the annotation, then try again.'
+        )
+      )
+    )
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    await vi.waitFor(() =>
+      expect(input.composer.lifecycle.restoreFailedSend).toHaveBeenCalledWith(snapshot)
+    )
+
+    expect(input.composer.actions.setError).toHaveBeenCalledWith(
+      expect.stringContaining('fixed version')
+    )
+    expect(input.composer.lifecycle.clearDraft).not.toHaveBeenCalled()
+    expect(hook.result.current.optimisticMessage).toBeUndefined()
+  })
+
   it('includes new-Session Compute intent in creation and stamps Review after submit succeeds', async () => {
     const input = options({
       activeSession: undefined,

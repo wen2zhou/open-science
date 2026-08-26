@@ -124,6 +124,7 @@ import type { WorkspaceComposerController } from './workspace-composer-controlle
 import type { WorkspaceConversationController } from './workspace-conversation-controller'
 import type { WorkspaceSessionController } from './workspace-session-controller'
 import { getAvatarColor } from '../settings/specialist-icons'
+import { localizeImageAnnotationSourceError } from './annotations/image-annotation-source-validation'
 
 const localizeVisionRunFailure = (
   error: string | null | undefined,
@@ -622,9 +623,13 @@ const ConversationPanel = ({
       ? activePendingPlan
       : undefined
   const resolvedRunError =
+    localizeImageAnnotationSourceError(activeSession?.error, t) ??
     localizeVisionRunFailure(activeSession?.error, t) ??
     normalizeRunFailureError(activeSession?.error)
-  const resolvedActionError = localizeVisionRunFailure(actionError, t) ?? actionError
+  const resolvedActionError =
+    localizeImageAnnotationSourceError(actionError, t) ??
+    localizeVisionRunFailure(actionError, t) ??
+    actionError
   const showVisionModelSettings =
     visionRunFailureMessage(actionError) === VISION_MODEL_NOT_CONFIGURED_MESSAGE ||
     visionRunFailureMessage(activeSession?.error) === VISION_MODEL_NOT_CONFIGURED_MESSAGE

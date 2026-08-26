@@ -131,6 +131,15 @@ describe('PreviewPanel', () => {
     expect(content.dataset.annotationCount).toBe('1')
     await act(async () => content.click())
     expect(onAddAnnotation).toHaveBeenCalledWith(annotation)
+
+    await act(async () =>
+      container
+        .querySelector<HTMLButtonElement>('[aria-label="Open full screen preview of file-1.png"]')
+        ?.click()
+    )
+    expect(container.querySelector('[role="dialog"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="file-content"]')).toBe(content)
+    expect(content.dataset.annotationCount).toBe('1')
   })
 
   const renderTwoFileTabs = async (): Promise<void> => {

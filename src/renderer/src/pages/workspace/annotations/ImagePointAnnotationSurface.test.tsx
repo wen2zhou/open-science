@@ -8,6 +8,8 @@ import type { PreviewFileItem } from '@/stores/preview-workbench-store'
 
 import { ImagePointAnnotationSurface } from './ImagePointAnnotationSurface'
 
+;(globalThis as { IS_REACT_ACT_ENVIRONMENT?: boolean }).IS_REACT_ACT_ENVIRONMENT = true
+
 const item: PreviewFileItem = {
   id: 'artifact-1',
   projectId: 'project-1',
@@ -45,7 +47,8 @@ describe('ImagePointAnnotationSurface', () => {
   })
 
   const renderSurface = async (
-    props: Partial<ComponentProps<typeof ImagePointAnnotationSurface>> = {}
+    props: Partial<ComponentProps<typeof ImagePointAnnotationSurface>> = {},
+    loadImage = true
   ): Promise<HTMLImageElement> => {
     await act(async () => {
       root.render(
@@ -72,7 +75,9 @@ describe('ImagePointAnnotationSurface', () => {
       clientWidth: { configurable: true, value: 400 },
       clientHeight: { configurable: true, value: 400 }
     })
-    await act(async () => image.dispatchEvent(new Event('load', { bubbles: true })))
+    if (loadImage) {
+      await act(async () => image.dispatchEvent(new Event('load', { bubbles: true })))
+    }
     return image
   }
 
@@ -80,10 +85,11 @@ describe('ImagePointAnnotationSurface', () => {
     target: Element,
     type: 'pointerdown' | 'pointerup',
     clientX: number,
-    clientY: number
+    clientY: number,
+    button = 0
   ): Promise<void> => {
     await act(async () => {
-      target.dispatchEvent(new MouseEvent(type, { bubbles: true, button: 0, clientX, clientY }))
+      target.dispatchEvent(new MouseEvent(type, { bubbles: true, button, clientX, clientY }))
     })
   }
 
@@ -164,6 +170,25 @@ describe('ImagePointAnnotationSurface', () => {
     expect(onAdd).not.toHaveBeenCalled()
   })
 
+  it('ignores clicks before load, unsupported formats, and non-left buttons', async () => {
+    const unloaded = await renderSurface({}, false)
+    await pointer(unloaded, 'pointerdown', 210, 220)
+    await pointer(unloaded, 'pointerup', 210, 220)
+    expect(document.body.textContent).not.toContain('Image point 1')
+
+    await act(async () => unloaded.dispatchEvent(new Event('load', { bubbles: true })))
+    await pointer(unloaded, 'pointerdown', 210, 220, 2)
+    await pointer(unloaded, 'pointerup', 210, 220, 2)
+    expect(document.body.textContent).not.toContain('Image point 1')
+
+    await renderSurface({ item: { ...item, name: 'figure.gif', mimeType: 'image/gif' } })
+    const unsupported = container.querySelector('img')!
+    await pointer(unsupported, 'pointerdown', 210, 220)
+    await pointer(unsupported, 'pointerup', 210, 220)
+    expect(document.body.textContent).not.toContain('Image point 1')
+    expect(onAdd).not.toHaveBeenCalled()
+  })
+
   it('reopens an existing numbered marker for keyboard note editing or removal', async () => {
     const onUpdateNote = vi.fn()
     const onRemove = vi.fn()
@@ -197,10 +222,19 @@ describe('ImagePointAnnotationSurface', () => {
     await act(async () => marker.click())
     const note = document.querySelector('textarea')!
     expect(note.value).toBe('Original note')
+    await act(async () =>
+      Array.from(document.querySelectorAll('button'))
+        .find((button) => button.textContent === 'Cancel')
+        ?.click()
+    )
+    expect(document.activeElement).toBe(marker)
+
+    await act(async () => marker.click())
+    const reopenedNote = document.querySelector('textarea')!
     await act(async () => {
       const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
-      setter?.call(note, 'Updated note')
-      note.dispatchEvent(new Event('input', { bubbles: true }))
+      setter?.call(reopenedNote, 'Updated note')
+      reopenedNote.dispatchEvent(new Event('input', { bubbles: true }))
     })
     await act(async () =>
       Array.from(document.querySelectorAll('button'))
@@ -216,5 +250,59 @@ describe('ImagePointAnnotationSurface', () => {
         ?.click()
     )
     expect(onRemove).toHaveBeenCalledWith('point-existing')
+  })
+
+  it('repositions normalized markers after the surface is resized', async () => {
+    let notifyResize: (() => void) | undefined
+    vi.stubGlobal(
+      'ResizeObserver',
+      class {
+        constructor(callback: () => void) {
+          notifyResize = callback
+        }
+        observe(): void {
+          return undefined
+        }
+        disconnect(): void {
+          return undefined
+        }
+      }
+    )
+    await renderSurface({
+      activeAnnotations: [
+        {
+          id: 'point-resize',
+          kind: 'image-point',
+          target: 'agent',
+          note: 'Track this pixel',
+          source: {
+            kind: 'artifact-version',
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            versionId: 'version-1',
+            name: 'figure.png',
+            path: item.path,
+            mimeType: 'image/png'
+          },
+          point: { x: 0.5, y: 0.5 },
+          naturalSize: { width: 800, height: 400 }
+        }
+      ]
+    })
+    const surface = container.querySelector<HTMLElement>('[data-image-annotation-surface]')!
+    const marker = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent === '1'
+    )!
+    expect(marker.style.left).toBe('200px')
+    expect(marker.style.top).toBe('200px')
+
+    Object.defineProperties(surface, {
+      clientWidth: { configurable: true, value: 800 },
+      clientHeight: { configurable: true, value: 400 }
+    })
+    await act(async () => notifyResize?.())
+
+    expect(marker.style.left).toBe('400px')
+    expect(marker.style.top).toBe('200px')
   })
 })

@@ -1948,6 +1948,15 @@ describe('workspace agent message sending', () => {
   })
 
   it('dispatches mixed image annotations with fixed references, stable numbers, and natural pixels', async () => {
+    const acquire = vi.fn().mockResolvedValue({
+      id: 'fixed-image-resource',
+      url: 'open-science-preview://fixed-image-resource',
+      size: 1024,
+      mimeType: 'image/png',
+      version: 1
+    })
+    const release = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('window', { api: { previewResources: { acquire, release } } })
     const sendPrompt = vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
     const runtime = {
       state: createSnapshot(['transport-session-1']),
@@ -2021,6 +2030,60 @@ describe('workspace agent message sending', () => {
     expect(sendPrompt.mock.calls[0]?.[4]).toEqual([
       expect.objectContaining({ versionId: 'version-fixed', path: imageSource.path })
     ])
+    expect(acquire).toHaveBeenCalledOnce()
+    expect(release).toHaveBeenCalledWith({ resourceId: 'fixed-image-resource' })
+  })
+
+  it('rejects an unavailable fixed image Version before mutating the Session or dispatching', async () => {
+    const sendPrompt = vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
+    const acquire = vi.fn().mockRejectedValue(new Error('Permission denied'))
+    vi.stubGlobal('window', {
+      api: { previewResources: { acquire, release: vi.fn().mockResolvedValue(undefined) } }
+    })
+    const runtime = {
+      state: createSnapshot(['transport-session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt
+    }
+    const sessionsBefore = useSessionStore.getState().sessions
+
+    await expect(
+      sendWorkspaceMessage(runtime, {
+        sessionId: 'transport-session-1',
+        text: 'Inspect the fixed source.',
+        annotations: [
+          {
+            id: 'point-unavailable',
+            kind: 'image-point',
+            target: 'agent',
+            note: 'This point matters.',
+            source: {
+              kind: 'artifact-version',
+              projectId: 'project-1',
+              sessionId: 'transport-session-1',
+              versionId: 'deleted-version',
+              name: 'figure.png',
+              path: 'artifact-version:project-1/transport-session-1/artifact-1/deleted-version',
+              mimeType: 'image/png'
+            },
+            point: { x: 0.5, y: 0.5 },
+            naturalSize: { width: 800, height: 600 }
+          }
+        ],
+        cwd: '/workspace/project',
+        projectId: 'project-1'
+      })
+    ).rejects.toThrow('An annotated image is no longer available')
+
+    expect(acquire).toHaveBeenCalledWith(
+      expect.objectContaining({
+        path: 'artifact-version:project-1/transport-session-1/artifact-1/deleted-version'
+      })
+    )
+    expect(sendPrompt).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions).toBe(sessionsBefore)
   })
 
   it('rejects an oversized annotation at the runtime boundary', async () => {
