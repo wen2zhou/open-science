@@ -192,6 +192,96 @@ describe('TextAnnotationSurface annotate trigger', () => {
     expect(document.querySelector('textarea')).not.toBeNull()
   })
 
+  it('keeps the note editor open while typing a note', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+    const editor = document.querySelector<HTMLTextAreaElement>('textarea')
+    expect(editor).not.toBeNull()
+
+    await act(async () => {
+      editor!.focus()
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(editor, 'first character')
+      editor!.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+
+    const survivingEditor = document.querySelector<HTMLTextAreaElement>('textarea')
+    expect(survivingEditor).toBe(editor)
+    expect(survivingEditor?.value).toBe('first character')
+  })
+
+  it('shows only the trigger after selecting again, not the note editor', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+    expect(document.querySelector('textarea')).not.toBeNull()
+
+    // The user dismisses the editor and selects different text.
+    await act(async () =>
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    )
+    expect(document.querySelector('textarea')).toBeNull()
+
+    await commitSelection(paragraph)
+    expect(annotateTrigger()).toBeDefined()
+    expect(document.querySelector('textarea')).toBeNull()
+  })
+
+  it('clears the draft trigger when clicking anywhere outside it', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    expect(annotateTrigger()).toBeDefined()
+
+    // Clicking elsewhere collapses the selection in a real browser; the
+    // leftover trigger must not linger over the text.
+    await act(async () => {
+      const outside = document.createElement('button')
+      document.body.appendChild(outside)
+      outside.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      outside.remove()
+    })
+
+    expect(annotateTrigger()).toBeUndefined()
+  })
+
+  it('hides the trigger while the note editor is open and restores it after escape', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+
+    expect(annotateTrigger()).toBeUndefined()
+    expect(document.querySelector('textarea')).not.toBeNull()
+
+    await act(async () =>
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    )
+    expect(annotateTrigger()).toBeDefined()
+    expect(document.querySelector('textarea')).toBeNull()
+  })
+
+  it('does not reopen the note editor for a fresh selection after the draft was cleared', async () => {
+    const paragraph = await renderSurface()
+    await commitSelection(paragraph)
+    await act(async () => annotateTrigger()?.click())
+    expect(document.querySelector('textarea')).not.toBeNull()
+
+    // The draft is cleared from outside while the editor was open; a stale
+    // open state must not resurrect the editor with the next selection.
+    await act(async () => {
+      const outside = document.createElement('button')
+      document.body.appendChild(outside)
+      outside.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      outside.remove()
+    })
+    expect(annotateTrigger()).toBeUndefined()
+    expect(document.querySelector('textarea')).toBeNull()
+
+    await commitSelection(paragraph)
+    expect(annotateTrigger()).toBeDefined()
+    expect(document.querySelector('textarea')).toBeNull()
+  })
+
   it('places the trigger beside the last line of a multi-line selection', async () => {
     const paragraph = await renderSurface()
     // The surface itself sits away from the viewport origin; the trigger must

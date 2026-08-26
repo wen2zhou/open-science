@@ -1,9 +1,9 @@
-import { useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
 import { Quote } from 'lucide-react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
-import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
+import { Popover, PopoverAnchor, PopoverContent } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import type { PreviewFileItem } from '@/stores/preview-workbench-store'
 import type { TextAnnotation } from '../../../../../shared/annotations'
@@ -17,6 +17,11 @@ type SelectionDraft = Readonly<{ quote: string; left: number; top: number; range
 const DRAFT_HIGHLIGHT_NAME = 'preview-annotation-draft'
 const DRAFT_HIGHLIGHT_STYLE_ID = 'preview-annotation-draft-style'
 const NO_ANNOTATIONS: readonly never[] = []
+
+// Pointer interactions owned by the annotate UI itself; a pointerdown inside
+// these must not clear the draft (the browser collapses the selection on any
+// mousedown, so the draft can only survive through an exemption).
+const ANNOTATE_UI_SELECTOR = '[data-annotation-trigger], [data-radix-popper-content-wrapper]'
 
 const projectFileSource = (item: PreviewFileItem): TextAnnotation['source'] | undefined => {
   if (!item.projectId) return undefined
@@ -108,26 +113,35 @@ export const PreviewTextAnnotationSurface = ({
     []
   )
 
+  const clearDraft = (): void => {
+    setSelection(undefined)
+    setOpen(false)
+    setNote('')
+  }
+
   const captureSelection = (): void => {
+    // While the note editor is open the draft is frozen; stray mouseup/keyup
+    // events from the surface must neither replace nor drop it.
+    if (open) return
     if (!source || !onAddAnnotation) {
-      setSelection(undefined)
+      clearDraft()
       return
     }
     const selected = window.getSelection()
     const range = selected?.rangeCount ? selected.getRangeAt(0) : undefined
     const surface = surfaceRef.current
     if (!selected || !range || !surface || selected.isCollapsed) {
-      setSelection(undefined)
+      clearDraft()
       return
     }
     const ancestor = range.commonAncestorContainer
     if (!surface.contains(ancestor.nodeType === Node.TEXT_NODE ? ancestor.parentNode : ancestor)) {
-      setSelection(undefined)
+      clearDraft()
       return
     }
     const quote = selected.toString().trim()
     if (!quote) {
-      setSelection(undefined)
+      clearDraft()
       return
     }
     setSelection({
@@ -139,6 +153,19 @@ export const PreviewTextAnnotationSurface = ({
       range: range.cloneRange()
     })
   }
+
+  useEffect(() => {
+    // Clicking anywhere else collapses the selection without any event
+    // reaching this surface; the draft must follow the real selection
+    // instead of lingering over the text as a stale trigger.
+    const onPointerDown = (event: PointerEvent): void => {
+      const target = event.target
+      if (target instanceof Element && target.closest(ANNOTATE_UI_SELECTOR)) return
+      clearDraft()
+    }
+    document.addEventListener('pointerdown', onPointerDown, true)
+    return () => document.removeEventListener('pointerdown', onPointerDown, true)
+  }, [])
 
   const add = (): void => {
     if (!selection || !source || !onAddAnnotation) return
@@ -158,9 +185,7 @@ export const PreviewTextAnnotationSurface = ({
     const highlight = getDraftHighlight()
     highlight?.add(selection.range)
     ownedRanges.current.set(annotation.id, selection.range)
-    setOpen(false)
-    setSelection(undefined)
-    setNote('')
+    clearDraft()
     window.getSelection()?.removeAllRanges()
   }
 
@@ -188,9 +213,17 @@ export const PreviewTextAnnotationSurface = ({
             if (!next) setNote('')
           }}
         >
-          <PopoverTrigger asChild>
+          <PopoverAnchor asChild>
+            <span
+              className="absolute h-7"
+              style={{ left: selection.left, top: selection.top }}
+              aria-hidden="true"
+            />
+          </PopoverAnchor>
+          {open ? null : (
             <button
               type="button"
+              data-annotation-trigger="true"
               className="absolute z-40 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-md focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               style={{ left: selection.left, top: selection.top }}
               // Browsers collapse the selection on mousedown before this
@@ -198,10 +231,11 @@ export const PreviewTextAnnotationSurface = ({
               // captureSelection or the draft (and this button) are dropped.
               onMouseUp={(event) => event.stopPropagation()}
               onKeyUp={(event) => event.stopPropagation()}
+              onClick={() => setOpen(true)}
             >
               {t('Annotate')}
             </button>
-          </PopoverTrigger>
+          )}
           <PopoverContent
             align="start"
             side="bottom"

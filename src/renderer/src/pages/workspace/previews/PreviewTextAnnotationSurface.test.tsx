@@ -134,9 +134,7 @@ describe('PreviewTextAnnotationSurface', () => {
   const selectQuote = (): Promise<void> => selectRange(19, 47)
 
   const confirmAnnotation = async (): Promise<void> => {
-    const entry = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Annotate'
-    )
+    const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
     await act(async () => entry?.click())
     const actions = Array.from(document.querySelectorAll('button')).filter(
       (button) => button.textContent === 'Annotate'
@@ -150,9 +148,7 @@ describe('PreviewTextAnnotationSurface', () => {
     await selectQuote()
 
     expect(onAddAnnotation).not.toHaveBeenCalled()
-    const entry = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Annotate'
-    )
+    const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
     await act(async () => entry?.click())
     const actions = Array.from(document.querySelectorAll('button')).filter(
       (button) => button.textContent === 'Annotate'
@@ -188,9 +184,7 @@ describe('PreviewTextAnnotationSurface', () => {
     expect(document.body.textContent).not.toContain('To Agent')
 
     await selectQuote()
-    const entry = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Annotate'
-    )
+    const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
     await act(async () => entry?.click())
     const cancel = Array.from(document.querySelectorAll('button')).find(
       (button) => button.textContent === 'Cancel'
@@ -290,9 +284,7 @@ describe('PreviewTextAnnotationSurface', () => {
   it('keeps the annotate entry alive when clicking it collapses the browser selection', async () => {
     await renderSurface()
     await selectQuote()
-    const entry = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Annotate'
-    )
+    const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
     expect(entry).toBeDefined()
 
     // A real browser collapses the selection on mousedown before the click
@@ -300,12 +292,41 @@ describe('PreviewTextAnnotationSurface', () => {
     window.getSelection()?.removeAllRanges()
     await act(async () => entry!.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })))
 
-    const surviving = Array.from(document.querySelectorAll('button')).find(
-      (button) => button.textContent === 'Annotate'
-    )
+    const surviving = document.querySelector<HTMLElement>('[data-annotation-trigger]')
     expect(surviving).toBe(entry)
 
     await act(async () => surviving?.click())
     expect(document.querySelector('textarea')).not.toBeNull()
+  })
+
+  it('clears the draft entry when clicking anywhere outside it', async () => {
+    await renderSurface()
+    await selectQuote()
+    expect(document.querySelector<HTMLElement>('[data-annotation-trigger]')).toBeDefined()
+
+    await act(async () => {
+      const outside = document.createElement('button')
+      document.body.appendChild(outside)
+      outside.dispatchEvent(new MouseEvent('pointerdown', { bubbles: true }))
+      outside.remove()
+    })
+
+    expect(document.querySelector<HTMLElement>('[data-annotation-trigger]')).toBeNull()
+  })
+
+  it('hides the entry while the note editor is open and restores it after escape', async () => {
+    await renderSurface()
+    await selectQuote()
+    const entry = document.querySelector<HTMLElement>('[data-annotation-trigger]')
+    await act(async () => entry?.click())
+
+    expect(document.querySelector<HTMLElement>('[data-annotation-trigger]')).toBeNull()
+    expect(document.querySelector('textarea')).not.toBeNull()
+
+    await act(async () =>
+      document.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+    )
+    expect(document.querySelector<HTMLElement>('[data-annotation-trigger]')).toBeDefined()
+    expect(document.querySelector('textarea')).toBeNull()
   })
 })
