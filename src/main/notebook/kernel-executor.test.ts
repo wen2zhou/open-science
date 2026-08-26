@@ -1337,6 +1337,35 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
         ownership,
         await helperHost.preflight('python', undefined, ownership)
       )
+      const attack = await executor.execute({
+        ...request,
+        language: 'python',
+        protectedDirs: [...helperFreePlan.protectedGenerationRoots],
+        code: [
+          'import __main__',
+          'normal_persistent_global = 41',
+          'policy_factory_visible = "_install_protected_paths_policy" in globals()',
+          'policy_updater_visible = hasattr(__main__, "_extend_protected_dirs")',
+          'try:',
+          '    _protected_dirs.clear()',
+          'except Exception:',
+          '    pass',
+          'globals()["_protected_dirs"] = []',
+          'globals()["_extend_protected_dirs"] = lambda entries: None',
+          'setattr(__main__, "_protected_dirs", [])',
+          'setattr(__main__, "_extend_protected_dirs", lambda entries: None)',
+          'for candidate_name in ("_protected_paths_audit", "_install_protected_paths_policy", "_extend_protected_dirs"):',
+          '    candidate = globals().get(candidate_name, getattr(__main__, candidate_name, None))',
+          '    for reflected in (getattr(candidate, "__defaults__", None) or ()):',
+          '        if hasattr(reflected, "clear"):',
+          '            reflected.clear()',
+          '    for cell in (getattr(candidate, "__closure__", None) or ()):',
+          '        reflected = cell.cell_contents',
+          '        if hasattr(reflected, "clear"):',
+          '            reflected.clear()',
+          'print(policy_factory_visible, policy_updater_visible)'
+        ].join('\n')
+      })
       const attempts = [
         `open(${JSON.stringify(sourcePath)}).read()`,
         [
@@ -1372,6 +1401,7 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
       expect(blocked.traceback).toContain('Access to protected application files is not allowed')
       expect(blocked.traceback).not.toContain(source)
       expect(helperFreePlan.protectedGenerationRoots).toEqual([generationRoot])
+      expect(attack).toMatchObject({ status: 'completed', stdout: 'False False\n' })
       expect(blockedFollowups).toHaveLength(3)
       for (const followup of blockedFollowups) {
         expect(followup.status).toBe('failed')
@@ -1379,6 +1409,13 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
         expect(followup.traceback).not.toContain(source)
       }
       expect(usable).toMatchObject({ status: 'completed', stdout: '42\n' })
+      const persistent = await executor.execute({
+        ...request,
+        language: 'python',
+        protectedDirs: [...helperFreePlan.protectedGenerationRoots],
+        code: 'print(normal_persistent_global + 1)'
+      })
+      expect(persistent).toMatchObject({ status: 'completed', stdout: '42\n' })
     } finally {
       await executor.shutdown()
     }

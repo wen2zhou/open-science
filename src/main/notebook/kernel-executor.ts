@@ -208,6 +208,9 @@ type ProcState = {
   // external command+args. ensureProc drops+respawns when the next run's identity differs, so a runtime
   // switch never reuses a kernel bound to the previous interpreter.
   interpreterIdentity: string
+  // Canonical host descriptors already installed into the Python loop's immutable audit hooks.
+  // New roots cross the protocol once; Python never exposes a mutable policy collection or updater.
+  protectedDirs: Set<string>
 }
 
 // Marks timeouts distinctly so persisted run status can reflect timeout instead of failure.
@@ -599,7 +602,8 @@ class NotebookKernelExecutor implements NotebookExecutor {
       child,
       readline,
       alive: true,
-      interpreterIdentity: identity
+      interpreterIdentity: identity,
+      protectedDirs: new Set(request.protectedDirs ?? [])
     }
 
     readline.on('line', (line) => this.handleLine(proc, line))
@@ -858,14 +862,18 @@ class NotebookKernelExecutor implements NotebookExecutor {
           proc.child.stdin.write(frameRRequest(reqId, request.code))
         } else {
           // Python and the repl (JS) loop share the same JSON-lines request framing.
+          const protectedDirAdditions = (request.protectedDirs ?? []).filter(
+            (directory) => !proc.protectedDirs.has(directory)
+          )
           proc.child.stdin.write(
             framePythonRequest(
               reqId,
               request.code,
               request.controlInvocationId,
-              request.protectedDirs
+              protectedDirAdditions
             )
           )
+          for (const directory of protectedDirAdditions) proc.protectedDirs.add(directory)
         }
         onDispatch()
       } catch (error) {

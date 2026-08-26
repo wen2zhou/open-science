@@ -106,21 +106,31 @@ def _guard_path(value):
         raise TypeError("the file descriptor cannot be resolved to a path")
     return os.path.normcase(os.path.realpath(os.path.abspath(os.fspath(value))))
 
-_protected_dirs = [
-    _guard_path(entry)
-    for entry in os.environ.get("OPEN_SCIENCE_PROTECTED_DIRS", "").split(os.pathsep)
-    if entry
-]
-
-def _extend_protected_dirs(entries, _guard_path=_guard_path, _protected_dirs=_protected_dirs):
-    if not isinstance(entries, list):
+def _install_protected_paths_policy(entries):
+    guard_path = _guard_path
+    protected_dirs = frozenset(
+        guard_path(entry)
+        for entry in entries
+        if isinstance(entry, str) and entry
+    )
+    if not protected_dirs:
         return
-    for entry in entries:
-        if not isinstance(entry, str) or not entry:
-            continue
-        protected = _guard_path(entry)
-        if protected not in _protected_dirs:
-            _protected_dirs.append(protected)
+
+    def audit(event, args):
+        if event != "open" or not args:
+            return
+        target = args[0]
+        if target is None or isinstance(target, int):
+            return
+        try:
+            resolved = guard_path(target)
+        except (TypeError, ValueError):
+            return
+        for directory in protected_dirs:
+            if resolved == directory or resolved.startswith(directory + os.sep):
+                raise PermissionError("Access to protected application files is not allowed.")
+
+    sys.addaudithook(audit)
 _runtime_dir_value = os.environ.get("OPEN_SCIENCE_RUNTIME_DIR", "")
 _managed_runtime_dir = _guard_path(_runtime_dir_value) if _runtime_dir_value else ""
 
@@ -326,9 +336,7 @@ def _command_writes_managed_runtime(command):
         return _text_references_managed_runtime(text) and bool(_runtime_write_command.search(text))
     return _shell_writes_managed_runtime(_command_text(command))
 
-def _protected_paths_audit(
-    event, args, _guard_path=_guard_path, _protected_dirs=_protected_dirs
-):
+def _protected_paths_audit(event, args):
     if event in ("subprocess.Popen", "os.system", "os.posix_spawn", "os.exec") and args:
         command = args[1] if event in ("subprocess.Popen", "os.posix_spawn", "os.exec") and len(args) > 1 else args[0]
         if _command_mutates_packages(command):
@@ -377,10 +385,6 @@ def _protected_paths_audit(
         resolved == _managed_runtime_dir or resolved.startswith(_managed_runtime_dir + os.sep)
     ):
         _blocked_environment_mutation()
-    for directory in _protected_dirs:
-        if resolved == directory or resolved.startswith(directory + os.sep):
-            raise PermissionError("Access to protected application files is not allowed.")
-
 sys.addaudithook(_protected_paths_audit)
 
 # `venv.create` is pure Python and can otherwise be reached through dynamically assembled names that
@@ -433,7 +437,6 @@ except ImportError:
 
 _globals = {"__name__": "__main__"}
 exec(compile(_BOOTSTRAP, "<bootstrap>", "exec"), _globals)
-_extend_protected_dirs = _globals["_extend_protected_dirs"]
 
 
 # Renders every open matplotlib figure to a content-addressed PNG (inline-backend semantics), then
@@ -547,6 +550,13 @@ def _run(code):
 
 
 def main():
+    # Install read-protection hooks before producer code can run, then remove the factory from the
+    # producer namespace. Every update registers a new immutable root snapshot; no mutable policy
+    # state or updater is retained in producer globals, function defaults, or an exposed closure.
+    install_protected_paths_policy = _globals.pop("_install_protected_paths_policy")
+    install_protected_paths_policy(
+        os.environ.get("OPEN_SCIENCE_PROTECTED_DIRS", "").split(os.pathsep)
+    )
     # The Node host always frames requests as UTF-8 JSON. On Windows, a piped stdin otherwise uses
     # the active ANSI code page (for example GBK with surrogateescape), which corrupts non-ASCII
     # source before it reaches ast.parse.
@@ -565,7 +575,7 @@ def main():
             # SIGINT (KeyboardInterrupt) can land at any point while handling a request,
             # including during figure capture or the response write itself. Catching it
             # here means the loop always survives instead of dying mid-request.
-            _extend_protected_dirs(request.get("protected_dirs", []))
+            install_protected_paths_policy(request.get("protected_dirs", []))
             response = _run(request.get("code", ""))
             response["req_id"] = req_id
             _protocol_out.write(json.dumps(response) + "\n")
