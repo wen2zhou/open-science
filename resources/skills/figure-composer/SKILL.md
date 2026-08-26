@@ -1,0 +1,206 @@
+---
+name: figure-composer
+description: 'Compose one publication-grade multi-panel figure from a one-line claim and immutable data Artifact Version references. Uses deterministic Python helpers for outline schema, geometry, panel tasks, crops, composition, review grouping, and revision scope; uses the existing JavaScript Host for reasoning, bounded panel delegation, visual inspection, and Artifact Version handoff. Runs at most three composite-review rounds and regenerates only affected panels. For a standalone plot use figure-style; for whole-paper figure ordering use paper-narrative.'
+license: Apache-2.0
+---
+
+# Figure Composer — narrative → panels → compose → adversarial loop
+
+`figure-composer` is the outer workflow for one multi-panel figure. Every panel
+worker loads `figure-style` independently; run `paper-narrative` first when the
+paper-level figure sequence is still undecided.
+
+## Open Science helper interface
+
+For deterministic Python work, declare the registered helper on the same
+`notebook_execute` request as the producer code:
+
+```json
+{ "helperModules": ["figure-composer"], "code": "print(panel_px(outline, 'B'))" }
+```
+
+In shorthand, use `helperModules: ["figure-composer"]`. The host injects only
+the public callables below. Call them directly; do not read, import, `exec`, copy,
+or rewrite the helper implementation, and never ask for its path or digest.
+`fc_sdk` and `derive_outline` are deliberately not part of this interface.
+There is no Python-to-JavaScript bridge: reasoning, delegation, collection, and
+image inspection run from `repl_execute` through the existing camelCase Host API.
+
+### Public Python methods
+
+- `figure_outline_schema()` returns a JSON Schema object. An outline is a mapping
+  with string `claim`, numeric `width_mm`, integer `ncol`, numeric
+  `row_heights_mm`, and ordered `panels`. Each panel requires string `letter`,
+  `role`, `message`, `chart_family`, and `ask`, plus integer `row`, `col`, and
+  `colspan`; optional fields are `rowspan`, `label_budget`, `data_vid`, and
+  `data_desc`. Bad outlines are rejected by whichever schema validator the
+  producer uses; this helper only returns the schema.
+- `grid_geom(outline, dpi=300, gutter_mm=4)` returns
+  `(width_px, ncol, col_width_px, row_heights_px, row_y_px, gutter_px)`. Geometry
+  uses integer truncation and zero-based rows/columns. Missing or invalid mapping
+  values surface normal `KeyError`, `TypeError`, `ZeroDivisionError`, or arithmetic
+  errors.
+- `panel_px(outline, letter, dpi=300, gutter_mm=4)` returns `(width_px, height_px)`
+  for the first exact matching panel letter. `rowspan` defaults to one. An unknown
+  letter raises `StopIteration`; malformed geometry surfaces the errors above.
+- `panel_xy(outline, letter, dpi=300, gutter_mm=4)` returns the panel's `(x, y)`
+  top-left pixel position. It has the same letter and geometry errors as
+  `panel_px`.
+- `panel_task(outline, letter, fig_label="Figure", rules_ref="(load
+`figure-style`)")` returns the complete panel-worker task string, including the
+  immutable data Artifact reference, exact 300-dpi box, label budget, neighbors,
+  and rendering constraints. It has the same lookup/geometry errors as
+  `panel_px`.
+- `compose_crops(outline, dpi=300, gutter_mm=4, pad_px=4)` returns an ordered
+  mapping `{letter: (left, top, right, bottom)}` in composed-PNG pixels, origin at
+  top left and clipped to the canvas. Invalid outlines surface geometry errors.
+- `compose_figure(outline, panel_paths, out_path, dpi=300, gutter_mm=4,
+letter_font="DejaVuSans-Bold.ttf", letter_pt=9, letter_case="lower")` reads one
+  image path per panel letter, resizes mismatched images to their slots, alpha
+  composites them in outline order, stamps letters, saves an RGB PNG, and returns
+  `(out_path, (width_px, height_px))`. Missing keys/files and unsupported images
+  surface normal `KeyError`, `FileNotFoundError`, or Pillow errors. A missing font
+  falls back to Pillow's default font.
+- `group_fixes_by_panel(review)` returns `{letter: markdown}` for `BLOCKER` and
+  `MAJOR` violations only. Missing optional fields become empty text; a violation
+  without `panel_letter` falls back to the first character of `location`.
+- `review_schema(per_panel=True)` returns the structured composite-review JSON
+  Schema. With `per_panel=True`, every violation requires `panel_letter`; false
+  omits that property and requirement.
+- `composite_review_task(composite_vid, outline, rules_vid, prev_vid=None,
+round_no=1, min_floor=5)` returns the whole-figure reviewer task. Version
+  arguments are immutable Artifact Version identities. `prev_vid=None` omits the
+  regression reference. The method does no I/O or validation.
+- `apply_outline_revisions(outline, revisions)` returns the set union of every
+  revision's `affected_panels`. It intentionally does not mutate `outline`; the
+  Agent applies the reviewed change explicitly. Missing `affected_panels` means
+  no affected panel.
+
+Pillow is imported only when `compose_figure` is called. If unavailable, its
+normal `ImportError` is returned; inspect or manage the bound Runtime Environment
+and retry.
+
+## Inputs
+
+- `claim`: the one sentence the figure makes true without surrounding prose.
+- `data`: immutable Upload or Artifact Version identities grounding the panels.
+- `width_mm`: venue column width, commonly 85–89 mm single or 174–183 mm double.
+
+## 1. Reason into an outline
+
+Use `figure_outline_schema()` to obtain the contract. In `repl_execute`, ask the
+current Host model for JSON only, then parse it and validate it against that
+schema in Python. `host.llm` is tool-less and accepts no caller-selected model,
+images, or schema, so never pretend it returned enforced structured output:
+
+```javascript
+const caps = await host.capabilities()
+if (caps.llm !== true) throw new Error('figure-composer requires host.llm for outline reasoning')
+const outlineDraft = await host.llm(
+  `Return JSON only for a 12-column multi-panel outline. Claim: ${claim}. ` +
+    `Immutable data Version identities: ${dataVersionIds.join(', ')}`
+)
+```
+
+Review the parsed outline before fan-out. Panel A is the context-free hook; B
+carries the claim; remaining panels add evidence in descending importance. Use
+one row per sub-claim and normally 5–10 panels.
+
+An existing image may be inspected with `host.viewImage`, but this Host release
+does not pass images into `host.llm`; manually draft the outline from what is
+visible instead of inventing a hidden vision bridge.
+
+## 2. Fan out panel workers
+
+Generate every task in Python with `panel_task`. Then dispatch from
+`repl_execute`. `host.delegate` admits at most four children atomically, so send
+waves of no more than four. A worker loads `figure-style` independently and
+declares `helperModules: ["figure-style"]` on its own Python producer request,
+renders the exact requested pixels, writes the PNG as an Artifact using the
+notebook `runId` as `producerRunId`, and calls `host.submitOutput` for the small
+JSON result. Never ask workers to exchange temporary absolute paths.
+
+```javascript
+const panelOutputSchema = {
+  type: 'object',
+  additionalProperties: false,
+  required: ['labelsUsed'],
+  properties: { labelsUsed: { type: 'array', items: { type: 'string' } } }
+}
+const requests = panelSpecs.map(({ letter, task, dataVersionId }) => ({
+  name: `panel-${letter}-r1`,
+  task: `${task}\nLoad \`figure-style\` independently. Publish the PNG Artifact, then submit labelsUsed.`,
+  inputs: dataVersionId ? [dataVersionId] : [],
+  outputSchema: panelOutputSchema
+}))
+const sent = await host.delegate(requests.slice(0, 4), { wait: false })
+const settled = await host.collect(
+  sent.children.map(({ frameId, attemptId }) => ({ frameId, attemptId })),
+  { returnWhen: 'all', timeoutSeconds: 1800 }
+)
+```
+
+Require `status === "completed"` and exactly one intended PNG in each child's
+`artifactsCreated`. Its `versionId` is the immutable Artifact Version identity
+for composition. Keep that identity in the panel map; use
+`host.artifactPath(versionId)` only to resolve bytes locally after collection.
+An Artifact path is an implementation detail, never the Agent-to-Agent contract.
+
+## 3. Compose and bind the producer Run
+
+Resolve the collected Version identities, place the paths in a small JSON
+handoff under `process.env.OPEN_SCIENCE_HANDOFF_DIR`, and read that manifest from
+the Python producer cell. Call `compose_figure`, and keep the returned notebook
+`runId`. Publish the final PNG with `write_artifact_file` using that exact value
+as `producerRunId`; this binds the composite Artifact to the run that last wrote
+its bytes.
+
+The current `notebook_execute` request schema has no dynamic `inputFiles` field.
+Therefore newly delegated panel Versions cannot yet be registered as the
+composition Run's provenance inputs merely by resolving their paths. Do not
+claim they are recorded as `inputFiles`, and do not add a Python-to-JavaScript
+bridge or change the central notebook schema here. Once the registered-origin
+integration adds that seam, pass the same immutable panel Version identities as
+the producer Run inputs; the workflow and panel map need no redesign.
+
+## 3.5 Look before review
+
+Call `compose_crops` in Python. From `repl_execute`, inspect every crop with the
+current camelCase API:
+
+```javascript
+await host.viewImage(
+  { versionId: compositeVersionId },
+  { crop: { unit: 'pixels', left: box[0], top: box[1], right: box[2], bottom: box[3] } }
+)
+```
+
+Check contrast, smallest mark, leader crossings, color identity, legend binding,
+seams, letter overlap, gutter bleed, and resize aliasing. Regenerate an offending
+panel before paying for formal review.
+
+## 4. Adversarial review loop
+
+Run a maximum 3 review rounds, with calibrated violation floors 5 → 4 → 3.
+Generate `composite_review_task(...)` and `review_schema()` in Python, then
+delegate one reviewer with the composite and design-rule Artifact Versions in
+`inputs` and the schema in `outputSchema`.
+
+After each result:
+
+1. Accept when the verdict is `accept` or `minor_revision`, there are no
+   `BLOCKER`s, and there are at most two `MAJOR`s.
+2. Apply reviewed outline edits explicitly. Use `apply_outline_revisions` only
+   to compute regeneration scope.
+3. Use `group_fixes_by_panel` for `BLOCKER`/`MAJOR` panel fixes.
+4. Regenerate only the union of outline-affected and violation-affected panels.
+   Give each retry a unique name such as `panel-B-r2`; include the prior panel
+   Artifact Version and its immutable data Version in `inputs`.
+5. Preserve every clean panel's exact Version identity. Recompose from the mixed
+   map of reused and regenerated Versions, inspect all crops, then publish with
+   the new compose run's `producerRunId`.
+
+For example, if round 1 changes only B and round 2 changes only A, the final map
+must be `A2 / B2 / C1`; C1 is never rerendered. Stop on convergence or after the
+third review. Never manufacture findings to meet a floor, over-correct clean
+content, or regenerate the whole figure for a localized issue.
