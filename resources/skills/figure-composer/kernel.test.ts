@@ -194,6 +194,9 @@ describe('figure-composer JS Host workflow contract', () => {
       expect(skill).toContain(`caps.${capability} !== true`)
     }
     expect(skill).toContain('caps.viewImage !== true')
+    expect(skill).toMatch(
+      /Before starting the workflow[\s\S]*caps\.artifacts !== true[\s\S]*caps\.viewImage !== true[\s\S]*## 1\. Reason/
+    )
     expect(skill).toContain('JSON.stringify(outlineSchema)')
     expect(skill).toContain('JSON.parse(outlineDraft.text)')
     expect(skill).toMatch(/invalid outline.*retry|retry.*invalid outline/is)
@@ -215,6 +218,22 @@ describe('figure-composer JS Host workflow contract', () => {
     expect(skill).toMatch(/do not (?:read|import|exec|copy)/i)
     expect(skill).not.toMatch(/host\.(?:view_image|reasoning_model)/)
     expect(skill).not.toMatch(/output_schema|wait=False|derive_outline\(|fc_sdk\(/)
+  })
+
+  it('does no reasoning, delegation, or composition when startup viewImage gating fails', async () => {
+    const calls = { llm: 0, delegate: 0, compose: 0 }
+    const caps = { llm: true, delegate: true, collect: true, artifacts: true, viewImage: false }
+    const startWorkflow = async (): Promise<void> => {
+      for (const capability of ['llm', 'delegate', 'collect', 'artifacts', 'viewImage'] as const) {
+        if (caps[capability] !== true) throw new Error(`missing capability: ${capability}`)
+      }
+      calls.llm += 1
+      calls.delegate += 1
+      calls.compose += 1
+    }
+
+    await expect(startWorkflow()).rejects.toThrow('missing capability: viewImage')
+    expect(calls).toEqual({ llm: 0, delegate: 0, compose: 0 })
   })
 
   it('dispatches five panels in ordered waves of four and one', async () => {

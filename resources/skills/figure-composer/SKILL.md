@@ -95,6 +95,7 @@ if (caps.llm !== true) throw new Error('figure-composer requires host.llm')
 if (caps.delegate !== true) throw new Error('figure-composer requires host.delegate')
 if (caps.collect !== true) throw new Error('figure-composer requires host.collect')
 if (caps.artifacts !== true) throw new Error('figure-composer requires Artifact discovery')
+if (caps.viewImage !== true) throw new Error('figure-composer requires host.viewImage for QA')
 ```
 
 ## 1. Reason into an outline
@@ -231,7 +232,6 @@ Call `compose_crops` in Python. From `repl_execute`, inspect every crop with the
 current camelCase API:
 
 ```javascript
-if (caps.viewImage !== true) throw new Error('figure-composer requires host.viewImage for QA')
 await host.viewImage(
   { versionId: compositeVersionId },
   { crop: { unit: 'pixels', left: box[0], top: box[1], right: box[2], bottom: box[3] } }
