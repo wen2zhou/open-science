@@ -110,6 +110,7 @@ const options = (
           draftKey: 'session-a',
           version: 1,
           doc,
+          annotations: [],
           attachments: []
         })),
         clearDraft: vi.fn(),
@@ -239,6 +240,84 @@ describe('workspace conversation controller', () => {
       resolveAdmission({ sessionId: 'session-a', messageId: 'annotation-message-1' })
     )
     expect(input.composer.lifecycle.clearDraft).toHaveBeenCalledWith('session-a', 1)
+  })
+
+  it('blocks an image-point annotation before capture when the model cannot read images', () => {
+    const input = options()
+    const annotation = {
+      id: 'point-1',
+      kind: 'image-point' as const,
+      target: 'agent' as const,
+      note: 'Inspect this point',
+      source: {
+        kind: 'artifact-version' as const,
+        projectId: 'project-a',
+        sessionId: 'session-a',
+        versionId: 'version-1',
+        name: 'figure.png',
+        path: 'artifact-version:project-a/session-a/artifact-1/version-1',
+        mimeType: 'image/png'
+      },
+      point: { x: 0.5, y: 0.5 },
+      naturalSize: { width: 100, height: 100 }
+    }
+    input.supportsImageInput = false
+    input.composer.view.annotations = [annotation]
+    const hook = renderController(input)
+
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+
+    expect(input.composer.actions.setError).toHaveBeenCalledWith(
+      "The selected model doesn't support images. Configure a Vision model in Settings > Model to enable image support."
+    )
+    expect(input.composer.lifecycle.captureSend).not.toHaveBeenCalled()
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+    hook.unmount()
+  })
+
+  it('sends an annotation-only New Conversation to the current project without a Session id', async () => {
+    const annotation = {
+      id: 'new-conversation-annotation',
+      kind: 'text' as const,
+      target: 'agent' as const,
+      quote: 'Quoted project evidence',
+      source: {
+        kind: 'project-file' as const,
+        projectId: 'project-a',
+        path: 'results/report.md',
+        versionId: 'version-a'
+      }
+    }
+    const input = options({
+      activeSession: undefined,
+      currentDraftKey: 'new:project-a'
+    })
+    input.composer.view.doc = { nodes: [] }
+    input.composer.view.annotations = [annotation]
+    input.composer.lifecycle.captureSend = vi.fn(() => ({
+      draftKey: 'new:project-a',
+      version: 3,
+      doc: { nodes: [] },
+      annotations: [annotation],
+      attachments: []
+    }))
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    await vi.waitFor(() => expect(input.runtime.sendMessage).toHaveBeenCalledOnce())
+
+    expect(input.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: undefined,
+        projectId: 'project-a',
+        text: '',
+        annotations: [annotation]
+      })
+    )
+    await vi.waitFor(() =>
+      expect(input.composer.lifecycle.clearDraft).toHaveBeenCalledWith('new:project-a', 3)
+    )
   })
 
   it('exposes the submitted draft immediately while runtime admission is pending', async () => {
@@ -824,6 +903,7 @@ describe('workspace conversation controller', () => {
       draftKey: 'new:project-a',
       version: 1,
       doc: textDoc('new'),
+      annotations: [],
       attachments: []
     }))
     input.runtime.sendMessage = vi.fn(() =>

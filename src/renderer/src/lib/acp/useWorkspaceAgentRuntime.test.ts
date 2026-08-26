@@ -1947,6 +1947,82 @@ describe('workspace agent message sending', () => {
     })
   })
 
+  it('dispatches mixed image annotations with fixed references, stable numbers, and natural pixels', async () => {
+    const sendPrompt = vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
+    const runtime = {
+      state: createSnapshot(['transport-session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt
+    }
+    const imageSource = {
+      kind: 'artifact-version' as const,
+      projectId: 'project-1',
+      sessionId: 'transport-session-1',
+      versionId: 'version-fixed',
+      name: 'figure.png',
+      path: 'artifact-version:project-1/transport-session-1/artifact-1/version-fixed',
+      mimeType: 'image/png'
+    }
+
+    await sendWorkspaceMessage(runtime, {
+      sessionId: 'transport-session-1',
+      text: 'Compare these details.',
+      annotations: [
+        {
+          id: 'quote-1',
+          kind: 'text',
+          target: 'agent',
+          quote: 'First detail',
+          source: {
+            kind: 'agent-message',
+            sessionId: 'transport-session-1',
+            messageId: 'agent-1'
+          }
+        },
+        {
+          id: 'point-1',
+          kind: 'image-point',
+          target: 'agent',
+          note: 'Inspect this point',
+          source: imageSource,
+          point: { x: 0.5, y: 1 },
+          naturalSize: { width: 1000, height: 500 }
+        },
+        {
+          id: 'point-2',
+          kind: 'image-point',
+          target: 'agent',
+          note: 'Compare this point',
+          source: imageSource,
+          point: { x: 0, y: 0 },
+          naturalSize: { width: 1000, height: 500 }
+        }
+      ],
+      referencedArtifacts: [
+        {
+          id: 'artifact-1',
+          name: 'figure.png',
+          path: imageSource.path,
+          source: 'artifact',
+          versionId: imageSource.versionId
+        }
+      ],
+      cwd: '/workspace/project',
+      projectId: 'project-1'
+    })
+
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledOnce())
+    expect(sendPrompt.mock.calls[0]?.[1]).toContain(
+      '"number":1,"x":500,"y":499,"imageWidth":1000,"imageHeight":500'
+    )
+    expect(sendPrompt.mock.calls[0]?.[1]).toContain('"number":2,"x":0,"y":0')
+    expect(sendPrompt.mock.calls[0]?.[4]).toEqual([
+      expect.objectContaining({ versionId: 'version-fixed', path: imageSource.path })
+    ])
+  })
+
   it('rejects an oversized annotation at the runtime boundary', async () => {
     const sendPrompt = vi.fn()
     const sent = await sendWorkspaceMessage(

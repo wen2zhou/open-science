@@ -109,13 +109,11 @@ type HistoryReplayContext = {
 
 const errorMessage = (error: unknown): string =>
   error instanceof Error ? error.message : String(error)
-
 const createSessionFailureMessage = (error: unknown): string =>
   errorMessage(error)
     .replace(/^Error invoking remote method '[^']*':\s*/i, '')
     .replace(/^Error(?::\s*|$)/i, '')
     .trim() || 'Agent session could not be created.'
-
 const latestFailureId = (events: AcpRuntimeEvent[], sessionId: string): string | undefined => {
   for (let index = events.length - 1; index >= 0; index -= 1) {
     const event = events[index]
@@ -123,7 +121,6 @@ const latestFailureId = (events: AcpRuntimeEvent[], sessionId: string): string |
   }
   return undefined
 }
-
 const failPrompt = async (
   sessionId: string,
   message: string,
@@ -144,11 +141,10 @@ const failPrompt = async (
       .find((item) => item.kind === 'error' && item.sessionId === sessionId)
     if (event && event.id !== priorErrorEventId && event.providerError) reportable = false
   } catch {
-    // The persisted run error remains useful when the live runtime snapshot is unavailable.
+    reportable = undefined
   }
   useSessionStore.getState().failRun(sessionId, message, { reportable })
 }
-
 const replayHistory = (
   messages: ChatMessage[],
   input: SendWorkspaceMessageCommand,
@@ -204,12 +200,16 @@ const dispatchPrompt = (runtime: WorkspaceCommandRuntime, request: PromptDispatc
     [...(runtime.currentRuntimeEvents?.() ?? runtime.state.events)],
     request.sessionId
   )
+  const referencedArtifacts = annotationProtocol.mergeImageAnnotationReferences(
+    request.referencedArtifacts,
+    annotationProtocol.prepareImagePointAnnotationsForAgent(request.annotations ?? []).attachments
+  )
   const args = [
     request.sessionId,
     annotationProtocol.appendAnnotationsToPrompt(request.content, request.annotations ?? []),
     request.attachments,
     request.forcedSkillIds,
-    request.referencedArtifacts,
+    referencedArtifacts,
     request.replay?.historyPreamble,
     request.replay?.historyAttachments,
     request.replay?.historyImages,

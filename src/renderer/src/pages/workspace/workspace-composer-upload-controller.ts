@@ -1109,6 +1109,11 @@ export const useWorkspaceComposerUploadController = ({
       clearHistory(draftKey)
       clearPastedTextUndo(draftKey)
       clearUndo(draftKey)
+      if (activeDraftKeyRef.current === draftKey) {
+        setActiveAttachments([])
+        setActiveTransfers([])
+        setError(null)
+      }
       for (const transfer of cleanup.attachmentTransfers) {
         delete transferFilesRef.current[transfer.transferId]
         cancelledTransfersRef.current.add(transfer.transferId)
@@ -1117,7 +1122,17 @@ export const useWorkspaceComposerUploadController = ({
       }
       deleteAttachmentFiles(cleanup.attachments)
     },
-    [clearHistory, clearPastedTextUndo, clearUndo, deleteAttachmentFiles, draftsRef, uploads]
+    [
+      activeDraftKeyRef,
+      clearHistory,
+      clearPastedTextUndo,
+      clearUndo,
+      deleteAttachmentFiles,
+      draftsRef,
+      setActiveAttachments,
+      setActiveTransfers,
+      uploads
+    ]
   )
 
   return {

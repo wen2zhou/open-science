@@ -50,6 +50,25 @@ export type ImagePointAnnotation = Readonly<{
 
 export type Annotation = TextAnnotation | ImagePointAnnotation
 
+export type ImagePointAgentPayload = Readonly<{
+  annotationId: string
+  number: number
+  note: string
+  sourceKind: ImagePointAnnotation['source']['kind']
+  versionId: string
+  name: string
+  mimeType: string
+  x: number
+  y: number
+  imageWidth: number
+  imageHeight: number
+}>
+
+export type PreparedImagePointAnnotations = Readonly<{
+  attachments: ArtifactReference[]
+  points: ImagePointAgentPayload[]
+}>
+
 export type AnnotationValidationError =
   'too-many' | 'quote-too-long' | 'note-too-long' | 'payload-too-large' | 'invalid'
 
@@ -168,7 +187,81 @@ export const sanitizeAnnotations = (value: unknown): Annotation[] => {
   return validateAnnotations(annotations) ? [] : annotations
 }
 
-const payloadItem = (annotation: Annotation): Record<string, unknown> => {
+export const imageVersionKey = (source: ImagePointAnnotation['source']): string =>
+  [source.kind, source.projectId, source.sessionId, source.versionId].join('\u0000')
+
+export const imageAnnotationFileReference = (
+  source: ImagePointAnnotation['source']
+): ArtifactReference => ({
+  id:
+    source.kind === 'artifact-version'
+      ? (parseArtifactVersionLocator(source.path)?.artifactId ?? source.versionId)
+      : source.versionId,
+  name: source.name,
+  path: source.path,
+  source: source.kind === 'artifact-version' ? 'artifact' : 'upload',
+  mimeType: source.mimeType,
+  versionId: source.versionId
+})
+
+export const prepareImagePointAnnotationsForAgent = (
+  annotations: readonly Annotation[]
+): PreparedImagePointAnnotations => {
+  const attachments: ArtifactReference[] = []
+  const attachedVersions = new Set<string>()
+  const points: ImagePointAgentPayload[] = []
+  for (const annotation of annotations) {
+    if (annotation.kind !== 'image-point') continue
+    const key = imageVersionKey(annotation.source)
+    if (!attachedVersions.has(key)) {
+      attachedVersions.add(key)
+      attachments.push(imageAnnotationFileReference(annotation.source))
+    }
+    points.push({
+      annotationId: annotation.id,
+      number: points.length + 1,
+      note: annotation.note,
+      sourceKind: annotation.source.kind,
+      versionId: annotation.source.versionId,
+      name: annotation.source.name,
+      mimeType: annotation.source.mimeType,
+      x: Math.round(
+        Math.min(1, Math.max(0, annotation.point.x)) * (annotation.naturalSize.width - 1)
+      ),
+      y: Math.round(
+        Math.min(1, Math.max(0, annotation.point.y)) * (annotation.naturalSize.height - 1)
+      ),
+      imageWidth: annotation.naturalSize.width,
+      imageHeight: annotation.naturalSize.height
+    })
+  }
+  return { attachments, points }
+}
+
+const fileReferenceVersionKey = (reference: FileReference): string | undefined =>
+  reference.source === 'linked-folder' || !reference.versionId
+    ? undefined
+    : [reference.source, reference.versionId].join('\u0000')
+
+export const mergeImageAnnotationReferences = (
+  referencedArtifacts: readonly FileReference[] | undefined,
+  imageReferences: readonly ArtifactReference[]
+): FileReference[] | undefined => {
+  const merged = [...(referencedArtifacts ?? [])]
+  const keys = new Set(merged.map(fileReferenceVersionKey).filter((key): key is string => !!key))
+  for (const reference of imageReferences) {
+    const key = fileReferenceVersionKey(reference)
+    if (key && keys.has(key)) continue
+    if (key) keys.add(key)
+    merged.push(reference)
+  }
+  return merged.length > 0 ? merged : undefined
+}
+
+const payloadItem = (
+  annotation: Annotation,
+  imagePoints: ReadonlyMap<string, ImagePointAgentPayload>
+): Record<string, unknown> => {
   if (annotation.kind === 'text') {
     return {
       kind: annotation.kind,
@@ -177,19 +270,39 @@ const payloadItem = (annotation: Annotation): Record<string, unknown> => {
       source: annotation.source
     }
   }
-  return {
-    kind: annotation.kind,
-    note: annotation.note,
-    source: annotation.source,
-    point: annotation.point,
-    naturalSize: annotation.naturalSize
-  }
+  const point = imagePoints.get(annotation.id)
+  return point
+    ? {
+        kind: annotation.kind,
+        note: point.note,
+        sourceKind: point.sourceKind,
+        versionId: point.versionId,
+        name: point.name,
+        mimeType: point.mimeType,
+        number: point.number,
+        x: point.x,
+        y: point.y,
+        imageWidth: point.imageWidth,
+        imageHeight: point.imageHeight
+      }
+    : {
+        kind: annotation.kind,
+        note: annotation.note,
+        source: annotation.source,
+        point: annotation.point,
+        naturalSize: annotation.naturalSize
+      }
 }
 
-export const annotationPayloadText = (annotations: readonly Annotation[]): string =>
-  annotations.length > 0
-    ? `[Annotations]\n${JSON.stringify({ version: 1, items: annotations.map(payloadItem) })}`
-    : ''
+export const annotationPayloadText = (annotations: readonly Annotation[]): string => {
+  if (annotations.length === 0) return ''
+  const prepared = prepareImagePointAnnotationsForAgent(annotations)
+  const imagePoints = new Map(prepared.points.map((point) => [point.annotationId, point]))
+  return `[Annotations]\n${JSON.stringify({
+    version: 1,
+    items: annotations.map((annotation) => payloadItem(annotation, imagePoints))
+  })}`
+}
 
 export const validateAnnotations = (
   annotations: readonly Annotation[],
@@ -220,3 +333,5 @@ export const appendAnnotationsToPrompt = (
   text: string,
   annotations: readonly Annotation[]
 ): string => [text.trim(), annotationPayloadText(annotations)].filter(Boolean).join('\n\n')
+import type { ArtifactReference, FileReference } from './artifacts'
+import { parseArtifactVersionLocator } from './artifact-provenance'

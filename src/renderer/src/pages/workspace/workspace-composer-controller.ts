@@ -35,7 +35,7 @@ export type ComposerSendSnapshot = {
   draftKey: string
   version: number
   doc: ComposerDoc
-  annotations?: Annotation[]
+  annotations: Annotation[]
   attachments: UploadedAttachment[]
 }
 
@@ -139,12 +139,18 @@ const useWorkspaceComposerController = ({
   const annotationsRef = useRef(annotations)
   const draftsRef = useRef<Record<string, ComposerDraft>>({})
   const versionsRef = useRef<Record<string, number>>({})
+  const deletedDraftKeysRef = useRef(new Set<string>())
   const historyRef = useRef<Record<string, ComposerHistoryNavigation>>({})
   const caretRequestKeyRef = useRef(0)
 
   const setActiveDoc = useCallback((next: ComposerDoc): void => {
     docRef.current = next
     setDoc(next)
+  }, [])
+
+  const setActiveAnnotations = useCallback((next: Annotation[]): void => {
+    annotationsRef.current = next
+    setAnnotations(next)
   }, [])
 
   const requestCaret = useCallback((position: ComposerCaretPosition): void => {
@@ -253,11 +259,15 @@ const useWorkspaceComposerController = ({
     if (currentDraftKey === previousDraftKey) return
 
     const outgoingHistory = historyRef.current[previousDraftKey]
-    draftsRef.current[previousDraftKey] = {
-      doc: outgoingHistory?.scratch ?? doc,
-      annotations,
-      attachments,
-      attachmentTransfers: transfers
+    if (deletedDraftKeysRef.current.delete(previousDraftKey)) {
+      delete draftsRef.current[previousDraftKey]
+    } else {
+      draftsRef.current[previousDraftKey] = {
+        doc: outgoingHistory?.scratch ?? doc,
+        annotations,
+        attachments,
+        attachmentTransfers: transfers
+      }
     }
     delete historyRef.current[previousDraftKey]
     setHistoryBrowsingKey(undefined)
@@ -270,7 +280,7 @@ const useWorkspaceComposerController = ({
       pendingCustomizePrefill.projectId === activeProjectId
     const nextDraft = draftsRef.current[currentDraftKey] ?? blank()
     if (!customizePrefillPending) setActiveDoc(nextDraft.doc)
-    setAnnotations(nextDraft.annotations)
+    setActiveAnnotations(nextDraft.annotations)
     activateDraftAttachments(nextDraft)
     activeDraftKeyRef.current = currentDraftKey
   }, [
@@ -282,6 +292,7 @@ const useWorkspaceComposerController = ({
     newConversationDraftKey,
     pendingCustomizePrefill,
     activateDraftAttachments,
+    setActiveAnnotations,
     setActiveDoc,
     transfers
   ])
@@ -450,11 +461,11 @@ const useWorkspaceComposerController = ({
     return {
       draftKey: activeDraftKeyRef.current,
       version: versionsRef.current[activeDraftKeyRef.current] ?? 0,
-      doc,
-      annotations: [...annotations],
+      doc: docRef.current,
+      annotations: [...annotationsRef.current],
       attachments
     }
-  }, [annotations, attachments, clearPastedTextUndo, clearUndo, doc])
+  }, [attachments, clearPastedTextUndo, clearUndo])
   const clearDraft = useCallback(
     (draftKey: string, expectedVersion?: number): boolean => {
       const currentVersion = versionsRef.current[draftKey] ?? 0
@@ -465,15 +476,27 @@ const useWorkspaceComposerController = ({
       delete draftsRef.current[draftKey]
       if (activeDraftKeyRef.current !== draftKey) return true
       setActiveDoc(emptyDoc)
-      setAnnotations([])
+      setActiveAnnotations([])
       clearActiveAttachments()
       setError(null)
       return true
     },
-    [clearActiveAttachments, clearHistory, clearPastedTextUndo, clearUndo, setActiveDoc, setError]
+    [
+      clearActiveAttachments,
+      clearHistory,
+      clearPastedTextUndo,
+      clearUndo,
+      setActiveAnnotations,
+      setActiveDoc,
+      setError
+    ]
   )
   const restoreFailedSend = useCallback(
     (snapshot: ComposerSendSnapshot, preserveOnConflict = false): boolean => {
+      if (deletedDraftKeysRef.current.has(snapshot.draftKey)) {
+        if (!preserveOnConflict) deleteAttachmentFiles(snapshot.attachments)
+        return false
+      }
       if (
         (versionsRef.current[snapshot.draftKey] ?? 0) !== snapshot.version &&
         !(
@@ -490,13 +513,13 @@ const useWorkspaceComposerController = ({
       }
       if (activeDraftKeyRef.current === snapshot.draftKey) {
         setActiveDoc(snapshot.doc)
-        setAnnotations(snapshot.annotations ?? [])
+        setActiveAnnotations([...snapshot.annotations])
         setActiveAttachments(snapshot.attachments)
         return true
       }
       draftsRef.current[snapshot.draftKey] = {
         doc: snapshot.doc,
-        annotations: snapshot.annotations ?? [],
+        annotations: [...snapshot.annotations],
         attachments: snapshot.attachments,
         attachmentTransfers: draftsRef.current[snapshot.draftKey]?.attachmentTransfers ?? []
       }
@@ -508,6 +531,7 @@ const useWorkspaceComposerController = ({
       deleteAttachmentFiles,
       doc,
       setActiveAttachments,
+      setActiveAnnotations,
       setActiveDoc,
       transfers.length
     ]
@@ -531,8 +555,7 @@ const useWorkspaceComposerController = ({
         const validation = validateAnnotations(next, docToText(docRef.current))
         if (validation) return validation
         markChanged()
-        annotationsRef.current = next
-        setAnnotations(next)
+        setActiveAnnotations(next)
         return undefined
       },
       updateAnnotationNote: (id, note): AnnotationValidationError | undefined => {
@@ -546,16 +569,14 @@ const useWorkspaceComposerController = ({
         const validation = validateAnnotations(next, docToText(docRef.current))
         if (validation) return validation
         markChanged()
-        annotationsRef.current = next
-        setAnnotations(next)
+        setActiveAnnotations(next)
         return undefined
       },
       removeAnnotation: (id): void => {
         const next = annotationsRef.current.filter((annotation) => annotation.id !== id)
         if (next.length === annotationsRef.current.length) return
         markChanged()
-        annotationsRef.current = next
-        setAnnotations(next)
+        setActiveAnnotations(next)
       },
       navigateHistory,
       stageFiles,
@@ -574,7 +595,19 @@ const useWorkspaceComposerController = ({
       discardSnapshot: (snapshot) => deleteAttachmentFiles(snapshot.attachments),
       hasUnfinishedTransfers,
       beginSessionDeletion,
-      settleSessionDeletion
+      settleSessionDeletion: (draftKey, deleted): void => {
+        settleSessionDeletion(draftKey, deleted)
+        if (!deleted) return
+        delete draftsRef.current[draftKey]
+        delete versionsRef.current[draftKey]
+        deletedDraftKeysRef.current.add(draftKey)
+        if (activeDraftKeyRef.current !== draftKey) return
+        clearHistory(draftKey)
+        setActiveDoc(emptyDoc)
+        setActiveAnnotations([])
+        clearActiveAttachments()
+        setError(null)
+      }
     }
   }
 }

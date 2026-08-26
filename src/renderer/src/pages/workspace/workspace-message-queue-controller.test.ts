@@ -91,7 +91,13 @@ const sessionWithPendingPermission = (
 
 const admission = (text: string): MessageQueueAdmission => ({
   session: session(),
-  snapshot: { draftKey: 'session-a', version: 1, doc: textDoc(text), attachments: [] },
+  snapshot: {
+    draftKey: 'session-a',
+    version: 1,
+    doc: textDoc(text),
+    annotations: [],
+    attachments: []
+  },
   text,
   forcedSkillIds: [],
   permissionProfile: 'full',
@@ -284,6 +290,46 @@ describe('workspace message queue controller', () => {
       expect.objectContaining({
         text: 'queued with snapshot',
         agentConfiguration: queuedConfiguration
+      })
+    )
+  })
+
+  it('dispatches the frozen annotations captured when the message was queued', async () => {
+    const annotation = {
+      id: 'annotation-1',
+      kind: 'text' as const,
+      target: 'agent' as const,
+      quote: 'Quoted Agent evidence',
+      note: 'Explain this evidence.',
+      source: {
+        kind: 'agent-message' as const,
+        sessionId: 'session-a',
+        messageId: 'agent-message-1'
+      }
+    }
+    let currentSession = session()
+    const input = options(currentSession, {
+      promptInFlightSessionIds: [],
+      getSession: () => currentSession
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    const queued = admission('queued with annotation')
+    queued.snapshot.annotations = [annotation]
+
+    act(() => hook.result.current.lifecycle.enqueue(queued))
+    currentSession = session('idle')
+    hook.rerender({
+      ...input,
+      activeSession: currentSession,
+      getSession: () => currentSession
+    })
+
+    await vi.waitFor(() => expect(input.runtime.sendMessage).toHaveBeenCalledOnce())
+    expect(input.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({
+        text: 'queued with annotation',
+        annotations: [annotation]
       })
     )
   })
@@ -632,6 +678,7 @@ describe('workspace message queue controller', () => {
           draftKey: 'session-a',
           version: 1,
           doc: textDoc('Draw a pie chart'),
+          annotations: [],
           attachments: [attachment]
         }
       })
@@ -735,6 +782,7 @@ describe('workspace message queue controller', () => {
           draftKey: 'session-a',
           version: 1,
           doc: textDoc('Draw a pie chart'),
+          annotations: [],
           attachments: [attachment]
         }
       })
@@ -810,6 +858,7 @@ describe('workspace message queue controller', () => {
           draftKey: 'session-a',
           version: 1,
           doc: textDoc('Draw a pie chart'),
+          annotations: [],
           attachments: [attachment]
         }
       })
@@ -1471,6 +1520,7 @@ describe('workspace message queue controller', () => {
           draftKey: 'session-a',
           version: 1,
           doc: textDoc('with file'),
+          annotations: [],
           attachments: [attachment]
         }
       })

@@ -283,7 +283,10 @@ const useWorkspaceConversationController = (
       if (activeSession && session.lifecycle.isBarrierInFlight(activeSession.id)) return
       if (
         current.supportsImageInput !== true &&
-        composer.view.attachments.some((attachment) => attachment.mimeType?.startsWith('image/'))
+        (composer.view.attachments.some((attachment) =>
+          attachment.mimeType?.startsWith('image/')
+        ) ||
+          composer.view.annotations.some((annotation) => annotation.kind === 'image-point'))
       ) {
         composer.actions.setError(VISION_MODEL_NOT_CONFIGURED_MESSAGE)
         return
@@ -328,7 +331,7 @@ const useWorkspaceConversationController = (
               status: 'complete' as const,
               eventIds: [],
               uploads: snapshot.attachments,
-              annotations: snapshot.annotations ?? [],
+              annotations: snapshot.annotations,
               parts: docToMessageParts(snapshot.doc),
               createdAt: 0,
               updatedAt: 0
@@ -345,7 +348,7 @@ const useWorkspaceConversationController = (
               : {}),
             text: docToText(snapshot.doc),
             attachments: snapshot.attachments,
-            annotations: snapshot.annotations ?? [],
+            annotations: snapshot.annotations,
             referencedArtifacts: docToArtifactRefs(snapshot.doc),
             parts: docToMessageParts(snapshot.doc),
             cwd: activeSession?.cwd,
@@ -371,7 +374,7 @@ const useWorkspaceConversationController = (
               composer.lifecycle.restoreFailedSend(snapshot)
               return
             }
-            if (snapshot.annotations?.length) {
+            if (snapshot.annotations.length > 0) {
               composer.lifecycle.clearDraft(snapshot.draftKey, snapshot.version)
             }
             if (wasNewConversation && autoReviewEnabled) {
@@ -400,13 +403,13 @@ const useWorkspaceConversationController = (
               inFlightDraftKeysRef.current.delete(snapshot.draftKey)
               return
             }
-            if (!snapshot.annotations?.length) composer.lifecycle.clearDraft(activeSession.id)
+            if (snapshot.annotations.length === 0) composer.lifecycle.clearDraft(activeSession.id)
             dispatch(activeSession.id)
           })
         return
       }
 
-      if (!snapshot.annotations?.length) composer.lifecycle.clearDraft(current.currentDraftKey)
+      if (snapshot.annotations.length === 0) composer.lifecycle.clearDraft(current.currentDraftKey)
       dispatch(branchInNewSession ? undefined : activeSession?.id)
     }
 
