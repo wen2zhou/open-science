@@ -444,6 +444,16 @@ const notebookExecutionInputFingerprint = (
         ? [...new Set(input.helperModules)]
         : undefined
   if (helperModules === undefined) return undefined
+  const artifactVersionInputs =
+    method !== 'execute' || input?.artifactVersionInputs === undefined
+      ? []
+      : Array.isArray(input.artifactVersionInputs) &&
+          input.artifactVersionInputs.every(
+            (versionId): versionId is string => typeof versionId === 'string'
+          )
+        ? [...new Set(input.artifactVersionInputs)]
+        : undefined
+  if (artifactVersionInputs === undefined) return undefined
 
   return createHash('sha256')
     .update(
@@ -457,7 +467,8 @@ const notebookExecutionInputFingerprint = (
             ? 'python'
             : null,
         method === 'execute' && typeof input?.cellId === 'string' ? input.cellId : null,
-        helperModules
+        helperModules,
+        artifactVersionInputs
       ])
     )
     .digest('hex')
@@ -2615,7 +2626,10 @@ class NotebookLocalRpcServer {
       const lease = await this.inputRegistry.openRun({
         projectId,
         appSessionId: sessionId,
-        promptMessageId: provenanceContext.promptMessageId
+        promptMessageId: provenanceContext.promptMessageId,
+        ...(method === 'execute' && Array.isArray(params.artifactVersionInputs)
+          ? { artifactVersionInputs: params.artifactVersionInputs as string[] }
+          : {})
       })
       const leases = this.activeInputRunLeases.get(sessionId) ?? new Set<NotebookInputRunLease>()
       const inputRunLeaseId = randomUUID()
@@ -2637,6 +2651,16 @@ class NotebookLocalRpcServer {
         this.inputRunLeaseIds.delete(lease)
         if (leases.size === 0) this.activeInputRunLeases.delete(sessionId)
       }
+    }
+
+    if (
+      method === 'execute' &&
+      Array.isArray(params.artifactVersionInputs) &&
+      params.artifactVersionInputs.length > 0
+    ) {
+      throw new Error(
+        'artifactVersionInputs requires an active Artifact provenance context and input registry.'
+      )
     }
 
     return handler(trustedParams, signal)

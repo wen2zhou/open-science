@@ -55,6 +55,7 @@ type RegisteredSkillHelper = Readonly<{
 type RegisteredSkillHelperCatalogOptions = {
   storageRoot: string
   packages: () => Promise<readonly RegisteredSkillPackage[]>
+  trustedBuiltinPackages?: () => Promise<readonly RegisteredSkillPackage[]>
   authorize?: (
     helper: Pick<RegisteredSkillHelper, 'id' | 'skillId' | 'origin'>,
     scope: RegisteredHelperScope | undefined
@@ -415,6 +416,9 @@ class RegisteredSkillHelperCatalog {
 
   constructor(private readonly options: RegisteredSkillHelperCatalogOptions) {}
 
+  // This is the only transaction that trusts the mutable Skill catalog. Callers invoke it after a
+  // validated create/import/update, or after the catalog observer reports a source change. Runtime
+  // resolution and cold-start restoration never consult those mutable package bytes.
   async refresh(): Promise<void> {
     const previous = this.snapshot
     try {
@@ -463,10 +467,57 @@ class RegisteredSkillHelperCatalog {
 
   private async restoreOrCreateSnapshot(): Promise<ReadonlyMap<string, RegisteredSkillHelper>> {
     const restored = await this.restoreBinding()
-    if (restored) return restored
+    if (restored) return this.reconcileTrustedBuiltins(restored)
+
+    // A missing binding is the first-registration case. Once one exists, restoreBinding verifies
+    // the app-owned generation and fails closed instead of rebuilding from Personal/Imported
+    // sources. Only refresh() can replace that durable trust decision.
     const created = await this.buildSnapshotFromPackages()
     await this.persistBinding(created)
     return created
+  }
+
+  private async reconcileTrustedBuiltins(
+    restored: ReadonlyMap<string, RegisteredSkillHelper>
+  ): Promise<ReadonlyMap<string, RegisteredSkillHelper>> {
+    if (!this.options.trustedBuiltinPackages) return restored
+
+    const packages = await this.options.trustedBuiltinPackages()
+    for (const entry of packages) {
+      if (entry.origin !== 'builtin') {
+        fail('startup reconciliation accepts only trusted Built-in packages')
+      }
+    }
+
+    // Prepare Built-ins independently, but validate dependencies only after combining them with the
+    // restored non-Built-in snapshot. A Built-in may depend on an explicitly registered Personal or
+    // Imported helper without granting startup permission to reread that helper's mutable source.
+    const prepared = new Map<string, PreparedHelper>()
+    for (const entry of packages) {
+      for (const helper of await preparePackage(entry)) {
+        if (prepared.has(helper.id))
+          fail(`duplicate helper ID "${helper.id}" in registered catalog`)
+        prepared.set(helper.id, helper)
+      }
+    }
+
+    const next = new Map<string, RegisteredSkillHelper>()
+    for (const helper of restored.values()) {
+      if (helper.origin !== 'builtin') next.set(helper.id, helper)
+    }
+    for (const helper of prepared.values()) {
+      if (next.has(helper.id)) fail(`duplicate helper ID "${helper.id}" in registered catalog`)
+      const root = await this.materialize(helper)
+      const source = new TextDecoder('utf-8', { fatal: true }).decode(
+        await readFile(join(root, 'source.py'))
+      )
+      next.set(helper.id, this.registeredHelper(helper, source))
+    }
+    this.assertSnapshot(next)
+
+    if (this.sameBinding(restored, next)) return restored
+    await this.persistBinding(next)
+    return next
   }
 
   private bindingPath(): string {
@@ -596,23 +647,61 @@ class RegisteredSkillHelperCatalog {
       const source = new TextDecoder('utf-8', { fatal: true }).decode(
         await readFile(join(root, 'source.py'))
       )
-      snapshot.set(
-        helper.id,
-        Object.freeze({
-          id: helper.id,
-          language: helper.language,
-          source,
-          exports: helper.exports,
-          dependencies: helper.dependencies,
-          skillId: helper.skillId,
-          origin: helper.origin,
-          interfaceRevision: helper.interfaceRevision,
-          generation: helper.generation,
-          digest: helper.digest
-        })
-      )
+      snapshot.set(helper.id, this.registeredHelper(helper, source))
     }
     return snapshot
+  }
+
+  private registeredHelper(helper: PreparedHelper, source: string): RegisteredSkillHelper {
+    return Object.freeze({
+      id: helper.id,
+      language: helper.language,
+      source,
+      exports: helper.exports,
+      dependencies: helper.dependencies,
+      skillId: helper.skillId,
+      origin: helper.origin,
+      interfaceRevision: helper.interfaceRevision,
+      generation: helper.generation,
+      digest: helper.digest
+    })
+  }
+
+  private assertSnapshot(snapshot: ReadonlyMap<string, RegisteredSkillHelper>): void {
+    let totalBytes = 0
+    for (const helper of snapshot.values()) {
+      totalBytes += Buffer.byteLength(helper.source)
+      if (totalBytes > HELPER_SOURCE_TOTAL_MAX_BYTES) {
+        fail('registered helper catalog exceeds the total source size limit')
+      }
+    }
+    assertDependencyGraph(snapshot)
+  }
+
+  private sameBinding(
+    left: ReadonlyMap<string, RegisteredSkillHelper>,
+    right: ReadonlyMap<string, RegisteredSkillHelper>
+  ): boolean {
+    if (left.size !== right.size) return false
+    for (const [id, helper] of left) {
+      const candidate = right.get(id)
+      if (
+        !candidate ||
+        candidate.skillId !== helper.skillId ||
+        candidate.origin !== helper.origin ||
+        candidate.interfaceRevision !== helper.interfaceRevision ||
+        candidate.generation !== helper.generation ||
+        candidate.digest !== helper.digest ||
+        candidate.language !== helper.language ||
+        candidate.exports.length !== helper.exports.length ||
+        candidate.exports.some((value, index) => value !== helper.exports[index]) ||
+        candidate.dependencies.length !== helper.dependencies.length ||
+        candidate.dependencies.some((value, index) => value !== helper.dependencies[index])
+      ) {
+        return false
+      }
+    }
+    return true
   }
 
   private async materialize(helper: PreparedHelper): Promise<string> {

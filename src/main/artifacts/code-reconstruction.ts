@@ -15,6 +15,7 @@ import type { NotebookKernelKind } from '../../shared/notebook'
 import type { NotebookHelperModuleEvidence } from '../../shared/notebook'
 import type { AgentFrameworkId } from '../../shared/settings'
 import type { ExplicitAgentBackendTarget } from '../settings/backend-resolver'
+import { notebookHelperEvidenceKey } from '../notebook/helper-evidence'
 import type { ArtifactVersionReconstructionProvenance } from './provenance-read-model'
 import { readArtifactReconstructionEvidence } from './provenance-reconstruction-evidence'
 
@@ -212,18 +213,11 @@ const sourceState = (
     return { state: 'unavailable', reason: 'helper-evidence-incomplete' }
   }
   if (provenance.execution.helperModules?.length) {
-    const helperKeys = new Set(
-      provenance.execution.helperModules.map((helper) =>
-        [
-          helper.skillIdentity,
-          helper.helperId,
-          helper.registeredGeneration,
-          helper.sourceDigest
-        ].join('\0')
-      )
-    )
+    const helperKeys = new Set(provenance.execution.helperModules.map(notebookHelperEvidenceKey))
     if (
-      producerRun.helperModuleKeys?.some((key) => !helperKeys.has(key)) ||
+      provenance.execution.runs.some((run) =>
+        run.helperModuleKeys?.some((key) => !helperKeys.has(key))
+      ) ||
       producerRun.scriptTruncated ||
       provenance.execution.truncation?.omittedLeadingRunCount
     ) {
@@ -280,36 +274,25 @@ const buildFreshReplayCode = (source: ReconstructionSource): string | undefined 
   if (!allHelpers?.length || source.language !== 'python') return undefined
   const producerKeys = new Set(producer.helperModuleKeys ?? [])
   if (producerKeys.size === 0) return undefined
-  const helpers = allHelpers.filter((helper) =>
-    producerKeys.has(
-      [
-        helper.skillIdentity,
-        helper.helperId,
-        helper.registeredGeneration,
-        helper.sourceDigest
-      ].join('\0')
-    )
-  )
+  const helpers = allHelpers.filter((helper) => producerKeys.has(notebookHelperEvidenceKey(helper)))
   if (helpers.length !== producerKeys.size) {
     throw new Error('Producer helper evidence is incomplete.')
   }
-  const earlierRuns = source.provenance
+  const replayRuns = source.provenance
     .execution!.runs.filter(
       (run) =>
-        run.runId !== producer.runId &&
         run.runIndex <= producer.runIndex &&
-        run.status === 'completed' &&
         run.kernelKind === producer.kernelKind &&
         (!producer.kernelEpochId ||
           !run.kernelEpochId ||
           run.kernelEpochId === producer.kernelEpochId)
     )
     .sort((left, right) => left.runIndex - right.runIndex)
-  if (earlierRuns.some((run) => run.scriptTruncated)) {
+  if (replayRuns.some((run) => run.status === 'completed' && run.scriptTruncated)) {
     throw new Error('Supporting cell evidence is incomplete.')
   }
   const byId = new Map(helpers.map((helper) => [helper.helperId, helper]))
-  const helperSections = orderedHelpers(helpers).map((helper) => {
+  const helperSection = (helper: NotebookHelperModuleEvidence): string => {
     const dependencyExports = (helper.dependencies ?? []).flatMap(
       (dependency) => byId.get(dependency)?.exports ?? []
     )
@@ -326,15 +309,37 @@ const buildFreshReplayCode = (source: ReconstructionSource): string | undefined 
       'globals().update({name: __os_private[name] for name in __os_exports})',
       'del __os_helper_source, __os_dependency_names, __os_private, __os_exports, __os_missing'
     ].join('\n')
-  })
-  const earlierSections = earlierRuns.map((run) =>
-    [`# === Earlier successful cell: ${run.runId} ===`, run.script].join('\n')
-  )
-  const code = [
-    ...helperSections,
-    ...earlierSections,
-    `# === Producer cell: ${producer.runId} ===\n${producer.script}`
-  ].join('\n\n')
+  }
+  const ordered = orderedHelpers(helpers)
+  const emittedHelperKeys = new Set<string>()
+  const sections: string[] = []
+  for (const run of replayRuns) {
+    const runHelperKeys = new Set(run.helperModuleKeys ?? [])
+    const newlyLoaded = ordered.filter((helper) => {
+      const key = notebookHelperEvidenceKey(helper)
+      return runHelperKeys.has(key) && !emittedHelperKeys.has(key)
+    })
+    for (const helper of newlyLoaded) {
+      const missingDependency = (helper.dependencies ?? []).find((dependency) => {
+        const evidence = byId.get(dependency)
+        return !evidence || !runHelperKeys.has(notebookHelperEvidenceKey(evidence))
+      })
+      if (missingDependency) {
+        throw new Error(`Helper evidence is missing dependency: ${missingDependency}`)
+      }
+      sections.push(helperSection(helper))
+      emittedHelperKeys.add(notebookHelperEvidenceKey(helper))
+    }
+    if (run.runId === producer.runId) {
+      sections.push(`# === Producer cell: ${producer.runId} ===\n${producer.script}`)
+    } else if (run.status === 'completed') {
+      sections.push(`# === Earlier successful cell: ${run.runId} ===\n${run.script}`)
+    }
+  }
+  if ([...producerKeys].some((key) => !emittedHelperKeys.has(key))) {
+    throw new Error('Producer helper evidence is incomplete.')
+  }
+  const code = sections.join('\n\n')
   if (byteLength(code) > RESPONSE_MAX_BYTES) {
     throw new Error('Fresh replay evidence exceeds the bounded reconstruction limit.')
   }

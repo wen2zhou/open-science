@@ -129,6 +129,8 @@ class SkillCatalogModule {
     this.registeredHelpers = new RegisteredSkillHelperCatalog({
       storageRoot: options.storageRoot,
       packages: () => this.registeredHelperPackages(),
+      trustedBuiltinPackages: async () =>
+        this.registeredHelperPackagesFromCatalog(await this.skillRegistry.list()),
       authorize: async ({ skillId }, scope) => {
         if (options.authorizeRegisteredHelper) {
           return options.authorizeRegisteredHelper(skillId, scope)
@@ -149,7 +151,7 @@ class SkillCatalogModule {
 
   registeredHelperCatalog(): Pick<
     RegisteredSkillHelperCatalog,
-    'resolve' | 'protectedDirectories'
+    'resolve' | 'protectedDirectories' | 'refresh'
   > {
     return this.registeredHelpers
   }

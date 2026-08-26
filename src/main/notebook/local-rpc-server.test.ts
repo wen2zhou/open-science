@@ -2532,6 +2532,31 @@ describe('notebook local RPC server', () => {
     let rpcEndpoint = ''
     let rpcToken = ''
     const leasedInput: NotebookRunInputFile = { ...registeredInput }
+    const workflowArtifact: NotebookRunInputFile = {
+      inputFileVersionId: 'panel-a-v1',
+      sourceKind: 'artifact-version',
+      sourceFileId: 'panel-a',
+      sourceVersionNumber: 1,
+      sourceProjectId: 'default-project',
+      sourceSessionId: 'panel-worker-1',
+      filename: 'panel_A.png',
+      contentType: 'image/png',
+      sizeBytes: 20,
+      checksum: 'b'.repeat(64),
+      storageKey: 'artifacts/default-project/panel-worker-1/panel-a-v1/content',
+      association: 'turn-attached'
+    }
+    const openRun = vi.fn(
+      async () =>
+        ({
+          getRunInputFiles: () => [leasedInput, workflowArtifact],
+          resolve: async () => {
+            leasedInput.association = 'resolver-accessed'
+            return '/managed/groups.csv'
+          },
+          close: () => [{ ...leasedInput }, { ...workflowArtifact }]
+        }) as never
+    )
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
@@ -2578,15 +2603,7 @@ describe('notebook local RPC server', () => {
       inputRegistry: {
         registerTurn: async () => undefined,
         getTurnInputs: () => [registeredInput],
-        openRun: async () =>
-          ({
-            getRunInputFiles: () => [leasedInput],
-            resolve: async () => {
-              leasedInput.association = 'resolver-accessed'
-              return '/managed/groups.csv'
-            },
-            close: () => [{ ...leasedInput }]
-          }) as never,
+        openRun,
         clearSession: () => undefined
       }
     })
@@ -2621,7 +2638,8 @@ describe('notebook local RPC server', () => {
             projectId: 'default-project',
             sessionId: 'session-1',
             workspaceCwd: '/workspace',
-            code: 'print("ok")'
+            code: 'print("ok")',
+            artifactVersionInputs: ['panel-a-v1']
           }
         })
       })
@@ -2636,13 +2654,20 @@ describe('notebook local RPC server', () => {
         messageBranchId: 'branch-1',
         runtimeSegmentId: 'runtime-1',
         promptMessageId: 'message-user-1',
-        inputFiles: [{ ...registeredInput, association: 'resolver-accessed' }]
+        inputFiles: [{ ...registeredInput, association: 'resolver-accessed' }, workflowArtifact]
+      })
+      expect(openRun).toHaveBeenCalledWith({
+        projectId: 'default-project',
+        appSessionId: 'session-1',
+        promptMessageId: 'message-user-1',
+        artifactVersionInputs: ['panel-a-v1']
       })
       const payload = (await response.json()) as {
         result: { inputFiles: Array<Record<string, unknown>> }
       }
       expect(payload.result.inputFiles).toEqual([
-        expect.objectContaining({ inputFileVersionId: 'upload-version-1' })
+        expect.objectContaining({ inputFileVersionId: 'upload-version-1' }),
+        expect.objectContaining({ inputFileVersionId: 'panel-a-v1' })
       ])
       expect(payload.result.inputFiles[0]).not.toHaveProperty('storageKey')
     } finally {

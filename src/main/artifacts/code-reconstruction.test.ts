@@ -5,6 +5,7 @@ import { promisify } from 'node:util'
 import { describe, expect, it, vi } from 'vitest'
 
 import type { ExplicitAgentBackendTarget } from '../settings/backend-resolver'
+import { notebookHelperEvidenceKey } from '../notebook/helper-evidence'
 import type { ArtifactVersionReconstructionProvenance } from './provenance-read-model'
 import {
   ArtifactCodeReconstructionService,
@@ -282,7 +283,12 @@ describe('ArtifactCodeReconstructionService', () => {
     const doubleSource = 'def double(value):\n    return value * 2'
     const secondSource = 'def second(value):\n    return double(value) + 1'
     const helperKey = (id: string, source: string): string =>
-      [`skill:${id}`, id, 'generation-1', digest(source)].join('\0')
+      notebookHelperEvidenceKey({
+        helperId: id,
+        skillIdentity: `skill:${id}`,
+        registeredGeneration: 'generation-1',
+        sourceDigest: digest(source)
+      })
     value.execution!.helperModules = [
       {
         helperId: 'double-helper',
@@ -335,6 +341,9 @@ describe('ArtifactCodeReconstructionService', () => {
     expect(harness.run).not.toHaveBeenCalled()
     const code = generated.value.code
     expect(code.indexOf('Supporting helper source: double-helper')).toBeLessThan(
+      code.indexOf('Earlier successful cell: run-1')
+    )
+    expect(code.indexOf('Earlier successful cell: run-1')).toBeLessThan(
       code.indexOf('Supporting helper source: second-helper')
     )
     expect(code).not.toContain('return 100')
@@ -343,6 +352,43 @@ describe('ArtifactCodeReconstructionService', () => {
     )
     const replay = await execFileAsync('python3', ['-c', code])
     expect(replay.stdout.trim()).toBe('9.0')
+  })
+
+  it('injects a helper first loaded mid-epoch after earlier imports and definitions', async () => {
+    const value = provenance()
+    const helperSource = 'def offset(value):\n    return value + 2'
+    const helper = {
+      helperId: 'offset-helper',
+      skillIdentity: 'skill:offset-helper',
+      packageOrigin: 'built-in',
+      interfaceRevision: '1',
+      registeredGeneration: 'generation-1',
+      exports: ['offset'],
+      source: helperSource,
+      sourceDigest: digest(helperSource)
+    }
+    value.execution!.helperModules = [helper]
+    value.execution!.helperEvidenceStatus = { state: 'complete' }
+    value.execution!.runs[0]!.kernelEpochId = 'epoch-1'
+    value.execution!.runs[0]!.script = 'baseline = 40'
+    delete value.execution!.runs[0]!.helperModuleKeys
+    value.execution!.runs[1]!.kernelEpochId = 'epoch-1'
+    value.execution!.runs[1]!.script = 'print(offset(baseline))'
+    value.execution!.runs[1]!.helperModuleKeys = [notebookHelperEvidenceKey(helper)]
+    const harness = makeHarness(value)
+
+    const generated = await harness.service.generate(request)
+
+    if (generated.state !== 'cached') throw new Error('expected cached replay')
+    const code = generated.value.code
+    expect(code.indexOf('Earlier successful cell: run-1')).toBeLessThan(
+      code.indexOf('Supporting helper source: offset-helper')
+    )
+    expect(code.indexOf('Supporting helper source: offset-helper')).toBeLessThan(
+      code.indexOf('Producer cell: run-2')
+    )
+    const replay = await execFileAsync('python3', ['-c', code])
+    expect(replay.stdout.trim()).toBe('42')
   })
 
   it('refuses to present incomplete helper evidence as replayable code', async () => {

@@ -505,8 +505,19 @@ const createApplicationModules = async (
       return
     }
     if (runtimeRef.current) {
-      broadcastToRenderers('skills:catalog-changed', undefined)
-      void runtimeRef.current.requestSkillsReload()
+      void settingsService
+        .registeredHelperCatalog()
+        .refresh()
+        .then(() => {
+          broadcastToRenderers('skills:catalog-changed', undefined)
+          return runtimeRef.current?.requestSkillsReload()
+        })
+        .catch((error) => {
+          createLogger('skills').warn(
+            'Skill catalog reconciliation failed',
+            diagnosticErrorFields(error)
+          )
+        })
     }
   }
   const sideChatOwnerRef: { current: SideChatRuntimeOwner | undefined } = {
@@ -2220,6 +2231,7 @@ const createApplicationModules = async (
       storageRoot: configRoot,
       catalog: { list: () => settingsService.listUserSkills() },
       onCatalogChanged: async () => {
+        await settingsService.registeredHelperCatalog().refresh()
         broadcastToRenderers('skills:catalog-changed', undefined)
         await runtime.requestSkillsReload()
       }

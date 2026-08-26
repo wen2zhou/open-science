@@ -1468,6 +1468,230 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
     }
   })
 
+  it('preserves a sanitized missing dependency diagnostic without dispatching producer code', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-missing-dependency-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    const helperHost = new NotebookHelperModuleHost({
+      resolve: async (id) => ({
+        id,
+        language: 'python',
+        source: [
+          'import open_science_definitely_missing_dependency',
+          'def dependency_export():',
+          '    return 42'
+        ].join('\n'),
+        exports: ['dependency_export']
+      })
+    })
+    const plan = await helperHost.plan(
+      { id: 'missing-dependency-epoch', processKey: 'python:default-python' },
+      await helperHost.preflight('python', ['dependency-helper'])
+    )
+    const sentinel = join(cwdDir, 'missing-dependency-producer-sentinel.txt')
+
+    try {
+      const result = await executor.execute({
+        ...request,
+        language: 'python',
+        helperModules: plan.injections,
+        code: `open(${JSON.stringify(sentinel)}, "w").write("ran")`
+      })
+      const globals = await executor.execute({
+        ...request,
+        language: 'python',
+        code: 'print("dependency_export" in globals())'
+      })
+
+      expect(result).toMatchObject({ status: 'failed', kernelDispatched: false })
+      expect(result.traceback).toContain(
+        'Python ModuleNotFoundError: No module named "open_science_definitely_missing_dependency".'
+      )
+      expect(result.traceback).toContain('inspect_packages')
+      expect(result.traceback).toContain('manage_packages')
+      expect(result.traceback).not.toContain('def dependency_export')
+      expect(result.helperModulesInitialized).toBeUndefined()
+      expect(existsSync(sentinel)).toBe(false)
+      expect(globals).toMatchObject({ status: 'completed', stdout: 'False\n' })
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('fails closed when an initialization exception carries an unsafe module name and secrets', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-sanitized-error-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    const secret = 'helper-secret-token-123'
+    const protectedPath = '/private/registered/generation/kernel.py'
+    const helperHost = new NotebookHelperModuleHost({
+      resolve: async (id) => ({
+        id,
+        language: 'python',
+        source: `raise ModuleNotFoundError(${JSON.stringify(`${secret} at ${protectedPath}`)}, name=${JSON.stringify(protectedPath)})\ndef never_published():\n    return 1`,
+        exports: ['never_published']
+      })
+    })
+    const plan = await helperHost.plan(
+      { id: 'sanitized-error-epoch', processKey: 'python:default-python' },
+      await helperHost.preflight('python', ['sanitized-helper'])
+    )
+
+    try {
+      const result = await executor.execute({
+        ...request,
+        language: 'python',
+        helperModules: plan.injections,
+        code: 'never_published()'
+      })
+      const globals = await executor.execute({
+        ...request,
+        language: 'python',
+        code: 'print("never_published" in globals())'
+      })
+
+      expect(result).toMatchObject({ status: 'failed', kernelDispatched: false })
+      expect(result.traceback).toMatch(/HELPER_INITIALIZATION_FAILED.*sanitized-helper/)
+      expect(result.traceback).toContain('Python ModuleNotFoundError.')
+      expect(result.traceback).not.toContain('No module named')
+      expect(result.traceback).not.toContain(secret)
+      expect(result.traceback).not.toContain(protectedPath)
+      expect(result.traceback).not.toContain('never_published')
+      expect(result.helperModulesInitialized).toBeUndefined()
+      expect(globals).toMatchObject({ status: 'completed', stdout: 'False\n' })
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('rolls back every staged export when a later helper is missing an export', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-plan-failure-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    const helperHost = new NotebookHelperModuleHost({
+      resolve: async (id) =>
+        id === 'first-helper'
+          ? {
+              id,
+              language: 'python',
+              source: 'def first_export():\n    return 1',
+              exports: ['first_export']
+            }
+          : id === 'later-helper'
+            ? {
+                id,
+                language: 'python',
+                source: 'def sibling_export():\n    return 2',
+                exports: ['sibling_export', 'missing_export']
+              }
+            : undefined
+    })
+    const plan = await helperHost.plan(
+      { id: 'plan-failure-epoch', processKey: 'python:default-python' },
+      await helperHost.preflight('python', ['first-helper', 'later-helper'])
+    )
+    const sentinel = join(cwdDir, 'plan-failure-producer-sentinel.txt')
+
+    try {
+      const result = await executor.execute({
+        ...request,
+        language: 'python',
+        helperModules: plan.injections,
+        code: `open(${JSON.stringify(sentinel)}, "w").write("ran")`
+      })
+      const globals = await executor.execute({
+        ...request,
+        language: 'python',
+        code: `print([name for name in ["first_export", "sibling_export", "missing_export"] if name in globals()])`
+      })
+
+      expect(result).toMatchObject({
+        status: 'failed',
+        kernelDispatched: false
+      })
+      expect(result.traceback).toMatch(/HELPER_MISSING_EXPORT.*later-helper/)
+      expect(result.helperModulesInitialized).toBeUndefined()
+      expect(existsSync(sentinel)).toBe(false)
+      expect(globals).toMatchObject({ status: 'completed', stdout: '[]\n' })
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('validates a later helper collision before executing any helper or producer code', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-plan-collision-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    const helperSentinel = join(cwdDir, 'plan-collision-helper-sentinel.txt')
+    const producerSentinel = join(cwdDir, 'plan-collision-producer-sentinel.txt')
+    const helperHost = new NotebookHelperModuleHost({
+      resolve: async (id) =>
+        id === 'first-helper'
+          ? {
+              id,
+              language: 'python',
+              source: [
+                `open(${JSON.stringify(helperSentinel)}, "w").write("ran")`,
+                'def first_export():',
+                '    return 1'
+              ].join('\n'),
+              exports: ['first_export']
+            }
+          : id === 'later-helper'
+            ? {
+                id,
+                language: 'python',
+                source: 'def occupied_export():\n    return 2',
+                exports: ['occupied_export']
+              }
+            : undefined
+    })
+    const plan = await helperHost.plan(
+      { id: 'plan-collision-epoch', processKey: 'python:default-python' },
+      await helperHost.preflight('python', ['first-helper', 'later-helper'])
+    )
+
+    try {
+      await executor.execute({ ...request, language: 'python', code: 'occupied_export = 7' })
+      const result = await executor.execute({
+        ...request,
+        language: 'python',
+        helperModules: plan.injections,
+        code: `open(${JSON.stringify(producerSentinel)}, "w").write("ran")`
+      })
+      const globals = await executor.execute({
+        ...request,
+        language: 'python',
+        code: 'print(occupied_export, "first_export" in globals())'
+      })
+
+      expect(result).toMatchObject({ status: 'failed', kernelDispatched: false })
+      expect(result.traceback).toMatch(/HELPER_EXPORT_COLLISION.*later-helper/)
+      expect(result.helperModulesInitialized).toBeUndefined()
+      expect(existsSync(helperSentinel)).toBe(false)
+      expect(existsSync(producerSentinel)).toBe(false)
+      expect(globals).toMatchObject({ status: 'completed', stdout: '7 False\n' })
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
   it('rejects an initial global collision without publishing sibling exports or producer code', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-collision-'))
     const request = baseRequest(cwdDir)

@@ -192,6 +192,48 @@ describe('UserSkillCatalogObserver', () => {
     observer.dispose()
   })
 
+  it('publishes helper descriptor changes even without a package compatibility fingerprint', async () => {
+    const watcher = fakeWatcher()
+    const base = {
+      id: 'personal-plot',
+      name: 'plot',
+      displayName: 'Plot',
+      description: 'Plot helper.',
+      source: 'personal' as const,
+      updatedAt: '2026-08-25T00:00:00.000Z',
+      sourceDir: '/skills/personal/plot'
+    }
+    const descriptor = {
+      id: 'plot-helper',
+      language: 'python' as const,
+      interfaceRevision: 1,
+      implementation: 'kernel.py',
+      exports: ['plot'],
+      dependencies: []
+    }
+    const list = vi
+      .fn()
+      .mockResolvedValueOnce([{ ...base, helpers: [descriptor] }])
+      .mockResolvedValue([{ ...base, helpers: [{ ...descriptor, exports: ['plot_v2'] }] }])
+    const onCatalogChanged = vi.fn()
+    const observer = new UserSkillCatalogObserver({
+      storageRoot: await makeStorage(),
+      catalog: { list },
+      onCatalogChanged,
+      watchDirectory: watcher.watchDirectory,
+      debounceMs: 1,
+      reconcileIntervalMs: 60_000
+    })
+    await observer.start()
+    await waitForCalls(list, 1)
+    await list.mock.results[0].value
+
+    watcher.emitChange()
+
+    await waitForCalls(onCatalogChanged, 1)
+    observer.dispose()
+  })
+
   it('forces one shared notification for explicit catalog mutations', async () => {
     const watcher = fakeWatcher()
     const onCatalogChanged = vi.fn()

@@ -184,25 +184,61 @@ const injectionCode = (
 ): string => {
   const filename = `<open-science-helper:${helper.id}>`
   const body = [
-    `__os_target = __os_target_globals`,
     `__os_dependency_names = ${JSON.stringify([...dependencyExports])}`,
-    `__os_dependency_missing = [name for name in __os_dependency_names if name not in __os_target]`,
+    `__os_available = {**__os_target, **__os_staged}`,
+    `__os_dependency_missing = [name for name in __os_dependency_names if name not in __os_available]`,
     `if __os_dependency_missing:`,
-    `    raise RuntimeError("OPEN_SCIENCE_HELPER_DEPENDENCY_EXPORT_MISSING")`,
-    `__os_private = {"__builtins__": __builtins__, **{name: __os_target[name] for name in __os_dependency_names}}`,
-    `exec(compile(${JSON.stringify(helper.source)}, ${JSON.stringify(filename)}, "exec"), __os_private, __os_private)`,
+    `    raise RuntimeError(${JSON.stringify(`OPEN_SCIENCE_HELPER_DEPENDENCY_EXPORT_MISSING:${helper.id}`)})`,
+    `__os_private = {"__builtins__": __builtins__, **{name: __os_available[name] for name in __os_dependency_names}}`,
+    `try:`,
+    `    exec(compile(${JSON.stringify(helper.source)}, ${JSON.stringify(filename)}, "exec"), __os_private, __os_private)`,
+    `except Exception as __os_error:`,
+    `    __os_ascii_letters = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ"`,
+    `    __os_ascii_identifier = __os_ascii_letters + "_0123456789"`,
+    `    __os_error_type = type(__os_error).__name__`,
+    `    __os_safe_error_type = (__os_error_type if isinstance(__os_error_type, str) and 0 < len(__os_error_type) <= 128 and __os_error_type[0] in (__os_ascii_letters + "_") and all(character in __os_ascii_identifier for character in __os_error_type[1:]) else "Exception")`,
+    `    __os_safe_detail = ":" + __os_safe_error_type`,
+    `    if isinstance(__os_error, ModuleNotFoundError):`,
+    `        __os_missing_module = getattr(__os_error, "name", None)`,
+    `        __os_module_parts = (__os_missing_module.split(".") if isinstance(__os_missing_module, str) and 0 < len(__os_missing_module) <= 256 else [])`,
+    `        __os_safe_module = bool(__os_module_parts) and all(part and part[0] in (__os_ascii_letters + "_") and all(character in __os_ascii_identifier for character in part[1:]) for part in __os_module_parts)`,
+    `        if __os_safe_module:`,
+    `            __os_safe_detail += ":MISSING_MODULE:" + __os_missing_module`,
+    `    raise RuntimeError(${JSON.stringify(`OPEN_SCIENCE_HELPER_INITIALIZATION_FAILED:${helper.id}`)} + __os_safe_detail) from None`,
     `__os_names = ${JSON.stringify([...helper.exports])}`,
     `__os_missing = [name for name in __os_names if name not in __os_private or not callable(__os_private[name])]`,
     `if __os_missing:`,
-    `    raise RuntimeError("OPEN_SCIENCE_HELPER_MISSING_EXPORT")`,
-    `__os_collisions = [name for name in __os_names if name in __os_target]`,
+    `    raise RuntimeError(${JSON.stringify(`OPEN_SCIENCE_HELPER_MISSING_EXPORT:${helper.id}`)})`,
+    `__os_staged.update({name: __os_private[name] for name in __os_names})`
+  ].join('\n')
+
+  return body
+}
+
+const notebookHelperInitializationCode = (
+  helpers: readonly NotebookHelperModuleInjection[]
+): string => {
+  const exportOwners = Object.fromEntries(
+    helpers.flatMap((helper) => helper.exports.map((name) => [name, helper.id] as const))
+  )
+  const duplicateExports = helpers
+    .flatMap((helper) => helper.exports)
+    .filter((name, index, names) => names.indexOf(name) !== index)
+  const body = [
+    `__os_target = __os_target_globals`,
+    `__os_staged = {}`,
+    `__os_export_owners = ${JSON.stringify(exportOwners)}`,
+    `__os_duplicate_exports = ${JSON.stringify(duplicateExports)}`,
+    `if __os_duplicate_exports:`,
+    `    raise RuntimeError("OPEN_SCIENCE_HELPER_EXPORT_COLLISION:" + __os_export_owners[__os_duplicate_exports[0]])`,
+    `__os_collisions = [name for name in __os_export_owners if name in __os_target]`,
     `if __os_collisions:`,
-    `    raise RuntimeError("OPEN_SCIENCE_HELPER_EXPORT_COLLISION")`,
-    `__os_staged = {name: __os_private[name] for name in __os_names}`,
+    `    raise RuntimeError("OPEN_SCIENCE_HELPER_EXPORT_COLLISION:" + __os_export_owners[__os_collisions[0]])`,
+    ...helpers.map(({ code }) => code),
     `__os_target.update(__os_staged)`
   ].join('\n')
 
-  return `exec(compile(${JSON.stringify(body)}, ${JSON.stringify(filename)}, "exec"), {"__builtins__": __builtins__, "__os_target_globals": globals()})`
+  return `exec(compile(${JSON.stringify(body)}, "<open-science-helper-plan>", "exec"), {"__builtins__": __builtins__, "__os_target_globals": globals()})`
 }
 
 class NotebookHelperModuleHost {
@@ -379,6 +415,7 @@ class NotebookHelperModuleHost {
 }
 
 export { NOTEBOOK_HELPER_EVIDENCE_MAX_SOURCE_BYTES, NotebookHelperModuleHost }
+export { notebookHelperInitializationCode }
 export type {
   NotebookHelperModuleCatalog,
   NotebookHelperModuleInjection,

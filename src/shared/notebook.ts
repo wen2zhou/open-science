@@ -763,6 +763,11 @@ export type ExecuteNotebookCodeRequest = NotebookSessionRequest & {
   // Stable IDs resolved by the host-owned registered Skill catalog. Callers cannot provide helper
   // implementation paths, source, or digests.
   helperModules?: string[]
+  // Immutable Artifact Versions produced or selected during the current control-plane workflow.
+  // The main process resolves and validates these identities before dispatch, then records them as
+  // inputs of this Run. This is intentionally identities-only: callers cannot supply paths or
+  // provenance metadata.
+  artifactVersionInputs?: string[]
   timeoutMs?: number
   cellId?: string
   source?: NotebookRunSource

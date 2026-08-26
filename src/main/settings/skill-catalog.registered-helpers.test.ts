@@ -251,6 +251,49 @@ describe('SkillCatalogModule registered helper projection', () => {
     ).rejects.toThrow('not authorized')
   })
 
+  it('refreshes direct helper edits for new epochs while an active epoch stays pinned', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'helper-direct-refresh-'))
+    roots.push(storageRoot)
+    const personal = await skill('personal', 'editable-skill')
+    const catalog = new SkillCatalogModule({
+      repository: new SettingsRepository(storageRoot),
+      storageRoot,
+      skillRegistry: { list: async () => [] } as unknown as SkillRegistry,
+      userSkills: { list: async () => [personal] } as unknown as UserSkillRepository
+    })
+    const registry = catalog.registeredHelperCatalog()
+    const host = new NotebookHelperModuleHost(registry)
+    const activeEpoch = { id: 'active', processKey: 'python:system-python' }
+    const first = await host.plan(
+      activeEpoch,
+      await host.preflight('python', ['editable-skill-helper'], activeEpoch)
+    )
+    host.commitInitialized(activeEpoch, ['editable-skill-helper'])
+
+    await writeFile(join(personal.sourceDir, 'kernel.py'), 'def editable_skill():\n    return 2\n')
+    await registry.refresh()
+
+    const pinned = await host.plan(
+      activeEpoch,
+      await host.preflight('python', ['editable-skill-helper'], activeEpoch)
+    )
+    const nextEpoch = { id: 'next', processKey: 'python:system-python' }
+    const replacement = await host.plan(
+      nextEpoch,
+      await host.preflight('python', ['editable-skill-helper'], nextEpoch)
+    )
+
+    expect(pinned.injections).toEqual([])
+    expect(host.loadedEvidence(activeEpoch).helperModules[0]).toMatchObject({
+      registeredGeneration: first.injections[0]?.registeredGeneration,
+      source: expect.stringContaining('return 1')
+    })
+    expect(replacement.injections[0]?.code).toContain('return 2')
+    expect(replacement.injections[0]?.registeredGeneration).not.toBe(
+      first.injections[0]?.registeredGeneration
+    )
+  })
+
   it('rolls back a promoted Personal candidate that conflicts with the live helper graph', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'helper-promotion-rollback-'))
     roots.push(storageRoot)

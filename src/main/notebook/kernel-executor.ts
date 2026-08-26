@@ -46,7 +46,10 @@ import {
   NOTEBOOK_TEXT_LIMIT_BYTES,
   NOTEBOOK_TEXT_LIMIT_ENV
 } from './content-limits'
-import type { NotebookHelperModuleInjection } from './helper-module-host'
+import {
+  notebookHelperInitializationCode,
+  type NotebookHelperModuleInjection
+} from './helper-module-host'
 import { notebookInterpreterIdentity } from './session-aggregate'
 
 // Driver-internal process kind. 'python'/'r' are the data kernels selected by the agent-facing
@@ -312,7 +315,7 @@ const errorToExecutionResult = (
 }
 
 const helperInitializationError = (
-  helper: NotebookHelperModuleInjection,
+  helpers: readonly NotebookHelperModuleInjection[],
   responseError: string
 ): Error => {
   const stage = responseError.includes('OPEN_SCIENCE_HELPER_MISSING_EXPORT')
@@ -322,9 +325,31 @@ const helperInitializationError = (
       : responseError.includes('OPEN_SCIENCE_HELPER_DEPENDENCY_EXPORT_MISSING')
         ? 'HELPER_DEPENDENCY_EXPORT_MISSING'
         : 'HELPER_INITIALIZATION_FAILED'
+  const helper =
+    helpers.find(({ id }) =>
+      responseError.includes(`${stage.replace(/^HELPER_/, 'OPEN_SCIENCE_HELPER_')}:${id}`)
+    ) ??
+    helpers.find(({ id }) => responseError.includes(`:${id}`)) ??
+    helpers[0]
+  if (!helper) return new Error(`${stage}: helper plan failed before producer dispatch.`)
+  const initializationDiagnostic = responseError.match(
+    new RegExp(
+      `OPEN_SCIENCE_HELPER_INITIALIZATION_FAILED:${helper.id}:` +
+        `([A-Za-z_][A-Za-z0-9_]{0,127})` +
+        `(?::MISSING_MODULE:([A-Za-z_][A-Za-z0-9_]*(?:\\.[A-Za-z_][A-Za-z0-9_]*)*))?`
+    )
+  )
+  const pythonErrorType = initializationDiagnostic?.[1]
+  const missingModule = initializationDiagnostic?.[2]
+  const actionableDetail = missingModule
+    ? ` Python ${pythonErrorType}: No module named "${missingModule}". ` +
+      'Use inspect_packages to inspect the current environment and manage_packages to install dependencies.'
+    : pythonErrorType
+      ? ` Python ${pythonErrorType}.`
+      : ''
   return new Error(
     `${stage}: helper "${helper.id}" failed before producer dispatch ` +
-      `(digest ${helper.digest.slice(0, 12)}, epoch ${helper.epochId}).`
+      `(digest ${helper.digest.slice(0, 12)}, epoch ${helper.epochId}).${actionableDetail}`
   )
 }
 
@@ -381,30 +406,42 @@ class NotebookKernelExecutor implements NotebookExecutor {
       const proc = await this.ensureProc(key, kind, env, request)
       if (proc.pending) throw new Error('Notebook execution is already running.')
 
-      for (const helper of request.helperModules ?? []) {
+      const helperModules = request.helperModules ?? []
+      for (const helper of helperModules) {
         if (kind !== 'python' || helper.language !== 'python') {
           throw new Error(
             `UNSUPPORTED_HELPER_LANGUAGE: helper "${helper.id}" cannot run on this kernel.`
           )
         }
+      }
+      if (helperModules.length > 0) {
         const initialization = await this.sendRequest(
           proc,
           randomUUID(),
-          { ...request, code: helper.code, helperModules: undefined },
+          {
+            ...request,
+            code: notebookHelperInitializationCode(helperModules),
+            helperModules: undefined
+          },
           () => undefined
         )
-        // A matched success response proves publication even when a soft timeout/cancellation raced
-        // with it. Preserve that fact so a surviving process is not reinjected into its own exports.
-        if (initialization.response.error === null) helperModulesInitialized.push(helper.id)
+        // A matched success response proves the whole transaction published even when a soft
+        // timeout/cancellation raced with it. Never report or commit a partial helper plan.
+        if (initialization.response.error === null) {
+          helperModulesInitialized.push(...helperModules.map(({ id }) => id))
+        }
         if (initialization.cancelled) throw new NotebookExecutionCancelledError()
         if (initialization.timedOut) {
+          const first = helperModules[0]
           throw new NotebookExecutionTimeoutError(
-            `HELPER_INITIALIZATION_TIMEOUT: helper "${helper.id}" timed out before producer dispatch ` +
-              `(digest ${helper.digest.slice(0, 12)}, epoch ${helper.epochId}).`
+            `HELPER_INITIALIZATION_TIMEOUT: helper plan timed out before producer dispatch` +
+              (first
+                ? ` (first helper "${first.id}", digest ${first.digest.slice(0, 12)}, epoch ${first.epochId}).`
+                : '.')
           )
         }
         if (initialization.response.error !== null) {
-          throw helperInitializationError(helper, initialization.response.error)
+          throw helperInitializationError(helperModules, initialization.response.error)
         }
       }
       workingFileObservation = await startWorkingFileObservation(request)

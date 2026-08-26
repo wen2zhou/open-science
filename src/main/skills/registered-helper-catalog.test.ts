@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { chmod, mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -215,32 +215,210 @@ describe('RegisteredSkillHelperCatalog', () => {
     }
   )
 
-  it('restores the durable catalog binding on cold start without reading a lost mutable source', async () => {
-    const storageRoot = await mkdtemp(join(tmpdir(), 'registered-cold-start-'))
+  it.each(['personal', 'imported'] as const)(
+    'restores the durable %s binding on cold start without trusting directly edited source',
+    async (origin) => {
+      const storageRoot = await mkdtemp(join(tmpdir(), 'registered-cold-start-'))
+      roots.push(storageRoot)
+      const entry = await packageFixture(origin, `durable-${origin}`)
+      const firstCatalog = new RegisteredSkillHelperCatalog({
+        storageRoot,
+        packages: async () => [entry]
+      })
+      const first = await firstCatalog.resolve(`durable-${origin}-helper`)
+
+      let sourceReads = 0
+      await writeFile(
+        join(entry.packageRoot, 'kernel.py'),
+        'def public_value():\n    return "v2"\n'
+      )
+      const restartedCatalog = new RegisteredSkillHelperCatalog({
+        storageRoot,
+        packages: async () => {
+          sourceReads += 1
+          return [entry]
+        }
+      })
+
+      const restarted = await restartedCatalog.resolve(`durable-${origin}-helper`)
+      expect(restarted).toMatchObject({
+        origin,
+        generation: first?.generation,
+        source: expect.stringContaining('return "v1"')
+      })
+      expect(sourceReads).toBe(0)
+
+      await restartedCatalog.refresh()
+      const refreshed = await restartedCatalog.resolve(`durable-${origin}-helper`)
+      expect(refreshed).toMatchObject({
+        origin,
+        source: expect.stringContaining('return "v2"')
+      })
+      expect(refreshed?.generation).not.toBe(first?.generation)
+      expect(sourceReads).toBe(1)
+    }
+  )
+
+  it('advances changed Built-ins on cold start and reuses an unchanged generation', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'registered-builtin-upgrade-'))
     roots.push(storageRoot)
-    const entry = await packageFixture('personal', 'durable')
+    const builtin = await packageFixture('builtin', 'bundled')
     const firstCatalog = new RegisteredSkillHelperCatalog({
       storageRoot,
-      packages: async () => [entry]
+      packages: async () => [builtin],
+      trustedBuiltinPackages: async () => [builtin]
     })
-    const first = await firstCatalog.resolve('durable-helper')
+    const first = await firstCatalog.resolve('bundled-helper')
 
-    await rm(entry.packageRoot, { recursive: true, force: true })
-    let sourceReads = 0
-    const restartedCatalog = new RegisteredSkillHelperCatalog({
+    const unchangedCatalog = new RegisteredSkillHelperCatalog({
       storageRoot,
       packages: async () => {
-        sourceReads += 1
-        throw new Error('mutable package source must not be read during cold start')
-      }
+        throw new Error('full mutable catalog must not be read during cold start')
+      },
+      trustedBuiltinPackages: async () => [builtin]
     })
-
-    await expect(restartedCatalog.resolve('durable-helper')).resolves.toMatchObject({
+    const unchanged = await unchangedCatalog.resolve('bundled-helper')
+    expect(unchanged).toMatchObject({
       generation: first?.generation,
       source: expect.stringContaining('return "v1"')
     })
-    expect(sourceReads).toBe(0)
+
+    await writeFile(
+      join(builtin.packageRoot, 'kernel.py'),
+      'def public_value():\n    return "v2"\n'
+    )
+    const upgradedCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => {
+        throw new Error('full mutable catalog must not be read during cold start')
+      },
+      trustedBuiltinPackages: async () => [builtin]
+    })
+    const upgraded = await upgradedCatalog.resolve('bundled-helper')
+    expect(upgraded).toMatchObject({
+      origin: 'builtin',
+      source: expect.stringContaining('return "v2"')
+    })
+    expect(upgraded?.generation).not.toBe(first?.generation)
   })
+
+  it('reconciles a mixed snapshot from trusted Built-ins only and removes retired Built-ins', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'registered-mixed-upgrade-'))
+    roots.push(storageRoot)
+    const builtin = await packageFixture('builtin', 'bundled')
+    const retired = await packageFixture('builtin', 'retired')
+    const personal = await packageFixture('personal', 'personal')
+    const imported = await packageFixture('imported', 'imported')
+    const firstCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => [builtin, retired, personal, imported],
+      trustedBuiltinPackages: async () => [builtin, retired]
+    })
+    await firstCatalog.resolve('bundled-helper')
+
+    await Promise.all([
+      writeFile(join(builtin.packageRoot, 'kernel.py'), 'def public_value():\n    return "v2"\n'),
+      writeFile(join(personal.packageRoot, 'kernel.py'), 'def public_value():\n    return "v2"\n'),
+      writeFile(join(imported.packageRoot, 'kernel.py'), 'def public_value():\n    return "v2"\n')
+    ])
+    let fullCatalogReads = 0
+    const restartedCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => {
+        fullCatalogReads += 1
+        return [builtin, personal, imported]
+      },
+      trustedBuiltinPackages: async () => [builtin]
+    })
+
+    await expect(restartedCatalog.resolve('bundled-helper')).resolves.toMatchObject({
+      source: expect.stringContaining('return "v2"')
+    })
+    await expect(restartedCatalog.resolve('retired-helper')).resolves.toBeUndefined()
+    await expect(restartedCatalog.resolve('personal-helper')).resolves.toMatchObject({
+      source: expect.stringContaining('return "v1"')
+    })
+    await expect(restartedCatalog.resolve('imported-helper')).resolves.toMatchObject({
+      source: expect.stringContaining('return "v1"')
+    })
+    expect(fullCatalogReads).toBe(0)
+  })
+
+  it('fails closed instead of removing a Built-in required by a restored user helper', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'registered-builtin-removal-'))
+    roots.push(storageRoot)
+    const builtin = await packageFixture('builtin', 'dependency')
+    const personal = await packageFixture('personal', 'dependent')
+    personal.helpers[0] = {
+      ...personal.helpers[0]!,
+      dependencies: ['dependency-helper']
+    }
+    const firstCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => [builtin, personal],
+      trustedBuiltinPackages: async () => [builtin]
+    })
+    await firstCatalog.resolve('dependent-helper')
+
+    const removedCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => {
+        throw new Error('full mutable catalog must not be read during cold start')
+      },
+      trustedBuiltinPackages: async () => []
+    })
+    await expect(removedCatalog.resolve('dependent-helper')).rejects.toThrow('unknown dependency')
+
+    // The rejected reconciliation does not replace the durable binding.
+    const recoveredCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => [],
+      trustedBuiltinPackages: async () => [builtin]
+    })
+    await expect(recoveredCatalog.resolve('dependent-helper')).resolves.toBeDefined()
+  })
+
+  it.each(['missing', 'corrupt'] as const)(
+    'fails closed when a persisted immutable generation is %s',
+    async (damage) => {
+      const storageRoot = await mkdtemp(join(tmpdir(), 'registered-cold-damage-'))
+      roots.push(storageRoot)
+      const entry = await packageFixture('personal', 'durable')
+      const firstCatalog = new RegisteredSkillHelperCatalog({
+        storageRoot,
+        packages: async () => [entry]
+      })
+      const first = await firstCatalog.resolve('durable-helper')
+      const sourcePath = join(
+        firstCatalog.generationRoot(first!.generation),
+        'durable-helper',
+        'source.py'
+      )
+      if (damage === 'missing') await rm(sourcePath)
+      else {
+        await chmod(sourcePath, 0o600)
+        await writeFile(sourcePath, 'def public_value():\n    return "tampered"\n')
+      }
+
+      let sourceReads = 0
+      const restartedCatalog = new RegisteredSkillHelperCatalog({
+        storageRoot,
+        packages: async () => {
+          sourceReads += 1
+          return [entry]
+        },
+        trustedBuiltinPackages: async () => {
+          sourceReads += 1
+          return []
+        }
+      })
+
+      await expect(restartedCatalog.resolve('durable-helper')).rejects.toThrow(
+        'immutable generation mismatch'
+      )
+      expect(sourceReads).toBe(0)
+    }
+  )
 
   it.each([
     ['/absolute.py', 'implementation locator'],

@@ -212,19 +212,19 @@ An Artifact path is an implementation detail, never the Agent-to-Agent contract.
 
 Resolve the collected Version identities, place the paths in a small JSON
 handoff under `process.env.OPEN_SCIENCE_HANDOFF_DIR`, and read that manifest from
-the Python producer cell. Call `compose_figure`, verify the notebook result is
-completed, and keep the actual returned `runId`. Publish the final PNG with
+the Python producer cell. On that same `notebook_execute` request, pass the
+ordered, de-duplicated panel identities as
+`artifactVersionInputs: panelVersions.map(({ versionId }) => versionId)`. This
+registers the delegated immutable panel Versions as the composition Run's
+provenance inputs; paths remain byte-access implementation details and must never
+replace Version identities in this field. Call `compose_figure`, verify the
+notebook result is completed, and keep the actual returned `runId`. Publish the
+final PNG with
 `write_artifact_file({ filename: "figure.png", producerRunId: composeResult.runId })`;
 never substitute a round number or locally invented Run identity. This binds the
-composite Artifact to the run that last wrote its bytes.
-
-The current `notebook_execute` request schema has no dynamic `inputFiles` field.
-Therefore newly delegated panel Versions cannot yet be registered as the
-composition Run's provenance inputs merely by resolving their paths. Do not
-claim they are recorded as `inputFiles`, and do not add a Python-to-JavaScript
-bridge or change the central notebook schema here. Once the registered-origin
-integration adds that seam, pass the same immutable panel Version identities as
-the producer Run inputs; the workflow and panel map need no redesign.
+composite Artifact to the run that last wrote its bytes. Fail the workflow if
+any panel Version cannot be validated in the active Project; never silently
+compose with an unregistered provenance input.
 
 ## 3.5 Look before review
 

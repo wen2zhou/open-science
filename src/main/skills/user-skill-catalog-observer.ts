@@ -38,6 +38,16 @@ const catalogFingerprint = (skills: readonly BundledSkill[]): string =>
         source: skill.source,
         updatedAt: skill.updatedAt,
         compatibility: skill.compatibility,
+        helpers: skill.helpers
+          ?.map((helper) => ({
+            id: helper.id,
+            language: helper.language,
+            interfaceRevision: helper.interfaceRevision,
+            implementation: helper.implementation,
+            exports: [...helper.exports].sort(),
+            dependencies: [...helper.dependencies].sort()
+          }))
+          .sort((left, right) => left.id.localeCompare(right.id)),
         author: skill.author,
         license: skill.license,
         thirdParty: skill.thirdParty
