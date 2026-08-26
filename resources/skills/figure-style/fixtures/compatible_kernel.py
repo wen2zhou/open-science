@@ -10,6 +10,7 @@ def apply_figure_style(*, frame="open", font=None, sizes=(8, 7, 6), grid=False):
     if frame not in {"open", "boxed", "none"}:
         raise ValueError("frame must be 'open', 'boxed', or 'none'")
     params = {
+        "font.family": "sans-serif",
         "font.size": base,
         "axes.titlesize": base,
         "axes.labelsize": base,
@@ -18,21 +19,26 @@ def apply_figure_style(*, frame="open", font=None, sizes=(8, 7, 6), grid=False):
         "ytick.labelsize": tick,
         "axes.titlelocation": "left",
         "axes.titleweight": "normal",
+        "axes.labelweight": "normal",
+        "axes.linewidth": 0.6,
         "axes.grid": bool(grid),
-        "grid.linewidth": 0.5,
-        "grid.alpha": 0.25,
         "xtick.direction": "out",
         "ytick.direction": "out",
+        "xtick.major.size": 3,
+        "ytick.major.size": 3,
+        "xtick.major.width": 0.6,
+        "ytick.major.width": 0.6,
         "legend.frameon": False,
+        "figure.dpi": 200,
         "savefig.dpi": 300,
         "savefig.bbox": "tight",
-        "savefig.pad_inches": 0.1,
+        "lines.linewidth": 1.2,
+        "patch.linewidth": 0.6,
         "pdf.fonttype": 42,
         "ps.fonttype": 42,
     }
     if font is not None:
-        params["font.family"] = "sans-serif"
-        params["font.sans-serif"] = [font]
+        params["font.sans-serif"] = [font, "DejaVu Sans"]
     mpl.rcParams.update(params)
     mpl.rcParams["axes.spines.top"] = frame == "boxed"
     mpl.rcParams["axes.spines.right"] = frame == "boxed"
@@ -48,7 +54,9 @@ def set_frame(ax, style="open"):
     }[style]
     for spine, visible in zip(("left", "bottom", "right", "top"), visibility):
         ax.spines[spine].set_visible(visible)
-    ax.tick_params(left=style != "none", bottom=style != "none")
+        if visible:
+            ax.spines[spine].set_linewidth(0.6)
+    ax.tick_params(direction="out", length=0 if style == "none" else 3, width=0.6)
 
 
 def panel_letter(ax, letter, dx=-0.18, dy=1.02, case="lower", fontsize=None):
@@ -210,7 +218,29 @@ def panel_crops(fig, dpi=None, pad_px=6, bbox_inches=None, pad_inches=None):
         lettered = {axes: str(index) for index, axes in enumerate(fig.axes)}
     crops = {}
     for axes, label in lettered.items():
-        bounds = axes.get_tightbbox(renderer)
+        boxes = [axes.get_tightbbox(renderer)]
+        subplot = axes.get_subplotspec()
+        for sibling in fig.axes:
+            if sibling is axes or sibling in lettered:
+                continue
+            sibling_subplot = sibling.get_subplotspec()
+            same_row = (
+                subplot is None
+                or sibling_subplot is None
+                or subplot.rowspan == sibling_subplot.rowspan
+            )
+            same_column = (
+                subplot is None
+                or sibling_subplot is None
+                or subplot.colspan == sibling_subplot.colspan
+            )
+            if (
+                axes.get_shared_y_axes().joined(axes, sibling) and same_row
+            ) or (
+                axes.get_shared_x_axes().joined(axes, sibling) and same_column
+            ):
+                boxes.append(sibling.get_tightbbox(renderer))
+        bounds = mpl.transforms.Bbox.union(boxes)
         left = (bounds.x0 / fig.dpi - origin_x) * dpi
         right = (bounds.x1 / fig.dpi - origin_x) * dpi
         top = height - (bounds.y1 / fig.dpi - origin_y) * dpi
