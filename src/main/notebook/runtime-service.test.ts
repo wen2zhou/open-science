@@ -206,6 +206,122 @@ const lifecycleCallbackHarness = (
 }
 
 describe('notebook runtime service', () => {
+  it('resolves registered helper IDs before dispatching the producer request', async () => {
+    const root = await createStorageRoot()
+    const executions: NotebookExecutionRequest[] = []
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      environmentStateTracker: verifiedPackageMutationTracker(),
+      helperModuleCatalog: {
+        resolve: async (id: string) =>
+          id === 'registered-test-helper'
+            ? {
+                id,
+                language: 'python' as const,
+                source:
+                  'PRIVATE_CONSTANT = 40\ndef public_add(value):\n    return PRIVATE_CONSTANT + value',
+                exports: ['public_add']
+              }
+            : undefined
+      },
+      executorFactory: () => ({
+        execute: async (request) => {
+          executions.push(request)
+          return {
+            status: 'completed' as const,
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    } as ConstructorParameters<typeof NotebookRuntimeService>[0])
+
+    await service.execute({
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      language: 'python',
+      code: 'print(public_add(2))',
+      helperModules: ['registered-test-helper']
+    } as Parameters<NotebookRuntimeService['execute']>[0])
+
+    expect(executions).toHaveLength(1)
+    expect(executions[0]).toMatchObject({
+      code: 'print(public_add(2))',
+      helperModules: [
+        {
+          id: 'registered-test-helper',
+          language: 'python',
+          exports: ['public_add']
+        }
+      ]
+    })
+    expect(executions[0]?.helperModules?.[0]?.code).not.toContain('print(public_add(2))')
+  })
+
+  it('rejects unknown, illegal, structured, and R helper requests before creating an executor', async () => {
+    const root = await createStorageRoot()
+    const executorFactory = vi.fn(() => ({
+      execute: vi.fn(),
+      shutdown: async () => ({ reaped: true })
+    }))
+    const catalogResolve = vi.fn(async () => undefined)
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      helperModuleCatalog: { resolve: catalogResolve },
+      executorFactory
+    })
+    const base = {
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      code: 'producer_sentinel = True'
+    }
+
+    await expect(service.execute({ ...base, helperModules: ['unknown-helper'] })).rejects.toThrow(
+      /UNKNOWN_HELPER_MODULE/
+    )
+    for (const id of [
+      '',
+      ' ',
+      '.',
+      '..',
+      './helper',
+      'helper/name',
+      'helper\\name',
+      'helper\0name',
+      'Helper',
+      'héĺper',
+      'a'.repeat(129)
+    ]) {
+      await expect(service.execute({ ...base, helperModules: [id] })).rejects.toThrow(
+        /INVALID_HELPER_ID/
+      )
+    }
+    await expect(
+      service.execute({
+        ...base,
+        helperModules: [{ id: 'unknown-helper', path: '/tmp/kernel.py', source: 'x', digest: 'x' }]
+      } as unknown as Parameters<NotebookRuntimeService['execute']>[0])
+    ).rejects.toThrow(/INVALID_HELPER_ID/)
+    await expect(
+      service.execute({ ...base, language: 'r', helperModules: ['unknown-helper'] })
+    ).rejects.toThrow(/UNSUPPORTED_HELPER_LANGUAGE/)
+
+    expect(catalogResolve).toHaveBeenCalledTimes(1)
+    expect(executorFactory).not.toHaveBeenCalled()
+  })
+
   it('routes root and child Frames through isolated owners while aggregating attributed history', async () => {
     const root = await createStorageRoot()
     const executions: NotebookExecutionRequest[] = []

@@ -10,7 +10,11 @@ import type { NotebookRunInputFile } from '../../shared/notebook'
 import { PlanCommandError } from '../../shared/session-plan/contract'
 import { fetchLocalRpc } from '../local-rpc-transport'
 import { NotebookLocalRpcServer } from './local-rpc-server'
-import { NotebookControlCompletionCapturedError, NotebookRuntimeService } from './runtime-service'
+import {
+  NotebookControlCompletionCapturedError,
+  NotebookRuntimeService,
+  type NotebookExecutionRequest
+} from './runtime-service'
 import { NotebookRunRepository, getRuntimeRoot } from './repository'
 import type { NotebookInputRunLease } from './input-registry'
 import {
@@ -1314,21 +1318,33 @@ describe('notebook local RPC server', () => {
 
   it('requires a bearer token and dispatches notebook execute calls', async () => {
     const root = await createStorageRoot()
+    const executions: NotebookExecutionRequest[] = []
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
       projectId: 'default-project',
       repository: new NotebookRunRepository(root),
+      helperModuleCatalog: {
+        resolve: async (id) => ({
+          id,
+          language: 'python',
+          source: 'def public_add(value):\n    return value + 1',
+          exports: ['public_add']
+        })
+      },
       executorFactory: () => ({
-        execute: async (request) => ({
-          status: 'completed',
-          stdout: '2\n',
-          stderr: '',
-          traceback: '',
-          cwdAfter: request.cwd,
-          outputs: [],
-          workingFiles: []
-        }),
+        execute: async (request) => {
+          executions.push(request)
+          return {
+            status: 'completed' as const,
+            stdout: '2\n',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: [],
+            workingFiles: []
+          }
+        },
         shutdown: async () => ({ reaped: true })
       })
     })
@@ -1362,7 +1378,8 @@ describe('notebook local RPC server', () => {
             projectId: 'default-project',
             sessionId: 'session-1',
             workspaceCwd: '/workspace',
-            code: 'print(1 + 1)'
+            code: 'print(1 + 1)',
+            helperModules: ['registered-test-helper']
           }
         })
       })
@@ -1376,6 +1393,10 @@ describe('notebook local RPC server', () => {
         text: {
           stdout: '2\n'
         }
+      })
+      expect(executions[0]).toMatchObject({
+        code: 'print(1 + 1)',
+        helperModules: [{ id: 'registered-test-helper', exports: ['public_add'] }]
       })
     } finally {
       await server.close()

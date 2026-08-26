@@ -359,6 +359,31 @@ class NotebookKernelExecutor implements NotebookExecutor {
 
       const proc = await this.ensureProc(key, kind, env, request)
       if (proc.pending) throw new Error('Notebook execution is already running.')
+
+      for (const helper of request.helperModules ?? []) {
+        if (kind !== 'python' || helper.language !== 'python') {
+          throw new Error(
+            `UNSUPPORTED_HELPER_LANGUAGE: helper "${helper.id}" cannot run on this kernel.`
+          )
+        }
+        const initialization = await this.sendRequest(
+          proc,
+          randomUUID(),
+          { ...request, code: helper.code, helperModules: undefined },
+          () => undefined
+        )
+        if (initialization.cancelled) throw new NotebookExecutionCancelledError()
+        if (initialization.timedOut) {
+          throw new NotebookExecutionTimeoutError(
+            `Helper initialization timed out for "${helper.id}".`
+          )
+        }
+        if (initialization.response.error !== null) {
+          throw new Error(
+            `HELPER_INITIALIZATION_FAILED: helper "${helper.id}" failed before producer dispatch.\n${initialization.response.error}`
+          )
+        }
+      }
       workingFileObservation = await startWorkingFileObservation(request)
       // sendRequest installs proc.pending synchronously. Revalidate immediately before that handoff:
       // an involuntary drop while ensureProc was finishing must settle this execute() locally rather

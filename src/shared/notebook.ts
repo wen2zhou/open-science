@@ -732,6 +732,9 @@ export type RunNotebookCellRequest = NotebookSessionRequest & {
 // Convenience request that writes a cell and runs it in one command.
 export type ExecuteNotebookCodeRequest = NotebookSessionRequest & {
   code: string
+  // Stable IDs resolved by the host-owned registered Skill catalog. Callers cannot provide helper
+  // implementation paths, source, or digests.
+  helperModules?: string[]
   timeoutMs?: number
   cellId?: string
   source?: NotebookRunSource

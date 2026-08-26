@@ -114,6 +114,11 @@ import {
   assertNotebookCodeAppendWithinLimit,
   assertNotebookCodeWithinLimit
 } from './content-limits'
+import {
+  NotebookHelperModuleHost,
+  type NotebookHelperModuleCatalog,
+  type NotebookHelperModuleInjection
+} from './helper-module-host'
 
 // Locale fallback when no explicit locale is injected (see shared/mirror.ts: non-CN locales resolve
 // to public hosts, so this default never silently forces a CN mirror).
@@ -223,6 +228,7 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
     | 'refreshAfterPackageMutation'
   >
   dependencyAnalyzer?: Pick<NotebookDependencyAnalyzer, 'project'>
+  helperModuleCatalog?: NotebookHelperModuleCatalog
 }
 
 // The wire binding plus the interpreter override the executor needs. `resolvedInterpreter` is set only
@@ -351,8 +357,10 @@ class NotebookRuntimeService {
     | 'refreshAfterPackageMutation'
   >
   private disposalPromise: Promise<{ reaped: boolean }> | undefined
+  private readonly helperModules: NotebookHelperModuleHost
 
   constructor(private readonly options: NotebookRuntimeServiceOptions) {
+    this.helperModules = new NotebookHelperModuleHost(options.helperModuleCatalog)
     const defaultProjectId = resolveProjectId(options)
     this.repository = options.repository ?? new NotebookRunRepository(options.dataRoot)
     this.exportReader = new NotebookExportReader({
@@ -811,14 +819,16 @@ class NotebookRuntimeService {
   // Compatibility facade: Session lookup and public summary projection stay here; lifecycle is owned.
   async runCell(
     request: RunNotebookCellRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    helperModules?: readonly NotebookHelperModuleInjection[]
   ): Promise<NotebookRunSummary> {
     return this.sessionLifecycle.runProjectOperation(request, async (deletionSignal) => {
       const session = await this.sessionLifecycle.ensure(request)
       const { run, dependencyProjection } = await this.executionOwner.executeDataCell(
         session,
         request,
-        signal ? AbortSignal.any([signal, deletionSignal]) : deletionSignal
+        signal ? AbortSignal.any([signal, deletionSignal]) : deletionSignal,
+        helperModules
       )
       return this.sessionReadModel.toRunSummary(session, run, dependencyProjection)
     })
@@ -830,6 +840,10 @@ class NotebookRuntimeService {
     signal?: AbortSignal
   ): Promise<NotebookRunSummary> {
     assertNotebookCodeWithinLimit(request.code)
+    const helperModules = await this.helperModules.resolve(
+      request.language ?? 'python',
+      request.helperModules
+    )
     const begin = await this.beginCodeCell(request)
 
     await this.appendCodeCell({
@@ -849,7 +863,8 @@ class NotebookRuntimeService {
         ...request,
         cellId: begin.cellId
       },
-      signal
+      signal,
+      helperModules
     )
   }
 

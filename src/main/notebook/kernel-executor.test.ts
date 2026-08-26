@@ -18,6 +18,7 @@ import {
 import { TimeoutController } from './timeout-controller'
 import { NOTEBOOK_PROTOCOL_LINE_LIMIT_BYTES, NOTEBOOK_TEXT_LIMIT_BYTES } from './content-limits'
 import type { NotebookExecutionRequest } from './runtime-service'
+import { NotebookHelperModuleHost } from './helper-module-host'
 import {
   startWorkingFileObservation,
   toPortableNotebookRelativePath
@@ -1058,6 +1059,111 @@ gate('NotebookKernelExecutor (fake loop)', () => {
 })
 
 posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
+  it('injects a registered helper on a private frame before the unchanged producer frame', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    const helperModules = await new NotebookHelperModuleHost({
+      resolve: async (id) =>
+        id === 'registered-test-helper'
+          ? {
+              id,
+              language: 'python',
+              source: [
+                'import math as private_math',
+                'PRIVATE_CONSTANT = 40',
+                'def private_helper(value):',
+                '    return private_math.floor(value)',
+                'def public_add(value):',
+                '    return PRIVATE_CONSTANT + private_helper(value)'
+              ].join('\n'),
+              exports: ['public_add']
+            }
+          : undefined
+    }).resolve('python', ['registered-test-helper'])
+
+    try {
+      await executor.execute({ ...request, code: 'warmup_value = 1', language: 'python' })
+      const child = procFor(executor, 'python')?.child as ChildProcessWithoutNullStreams
+      const originalWrite = child.stdin.write.bind(child.stdin)
+      const frames: string[] = []
+      child.stdin.write = ((chunk: string | Uint8Array, ...args: unknown[]) => {
+        frames.push(String(chunk))
+        return originalWrite(chunk, ...(args as []))
+      }) as typeof child.stdin.write
+
+      const producerCode = [
+        'producer_state = public_add(2.9)',
+        'print(producer_state)',
+        "private_names = ['private_math', 'PRIVATE_CONSTANT', 'private_helper', '__os_private', '__os_names', '__os_missing', '__os_target', '__os_target_globals', '__os_collisions', '__os_staged']",
+        'print(all(name not in globals() for name in private_names))'
+      ].join('\n')
+      const result = await executor.execute({
+        ...request,
+        code: producerCode,
+        language: 'python',
+        helperModules
+      })
+      const persisted = await executor.execute({
+        ...request,
+        code: 'print(producer_state)',
+        language: 'python'
+      })
+
+      expect(result).toMatchObject({ status: 'completed', stdout: '42\nTrue\n' })
+      expect(persisted).toMatchObject({ status: 'completed', stdout: '42\n' })
+      expect(frames).toHaveLength(3)
+      expect(JSON.parse(frames[0] ?? '{}')).not.toMatchObject({ code: producerCode })
+      expect(JSON.parse(frames[1] ?? '{}')).toMatchObject({ code: producerCode })
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('fails helper initialization atomically without dispatching the producer sentinel', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-failure-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    const helperModules = await new NotebookHelperModuleHost({
+      resolve: async (id) => ({
+        id,
+        language: 'python',
+        source: 'def staged_export():\n    return 42',
+        exports: ['staged_export', 'missing_export']
+      })
+    }).resolve('python', ['registered-test-helper'])
+    const sentinel = join(cwdDir, 'producer-sentinel.txt')
+
+    try {
+      const result = await executor.execute({
+        ...request,
+        language: 'python',
+        helperModules,
+        code: `open(${JSON.stringify(sentinel)}, "w").write("ran")`
+      })
+      const healthy = await executor.execute({
+        ...request,
+        language: 'python',
+        code: `print("staged_export" in globals(), "missing_export" in globals())`
+      })
+
+      expect(result).toMatchObject({ status: 'failed', kernelDispatched: false })
+      expect(result.traceback).toMatch(/HELPER_INITIALIZATION_FAILED.*missing_export/s)
+      expect(existsSync(sentinel)).toBe(false)
+      expect(healthy).toMatchObject({ status: 'completed', stdout: 'False False\n' })
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
   it('bounds producer output before it crosses the loop protocol', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-output-limit-'))
     const request = baseRequest(cwdDir)

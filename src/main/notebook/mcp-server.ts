@@ -66,7 +66,8 @@ type NotebookMcpServerConfigRequest = NotebookMcpEnvironment & {
 const executeToolSchema = {
   code: z.string(),
   cellId: z.string().min(1).optional(),
-  language: z.enum(['python', 'r']).optional()
+  language: z.enum(['python', 'r']).optional(),
+  helperModules: z.array(z.string().min(1).max(128)).optional()
   // No `environment`: the env is the session's bound runtime (notebook_bind_runtime), not a per-call
   // argument. To run in a different env, bind/switch to it first.
 }
@@ -1246,7 +1247,7 @@ const NOTEBOOK_RPC_TOOLS: NotebookRpcToolDefinition[] = [
     name: 'notebook_execute',
     title: 'Execute notebook code',
     description:
-      'Write and run one persistent Python/R cell; reuse cellId to rerun it. The session binding selects the runtime (no per-call runtime/environment). Keep runId as producerRunId when this run last writes a final artifact.',
+      'Write and run one persistent Python/R cell; reuse cellId to rerun it. For a registered Python Skill helper, pass only its stable ID in helperModules; never pass an implementation path, source, or digest. The session binding selects the runtime (no per-call runtime/environment). Keep runId as producerRunId when this run last writes a final artifact.',
     method: 'execute',
     inputSchema: executeToolSchema,
     mapResult: compactNotebookExecutionResult,

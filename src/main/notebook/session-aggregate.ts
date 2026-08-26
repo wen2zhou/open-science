@@ -19,6 +19,7 @@ import type { TrustedControlInvocationIdentity } from '../../shared/agents-contr
 import type { TransientViewImage } from './host-view-image-service'
 import { resolveProjectId, type ProjectIdScope } from '../../shared/project-scope'
 import { notebookLaneScope, type NotebookLaneIdentity } from './lane-identity'
+import type { NotebookHelperModuleInjection } from './helper-module-host'
 
 export type NotebookSessionResolvedInterpreter = {
   command: string
@@ -33,6 +34,7 @@ export type NotebookSessionRuntimeBinding = NotebookRuntimeBinding & {
 
 export type NotebookSessionExecutionRequest = {
   code: string
+  helperModules?: readonly NotebookHelperModuleInjection[]
   cwd: string
   notebookSessionRoot: string
   dataRoot: string

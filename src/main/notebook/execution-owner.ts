@@ -43,6 +43,7 @@ import {
   type NotebookDependencyInterpreter,
   type NotebookDependencyProjection
 } from './dependency-analysis'
+import type { NotebookHelperModuleInjection } from './helper-module-host'
 
 type NotebookControlResult = Pick<
   NotebookSessionExecutionResult,
@@ -159,7 +160,8 @@ class NotebookExecutionOwner {
   async executeDataCell(
     session: NotebookSessionAggregate,
     request: RunNotebookCellRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    helperModules?: readonly NotebookHelperModuleInjection[]
   ): Promise<{ run: NotebookRunRecord; dependencyProjection: NotebookDependencyProjection }> {
     const cell = session.cellView(request.cellId)
     if (session.isCellReceiving(cell.id)) {
@@ -168,7 +170,7 @@ class NotebookExecutionOwner {
     const route = this.options.dataExecutionAdmission.route(session, cell.language)
     return session.enqueueExecution(
       route.processKey,
-      () => this.executeDataCellExclusive(session, cell, request, signal),
+      () => this.executeDataCellExclusive(session, cell, request, signal, helperModules),
       signal
     )
   }
@@ -176,7 +178,8 @@ class NotebookExecutionOwner {
     session: NotebookSessionAggregate,
     cell: Readonly<NotebookCell>,
     request: RunNotebookCellRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    helperModules?: readonly NotebookHelperModuleInjection[]
   ): Promise<{ run: NotebookRunRecord; dependencyProjection: NotebookDependencyProjection }> {
     this.options.notifyAvailable(session, request.source ?? 'agent')
     const { runId } = this.options.runTerminalization.allocateRunIdentity()
@@ -256,6 +259,7 @@ class NotebookExecutionOwner {
           const executionResult = await session
             .execute({
               code: cell.code,
+              ...(helperModules?.length ? { helperModules } : {}),
               cwd: cwdBefore,
               language: cell.language,
               environment,
