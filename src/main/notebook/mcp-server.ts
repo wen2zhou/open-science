@@ -1247,7 +1247,7 @@ const NOTEBOOK_RPC_TOOLS: NotebookRpcToolDefinition[] = [
     name: 'notebook_execute',
     title: 'Execute notebook code',
     description:
-      'Write and run one persistent Python/R cell; reuse cellId to rerun it. For a registered Python Skill helper, pass only its stable ID in helperModules; never pass an implementation path, source, or digest. The session binding selects the runtime (no per-call runtime/environment). Keep runId as producerRunId when this run last writes a final artifact.',
+      "Run a persistent Python/R cell; reuse cellId. Registered Python helpers accept stable helperModules IDs only—never paths/source/digests. Binding selects runtime. Preserve a final artifact's runId as producerRunId.",
     method: 'execute',
     inputSchema: executeToolSchema,
     mapResult: compactNotebookExecutionResult,

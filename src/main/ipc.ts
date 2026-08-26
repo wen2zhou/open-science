@@ -123,6 +123,7 @@ import {
 import { ManagedPreviewResources } from './managed-preview-resources'
 import type { PreviewProtocolRegistrar } from './managed-preview-protocol'
 import type { ManagedPreviewSource } from '../shared/preview-resources'
+import { resolveEffectiveSpecialistSkills } from '../shared/specialist'
 import {
   createOfficePreviewFrameProcessResolver,
   createOfficePreviewProcessMemoryReader
@@ -1046,6 +1047,7 @@ const createApplicationModules = async (
       locale: app.getLocale(),
       appVersion: app.getVersion(),
       translate,
+      helperModuleCatalog: settingsService.registeredHelperCatalog(),
       events: applicationEvents,
       disposeTimeoutMs: QUIT_SHUTDOWN_BUDGET_MS,
       isBackendTeardownOwned: () => backendTeardownOwnedByCoordinator
@@ -1905,6 +1907,15 @@ const createApplicationModules = async (
   const notebookRpcServer = await modules.add(
     new NotebookLocalRpcServer(notebookLocalRpc, {
       onSessionReleased: (sessionId) => completionGateCoordinator.releaseSession(sessionId),
+      resolveSpecialistSkillIds: async (specialistId) => {
+        const profile = await profileService.resolveRunnableById(specialistId)
+        if (!profile.enabled) return []
+        const effective = resolveEffectiveSpecialistSkills(
+          profile,
+          await settingsService.listSpecialistSkillCatalog()
+        )
+        return effective.kind === 'specialist' ? [...new Set(effective.skillIds)] : []
+      },
       connectorService,
       computeService: agentComputeService,
       skillImporter: conversationSkillImporter,

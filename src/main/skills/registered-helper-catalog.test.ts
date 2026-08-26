@@ -1,0 +1,408 @@
+import { mkdir, mkdtemp, readFile, rm, symlink, writeFile } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
+import { afterEach, describe, expect, it } from 'vitest'
+
+import {
+  RegisteredSkillHelperCatalog,
+  type RegisteredSkillPackage
+} from './registered-helper-catalog'
+import { NotebookHelperModuleHost } from '../notebook/helper-module-host'
+import { NotebookKernelExecutor } from '../notebook/kernel-executor'
+import { resolvePythonCommand } from '../notebook/python-command'
+
+const roots: string[] = []
+
+afterEach(async () => {
+  await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
+})
+
+const packageFixture = async (
+  origin: RegisteredSkillPackage['origin'],
+  skillId: string,
+  source = 'def public_value():\n    return "v1"\n'
+): Promise<RegisteredSkillPackage> => {
+  const packageRoot = await mkdtemp(join(tmpdir(), `registered-${origin}-`))
+  roots.push(packageRoot)
+  await writeFile(join(packageRoot, 'kernel.py'), source)
+  return {
+    skillId,
+    origin,
+    packageRoot,
+    helpers: [
+      {
+        id: `${skillId}-helper`,
+        language: 'python',
+        interfaceRevision: 1,
+        implementation: 'kernel.py',
+        exports: ['public_value'],
+        dependencies: []
+      }
+    ]
+  }
+}
+
+const createCatalog = async (
+  packages: () => Promise<readonly RegisteredSkillPackage[]>,
+  authorize?: ConstructorParameters<typeof RegisteredSkillHelperCatalog>[0]['authorize']
+): Promise<RegisteredSkillHelperCatalog> => {
+  const storageRoot = await mkdtemp(join(tmpdir(), 'registered-generations-'))
+  roots.push(storageRoot)
+  return new RegisteredSkillHelperCatalog({ storageRoot, packages, authorize })
+}
+
+describe('RegisteredSkillHelperCatalog', () => {
+  it('normalizes all three supported origins through one catalog port and materializes app-owned generations', async () => {
+    const packages = await Promise.all(
+      (['builtin', 'personal', 'imported'] as const).map((origin) => packageFixture(origin, origin))
+    )
+    const catalog = await createCatalog(async () => packages)
+
+    for (const entry of packages) {
+      const helper = await catalog.resolve(`${entry.skillId}-helper`, {
+        projectId: 'project-1',
+        sessionId: 'session-1'
+      })
+      expect(helper).toMatchObject({
+        id: `${entry.skillId}-helper`,
+        skillId: entry.skillId,
+        origin: entry.origin,
+        language: 'python',
+        interfaceRevision: 1,
+        exports: ['public_value'],
+        dependencies: []
+      })
+      expect(helper?.source).toContain('return "v1"')
+      expect(helper?.generation).toMatch(/^sha256:[0-9a-f]{64}$/)
+      expect(helper?.digest).toMatch(/^sha256:[0-9a-f]{64}$/)
+      expect(JSON.stringify(helper)).not.toContain(entry.packageRoot)
+    }
+  })
+
+  it('executes every origin through the real persistent Python loop after source loss', async () => {
+    const origins = ['builtin', 'personal', 'imported'] as const
+    const packages = await Promise.all(
+      origins.map(async (origin, index) => {
+        const exported = `${origin}_value`
+        const entry = await packageFixture(
+          origin,
+          origin,
+          `def ${exported}():\n    return ${index + 1}\n`
+        )
+        entry.helpers[0] = { ...entry.helpers[0]!, exports: [exported] }
+        return entry
+      })
+    )
+    const catalog = await createCatalog(async () => packages)
+    const host = new NotebookHelperModuleHost(catalog)
+    const injections = await Promise.all(
+      origins.map(async (origin) => {
+        const request = await host.preflight('python', [`${origin}-helper`])
+        return (
+          await host.plan({ id: `${origin}-epoch`, processKey: 'python:default-python' }, request)
+        ).injections
+      })
+    )
+    for (const entry of packages) {
+      await writeFile(join(entry.packageRoot, 'kernel.py'), 'raise RuntimeError("source reread")\n')
+    }
+
+    const root = await mkdtemp(join(tmpdir(), 'registered-real-loop-'))
+    roots.push(root)
+    await mkdir(join(root, 'nb', 'data'), { recursive: true })
+    const python = await resolvePythonCommand()
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py')
+    })
+    try {
+      for (const [index, origin] of origins.entries()) {
+        const result = await executor.execute({
+          cwd: root,
+          notebookSessionRoot: join(root, 'nb'),
+          dataRoot: join(root, 'nb', 'data'),
+          runtimeRoot: join(root, 'runtime'),
+          language: 'python',
+          resolvedInterpreter: python,
+          helperModules: injections[index],
+          code: `print(${origin}_value())`
+        })
+        expect(result).toMatchObject({ status: 'completed', stdout: `${index + 1}\n` })
+      }
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('assigns every helper in one package the same immutable package generation', async () => {
+    const entry = await packageFixture('builtin', 'multi')
+    entry.helpers.push({ ...entry.helpers[0]!, id: 'multi-second-helper' })
+    const catalog = await createCatalog(async () => [entry])
+
+    const first = await catalog.resolve('multi-helper')
+    const second = await catalog.resolve('multi-second-helper')
+    expect(first?.generation).toBe(second?.generation)
+    const root = catalog.generationRoot(first!.generation)
+    await expect(readFile(join(root, 'multi-helper', 'source.py'), 'utf8')).resolves.toContain(
+      'public_value'
+    )
+    await expect(
+      readFile(join(root, 'multi-second-helper', 'source.py'), 'utf8')
+    ).resolves.toContain('public_value')
+  })
+
+  it.each(['builtin', 'personal', 'imported'] as const)(
+    'keeps the old immutable %s generation after replacement and never rereads its source',
+    async (origin) => {
+      const entry = await packageFixture(origin, 'plot')
+      let current = entry
+      const catalog = await createCatalog(async () => [current])
+      const first = await catalog.resolve('plot-helper')
+      expect(first?.source).toContain('"v1"')
+
+      await writeFile(
+        join(entry.packageRoot, 'kernel.py'),
+        'def public_value():\n    return "v2"\n'
+      )
+      expect((await catalog.resolve('plot-helper'))?.source).toContain('"v1"')
+
+      const replacement = await packageFixture(
+        origin,
+        'plot',
+        'def public_value():\n    return "v2"\n'
+      )
+      current = replacement
+      await catalog.refresh()
+      const second = await catalog.resolve('plot-helper')
+      expect(second?.source).toContain('"v2"')
+      expect(second?.generation).not.toBe(first?.generation)
+
+      const generationRoot = catalog.generationRoot(first!.generation)
+      await expect(
+        readFile(join(generationRoot, 'plot-helper', 'source.py'), 'utf8')
+      ).resolves.toContain('"v1"')
+    }
+  )
+
+  it('restores the durable catalog binding on cold start without reading a lost mutable source', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'registered-cold-start-'))
+    roots.push(storageRoot)
+    const entry = await packageFixture('personal', 'durable')
+    const firstCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => [entry]
+    })
+    const first = await firstCatalog.resolve('durable-helper')
+
+    await rm(entry.packageRoot, { recursive: true, force: true })
+    let sourceReads = 0
+    const restartedCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => {
+        sourceReads += 1
+        throw new Error('mutable package source must not be read during cold start')
+      }
+    })
+
+    await expect(restartedCatalog.resolve('durable-helper')).resolves.toMatchObject({
+      generation: first?.generation,
+      source: expect.stringContaining('return "v1"')
+    })
+    expect(sourceReads).toBe(0)
+  })
+
+  it.each([
+    ['/absolute.py', 'implementation locator'],
+    ['../escape.py', 'implementation locator'],
+    ['nested\\kernel.py', 'implementation locator']
+  ])('rejects unsafe locator %s', async (implementation, message) => {
+    const entry = await packageFixture('imported', 'unsafe')
+    entry.helpers[0] = { ...entry.helpers[0]!, implementation }
+    const catalog = await createCatalog(async () => [entry])
+    await expect(catalog.resolve('unsafe-helper')).rejects.toThrow(message)
+  })
+
+  it('rejects symlinks, invalid UTF-8, oversized source, missing exports, and duplicate exports', async () => {
+    const cases: Array<{
+      mutate: (entry: RegisteredSkillPackage) => Promise<void>
+      error: string
+    }> = [
+      {
+        mutate: async (entry) => {
+          await writeFile(
+            join(entry.packageRoot, 'target.py'),
+            'def public_value():\n    return 1\n'
+          )
+          await rm(join(entry.packageRoot, 'kernel.py'))
+          await symlink('target.py', join(entry.packageRoot, 'kernel.py'))
+        },
+        error: 'symbolic link'
+      },
+      {
+        mutate: (entry) =>
+          writeFile(join(entry.packageRoot, 'kernel.py'), Buffer.from([0xff, 0xfe])),
+        error: 'UTF-8'
+      },
+      {
+        mutate: (entry) => writeFile(join(entry.packageRoot, 'kernel.py'), 'x'.repeat(1_048_577)),
+        error: 'size limit'
+      },
+      {
+        mutate: (entry) => writeFile(join(entry.packageRoot, 'kernel.py'), 'VALUE = 1\n'),
+        error: 'callable export'
+      },
+      {
+        mutate: async (entry) => {
+          entry.helpers[0] = { ...entry.helpers[0]!, exports: ['public_value', 'public_value'] }
+        },
+        error: 'duplicate export'
+      }
+    ]
+
+    for (const [index, testCase] of cases.entries()) {
+      const entry = await packageFixture('imported', `bad-${index}`)
+      await testCase.mutate(entry)
+      const catalog = await createCatalog(async () => [entry])
+      await expect(catalog.resolve(`bad-${index}-helper`)).rejects.toThrow(testCase.error)
+    }
+  })
+
+  it.each([
+    ['def public_value(:\n    return 1\n', 'SyntaxError'],
+    ['public_value = 1\n', 'non-callable exports'],
+    ['def another_value():\n    return 1\n', 'missing or non-callable exports'],
+    [
+      'open("forbidden", "w").write("bad")\ndef public_value():\n    return 1\n',
+      "name 'open' is not defined"
+    ]
+  ])('fails closed when isolated Python rejects an export candidate', async (source, message) => {
+    const entry = await packageFixture('personal', 'isolated', source)
+    const catalog = await createCatalog(async () => [entry])
+
+    await expect(catalog.resolve('isolated-helper')).rejects.toThrow(message)
+  })
+
+  it('allows definition-oriented math and json stdlib imports during callable validation', async () => {
+    const entry = await packageFixture(
+      'builtin',
+      'stdlib',
+      [
+        'import json',
+        'import math',
+        'def public_value(value=4):',
+        '    return json.dumps({"root": math.sqrt(value)})'
+      ].join('\n')
+    )
+    const catalog = await createCatalog(async () => [entry])
+
+    await expect(catalog.resolve('stdlib-helper')).resolves.toMatchObject({
+      exports: ['public_value']
+    })
+  })
+
+  it.each([
+    ['os', 'import os\ndef public_value():\n    return os.getcwd()\n'],
+    [
+      'pathlib file access',
+      'from pathlib import Path\nPath("forbidden").read_text()\ndef public_value():\n    return 1\n'
+    ],
+    ['socket', 'import socket\ndef public_value():\n    return socket.socket()\n'],
+    ['subprocess', 'import subprocess\ndef public_value():\n    return subprocess.run([])\n'],
+    ['third-party', 'import definitely_not_a_real_package\ndef public_value():\n    return 1\n']
+  ])('rejects %s imports during callable validation', async (_caseName, source) => {
+    const entry = await packageFixture('imported', 'unsafe-import', source)
+    const catalog = await createCatalog(async () => [entry])
+
+    await expect(catalog.resolve('unsafe-import-helper')).rejects.toThrow(
+      /host access|not allowed|No module named/
+    )
+  })
+
+  it('rejects Connector registered-helper packages as unsupported', async () => {
+    const entry = await packageFixture('imported', 'unsupported-connector')
+    const unsupported = { ...entry, origin: 'connector' } as unknown as RegisteredSkillPackage
+    const catalog = await createCatalog(async () => [unsupported])
+
+    await expect(catalog.resolve('unsupported-connector-helper')).rejects.toThrow('invalid origin')
+  })
+
+  it('fails closed on duplicate IDs, missing dependencies, cycles, and non-callable dependencies', async () => {
+    const first = await packageFixture('builtin', 'first')
+    const duplicate = await packageFixture('personal', 'second')
+    duplicate.helpers[0] = { ...duplicate.helpers[0]!, id: 'first-helper' }
+    await expect(
+      (await createCatalog(async () => [first, duplicate])).resolve('first-helper')
+    ).rejects.toThrow('duplicate helper ID')
+
+    const missing = await packageFixture('imported', 'missing')
+    missing.helpers[0] = { ...missing.helpers[0]!, dependencies: ['absent-helper'] }
+    await expect(
+      (await createCatalog(async () => [missing])).resolve('missing-helper')
+    ).rejects.toThrow('unknown dependency')
+
+    const left = await packageFixture('builtin', 'left')
+    const right = await packageFixture('imported', 'right')
+    left.helpers[0] = { ...left.helpers[0]!, dependencies: ['right-helper'] }
+    right.helpers[0] = { ...right.helpers[0]!, dependencies: ['left-helper'] }
+    await expect(
+      (await createCatalog(async () => [left, right])).resolve('left-helper')
+    ).rejects.toThrow('dependency cycle')
+  })
+
+  it('rejects a registered generation whose combined helper sources exceed the total limit', async () => {
+    const packages = await Promise.all(
+      Array.from({ length: 5 }, (_, index) =>
+        packageFixture(
+          'builtin',
+          `large-${index}`,
+          `def public_value():\n    return ${index}\n#${'x'.repeat(900_000)}`
+        )
+      )
+    )
+    const catalog = await createCatalog(async () => packages)
+
+    await expect(catalog.resolve('large-0-helper')).rejects.toThrow('total source size limit')
+  })
+
+  it('enforces trusted scope authorization without accepting scope claims in helper IDs', async () => {
+    const allowed = await packageFixture('builtin', 'allowed')
+    const denied = await packageFixture('personal', 'denied')
+    const catalog = await createCatalog(
+      async () => [allowed, denied],
+      ({ skillId }, scope) => scope?.sessionId === 'session-1' && skillId === 'allowed'
+    )
+
+    await expect(
+      catalog.resolve('allowed-helper', { projectId: 'project-1', sessionId: 'session-1' })
+    ).resolves.toBeDefined()
+    await expect(
+      catalog.resolve('denied-helper', { projectId: 'project-1', sessionId: 'session-1' })
+    ).rejects.toThrow('not authorized')
+    await expect(catalog.resolve('/tmp/kernel.py')).resolves.toBeUndefined()
+    await expect(catalog.resolve('sha256:' + 'a'.repeat(64))).resolves.toBeUndefined()
+  })
+
+  it('validates Personal and Imported descriptors before a staged package is promoted', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'staged-helper-'))
+    roots.push(root)
+    await mkdir(join(root, 'nested'))
+    await writeFile(join(root, 'kernel.py'), 'def public_value():\n    return 1\n')
+    const descriptor = {
+      schemaVersion: 1,
+      helpers: [
+        {
+          id: 'staged-helper',
+          language: 'python',
+          interfaceRevision: 1,
+          implementation: 'kernel.py',
+          exports: ['missing'],
+          dependencies: []
+        }
+      ]
+    }
+    await writeFile(join(root, 'open-science.json'), JSON.stringify(descriptor))
+
+    const { inspectSkillPackage } = await import('./skill-package-inspection')
+    await expect(inspectSkillPackage(root)).rejects.toThrow('callable export')
+  })
+})

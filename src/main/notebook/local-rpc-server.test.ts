@@ -1374,10 +1374,13 @@ describe('notebook local RPC server', () => {
         shutdown: async () => ({ reaped: true })
       })
     })
+    const resolveSpecialistSkillIds = vi.fn(async () => ['registered-test-skill'])
     const server = new NotebookLocalRpcServer(service, {
       transport: 'tcp',
-      token: 'secret-token'
+      token: 'secret-token',
+      resolveSpecialistSkillIds
     })
+    server.registerSessionSpecialist('session-1', 'specialist-1')
     const connection = await server.ensureStarted()
 
     try {
@@ -1424,6 +1427,7 @@ describe('notebook local RPC server', () => {
         code: 'print(1 + 1)',
         helperModules: [{ id: 'registered-test-helper', exports: ['public_add'] }]
       })
+      expect(resolveSpecialistSkillIds).toHaveBeenCalledWith('specialist-1')
     } finally {
       await server.close()
     }

@@ -44,7 +44,7 @@ import {
   type NotebookDependencyInterpreter,
   type NotebookDependencyProjection
 } from './dependency-analysis'
-import type { NotebookHelperModuleHost } from './helper-module-host'
+import type { NotebookHelperModuleHost, NotebookHelperModuleScope } from './helper-module-host'
 
 type NotebookControlResult = Pick<
   NotebookSessionExecutionResult,
@@ -201,10 +201,18 @@ class NotebookExecutionOwner {
       notebookInterpreterIdentity(resolvedInterpreter)
     )
     const kernelEpochId = kernelEpoch.id
+    const helperModuleScope: NotebookHelperModuleScope = {
+      projectId: request.projectId,
+      sessionId: request.sessionId,
+      ...(request.executionInvocationId && request.registeredHelperSkillIds
+        ? { allowedSkillIds: request.registeredHelperSkillIds }
+        : {})
+    }
     const helperRequest = await this.options.helperModules.preflight(
       cell.language,
       helperModuleIds,
-      kernelEpoch
+      kernelEpoch,
+      helperModuleScope
     )
     const helperPlan = await this.options.helperModules.plan(kernelEpoch, helperRequest)
     session.markCellRunning(cell.id, runId, executionCount)

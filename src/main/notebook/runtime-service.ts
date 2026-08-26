@@ -321,6 +321,7 @@ class NotebookRuntimeService {
   private readonly exportReader: NotebookExportReader
   private readonly runTerminalization: NotebookRunTerminalizationOwner
   private readonly executionOwner: NotebookExecutionOwner
+  private readonly helperModules: NotebookHelperModuleHost
   private readonly dependencyAnalyzer: Pick<NotebookDependencyAnalyzer, 'project'>
   private readonly dataExecutionAdmission: NotebookDataExecutionAdmissionOwner
   private readonly packageOperations: NotebookPackageOperations
@@ -503,6 +504,7 @@ class NotebookRuntimeService {
       repository: this.repository,
       notifyChanged: (session) => this.sessionLifecycle.notifyChanged(session as RuntimeSession)
     })
+    this.helperModules = new NotebookHelperModuleHost(options.helperModuleCatalog)
     this.executionOwner = new NotebookExecutionOwner({
       configRoot: options.configRoot,
       runTerminalization: this.runTerminalization,
@@ -522,7 +524,7 @@ class NotebookRuntimeService {
           completedRun: run,
           ...(interpreter ? { interpreter } : {})
         }),
-      helperModules: new NotebookHelperModuleHost(options.helperModuleCatalog),
+      helperModules: this.helperModules,
       platform: options.platform,
       shellProcess: options.shellProcess
     })

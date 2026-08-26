@@ -15,10 +15,25 @@ type RegisteredNotebookHelperModule = Readonly<{
   dependencies?: readonly string[]
   registeredGeneration?: string
   generationRoot?: string
+  skillId?: string
+  origin?: 'builtin' | 'personal' | 'imported'
+  interfaceRevision?: number
+  generation?: string
+  digest?: string
+}>
+
+type NotebookHelperModuleScope = Readonly<{
+  projectId?: string
+  sessionId?: string
+  allowedSkillIds?: readonly string[]
 }>
 
 type NotebookHelperModuleCatalog = {
-  resolve(id: string): Promise<RegisteredNotebookHelperModule | undefined>
+  resolve(
+    id: string,
+    scope?: NotebookHelperModuleScope
+  ): Promise<RegisteredNotebookHelperModule | undefined>
+  protectedDirectories?(): readonly string[]
 }
 
 type PinnedNotebookHelperModule = Readonly<{
@@ -30,12 +45,16 @@ type PinnedNotebookHelperModule = Readonly<{
   dependencies: readonly string[]
   registeredGeneration: string
   generationRoot?: string
+  skillId?: string
+  origin?: 'builtin' | 'personal' | 'imported'
+  interfaceRevision?: number
 }>
 
 type NotebookHelperModuleRequest = Readonly<{
   language: NotebookLanguage
   requestedIds: readonly string[]
   roots: ReadonlyMap<string, PinnedNotebookHelperModule>
+  scope?: NotebookHelperModuleScope
 }>
 
 type NotebookHelperModuleInjection = Readonly<{
@@ -46,6 +65,10 @@ type NotebookHelperModuleInjection = Readonly<{
   registeredGeneration: string
   epochId: string
   code: string
+  dependencies?: readonly string[]
+  skillId?: string
+  origin?: 'builtin' | 'personal' | 'imported'
+  interfaceRevision?: number
 }>
 
 type NotebookHelperModulePlan = Readonly<{
@@ -102,6 +125,11 @@ const pinDescriptor = (
       `HELPER_GENERATION_MISMATCH: helper "${expectedId}" does not match its registered digest.`
     )
   }
+  if (helper.digest !== undefined && helper.digest !== `sha256:${digest}`) {
+    throw new Error(
+      `HELPER_GENERATION_MISMATCH: helper "${expectedId}" does not match its registered digest.`
+    )
+  }
   return {
     id: expectedId,
     language: 'python',
@@ -109,8 +137,11 @@ const pinDescriptor = (
     digest,
     exports,
     dependencies: dependencies.sort(),
-    registeredGeneration: helper.registeredGeneration ?? `source-${digest}`,
-    ...(helper.generationRoot ? { generationRoot: helper.generationRoot } : {})
+    registeredGeneration: helper.generation ?? helper.registeredGeneration ?? `source-${digest}`,
+    ...(helper.generationRoot ? { generationRoot: helper.generationRoot } : {}),
+    ...(helper.skillId ? { skillId: helper.skillId } : {}),
+    ...(helper.origin ? { origin: helper.origin } : {}),
+    ...(helper.interfaceRevision ? { interfaceRevision: helper.interfaceRevision } : {})
   }
 }
 
@@ -146,12 +177,19 @@ class NotebookHelperModuleHost {
 
   constructor(private readonly catalog: NotebookHelperModuleCatalog = emptyCatalog) {}
 
+  protectedDirectories(): readonly string[] {
+    return this.catalog.protectedDirectories?.() ?? []
+  }
+
   async preflight(
     language: NotebookLanguage,
     requested: readonly string[] | undefined,
-    epoch?: NotebookKernelEpochOwnership
+    epoch?: NotebookKernelEpochOwnership,
+    scope?: NotebookHelperModuleScope
   ): Promise<NotebookHelperModuleRequest> {
-    if (requested === undefined) return { language, requestedIds: [], roots: new Map() }
+    if (requested === undefined) {
+      return { language, requestedIds: [], roots: new Map(), ...(scope ? { scope } : {}) }
+    }
     if (!Array.isArray(requested)) {
       throw new Error(
         'INVALID_HELPER_MODULES: helperModules must be an array of stable helper IDs.'
@@ -168,6 +206,12 @@ class NotebookHelperModuleHost {
       assertHelperId(id)
       const existing = pinned?.get(id)
       if (existing) {
+        if (scope?.allowedSkillIds !== undefined) {
+          const authorized = await this.catalog.resolve(id, scope)
+          if (!authorized || authorized.id !== id) {
+            throw new Error(`UNKNOWN_HELPER_MODULE: no registered helper has ID "${id}".`)
+          }
+        }
         roots.set(id, existing)
         continue
       }
@@ -175,12 +219,12 @@ class NotebookHelperModuleHost {
         id,
         pinDescriptor(
           id,
-          await this.catalog.resolve(id),
+          await this.catalog.resolve(id, scope),
           `UNKNOWN_HELPER_MODULE: no registered helper has ID "${id}".`
         )
       )
     }
-    return { language, requestedIds: ids, roots }
+    return { language, requestedIds: ids, roots, ...(scope ? { scope } : {}) }
   }
 
   async plan(
@@ -211,11 +255,17 @@ class NotebookHelperModuleHost {
       if (!descriptor) {
         descriptor = pinDescriptor(
           id,
-          await this.catalog.resolve(id),
+          await this.catalog.resolve(id, request.scope),
           `MISSING_HELPER_DEPENDENCY: helper "${parent ?? id}" requires "${id}".`
         )
         // Fix a dependency before following any of its own dependency edges.
         state.pinned.set(id, descriptor)
+      }
+      if (request.scope?.allowedSkillIds !== undefined && !request.requestedIds.includes(id)) {
+        const authorized = await this.catalog.resolve(id, request.scope)
+        if (!authorized || authorized.id !== id) {
+          throw new Error(`MISSING_HELPER_DEPENDENCY: helper "${parent ?? id}" requires "${id}".`)
+        }
       }
       visiting.push(id)
       for (const dependency of descriptor.dependencies) await visit(dependency, id)
@@ -225,7 +275,7 @@ class NotebookHelperModuleHost {
     }
     for (const id of request.requestedIds) await visit(id)
 
-    const roots = new Set<string>()
+    const roots = new Set<string>(this.protectedDirectories())
     for (const helper of state.pinned.values()) {
       if (helper.generationRoot) roots.add(helper.generationRoot)
     }
@@ -238,6 +288,10 @@ class NotebookHelperModuleHost {
         digest: helper.digest,
         registeredGeneration: helper.registeredGeneration,
         epochId: epoch.id,
+        ...(helper.dependencies.length ? { dependencies: helper.dependencies } : {}),
+        ...(helper.skillId ? { skillId: helper.skillId } : {}),
+        ...(helper.origin ? { origin: helper.origin } : {}),
+        ...(helper.interfaceRevision ? { interfaceRevision: helper.interfaceRevision } : {}),
         code: injectionCode(
           helper,
           helper.dependencies.flatMap((dependency) => state.pinned.get(dependency)?.exports ?? [])
@@ -261,5 +315,6 @@ export type {
   NotebookHelperModuleInjection,
   NotebookHelperModulePlan,
   NotebookHelperModuleRequest,
+  NotebookHelperModuleScope,
   RegisteredNotebookHelperModule
 }

@@ -92,6 +92,7 @@ type NotebookLocalRpcServerOptions = {
   requestBytes?: number
   now?: () => number
   onSessionReleased?: (sessionId: string) => void
+  resolveSpecialistSkillIds?: (specialistId: string) => Promise<readonly string[]>
   transport?: LocalRpcListenOptions['transport']
   connectorService?: {
     call(
@@ -500,6 +501,7 @@ class NotebookLocalRpcServer {
   private readonly skillsService: NotebookLocalRpcServerOptions['skillsService']
   private readonly hostModel: NotebookLocalRpcServerOptions['hostModel']
   private readonly hostViewImage: NotebookLocalRpcServerOptions['hostViewImage']
+  private readonly resolveSpecialistSkillIds: NotebookLocalRpcServerOptions['resolveSpecialistSkillIds']
   private server: Server | undefined
   private serverLifecycle: NotebookRpcServerLifecycle | undefined
   private startPromise: Promise<NotebookRpcConnection> | undefined
@@ -538,6 +540,7 @@ class NotebookLocalRpcServer {
     this.requestBytes = options.requestBytes ?? LOCAL_RESOURCE_BUDGETS.requestBytes
     this.now = options.now ?? Date.now
     this.onSessionReleased = options.onSessionReleased
+    this.resolveSpecialistSkillIds = options.resolveSpecialistSkillIds
     this.transport = options.transport
     this.connectorService = options.connectorService
     this.computeService = options.computeService
@@ -2580,7 +2583,20 @@ class NotebookLocalRpcServer {
       )
     }
 
-    const handler = resolveNotebookLocalRpcHandler(this.service, method, params)
+    let trustedParams = params
+    if (method === 'execute' && typeof params.sessionId === 'string') {
+      const specialistId = this.sessionSpecialists.get(params.sessionId)
+      if (specialistId) {
+        const allowedSkillIds = this.resolveSpecialistSkillIds
+          ? await this.resolveSpecialistSkillIds(specialistId).catch(() => [])
+          : []
+        trustedParams = {
+          ...params,
+          registeredHelperSkillIds: [...allowedSkillIds]
+        }
+      }
+    }
+    const handler = resolveNotebookLocalRpcHandler(this.service, method, trustedParams)
 
     const projectId =
       typeof params.sessionId === 'string'
@@ -2609,7 +2625,7 @@ class NotebookLocalRpcServer {
       try {
         return await handler(
           {
-            ...params,
+            ...trustedParams,
             registeredInputFiles: lease.getRunInputFiles(),
             inputRunLeaseId
           },
@@ -2623,7 +2639,7 @@ class NotebookLocalRpcServer {
       }
     }
 
-    return handler(params, signal)
+    return handler(trustedParams, signal)
   }
 
   // Rewrites the temporary notebook session id to the final ACP session id when needed.
