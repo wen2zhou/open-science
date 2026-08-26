@@ -176,6 +176,7 @@ describe('Notebook runtime facade architecture', () => {
         'environmentStateTracker',
         'executionOwner',
         'exportReader',
+        'helperModules',
         'mcpRpcConnectionResolver',
         'options',
         'packageOperations',

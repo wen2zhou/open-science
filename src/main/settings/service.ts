@@ -504,17 +504,17 @@ class SettingsService {
   async listSkills(): Promise<SkillView[]> {
     return this.skills.listSkills()
   }
-
   // Internal main-process adapter used by host.skills. Unlike listSkills(), this includes bundled
   // internal Skills and returns source directories only to the trusted caller callback.
   async listHostSkills(): Promise<BundledSkill[]> {
     return this.skills.listHostSkills()
   }
-
+  registeredHelperCatalog() {
+    return this.skills.registeredHelperCatalog()
+  }
   async listUserSkills(): Promise<BundledSkill[]> {
     return this.skills.listUserSkills()
   }
-
   async withHostSkillRead<T>(
     id: string,
     read: (skill: BundledSkill) => Promise<T>

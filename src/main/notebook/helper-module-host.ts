@@ -1,4 +1,4 @@
-import type { NotebookLanguage } from '../../shared/notebook'
+import type { ExecuteNotebookCodeRequest, NotebookLanguage } from '../../shared/notebook'
 
 const HELPER_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 
@@ -7,10 +7,24 @@ type RegisteredNotebookHelperModule = Readonly<{
   language: 'python'
   source: string
   exports: readonly string[]
+  dependencies?: readonly string[]
+  skillId?: string
+  origin?: 'builtin' | 'personal' | 'imported' | 'connector'
+  interfaceRevision?: number
+  generation?: string
+  digest?: string
 }>
 
 type NotebookHelperModuleCatalog = {
-  resolve(id: string): Promise<RegisteredNotebookHelperModule | undefined>
+  resolve(
+    id: string,
+    scope?: Readonly<{
+      projectId?: string
+      sessionId?: string
+      allowedSkillIds?: readonly string[]
+    }>
+  ): Promise<RegisteredNotebookHelperModule | undefined>
+  protectedDirectories?(): readonly string[]
 }
 
 type NotebookHelperModuleInjection = Readonly<{
@@ -18,6 +32,12 @@ type NotebookHelperModuleInjection = Readonly<{
   language: 'python'
   exports: readonly string[]
   code: string
+  dependencies?: readonly string[]
+  skillId?: string
+  origin?: 'builtin' | 'personal' | 'imported' | 'connector'
+  interfaceRevision?: number
+  generation?: string
+  digest?: string
 }>
 
 const emptyCatalog: NotebookHelperModuleCatalog = { resolve: async () => undefined }
@@ -47,9 +67,31 @@ const injectionCode = (helper: RegisteredNotebookHelperModule): string => {
 class NotebookHelperModuleHost {
   constructor(private readonly catalog: NotebookHelperModuleCatalog = emptyCatalog) {}
 
+  protectedDirectories(): readonly string[] {
+    return this.catalog.protectedDirectories?.() ?? []
+  }
+
+  resolveRequest(
+    request: ExecuteNotebookCodeRequest
+  ): Promise<readonly NotebookHelperModuleInjection[]> {
+    const trustedSkillIds = request.executionInvocationId
+      ? request.registeredHelperSkillIds
+      : undefined
+    return this.resolve(request.language ?? 'python', request.helperModules, {
+      projectId: request.projectId,
+      sessionId: request.sessionId,
+      ...(trustedSkillIds ? { allowedSkillIds: trustedSkillIds } : {})
+    })
+  }
+
   async resolve(
     language: NotebookLanguage,
-    requested: readonly string[] | undefined
+    requested: readonly string[] | undefined,
+    scope?: Readonly<{
+      projectId?: string
+      sessionId?: string
+      allowedSkillIds?: readonly string[]
+    }>
   ): Promise<readonly NotebookHelperModuleInjection[]> {
     if (requested === undefined) return []
     if (!Array.isArray(requested)) {
@@ -67,7 +109,7 @@ class NotebookHelperModuleHost {
       if (typeof id !== 'string' || id.length > 128 || !HELPER_ID.test(id)) {
         throw new Error('INVALID_HELPER_ID: helperModules accepts only stable helper IDs.')
       }
-      const helper = await this.catalog.resolve(id)
+      const helper = await this.catalog.resolve(id, scope)
       if (!helper || helper.id !== id) {
         throw new Error(`UNKNOWN_HELPER_MODULE: no registered helper has ID "${id}".`)
       }
@@ -78,7 +120,13 @@ class NotebookHelperModuleHost {
         id,
         language: 'python',
         exports: [...helper.exports],
-        code: injectionCode(helper)
+        code: injectionCode(helper),
+        ...(helper.dependencies ? { dependencies: [...helper.dependencies] } : {}),
+        ...(helper.skillId ? { skillId: helper.skillId } : {}),
+        ...(helper.origin ? { origin: helper.origin } : {}),
+        ...(helper.interfaceRevision ? { interfaceRevision: helper.interfaceRevision } : {}),
+        ...(helper.generation ? { generation: helper.generation } : {}),
+        ...(helper.digest ? { digest: helper.digest } : {})
       })
     }
     return resolved

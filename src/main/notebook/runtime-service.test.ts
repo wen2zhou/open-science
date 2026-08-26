@@ -266,6 +266,59 @@ describe('notebook runtime service', () => {
     expect(executions[0]?.helperModules?.[0]?.code).not.toContain('print(public_add(2))')
   })
 
+  it('forwards only authenticated bridge Skill scope to helper resolution', async () => {
+    const root = await createStorageRoot()
+    const scopes: unknown[] = []
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      helperModuleCatalog: {
+        resolve: async (id, scope) => {
+          scopes.push(scope)
+          return {
+            id,
+            language: 'python',
+            source: 'def public_value():\n    return 1',
+            exports: ['public_value']
+          }
+        }
+      },
+      executorFactory: () => ({
+        execute: async (request) => ({
+          status: 'completed' as const,
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const base = {
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      code: 'public_value()',
+      helperModules: ['scope-helper'],
+      registeredHelperSkillIds: ['forged-skill']
+    }
+
+    await service.execute(base)
+    await service.execute({
+      ...base,
+      cellId: 'trusted',
+      executionInvocationId: 'trusted-invocation'
+    })
+
+    expect(scopes).toEqual([
+      { projectId: 'default-project', sessionId: 'session-1' },
+      { projectId: 'default-project', sessionId: 'session-1', allowedSkillIds: ['forged-skill'] }
+    ])
+  })
+
   it('rejects unknown, illegal, structured, and R helper requests before creating an executor', async () => {
     const root = await createStorageRoot()
     const executorFactory = vi.fn(() => ({

@@ -86,6 +86,7 @@ type McpRpcConnectionResolver = (
 
 type NotebookExecutionOwnerOptions = {
   configRoot: string
+  protectedSkillGenerationDirs?: readonly string[]
   runTerminalization: NotebookRunTerminalizationOwner
   dataExecutionAdmission: NotebookDataExecutionAdmissionOwner
   environmentStateTracker: Pick<EnvironmentStateTracker, 'prepareRun' | 'captureCompletedRun'>
@@ -266,7 +267,10 @@ class NotebookExecutionOwner {
               notebookSessionRoot: session.notebookSessionRoot,
               dataRoot: session.dataRoot,
               runtimeRoot: session.runtimeRoot,
-              protectedDirs: [getAppClaudeConfigDir(this.options.configRoot)],
+              protectedDirs: [
+                getAppClaudeConfigDir(this.options.configRoot),
+                ...(this.options.protectedSkillGenerationDirs ?? [])
+              ],
               timeoutMs: request.timeoutMs,
               signal,
               resolvedInterpreter,
@@ -487,7 +491,10 @@ class NotebookExecutionOwner {
                   notebookSessionRoot: session.notebookSessionRoot,
                   dataRoot: session.dataRoot,
                   runtimeRoot: session.runtimeRoot,
-                  protectedDirs: [getAppClaudeConfigDir(this.options.configRoot)],
+                  protectedDirs: [
+                    getAppClaudeConfigDir(this.options.configRoot),
+                    ...(this.options.protectedSkillGenerationDirs ?? [])
+                  ],
                   timeoutMs: request.timeoutMs,
                   signal,
                   mcpRpcEndpoint: mcpRpc?.endpoint,

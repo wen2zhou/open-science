@@ -147,9 +147,6 @@ type NotebookExecutor = NotebookSessionExecutor
 
 type NotebookRuntimeServiceCallbacks = NotebookSessionLifecycleCallbacks
 
-// The session-scoped connector RPC capability injected into the persistent control-plane REPL. The
-// service caches it for the RuntimeSession lifetime because the child captures it only when spawned;
-// release revokes that capability when the runtime session is shut down.
 type McpRpcConnection = NotebookSessionMcpRpcConnection
 type McpRpcConnectionBinding = {
   sessionId: string
@@ -170,9 +167,6 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
     lifecycle: NotebookExecutorLifecycleCallbacks
   ) => NotebookExecutor
   callbacks?: NotebookRuntimeServiceCallbacks
-  // Resolves the connector RPC connection to inject into the kernel spawn env. Usually set after
-  // construction via setMcpRpcConnectionResolver, since the RPC server is constructed with this
-  // service as a dependency (constructing them in the other order would cycle).
   getMcpRpcConnection?: (binding: McpRpcConnectionBinding) => Promise<McpRpcConnection>
   // Resolves the user-configured package mirror (settings). Optional/async so a synchronous test
   // double works just as well as the real disk-backed settings service.
@@ -192,8 +186,6 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
   // Stateless shell child-process port. The production adapter owns platform invocation, encoding,
   // environment projection, and timeout teardown; tests inject a fake without crossing IPC/shared.
   shellProcess?: NotebookShellProcess
-  // Latency-probe deps for the fastest-mirror auto-selection, injectable so tests stay hermetic (the
-  // real probe does live HEAD requests). Undefined in production → effectiveMirrorAsync's real probe.
   mirrorProbe?: ProbeDeps
   // Package installer, injectable so tests never spawn real micromamba/pip/R. Defaults to
   // package-manager's installPackages.
@@ -205,9 +197,6 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
   // Structured main-process diagnostics for package operations and interpreter probes. Injectable so
   // tests assert logging without initializing the rotating file sink.
   logger?: RuntimeDiagnosticLogger
-  // Provisioner-backed named-environment manager for manageEnvironments. Injectable so tests use a
-  // fake; the production instance (the DefaultRuntimeProvisioner) is wired after construction in
-  // main/ipc.ts via setEnvironmentManager, mirroring the mcp/mirror resolvers.
   environmentManager?: NotebookEnvironmentManager
   // Included in exported notebook provenance. Tests may omit it.
   appVersion?: string
@@ -511,6 +500,7 @@ class NotebookRuntimeService {
     })
     this.executionOwner = new NotebookExecutionOwner({
       configRoot: options.configRoot,
+      protectedSkillGenerationDirs: this.helperModules.protectedDirectories(),
       runTerminalization: this.runTerminalization,
       dataExecutionAdmission: this.dataExecutionAdmission,
       environmentStateTracker: this.environmentStateTracker,
@@ -840,10 +830,7 @@ class NotebookRuntimeService {
     signal?: AbortSignal
   ): Promise<NotebookRunSummary> {
     assertNotebookCodeWithinLimit(request.code)
-    const helperModules = await this.helperModules.resolve(
-      request.language ?? 'python',
-      request.helperModules
-    )
+    const helperModules = await this.helperModules.resolveRequest(request)
     const begin = await this.beginCodeCell(request)
 
     await this.appendCodeCell({

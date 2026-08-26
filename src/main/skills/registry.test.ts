@@ -148,6 +148,38 @@ describe('SkillRegistry', () => {
     expect(after).not.toBe(before)
   })
 
+  it('normalizes a bundled registered-helper descriptor without exposing its source', async () => {
+    const root = await seedRoot()
+    await writeFile(join(root, 'demo', 'kernel.py'), 'def public_demo():\n    return 1\n')
+    await writeFile(
+      join(root, 'demo', 'open-science.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        helpers: [
+          {
+            id: 'demo-helper',
+            language: 'python',
+            interfaceRevision: 1,
+            implementation: 'kernel.py',
+            exports: ['public_demo'],
+            dependencies: []
+          }
+        ]
+      })
+    )
+
+    expect((await new SkillRegistry(root).list())[0]?.helpers).toEqual([
+      {
+        id: 'demo-helper',
+        language: 'python',
+        interfaceRevision: 1,
+        implementation: 'kernel.py',
+        exports: ['public_demo'],
+        dependencies: []
+      }
+    ])
+  })
+
   it('skips manifest entries whose SKILL.md is missing', async () => {
     const root = await seedRoot()
     await writeFile(

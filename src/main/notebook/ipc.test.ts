@@ -168,6 +168,7 @@ describe('notebook IPC handlers', () => {
         promptMessageId: 'forged-prompt'
       },
       registeredInputFiles: [],
+      registeredHelperSkillIds: ['forged-skill'],
       inputRunLeaseId: 'forged-input-run-lease'
     }
     const run = { ...publicRun, ...forgedTurnContext }

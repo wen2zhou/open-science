@@ -618,6 +618,9 @@ export type NotebookSessionRequest = OptionalProjectIdScope & {
   // Injected only by the authenticated local RPC bridge after resolving the active turn registry.
   // Renderer IPC strips this field before calling the runtime service.
   registeredInputFiles?: NotebookRunInputFile[]
+  // Injected only by the authenticated local RPC bridge for a Specialist-bound session. Renderer
+  // IPC strips this field together with executionInvocationId; it is never caller authority.
+  registeredHelperSkillIds?: string[]
   // Identifies the exact active input lease for this execution. The bridge generates it and the
   // kernel returns it when resolving an immutable input so overlapping runs cannot claim access.
   inputRunLeaseId?: string

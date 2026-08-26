@@ -61,6 +61,11 @@ import { createLogger } from '../logger'
 import type { SettingsRepository } from './repository'
 import type { StoredSettings } from './types'
 import { encryptKey, maskKey, tryDecryptKey } from './crypto'
+import {
+  RegisteredSkillHelperCatalog,
+  type RegisteredHelperScope,
+  type RegisteredSkillPackage
+} from '../skills/registered-helper-catalog'
 
 type SkillCatalogEntry = {
   name: string
@@ -97,6 +102,13 @@ type SkillCatalogModuleOptions = {
   skillRegistry?: SkillRegistry
   userSkills?: UserSkillRepository
   githubFetch?: FetchLike
+  // Canonical Connector registration owner. This is intentionally not the framework runtime
+  // projection: helper registration must never reverse-scan materialized mcp-* directories.
+  registeredConnectorPackages?: () => Promise<readonly RegisteredSkillPackage[]>
+  authorizeRegisteredHelper?: (
+    skillId: string,
+    scope: RegisteredHelperScope | undefined
+  ) => boolean | Promise<boolean>
 }
 
 // Owns the installed Skill catalog and its filesystem rules. SettingsService remains a compatibility
@@ -105,12 +117,50 @@ class SkillCatalogModule {
   private readonly skillRegistry: SkillRegistry
   private readonly userSkills: UserSkillRepository
   private readonly githubFetch: FetchLike
+  private readonly registeredHelpers: RegisteredSkillHelperCatalog
   private userSkillCatalogRead: Promise<BundledSkill[]> | undefined
 
   constructor(private readonly options: SkillCatalogModuleOptions) {
     this.skillRegistry = options.skillRegistry ?? new SkillRegistry()
     this.userSkills = options.userSkills ?? new UserSkillRepository(options.storageRoot)
     this.githubFetch = options.githubFetch ?? netFetch
+    this.registeredHelpers = new RegisteredSkillHelperCatalog({
+      storageRoot: options.storageRoot,
+      packages: () => this.registeredHelperPackages(),
+      authorize: async ({ skillId }, scope) => {
+        if (options.authorizeRegisteredHelper) {
+          return options.authorizeRegisteredHelper(skillId, scope)
+        }
+        if (scope?.allowedSkillIds && !scope.allowedSkillIds.includes(skillId)) return false
+        const disabled = new Set(
+          (await this.options.repository.getSettings()).disabledSkillIds ?? []
+        )
+        // A trusted Specialist scope may force-load a globally disabled Skill. Main Agent requests
+        // have no allowedSkillIds and continue to honor global enablement.
+        return scope?.allowedSkillIds !== undefined || !disabled.has(skillId)
+      }
+    })
+  }
+
+  registeredHelperCatalog(): RegisteredSkillHelperCatalog {
+    return this.registeredHelpers
+  }
+
+  private async refreshRegisteredHelpers(): Promise<void> {
+    await this.registeredHelpers.refresh()
+  }
+
+  private async registeredHelperPackages(): Promise<readonly RegisteredSkillPackage[]> {
+    const installed = (await this.catalog())
+      .filter((skill) => skill.helpers?.length)
+      .map((skill) => ({
+        skillId: skill.id,
+        origin: skill.source === 'featured' ? ('builtin' as const) : skill.source,
+        packageRoot: skill.sourceDir,
+        helpers: [...(skill.helpers ?? [])]
+      }))
+    const connectors = await (this.options.registeredConnectorPackages?.() ?? [])
+    return [...installed, ...connectors]
   }
 
   private async authenticatedGitHubFetch(): Promise<FetchLike> {
@@ -239,12 +289,14 @@ class SkillCatalogModule {
   }
 
   async publishHostSkill(name: string, sourcePath: string, overwrite: boolean): Promise<string> {
-    return this.userSkills.publishPersonalDirectory(
+    const id = await this.userSkills.publishPersonalDirectory(
       name,
       sourcePath,
       overwrite,
       await this.bundledSkillNames()
     )
+    await this.refreshRegisteredHelpers()
+    return id
   }
 
   async listSkills(): Promise<SkillView[]> {
@@ -444,6 +496,7 @@ class SkillCatalogModule {
 
   async createSkill(request: CreateSkillRequest): Promise<SkillView[]> {
     await this.userSkills.createPersonal(request, await this.bundledSkillNames())
+    await this.refreshRegisteredHelpers()
     return this.listSkills()
   }
 
@@ -460,6 +513,7 @@ class SkillCatalogModule {
       metadata: request.metadata,
       references: request.references
     })
+    await this.refreshRegisteredHelpers()
     return this.listSkills()
   }
 
@@ -469,6 +523,7 @@ class SkillCatalogModule {
   ): Promise<SkillView[]> {
     await this.userSkills.delete(request.id, guard)
     await this.options.repository.setSkillEnabled(request.id, true)
+    await this.refreshRegisteredHelpers()
     return this.listSkills()
   }
 
@@ -479,6 +534,7 @@ class SkillCatalogModule {
       await this.bundledSkillNames(),
       { signal }
     )
+    await this.refreshRegisteredHelpers()
     return { ...outcome, skills: await this.listSkills() }
   }
 
@@ -489,6 +545,7 @@ class SkillCatalogModule {
       replaceId: request.replaceId,
       reservedNames: await this.bundledSkillNames()
     })
+    await this.refreshRegisteredHelpers()
     return { ...outcome, skills: await this.listSkills() }
   }
 
@@ -521,7 +578,13 @@ class SkillCatalogModule {
     zip: Buffer,
     items: ImportSkillZipBatchRequest['items']
   ): ReturnType<UserSkillRepository['importFromZipBatch']> {
-    return this.userSkills.importFromZipBatch(zip, items, await this.bundledSkillNames())
+    const outcomes = await this.userSkills.importFromZipBatch(
+      zip,
+      items,
+      await this.bundledSkillNames()
+    )
+    await this.refreshRegisteredHelpers()
+    return outcomes
   }
 
   async previewGitHubSkill(
@@ -682,6 +745,7 @@ class SkillCatalogModule {
         candidate.item.matchedFallbackDirectoryNames.add(fallbackSlug)
       }
     }
+    await this.refreshRegisteredHelpers()
     return discovered
   }
 
@@ -803,6 +867,7 @@ class SkillCatalogModule {
         })
       }
     }
+    await this.refreshRegisteredHelpers()
     return { results, skills: await this.listSkills() }
   }
 
