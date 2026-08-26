@@ -73,12 +73,19 @@ pythonGate('figure-style helper contract', () => {
     async (_label, replaceSource) => {
       smokeRoot = await mkdtemp(join(resolve('.'), '.figure-style-smoke-'))
       const source = replaceSource(await readFile(kernelPath, 'utf8'))
-      const helperModules = await new NotebookHelperModuleHost({
+      const helperHost = new NotebookHelperModuleHost({
         resolve: async (id) =>
           id === 'figure-style'
             ? { id, language: 'python' as const, source, exports: helperExports }
             : undefined
-      }).resolve('python', ['figure-style'])
+      })
+      const helperRequest = await helperHost.preflight('python', ['figure-style'])
+      const helperModules = (
+        await helperHost.plan(
+          { id: 'figure-style-smoke-epoch', processKey: 'python:default-python' },
+          helperRequest
+        )
+      ).injections
       const executor = new NotebookKernelExecutor({
         pythonLoopPath: resolve('resources/notebook/python_loop.py'),
         platform: process.platform
