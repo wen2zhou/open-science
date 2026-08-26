@@ -139,12 +139,19 @@ describe('paper-narrative adapter', () => {
     it('injects only the three public methods in the real persistent Python loop', async () => {
       smokeRoot = await mkdtemp(join(resolve('.'), '.paper-narrative-smoke-'))
       const source = await readFile(kernelPath, 'utf8')
-      const helperModules = await new NotebookHelperModuleHost({
+      const helperHost = new NotebookHelperModuleHost({
         resolve: async (id) =>
           id === 'paper-narrative'
             ? { id, language: 'python' as const, source, exports: helperExports }
             : undefined
-      }).resolve('python', ['paper-narrative'])
+      })
+      const helperRequest = await helperHost.preflight('python', ['paper-narrative'])
+      const helperModules = (
+        await helperHost.plan(
+          { id: 'paper-narrative-smoke-epoch', processKey: 'python:default-python' },
+          helperRequest
+        )
+      ).injections
       const executor = new NotebookKernelExecutor({
         pythonLoopPath: resolve('resources/notebook/python_loop.py'),
         platform: process.platform
