@@ -17,7 +17,10 @@ const rect = (left: number, top: number, right: number, bottom: number): DOMRect
   }) as DOMRect
 
 describe('anchorSelectionTrigger', () => {
-  const viewport = { width: 1024, height: 768 }
+  // The surface sits at viewport (90, 10); selection rects are viewport
+  // coordinates. The trigger must be placed in surface-local coordinates so
+  // it scrolls with the text instead of drifting as a fixed overlay.
+  const container = { rect: rect(90, 10, 490, 610), width: 400 }
 
   afterEach(() => {
     document.body.innerHTML = ''
@@ -55,28 +58,28 @@ describe('anchorSelectionTrigger', () => {
     return selection
   }
 
-  it('anchors a forward selection at its last line rect', () => {
+  it('anchors a forward selection at its last line, in surface-local coordinates', () => {
     const selection = selectWithRects(
-      [rect(10, 10, 300, 30), rect(10, 40, 120, 60)],
-      rect(10, 10, 300, 60)
+      [rect(100, 20, 300, 40), rect(100, 50, 120, 70)],
+      rect(100, 20, 300, 70)
     )
 
-    expect(anchorSelectionTrigger(selection, viewport)).toEqual({ left: 126, top: 66 })
+    expect(anchorSelectionTrigger(selection, container)).toEqual({ left: 36, top: 66 })
   })
 
-  it('anchors a backward selection at its first line rect', () => {
+  it('anchors a backward selection at its first line, in surface-local coordinates', () => {
     const selection = selectWithRects(
-      [rect(10, 10, 300, 30), rect(10, 40, 120, 60)],
-      rect(10, 10, 300, 60),
+      [rect(100, 20, 300, 40), rect(100, 50, 120, 70)],
+      rect(100, 20, 300, 70),
       true
     )
 
-    expect(anchorSelectionTrigger(selection, viewport)).toEqual({ left: 306, top: 36 })
+    expect(anchorSelectionTrigger(selection, container)).toEqual({ left: 216, top: 36 })
   })
 
-  it('keeps the trigger inside the viewport for selections near the edges', () => {
-    const selection = selectWithRects([rect(10, 700, 1020, 760)], rect(10, 700, 1020, 760))
+  it('keeps the trigger inside the surface width', () => {
+    const selection = selectWithRects([rect(100, 20, 480, 40)], rect(100, 20, 480, 40))
 
-    expect(anchorSelectionTrigger(selection, viewport)).toEqual({ left: 916, top: 716 })
+    expect(anchorSelectionTrigger(selection, container)).toEqual({ left: 392, top: 36 })
   })
 })

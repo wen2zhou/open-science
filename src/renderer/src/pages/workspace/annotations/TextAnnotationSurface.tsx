@@ -78,8 +78,8 @@ const TextAnnotationSurface = ({
     setSelection({
       quote,
       ...anchorSelectionTrigger(selected, {
-        width: window.innerWidth,
-        height: window.innerHeight
+        rect: surface.getBoundingClientRect(),
+        width: surface.clientWidth
       }),
       range: range.cloneRange()
     })
@@ -166,7 +166,7 @@ const TextAnnotationSurface = ({
           <PopoverTrigger asChild>
             <button
               type="button"
-              className="fixed z-40 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-md focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+              className="absolute z-40 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-md focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               style={{ left: selection.left, top: selection.top }}
               // Browsers collapse the selection on mousedown before this
               // button's click lands; its mouseup/keyup must not re-enter

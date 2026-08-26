@@ -194,6 +194,22 @@ describe('TextAnnotationSurface annotate trigger', () => {
 
   it('places the trigger beside the last line of a multi-line selection', async () => {
     const paragraph = await renderSurface()
+    // The surface itself sits away from the viewport origin; the trigger must
+    // be placed in surface-local coordinates and scroll with the text.
+    const surface = container.querySelector<HTMLElement>('[data-annotation-surface]')!
+    surface.getBoundingClientRect = () =>
+      ({
+        left: 90,
+        top: 10,
+        right: 490,
+        bottom: 610,
+        width: 400,
+        height: 600,
+        x: 90,
+        y: 10,
+        toJSON: () => ({})
+      }) as DOMRect
+    Object.defineProperty(surface, 'clientWidth', { configurable: true, value: 400 })
     const range = document.createRange()
     range.selectNodeContents(paragraph.firstChild!)
     const lineRect = (left: number, top: number, right: number, bottom: number): DOMRect =>
@@ -210,11 +226,11 @@ describe('TextAnnotationSurface annotate trigger', () => {
       }) as DOMRect
     Object.defineProperty(range, 'getClientRects', {
       configurable: true,
-      value: () => [lineRect(10, 10, 300, 30), lineRect(10, 40, 120, 60)]
+      value: () => [lineRect(100, 20, 300, 40), lineRect(100, 50, 120, 70)]
     })
     Object.defineProperty(range, 'getBoundingClientRect', {
       configurable: true,
-      value: () => lineRect(10, 10, 300, 60)
+      value: () => lineRect(100, 20, 300, 70)
     })
     const selection = window.getSelection()!
     selection.removeAllRanges()
@@ -223,8 +239,11 @@ describe('TextAnnotationSurface annotate trigger', () => {
 
     const trigger = annotateTrigger()
     // The trigger follows the selection's visible end (last line), not the
-    // bounding box's far right edge.
-    expect(trigger?.style.left).toBe('126px')
+    // bounding box's far right edge, and stays anchored to the surface so it
+    // scrolls with the text instead of floating at a stale viewport position.
+    expect(trigger?.className).toContain('absolute')
+    expect(trigger?.className).not.toContain('fixed')
+    expect(trigger?.style.left).toBe('36px')
     expect(trigger?.style.top).toBe('66px')
   })
 })

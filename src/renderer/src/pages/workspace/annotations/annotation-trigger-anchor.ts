@@ -3,15 +3,19 @@
  * text selection. The trigger anchors beside the selection's visible end —
  * the last line for a forward drag and the first line for a backward drag —
  * so it stays near the text the user is looking at instead of jumping to the
- * selection's bounding-box corner, and it is clamped inside the viewport.
+ * selection's bounding-box corner.
+ *
+ * Coordinates are surface-local: viewport geometry is translated through the
+ * surface rectangle, and the trigger is rendered absolutely inside the
+ * surface so it scrolls with the text. A fixed-position viewport snapshot
+ * would drift away from the selection as soon as the message list scrolls,
+ * and would break entirely under any transformed ancestor.
  */
 
-type SelectionTriggerViewport = Readonly<{ width: number; height: number }>
+type SelectionTriggerContainer = Readonly<{ rect: DOMRect; width: number }>
 
 const TRIGGER_ANCHOR_OFFSET = 6
-const TRIGGER_VIEWPORT_MARGIN = 8
-const TRIGGER_VIEWPORT_RESERVED_WIDTH = 108
-const TRIGGER_VIEWPORT_RESERVED_HEIGHT = 52
+const TRIGGER_CONTAINER_MARGIN = 8
 
 const isBackwardSelection = (selected: Selection): boolean => {
   const { anchorNode, anchorOffset, focusNode, focusOffset } = selected
@@ -23,7 +27,7 @@ const isBackwardSelection = (selected: Selection): boolean => {
 
 const anchorSelectionTrigger = (
   selected: Selection,
-  viewport: SelectionTriggerViewport
+  container: SelectionTriggerContainer
 ): { left: number; top: number } => {
   const range = selected.rangeCount > 0 ? selected.getRangeAt(0) : undefined
   // jsdom and detached ranges expose neither geometry method.
@@ -39,21 +43,10 @@ const anchorSelectionTrigger = (
         ? rects[0]
         : rects[rects.length - 1]
       : bounding
+  const localLeft = (anchorRect?.right ?? 0) + TRIGGER_ANCHOR_OFFSET - container.rect.left
   return {
-    left: Math.max(
-      TRIGGER_VIEWPORT_MARGIN,
-      Math.min(
-        (anchorRect?.right ?? 0) + TRIGGER_ANCHOR_OFFSET,
-        viewport.width - TRIGGER_VIEWPORT_RESERVED_WIDTH
-      )
-    ),
-    top: Math.max(
-      TRIGGER_VIEWPORT_MARGIN,
-      Math.min(
-        (anchorRect?.bottom ?? 0) + TRIGGER_ANCHOR_OFFSET,
-        viewport.height - TRIGGER_VIEWPORT_RESERVED_HEIGHT
-      )
-    )
+    left: Math.max(0, Math.min(localLeft, container.width - TRIGGER_CONTAINER_MARGIN)),
+    top: (anchorRect?.bottom ?? 0) + TRIGGER_ANCHOR_OFFSET - container.rect.top
   }
 }
 
