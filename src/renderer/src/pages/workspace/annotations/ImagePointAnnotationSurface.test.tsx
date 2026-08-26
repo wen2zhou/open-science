@@ -1,7 +1,8 @@
 // @vitest-environment jsdom
-import { act, type ComponentProps } from 'react'
+import { act, type ComponentProps, type ReactElement } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
+import { Context } from 'react-zoom-pan-pinch'
 
 import { createArtifactVersionLocator } from '../../../../../shared/artifact-provenance'
 import type { PreviewFileItem } from '@/stores/preview-workbench-store'
@@ -48,19 +49,22 @@ describe('ImagePointAnnotationSurface', () => {
 
   const renderSurface = async (
     props: Partial<ComponentProps<typeof ImagePointAnnotationSurface>> = {},
-    loadImage = true
+    loadImage = true,
+    wrap: (surface: ReactElement) => ReactElement = (surface) => surface
   ): Promise<HTMLImageElement> => {
     await act(async () => {
       root.render(
-        <ImagePointAnnotationSurface
-          item={item}
-          src="blob:figure"
-          activeAnnotations={[]}
-          onAdd={onAdd}
-          onAnnotationError={vi.fn()}
-          onImageError={vi.fn()}
-          {...props}
-        />
+        wrap(
+          <ImagePointAnnotationSurface
+            item={item}
+            src="blob:figure"
+            activeAnnotations={[]}
+            onAdd={onAdd}
+            onAnnotationError={vi.fn()}
+            onImageError={vi.fn()}
+            {...props}
+          />
+        )
       )
     })
     const surface = container.querySelector<HTMLElement>('[data-image-annotation-surface]')!
@@ -306,5 +310,87 @@ describe('ImagePointAnnotationSurface', () => {
 
     expect(marker.style.left).toBe('400px')
     expect(marker.style.top).toBe('200px')
+  })
+
+  it('renders unscaled markers outside a zoom wrapper', async () => {
+    await renderSurface({
+      activeAnnotations: [
+        {
+          id: 'point-plain',
+          kind: 'image-point',
+          target: 'agent',
+          note: 'Unzoomed point',
+          source: {
+            kind: 'artifact-version',
+            projectId: 'project-1',
+            sessionId: 'session-1',
+            versionId: 'version-1',
+            name: 'figure.png',
+            path: item.path,
+            mimeType: 'image/png'
+          },
+          point: { x: 0.5, y: 0.5 },
+          naturalSize: { width: 800, height: 400 }
+        }
+      ]
+    })
+    const marker = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent === '1'
+    )!
+    expect(marker.style.transform).toBe('translate(-50%, -50%) scale(1)')
+  })
+
+  it('keeps markers and the pending ring at a constant on-screen size while zoomed', async () => {
+    type ZoomInstance = React.ContextType<typeof Context>
+    const listeners: Array<() => void> = []
+    const zoom = {
+      state: { scale: 2 },
+      onChange: (callback: () => void) => {
+        listeners.push(callback)
+        return () => undefined
+      }
+    } as unknown as ZoomInstance
+    const image = await renderSurface(
+      {
+        activeAnnotations: [
+          {
+            id: 'point-zoomed',
+            kind: 'image-point',
+            target: 'agent',
+            note: 'Zoomed point',
+            source: {
+              kind: 'artifact-version',
+              projectId: 'project-1',
+              sessionId: 'session-1',
+              versionId: 'version-1',
+              name: 'figure.png',
+              path: item.path,
+              mimeType: 'image/png'
+            },
+            point: { x: 0.5, y: 0.5 },
+            naturalSize: { width: 800, height: 400 }
+          }
+        ]
+      },
+      true,
+      (surface) => <Context.Provider value={zoom}>{surface}</Context.Provider>
+    )
+    const marker = Array.from(container.querySelectorAll<HTMLButtonElement>('button')).find(
+      (button) => button.textContent === '1'
+    )!
+    // The zoom wrapper scales the whole surface by 2; the marker counters
+    // with scale(1/2) so its on-screen size stays constant.
+    expect(marker.style.transform).toBe('translate(-50%, -50%) scale(0.5)')
+
+    await pointer(image, 'pointerdown', 210, 220)
+    await pointer(image, 'pointerup', 210, 220)
+    const ring = container.querySelector<HTMLElement>('span[aria-hidden="true"]')
+    expect(ring?.style.transform).toBe('translate(-50%, -50%) scale(0.5)')
+
+    await act(async () => {
+      zoom.state.scale = 4
+      for (const listener of listeners) listener()
+    })
+    expect(marker.style.transform).toBe('translate(-50%, -50%) scale(0.25)')
   })
 })

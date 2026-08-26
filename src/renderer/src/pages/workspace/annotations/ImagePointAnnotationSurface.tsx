@@ -23,6 +23,7 @@ import {
   type ImagePointAnnotationSource
 } from './image-annotation-source'
 import { createAnnotationId } from './annotation-id'
+import { useAnnotationSurfaceScale } from './use-annotation-surface-scale'
 
 const IMAGE_POINT_CLICK_THRESHOLD = 4
 
@@ -66,6 +67,7 @@ const ImagePointAnnotationSurface = ({
   onImageError: () => void
 }): React.JSX.Element => {
   const { t } = useTranslation()
+  const surfaceScale = useAnnotationSurfaceScale()
   const surfaceRef = useRef<HTMLDivElement | null>(null)
   const focusReturnRef = useRef<HTMLElement | null>(null)
   const pointerStart = useRef<PointerStart | undefined>(undefined)
@@ -177,12 +179,17 @@ const ImagePointAnnotationSurface = ({
 
   const markerStyle = (
     point: ImageAnnotationPoint,
-    rect: ImageAnnotationRect | undefined
+    rect: ImageAnnotationRect | undefined,
+    scale: number
   ): React.CSSProperties | undefined =>
     rect
       ? {
           left: rect.left + point.x * rect.width,
-          top: rect.top + point.y * rect.height
+          top: rect.top + point.y * rect.height,
+          // The zoom wrapper scales the whole surface; the marker counters
+          // so its on-screen size stays constant while staying pinned to
+          // the image point.
+          transform: `translate(-50%, -50%) scale(${1 / scale})`
         }
       : undefined
 
@@ -243,8 +250,8 @@ const ImagePointAnnotationSurface = ({
         <button
           type="button"
           key={annotation.id}
-          className="absolute z-[1] flex size-6 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-primary-foreground bg-primary text-[11px] font-bold text-primary-foreground shadow outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
-          style={markerStyle(annotation.point, localContentRect)}
+          className="absolute z-[1] flex size-6 items-center justify-center rounded-full border-2 border-primary-foreground bg-primary text-[11px] font-bold text-primary-foreground shadow outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
+          style={markerStyle(annotation.point, localContentRect, surfaceScale)}
           aria-label={t('Point {{number}} at {{x}}, {{y}}', {
             number,
             x: annotation.point.x.toFixed(3),
@@ -272,8 +279,8 @@ const ImagePointAnnotationSurface = ({
         <Popover open onOpenChange={(open) => !open && clearPending()}>
           <PopoverAnchor asChild>
             <span
-              className="pointer-events-none absolute z-[2] flex size-7 -translate-x-1/2 -translate-y-1/2 items-center justify-center rounded-full border-2 border-dashed border-primary bg-background text-xs font-bold text-primary shadow"
-              style={markerStyle(pending.point, localContentRect)}
+              className="pointer-events-none absolute z-[2] flex size-7 items-center justify-center rounded-full border-2 border-dashed border-primary bg-background text-xs font-bold text-primary shadow"
+              style={markerStyle(pending.point, localContentRect, surfaceScale)}
               aria-hidden="true"
             >
               {displayNumber}
