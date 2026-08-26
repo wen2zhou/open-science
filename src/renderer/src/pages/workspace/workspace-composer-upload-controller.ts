@@ -2,6 +2,7 @@ import { useCallback, useEffect, useRef, useState } from 'react'
 
 import { VISION_MODEL_NOT_CONFIGURED_MESSAGE } from '../../../../shared/run-error-classification'
 import type { UploadedAttachment } from '../../../../shared/uploads'
+import type { Annotation } from '../../../../shared/annotations'
 
 import { planComposerAttachmentIntake } from './composer-attachment-intake'
 import {
@@ -23,6 +24,7 @@ import {
 
 export type ComposerDraft = {
   doc: ComposerDoc
+  annotations: Annotation[]
   attachments: UploadedAttachment[]
   attachmentTransfers: ComposerUploadTransfer[]
 }
@@ -35,7 +37,9 @@ type PastedTextUndoReceipt = {
   attachmentDoc?: ComposerDoc
 }
 
-type ComposerHistorySnapshot = ComposerDraft & { caret?: ComposerCaretPosition }
+type ComposerHistorySnapshot = Omit<ComposerDraft, 'annotations'> & {
+  caret?: ComposerCaretPosition
+}
 type ComposerHistoryRef = { current: Record<string, ComposerHistorySnapshot[]> }
 
 export type ComposerUploadApi = UploadStagingApi & {

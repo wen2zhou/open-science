@@ -1303,6 +1303,42 @@ describe('workspace message queue controller', () => {
     expect(hook.result.current.items).toEqual([])
   })
 
+  it('defers annotation Send now until idle instead of losing structured context in steering', async () => {
+    const steerFollowUp = vi.fn()
+    const input = options(session(), {
+      runtime: {
+        cancelRun: vi.fn(async () => undefined),
+        sendMessage: vi.fn(),
+        steerFollowUp
+      }
+    })
+    const hook = renderController(input)
+    mounted.push(hook)
+    const queued = admission('')
+    queued.snapshot.annotations = [
+      {
+        id: 'annotation-1',
+        kind: 'text',
+        target: 'agent',
+        quote: 'Quoted Agent evidence',
+        source: {
+          kind: 'agent-message',
+          sessionId: 'session-a',
+          messageId: 'agent-message-1'
+        }
+      }
+    ]
+    act(() => hook.result.current.lifecycle.enqueue(queued))
+
+    await act(async () => hook.result.current.actions.sendNow(hook.result.current.items[0].id))
+
+    expect(steerFollowUp).not.toHaveBeenCalled()
+    expect(input.runtime.sendMessage).not.toHaveBeenCalled()
+    expect(hook.result.current.items).toEqual([
+      expect.objectContaining({ phase: 'queued', deferredUntilIdle: true })
+    ])
+  })
+
   it('requeues when native follow-up is refused instead of interrupting', async () => {
     let currentSession = session()
     const input = options(currentSession, {

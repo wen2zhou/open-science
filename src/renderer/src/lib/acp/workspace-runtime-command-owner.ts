@@ -1,5 +1,6 @@
 import type { AcpMessageImage, AcpRuntimeEvent } from '../../../../shared/acp'
 import type { FileReference } from '../../../../shared/artifacts'
+import * as annotationProtocol from '../../../../shared/annotations'
 import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
 import {
   collectSessionReferences,
@@ -48,6 +49,7 @@ type SendWorkspaceMessageIntent = {
     pendingAction?: 'review' | 'approve' | 'reject'
   }
   attachments?: UploadedAttachment[]
+  annotations?: annotationProtocol.Annotation[]
   cwd?: string
   projectId?: string
   permissionProfile?: PermissionProfileId
@@ -183,6 +185,7 @@ type PromptDispatch = {
   sessionId: string
   messageId: string
   content: string
+  annotations?: annotationProtocol.Annotation[]
   attachments: UploadedAttachment[]
   forcedSkillIds?: string[]
   referencedArtifacts?: FileReference[]
@@ -203,7 +206,7 @@ const dispatchPrompt = (runtime: WorkspaceCommandRuntime, request: PromptDispatc
   )
   const args = [
     request.sessionId,
-    request.content,
+    annotationProtocol.appendAnnotationsToPrompt(request.content, request.annotations ?? []),
     request.attachments,
     request.forcedSkillIds,
     request.referencedArtifacts,
@@ -353,6 +356,7 @@ const startPendingPrompt = (
       sessionId: created.sessionId,
       messageId: boundMessageId,
       content: request.content,
+      annotations: request.annotations,
       attachments,
       forcedSkillIds: request.forcedSkillIds,
       referencedArtifacts: request.referencedArtifacts,
@@ -389,19 +393,22 @@ const sendWorkspaceMessage = async (
     ? replaySession.messages.find((item) => item.id === replaySession.pendingContextReplayMessageId)
     : undefined
   const attachments = input.attachments ?? []
+  const annotations = input.annotations ?? []
+  if (annotationProtocol.validateAnnotations(annotations, content)) return undefined
   const effectiveAttachments =
     attachments.length > 0 || !replayPrompt?.uploads?.length
       ? attachments
       : replayPrompt.uploads.map((upload) =>
           toRuntimeUploadedAttachment(upload, replaySession?.projectId)
         )
-  if (!content && effectiveAttachments.length === 0) return undefined
+  if (!content && effectiveAttachments.length === 0 && annotations.length === 0) return undefined
 
   if (input.branchSourceSessionId) {
     const pending = useSessionStore.getState().branchInNewSession({
       sourceSessionId: input.branchSourceSessionId,
       content,
       attachments,
+      annotations,
       parts: input.parts,
       turnIntent: input.turnIntent,
       permissionProfile: input.permissionProfile,
@@ -488,6 +495,7 @@ const sendWorkspaceMessage = async (
         sessionId,
         content,
         attachments: effectiveAttachments,
+        annotations,
         parts: input.parts,
         turnIntent: input.turnIntent,
         cwd,
@@ -568,6 +576,7 @@ const sendWorkspaceMessage = async (
       sessionId,
       content,
       attachments: promptAttachments,
+      annotations,
       parts: input.parts,
       turnIntent: input.turnIntent,
       cwd: input.cwd,
@@ -602,6 +611,7 @@ const sendWorkspaceMessage = async (
       sessionId,
       messageId: appended.messageId,
       content,
+      annotations,
       attachments: promptMedia?.currentAttachments ?? promptAttachments,
       forcedSkillIds: input.forcedSkillIds,
       referencedArtifacts: input.referencedArtifacts,
@@ -619,6 +629,7 @@ const sendWorkspaceMessage = async (
   const pending = useSessionStore.getState().appendPendingUserMessage({
     content,
     attachments,
+    annotations,
     parts: input.parts,
     turnIntent: input.turnIntent,
     cwd: input.cwd,

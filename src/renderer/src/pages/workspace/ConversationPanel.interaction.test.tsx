@@ -331,6 +331,52 @@ const delegatedQuestionSession = (): ChatSession => ({
   }
 })
 
+describe('ConversationPanel annotation composer integration', () => {
+  it('renders an editable annotation card, returns focus on Esc, and removes it', async () => {
+    const removeAnnotation = vi.fn()
+    renderPanel({
+      composer: {
+        view: {
+          annotations: [
+            {
+              id: 'annotation-1',
+              kind: 'text',
+              target: 'agent',
+              quote: 'Quoted Agent evidence',
+              note: 'Explain this evidence.',
+              source: {
+                kind: 'agent-message',
+                sessionId: 'session-1',
+                messageId: 'message-1'
+              }
+            }
+          ]
+        },
+        actions: { removeAnnotation }
+      }
+    })
+
+    const card = container.querySelector('[aria-label="Annotations for Agent"]')
+    expect(card?.textContent).toContain('Quoted Agent evidence')
+    expect(card?.textContent).toContain('Explain this evidence.')
+
+    const edit = card?.querySelector<HTMLButtonElement>('[aria-label="Edit annotation note"]')
+    await act(async () => edit?.click())
+    const note = card?.querySelector<HTMLTextAreaElement>('textarea[id^="edit-annotation-"]')
+    expect(note).not.toBeNull()
+    await act(async () => {
+      note?.dispatchEvent(new KeyboardEvent('keydown', { key: 'Escape', bubbles: true }))
+      await Promise.resolve()
+    })
+    expect(document.activeElement).toBe(edit)
+
+    act(() => {
+      card?.querySelector<HTMLButtonElement>('[aria-label="Remove annotation"]')?.click()
+    })
+    expect(removeAnnotation).toHaveBeenCalledWith('annotation-1')
+  })
+})
+
 type PanelProps = Parameters<typeof ConversationPanel>[0]
 type DeepPartial<T> = {
   [Key in keyof T]?: T[Key] extends readonly unknown[]
@@ -372,6 +418,7 @@ const createPanelDefaults = (): PanelProps => ({
   composer: {
     view: {
       doc: emptyDoc,
+      annotations: [],
       attachments: [],
       transfers: [],
       error: null,
@@ -382,6 +429,9 @@ const createPanelDefaults = (): PanelProps => ({
     },
     actions: {
       changeDoc: vi.fn(),
+      addAnnotation: vi.fn(),
+      updateAnnotationNote: vi.fn(),
+      removeAnnotation: vi.fn(),
       navigateHistory: vi.fn(() => false),
       stageFiles: onStageAttachmentFiles,
       stagePastedText: vi.fn(),

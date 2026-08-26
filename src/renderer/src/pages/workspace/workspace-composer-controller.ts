@@ -1,12 +1,18 @@
 import { useCallback, useEffect, useLayoutEffect, useRef, useState } from 'react'
 
 import type { UploadedAttachment } from '../../../../shared/uploads'
+import {
+  validateAnnotations,
+  type Annotation,
+  type AnnotationValidationError
+} from '../../../../shared/annotations'
 import { buildCustomizePrefillDoc } from '@/lib/customize-chat'
 import type { CustomizePrefillIntent } from '@/stores/navigation-store'
 
 import type { ComposerUploadTransfer } from './composer-upload-transfer'
 import {
   docIsEmpty,
+  docToText,
   emptyDoc,
   type ComposerCaretPosition,
   type ComposerDoc,
@@ -29,6 +35,7 @@ export type ComposerSendSnapshot = {
   draftKey: string
   version: number
   doc: ComposerDoc
+  annotations?: Annotation[]
   attachments: UploadedAttachment[]
 }
 
@@ -58,6 +65,7 @@ type WorkspaceComposerControllerInput = {
 type WorkspaceComposerController = {
   view: {
     doc: ComposerDoc
+    annotations: Annotation[]
     attachments: UploadedAttachment[]
     transfers: ComposerUploadTransfer[]
     error: string | null
@@ -68,6 +76,9 @@ type WorkspaceComposerController = {
   }
   actions: {
     changeDoc: (doc: ComposerDoc, caret?: ComposerCaretPosition) => void
+    addAnnotation: (annotation: Annotation) => AnnotationValidationError | undefined
+    updateAnnotationNote: (id: string, note: string) => AnnotationValidationError | undefined
+    removeAnnotation: (id: string) => void
     navigateHistory: (direction: 'previous' | 'next') => boolean
     stageFiles: (files: File[]) => void
     stagePastedText: (
@@ -93,7 +104,12 @@ type WorkspaceComposerController = {
   }
 }
 
-const blank = (): ComposerDraft => ({ doc: emptyDoc, attachments: [], attachmentTransfers: [] })
+const blank = (): ComposerDraft => ({
+  doc: emptyDoc,
+  annotations: [],
+  attachments: [],
+  attachmentTransfers: []
+})
 
 const useWorkspaceComposerController = ({
   currentDraftKey,
@@ -109,6 +125,7 @@ const useWorkspaceComposerController = ({
   uploads
 }: WorkspaceComposerControllerInput): WorkspaceComposerController => {
   const [doc, setDoc] = useState<ComposerDoc>(emptyDoc)
+  const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [historyBrowsingKey, setHistoryBrowsingKey] = useState<string>()
   const [historyStatus, setHistoryStatus] = useState('')
   const [skillCatalogReady, setSkillCatalogReady] = useState(historyPolicy.skillCatalogReady)
@@ -119,6 +136,7 @@ const useWorkspaceComposerController = ({
   }>()
   const activeDraftKeyRef = useRef(currentDraftKey)
   const docRef = useRef(doc)
+  const annotationsRef = useRef(annotations)
   const draftsRef = useRef<Record<string, ComposerDraft>>({})
   const versionsRef = useRef<Record<string, number>>({})
   const historyRef = useRef<Record<string, ComposerHistoryNavigation>>({})
@@ -211,6 +229,10 @@ const useWorkspaceComposerController = ({
     docRef.current = doc
   }, [doc])
 
+  useLayoutEffect(() => {
+    annotationsRef.current = annotations
+  }, [annotations])
+
   const { loadSkills, refreshSkillCatalog } = historyPolicy
   const ready = skillCatalogReady || historyPolicy.skillCatalogReady || !refreshSkillCatalog
   useEffect(() => {
@@ -233,6 +255,7 @@ const useWorkspaceComposerController = ({
     const outgoingHistory = historyRef.current[previousDraftKey]
     draftsRef.current[previousDraftKey] = {
       doc: outgoingHistory?.scratch ?? doc,
+      annotations,
       attachments,
       attachmentTransfers: transfers
     }
@@ -247,10 +270,12 @@ const useWorkspaceComposerController = ({
       pendingCustomizePrefill.projectId === activeProjectId
     const nextDraft = draftsRef.current[currentDraftKey] ?? blank()
     if (!customizePrefillPending) setActiveDoc(nextDraft.doc)
+    setAnnotations(nextDraft.annotations)
     activateDraftAttachments(nextDraft)
     activeDraftKeyRef.current = currentDraftKey
   }, [
     activeProjectId,
+    annotations,
     attachments,
     currentDraftKey,
     doc,
@@ -426,9 +451,10 @@ const useWorkspaceComposerController = ({
       draftKey: activeDraftKeyRef.current,
       version: versionsRef.current[activeDraftKeyRef.current] ?? 0,
       doc,
+      annotations: [...annotations],
       attachments
     }
-  }, [attachments, clearPastedTextUndo, clearUndo, doc])
+  }, [annotations, attachments, clearPastedTextUndo, clearUndo, doc])
   const clearDraft = useCallback(
     (draftKey: string, expectedVersion?: number): boolean => {
       const currentVersion = versionsRef.current[draftKey] ?? 0
@@ -439,6 +465,7 @@ const useWorkspaceComposerController = ({
       delete draftsRef.current[draftKey]
       if (activeDraftKeyRef.current !== draftKey) return true
       setActiveDoc(emptyDoc)
+      setAnnotations([])
       clearActiveAttachments()
       setError(null)
       return true
@@ -453,6 +480,7 @@ const useWorkspaceComposerController = ({
           preserveOnConflict &&
           activeDraftKeyRef.current === snapshot.draftKey &&
           docIsEmpty(doc) &&
+          annotations.length === 0 &&
           attachments.length === 0 &&
           transfers.length === 0
         )
@@ -462,11 +490,13 @@ const useWorkspaceComposerController = ({
       }
       if (activeDraftKeyRef.current === snapshot.draftKey) {
         setActiveDoc(snapshot.doc)
+        setAnnotations(snapshot.annotations ?? [])
         setActiveAttachments(snapshot.attachments)
         return true
       }
       draftsRef.current[snapshot.draftKey] = {
         doc: snapshot.doc,
+        annotations: snapshot.annotations ?? [],
         attachments: snapshot.attachments,
         attachmentTransfers: draftsRef.current[snapshot.draftKey]?.attachmentTransfers ?? []
       }
@@ -474,6 +504,7 @@ const useWorkspaceComposerController = ({
     },
     [
       attachments.length,
+      annotations.length,
       deleteAttachmentFiles,
       doc,
       setActiveAttachments,
@@ -484,6 +515,7 @@ const useWorkspaceComposerController = ({
   return {
     view: {
       doc,
+      annotations,
       attachments,
       transfers,
       error,
@@ -494,6 +526,37 @@ const useWorkspaceComposerController = ({
     },
     actions: {
       changeDoc,
+      addAnnotation: (annotation): AnnotationValidationError | undefined => {
+        const next = [...annotationsRef.current, annotation]
+        const validation = validateAnnotations(next, docToText(docRef.current))
+        if (validation) return validation
+        markChanged()
+        annotationsRef.current = next
+        setAnnotations(next)
+        return undefined
+      },
+      updateAnnotationNote: (id, note): AnnotationValidationError | undefined => {
+        const next = annotationsRef.current.map((annotation) =>
+          annotation.id === id
+            ? annotation.kind === 'text'
+              ? { ...annotation, note: note.trim() || undefined }
+              : { ...annotation, note: note.trim() }
+            : annotation
+        )
+        const validation = validateAnnotations(next, docToText(docRef.current))
+        if (validation) return validation
+        markChanged()
+        annotationsRef.current = next
+        setAnnotations(next)
+        return undefined
+      },
+      removeAnnotation: (id): void => {
+        const next = annotationsRef.current.filter((annotation) => annotation.id !== id)
+        if (next.length === annotationsRef.current.length) return
+        markChanged()
+        annotationsRef.current = next
+        setAnnotations(next)
+      },
       navigateHistory,
       stageFiles,
       stagePastedText,

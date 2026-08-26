@@ -103,7 +103,7 @@ const options = (
     newConversationAutoReviewEnabled: false,
     newConversationEnabledComputeHosts: [],
     composer: {
-      view: { doc, attachments: [], transfers: [] },
+      view: { doc, annotations: [], attachments: [], transfers: [] },
       actions: { setError: vi.fn() },
       lifecycle: {
         captureSend: vi.fn(() => ({
@@ -190,6 +190,57 @@ afterEach(() => {
 })
 
 describe('workspace conversation controller', () => {
+  it('admits and sends a structured annotation without message text', async () => {
+    const annotation = {
+      id: 'annotation-1',
+      kind: 'text' as const,
+      target: 'agent' as const,
+      quote: 'Quoted Agent response',
+      source: {
+        kind: 'agent-message' as const,
+        sessionId: 'session-a',
+        messageId: 'agent-message-a'
+      }
+    }
+    const input = options()
+    let resolveAdmission!: (value: { sessionId: string; messageId: string }) => void
+    input.runtime.sendMessage = vi.fn(
+      () =>
+        new Promise<{ sessionId: string; messageId: string }>((resolve) => {
+          resolveAdmission = resolve
+        })
+    )
+    input.composer.view.doc = { nodes: [] }
+    input.composer.view.annotations = [annotation]
+    input.composer.lifecycle.captureSend = vi.fn(() => ({
+      draftKey: 'session-a',
+      version: 1,
+      doc: { nodes: [] },
+      annotations: [annotation],
+      attachments: []
+    }))
+    const hook = renderController(input)
+    mounted.push(hook)
+
+    expect(hook.result.current.availability.submit).toBe(true)
+    act(() => hook.result.current.actions.submit.draft({ forcedSkillIds: [] }))
+    await vi.waitFor(() => expect(input.runtime.sendMessage).toHaveBeenCalledOnce())
+
+    expect(input.runtime.sendMessage).toHaveBeenCalledWith(
+      expect.objectContaining({ text: '', annotations: [annotation] })
+    )
+    expect(hook.result.current.optimisticMessage).toMatchObject({
+      content: '',
+      annotations: [annotation]
+    })
+    expect(input.composer.lifecycle.clearDraft).not.toHaveBeenCalled()
+
+    await act(async () =>
+      resolveAdmission({ sessionId: 'session-a', messageId: 'annotation-message-1' })
+    )
+    expect(input.composer.lifecycle.clearDraft).toHaveBeenCalledWith('session-a', 1)
+  })
+
   it('exposes the submitted draft immediately while runtime admission is pending', async () => {
     let resolveAdmission!: (value: { sessionId: string; messageId: string }) => void
     const admission = new Promise<{ sessionId: string; messageId: string }>((resolve) => {

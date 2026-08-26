@@ -485,6 +485,7 @@ const sendIntentKeys = [
   'turnIntent',
   'planContinuation',
   'attachments',
+  'annotations',
   'cwd',
   'projectId',
   'permissionProfile',

@@ -71,6 +71,11 @@ import { useSessionJobStore } from '@/stores/session-job-store'
 import type { GoToTranscriptIntent, ReviewWithChecks } from '../../../../shared/reviewer'
 import type { ComposerDoc } from './composer/composer-doc'
 import type {
+  Annotation,
+  AnnotationValidationError,
+  TextAnnotation
+} from '../../../../shared/annotations'
+import type {
   HandoffLifecycleEventSource,
   HandoffRetryRequest
 } from '../../../../shared/handoff-lifecycle'
@@ -92,6 +97,9 @@ type WorkspaceMessageScrollerProps = {
   notebookReference?: NotebookSessionReference
   onSendEditedMessage: (messageId: string, doc: ComposerDoc) => void
   optimisticMessage?: ChatMessage
+  annotations?: readonly Annotation[]
+  onAddAnnotation?: (annotation: TextAnnotation) => AnnotationValidationError | undefined
+  onAnnotationError?: (error: AnnotationValidationError) => void
   canBranchInNewSession?: boolean
   onBranchInNewSession?: (messageId: string) => void
   trailingContent?: ReactNode
@@ -368,6 +376,9 @@ const WorkspaceMessageScrollerImpl = ({
   isResumingSession = false,
   notebookReference,
   onSendEditedMessage,
+  annotations = [],
+  onAddAnnotation,
+  onAnnotationError,
   optimisticMessage,
   canBranchInNewSession = false,
   onBranchInNewSession,
@@ -1251,6 +1262,15 @@ const WorkspaceMessageScrollerImpl = ({
                     onOpenSkillMention,
                     onPreviewMentionArtifact,
                     onSendEditedMessage,
+                    annotationSessionId: currentSessionId,
+                    activeTextAnnotations: annotations.filter(
+                      (annotation): annotation is TextAnnotation =>
+                        annotation.kind === 'text' &&
+                        annotation.source.kind === 'agent-message' &&
+                        annotation.source.messageId === item.message.id
+                    ),
+                    onAddTextAnnotation: onAddAnnotation,
+                    onAnnotationError,
                     canBranchInNewSession,
                     onBranchInNewSession,
                     turnStartedAt: item.message.responseToMessageId

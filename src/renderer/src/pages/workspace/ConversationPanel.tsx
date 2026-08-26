@@ -50,6 +50,7 @@ import {
 import { useRef, useState } from 'react'
 import { resolveEffectiveSpecialistSkills } from '../../../../shared/specialist'
 import { isUnsupportedCodexAcpVersionError } from '../../../../shared/codex-runtime'
+import { validateAnnotations } from '../../../../shared/annotations'
 
 import { FileDropOverlay } from '@/components/FileDropOverlay'
 import { RemoteJobBadge } from '@/components/RemoteJobBadge'
@@ -78,6 +79,7 @@ import { ComposerEditor } from './composer/ComposerEditor'
 import {
   appendArtifactMention,
   docToSkillIds,
+  docToText,
   pastedTextAttachmentDomId,
   pastedTextPreviewName,
   type ComposerPastedTextNode
@@ -99,6 +101,8 @@ import { ExtensionPreservingFileName } from './ExtensionPreservingFileName'
 import { WorkspaceElicitationCard } from './WorkspaceElicitationCard'
 import { WorkspaceDelegatedQuestionCard } from './WorkspaceDelegatedQuestionCard'
 import { WorkspaceMessageScroller } from './WorkspaceMessageScroller'
+import { AnnotationDraftCards } from './annotations/AnnotationCards'
+import { annotationValidationMessage } from './annotations/annotation-validation-message'
 import { SessionSwitchSkeleton } from './SessionSwitchSkeleton'
 import { PlanProgressChip, WorkspacePlanCard } from './session-plan/SessionPlanSurfaces'
 import { projectDelegatedQuestionQueue } from './subagent-release-projection'
@@ -380,8 +384,10 @@ const ConversationPanel = ({
   const {
     view: {
       doc: draftDoc,
+      annotations,
       attachments,
       transfers: attachmentTransfers,
+      error: composerError,
       historyStatus,
       isHistoryBrowsing,
       isUploading: isUploadingAttachments,
@@ -389,6 +395,9 @@ const ConversationPanel = ({
     },
     actions: {
       changeDoc: onDraftDocChange,
+      addAnnotation: onAddAnnotation,
+      updateAnnotationNote: onUpdateAnnotationNote,
+      removeAnnotation: onRemoveAnnotation,
       navigateHistory: onNavigateHistory,
       stageFiles: onStageAttachmentFiles,
       stagePastedText: onStagePastedText,
@@ -396,9 +405,19 @@ const ConversationPanel = ({
       removeAttachment: onRemoveAttachment,
       restorePastedText: onRestorePastedText,
       undo: onUndo,
-      redo: onRedo
+      redo: onRedo,
+      setError: onSetComposerError
     }
   } = composer
+  const onValidatedDraftDocChange = (
+    nextDoc: Parameters<typeof onDraftDocChange>[0],
+    caret?: Parameters<typeof onDraftDocChange>[1]
+  ): void => {
+    if (caret) onDraftDocChange(nextDoc, caret)
+    else onDraftDocChange(nextDoc)
+    const validation = validateAnnotations(annotations, docToText(nextDoc))
+    onSetComposerError(validation ? annotationValidationMessage(validation, t) : null)
+  }
   const {
     availability: {
       submit: canSendMessage,
@@ -754,7 +773,7 @@ const ConversationPanel = ({
   // same appendArtifactMention path Global Search uses); ComposerEditor syncs the chip into the DOM.
   const handleInsertFileReference = (reference: LinkedFolderFileReference): void => {
     if (!canEditDraft) return
-    onDraftDocChange(appendArtifactMention(draftDoc, reference))
+    onValidatedDraftDocChange(appendArtifactMention(draftDoc, reference))
   }
 
   const handleBranchInNewSession = (): void => {
@@ -948,6 +967,15 @@ const ConversationPanel = ({
               handoffLifecycleSource={workspaceHandoffLifecycleClient}
               onRetryHandoff={(request) => workspaceHandoffLifecycleClient.retry(request)}
               reportPresentationRevealing
+              annotations={annotations}
+              onAddAnnotation={(annotation) => {
+                const error = onAddAnnotation(annotation)
+                if (!error) onSetComposerError(null)
+                return error
+              }}
+              onAnnotationError={(error) =>
+                onSetComposerError(annotationValidationMessage(error, t))
+              }
             />
           </WorkspaceMessageEditStateProvider>
         )}
@@ -965,7 +993,33 @@ const ConversationPanel = ({
           <div className="px-2 pb-[max(env(safe-area-inset-bottom),0.5rem)] md:px-4 md:pb-[6px]">
             {/* Runtime and session errors stay near the composer so recovery is visible. */}
             <div className={composerContentClassName}>
+              <AnnotationDraftCards
+                annotations={annotations}
+                disabled={!canEditDraft}
+                onUpdateNote={(id, note) => {
+                  const error = onUpdateAnnotationNote(id, note)
+                  if (error) onSetComposerError(annotationValidationMessage(error, t))
+                  else onSetComposerError(null)
+                  return error
+                }}
+                onRemove={(id) => {
+                  onRemoveAnnotation(id)
+                  const validation = validateAnnotations(
+                    annotations.filter((annotation) => annotation.id !== id),
+                    docToText(draftDoc)
+                  )
+                  onSetComposerError(validation ? annotationValidationMessage(validation, t) : null)
+                }}
+              />
               <div className="px-1 md:px-3">
+                {composerError ? (
+                  <div
+                    role="alert"
+                    className="mb-2 rounded-lg border border-red-200 bg-red-50 px-3 py-2 text-[12px] leading-5 text-red-700 dark:border-red-800/50 dark:bg-red-950/20 dark:text-red-300"
+                  >
+                    {composerError}
+                  </div>
+                ) : null}
                 {/* Interrupted sessions get a neutral banner with a Resume action instead of the
                     red error box, so the user can re-attach and continue the interrupted turn. */}
                 {!sideChat && activeSession?.interrupted && !hasUnsupportedCodexAcpRunError ? (
@@ -1532,7 +1586,7 @@ const ConversationPanel = ({
                         {/* Draft editing waits for persistence hydration to avoid targeting the wrong session. */}
                         <ComposerEditor
                           doc={draftDoc}
-                          onDocChange={onDraftDocChange}
+                          onDocChange={onValidatedDraftDocChange}
                           onSubmit={handleSubmit}
                           onPaste={handleMessageDraftPaste}
                           onLongTextPaste={onStagePastedText}

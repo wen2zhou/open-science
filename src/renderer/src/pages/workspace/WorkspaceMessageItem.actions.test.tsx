@@ -10,6 +10,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import type { ChatMessage } from '@/stores/session-store'
 
 import type { ComposerDoc } from './composer/composer-doc'
+import type { TextAnnotation } from '../../../../shared/annotations'
 import { WorkspaceMessageItem } from './WorkspaceMessageItem'
 
 // Keep the transcript row and markdown surface as thin wrappers so the test never loads Shiki.
@@ -69,6 +70,8 @@ const renderItem = async (
       onNext?: () => void
     }
     reviewerCorrectionActive?: boolean
+    activeTextAnnotations?: TextAnnotation[]
+    onAddTextAnnotation?: (annotation: TextAnnotation) => undefined
   } = {}
 ): Promise<void> => {
   await act(async () => {
@@ -87,6 +90,10 @@ const renderItem = async (
         subsequentTurns={options.subsequentTurns ?? 0}
         revisionNavigation={options.revisionNavigation}
         reviewerCorrectionActive={options.reviewerCorrectionActive}
+        annotationSessionId="session-1"
+        activeTextAnnotations={options.activeTextAnnotations}
+        onAddTextAnnotation={options.onAddTextAnnotation}
+        onAnnotationError={noop}
       />
     )
   })
@@ -192,6 +199,88 @@ afterEach(() => {
 })
 
 describe('WorkspaceMessageItem user message actions', () => {
+  it('creates a text annotation only after the two-step confirmation', async () => {
+    const onAddTextAnnotation = vi.fn(() => undefined)
+    await renderItem(createMessage({ role: 'agent', content: 'Quoted Agent evidence' }), {
+      onAddTextAnnotation
+    })
+    const annotationSurface = container.querySelector('[data-annotation-surface="true"]')
+    const text = Array.from(annotationSurface?.querySelectorAll('div') ?? []).find(
+      (element) =>
+        element.textContent === 'Quoted Agent evidence' && element.childNodes.length === 1
+    )?.firstChild
+    if (!text) throw new Error('Agent response text not found')
+    const range = document.createRange()
+    range.selectNodeContents(text)
+    window.getSelection()?.removeAllRanges()
+    window.getSelection()?.addRange(range)
+
+    await act(async () => {
+      annotationSurface?.dispatchEvent(new MouseEvent('mouseup', { bubbles: true }))
+    })
+    expect(onAddTextAnnotation).not.toHaveBeenCalled()
+    const annotateEntry = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Annotate'
+    )
+    if (!annotateEntry) throw new Error('Annotate entry not found')
+    await click(annotateEntry)
+
+    const note = document.querySelector<HTMLTextAreaElement>(
+      '[placeholder="Add context for the Agent"]'
+    )
+    if (!note) throw new Error('Annotation note not found')
+    await act(async () => {
+      const setter = Object.getOwnPropertyDescriptor(HTMLTextAreaElement.prototype, 'value')?.set
+      setter?.call(note, 'Explain this evidence.')
+      note.dispatchEvent(new Event('input', { bubbles: true }))
+    })
+    const confirm = Array.from(document.querySelectorAll('button'))
+      .filter((button) => button.textContent === 'Annotate')
+      .at(-1)
+    if (!confirm) throw new Error('Annotate confirmation not found')
+    await click(confirm)
+
+    expect(onAddTextAnnotation).toHaveBeenCalledWith(
+      expect.objectContaining({
+        kind: 'text',
+        target: 'agent',
+        quote: 'Quoted Agent evidence',
+        note: 'Explain this evidence.',
+        source: {
+          kind: 'agent-message',
+          sessionId: 'session-1',
+          messageId: 'message-1'
+        }
+      })
+    )
+  })
+
+  it('renders sent annotations as read-only evidence cards', async () => {
+    await renderItem(
+      createMessage({
+        content: '',
+        annotations: [
+          {
+            id: 'annotation-1',
+            kind: 'text',
+            target: 'agent',
+            quote: 'Quoted evidence',
+            note: 'A note',
+            source: {
+              kind: 'agent-message',
+              sessionId: 'session-1',
+              messageId: 'agent-message-1'
+            }
+          }
+        ]
+      })
+    )
+
+    expect(container.textContent).toContain('Quoted evidence')
+    expect(container.textContent).toContain('A note')
+    expect(container.querySelector('[aria-label="Sent annotations"]')).not.toBeNull()
+  })
+
   it('groups Copy tightly before Branch in a completed Agent Message footer', async () => {
     const onBranchInNewSession = vi.fn()
     await renderItem(

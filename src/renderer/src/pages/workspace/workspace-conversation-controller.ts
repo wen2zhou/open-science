@@ -46,7 +46,10 @@ type DraftSubmitIntent = {
 type RestoredPlanResponse = { decision: 'approved' | 'rejected' } | { feedback: string }
 
 type ConversationComposer = {
-  view: Pick<WorkspaceComposerController['view'], 'doc' | 'attachments' | 'transfers'>
+  view: Pick<
+    WorkspaceComposerController['view'],
+    'doc' | 'annotations' | 'attachments' | 'transfers'
+  >
   actions: Pick<WorkspaceComposerController['actions'], 'setError'>
   lifecycle: Pick<
     WorkspaceComposerController['lifecycle'],
@@ -146,7 +149,9 @@ const canSubmitImmediately = (options: WorkspaceConversationControllerOptions): 
     options.agentConfigurationReady &&
     !options.sideChatOpen &&
     composer.view.transfers.length === 0 &&
-    (!docIsEmpty(composer.view.doc) || composer.view.attachments.length > 0) &&
+    (!docIsEmpty(composer.view.doc) ||
+      composer.view.attachments.length > 0 ||
+      composer.view.annotations.length > 0) &&
     (options.actionability?.actions.startTurn.allowed ?? true) &&
     !hasRuntimeInteraction(options) &&
     !activeSession?.fixLoopActive &&
@@ -164,7 +169,9 @@ const canQueueDraft = (options: WorkspaceConversationControllerOptions): boolean
     !options.sideChatOpen &&
     activeSession?.status === 'running' &&
     composer.view.transfers.length === 0 &&
-    (!docIsEmpty(composer.view.doc) || composer.view.attachments.length > 0) &&
+    (!docIsEmpty(composer.view.doc) ||
+      composer.view.attachments.length > 0 ||
+      composer.view.annotations.length > 0) &&
     !options.sendPreparationInFlightSessionIds.includes(activeSession.id) &&
     !options.saveAsSkillInFlightSessionIds.includes(activeSession.id) &&
     !activeSession.fixLoopActive &&
@@ -321,6 +328,7 @@ const useWorkspaceConversationController = (
               status: 'complete' as const,
               eventIds: [],
               uploads: snapshot.attachments,
+              annotations: snapshot.annotations ?? [],
               parts: docToMessageParts(snapshot.doc),
               createdAt: 0,
               updatedAt: 0
@@ -337,6 +345,7 @@ const useWorkspaceConversationController = (
               : {}),
             text: docToText(snapshot.doc),
             attachments: snapshot.attachments,
+            annotations: snapshot.annotations ?? [],
             referencedArtifacts: docToArtifactRefs(snapshot.doc),
             parts: docToMessageParts(snapshot.doc),
             cwd: activeSession?.cwd,
@@ -361,6 +370,9 @@ const useWorkspaceConversationController = (
             if (!result) {
               composer.lifecycle.restoreFailedSend(snapshot)
               return
+            }
+            if (snapshot.annotations?.length) {
+              composer.lifecycle.clearDraft(snapshot.draftKey, snapshot.version)
             }
             if (wasNewConversation && autoReviewEnabled) {
               current.setAutoReviewEnabled(result.sessionId, true)
@@ -388,13 +400,13 @@ const useWorkspaceConversationController = (
               inFlightDraftKeysRef.current.delete(snapshot.draftKey)
               return
             }
-            composer.lifecycle.clearDraft(activeSession.id)
+            if (!snapshot.annotations?.length) composer.lifecycle.clearDraft(activeSession.id)
             dispatch(activeSession.id)
           })
         return
       }
 
-      composer.lifecycle.clearDraft(current.currentDraftKey)
+      if (!snapshot.annotations?.length) composer.lifecycle.clearDraft(current.currentDraftKey)
       dispatch(branchInNewSession ? undefined : activeSession?.id)
     }
 

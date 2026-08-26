@@ -85,6 +85,7 @@ const dispatchQueuedSession = (
         sessionId,
         text: item.text,
         attachments: item.snapshot.attachments,
+        annotations: item.snapshot.annotations,
         referencedArtifacts: docToArtifactRefs(item.snapshot.doc),
         parts: docToMessageParts(item.snapshot.doc),
         cwd: item.cwd,
@@ -215,7 +216,12 @@ const sendQueuedItemNow = async (
     }
     const liveTurn = isQueueLiveTurn(liveSession)
     const referencedArtifacts = docToArtifactRefs(item.snapshot.doc)
-    if (liveTurn && hasPayload && current.runtime.steerFollowUp) {
+    if (
+      liveTurn &&
+      hasPayload &&
+      current.runtime.steerFollowUp &&
+      !item.snapshot.annotations?.length
+    ) {
       owner.replaceItem(sessionId, itemId, {
         phase: 'sending',
         error: undefined,

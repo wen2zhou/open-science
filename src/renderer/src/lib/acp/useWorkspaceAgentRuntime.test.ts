@@ -1906,6 +1906,83 @@ describe('workspace agent message sending', () => {
     })
   })
 
+  it('sends annotation-only context while preserving structured Message data', async () => {
+    const sendPrompt = vi.fn().mockResolvedValue(createSnapshot(['transport-session-1']))
+    const runtime = {
+      state: createSnapshot(['transport-session-1']),
+      createSession: vi.fn(),
+      resumeSession: vi.fn(),
+      resetSessionContext: vi.fn(),
+      sendPrompt
+    }
+    const annotation = {
+      id: 'annotation-1',
+      kind: 'text' as const,
+      target: 'agent' as const,
+      quote: 'The confidence intervals overlap.',
+      note: 'Explain the consequence.',
+      source: {
+        kind: 'agent-message' as const,
+        sessionId: 'transport-session-1',
+        messageId: 'agent-message-1'
+      }
+    }
+
+    const sent = await sendWorkspaceMessage(runtime, {
+      sessionId: 'transport-session-1',
+      text: '',
+      annotations: [annotation],
+      cwd: '/workspace/project',
+      projectId: 'project-1'
+    })
+
+    expect(sent).toBeDefined()
+    await vi.waitFor(() => expect(sendPrompt).toHaveBeenCalledOnce())
+    expect(sendPrompt.mock.calls[0]?.[1]).toContain('[Annotations]')
+    expect(sendPrompt.mock.calls[0]?.[1]).toContain('The confidence intervals overlap.')
+    expect(useSessionStore.getState().sessions[0].messages[0]).toMatchObject({
+      role: 'user',
+      content: '',
+      annotations: [annotation]
+    })
+  })
+
+  it('rejects an oversized annotation at the runtime boundary', async () => {
+    const sendPrompt = vi.fn()
+    const sent = await sendWorkspaceMessage(
+      {
+        state: createSnapshot(['transport-session-1']),
+        createSession: vi.fn(),
+        resumeSession: vi.fn(),
+        resetSessionContext: vi.fn(),
+        sendPrompt
+      },
+      {
+        sessionId: 'transport-session-1',
+        text: '',
+        annotations: [
+          {
+            id: 'annotation-oversized',
+            kind: 'text',
+            target: 'agent',
+            quote: 'x'.repeat(4_001),
+            source: {
+              kind: 'agent-message',
+              sessionId: 'transport-session-1',
+              messageId: 'agent-message-1'
+            }
+          }
+        ],
+        cwd: '/workspace/project',
+        projectId: 'project-1'
+      }
+    )
+
+    expect(sent).toBeUndefined()
+    expect(sendPrompt).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions).toEqual([])
+  })
+
   it('does not append a prompt when attachment finalization fails', async () => {
     const attachment = createAttachment()
     useSessionStore.getState().appendUserMessage({

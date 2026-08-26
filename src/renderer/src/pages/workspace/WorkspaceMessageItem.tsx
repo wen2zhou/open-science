@@ -72,6 +72,9 @@ import { useNearViewport } from './previews/useNearViewport'
 import { useUnavailablePreviewProbe } from './previews/useUnavailablePreviewProbe'
 import { resolveSessionProviderId } from './error-report'
 import { SessionMessageMarkdown } from './SessionMessageMarkdown'
+import { AnnotationMessageCards } from './annotations/AnnotationCards'
+import { TextAnnotationSurface } from './annotations/TextAnnotationSurface'
+import type { AnnotationValidationError, TextAnnotation } from '../../../../shared/annotations'
 
 type MessageArtifact = NonNullable<ChatSession['artifacts']>[number]
 type MessageUploadAttachment = NonNullable<ChatMessage['uploads']>[number]
@@ -105,6 +108,10 @@ type WorkspaceMessageItemProps = {
   // Embedded transcript surfaces can supply their own horizontal gutter without changing live chat.
   contentPaddingClassName?: string
   onSendEditedMessage?: (messageId: string, doc: ComposerDoc) => void
+  annotationSessionId?: string
+  activeTextAnnotations?: readonly TextAnnotation[]
+  onAddTextAnnotation?: (annotation: TextAnnotation) => AnnotationValidationError | undefined
+  onAnnotationError?: (error: AnnotationValidationError) => void
   canBranchInNewSession?: boolean
   onBranchInNewSession?: (messageId: string) => void
   // Prompt send time for an Agent response; paired with its completion time for elapsed duration.
@@ -1159,6 +1166,10 @@ const WorkspaceMessageItemImpl = ({
   sending = false,
   contentPaddingClassName,
   onSendEditedMessage,
+  annotationSessionId,
+  activeTextAnnotations = [],
+  onAddTextAnnotation,
+  onAnnotationError,
   canBranchInNewSession = false,
   onBranchInNewSession,
   turnStartedAt,
@@ -1424,6 +1435,7 @@ const WorkspaceMessageItemImpl = ({
                   </TooltipProvider>
                 ) : null}
                 <div data-slot="user-message-bubble" className={userMessageBubbleClassName}>
+                  <AnnotationMessageCards annotations={message.annotations ?? []} />
                   <MessageUploadAttachmentList
                     attachments={uploads}
                     onPreviewUploadAttachment={onPreviewUploadAttachment}
@@ -1519,13 +1531,31 @@ const WorkspaceMessageItemImpl = ({
             )}
           >
             {message.content ? (
-              <SessionMessageMarkdown
-                content={assistantPresentation.content}
-                isAnimating={isAssistantPresenting}
-                artifacts={artifacts}
-                onPreviewArtifact={onPreviewArtifact}
-                onPreviewArtifactModal={onPreviewArtifactModal}
-              />
+              annotationSessionId && onAddTextAnnotation && onAnnotationError ? (
+                <TextAnnotationSurface
+                  sessionId={annotationSessionId}
+                  messageId={message.id}
+                  activeAnnotations={activeTextAnnotations}
+                  onAdd={onAddTextAnnotation}
+                  onError={onAnnotationError}
+                >
+                  <SessionMessageMarkdown
+                    content={assistantPresentation.content}
+                    isAnimating={isAssistantPresenting}
+                    artifacts={artifacts}
+                    onPreviewArtifact={onPreviewArtifact}
+                    onPreviewArtifactModal={onPreviewArtifactModal}
+                  />
+                </TextAnnotationSurface>
+              ) : (
+                <SessionMessageMarkdown
+                  content={assistantPresentation.content}
+                  isAnimating={isAssistantPresenting}
+                  artifacts={artifacts}
+                  onPreviewArtifact={onPreviewArtifact}
+                  onPreviewArtifactModal={onPreviewArtifactModal}
+                />
+              )
             ) : null}
             <MessageImageList images={message.images ?? []} />
             <MessageArtifactList onPreviewArtifact={onPreviewArtifact} artifacts={artifacts} />
@@ -1579,6 +1609,18 @@ const areRuntimeIdentitiesEqual = (
     previous.backendId === next.backendId &&
     previous.model === next.model)
 
+const areTextAnnotationsEqual = (
+  previous: readonly TextAnnotation[] | undefined,
+  next: readonly TextAnnotation[] | undefined
+): boolean => {
+  if (previous === next) return true
+  const left = previous ?? []
+  const right = next ?? []
+  return (
+    left.length === right.length && left.every((annotation, index) => annotation === right[index])
+  )
+}
+
 // The scroller rebuilds this object (with fresh closures) on every render. The closures only
 // capture the session id and a revision's branch id, both of which change only together with
 // index/total or the message itself, so those fields fully determine what a re-render would show.
@@ -1607,6 +1649,10 @@ const areWorkspaceMessageItemPropsEqual = (
   previous.onOpenSkillMention === next.onOpenSkillMention &&
   previous.onPreviewMentionArtifact === next.onPreviewMentionArtifact &&
   previous.onSendEditedMessage === next.onSendEditedMessage &&
+  previous.annotationSessionId === next.annotationSessionId &&
+  areTextAnnotationsEqual(previous.activeTextAnnotations, next.activeTextAnnotations) &&
+  previous.onAddTextAnnotation === next.onAddTextAnnotation &&
+  previous.onAnnotationError === next.onAnnotationError &&
   (previous.canBranchInNewSession ?? false) === (next.canBranchInNewSession ?? false) &&
   previous.onBranchInNewSession === next.onBranchInNewSession &&
   (previous.canEditMessage ?? false) === (next.canEditMessage ?? false) &&
