@@ -286,4 +286,26 @@ describe('PreviewTextAnnotationSurface', () => {
 
     expect(document.body.textContent).not.toContain('To Agent')
   })
+
+  it('keeps the annotate entry alive when clicking it collapses the browser selection', async () => {
+    await renderSurface()
+    await selectQuote()
+    const entry = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Annotate'
+    )
+    expect(entry).toBeDefined()
+
+    // A real browser collapses the selection on mousedown before the click
+    // lands, and the button's mouseup bubbles back into the surface.
+    window.getSelection()?.removeAllRanges()
+    await act(async () => entry!.dispatchEvent(new MouseEvent('mouseup', { bubbles: true })))
+
+    const surviving = Array.from(document.querySelectorAll('button')).find(
+      (button) => button.textContent === 'Annotate'
+    )
+    expect(surviving).toBe(entry)
+
+    await act(async () => surviving?.click())
+    expect(document.querySelector('textarea')).not.toBeNull()
+  })
 })

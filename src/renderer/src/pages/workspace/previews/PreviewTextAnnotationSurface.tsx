@@ -8,6 +8,7 @@ import { Textarea } from '@/components/ui/textarea'
 import type { PreviewFileItem } from '@/stores/preview-workbench-store'
 import type { TextAnnotation } from '../../../../../shared/annotations'
 import type { PreviewFileRendererProps } from './preview-types'
+import { anchorSelectionTrigger } from '../annotations/annotation-trigger-anchor'
 import { createAnnotationId } from '../annotations/annotation-id'
 import { reconcileTextAnnotationRanges } from '../annotations/text-annotation-range'
 
@@ -129,11 +130,12 @@ export const PreviewTextAnnotationSurface = ({
       setSelection(undefined)
       return
     }
-    const rect = range.getBoundingClientRect()
     setSelection({
       quote,
-      left: Math.max(8, Math.min(rect.right + 6, window.innerWidth - 108)),
-      top: Math.max(8, Math.min(rect.bottom + 6, window.innerHeight - 52)),
+      ...anchorSelectionTrigger(selected, {
+        width: window.innerWidth,
+        height: window.innerHeight
+      }),
       range: range.cloneRange()
     })
   }
@@ -191,6 +193,11 @@ export const PreviewTextAnnotationSurface = ({
               type="button"
               className="fixed z-40 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-md focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               style={{ left: selection.left, top: selection.top }}
+              // Browsers collapse the selection on mousedown before this
+              // button's click lands; its mouseup/keyup must not re-enter
+              // captureSelection or the draft (and this button) are dropped.
+              onMouseUp={(event) => event.stopPropagation()}
+              onKeyUp={(event) => event.stopPropagation()}
             >
               {t('Annotate')}
             </button>

@@ -6,6 +6,7 @@ import { Button } from '@/components/ui/button'
 import { Popover, PopoverContent, PopoverTrigger } from '@/components/ui/popover'
 import { Textarea } from '@/components/ui/textarea'
 import type { AnnotationValidationError, TextAnnotation } from '../../../../../shared/annotations'
+import { anchorSelectionTrigger } from './annotation-trigger-anchor'
 import { createAnnotationId } from './annotation-id'
 import { reconcileTextAnnotationRanges } from './text-annotation-range'
 
@@ -74,11 +75,12 @@ const TextAnnotationSurface = ({
       setSelection(undefined)
       return
     }
-    const rect = range.getBoundingClientRect()
     setSelection({
       quote,
-      left: Math.min(rect.right + 6, window.innerWidth - 100),
-      top: Math.min(rect.bottom + 6, window.innerHeight - 44),
+      ...anchorSelectionTrigger(selected, {
+        width: window.innerWidth,
+        height: window.innerHeight
+      }),
       range: range.cloneRange()
     })
   }
@@ -166,6 +168,11 @@ const TextAnnotationSurface = ({
               type="button"
               className="fixed z-40 rounded-full bg-primary px-3 py-1.5 text-xs font-semibold text-primary-foreground shadow-md focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50"
               style={{ left: selection.left, top: selection.top }}
+              // Browsers collapse the selection on mousedown before this
+              // button's click lands; its mouseup/keyup must not re-enter
+              // captureSelection or the draft (and this button) are dropped.
+              onMouseUp={(event) => event.stopPropagation()}
+              onKeyUp={(event) => event.stopPropagation()}
             >
               {t('Annotate')}
             </button>
