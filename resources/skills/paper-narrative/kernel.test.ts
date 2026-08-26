@@ -23,6 +23,92 @@ const helperExports = [
   'narrative_review_task'
 ] as const
 
+type HostReview = Readonly<{
+  hook_verdict: {
+    would_send_for_review: string
+    why: string
+    fig1_is: string
+    fig1_should_be: string
+  }
+  figure_moves: Array<{ what: string; from_fig: string; to_fig: string; why: string }>
+  missing_panels: unknown[]
+  kill_list: unknown[]
+  arc: Array<{ fig: string; role: string; one_line: string }>
+  boldest_defensible_fig1: string
+}>
+
+type FakeHost = Readonly<{
+  llm(prompt: string): Promise<{ text: string }>
+  delegate(
+    requests: Array<{ name: string; task: string; inputs: string[]; outputSchema: unknown }>,
+    options: { wait: false }
+  ): Promise<{ children: Array<{ frameId: string; attemptId: string }> }>
+  collect(
+    selectors: Array<{ frameId: string; attemptId: string }>,
+    options: { returnWhen: 'all'; timeoutSeconds: number }
+  ): Promise<
+    Array<{
+      status: string
+      error?: string
+      structuredOutput?: unknown
+      structuredOutputUnsatisfied?: boolean
+    }>
+  >
+}>
+
+const deriveBrief = async (
+  host: Pick<FakeHost, 'llm'>,
+  schema: Record<string, unknown>,
+  manuscriptText: string,
+  captionsText: string
+): Promise<Record<string, unknown>> => {
+  const response = await host.llm(
+    `Return JSON only. Schema:\n${JSON.stringify(schema)}\nManuscript:\n${manuscriptText}\nCaptions:\n${captionsText}`
+  )
+  let brief: unknown
+  try {
+    brief = JSON.parse(response.text)
+  } catch {
+    throw new Error('Invalid paper brief: model output was not JSON; review and retry.')
+  }
+  if (
+    typeof brief !== 'object' ||
+    brief === null ||
+    !('pitch' in brief) ||
+    !('vision' in brief) ||
+    !('figures' in brief) ||
+    !Array.isArray(brief.figures)
+  ) {
+    throw new Error(
+      'Invalid paper brief: model output failed paper_brief_schema; review and retry.'
+    )
+  }
+  return brief as Record<string, unknown>
+}
+
+const collectStructured = async <T>(
+  host: Pick<FakeHost, 'delegate' | 'collect'>,
+  request: { name: string; task: string; inputs: string[]; outputSchema: unknown }
+): Promise<T> => {
+  const receipt = await host.delegate([request], { wait: false })
+  const results = await host.collect(receipt.children, {
+    returnWhen: 'all',
+    timeoutSeconds: 1800
+  })
+  const child = results[0]
+  if (!child || child.status !== 'completed') {
+    throw new Error(
+      `Delegated workflow failed: ${child?.error ?? child?.status ?? 'missing child'}`
+    )
+  }
+  if (child.structuredOutputUnsatisfied || child.structuredOutput === undefined) {
+    throw new Error(
+      'Delegated workflow returned no schema-valid structuredOutput; review and retry.'
+    )
+  }
+  return child.structuredOutput as T
+}
+
 let smokeRoot: string | undefined
 
 afterEach(async () => {
@@ -30,14 +116,67 @@ afterEach(async () => {
   smokeRoot = undefined
 })
 
-pythonGate('paper-narrative adapter', () => {
-  it('passes the Python public-interface harness', () => {
-    expect(() =>
-      execFileSync(python3 as string, [contractPath], {
-        cwd: skillDir,
-        timeout: 15_000
+describe('paper-narrative adapter', () => {
+  pythonGate('Python helper', () => {
+    it('passes the Python public-interface harness', () => {
+      expect(() =>
+        execFileSync(python3 as string, [contractPath], {
+          cwd: skillDir,
+          timeout: 15_000
+        })
+      ).not.toThrow()
+    })
+
+    it('injects only the three public methods in the real persistent Python loop', async () => {
+      smokeRoot = await mkdtemp(join(resolve('.'), '.paper-narrative-smoke-'))
+      const source = await readFile(kernelPath, 'utf8')
+      const helperModules = await new NotebookHelperModuleHost({
+        resolve: async (id) =>
+          id === 'paper-narrative'
+            ? { id, language: 'python' as const, source, exports: helperExports }
+            : undefined
+      }).resolve('python', ['paper-narrative'])
+      const executor = new NotebookKernelExecutor({
+        pythonLoopPath: resolve('resources/notebook/python_loop.py'),
+        platform: process.platform
       })
-    ).not.toThrow()
+      const producer = [
+        'import json',
+        'brief = {"pitch":"A","vision":"B","figures":[{"key":"Fig1","claim":"Hook"}]}',
+        'print(json.dumps({"brief_required": paper_brief_schema()["required"], "review_required": narrative_review_schema()["required"], "has_deck": "{{artifact:deck-v1}}" in narrative_review_task(brief, "deck-v1", "rules-v1"), "pn_sdk": "pn_sdk" in globals(), "derive": "derive_paper_brief" in globals()}))'
+      ].join('\n')
+
+      try {
+        const result = await executor.execute({
+          cwd: smokeRoot,
+          notebookSessionRoot: join(smokeRoot, 'notebook'),
+          dataRoot: join(smokeRoot, 'notebook', 'data'),
+          runtimeRoot: join(smokeRoot, 'runtime'),
+          language: 'python',
+          resolvedInterpreter: { command: python3 as string },
+          helperModules,
+          code: producer
+        })
+
+        expect(result.status, result.traceback).toBe('completed')
+        expect(JSON.parse(result.stdout.trim())).toEqual({
+          brief_required: ['pitch', 'vision', 'figures'],
+          review_required: [
+            'hook_verdict',
+            'figure_moves',
+            'missing_panels',
+            'kill_list',
+            'arc',
+            'boldest_defensible_fig1'
+          ],
+          has_deck: true,
+          pn_sdk: false,
+          derive: false
+        })
+      } finally {
+        await executor.shutdown()
+      }
+    }, 30_000)
   })
 
   it('documents deterministic helpers and the review-required JS Host workflow', async () => {
@@ -59,88 +198,58 @@ pythonGate('paper-narrative adapter', () => {
     expect(skill).toMatch(/missing_panels\.length\s*===?\s*0/)
     expect(skill).toMatch(/do not (?:read|import|exec|copy)/i)
     expect(skill).not.toMatch(/pn_sdk\(|derive_paper_brief\(|host\.reasoning_model/)
+    expect(skill).toContain('JSON.stringify(briefSchema)')
+    expect(skill).toMatch(/invalid paper brief.*retry/i)
   })
-
-  it('injects only the three public methods in the real persistent Python loop', async () => {
-    smokeRoot = await mkdtemp(join(resolve('.'), '.paper-narrative-smoke-'))
-    const source = await readFile(kernelPath, 'utf8')
-    const helperModules = await new NotebookHelperModuleHost({
-      resolve: async (id) =>
-        id === 'paper-narrative'
-          ? { id, language: 'python' as const, source, exports: helperExports }
-          : undefined
-    }).resolve('python', ['paper-narrative'])
-    const executor = new NotebookKernelExecutor({
-      pythonLoopPath: resolve('resources/notebook/python_loop.py'),
-      platform: process.platform
-    })
-    const producer = [
-      'import json',
-      'brief = {"pitch":"A","vision":"B","figures":[{"key":"Fig1","claim":"Hook"}]}',
-      'print(json.dumps({"brief_required": paper_brief_schema()["required"], "review_required": narrative_review_schema()["required"], "has_deck": "{{artifact:deck-v1}}" in narrative_review_task(brief, "deck-v1", "rules-v1"), "pn_sdk": "pn_sdk" in globals(), "derive": "derive_paper_brief" in globals()}))'
-    ].join('\n')
-
-    try {
-      const result = await executor.execute({
-        cwd: smokeRoot,
-        notebookSessionRoot: join(smokeRoot, 'notebook'),
-        dataRoot: join(smokeRoot, 'notebook', 'data'),
-        runtimeRoot: join(smokeRoot, 'runtime'),
-        language: 'python',
-        resolvedInterpreter: { command: python3 as string },
-        helperModules,
-        code: producer
-      })
-
-      expect(result.status, result.traceback).toBe('completed')
-      expect(JSON.parse(result.stdout.trim())).toEqual({
-        brief_required: ['pitch', 'vision', 'figures'],
-        review_required: [
-          'hook_verdict',
-          'figure_moves',
-          'missing_panels',
-          'kill_list',
-          'arc',
-          'boldest_defensible_fig1'
-        ],
-        has_deck: true,
-        pn_sdk: false,
-        derive: false
-      })
-    } finally {
-      await executor.shutdown()
-    }
-  }, 30_000)
 
   it('converges and hands every arc claim, moved panel, and data reference to figure-composer', async () => {
     const llmCalls: string[] = []
-    const delegateInputs: string[][] = []
-    const composerRequests: Array<{ claim: string; movedPanels: string[]; dataRefs: string[] }> = []
-    const reviews = [
-      {
-        hook_verdict: { would_send_for_review: 'weak' },
-        figure_moves: [{ what: 'responder panel', from_fig: 'Fig2', to_fig: 'Fig1', why: 'hook' }],
-        missing_panels: [],
-        kill_list: [],
-        arc: [
-          { fig: 'Fig1', role: 'hook', one_line: 'Treatment restores function' },
-          { fig: 'Fig2', role: 'mechanism', one_line: 'The receptor explains response' }
-        ],
-        boldest_defensible_fig1: 'Treatment restores function in responders'
+    type Request = { name: string; task: string; inputs: string[]; outputSchema: unknown }
+    const delegated: Request[] = []
+    const pending = new Map<string, Request>()
+    const firstReview: HostReview = {
+      hook_verdict: {
+        would_send_for_review: 'weak',
+        why: 'The response is buried.',
+        fig1_is: 'A broad survey.',
+        fig1_should_be: 'The responder result.'
       },
-      {
-        hook_verdict: { would_send_for_review: 'yes' },
-        figure_moves: [],
-        missing_panels: [],
-        kill_list: [],
-        arc: [
-          { fig: 'Fig1', role: 'hook', one_line: 'Treatment restores function in responders' },
-          { fig: 'Fig2', role: 'mechanism', one_line: 'The receptor explains response' }
-        ],
-        boldest_defensible_fig1: 'Treatment restores function in responders'
-      }
-    ]
-    const fakeHost = {
+      figure_moves: [
+        { what: 'responder panel', from_fig: 'Fig2', to_fig: 'Fig1', why: 'stronger hook' }
+      ],
+      missing_panels: [
+        {
+          target_fig: 'Fig1',
+          what_to_show: 'dose response',
+          analysis_needed: 'fit EC50',
+          data_hint: 'dose table'
+        }
+      ],
+      kill_list: [],
+      arc: [
+        { fig: 'Fig1', role: 'hook', one_line: 'Treatment restores function' },
+        { fig: 'Fig2', role: 'mechanism', one_line: 'The receptor explains response' }
+      ],
+      boldest_defensible_fig1: 'Treatment restores function in responders'
+    }
+    const finalReview: HostReview = {
+      hook_verdict: {
+        would_send_for_review: 'yes',
+        why: 'The result is immediate and supported.',
+        fig1_is: 'The responder result.',
+        fig1_should_be: 'The responder result.'
+      },
+      figure_moves: [],
+      missing_panels: [],
+      kill_list: [],
+      arc: [
+        { fig: 'Fig1', role: 'hook', one_line: 'Treatment restores function in responders' },
+        { fig: 'Fig2', role: 'mechanism', one_line: 'The receptor explains response' }
+      ],
+      boldest_defensible_fig1: 'Treatment restores function in responders'
+    }
+    let nextFrame = 0
+    const fakeHost: FakeHost = {
       llm: async (prompt: string) => {
         llmCalls.push(prompt)
         return {
@@ -156,57 +265,147 @@ pythonGate('paper-narrative adapter', () => {
           })
         }
       },
-      delegate: async (requests: Array<{ inputs: string[] }>) => {
-        delegateInputs.push(...requests.map(({ inputs }) => inputs))
-        return { children: [{ status: 'completed', output: reviews.shift() }] }
+      delegate: async (requests) => {
+        delegated.push(...requests)
+        return {
+          children: requests.map((request) => {
+            const frameId = `frame-${++nextFrame}`
+            pending.set(frameId, request)
+            return { frameId, attemptId: `attempt-${nextFrame}` }
+          })
+        }
+      },
+      collect: async (selectors) => {
+        return selectors.map(({ frameId }) => {
+          const request = pending.get(frameId)
+          if (!request) return { status: 'failed', error: 'unknown receipt' }
+          if (request.name === 'paper-narrative-editor-r1') {
+            return { status: 'completed', structuredOutput: firstReview }
+          }
+          if (request.name === 'paper-narrative-editor-r2') {
+            return { status: 'completed', structuredOutput: finalReview }
+          }
+          return {
+            status: 'completed',
+            structuredOutput: { versionId: `${request.name}-version` }
+          }
+        })
       }
     }
     const manuscriptText = 'Abstract: treatment restores function through a receptor.'
     const captionsText = 'Fig1: response. Fig2: receptor mechanism.'
-    const brief = JSON.parse(
-      (await fakeHost.llm(`Manuscript:\n${manuscriptText}\nCaptions:\n${captionsText}`)).text
-    )
-    let review = (
-      await fakeHost.delegate([{ inputs: ['manuscript-v1', 'captions-v1', 'deck-v1', 'rules-v1'] }])
-    ).children[0].output!
-
-    for (const item of review.arc) {
-      composerRequests.push({
-        claim: item.one_line,
-        movedPanels: review.figure_moves
-          .filter((move) => move.to_fig === item.fig)
-          .map((move) => move.what),
-        dataRefs: brief.figures
-          .filter((figure: { key: string }) => figure.key === item.fig)
-          .map((figure: { composite_vid: string }) => figure.composite_vid)
-      })
+    const briefSchema = {
+      type: 'object',
+      required: ['pitch', 'vision', 'figures'],
+      properties: {
+        pitch: { type: 'string' },
+        vision: { type: 'string' },
+        figures: { type: 'array' }
+      }
     }
-    review = (
-      await fakeHost.delegate([{ inputs: ['manuscript-v1', 'captions-v1', 'deck-v2', 'rules-v1'] }])
-    ).children[0].output!
+    const brief = await deriveBrief(fakeHost, briefSchema, manuscriptText, captionsText)
+    expect(brief).toMatchObject({
+      pitch: 'Treatment restores function.',
+      figures: [{ composite_vid: 'fig1-v1' }, { composite_vid: 'fig2-v1' }]
+    })
+    const reviewSchema = { type: 'object' }
+    let review = await collectStructured<HostReview>(fakeHost, {
+      name: 'paper-narrative-editor-r1',
+      task: 'Review the full deck',
+      inputs: ['manuscript-v1', 'captions-v1', 'deck-v1', 'rules-v1'],
+      outputSchema: reviewSchema
+    })
+    const figureDataVersionIds: Record<string, string[]> = {
+      Fig1: ['data-shared-v1', 'data-fig1-v1'],
+      Fig2: ['data-shared-v1', 'data-fig2-v1']
+    }
+    const publishedMissingAnalysisVersionIds: Record<string, string[]> = {
+      Fig1: ['analysis-dose-v1', 'data-fig1-v1']
+    }
+
+    const composerRequests = review.arc.map((item) => {
+      const moved = review.figure_moves.filter((move) => move.to_fig === item.fig)
+      const inputs = [
+        ...(figureDataVersionIds[item.fig] ?? []),
+        ...moved.flatMap((move) => figureDataVersionIds[move.from_fig] ?? []),
+        ...(publishedMissingAnalysisVersionIds[item.fig] ?? [])
+      ]
+      return {
+        name: `compose-${item.fig}`,
+        task: `Claim: ${item.one_line}; moved panels: ${moved.map(({ what }) => what).join(', ')}`,
+        inputs: [...new Set(inputs)],
+        outputSchema: { type: 'object' }
+      }
+    })
+    const composerReceipt = await fakeHost.delegate(composerRequests, { wait: false })
+    const composerResults = await fakeHost.collect(composerReceipt.children, {
+      returnWhen: 'all',
+      timeoutSeconds: 1800
+    })
+    expect(composerResults.every((child) => child.status === 'completed')).toBe(true)
+
+    review = await collectStructured<HostReview>(fakeHost, {
+      name: 'paper-narrative-editor-r2',
+      task: 'Review the rebuilt full deck',
+      inputs: ['manuscript-v1', 'captions-v1', 'deck-v2', 'rules-v1'],
+      outputSchema: reviewSchema
+    })
 
     const converged =
       review.hook_verdict.would_send_for_review === 'yes' &&
       review.figure_moves.length === 0 &&
       review.missing_panels.length === 0
     expect(converged).toBe(true)
+    expect(llmCalls[0]).toContain(JSON.stringify(briefSchema))
     expect(llmCalls[0]).toContain(manuscriptText)
     expect(llmCalls[0]).toContain(captionsText)
-    expect(delegateInputs).toEqual([
-      ['manuscript-v1', 'captions-v1', 'deck-v1', 'rules-v1'],
-      ['manuscript-v1', 'captions-v1', 'deck-v2', 'rules-v1']
-    ])
-    expect(composerRequests).toEqual([
+    const sentComposer = delegated.filter(({ name }) => name.startsWith('compose-'))
+    expect(sentComposer.map(({ name, task, inputs }) => ({ name, task, inputs }))).toEqual([
       {
-        claim: 'Treatment restores function',
-        movedPanels: ['responder panel'],
-        dataRefs: ['fig1-v1']
+        name: 'compose-Fig1',
+        task: 'Claim: Treatment restores function; moved panels: responder panel',
+        inputs: ['data-shared-v1', 'data-fig1-v1', 'data-fig2-v1', 'analysis-dose-v1']
       },
       {
-        claim: 'The receptor explains response',
-        movedPanels: [],
-        dataRefs: ['fig2-v1']
+        name: 'compose-Fig2',
+        task: 'Claim: The receptor explains response; moved panels: ',
+        inputs: ['data-shared-v1', 'data-fig2-v1']
       }
     ])
+    expect(sentComposer.flatMap(({ inputs }) => inputs)).not.toContain('fig1-v1')
+    expect(sentComposer.flatMap(({ inputs }) => inputs)).not.toContain('fig2-v1')
+  })
+
+  it('fails clearly when brief reasoning returns invalid output', async () => {
+    const prompt: string[] = []
+    await expect(
+      deriveBrief(
+        {
+          llm: async (value) => {
+            prompt.push(value)
+            return { text: '{"pitch":"missing the rest"}' }
+          }
+        },
+        { type: 'object', required: ['pitch', 'vision', 'figures'] },
+        'abstract',
+        'captions'
+      )
+    ).rejects.toThrow(/invalid paper brief.*review and retry/i)
+    expect(prompt[0]).toContain('"required":["pitch","vision","figures"]')
+  })
+
+  it('fails clearly when a completed reviewer has no accepted structured output', async () => {
+    const host: Pick<FakeHost, 'delegate' | 'collect'> = {
+      delegate: async () => ({ children: [{ frameId: 'f1', attemptId: 'a1' }] }),
+      collect: async () => [{ status: 'completed', structuredOutputUnsatisfied: true }]
+    }
+    await expect(
+      collectStructured(host, {
+        name: 'review',
+        task: 'review',
+        inputs: [],
+        outputSchema: { type: 'object' }
+      })
+    ).rejects.toThrow(/no schema-valid structuredOutput.*review and retry/i)
   })
 })

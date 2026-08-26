@@ -38,8 +38,10 @@ not invent a Python Host, Connector, LLM, or delegation bridge.
   the handling-editor result. It requires `hook_verdict`, `figure_moves`,
   `missing_panels`, `kill_list`, `arc`, and `boldest_defensible_fig1`.
   `would_send_for_review` is `yes`, `weak`, or `no`; arc roles are `hook`,
-  `mechanism`, `evidence`, `application`, or `supplement`. The method performs
-  no I/O and raises no domain-specific errors.
+  `mechanism`, `evidence`, `application`, or `supplement`. A hook verdict must
+  include both `fig1_is` and `fig1_should_be`; every missing panel must include
+  a source-oriented `data_hint`. The method performs no I/O and raises no
+  domain-specific errors.
 - `narrative_review_task(brief, deck_vid, rules_vid)` returns the complete
   handling-editor task string. `brief` is a mapping shaped by
   `paper_brief_schema()`; `deck_vid` and `rules_vid` are immutable Artifact
@@ -77,10 +79,11 @@ control-plane request. Obtain `paper_brief_schema()` in Python first. Then call
 the current tool-less Host model and require JSON only:
 
 ```javascript
+const briefSchema = paperBriefSchemaFromNotebook
 const caps = await host.capabilities()
 if (caps.llm !== true) throw new Error('paper-narrative requires host.llm for brief reasoning')
 const briefDraft = await host.llm(
-  `Return JSON only for the supplied paper_brief schema.\n` +
+  `Return JSON only. The complete paper_brief JSON Schema is:\n${JSON.stringify(briefSchema)}\n` +
     `Manuscript Artifact Version: ${manuscriptVersionId}\n` +
     `Captions Artifact Version: ${captionsVersionId}\n` +
     `Manuscript text:\n${manuscriptText}\n\nCaptions/claims:\n${captionsText}\n\n` +
@@ -88,12 +91,22 @@ const briefDraft = await host.llm(
     `Vision is the killer application: what readers can now do. ` +
     `Name the audience and the single most-arresting image.`
 )
+
+let brief
+try {
+  brief = JSON.parse(briefDraft.text)
+} catch {
+  throw new Error('Invalid paper brief: model output was not JSON; review and retry.')
+}
 ```
 
-`host.llm` does not enforce a caller-provided schema. Parse `briefDraft.text`,
-validate it against `paper_brief_schema()` in Python, and attach the immutable
-figure/data references from the source claim table. Then review every field —
-pitch, vision, audience, most-arresting asset, and every figure claim — before
+`host.llm` does not enforce a caller-provided schema. Validate the parsed value
+against that exact `briefSchema` with the bound Python environment's JSON Schema
+validator. If validation fails, stop with `Invalid paper brief: model output
+failed paper_brief_schema; review and retry.` Do not fill missing required
+fields with guesses. After validation, attach the immutable figure/data
+references from the source claim table. Then review every field — pitch,
+vision, audience, most-arresting asset, and every figure claim — before
 continuing. Fix unsupported wording explicitly; never silently treat the first
 model draft as approved.
 
@@ -117,6 +130,16 @@ const settled = await host.collect(
   sent.children.map(({ frameId, attemptId }) => ({ frameId, attemptId })),
   { returnWhen: 'all', timeoutSeconds: 1800 }
 )
+const editor = settled[0]
+if (!editor || editor.status !== 'completed') {
+  throw new Error(
+    `paper-narrative reviewer failed: ${editor?.error ?? editor?.status ?? 'missing'}`
+  )
+}
+if (editor.structuredOutputUnsatisfied || editor.structuredOutput === undefined) {
+  throw new Error('paper-narrative reviewer returned no schema-valid structuredOutput')
+}
+const review = editor.structuredOutput
 ```
 
 Require a completed child and a schema-valid result. Human-review the result as
@@ -146,31 +169,49 @@ arc entry. Each request must include:
 4. any accepted missing-panel analysis result after it has actually been run
    and published as an Artifact Version.
 
+Build `inputs` as an order-preserving union: the target figure's source-data
+Versions, every moved item's `from_fig` source-data Versions, and the published
+missing-analysis Versions for the target. Deduplicate identities. A brief
+figure's `composite_vid` identifies rendered figure output; it is not source
+data and must never be substituted for these input references.
+
 Example fake-compatible request construction:
 
 ```javascript
-const composerRequests = review.arc.map((item) => ({
-  name: `compose-${item.fig}`,
-  task: `Load figure-composer. Claim: ${item.one_line}. Moved-in panels: ${
-    review.figure_moves
-      .filter((move) => move.to_fig === item.fig)
-      .map((move) => move.what)
-      .join('; ') || 'none'
-  }.`,
-  inputs: figureDataVersionIds[item.fig] ?? [],
-  outputSchema: composerOutputSchema
-}))
-const composed = await host.delegate(composerRequests.slice(0, 4), { wait: false })
+const composerRequests = review.arc.map((item) => {
+  const moved = review.figure_moves.filter((move) => move.to_fig === item.fig)
+  const sourceInputs = [
+    ...(figureDataVersionIds[item.fig] ?? []),
+    ...moved.flatMap((move) => figureDataVersionIds[move.from_fig] ?? []),
+    ...(publishedMissingAnalysisVersionIds[item.fig] ?? [])
+  ]
+  return {
+    name: `compose-${item.fig}`,
+    task: `Load figure-composer. Claim: ${item.one_line}. Moved-in panels: ${
+      moved.map((move) => move.what).join('; ') || 'none'
+    }.`,
+    inputs: [...new Set(sourceInputs)],
+    outputSchema: composerOutputSchema
+  }
+})
+const composerReceipts = await host.delegate(composerRequests.slice(0, 4), { wait: false })
+const composerResults = await host.collect(
+  composerReceipts.children.map(({ frameId, attemptId }) => ({ frameId, attemptId })),
+  { returnWhen: 'all', timeoutSeconds: 1800 }
+)
 ```
 
-Send waves of no more than four, collect them, and build a new deck from their
-immutable output Version identities. `paper-narrative` does not depend on the
-composer's internal implementation; the identity-bearing request is the seam.
+For every composer result, require `status === 'completed'`, reject `error` or
+`structuredOutputUnsatisfied`, and read the accepted value only from
+`structuredOutput`. Build a new deck from the returned immutable output Version
+identities. Send waves of no more than four. `paper-narrative` does not depend
+on the composer's internal implementation; the identity-bearing request is the
+seam.
 
 The current notebook request schema cannot yet record dynamic delegated
 Artifact Versions as `inputFiles`, and this adapter does not change the central
-manifest or schema. After the registered-origin integration lands, pass these
-same identities through that provenance seam without redesigning the workflow.
+manifest or schema. This workflow passes the identities through delegated
+`inputs`; do not claim they are notebook `inputFiles` provenance.
 
 ## 4. Re-review and converge
 

@@ -17,7 +17,7 @@ def narrative_review_schema():
             "would_send_for_review":{"type":"string","enum":["yes","weak","no"]},
             "why":{"type":"string"},"fig1_is":{"type":"string"},
             "fig1_should_be":{"type":"string"}},
-            "required":["would_send_for_review","why","fig1_should_be"]},
+            "required":["would_send_for_review","why","fig1_is","fig1_should_be"]},
         "figure_moves":{"type":"array","items":{"type":"object","properties":{
             "what":{"type":"string"},"from_fig":{"type":"string"},
             "to_fig":{"type":"string"},"why":{"type":"string"}},
@@ -25,7 +25,7 @@ def narrative_review_schema():
         "missing_panels":{"type":"array","items":{"type":"object","properties":{
             "target_fig":{"type":"string"},"what_to_show":{"type":"string"},
             "analysis_needed":{"type":"string"},"data_hint":{"type":"string"}},
-            "required":["target_fig","what_to_show","analysis_needed"]}},
+            "required":["target_fig","what_to_show","analysis_needed","data_hint"]}},
         "kill_list":{"type":"array","items":{"type":"object","properties":{
             "what":{"type":"string"},"why":{"type":"string"},
             "demote_to":{"type":"string","enum":["supplement","caption","delete"]}},

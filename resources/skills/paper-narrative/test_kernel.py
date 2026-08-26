@@ -6,6 +6,12 @@ import json
 from kernel import narrative_review_schema, narrative_review_task, paper_brief_schema
 
 
+def assert_required_fields(schema, value):
+    missing = [name for name in schema.get("required", []) if name not in value]
+    if missing:
+        raise ValueError("missing required fields: " + ", ".join(missing))
+
+
 def test_public_signatures():
     assert str(inspect.signature(paper_brief_schema)) == "()"
     assert str(inspect.signature(narrative_review_schema)) == "()"
@@ -45,6 +51,18 @@ def test_review_schema_preserves_story_decisions_and_convergence_fields():
         "weak",
         "no",
     ]
+    assert props["hook_verdict"]["required"] == [
+        "would_send_for_review",
+        "why",
+        "fig1_is",
+        "fig1_should_be",
+    ]
+    assert props["missing_panels"]["items"]["required"] == [
+        "target_fig",
+        "what_to_show",
+        "analysis_needed",
+        "data_hint",
+    ]
     assert props["arc"]["items"]["properties"]["role"]["enum"] == [
         "hook",
         "mechanism",
@@ -58,6 +76,30 @@ def test_review_schema_preserves_story_decisions_and_convergence_fields():
         "delete",
     ]
     json.dumps(schema)
+
+    try:
+        assert_required_fields(
+            props["hook_verdict"],
+            {"would_send_for_review": "yes", "why": "clear", "fig1_should_be": "the hook"},
+        )
+    except ValueError as error:
+        assert "fig1_is" in str(error)
+    else:
+        raise AssertionError("hook verdict without fig1_is must be rejected")
+
+    try:
+        assert_required_fields(
+            props["missing_panels"]["items"],
+            {
+                "target_fig": "Fig2",
+                "what_to_show": "dose response",
+                "analysis_needed": "fit EC50",
+            },
+        )
+    except ValueError as error:
+        assert "data_hint" in str(error)
+    else:
+        raise AssertionError("missing panel without data_hint must be rejected")
 
 
 def test_review_task_names_artifacts_claims_and_every_editorial_move():
