@@ -1,54 +1,20 @@
-import { createHash } from 'node:crypto'
-
 import type {
   PersistedArtifactExecutionSnapshot,
   ProvenanceNotebookOutput
 } from '../../shared/artifact-provenance'
-import type { NotebookHelperModuleEvidence } from '../../shared/notebook'
 import {
   decodeVersionedJson,
   type VersionedJsonDecodeResult
 } from '../storage/versioned-json-decoder'
+import {
+  decodeNotebookHelperEvidence,
+  notebookHelperEvidenceKey
+} from '../notebook/helper-evidence'
 
 const recordValue = (value: unknown): Record<string, unknown> | undefined =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
     ? (value as Record<string, unknown>)
     : undefined
-
-const sha256 = (value: string): string => createHash('sha256').update(value).digest('hex')
-
-const helperEvidenceValue = (value: unknown): NotebookHelperModuleEvidence | undefined => {
-  const helper = recordValue(value)
-  if (
-    !helper ||
-    typeof helper.helperId !== 'string' ||
-    typeof helper.skillIdentity !== 'string' ||
-    typeof helper.packageOrigin !== 'string' ||
-    typeof helper.interfaceRevision !== 'string' ||
-    typeof helper.registeredGeneration !== 'string' ||
-    !Array.isArray(helper.exports) ||
-    helper.exports.some((name) => typeof name !== 'string') ||
-    (helper.dependencies !== undefined &&
-      (!Array.isArray(helper.dependencies) ||
-        helper.dependencies.some((id) => typeof id !== 'string'))) ||
-    typeof helper.source !== 'string' ||
-    typeof helper.sourceDigest !== 'string' ||
-    sha256(helper.source) !== helper.sourceDigest
-  ) {
-    return undefined
-  }
-  return {
-    helperId: helper.helperId,
-    skillIdentity: helper.skillIdentity,
-    packageOrigin: helper.packageOrigin,
-    interfaceRevision: helper.interfaceRevision,
-    registeredGeneration: helper.registeredGeneration,
-    exports: [...helper.exports] as string[],
-    ...(helper.dependencies ? { dependencies: [...helper.dependencies] as string[] } : {}),
-    source: helper.source,
-    sourceDigest: helper.sourceDigest
-  }
-}
 
 const normalizeStoredProvenanceOutput = (value: unknown): ProvenanceNotebookOutput[] => {
   const output = recordValue(value)
@@ -216,9 +182,12 @@ const executionSnapshotValue = (value: unknown): PersistedArtifactExecutionSnaps
   }
   const normalized = value as PersistedArtifactExecutionSnapshot
   const rawHelpers = Array.isArray(snapshot.helperModules) ? snapshot.helperModules : []
+  const invalidHelperReasons = new Set<'source-missing' | 'source-corrupt'>()
   const helperModules = rawHelpers.flatMap((helper) => {
-    const normalizedHelper = helperEvidenceValue(helper)
-    return normalizedHelper ? [normalizedHelper] : []
+    const decoded = decodeNotebookHelperEvidence(helper)
+    if (decoded.state === 'valid') return [decoded.value]
+    invalidHelperReasons.add(decoded.reason)
+    return []
   })
   const persistedStatus = recordValue(snapshot.helperEvidenceStatus)
   const persistedReasons =
@@ -229,6 +198,17 @@ const executionSnapshotValue = (value: unknown): PersistedArtifactExecutionSnaps
         )
       : []
   const reasons = new Set(persistedReasons)
+  for (const reason of invalidHelperReasons) reasons.add(reason)
+  const hasHelperKeys = (snapshot.runs as PersistedArtifactExecutionSnapshot['runs']).some(
+    (run) => (run.helperModuleKeys?.length ?? 0) > 0
+  )
+  if (
+    (hasHelperKeys && snapshot.helperModules === undefined) ||
+    ((hasHelperKeys || rawHelpers.length > 0) && snapshot.helperEvidenceStatus === undefined) ||
+    (persistedStatus?.state === 'complete' && rawHelpers.length === 0)
+  ) {
+    reasons.add('source-missing')
+  }
   if (snapshot.helperModules !== undefined && !Array.isArray(snapshot.helperModules)) {
     reasons.add('source-corrupt')
   }
@@ -246,17 +226,7 @@ const executionSnapshotValue = (value: unknown): PersistedArtifactExecutionSnaps
   ) {
     reasons.add('source-corrupt')
   }
-  if (rawHelpers.length !== helperModules.length) reasons.add('source-corrupt')
-  const availableKeys = new Set(
-    helperModules.map((helper) =>
-      [
-        helper.skillIdentity,
-        helper.helperId,
-        helper.registeredGeneration,
-        helper.sourceDigest
-      ].join('\0')
-    )
-  )
+  const availableKeys = new Set(helperModules.map(notebookHelperEvidenceKey))
   if (
     rawHelpers.length === helperModules.length &&
     !reasons.has('payload-limit') &&
@@ -268,7 +238,9 @@ const executionSnapshotValue = (value: unknown): PersistedArtifactExecutionSnaps
   }
   return {
     ...normalized,
-    ...(snapshot.helperModules !== undefined || snapshot.helperEvidenceStatus !== undefined
+    ...(hasHelperKeys ||
+    snapshot.helperModules !== undefined ||
+    snapshot.helperEvidenceStatus !== undefined
       ? {
           helperModules,
           helperEvidenceStatus:

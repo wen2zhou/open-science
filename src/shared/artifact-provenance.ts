@@ -2,6 +2,7 @@ import type { ArtifactFile, ArtifactSourceFileObservation, ArtifactWriteSource }
 import type {
   NotebookInputAssociation,
   NotebookHelperModuleEvidence,
+  NotebookHelperEvidenceStatus,
   NotebookKernelKind,
   NotebookInputFileSummary,
   NotebookRunEnvironmentCapture,
@@ -450,12 +451,14 @@ export type ProvenanceNotebookRun = {
   helperModuleKeys?: string[]
 }
 
-export type ArtifactHelperEvidenceStatus =
-  | { state: 'complete' }
-  | {
-      state: 'incomplete'
-      reasons: Array<'source-missing' | 'source-corrupt' | 'payload-limit'>
-    }
+export type ArtifactHelperEvidenceStatus = NotebookHelperEvidenceStatus
+
+export type ArtifactNotebookHelperEvidence = Omit<
+  NotebookHelperModuleEvidence,
+  'source' | 'dependencies'
+> & {
+  sourceAvailable: boolean
+}
 
 export type ArtifactExecutionInputAvailability =
   | { state: 'available' }
@@ -493,8 +496,12 @@ export type PersistedArtifactExecutionSnapshot = {
 
 // Renderer-safe execution projection. Input storage keys are resolved in main and replaced with the
 // current immutable-byte availability before this value crosses IPC.
-export type ArtifactExecutionSnapshot = Omit<PersistedArtifactExecutionSnapshot, 'inputFiles'> & {
+export type ArtifactExecutionSnapshot = Omit<
+  PersistedArtifactExecutionSnapshot,
+  'inputFiles' | 'helperModules'
+> & {
   inputFiles: ProvenanceExecutionInputFile[]
+  helperModules?: ArtifactNotebookHelperEvidence[]
 }
 
 export type ArtifactVersionProvenance = {

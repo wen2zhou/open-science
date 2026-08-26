@@ -21,42 +21,16 @@ import {
   decodeArtifactExecutionSnapshot,
   parseArtifactExecutionSnapshot
 } from './provenance-execution-snapshot-decoder'
+import {
+  decodeNotebookHelperEvidence,
+  notebookHelperEvidenceKey
+} from '../notebook/helper-evidence'
 
 const MAX_EXECUTION_SNAPSHOT_BYTES = 4 * 1024 * 1024
 const MAX_EXECUTION_SNAPSHOT_RUNS = 128
 const MAX_EXECUTION_SNAPSHOT_OUTPUTS = 256
 const MAX_EXECUTION_SNAPSHOT_INPUTS = 256
 const MAX_EXECUTION_OUTPUT_BYTES = 64 * 1024
-
-const helperEvidenceKey = (
-  helper: Pick<
-    NotebookHelperModuleEvidence,
-    'helperId' | 'skillIdentity' | 'registeredGeneration' | 'sourceDigest'
-  >
-): string =>
-  [helper.skillIdentity, helper.helperId, helper.registeredGeneration, helper.sourceDigest].join(
-    '\0'
-  )
-
-const validHelperEvidence = (value: unknown): value is NotebookHelperModuleEvidence => {
-  const helper = recordValue(value)
-  return Boolean(
-    helper &&
-    typeof helper.helperId === 'string' &&
-    typeof helper.skillIdentity === 'string' &&
-    typeof helper.packageOrigin === 'string' &&
-    typeof helper.interfaceRevision === 'string' &&
-    typeof helper.registeredGeneration === 'string' &&
-    Array.isArray(helper.exports) &&
-    helper.exports.every((name) => typeof name === 'string') &&
-    (helper.dependencies === undefined ||
-      (Array.isArray(helper.dependencies) &&
-        helper.dependencies.every((id) => typeof id === 'string'))) &&
-    typeof helper.source === 'string' &&
-    typeof helper.sourceDigest === 'string' &&
-    sha256(helper.source) === helper.sourceDigest
-  )
-}
 
 const clipText = (value: string, maxLength = 16_000): string =>
   value.length <= maxLength ? value : `${value.slice(0, maxLength)}\n…[truncated]`
@@ -216,6 +190,28 @@ const buildBoundedExecutionSnapshot = (
   const runHelperKeys = new Map<string, string[]>()
   for (const { run } of eligibleRuns) {
     const rawHelpers = run.helperModules as unknown
+    const rawStatus = recordValue(run.helperEvidenceStatus)
+    if (rawStatus?.state === 'incomplete' && Array.isArray(rawStatus.reasons)) {
+      for (const reason of rawStatus.reasons) {
+        if (
+          reason === 'source-missing' ||
+          reason === 'source-corrupt' ||
+          reason === 'payload-limit'
+        ) {
+          helperEvidenceReasons.add(reason)
+        } else {
+          helperEvidenceReasons.add('source-corrupt')
+        }
+      }
+    } else if (rawStatus !== undefined && rawStatus.state !== 'complete') {
+      helperEvidenceReasons.add('source-corrupt')
+    }
+    if (rawStatus?.state === 'complete' && rawHelpers === undefined) {
+      helperEvidenceReasons.add('source-missing')
+    }
+    if (rawHelpers !== undefined && run.helperEvidenceStatus === undefined) {
+      helperEvidenceReasons.add('source-missing')
+    }
     if (rawHelpers === undefined) continue
     if (!Array.isArray(rawHelpers)) {
       helperEvidenceReasons.add('source-missing')
@@ -223,29 +219,29 @@ const buildBoundedExecutionSnapshot = (
     }
     const keys: string[] = []
     for (const rawHelper of rawHelpers) {
-      if (!validHelperEvidence(rawHelper)) {
-        helperEvidenceReasons.add(
-          recordValue(rawHelper)?.source === undefined ? 'source-missing' : 'source-corrupt'
-        )
+      const decodedHelper = decodeNotebookHelperEvidence(rawHelper)
+      if (decodedHelper.state === 'invalid') {
+        helperEvidenceReasons.add(decodedHelper.reason)
         continue
       }
-      const key = helperEvidenceKey(rawHelper)
+      const helper = decodedHelper.value
+      const key = notebookHelperEvidenceKey(helper)
       const existing = helperModulesByKey.get(key)
       if (
         existing &&
         canonicalJson(existing as unknown as CanonicalJson) !==
-          canonicalJson(rawHelper as unknown as CanonicalJson)
+          canonicalJson(helper as unknown as CanonicalJson)
       ) {
         helperEvidenceReasons.add('source-corrupt')
         continue
       }
-      helperModulesByKey.set(key, { ...rawHelper, exports: [...rawHelper.exports] })
+      helperModulesByKey.set(key, helper)
       keys.push(key)
     }
     if (keys.length) runHelperKeys.set(run.runId, [...new Set(keys)].sort())
   }
   let helperModules = [...helperModulesByKey.values()].sort((left, right) =>
-    helperEvidenceKey(left).localeCompare(helperEvidenceKey(right))
+    notebookHelperEvidenceKey(left).localeCompare(notebookHelperEvidenceKey(right))
   )
   let omittedLeadingRunCount = Math.max(0, eligibleRuns.length - MAX_EXECUTION_SNAPSHOT_RUNS)
   let omittedOutputCount = 0

@@ -1,10 +1,14 @@
-import { createHash } from 'node:crypto'
-
-import type { NotebookHelperModuleEvidence, NotebookLanguage } from '../../shared/notebook'
+import type {
+  NotebookHelperEvidenceStatus,
+  NotebookHelperModuleEvidence,
+  NotebookLanguage
+} from '../../shared/notebook'
 import type { NotebookKernelEpochOwnership } from './session-aggregate'
+import { digestNotebookHelperSource } from './helper-evidence'
 
 const HELPER_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const PYTHON_EXPORT = /^[A-Za-z_][A-Za-z0-9_]*$/
+const NOTEBOOK_HELPER_EVIDENCE_MAX_SOURCE_BYTES = 512 * 1024
 
 type RegisteredNotebookHelperModule = Readonly<{
   id: string
@@ -59,13 +63,17 @@ type NotebookHelperModulePlan = Readonly<{
   protectedGenerationRoots: readonly string[]
 }>
 
+type LoadedNotebookHelperEvidence = Readonly<{
+  helperModules: NotebookHelperModuleEvidence[]
+  helperEvidenceStatus?: NotebookHelperEvidenceStatus
+}>
+
 type EpochState = {
   pinned: Map<string, PinnedNotebookHelperModule>
   loaded: Set<string>
 }
 
 const emptyCatalog: NotebookHelperModuleCatalog = { resolve: async () => undefined }
-const sha256 = (source: string): string => createHash('sha256').update(source).digest('hex')
 
 const assertHelperId: (id: unknown) => asserts id is string = (id) => {
   if (typeof id !== 'string' || id.length > 128 || !HELPER_ID.test(id)) {
@@ -102,7 +110,7 @@ const pinDescriptor = (
       `HELPER_SOURCE_VALIDATION_FAILED: helper "${expectedId}" has duplicate dependencies.`
     )
   }
-  const digest = sha256(helper.source)
+  const digest = digestNotebookHelperSource(helper.source)
   for (const [label, value] of [
     ['Skill identity', helper.skillIdentity ?? expectedId],
     ['package origin', helper.packageOrigin ?? 'registered'],
@@ -275,31 +283,44 @@ class NotebookHelperModuleHost {
     }
   }
 
-  loadedEvidence(epoch: NotebookKernelEpochOwnership): NotebookHelperModuleEvidence[] {
+  loadedEvidence(epoch: NotebookKernelEpochOwnership): LoadedNotebookHelperEvidence {
     const state = this.epochs.get(epoch)
-    if (!state) return []
-    return [...state.loaded].sort().flatMap((id) => {
+    if (!state || state.loaded.size === 0) return { helperModules: [] }
+    let sourceBytes = 0
+    let omitted = false
+    const helperModules = [...state.loaded].sort().flatMap((id) => {
       const helper = state.pinned.get(id)
-      return helper
-        ? [
-            {
-              helperId: helper.id,
-              skillIdentity: helper.skillIdentity,
-              packageOrigin: helper.packageOrigin,
-              interfaceRevision: helper.interfaceRevision,
-              registeredGeneration: helper.registeredGeneration,
-              exports: [...helper.exports],
-              ...(helper.dependencies.length ? { dependencies: [...helper.dependencies] } : {}),
-              source: helper.source,
-              sourceDigest: helper.digest
-            }
-          ]
-        : []
+      if (!helper) return []
+      const helperSourceBytes = Buffer.byteLength(helper.source, 'utf8')
+      if (sourceBytes + helperSourceBytes > NOTEBOOK_HELPER_EVIDENCE_MAX_SOURCE_BYTES) {
+        omitted = true
+        return []
+      }
+      sourceBytes += helperSourceBytes
+      return [
+        {
+          helperId: helper.id,
+          skillIdentity: helper.skillIdentity,
+          packageOrigin: helper.packageOrigin,
+          interfaceRevision: helper.interfaceRevision,
+          registeredGeneration: helper.registeredGeneration,
+          exports: [...helper.exports],
+          ...(helper.dependencies.length ? { dependencies: [...helper.dependencies] } : {}),
+          source: helper.source,
+          sourceDigest: helper.digest
+        }
+      ]
     })
+    return {
+      helperModules,
+      helperEvidenceStatus: omitted
+        ? { state: 'incomplete', reasons: ['payload-limit'] }
+        : { state: 'complete' }
+    }
   }
 }
 
-export { NotebookHelperModuleHost }
+export { NOTEBOOK_HELPER_EVIDENCE_MAX_SOURCE_BYTES, NotebookHelperModuleHost }
 export type {
   NotebookHelperModuleCatalog,
   NotebookHelperModuleInjection,

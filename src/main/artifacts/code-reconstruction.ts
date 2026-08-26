@@ -7,7 +7,6 @@ import type {
   GetArtifactCodeReconstructionRequest
 } from '../../shared/artifact-code-reconstruction'
 import type {
-  ArtifactVersionProvenance,
   ProvenanceNotebookOutput,
   ProvenanceNotebookRun
 } from '../../shared/artifact-provenance'
@@ -16,6 +15,8 @@ import type { NotebookKernelKind } from '../../shared/notebook'
 import type { NotebookHelperModuleEvidence } from '../../shared/notebook'
 import type { AgentFrameworkId } from '../../shared/settings'
 import type { ExplicitAgentBackendTarget } from '../settings/backend-resolver'
+import type { ArtifactVersionReconstructionProvenance } from './provenance-read-model'
+import { readArtifactReconstructionEvidence } from './provenance-reconstruction-evidence'
 
 const CONTEXT_MAX_BYTES = 256 * 1024
 const PRODUCER_SCRIPT_MAX_BYTES = 160 * 1024
@@ -25,7 +26,7 @@ const PROMPT_VERSION = 'artifact-code-reconstruction-v2'
 
 type CodeReconstructionRepository = Pick<
   import('./provenance-repository').ArtifactProvenanceRepository,
-  'getVersionProvenance' | 'readCodeReconstructionCache' | 'writeCodeReconstructionCache'
+  'readCodeReconstructionCache' | 'writeCodeReconstructionCache'
 >
 
 type CodeReconstructionRunner = {
@@ -38,12 +39,15 @@ type CodeReconstructionRunner = {
 
 type ArtifactCodeReconstructionServiceOptions = {
   provenance: CodeReconstructionRepository
+  loadProvenance?: (
+    request: GetArtifactCodeReconstructionRequest
+  ) => Promise<ArtifactVersionReconstructionProvenance>
   runner: CodeReconstructionRunner
   now?: () => Date
 }
 
 type ReconstructionSource = {
-  provenance: ArtifactVersionProvenance
+  provenance: ArtifactVersionReconstructionProvenance
   producerRun: ProvenanceNotebookRun
   language: NotebookKernelKind
   sourceChecksum: string
@@ -177,7 +181,7 @@ const projectRun = (run: ProvenanceNotebookRun, maxScriptBytes: number): Reconst
 }
 
 const sourceState = (
-  provenance: ArtifactVersionProvenance
+  provenance: ArtifactVersionReconstructionProvenance
 ): ReconstructionSource | ArtifactCodeReconstructionState => {
   if (!provenance.execution || !provenance.evidence.execution_snapshot_checksum) {
     return { state: 'unavailable', reason: 'execution-unavailable' }
@@ -191,6 +195,18 @@ const sourceState = (
   )
   if (!producerRun?.script.trim()) {
     return { state: 'unavailable', reason: 'producer-script-missing' }
+  }
+  const hasHelperKeys = provenance.execution.runs.some(
+    (run) => (run.helperModuleKeys?.length ?? 0) > 0
+  )
+  if (
+    (hasHelperKeys &&
+      (!provenance.execution.helperModules || !provenance.execution.helperEvidenceStatus)) ||
+    (provenance.execution.helperModules?.length && !provenance.execution.helperEvidenceStatus) ||
+    (provenance.execution.helperEvidenceStatus?.state === 'complete' &&
+      !provenance.execution.helperModules?.length)
+  ) {
+    return { state: 'unavailable', reason: 'helper-evidence-incomplete' }
   }
   if (provenance.execution.helperEvidenceStatus?.state === 'incomplete') {
     return { state: 'unavailable', reason: 'helper-evidence-incomplete' }
@@ -621,11 +637,8 @@ export class ArtifactCodeReconstructionService {
     request: GetArtifactCodeReconstructionRequest
   ): Promise<ReconstructionSource | ArtifactCodeReconstructionState> {
     return sourceState(
-      await this.options.provenance.getVersionProvenance(request, {
-        execution: true,
-        messages: false,
-        review: false
-      })
+      await (this.options.loadProvenance?.(request) ??
+        readArtifactReconstructionEvidence(this.options.provenance, request))
     )
   }
 }

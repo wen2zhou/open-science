@@ -1,6 +1,7 @@
 import type {
   NotebookEnvironmentManifest,
   NotebookHelperModuleEvidence,
+  NotebookHelperEvidenceStatus,
   NotebookOutput,
   NotebookRunEnvironmentCapture,
   NotebookRunRecord,
@@ -36,6 +37,7 @@ type NotebookRunTerminalResult = {
   environmentCapture?: NotebookRunEnvironmentCapture
   kernelDispatched?: boolean
   helperModules?: NotebookHelperModuleEvidence[]
+  helperEvidenceStatus?: NotebookHelperEvidenceStatus
 }
 
 type TerminalizeNotebookRunRequest<Result extends NotebookRunTerminalResult> = {
@@ -200,6 +202,9 @@ class NotebookRunTerminalizationOwner {
         ? { kernelDispatched: limitedResult.kernelDispatched }
         : {}),
       ...(limitedResult.helperModules ? { helperModules: limitedResult.helperModules } : {}),
+      ...(limitedResult.helperEvidenceStatus
+        ? { helperEvidenceStatus: limitedResult.helperEvidenceStatus }
+        : {}),
       ...(interruptionReason ? { interruptionReason } : {}),
       ...(environmentCapture.state !== 'unavailable' && limitedResult.environmentManifest
         ? { environmentManifest: limitedResult.environmentManifest }

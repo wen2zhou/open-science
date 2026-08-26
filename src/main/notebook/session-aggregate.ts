@@ -4,6 +4,7 @@ import type {
   NotebookCell,
   NotebookEnvironmentManifest,
   NotebookHelperModuleEvidence,
+  NotebookHelperEvidenceStatus,
   NotebookKernelInstanceIdentity,
   NotebookKernelMetadata,
   NotebookLanguage,
@@ -85,6 +86,7 @@ export type NotebookSessionExecutionResult = {
   // The host uses this even when the producer later fails, so same-epoch retries stay idempotent.
   helperModulesInitialized?: readonly string[]
   helperModules?: NotebookHelperModuleEvidence[]
+  helperEvidenceStatus?: NotebookHelperEvidenceStatus
 }
 
 export type NotebookSessionExecutor<

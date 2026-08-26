@@ -8,6 +8,7 @@ import {
   buildBoundedExecutionSnapshot,
   parseArtifactExecutionSnapshot
 } from './provenance-execution-evidence'
+import { projectPublicArtifactExecutionSnapshot } from './provenance-read-model'
 
 const digest = (source: string): string => createHash('sha256').update(source).digest('hex')
 
@@ -35,6 +36,7 @@ const run = (
   kernelEpochId: 'epoch-1',
   kernelDispatched: true,
   helperModules: helpers,
+  helperEvidenceStatus: { state: 'complete' },
   cellId: runId,
   source: 'agent',
   kernelKind: 'python',
@@ -109,5 +111,66 @@ describe('Artifact helper execution evidence', () => {
       state: 'incomplete',
       reasons: ['source-corrupt']
     })
+  })
+
+  it('fails closed when helper keys survive without their evidence envelope', () => {
+    const value = snapshot([run('run-1', 'helper_a()', [helper('helper-a')])])
+    delete value.helperModules
+    delete value.helperEvidenceStatus
+
+    const decoded = parseArtifactExecutionSnapshot(JSON.stringify(value))
+
+    expect(decoded.helperModules).toEqual([])
+    expect(decoded.helperEvidenceStatus).toEqual({
+      state: 'incomplete',
+      reasons: ['source-missing']
+    })
+  })
+
+  it('fails closed when helper modules survive without their status', () => {
+    const value = snapshot([run('run-1', 'helper_a()', [helper('helper-a')])])
+    delete value.helperEvidenceStatus
+
+    const decoded = parseArtifactExecutionSnapshot(JSON.stringify(value))
+
+    expect(decoded.helperModules).toHaveLength(1)
+    expect(decoded.helperEvidenceStatus).toEqual({
+      state: 'incomplete',
+      reasons: ['source-missing']
+    })
+  })
+
+  it('fails closed when a complete status survives without helper modules', () => {
+    const value = snapshot([run('run-1', 'helper_a()', [helper('helper-a')])])
+    delete value.helperModules
+
+    const decoded = parseArtifactExecutionSnapshot(JSON.stringify(value))
+
+    expect(decoded.helperModules).toEqual([])
+    expect(decoded.helperEvidenceStatus).toEqual({
+      state: 'incomplete',
+      reasons: ['source-missing']
+    })
+  })
+
+  it('projects helper identity without source into renderer-facing execution evidence', () => {
+    const value = snapshot([run('run-1', 'helper_a()', [helper('helper-a')])])
+
+    const projected = projectPublicArtifactExecutionSnapshot(value, [])
+
+    expect(projected.helperModules).toEqual([
+      {
+        helperId: 'helper-a',
+        skillIdentity: 'skill:helper-a',
+        packageOrigin: 'built-in',
+        interfaceRevision: '1',
+        registeredGeneration: 'generation-1',
+        exports: ['helper_a'],
+        sourceDigest: value.helperModules![0]!.sourceDigest,
+        sourceAvailable: true
+      }
+    ])
+    expect(JSON.stringify(projected)).not.toContain('return "helper-a"')
+    expect(JSON.stringify(projected)).not.toContain('"source"')
   })
 })

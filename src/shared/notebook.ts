@@ -403,6 +403,13 @@ export type NotebookHelperModuleEvidence = {
   sourceDigest: string
 }
 
+export type NotebookHelperEvidenceStatus =
+  | { state: 'complete' }
+  | {
+      state: 'incomplete'
+      reasons: Array<'source-missing' | 'source-corrupt' | 'payload-limit'>
+    }
+
 // Stores one durable notebook execution, including code, output, and generated-file references.
 export type NotebookRunRecord = {
   runId: string
@@ -418,6 +425,7 @@ export type NotebookRunRecord = {
   // Sticky for the kernel epoch: every later Python run retains the complete loaded-helper set,
   // even when that cell omitted helperModules.
   helperModules?: NotebookHelperModuleEvidence[]
+  helperEvidenceStatus?: NotebookHelperEvidenceStatus
   // Stable identity of the external runtime used by this run. Managed runs are reproducible from
   // their environment; external runs need this identity to rebuild a missing derived sidecar.
   runtimeId?: string

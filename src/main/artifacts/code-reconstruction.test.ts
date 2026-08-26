@@ -4,8 +4,8 @@ import { promisify } from 'node:util'
 
 import { describe, expect, it, vi } from 'vitest'
 
-import type { ArtifactVersionProvenance } from '../../shared/artifact-provenance'
 import type { ExplicitAgentBackendTarget } from '../settings/backend-resolver'
+import type { ArtifactVersionReconstructionProvenance } from './provenance-read-model'
 import {
   ArtifactCodeReconstructionService,
   CONTEXT_MAX_BYTES,
@@ -22,7 +22,7 @@ const request = {
 const execFileAsync = promisify(execFile)
 const digest = (source: string): string => createHash('sha256').update(source).digest('hex')
 
-const provenance = (): ArtifactVersionProvenance => ({
+const provenance = (): ArtifactVersionReconstructionProvenance => ({
   descriptor: {
     id: 'version-1',
     artifactId: 'artifact-1',
@@ -175,7 +175,7 @@ const provenance = (): ArtifactVersionProvenance => ({
 // eslint-disable-next-line @typescript-eslint/explicit-function-return-type
 const makeHarness = (value = provenance()) => {
   let cache: string | undefined
-  const getVersionProvenance = vi.fn(async () => value)
+  const getVersionProvenanceForCodeReconstruction = vi.fn(async () => value)
   const readCodeReconstructionCache = vi.fn(async () => cache)
   const writeCodeReconstructionCache = vi.fn(
     async (_request: typeof request, serialized: string) => {
@@ -199,10 +199,10 @@ const makeHarness = (value = provenance()) => {
   }))
   const service = new ArtifactCodeReconstructionService({
     provenance: {
-      getVersionProvenance,
       readCodeReconstructionCache,
       writeCodeReconstructionCache
     },
+    loadProvenance: getVersionProvenanceForCodeReconstruction,
     runner: { captureTarget, run },
     now: () => new Date('2026-08-06T01:00:00.000Z')
   })
@@ -210,7 +210,7 @@ const makeHarness = (value = provenance()) => {
     service,
     run,
     captureTarget,
-    getVersionProvenance,
+    getVersionProvenanceForCodeReconstruction,
     readCodeReconstructionCache,
     writeCodeReconstructionCache
   }
@@ -242,7 +242,7 @@ describe('ArtifactCodeReconstructionService', () => {
     expect(harness.run).toHaveBeenCalledOnce()
     expect(harness.captureTarget).toHaveBeenCalledOnce()
     expect(harness.captureTarget.mock.invocationCallOrder[0]).toBeLessThan(
-      harness.getVersionProvenance.mock.invocationCallOrder.at(-1)!
+      harness.getVersionProvenanceForCodeReconstruction.mock.invocationCallOrder.at(-1)!
     )
     expect(harness.run.mock.calls[0]?.[0]).toContain('<artifact_execution_evidence>')
     expect(harness.run.mock.calls[0]?.[0]).toContain('groups.csv')
@@ -384,6 +384,20 @@ describe('ArtifactCodeReconstructionService', () => {
     await expect(harness.service.generate(request)).resolves.toEqual({
       state: 'unavailable',
       reason: 'supporting-code-incomplete'
+    })
+    expect(harness.run).not.toHaveBeenCalled()
+  })
+
+  it('does not send orphaned helper keys to the reconstruction model', async () => {
+    const value = provenance()
+    value.execution!.runs[1]!.helperModuleKeys = ['orphaned-helper-key']
+    delete value.execution!.helperModules
+    delete value.execution!.helperEvidenceStatus
+    const harness = makeHarness(value)
+
+    await expect(harness.service.generate(request)).resolves.toEqual({
+      state: 'unavailable',
+      reason: 'helper-evidence-incomplete'
     })
     expect(harness.run).not.toHaveBeenCalled()
   })

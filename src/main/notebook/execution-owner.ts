@@ -304,7 +304,7 @@ class NotebookExecutionOwner {
           )
           const resultWithEvidence = {
             ...executionResult,
-            helperModules: this.options.helperModules.loadedEvidence(kernelEpoch)
+            ...this.options.helperModules.loadedEvidence(kernelEpoch)
           }
           const result =
             resultWithEvidence.kernelDispatched === undefined
