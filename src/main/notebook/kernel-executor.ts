@@ -46,6 +46,7 @@ import {
   NOTEBOOK_TEXT_LIMIT_BYTES,
   NOTEBOOK_TEXT_LIMIT_ENV
 } from './content-limits'
+import type { NotebookHelperModuleInjection } from './helper-module-host'
 
 // Driver-internal process kind. 'python'/'r' are the data kernels selected by the agent-facing
 // NotebookLanguage; 'repl' is the control-plane Node kernel reached only via the control path. The
@@ -279,7 +280,8 @@ const interpreterIdentity = (request: NotebookExecutionRequest): string => {
 const errorToExecutionResult = (
   error: unknown,
   request: NotebookExecutionRequest,
-  kernelDispatched = false
+  kernelDispatched = false,
+  helperModulesInitialized: readonly string[] = []
 ): NotebookExecutionResult => {
   if (error instanceof NotebookExecutionCancelledError) {
     return {
@@ -290,7 +292,8 @@ const errorToExecutionResult = (
       traceback: '',
       cwdAfter: request.cwd,
       outputs: [],
-      workingFiles: []
+      workingFiles: [],
+      ...(helperModulesInitialized.length ? { helperModulesInitialized } : {})
     }
   }
 
@@ -304,8 +307,26 @@ const errorToExecutionResult = (
     traceback: message,
     cwdAfter: request.cwd,
     outputs: [{ type: 'error', message, traceback: message }],
-    workingFiles: []
+    workingFiles: [],
+    ...(helperModulesInitialized.length ? { helperModulesInitialized } : {})
   }
+}
+
+const helperInitializationError = (
+  helper: NotebookHelperModuleInjection,
+  responseError: string
+): Error => {
+  const stage = responseError.includes('OPEN_SCIENCE_HELPER_MISSING_EXPORT')
+    ? 'HELPER_MISSING_EXPORT'
+    : responseError.includes('OPEN_SCIENCE_HELPER_EXPORT_COLLISION')
+      ? 'HELPER_EXPORT_COLLISION'
+      : responseError.includes('OPEN_SCIENCE_HELPER_DEPENDENCY_EXPORT_MISSING')
+        ? 'HELPER_DEPENDENCY_EXPORT_MISSING'
+        : 'HELPER_INITIALIZATION_FAILED'
+  return new Error(
+    `${stage}: helper "${helper.id}" failed before producer dispatch ` +
+      `(digest ${helper.digest.slice(0, 12)}, epoch ${helper.epochId}).`
+  )
 }
 
 // Drives one persistent exec-loop process per kind for a notebook session, framing requests over
@@ -350,6 +371,7 @@ class NotebookKernelExecutor implements NotebookExecutor {
   async execute(request: NotebookExecutionRequest): Promise<NotebookExecutionResult> {
     let workingFileObservation: WorkingFileObservation | undefined
     let kernelDispatched = false
+    const helperModulesInitialized: string[] = []
     try {
       if (request.signal?.aborted) throw new NotebookExecutionCancelledError()
       const kind = resolveProcessKind(request)
@@ -372,16 +394,18 @@ class NotebookKernelExecutor implements NotebookExecutor {
           { ...request, code: helper.code, helperModules: undefined },
           () => undefined
         )
+        // A matched success response proves publication even when a soft timeout/cancellation raced
+        // with it. Preserve that fact so a surviving process is not reinjected into its own exports.
+        if (initialization.response.error === null) helperModulesInitialized.push(helper.id)
         if (initialization.cancelled) throw new NotebookExecutionCancelledError()
         if (initialization.timedOut) {
           throw new NotebookExecutionTimeoutError(
-            `Helper initialization timed out for "${helper.id}".`
+            `HELPER_INITIALIZATION_TIMEOUT: helper "${helper.id}" timed out before producer dispatch ` +
+              `(digest ${helper.digest.slice(0, 12)}, epoch ${helper.epochId}).`
           )
         }
         if (initialization.response.error !== null) {
-          throw new Error(
-            `HELPER_INITIALIZATION_FAILED: helper "${helper.id}" failed before producer dispatch.\n${initialization.response.error}`
-          )
+          throw helperInitializationError(helper, initialization.response.error)
         }
       }
       workingFileObservation = await startWorkingFileObservation(request)
@@ -431,11 +455,12 @@ class NotebookKernelExecutor implements NotebookExecutor {
           : mapped.outputs,
         truncated: response.outputTruncated || figureResult.truncated,
         workingFiles,
+        ...(helperModulesInitialized.length ? { helperModulesInitialized } : {}),
         environmentOverlay: response.environmentOverlay
       }
     } catch (error) {
       await workingFileObservation?.finish()
-      return errorToExecutionResult(error, request, kernelDispatched)
+      return errorToExecutionResult(error, request, kernelDispatched, helperModulesInitialized)
     }
   }
 

@@ -1067,7 +1067,7 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
       pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
       platform: 'linux'
     })
-    const helperModules = await new NotebookHelperModuleHost({
+    const helperHost = new NotebookHelperModuleHost({
       resolve: async (id) =>
         id === 'registered-test-helper'
           ? {
@@ -1084,7 +1084,13 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
               exports: ['public_add']
             }
           : undefined
-    }).resolve('python', ['registered-test-helper'])
+    })
+    const helperModules = (
+      await helperHost.plan(
+        { id: 'test-epoch', processKey: 'python:default-python' },
+        await helperHost.preflight('python', ['registered-test-helper'])
+      )
+    ).injections
 
     try {
       await executor.execute({ ...request, code: 'warmup_value = 1', language: 'python' })
@@ -1124,6 +1130,132 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
     }
   })
 
+  it('loads a dependency closure once per epoch and preserves ordinary user rebinding', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-epoch-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    const helperHost = new NotebookHelperModuleHost({
+      resolve: async (id) =>
+        id === 'base-helper'
+          ? {
+              id,
+              language: 'python',
+              source: 'def base_value():\n    return 40',
+              exports: ['base_value']
+            }
+          : id === 'dependent-helper'
+            ? {
+                id,
+                language: 'python',
+                source: 'def answer():\n    return base_value() + 2',
+                exports: ['answer'],
+                dependencies: ['base-helper']
+              }
+            : undefined
+    })
+    const ownership = { id: 'epoch-1', processKey: 'python:default-python' }
+
+    try {
+      const firstPlan = await helperHost.plan(
+        ownership,
+        await helperHost.preflight('python', ['dependent-helper'])
+      )
+      const first = await executor.execute({
+        ...request,
+        language: 'python',
+        helperModules: firstPlan.injections,
+        code: 'print(answer())'
+      })
+      helperHost.commitInitialized(ownership, first.helperModulesInitialized ?? [])
+
+      await executor.execute({
+        ...request,
+        language: 'python',
+        code: 'answer = lambda: 99'
+      })
+      const repeatedPlan = await helperHost.plan(
+        ownership,
+        await helperHost.preflight('python', ['dependent-helper'])
+      )
+      const rebound = await executor.execute({
+        ...request,
+        language: 'python',
+        helperModules: repeatedPlan.injections,
+        code: 'print(answer())'
+      })
+
+      expect(first).toMatchObject({
+        status: 'completed',
+        stdout: '42\n',
+        helperModulesInitialized: ['base-helper', 'dependent-helper']
+      })
+      expect(repeatedPlan.injections).toEqual([])
+      expect(rebound).toMatchObject({ status: 'completed', stdout: '99\n' })
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('protects the registered generation parent while injected exports remain usable', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-protected-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const generationRoot = join(cwdDir, 'registered', 'generation-1')
+    const sourcePath = join(generationRoot, 'kernel.py')
+    const source = 'def protected_answer():\n    return 42'
+    await mkdir(generationRoot, { recursive: true })
+    await writeFile(sourcePath, source)
+    const helperHost = new NotebookHelperModuleHost({
+      resolve: async (id) => ({
+        id,
+        language: 'python',
+        source,
+        exports: ['protected_answer'],
+        registeredGeneration: 'generation-1',
+        generationRoot
+      })
+    })
+    const ownership = { id: 'protected-epoch', processKey: 'python:default-python' }
+    const plan = await helperHost.plan(
+      ownership,
+      await helperHost.preflight('python', ['protected-helper'])
+    )
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+
+    try {
+      const blocked = await executor.execute({
+        ...request,
+        language: 'python',
+        helperModules: plan.injections,
+        protectedDirs: [...plan.protectedGenerationRoots],
+        code: `open(${JSON.stringify(sourcePath)}).read()`
+      })
+      helperHost.commitInitialized(ownership, blocked.helperModulesInitialized ?? [])
+      const usable = await executor.execute({
+        ...request,
+        language: 'python',
+        code: 'print(protected_answer())'
+      })
+
+      expect(blocked).toMatchObject({
+        status: 'failed',
+        helperModulesInitialized: ['protected-helper']
+      })
+      expect(blocked.traceback).toContain('Access to protected application files is not allowed')
+      expect(blocked.traceback).not.toContain(source)
+      expect(usable).toMatchObject({ status: 'completed', stdout: '42\n' })
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
   it('fails helper initialization atomically without dispatching the producer sentinel', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-failure-'))
     const request = baseRequest(cwdDir)
@@ -1132,14 +1264,20 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
       pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
       platform: 'linux'
     })
-    const helperModules = await new NotebookHelperModuleHost({
+    const helperHost = new NotebookHelperModuleHost({
       resolve: async (id) => ({
         id,
         language: 'python',
         source: 'def staged_export():\n    return 42',
         exports: ['staged_export', 'missing_export']
       })
-    }).resolve('python', ['registered-test-helper'])
+    })
+    const helperModules = (
+      await helperHost.plan(
+        { id: 'test-epoch', processKey: 'python:default-python' },
+        await helperHost.preflight('python', ['registered-test-helper'])
+      )
+    ).injections
     const sentinel = join(cwdDir, 'producer-sentinel.txt')
 
     try {
@@ -1156,9 +1294,60 @@ posixGate('NotebookKernelExecutor (real Python loop mutation policy)', () => {
       })
 
       expect(result).toMatchObject({ status: 'failed', kernelDispatched: false })
-      expect(result.traceback).toMatch(/HELPER_INITIALIZATION_FAILED.*missing_export/s)
+      expect(result.traceback).toMatch(/HELPER_MISSING_EXPORT.*registered-test-helper/s)
+      expect(result.traceback).not.toContain('missing_export')
       expect(existsSync(sentinel)).toBe(false)
       expect(healthy).toMatchObject({ status: 'completed', stdout: 'False False\n' })
+    } finally {
+      await executor.shutdown()
+    }
+  })
+
+  it('rejects an initial global collision without publishing sibling exports or producer code', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-python-loop-helper-collision-'))
+    const request = baseRequest(cwdDir)
+    await stubEnvPython(request.runtimeRoot, DEFAULT_PY_ENV)
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py'),
+      platform: 'linux'
+    })
+    const helperHost = new NotebookHelperModuleHost({
+      resolve: async (id) => ({
+        id,
+        language: 'python',
+        source: [
+          'def sibling_export():',
+          '    return 42',
+          'def collision_export():',
+          '    return 99'
+        ].join('\n'),
+        exports: ['sibling_export', 'collision_export']
+      })
+    })
+    const plan = await helperHost.plan(
+      { id: 'collision-epoch', processKey: 'python:default-python' },
+      await helperHost.preflight('python', ['collision-helper'])
+    )
+    const sentinel = join(cwdDir, 'collision-producer-sentinel.txt')
+
+    try {
+      await executor.execute({ ...request, language: 'python', code: 'collision_export = 7' })
+      const result = await executor.execute({
+        ...request,
+        language: 'python',
+        helperModules: plan.injections,
+        code: `open(${JSON.stringify(sentinel)}, "w").write("ran")`
+      })
+      const healthy = await executor.execute({
+        ...request,
+        language: 'python',
+        code: 'print(collision_export, "sibling_export" in globals())'
+      })
+
+      expect(result).toMatchObject({ status: 'failed', kernelDispatched: false })
+      expect(result.traceback).toMatch(/HELPER_EXPORT_COLLISION.*collision-helper/)
+      expect(existsSync(sentinel)).toBe(false)
+      expect(healthy).toMatchObject({ status: 'completed', stdout: '7 False\n' })
     } finally {
       await executor.shutdown()
     }

@@ -117,7 +117,7 @@ import {
 import {
   NotebookHelperModuleHost,
   type NotebookHelperModuleCatalog,
-  type NotebookHelperModuleInjection
+  type NotebookHelperModuleRequest
 } from './helper-module-host'
 
 // Locale fallback when no explicit locale is injected (see shared/mirror.ts: non-CN locales resolve
@@ -528,6 +528,7 @@ class NotebookRuntimeService {
           completedRun: run,
           ...(interpreter ? { interpreter } : {})
         }),
+      helperModules: this.helperModules,
       platform: options.platform,
       shellProcess: options.shellProcess
     })
@@ -820,7 +821,7 @@ class NotebookRuntimeService {
   async runCell(
     request: RunNotebookCellRequest,
     signal?: AbortSignal,
-    helperModules?: readonly NotebookHelperModuleInjection[]
+    helperModules?: NotebookHelperModuleRequest
   ): Promise<NotebookRunSummary> {
     return this.sessionLifecycle.runProjectOperation(request, async (deletionSignal) => {
       const session = await this.sessionLifecycle.ensure(request)
@@ -840,7 +841,7 @@ class NotebookRuntimeService {
     signal?: AbortSignal
   ): Promise<NotebookRunSummary> {
     assertNotebookCodeWithinLimit(request.code)
-    const helperModules = await this.helperModules.resolve(
+    const helperModules = await this.helperModules.preflight(
       request.language ?? 'python',
       request.helperModules
     )

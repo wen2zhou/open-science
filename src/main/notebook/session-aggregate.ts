@@ -73,6 +73,9 @@ export type NotebookSessionExecutionResult = {
   // Internal execution evidence persisted onto data runs. Optional keeps injected/legacy executors
   // source-compatible; the execution owner treats a missing value after dispatch conservatively.
   kernelDispatched?: boolean
+  // Exact helper initializations acknowledged by the persistent loop before producer dispatch.
+  // The host uses this even when the producer later fails, so same-epoch retries stay idempotent.
+  helperModulesInitialized?: readonly string[]
 }
 
 export type NotebookSessionExecutor<
@@ -86,6 +89,14 @@ export type NotebookSessionExecutor<
 }
 
 export type NotebookSessionExecutorGeneration = symbol
+
+// Stable object identity owned by the Aggregate for exactly one concrete process epoch. Host-owned
+// kernel extensions key their volatile state by this object, so retiring a process cannot accidentally
+// reuse loaded state even if a caller retains the printable UUID.
+export type NotebookKernelEpochOwnership = Readonly<{
+  id: string
+  processKey: string
+}>
 
 export type NotebookSessionOwnedExecutor<
   Request = NotebookSessionExecutionRequest,
@@ -192,7 +203,7 @@ export class NotebookSessionAggregate<
   private durableUnknownKernelTermination: boolean
   private readonly runtimeBindings = new Map<NotebookLanguage, NotebookSessionRuntimeBinding>()
   private readonly forceStoppedKeys = new Set<string>()
-  private readonly kernelEpochIds = new Map<string, string>()
+  private readonly kernelEpochs = new Map<string, NotebookKernelEpochOwnership>()
 
   constructor(init: NotebookSessionAggregateInit<Request, Result>) {
     this.id = `notebook-session-${init.sessionId}`
@@ -406,7 +417,7 @@ export class NotebookSessionAggregate<
     this.kernelStatuses.delete(processKey)
     this.terminatedKernels.delete(processKey)
     this.executionQueues.delete(processKey)
-    this.kernelEpochIds.delete(processKey)
+    this.kernelEpochs.delete(processKey)
   }
 
   kernelStatus(processKey: string): NotebookKernelMetadata['lastKnownStatus'] | undefined {
@@ -487,16 +498,20 @@ export class NotebookSessionAggregate<
   }
 
   kernelEpochId(processKey: string, reset = false): string {
-    if (reset) this.kernelEpochIds.delete(processKey)
-    const existing = this.kernelEpochIds.get(processKey)
+    return this.kernelEpoch(processKey, reset).id
+  }
+
+  kernelEpoch(processKey: string, reset = false): NotebookKernelEpochOwnership {
+    if (reset) this.kernelEpochs.delete(processKey)
+    const existing = this.kernelEpochs.get(processKey)
     if (existing) return existing
-    const epochId = randomUUID()
-    this.kernelEpochIds.set(processKey, epochId)
-    return epochId
+    const epoch = { id: randomUUID(), processKey }
+    this.kernelEpochs.set(processKey, epoch)
+    return epoch
   }
 
   retireKernelEpoch(processKey: string): void {
-    this.kernelEpochIds.delete(processKey)
+    this.kernelEpochs.delete(processKey)
   }
 
   ownsExecutorGeneration(generation: NotebookSessionExecutorGeneration): boolean {
@@ -523,7 +538,7 @@ export class NotebookSessionAggregate<
   terminateExecutor(kind: 'python' | 'r' | 'repl', env: string): Promise<void> {
     const processKey = kind === 'repl' ? 'repl' : `${kind}:${env}`
     return (this.executorValue.terminate?.(kind, env) ?? Promise.resolve()).then(() => {
-      this.kernelEpochIds.delete(processKey)
+      this.kernelEpochs.delete(processKey)
     })
   }
 
@@ -532,7 +547,7 @@ export class NotebookSessionAggregate<
   ): Promise<void> {
     if (this.executorValue.restart) {
       await this.executorValue.restart()
-      this.kernelEpochIds.clear()
+      this.kernelEpochs.clear()
       return
     }
     this.executorGenerationActive = false
@@ -543,7 +558,7 @@ export class NotebookSessionAggregate<
     this.executorValue = next.executor
     this.executorGenerationValue = next.generation
     this.executorGenerationActive = true
-    this.kernelEpochIds.clear()
+    this.kernelEpochs.clear()
   }
 
   shutdownExecutor(): Promise<{ reaped: boolean }> {

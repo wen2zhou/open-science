@@ -209,6 +209,8 @@ describe('notebook runtime service', () => {
   it('resolves registered helper IDs before dispatching the producer request', async () => {
     const root = await createStorageRoot()
     const executions: NotebookExecutionRequest[] = []
+    let generation = 1
+    let terminateKernel!: () => Promise<void>
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
@@ -222,25 +224,33 @@ describe('notebook runtime service', () => {
                 id,
                 language: 'python' as const,
                 source:
-                  'PRIVATE_CONSTANT = 40\ndef public_add(value):\n    return PRIVATE_CONSTANT + value',
-                exports: ['public_add']
+                  `PRIVATE_CONSTANT = ${generation === 1 ? 40 : 50}\n` +
+                  'def public_add(value):\n    return PRIVATE_CONSTANT + value',
+                exports: ['public_add'],
+                registeredGeneration: `generation-${generation}`,
+                generationRoot: join(root, 'registered', `generation-${generation}`)
               }
             : undefined
       },
-      executorFactory: () => ({
-        execute: async (request) => {
-          executions.push(request)
-          return {
-            status: 'completed' as const,
-            stdout: '',
-            stderr: '',
-            traceback: '',
-            cwdAfter: request.cwd,
-            outputs: []
-          }
-        },
-        shutdown: async () => ({ reaped: true })
-      })
+      executorFactory: (_sessionId, lifecycle) => {
+        terminateKernel = () => lifecycle.onTerminated('python', 'default-python')
+        return {
+          execute: async (request) => {
+            executions.push(request)
+            return {
+              status: 'completed' as const,
+              stdout: '',
+              stderr: '',
+              traceback: '',
+              cwdAfter: request.cwd,
+              outputs: [],
+              helperModulesInitialized: request.helperModules?.map(({ id }) => id)
+            }
+          },
+          shutdown: async () => ({ reaped: true }),
+          restart: async () => undefined
+        }
+      }
     } as ConstructorParameters<typeof NotebookRuntimeService>[0])
 
     await service.execute({
@@ -251,8 +261,40 @@ describe('notebook runtime service', () => {
       code: 'print(public_add(2))',
       helperModules: ['registered-test-helper']
     } as Parameters<NotebookRuntimeService['execute']>[0])
+    generation = 2
+    await service.execute({
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      language: 'python',
+      code: 'print(public_add(3))',
+      helperModules: ['registered-test-helper']
+    } as Parameters<NotebookRuntimeService['execute']>[0])
+    await terminateKernel()
+    await service.execute({
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      language: 'python',
+      code: 'print(public_add(4))',
+      helperModules: ['registered-test-helper']
+    } as Parameters<NotebookRuntimeService['execute']>[0])
+    generation = 3
+    await service.restart({
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root
+    })
+    await service.execute({
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      language: 'python',
+      code: 'print(public_add(5))',
+      helperModules: ['registered-test-helper']
+    } as Parameters<NotebookRuntimeService['execute']>[0])
 
-    expect(executions).toHaveLength(1)
+    expect(executions).toHaveLength(4)
     expect(executions[0]).toMatchObject({
       code: 'print(public_add(2))',
       helperModules: [
@@ -264,6 +306,20 @@ describe('notebook runtime service', () => {
       ]
     })
     expect(executions[0]?.helperModules?.[0]?.code).not.toContain('print(public_add(2))')
+    expect(executions[0]?.helperModules?.[0]).toMatchObject({
+      registeredGeneration: 'generation-1'
+    })
+    expect(executions[0]?.protectedDirs).toContain(join(root, 'registered', 'generation-1'))
+    expect(executions[1]?.helperModules).toBeUndefined()
+    expect(executions[1]?.protectedDirs).toContain(join(root, 'registered', 'generation-1'))
+    expect(executions[2]?.helperModules?.[0]).toMatchObject({
+      registeredGeneration: 'generation-2'
+    })
+    expect(executions[2]?.protectedDirs).toContain(join(root, 'registered', 'generation-2'))
+    expect(executions[3]?.helperModules?.[0]).toMatchObject({
+      registeredGeneration: 'generation-3'
+    })
+    expect(executions[3]?.protectedDirs).toContain(join(root, 'registered', 'generation-3'))
   })
 
   it('rejects unknown, illegal, structured, and R helper requests before creating an executor', async () => {
