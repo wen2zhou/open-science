@@ -169,7 +169,7 @@ describe('RegisteredSkillHelperCatalog', () => {
         'def public_value():\n    return "v2"\n'
       )
       current = replacement
-      catalog.invalidate()
+      await catalog.refresh()
       const second = await catalog.resolve('plot-helper')
       expect(second?.source).toContain('"v2"')
       expect(second?.generation).not.toBe(first?.generation)
@@ -180,6 +180,33 @@ describe('RegisteredSkillHelperCatalog', () => {
       ).resolves.toContain('"v1"')
     }
   )
+
+  it('restores the durable catalog binding on cold start without reading a lost mutable source', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'registered-cold-start-'))
+    roots.push(storageRoot)
+    const entry = await packageFixture('personal', 'durable')
+    const firstCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => [entry]
+    })
+    const first = await firstCatalog.resolve('durable-helper')
+
+    await rm(entry.packageRoot, { recursive: true, force: true })
+    let sourceReads = 0
+    const restartedCatalog = new RegisteredSkillHelperCatalog({
+      storageRoot,
+      packages: async () => {
+        sourceReads += 1
+        throw new Error('mutable package source must not be read during cold start')
+      }
+    })
+
+    await expect(restartedCatalog.resolve('durable-helper')).resolves.toMatchObject({
+      generation: first?.generation,
+      source: expect.stringContaining('return "v1"')
+    })
+    expect(sourceReads).toBe(0)
+  })
 
   it.each([
     ['/absolute.py', 'implementation locator'],
@@ -250,6 +277,42 @@ describe('RegisteredSkillHelperCatalog', () => {
     const catalog = await createCatalog(async () => [entry])
 
     await expect(catalog.resolve('isolated-helper')).rejects.toThrow(message)
+  })
+
+  it('allows definition-oriented math and json stdlib imports during callable validation', async () => {
+    const entry = await packageFixture(
+      'builtin',
+      'stdlib',
+      [
+        'import json',
+        'import math',
+        'def public_value(value=4):',
+        '    return json.dumps({"root": math.sqrt(value)})'
+      ].join('\n')
+    )
+    const catalog = await createCatalog(async () => [entry])
+
+    await expect(catalog.resolve('stdlib-helper')).resolves.toMatchObject({
+      exports: ['public_value']
+    })
+  })
+
+  it.each([
+    ['os', 'import os\ndef public_value():\n    return os.getcwd()\n'],
+    [
+      'pathlib file access',
+      'from pathlib import Path\nPath("forbidden").read_text()\ndef public_value():\n    return 1\n'
+    ],
+    ['socket', 'import socket\ndef public_value():\n    return socket.socket()\n'],
+    ['subprocess', 'import subprocess\ndef public_value():\n    return subprocess.run([])\n'],
+    ['third-party', 'import definitely_not_a_real_package\ndef public_value():\n    return 1\n']
+  ])('rejects %s imports during callable validation', async (_caseName, source) => {
+    const entry = await packageFixture('connector', 'unsafe-import', source)
+    const catalog = await createCatalog(async () => [entry])
+
+    await expect(catalog.resolve('unsafe-import-helper')).rejects.toThrow(
+      /host access|not allowed|No module named/
+    )
   })
 
   it('fails closed on duplicate IDs, missing dependencies, cycles, and non-callable dependencies', async () => {

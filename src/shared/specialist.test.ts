@@ -11,7 +11,8 @@ import {
   emptyFullAccessConfig,
   emptySelectedConfig,
   resolveEffectiveSpecialistSkills,
-  filterSpecialistConnectorSkills
+  filterSpecialistConnectorSkills,
+  resolveSpecialistConnectorSkillNames
 } from './specialist'
 
 describe('inferSpecialistId', () => {
@@ -287,5 +288,39 @@ describe('filterSpecialistConnectorSkills', () => {
       selectedCapabilities: { ...emptySelectedConfig(), connectorIds: ['nonexistent'] }
     }
     expect(filterSpecialistConnectorSkills(provisioned, specialist)).toEqual([])
+  })
+})
+
+describe('resolveSpecialistConnectorSkillNames', () => {
+  const connectors = [
+    { id: 'bundled-id', canonicalName: 'bundled-id' },
+    { id: 'custom-durable-id', canonicalName: 'custom-name' }
+  ]
+
+  it('maps only authenticated selected Connector ids to canonical names', () => {
+    expect(
+      resolveSpecialistConnectorSkillNames(connectors, {
+        capabilityMode: 'selected',
+        fullAccess: emptyFullAccessConfig(),
+        selectedCapabilities: {
+          ...emptySelectedConfig(),
+          skillIds: ['mcp-custom-name'],
+          connectorIds: ['custom-durable-id']
+        }
+      })
+    ).toEqual(['mcp-custom-name'])
+  })
+
+  it('applies full-mode exclusions by durable id without consulting Skill names', () => {
+    expect(
+      resolveSpecialistConnectorSkillNames(connectors, {
+        capabilityMode: 'full',
+        fullAccess: {
+          ...emptyFullAccessConfig(),
+          excludedConnectorIds: ['custom-durable-id']
+        },
+        selectedCapabilities: emptySelectedConfig()
+      })
+    ).toEqual(['mcp-bundled-id'])
   })
 })

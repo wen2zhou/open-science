@@ -9,6 +9,8 @@ const HELPER_MANIFEST_FILE = 'open-science.json'
 const HELPER_MANIFEST_SCHEMA_VERSION = 1
 const HELPER_SOURCE_MAX_BYTES = 1024 * 1024
 const HELPER_SOURCE_TOTAL_MAX_BYTES = 4 * 1024 * 1024
+const CATALOG_BINDING_FILE = 'catalog-binding.json'
+const CATALOG_BINDING_SCHEMA_VERSION = 1
 const SAFE_HELPER_ID = /^[a-z0-9]+(?:-[a-z0-9]+)*$/
 const SAFE_EXPORT_NAME = /^[A-Za-z_][A-Za-z0-9_]*$/
 const SHA256_GENERATION = /^sha256:([0-9a-f]{64})$/
@@ -61,6 +63,7 @@ type RegisteredSkillHelperCatalogOptions = {
 }
 
 type PreparedHelper = Omit<RegisteredSkillHelper, 'source'> & { sourceBytes: Buffer }
+type BoundHelper = Omit<RegisteredSkillHelper, 'source'>
 
 const isRecord = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value)
@@ -219,7 +222,19 @@ const assertContainedRegularSource = async (
 }
 
 const CALLABLE_VALIDATOR = String.raw`
-import builtins, json, sys
+import builtins, collections, datetime, decimal, fractions, functools, itertools, json, math, re, statistics, sys
+
+allowed_modules = {
+    module.__name__: module
+    for module in (
+        collections, datetime, decimal, fractions, functools, itertools, json, math, re, statistics
+    )
+}
+
+def restricted_import(name, globals=None, locals=None, fromlist=(), level=0):
+    if level != 0 or name not in allowed_modules:
+        raise ImportError('stdlib import is not allowed during helper validation: ' + name)
+    return allowed_modules[name]
 
 def deny(event, args):
     if event == "open" or event == "import" or event.startswith(("socket.", "subprocess.", "os.system", "os.exec", "os.spawn")):
@@ -233,6 +248,7 @@ safe_names = (
     "range", "repr", "reversed", "set", "slice", "sorted", "str", "sum", "tuple", "ValueError", "zip"
 )
 safe_builtins = {name: getattr(builtins, name) for name in safe_names}
+safe_builtins["__import__"] = restricted_import
 namespace = {"__builtins__": safe_builtins, "__name__": "__open_science_helper_validation__"}
 exec(compile(request["source"], "<registered-helper>", "exec"), namespace, namespace)
 missing = [name for name in request["exports"] if name not in namespace or not callable(namespace[name])]
@@ -342,7 +358,9 @@ const preparePackage = async (entry: RegisteredSkillPackage): Promise<PreparedHe
   }))
 }
 
-const assertDependencyGraph = (helpers: ReadonlyMap<string, PreparedHelper>): void => {
+const assertDependencyGraph = (
+  helpers: ReadonlyMap<string, Pick<RegisteredSkillHelper, 'id' | 'dependencies'>>
+): void => {
   for (const helper of helpers.values()) {
     for (const dependency of helper.dependencies) {
       if (!helpers.has(dependency)) {
@@ -398,14 +416,11 @@ class RegisteredSkillHelperCatalog {
 
   constructor(private readonly options: RegisteredSkillHelperCatalogOptions) {}
 
-  invalidate(): void {
-    this.snapshot = undefined
-  }
-
   async refresh(): Promise<void> {
     const previous = this.snapshot
     try {
-      const next = await this.buildSnapshot()
+      const next = await this.buildSnapshotFromPackages()
+      await this.persistBinding(next)
       this.snapshot = Promise.resolve(next)
     } catch (error) {
       this.snapshot = previous
@@ -438,7 +453,7 @@ class RegisteredSkillHelperCatalog {
 
   private readSnapshot(): Promise<ReadonlyMap<string, RegisteredSkillHelper>> {
     if (!this.snapshot) {
-      const read = this.buildSnapshot().catch((error) => {
+      const read = this.restoreOrCreateSnapshot().catch((error) => {
         if (this.snapshot === read) this.snapshot = undefined
         throw error
       })
@@ -447,7 +462,133 @@ class RegisteredSkillHelperCatalog {
     return this.snapshot
   }
 
-  private async buildSnapshot(): Promise<ReadonlyMap<string, RegisteredSkillHelper>> {
+  private async restoreOrCreateSnapshot(): Promise<ReadonlyMap<string, RegisteredSkillHelper>> {
+    const restored = await this.restoreBinding()
+    if (restored) return restored
+    const created = await this.buildSnapshotFromPackages()
+    await this.persistBinding(created)
+    return created
+  }
+
+  private bindingPath(): string {
+    return join(this.options.storageRoot, 'registered-skill-generations', CATALOG_BINDING_FILE)
+  }
+
+  private async restoreBinding(): Promise<ReadonlyMap<string, RegisteredSkillHelper> | undefined> {
+    const raw = await readFile(this.bindingPath()).catch((error) => {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
+      throw error
+    })
+    if (!raw) return undefined
+    let parsed: unknown
+    try {
+      parsed = JSON.parse(new TextDecoder('utf-8', { fatal: true }).decode(raw))
+    } catch {
+      return fail('registered helper catalog binding is invalid')
+    }
+    if (!isRecord(parsed)) fail('registered helper catalog binding is invalid')
+    const binding = parsed as Record<string, unknown>
+    if (
+      binding.schemaVersion !== CATALOG_BINDING_SCHEMA_VERSION ||
+      !Array.isArray(binding.helpers)
+    ) {
+      fail('registered helper catalog binding is invalid')
+    }
+
+    const snapshot = new Map<string, RegisteredSkillHelper>()
+    for (const value of binding.helpers as unknown[]) {
+      const helper = this.normalizeBoundHelper(value)
+      if (snapshot.has(helper.id)) fail(`duplicate helper ID "${helper.id}" in catalog binding`)
+      const sourcePath = join(this.generationRoot(helper.generation), helper.id, 'source.py')
+      const sourceBytes = await readFile(sourcePath).catch(() => undefined)
+      if (!sourceBytes || sourceDigest(sourceBytes) !== helper.digest) {
+        fail(`immutable generation mismatch for helper "${helper.id}"`)
+      }
+      let source: string
+      try {
+        source = new TextDecoder('utf-8', { fatal: true }).decode(sourceBytes)
+      } catch {
+        return fail(`immutable generation source for helper "${helper.id}" must be UTF-8`)
+      }
+      snapshot.set(helper.id, Object.freeze({ ...helper, source }))
+    }
+    assertDependencyGraph(snapshot)
+    return snapshot
+  }
+
+  private normalizeBoundHelper(value: unknown): BoundHelper {
+    if (!isRecord(value)) fail('registered helper catalog binding entry is invalid')
+    const record = value as Record<string, unknown>
+    const id = assertStableId(record.id, 'helper id')
+    const skillId = assertStableId(record.skillId, 'Skill identity')
+    if (record.language !== 'python') fail(`helper "${id}" has an unsupported language`)
+    if (!['builtin', 'personal', 'imported', 'connector'].includes(String(record.origin))) {
+      fail(`Skill "${skillId}" has an invalid origin`)
+    }
+    if (!Number.isSafeInteger(record.interfaceRevision) || Number(record.interfaceRevision) < 1) {
+      fail(`helper "${id}" has an invalid Interface revision`)
+    }
+    const generation = record.generation
+    if (typeof generation !== 'string' || !SHA256_GENERATION.test(generation)) {
+      fail(`helper "${id}" has an invalid generation`)
+    }
+    const digest = record.digest
+    if (typeof digest !== 'string' || !SHA256_GENERATION.test(digest)) {
+      fail(`helper "${id}" has an invalid digest`)
+    }
+    const descriptor = normalizeDescriptor({
+      id,
+      language: record.language,
+      interfaceRevision: record.interfaceRevision,
+      implementation: 'source.py',
+      exports: record.exports,
+      dependencies: record.dependencies
+    })
+    return {
+      id,
+      skillId,
+      origin: record.origin as RegisteredSkillOrigin,
+      language: 'python',
+      interfaceRevision: descriptor.interfaceRevision,
+      exports: Object.freeze([...descriptor.exports]),
+      dependencies: Object.freeze([...descriptor.dependencies]),
+      generation: generation as string,
+      digest: digest as string
+    }
+  }
+
+  private async persistBinding(
+    snapshot: ReadonlyMap<string, RegisteredSkillHelper>
+  ): Promise<void> {
+    const root = join(this.options.storageRoot, 'registered-skill-generations')
+    await mkdir(root, { recursive: true })
+    const staging = join(root, `.catalog-binding-${randomUUID()}.json`)
+    const helpers = [...snapshot.values()]
+      .sort((left, right) => left.id.localeCompare(right.id))
+      .map((helper) => ({
+        id: helper.id,
+        language: helper.language,
+        exports: helper.exports,
+        dependencies: helper.dependencies,
+        skillId: helper.skillId,
+        origin: helper.origin,
+        interfaceRevision: helper.interfaceRevision,
+        generation: helper.generation,
+        digest: helper.digest
+      }))
+    try {
+      await writeFile(
+        staging,
+        JSON.stringify({ schemaVersion: CATALOG_BINDING_SCHEMA_VERSION, helpers }),
+        { flag: 'wx', mode: 0o600 }
+      )
+      await rename(staging, this.bindingPath())
+    } finally {
+      await rm(staging, { force: true })
+    }
+  }
+
+  private async buildSnapshotFromPackages(): Promise<ReadonlyMap<string, RegisteredSkillHelper>> {
     const prepared = await prepareRegisteredSkillPackages(await this.options.packages())
 
     const snapshot = new Map<string, RegisteredSkillHelper>()

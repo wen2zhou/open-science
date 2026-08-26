@@ -146,7 +146,7 @@ export type SettingsServiceOptions = {
   skillRegistry?: SkillRegistry
   userSkills?: UserSkillRepository
   githubFetch?: FetchLike
-  registeredConnectorPackages?: ConnectorSettingsServiceOptions['registeredConnectorPackages']
+  connectorRegisteredSkillOwner?: ConnectorSettingsServiceOptions['connectorRegisteredSkillOwner']
   // One-shot Claude command runner, injectable so validation tests can inspect the exact auth env.
   executeClaudeProbe?: ExecuteClaudeProbe
   // One-shot managed Claude installer, injectable so tests avoid real network/fs.
@@ -218,7 +218,7 @@ class SettingsService {
       skillRegistry: options.skillRegistry ?? new SkillRegistry(),
       userSkills: options.userSkills,
       githubFetch: options.githubFetch,
-      registeredConnectorPackages: () => this.connectors.registeredHelperPackages()
+      registeredConnectorOwner: this.connectors
     })
     const allocateSettingsIdSequence = createSettingsIdSequence()
     this.runtimeManager = new AgentRuntimeManager({

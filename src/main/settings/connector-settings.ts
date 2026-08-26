@@ -29,6 +29,8 @@ import { CONNECTOR_CATALOG } from '../connectors/catalog'
 import { isCustomMcpServerRouteSafe } from '../connectors/custom-mcp-bootstrap'
 import { getConnectorTools } from '../connectors/registry'
 import type { RegisteredSkillPackage } from '../skills/registered-helper-catalog'
+import { ConnectorRegisteredSkillOwner } from '../connectors/registered-skill-owner'
+import { resolveStorageRoot } from '../storage-root'
 import { encryptKey, isEncryptionAvailable, tryDecryptKey } from './crypto'
 import { sanitizeCustomMcpServer, type SettingsRepository } from './repository'
 import type { StoredConnectors, StoredCustomMcpOAuthState, StoredCustomMcpServer } from './types'
@@ -46,8 +48,14 @@ type CustomServerRuntimeProjectionProvider = {
   isRefreshing: (id: string) => boolean
 }
 
+type RegisteredConnectorSkillOwner = {
+  packages(): Promise<readonly RegisteredSkillPackage[]>
+  setRegistrationObserver?(observer: () => Promise<void>): void
+}
+
 type ConnectorSettingsServiceOptions = {
-  registeredConnectorPackages?: () => Promise<readonly RegisteredSkillPackage[]>
+  storageRoot?: string
+  connectorRegisteredSkillOwner?: RegisteredConnectorSkillOwner
 }
 
 const normalizeOAuthConfig = (
@@ -97,11 +105,21 @@ class ConnectorSettingsModule {
 
   constructor(
     private readonly repository: SettingsRepository,
-    private readonly options: ConnectorSettingsServiceOptions = {}
-  ) {}
+    options: ConnectorSettingsServiceOptions = {}
+  ) {
+    this.registeredSkills =
+      options.connectorRegisteredSkillOwner ??
+      new ConnectorRegisteredSkillOwner(options.storageRoot ?? resolveStorageRoot())
+  }
+
+  private readonly registeredSkills: RegisteredConnectorSkillOwner
 
   registeredHelperPackages(): Promise<readonly RegisteredSkillPackage[]> {
-    return this.options.registeredConnectorPackages?.() ?? Promise.resolve([])
+    return this.registeredSkills.packages()
+  }
+
+  setRegisteredHelperRefresh(refresh: () => Promise<void>): void {
+    this.registeredSkills.setRegistrationObserver?.(refresh)
   }
 
   setCustomServerRuntimeProjectionProvider(provider: CustomServerRuntimeProjectionProvider): void {
@@ -681,5 +699,6 @@ export { ConnectorSettingsModule }
 export type {
   CustomServerRuntimeProjectionProvider,
   CustomServerSecurityChangeGuard,
-  ConnectorSettingsServiceOptions
+  ConnectorSettingsServiceOptions,
+  RegisteredConnectorSkillOwner
 }

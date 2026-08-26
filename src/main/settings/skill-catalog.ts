@@ -106,6 +106,10 @@ type SkillCatalogModuleOptions = {
   // Canonical Connector registration owner. This is intentionally not the framework runtime
   // projection: helper registration must never reverse-scan materialized mcp-* directories.
   registeredConnectorPackages?: () => Promise<readonly RegisteredSkillPackage[]>
+  registeredConnectorOwner?: {
+    registeredHelperPackages(): Promise<readonly RegisteredSkillPackage[]>
+    setRegisteredHelperRefresh(refresh: () => Promise<void>): void
+  }
   authorizeRegisteredHelper?: (
     skillId: string,
     scope: RegisteredHelperScope | undefined
@@ -151,6 +155,9 @@ class SkillCatalogModule {
         return !disabled.has(skillId)
       }
     })
+    options.registeredConnectorOwner?.setRegisteredHelperRefresh(() =>
+      this.refreshRegisteredHelpers()
+    )
   }
 
   registeredHelperCatalog(): Pick<
@@ -179,7 +186,9 @@ class SkillCatalogModule {
         packageRoot: skill.sourceDir,
         helpers: [...(skill.helpers ?? [])]
       }))
-    const connectors = await (this.options.registeredConnectorPackages?.() ?? [])
+    const connectors = await (this.options.registeredConnectorOwner?.registeredHelperPackages() ??
+      this.options.registeredConnectorPackages?.() ??
+      [])
     return [...installed, ...connectors]
   }
 
