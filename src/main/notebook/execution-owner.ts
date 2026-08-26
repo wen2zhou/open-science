@@ -31,6 +31,7 @@ import type {
   NotebookSessionResolvedInterpreter,
   NotebookSessionRuntimeBinding
 } from './session-aggregate'
+import { notebookInterpreterIdentity } from './session-aggregate'
 import {
   NotebookShellProcessAdapter,
   type NotebookShellProcess,
@@ -43,7 +44,7 @@ import {
   type NotebookDependencyInterpreter,
   type NotebookDependencyProjection
 } from './dependency-analysis'
-import type { NotebookHelperModuleInjection } from './helper-module-host'
+import type { NotebookHelperModuleHost } from './helper-module-host'
 
 type NotebookControlResult = Pick<
   NotebookSessionExecutionResult,
@@ -112,6 +113,7 @@ type NotebookExecutionOwnerOptions = {
     run: NotebookRunRecord,
     interpreter?: NotebookDependencyInterpreter
   ) => Promise<NotebookDependencyProjection>
+  helperModules: Pick<NotebookHelperModuleHost, 'preflight' | 'plan' | 'commitInitialized'>
   platform?: NodeJS.Platform
   shellProcess?: NotebookShellProcess
 }
@@ -161,7 +163,7 @@ class NotebookExecutionOwner {
     session: NotebookSessionAggregate,
     request: RunNotebookCellRequest,
     signal?: AbortSignal,
-    helperModules?: readonly NotebookHelperModuleInjection[]
+    helperModuleIds?: readonly string[]
   ): Promise<{ run: NotebookRunRecord; dependencyProjection: NotebookDependencyProjection }> {
     const cell = session.cellView(request.cellId)
     if (session.isCellReceiving(cell.id)) {
@@ -170,7 +172,7 @@ class NotebookExecutionOwner {
     const route = this.options.dataExecutionAdmission.route(session, cell.language)
     return session.enqueueExecution(
       route.processKey,
-      () => this.executeDataCellExclusive(session, cell, request, signal, helperModules),
+      () => this.executeDataCellExclusive(session, cell, request, signal, helperModuleIds),
       signal
     )
   }
@@ -179,7 +181,7 @@ class NotebookExecutionOwner {
     cell: Readonly<NotebookCell>,
     request: RunNotebookCellRequest,
     signal?: AbortSignal,
-    helperModules?: readonly NotebookHelperModuleInjection[]
+    helperModuleIds?: readonly string[]
   ): Promise<{ run: NotebookRunRecord; dependencyProjection: NotebookDependencyProjection }> {
     this.options.notifyAvailable(session, request.source ?? 'agent')
     const { runId } = this.options.runTerminalization.allocateRunIdentity()
@@ -193,7 +195,18 @@ class NotebookExecutionOwner {
       session.isKernelTerminated(processKey) ||
       session.kernelStatus(processKey) === 'terminated' ||
       session.hasDurableKernelTermination(processKey)
-    const kernelEpochId = session.kernelEpochId(processKey, kernelWasTerminated)
+    const kernelEpoch = session.kernelEpoch(
+      processKey,
+      kernelWasTerminated,
+      notebookInterpreterIdentity(resolvedInterpreter)
+    )
+    const kernelEpochId = kernelEpoch.id
+    const helperRequest = await this.options.helperModules.preflight(
+      cell.language,
+      helperModuleIds,
+      kernelEpoch
+    )
+    const helperPlan = await this.options.helperModules.plan(kernelEpoch, helperRequest)
     session.markCellRunning(cell.id, runId, executionCount)
     const runningRun: NotebookRunRecord = {
       runId,
@@ -259,14 +272,17 @@ class NotebookExecutionOwner {
           const executionResult = await session
             .execute({
               code: cell.code,
-              ...(helperModules?.length ? { helperModules } : {}),
+              ...(helperPlan.injections.length ? { helperModules: helperPlan.injections } : {}),
               cwd: cwdBefore,
               language: cell.language,
               environment,
               notebookSessionRoot: session.notebookSessionRoot,
               dataRoot: session.dataRoot,
               runtimeRoot: session.runtimeRoot,
-              protectedDirs: [getAppClaudeConfigDir(this.options.configRoot)],
+              protectedDirs: [
+                getAppClaudeConfigDir(this.options.configRoot),
+                ...helperPlan.protectedGenerationRoots
+              ],
               timeoutMs: request.timeoutMs,
               signal,
               resolvedInterpreter,
@@ -279,6 +295,10 @@ class NotebookExecutionOwner {
                 : errorToExecutionResult(error, cwdBefore)
               return { ...fallback, kernelDispatched: true }
             })
+          this.options.helperModules.commitInitialized(
+            kernelEpoch,
+            executionResult.helperModulesInitialized ?? []
+          )
           const result =
             executionResult.kernelDispatched === undefined
               ? { ...executionResult, kernelDispatched: true }

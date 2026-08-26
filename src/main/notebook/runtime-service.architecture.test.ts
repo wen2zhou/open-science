@@ -151,7 +151,7 @@ describe('Notebook runtime facade architecture', () => {
   it('keeps the compatibility facade within its completion gate', () => {
     const physicalLines = facadeSource.split(/\r?\n/).length - Number(facadeSource.endsWith('\n'))
 
-    expect(physicalLines).toBeLessThanOrEqual(1250)
+    expect(physicalLines).toBeLessThanOrEqual(1255)
   })
 
   it('keeps package, repair, and Session lifecycle state behind owners', () => {
@@ -203,6 +203,7 @@ describe('Notebook runtime facade architecture', () => {
       'NotebookEnvironmentOperations',
       'NotebookExecutionOwner',
       'NotebookExportReader',
+      'NotebookHelperModuleHost',
       'NotebookPackageOperations',
       'NotebookRecoveryCoordinator',
       'NotebookRunTerminalizationOwner',

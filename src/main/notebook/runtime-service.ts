@@ -114,11 +114,7 @@ import {
   assertNotebookCodeAppendWithinLimit,
   assertNotebookCodeWithinLimit
 } from './content-limits'
-import {
-  NotebookHelperModuleHost,
-  type NotebookHelperModuleCatalog,
-  type NotebookHelperModuleInjection
-} from './helper-module-host'
+import { NotebookHelperModuleHost, type NotebookHelperModuleCatalog } from './helper-module-host'
 
 // Locale fallback when no explicit locale is injected (see shared/mirror.ts: non-CN locales resolve
 // to public hosts, so this default never silently forces a CN mirror).
@@ -357,10 +353,8 @@ class NotebookRuntimeService {
     | 'refreshAfterPackageMutation'
   >
   private disposalPromise: Promise<{ reaped: boolean }> | undefined
-  private readonly helperModules: NotebookHelperModuleHost
 
   constructor(private readonly options: NotebookRuntimeServiceOptions) {
-    this.helperModules = new NotebookHelperModuleHost(options.helperModuleCatalog)
     const defaultProjectId = resolveProjectId(options)
     this.repository = options.repository ?? new NotebookRunRepository(options.dataRoot)
     this.exportReader = new NotebookExportReader({
@@ -528,6 +522,7 @@ class NotebookRuntimeService {
           completedRun: run,
           ...(interpreter ? { interpreter } : {})
         }),
+      helperModules: new NotebookHelperModuleHost(options.helperModuleCatalog),
       platform: options.platform,
       shellProcess: options.shellProcess
     })
@@ -820,7 +815,7 @@ class NotebookRuntimeService {
   async runCell(
     request: RunNotebookCellRequest,
     signal?: AbortSignal,
-    helperModules?: readonly NotebookHelperModuleInjection[]
+    helperModules?: readonly string[]
   ): Promise<NotebookRunSummary> {
     return this.sessionLifecycle.runProjectOperation(request, async (deletionSignal) => {
       const session = await this.sessionLifecycle.ensure(request)
@@ -840,10 +835,6 @@ class NotebookRuntimeService {
     signal?: AbortSignal
   ): Promise<NotebookRunSummary> {
     assertNotebookCodeWithinLimit(request.code)
-    const helperModules = await this.helperModules.resolve(
-      request.language ?? 'python',
-      request.helperModules
-    )
     const begin = await this.beginCodeCell(request)
 
     await this.appendCodeCell({
@@ -864,7 +855,7 @@ class NotebookRuntimeService {
         cellId: begin.cellId
       },
       signal,
-      helperModules
+      request.helperModules
     )
   }
 
