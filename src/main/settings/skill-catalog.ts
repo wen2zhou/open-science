@@ -64,7 +64,8 @@ import { encryptKey, maskKey, tryDecryptKey } from './crypto'
 import {
   RegisteredSkillHelperCatalog,
   type RegisteredHelperScope,
-  type RegisteredSkillPackage
+  type RegisteredSkillPackage,
+  validateRegisteredSkillPackages
 } from '../skills/registered-helper-catalog'
 
 type SkillCatalogEntry = {
@@ -122,27 +123,40 @@ class SkillCatalogModule {
 
   constructor(private readonly options: SkillCatalogModuleOptions) {
     this.skillRegistry = options.skillRegistry ?? new SkillRegistry()
-    this.userSkills = options.userSkills ?? new UserSkillRepository(options.storageRoot)
+    this.userSkills =
+      options.userSkills ??
+      new UserSkillRepository(options.storageRoot, undefined, async (list) =>
+        this.validatePromotedRegisteredHelpers(await list())
+      )
     this.githubFetch = options.githubFetch ?? netFetch
     this.registeredHelpers = new RegisteredSkillHelperCatalog({
       storageRoot: options.storageRoot,
       packages: () => this.registeredHelperPackages(),
-      authorize: async ({ skillId }, scope) => {
+      authorize: async ({ skillId, origin }, scope) => {
         if (options.authorizeRegisteredHelper) {
           return options.authorizeRegisteredHelper(skillId, scope)
         }
-        if (scope?.allowedSkillIds && !scope.allowedSkillIds.includes(skillId)) return false
+        const isSpecialistScope =
+          scope?.allowedSkillIds !== undefined || scope?.allowedConnectorNames !== undefined
+        if (isSpecialistScope) {
+          return origin === 'connector'
+            ? Boolean(scope?.allowedConnectorNames?.includes(skillId))
+            : Boolean(scope?.allowedSkillIds?.includes(skillId))
+        }
         const disabled = new Set(
           (await this.options.repository.getSettings()).disabledSkillIds ?? []
         )
         // A trusted Specialist scope may force-load a globally disabled Skill. Main Agent requests
         // have no allowedSkillIds and continue to honor global enablement.
-        return scope?.allowedSkillIds !== undefined || !disabled.has(skillId)
+        return !disabled.has(skillId)
       }
     })
   }
 
-  registeredHelperCatalog(): RegisteredSkillHelperCatalog {
+  registeredHelperCatalog(): Pick<
+    RegisteredSkillHelperCatalog,
+    'resolve' | 'protectedDirectories'
+  > {
     return this.registeredHelpers
   }
 
@@ -151,7 +165,13 @@ class SkillCatalogModule {
   }
 
   private async registeredHelperPackages(): Promise<readonly RegisteredSkillPackage[]> {
-    const installed = (await this.catalog())
+    return this.registeredHelperPackagesFromCatalog(await this.catalog())
+  }
+
+  private async registeredHelperPackagesFromCatalog(
+    skills: readonly BundledSkill[]
+  ): Promise<readonly RegisteredSkillPackage[]> {
+    const installed = skills
       .filter((skill) => skill.helpers?.length)
       .map((skill) => ({
         skillId: skill.id,
@@ -161,6 +181,13 @@ class SkillCatalogModule {
       }))
     const connectors = await (this.options.registeredConnectorPackages?.() ?? [])
     return [...installed, ...connectors]
+  }
+
+  private async validatePromotedRegisteredHelpers(user: readonly BundledSkill[]): Promise<void> {
+    const featured = await this.skillRegistry.list()
+    await validateRegisteredSkillPackages(
+      await this.registeredHelperPackagesFromCatalog(this.mergeCatalog(featured, user))
+    )
   }
 
   private async authenticatedGitHubFetch(): Promise<FetchLike> {
@@ -213,6 +240,13 @@ class SkillCatalogModule {
 
   private async catalog(): Promise<BundledSkill[]> {
     const [featured, user] = await Promise.all([this.skillRegistry.list(), this.listUserSkills()])
+    return this.mergeCatalog(featured, user)
+  }
+
+  private mergeCatalog(
+    featured: readonly BundledSkill[],
+    user: readonly BundledSkill[]
+  ): BundledSkill[] {
     const bundledNames = new Set(featured.map((skill) => skill.name))
     const bundledIds = new Set(featured.map((skill) => skill.id))
     const userIdCounts = new Map<string, number>()

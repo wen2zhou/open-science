@@ -1,4 +1,4 @@
-import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -19,6 +19,7 @@ import { NotebookRuntimeService, type NotebookExecutionRequest } from '../notebo
 import { NotebookRunRepository } from '../notebook/repository'
 import { SettingsRepository } from './repository'
 import { SkillCatalogModule } from './skill-catalog'
+import { SettingsService } from './service'
 
 const roots: string[] = []
 
@@ -52,6 +53,30 @@ const skill = async (source: BundledSkill['source'], id: string): Promise<Bundle
 }
 
 describe('SkillCatalogModule registered helper projection', () => {
+  it('wires the Connector-owned canonical package provider through SettingsService composition', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'helper-settings-composition-'))
+    roots.push(storageRoot)
+    const connector = await skill('featured', 'canonical-connector')
+    const service = new SettingsService({
+      repository: new SettingsRepository(storageRoot),
+      storageRoot,
+      skillRegistry: { list: async () => [] } as unknown as SkillRegistry,
+      userSkills: { list: async () => [] } as unknown as UserSkillRepository,
+      registeredConnectorPackages: async () => [
+        {
+          skillId: 'mcp-canonical',
+          origin: 'connector',
+          packageRoot: connector.sourceDir,
+          helpers: [...(connector.helpers ?? [])]
+        }
+      ]
+    })
+
+    await expect(
+      service.registeredHelperCatalog().resolve('canonical-connector-helper')
+    ).resolves.toMatchObject({ skillId: 'mcp-canonical', origin: 'connector' })
+  })
+
   it('derives Built-in, Personal, Imported and canonical Connector helpers from one catalog', async () => {
     const storageRoot = await mkdtemp(join(tmpdir(), 'helper-skill-catalog-'))
     roots.push(storageRoot)
@@ -151,5 +176,101 @@ describe('SkillCatalogModule registered helper projection', () => {
         allowedSkillIds: ['personal-skill']
       })
     ).rejects.toThrow('not authorized')
+  })
+
+  it('does not authorize a durable Skill ID through a colliding Connector framework name', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'helper-authority-collision-'))
+    roots.push(storageRoot)
+    const durable = await skill('featured', 'mcp-collision')
+    const connector = await skill('featured', 'connector-source')
+    const catalog = new SkillCatalogModule({
+      repository: new SettingsRepository(storageRoot),
+      storageRoot,
+      skillRegistry: { list: async () => [durable] } as unknown as SkillRegistry,
+      userSkills: { list: async () => [] } as unknown as UserSkillRepository,
+      registeredConnectorPackages: async () => [
+        {
+          skillId: 'mcp-collision',
+          origin: 'connector',
+          packageRoot: connector.sourceDir,
+          helpers: [{ ...connector.helpers![0]!, id: 'connector-collision-helper' }]
+        }
+      ]
+    })
+    const registry = catalog.registeredHelperCatalog()
+    const connectorOnlyScope = { allowedSkillIds: [], allowedConnectorNames: ['mcp-collision'] }
+
+    await expect(registry.resolve('mcp-collision-helper', connectorOnlyScope)).rejects.toThrow(
+      'not authorized'
+    )
+    await expect(
+      registry.resolve('connector-collision-helper', connectorOnlyScope)
+    ).resolves.toMatchObject({ origin: 'connector' })
+  })
+
+  it('rolls back a promoted Personal candidate that conflicts with the live helper graph', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'helper-promotion-rollback-'))
+    roots.push(storageRoot)
+    const repository = new SettingsRepository(storageRoot)
+    const catalog = new SkillCatalogModule({
+      repository,
+      storageRoot,
+      skillRegistry: { list: async () => [] } as unknown as SkillRegistry
+    })
+    const packageRoot = async (name: string, value: string): Promise<string> => {
+      const root = await mkdtemp(join(tmpdir(), `helper-promote-${name}-`))
+      roots.push(root)
+      await writeFile(
+        join(root, 'SKILL.md'),
+        `---\nname: ${name}\ndescription: ${name}\n---\nbody\n`
+      )
+      await writeFile(
+        join(root, 'kernel.py'),
+        `def shared_export():\n    return ${JSON.stringify(value)}\n`
+      )
+      await writeFile(
+        join(root, 'open-science.json'),
+        JSON.stringify({
+          schemaVersion: 1,
+          helpers: [
+            {
+              id: 'shared-helper',
+              language: 'python',
+              interfaceRevision: 1,
+              implementation: 'kernel.py',
+              exports: ['shared_export'],
+              dependencies: []
+            }
+          ]
+        })
+      )
+      return root
+    }
+
+    await catalog.publishHostSkill('first', await packageRoot('first', 'old'), false)
+    const registry = catalog.registeredHelperCatalog()
+    const old = await registry.resolve('shared-helper')
+    await expect(
+      catalog.publishHostSkill('conflict', await packageRoot('conflict', 'new'), false)
+    ).rejects.toThrow('duplicate helper ID')
+
+    const invalidReplacement = await packageRoot('first', 'replacement')
+    const replacementManifest = JSON.parse(
+      await readFile(join(invalidReplacement, 'open-science.json'), 'utf8')
+    ) as { helpers: Array<{ dependencies: string[] }> }
+    replacementManifest.helpers[0]!.dependencies = ['missing-helper']
+    await writeFile(
+      join(invalidReplacement, 'open-science.json'),
+      JSON.stringify(replacementManifest)
+    )
+    await expect(catalog.publishHostSkill('first', invalidReplacement, true)).rejects.toThrow(
+      'unknown dependency'
+    )
+
+    expect((await catalog.listSkills()).map((entry) => entry.id)).toEqual(['personal-first'])
+    await expect(registry.resolve('shared-helper')).resolves.toMatchObject({
+      generation: old?.generation,
+      source: expect.stringContaining('"old"')
+    })
   })
 })

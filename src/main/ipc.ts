@@ -1035,7 +1035,6 @@ const createApplicationModules = async (
       }
     }
   }
-  await settingsService.registeredHelperCatalog().refresh()
   const notebookApplication = await modules.add(
     {
       configRoot: resolveConfigRoot(),
@@ -1915,8 +1914,17 @@ const createApplicationModules = async (
           profile,
           await settingsService.listSpecialistSkillCatalog()
         )
+        return effective.kind === 'specialist' ? [...new Set(effective.skillIds)] : []
+      },
+      resolveSpecialistConnectorNames: async (specialistId) => {
+        const profile = await profileService.resolveRunnableById(specialistId)
+        if (!profile.enabled) return []
+        const effective = resolveEffectiveSpecialistSkills(
+          profile,
+          await settingsService.listSpecialistSkillCatalog()
+        )
         return effective.kind === 'specialist'
-          ? [...new Set([...effective.skillIds, ...effective.frameworkNames])]
+          ? [...new Set(effective.frameworkNames.filter((name) => name.startsWith('mcp-')))]
           : []
       },
       connectorService,

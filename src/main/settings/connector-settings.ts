@@ -28,6 +28,7 @@ import {
 import { CONNECTOR_CATALOG } from '../connectors/catalog'
 import { isCustomMcpServerRouteSafe } from '../connectors/custom-mcp-bootstrap'
 import { getConnectorTools } from '../connectors/registry'
+import type { RegisteredSkillPackage } from '../skills/registered-helper-catalog'
 import { encryptKey, isEncryptionAvailable, tryDecryptKey } from './crypto'
 import { sanitizeCustomMcpServer, type SettingsRepository } from './repository'
 import type { StoredConnectors, StoredCustomMcpOAuthState, StoredCustomMcpServer } from './types'
@@ -43,6 +44,10 @@ type CustomServerRuntimeProjectionProvider = {
   materializedSkillNames: () => readonly string[]
   availability: (id: string) => CustomServerView['availability']
   isRefreshing: (id: string) => boolean
+}
+
+type ConnectorSettingsServiceOptions = {
+  registeredConnectorPackages?: () => Promise<readonly RegisteredSkillPackage[]>
 }
 
 const normalizeOAuthConfig = (
@@ -90,7 +95,14 @@ class ConnectorSettingsModule {
     isRefreshing: () => false
   }
 
-  constructor(private readonly repository: SettingsRepository) {}
+  constructor(
+    private readonly repository: SettingsRepository,
+    private readonly options: ConnectorSettingsServiceOptions = {}
+  ) {}
+
+  registeredHelperPackages(): Promise<readonly RegisteredSkillPackage[]> {
+    return this.options.registeredConnectorPackages?.() ?? Promise.resolve([])
+  }
 
   setCustomServerRuntimeProjectionProvider(provider: CustomServerRuntimeProjectionProvider): void {
     this.customServerRuntimeProjectionProvider = provider
@@ -666,4 +678,8 @@ class ConnectorSettingsModule {
 }
 
 export { ConnectorSettingsModule }
-export type { CustomServerRuntimeProjectionProvider, CustomServerSecurityChangeGuard }
+export type {
+  CustomServerRuntimeProjectionProvider,
+  CustomServerSecurityChangeGuard,
+  ConnectorSettingsServiceOptions
+}

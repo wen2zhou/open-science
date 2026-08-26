@@ -303,7 +303,8 @@ describe('notebook runtime service', () => {
       workspaceCwd: root,
       code: 'public_value()',
       helperModules: ['scope-helper'],
-      registeredHelperSkillIds: ['forged-skill']
+      registeredHelperSkillIds: ['forged-skill'],
+      registeredHelperConnectorNames: ['mcp-forged']
     }
 
     await service.execute(base)
@@ -315,7 +316,12 @@ describe('notebook runtime service', () => {
 
     expect(scopes).toEqual([
       { projectId: 'default-project', sessionId: 'session-1' },
-      { projectId: 'default-project', sessionId: 'session-1', allowedSkillIds: ['forged-skill'] }
+      {
+        projectId: 'default-project',
+        sessionId: 'session-1',
+        allowedSkillIds: ['forged-skill'],
+        allowedConnectorNames: ['mcp-forged']
+      }
     ])
   })
 

@@ -1,6 +1,9 @@
 import { createHash, randomUUID } from 'node:crypto'
+import { spawn } from 'node:child_process'
 import { lstat, mkdir, readFile, realpath, rename, rm, writeFile } from 'node:fs/promises'
 import { isAbsolute, join, posix, relative, resolve, sep } from 'node:path'
+
+import { resolvePythonCommand } from '../notebook/python-command'
 
 const HELPER_MANIFEST_FILE = 'open-science.json'
 const HELPER_MANIFEST_SCHEMA_VERSION = 1
@@ -32,6 +35,7 @@ type RegisteredHelperScope = Readonly<{
   projectId?: string
   sessionId?: string
   allowedSkillIds?: readonly string[]
+  allowedConnectorNames?: readonly string[]
 }>
 
 type RegisteredSkillHelper = Readonly<{
@@ -214,21 +218,74 @@ const assertContainedRegularSource = async (
   return { bytes, source }
 }
 
-const assertCallableExports = (
+const CALLABLE_VALIDATOR = String.raw`
+import builtins, json, sys
+
+def deny(event, args):
+    if event == "open" or event == "import" or event.startswith(("socket.", "subprocess.", "os.system", "os.exec", "os.spawn")):
+        raise PermissionError("host access is unavailable during helper validation")
+
+sys.addaudithook(deny)
+request = json.loads(sys.stdin.read())
+safe_names = (
+    "__build_class__", "abs", "all", "any", "bool", "bytes", "callable", "dict", "enumerate",
+    "Exception", "float", "int", "isinstance", "len", "list", "map", "max", "min", "object",
+    "range", "repr", "reversed", "set", "slice", "sorted", "str", "sum", "tuple", "ValueError", "zip"
+)
+safe_builtins = {name: getattr(builtins, name) for name in safe_names}
+namespace = {"__builtins__": safe_builtins, "__name__": "__open_science_helper_validation__"}
+exec(compile(request["source"], "<registered-helper>", "exec"), namespace, namespace)
+missing = [name for name in request["exports"] if name not in namespace or not callable(namespace[name])]
+if missing:
+    raise TypeError("missing or non-callable exports: " + ", ".join(missing))
+`
+
+const assertCallableExports = async (
   helperId: string,
   source: string,
   exports: readonly string[]
-): void => {
-  const definitions = new Set<string>()
-  for (const line of source.split(/\r?\n/)) {
-    const match = /^(?:async\s+)?def\s+([A-Za-z_][A-Za-z0-9_]*)\s*\(/.exec(line)
-    if (match?.[1]) definitions.add(match[1])
-  }
-  for (const exported of exports) {
-    if (!definitions.has(exported)) {
-      fail(`helper "${helperId}" is missing callable export "${exported}"`)
-    }
-  }
+): Promise<void> => {
+  const python = await resolvePythonCommand()
+  await new Promise<void>((resolveValidation, rejectValidation) => {
+    const child = spawn(
+      python.command,
+      [...python.baseArgs, '-I', '-S', '-c', CALLABLE_VALIDATOR],
+      {
+        env:
+          process.platform === 'win32'
+            ? { SystemRoot: process.env.SystemRoot, WINDIR: process.env.WINDIR }
+            : {},
+        stdio: ['pipe', 'ignore', 'pipe'],
+        windowsHide: true
+      }
+    )
+    let stderr = ''
+    const timeout = setTimeout(() => child.kill(), 5_000)
+    child.stderr.on('data', (chunk: Buffer) => {
+      if (stderr.length < 8_192) stderr += chunk.toString('utf8').slice(0, 8_192 - stderr.length)
+    })
+    child.stdin.on('error', () => undefined)
+    child.once('error', (error) => {
+      clearTimeout(timeout)
+      rejectValidation(
+        new Error(`helper "${helperId}" callable validation requires Python 3: ${error.message}`)
+      )
+    })
+    child.once('close', (code, signal) => {
+      clearTimeout(timeout)
+      if (code === 0) {
+        resolveValidation()
+        return
+      }
+      const detail = signal ? `terminated by ${signal}` : stderr.trim().split('\n').at(-1)
+      rejectValidation(
+        new Error(
+          `INVALID_REGISTERED_HELPER: helper "${helperId}" failed isolated callable export validation${detail ? `: ${detail}` : ''}`
+        )
+      )
+    })
+    child.stdin.end(JSON.stringify({ source, exports }))
+  })
 }
 
 const sourceDigest = (bytes: Buffer): string =>
@@ -267,7 +324,7 @@ const preparePackage = async (entry: RegisteredSkillPackage): Promise<PreparedHe
       entry.packageRoot,
       descriptor.implementation
     )
-    assertCallableExports(descriptor.id, source, descriptor.exports)
+    await assertCallableExports(descriptor.id, source, descriptor.exports)
     loaded.push({ descriptor, bytes, digest: sourceDigest(bytes) })
   }
   const generation = generationDigest(skillId, entry.origin, loaded)
@@ -311,6 +368,31 @@ const validateSkillHelperPackage = async (packageRoot: string): Promise<void> =>
   await preparePackage({ skillId: 'staged-skill', origin: 'personal', packageRoot, helpers })
 }
 
+const prepareRegisteredSkillPackages = async (
+  packages: readonly RegisteredSkillPackage[]
+): Promise<Map<string, PreparedHelper>> => {
+  const prepared = new Map<string, PreparedHelper>()
+  let totalBytes = 0
+  for (const entry of packages) {
+    for (const helper of await preparePackage(entry)) {
+      if (prepared.has(helper.id)) fail(`duplicate helper ID "${helper.id}" in registered catalog`)
+      totalBytes += helper.sourceBytes.byteLength
+      if (totalBytes > HELPER_SOURCE_TOTAL_MAX_BYTES) {
+        fail('registered helper catalog exceeds the total source size limit')
+      }
+      prepared.set(helper.id, helper)
+    }
+  }
+  assertDependencyGraph(prepared)
+  return prepared
+}
+
+const validateRegisteredSkillPackages = async (
+  packages: readonly RegisteredSkillPackage[]
+): Promise<void> => {
+  await prepareRegisteredSkillPackages(packages)
+}
+
 class RegisteredSkillHelperCatalog {
   private snapshot: Promise<ReadonlyMap<string, RegisteredSkillHelper>> | undefined
 
@@ -321,8 +403,14 @@ class RegisteredSkillHelperCatalog {
   }
 
   async refresh(): Promise<void> {
-    this.invalidate()
-    await this.readSnapshot()
+    const previous = this.snapshot
+    try {
+      const next = await this.buildSnapshot()
+      this.snapshot = Promise.resolve(next)
+    } catch (error) {
+      this.snapshot = previous
+      throw error
+    }
   }
 
   protectedDirectories(): readonly string[] {
@@ -360,20 +448,7 @@ class RegisteredSkillHelperCatalog {
   }
 
   private async buildSnapshot(): Promise<ReadonlyMap<string, RegisteredSkillHelper>> {
-    const prepared = new Map<string, PreparedHelper>()
-    let totalBytes = 0
-    for (const entry of await this.options.packages()) {
-      for (const helper of await preparePackage(entry)) {
-        if (prepared.has(helper.id))
-          fail(`duplicate helper ID "${helper.id}" in registered catalog`)
-        totalBytes += helper.sourceBytes.byteLength
-        if (totalBytes > HELPER_SOURCE_TOTAL_MAX_BYTES) {
-          fail('registered helper catalog exceeds the total source size limit')
-        }
-        prepared.set(helper.id, helper)
-      }
-    }
-    assertDependencyGraph(prepared)
+    const prepared = await prepareRegisteredSkillPackages(await this.options.packages())
 
     const snapshot = new Map<string, RegisteredSkillHelper>()
     for (const helper of prepared.values()) {
@@ -451,6 +526,7 @@ export {
   HELPER_MANIFEST_FILE,
   RegisteredSkillHelperCatalog,
   readSkillHelperDescriptors,
+  validateRegisteredSkillPackages,
   validateSkillHelperPackage
 }
 export type {

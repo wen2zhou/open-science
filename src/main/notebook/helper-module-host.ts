@@ -22,6 +22,7 @@ type NotebookHelperModuleCatalog = {
       projectId?: string
       sessionId?: string
       allowedSkillIds?: readonly string[]
+      allowedConnectorNames?: readonly string[]
     }>
   ): Promise<RegisteredNotebookHelperModule | undefined>
   protectedDirectories?(): readonly string[]
@@ -77,10 +78,14 @@ class NotebookHelperModuleHost {
     const trustedSkillIds = request.executionInvocationId
       ? request.registeredHelperSkillIds
       : undefined
+    const trustedConnectorNames = request.executionInvocationId
+      ? request.registeredHelperConnectorNames
+      : undefined
     return this.resolve(request.language ?? 'python', request.helperModules, {
       projectId: request.projectId,
       sessionId: request.sessionId,
-      ...(trustedSkillIds ? { allowedSkillIds: trustedSkillIds } : {})
+      ...(trustedSkillIds ? { allowedSkillIds: trustedSkillIds } : {}),
+      ...(trustedConnectorNames ? { allowedConnectorNames: trustedConnectorNames } : {})
     })
   }
 
@@ -91,6 +96,7 @@ class NotebookHelperModuleHost {
       projectId?: string
       sessionId?: string
       allowedSkillIds?: readonly string[]
+      allowedConnectorNames?: readonly string[]
     }>
   ): Promise<readonly NotebookHelperModuleInjection[]> {
     if (requested === undefined) return []

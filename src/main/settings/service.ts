@@ -93,6 +93,7 @@ import { NotebookRuntimeSettingsModule } from './notebook-runtime-settings'
 import { SkillCatalogModule } from './skill-catalog'
 import { ConnectorSettingsModule, type CustomServerSecurityChangeGuard } from './connector-settings'
 import type { CustomServerRuntimeProjectionProvider } from './connector-settings'
+import type { ConnectorSettingsServiceOptions } from './connector-settings'
 import { ProviderAccountsModule } from './provider-accounts'
 import { AgentRuntimeManager, type ExecuteClaudeProbe } from './agent-runtime-manager'
 import {
@@ -142,12 +143,10 @@ export type SettingsServiceOptions = {
   // The framework-neutral Agents config dir. Codex and other compatible agents discover skills
   // under ~/.agents/skills; it is scanned regardless of the active framework.
   userAgentsDir?: string
-  // Bundled-skill source, injectable so tests can point at a seeded temp dir instead of app resources.
   skillRegistry?: SkillRegistry
-  // Writable personal/imported skill store, injectable so tests can use a temp storage root.
   userSkills?: UserSkillRepository
-  // GitHub request implementation, injectable so credential tests never hit the network.
   githubFetch?: FetchLike
+  registeredConnectorPackages?: ConnectorSettingsServiceOptions['registeredConnectorPackages']
   // One-shot Claude command runner, injectable so validation tests can inspect the exact auth env.
   executeClaudeProbe?: ExecuteClaudeProbe
   // One-shot managed Claude installer, injectable so tests avoid real network/fs.
@@ -207,7 +206,7 @@ class SettingsService {
     this.log = options.log ?? createLogger('settings')
     this.preferences = new SettingsPreferencesModule(this.repository)
     this.notebookRuntimeSettings = new NotebookRuntimeSettingsModule(this.repository)
-    this.connectors = new ConnectorSettingsModule(this.repository)
+    this.connectors = new ConnectorSettingsModule(this.repository, options)
     this.userClaudeDir = options.userClaudeDir ?? getUserClaudeConfigDir()
     const userCodexDir = options.userCodexDir ?? join(homedir(), '.codex')
     this.skills = new SkillCatalogModule({
@@ -217,8 +216,9 @@ class SettingsService {
       userCodexDir,
       userAgentsDir: options.userAgentsDir ?? join(homedir(), '.agents'),
       skillRegistry: options.skillRegistry ?? new SkillRegistry(),
-      userSkills: options.userSkills ?? new UserSkillRepository(this.storageRoot),
-      githubFetch: options.githubFetch
+      userSkills: options.userSkills,
+      githubFetch: options.githubFetch,
+      registeredConnectorPackages: () => this.connectors.registeredHelperPackages()
     })
     const allocateSettingsIdSequence = createSettingsIdSequence()
     this.runtimeManager = new AgentRuntimeManager({
@@ -509,7 +509,7 @@ class SettingsService {
   async listHostSkills(): Promise<BundledSkill[]> {
     return this.skills.listHostSkills()
   }
-  registeredHelperCatalog() {
+  registeredHelperCatalog(): ReturnType<SkillCatalogModule['registeredHelperCatalog']> {
     return this.skills.registeredHelperCatalog()
   }
   async listUserSkills(): Promise<BundledSkill[]> {

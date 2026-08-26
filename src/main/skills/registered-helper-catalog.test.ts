@@ -8,6 +8,9 @@ import {
   RegisteredSkillHelperCatalog,
   type RegisteredSkillPackage
 } from './registered-helper-catalog'
+import { NotebookHelperModuleHost } from '../notebook/helper-module-host'
+import { NotebookKernelExecutor } from '../notebook/kernel-executor'
+import { resolvePythonCommand } from '../notebook/python-command'
 
 const roots: string[] = []
 
@@ -76,6 +79,55 @@ describe('RegisteredSkillHelperCatalog', () => {
       expect(helper?.generation).toMatch(/^sha256:[0-9a-f]{64}$/)
       expect(helper?.digest).toMatch(/^sha256:[0-9a-f]{64}$/)
       expect(JSON.stringify(helper)).not.toContain(entry.packageRoot)
+    }
+  })
+
+  it('executes every origin through the real persistent Python loop after source loss', async () => {
+    const origins = ['builtin', 'personal', 'imported', 'connector'] as const
+    const packages = await Promise.all(
+      origins.map(async (origin, index) => {
+        const exported = `${origin}_value`
+        const entry = await packageFixture(
+          origin,
+          origin,
+          `def ${exported}():\n    return ${index + 1}\n`
+        )
+        entry.helpers[0] = { ...entry.helpers[0]!, exports: [exported] }
+        return entry
+      })
+    )
+    const catalog = await createCatalog(async () => packages)
+    const host = new NotebookHelperModuleHost(catalog)
+    const injections = await Promise.all(
+      origins.map((origin) => host.resolve('python', [`${origin}-helper`]))
+    )
+    for (const entry of packages) {
+      await writeFile(join(entry.packageRoot, 'kernel.py'), 'raise RuntimeError("source reread")\n')
+    }
+
+    const root = await mkdtemp(join(tmpdir(), 'registered-real-loop-'))
+    roots.push(root)
+    await mkdir(join(root, 'nb', 'data'), { recursive: true })
+    const python = await resolvePythonCommand()
+    const executor = new NotebookKernelExecutor({
+      pythonLoopPath: join(__dirname, '../../../resources/notebook/python_loop.py')
+    })
+    try {
+      for (const [index, origin] of origins.entries()) {
+        const result = await executor.execute({
+          cwd: root,
+          notebookSessionRoot: join(root, 'nb'),
+          dataRoot: join(root, 'nb', 'data'),
+          runtimeRoot: join(root, 'runtime'),
+          language: 'python',
+          resolvedInterpreter: python,
+          helperModules: injections[index],
+          code: `print(${origin}_value())`
+        })
+        expect(result).toMatchObject({ status: 'completed', stdout: `${index + 1}\n` })
+      }
+    } finally {
+      await executor.shutdown()
     }
   })
 
@@ -183,6 +235,21 @@ describe('RegisteredSkillHelperCatalog', () => {
       const catalog = await createCatalog(async () => [entry])
       await expect(catalog.resolve(`bad-${index}-helper`)).rejects.toThrow(testCase.error)
     }
+  })
+
+  it.each([
+    ['def public_value(:\n    return 1\n', 'SyntaxError'],
+    ['public_value = 1\n', 'non-callable exports'],
+    ['def another_value():\n    return 1\n', 'missing or non-callable exports'],
+    [
+      'open("forbidden", "w").write("bad")\ndef public_value():\n    return 1\n',
+      "name 'open' is not defined"
+    ]
+  ])('fails closed when isolated Python rejects an export candidate', async (source, message) => {
+    const entry = await packageFixture('personal', 'isolated', source)
+    const catalog = await createCatalog(async () => [entry])
+
+    await expect(catalog.resolve('isolated-helper')).rejects.toThrow(message)
   })
 
   it('fails closed on duplicate IDs, missing dependencies, cycles, and non-callable dependencies', async () => {
