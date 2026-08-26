@@ -1,0 +1,39 @@
+{
+  "helperId": "figure-style",
+  "exports": [
+    {
+      "name": "apply_figure_style",
+      "signature": "(*, frame='open', font=None, sizes=(8, 7, 6), grid=False)"
+    },
+    { "name": "set_frame", "signature": "(ax, style='open')" },
+    {
+      "name": "panel_letter",
+      "signature": "(ax, letter, dx=-0.18, dy=1.02, case='lower', fontsize=None)"
+    },
+    {
+      "name": "focal_palette",
+      "signature": "(labels, focal, focal_color, other='muted', base_colors=None)"
+    },
+    {
+      "name": "bar_with_points",
+      "signature": "(ax, x, ymat, labels, colors, jitter=0.08, show_points=True, errorbar=None, point_alpha=0.5, point_size=8)"
+    },
+    {
+      "name": "strip_with_median",
+      "signature": "(ax, groups, values, colors=None, jitter=0.12)"
+    },
+    {
+      "name": "goodness_arrow",
+      "signature": "(ax, text='higher = better', loc='upper left', axis='y', fontsize=None)"
+    },
+    { "name": "two_tier_label", "signature": "(name, meta)" },
+    {
+      "name": "end_of_line_labels",
+      "signature": "(ax, xs, ys, labels, colors=None, dx=0.01, fontsize=None)"
+    },
+    {
+      "name": "panel_crops",
+      "signature": "(fig, dpi=None, pad_px=6, bbox_inches=None, pad_inches=None)"
+    }
+  ]
+}

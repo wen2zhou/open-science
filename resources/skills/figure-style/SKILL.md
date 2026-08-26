@@ -29,11 +29,15 @@ in the cell so its own data preparation is readable. Image inspection, judgment,
 and revision reasoning stay in the Agent's existing JS control plane; there is
 no Python `host` bridge.
 
-The public interface is below. “Sequence” means an ordered Python sequence;
-parallel sequences must have compatible lengths. Plotting functions import
-their optional dependencies only when called. A missing `matplotlib`, `numpy`,
-or `scipy` (only for `ci95`) dependency surfaces its normal Python import error;
-inspect or manage the bound Runtime Environment, then retry.
+The public interface is below. “Sequence” means an ordered Python sequence.
+These helpers preserve the source implementation's ordinary Python `zip`
+semantics: zipped parallel inputs stop at the shortest sequence; there is no
+additional equal-length validation. Inputs passed together to NumPy or
+matplotlib can still raise those libraries' normal shape/type errors. Plotting
+functions import their optional dependencies only when called. A missing
+`matplotlib`, `numpy`, or `scipy` (only for `ci95`) dependency surfaces its
+normal Python import error; inspect or manage the bound Runtime Environment,
+then retry.
 
 - `apply_figure_style(*, frame="open", font=None, sizes=(8, 7, 6), grid=False)`
   sets matplotlib `rcParams` and returns `None`. `frame` is `"open"`, `"boxed"`,
@@ -56,27 +60,33 @@ inspect or manage the bound Runtime Environment, then retry.
   when no focal label occurs in `labels`, and matplotlib raises for invalid colors.
 - `bar_with_points(ax, x, ymat, labels, colors, jitter=0.08,
   show_points=True, errorbar=None, point_alpha=0.5, point_size=8)` returns `ax`.
-  `x`, `labels`, and `colors` are parallel one-dimensional sequences; `ymat` is
-  a parallel sequence of numeric one-dimensional replicate sequences. Bars show
-  means. Raw points are shown when `show_points=True`; otherwise `errorbar="sd"`
-  or `"ci95"` draws the sample SD or t-distribution 95% CI. Shape/type failures
-  surface as NumPy/matplotlib errors.
+  `x`, `labels`, and `colors` are one-dimensional sequences; `ymat` is a sequence
+  of numeric one-dimensional replicate sequences. Bars show means. Matplotlib
+  consumes the bar inputs with its normal broadcasting/color-cycling behavior;
+  the raw-point overlay pairs `x` and `ymat` with `zip`, so unmatched trailing
+  entries are ignored. Tick-label count errors and other incompatible shapes
+  remain normal NumPy/matplotlib errors. Raw points are shown when
+  `show_points=True`; otherwise `errorbar="sd"` or `"ci95"` draws the sample SD
+  or t-distribution 95% CI.
 - `strip_with_median(ax, groups, values, colors=None, jitter=0.12)` returns `ax`.
-  `groups` is a one-dimensional label sequence and `values` a parallel sequence
-  of numeric one-dimensional replicate sequences. `colors` is parallel or
-  defaults to dark gray. Each group gets jittered raw points and a median tick;
-  incompatible data surfaces normal NumPy/matplotlib errors, while an empty
-  replicate sequence follows NumPy's empty-slice warning/NaN behavior.
+  `groups` is a one-dimensional label sequence and `values` a sequence of
+  numeric one-dimensional replicate sequences. `values` and `colors` are paired
+  with `zip`, so an explicitly shorter sequence silently limits the plotted
+  groups; `groups` still supplies all x tick labels. `colors=None` supplies one
+  dark-gray color per group. Each plotted group gets jittered raw points and a
+  median tick; an empty replicate sequence follows NumPy's empty-slice
+  warning/NaN behavior.
 - `goodness_arrow(ax, text="higher = better", loc="upper left", axis="y",
   fontsize=None)` adds an upright cue and returns `None`. `loc` is `"upper left"`,
   `"upper right"`, `"lower left"`, or `"lower right"` (otherwise `KeyError`);
   `axis="y"` uses an up arrow and other values use a right arrow.
 - `two_tier_label(name, meta)` returns the string `"{name}\n{meta}"`.
 - `end_of_line_labels(ax, xs, ys, labels, colors=None, dx=0.01,
-  fontsize=None)` adds direct labels and returns `None`. `xs` and `ys` are
-  parallel sequences of non-empty numeric series; `labels` and optional `colors`
-  are parallel. Empty series raise `IndexError`; other bad shapes/types surface
-  normal matplotlib errors.
+  fontsize=None)` adds direct labels and returns `None`. `xs`, `ys`, `labels`,
+  and the effective `colors` sequence are paired with `zip`; unmatched trailing
+  entries are silently ignored. Each consumed x/y series must be non-empty or
+  indexing its endpoint raises `IndexError`; other bad types surface normal
+  matplotlib errors.
 - `panel_crops(fig, dpi=None, pad_px=6, bbox_inches=None, pad_inches=None)` returns
   `{panel_letter: (x0, y0, x1, y1)}` integer crop boxes in saved-PNG pixel space,
   origin at top left. `fig` is a rendered matplotlib `Figure`; `dpi=None` and
