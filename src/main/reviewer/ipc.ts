@@ -445,8 +445,8 @@ const createReviewerCommandOwner = (options: ReviewerIpcOptions): ReviewerComman
           ? {
               reviewerFileEvidenceResolver: (request) =>
                 artifactProvenanceRepository.resolveReviewerTurnFileEvidence!(request)
-             }
-           : {}),
+            }
+          : {}),
         reviewerMcpEntryPath: options.mcpEntryPath,
         onStarted: () => settle({ started: true }),
         onReviewUpdate: (review: ReviewWithChecks) => {
