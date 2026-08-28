@@ -6,54 +6,28 @@ import { dirname, resolve } from 'node:path'
 import { fileURLToPath, pathToFileURL } from 'node:url'
 
 export const CAPTURE_SCHEMA_VERSION = 2
+const EXECUTABLE_REGRESSION_GATE = 'src/main/reviewer/reviewer-regression-gate.integration.test.ts'
 export const REVIEWER_REGRESSION_SCENARIOS = [
-  [
-    'image-trace-only',
-    'execution log + artifact trace',
-    ['src/main/reviewer/image-generation-trace.integration.test.ts']
-  ],
-  [
-    'rendered-image-contradiction',
-    'artifact image content',
-    ['src/main/reviewer/image-content.integration.test.ts']
-  ],
+  ['image-trace-only', 'execution log + artifact trace', [EXECUTABLE_REGRESSION_GATE]],
+  ['rendered-image-contradiction', 'artifact image content', [EXECUTABLE_REGRESSION_GATE]],
   [
     'targeted-source-pages',
     'trusted source role + targeted page content',
-    ['src/main/reviewer/mcp-server.test.ts', 'src/main/reviewer/host-sdk.test.ts']
+    [EXECUTABLE_REGRESSION_GATE]
   ],
-  [
-    'earlier-turn-abstention',
-    'frozen turn scope only',
-    ['src/main/reviewer/scope.test.ts', 'src/main/reviewer/rubric.test.ts']
-  ],
+  ['earlier-turn-abstention', 'frozen turn scope only', [EXECUTABLE_REGRESSION_GATE]],
   [
     'fabricated-current-turn-reference',
     'current-turn concrete identifier trace',
-    ['src/main/reviewer/rubric.test.ts', 'src/main/reviewer/mcp-server.test.ts']
+    [EXECUTABLE_REGRESSION_GATE]
   ],
-  [
-    'user-stop',
-    'routed cancellation evidence',
-    ['src/main/reviewer/turn-evidence.test.ts', 'src/main/reviewer/rubric.test.ts']
-  ],
-  [
-    'plan-completion',
-    'effective current-turn Plan',
-    ['src/main/reviewer/turn-evidence.test.ts', 'src/main/reviewer/rubric.test.ts']
-  ],
-  [
-    'tabular-values',
-    'bounded columns and row targets',
-    ['src/main/reviewer/host-sdk-tabular.test.ts', 'src/main/reviewer/mcp-server.test.ts']
-  ],
+  ['user-stop', 'routed cancellation evidence', [EXECUTABLE_REGRESSION_GATE]],
+  ['plan-completion', 'effective current-turn Plan', [EXECUTABLE_REGRESSION_GATE]],
+  ['tabular-values', 'bounded columns and row targets', [EXECUTABLE_REGRESSION_GATE]],
   [
     'opaque-binary-generation',
     'artifact trace; byte-free limitation if content is attempted',
-    [
-      'src/main/reviewer/image-generation-trace.integration.test.ts',
-      'src/main/reviewer/mcp-server.test.ts'
-    ]
+    [EXECUTABLE_REGRESSION_GATE]
   ]
 ].map(([id, evidenceRoute, testFiles]) => ({ id, evidenceRoute, testFiles }))
 

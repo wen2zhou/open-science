@@ -12,7 +12,7 @@ import {
 const fixtureUrl = new URL('../test/fixtures/reviewer-model-evaluation.json', import.meta.url)
 
 describe('Reviewer enhancement regression gate', () => {
-  it('names every required shipping scenario and keeps deferred capabilities out', () => {
+  it('routes every required shipping scenario through the executable protocol gate', () => {
     expect(REVIEWER_REGRESSION_SCENARIOS.map(({ id }) => id)).toEqual([
       'image-trace-only',
       'rendered-image-contradiction',
@@ -24,7 +24,9 @@ describe('Reviewer enhancement regression gate', () => {
       'tabular-values',
       'opaque-binary-generation'
     ])
-    expect(REVIEWER_REGRESSION_SCENARIOS.every(({ testFiles }) => testFiles.length > 0)).toBe(true)
+    expect(REVIEWER_REGRESSION_SCENARIOS.map(({ testFiles }) => testFiles)).toEqual(
+      Array(9).fill(['src/main/reviewer/reviewer-regression-gate.integration.test.ts'])
+    )
     expect(JSON.stringify(REVIEWER_REGRESSION_SCENARIOS)).not.toMatch(
       /archive search|context drift|session-level|format-specific MCP/i
     )

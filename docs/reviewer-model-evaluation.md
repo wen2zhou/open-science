@@ -31,12 +31,12 @@ The deterministic product suite covers the full shipping matrix; the model sampl
 
 | Scenario | Required evidence route | Executable regression files |
 | --- | --- | --- |
-| image-trace-only | execution log + artifact trace | `src/main/reviewer/image-generation-trace.integration.test.ts` |
-| rendered-image-contradiction | artifact image content | `src/main/reviewer/image-content.integration.test.ts` |
-| targeted-source-pages | trusted source role + targeted page content | `src/main/reviewer/mcp-server.test.ts`<br>`src/main/reviewer/host-sdk.test.ts` |
-| earlier-turn-abstention | frozen turn scope only | `src/main/reviewer/scope.test.ts`<br>`src/main/reviewer/rubric.test.ts` |
-| fabricated-current-turn-reference | current-turn concrete identifier trace | `src/main/reviewer/rubric.test.ts`<br>`src/main/reviewer/mcp-server.test.ts` |
-| user-stop | routed cancellation evidence | `src/main/reviewer/turn-evidence.test.ts`<br>`src/main/reviewer/rubric.test.ts` |
-| plan-completion | effective current-turn Plan | `src/main/reviewer/turn-evidence.test.ts`<br>`src/main/reviewer/rubric.test.ts` |
-| tabular-values | bounded columns and row targets | `src/main/reviewer/host-sdk-tabular.test.ts`<br>`src/main/reviewer/mcp-server.test.ts` |
-| opaque-binary-generation | artifact trace; byte-free limitation if content is attempted | `src/main/reviewer/image-generation-trace.integration.test.ts`<br>`src/main/reviewer/mcp-server.test.ts` |
+| image-trace-only | execution log + artifact trace | `src/main/reviewer/reviewer-regression-gate.integration.test.ts` |
+| rendered-image-contradiction | artifact image content | `src/main/reviewer/reviewer-regression-gate.integration.test.ts` |
+| targeted-source-pages | trusted source role + targeted page content | `src/main/reviewer/reviewer-regression-gate.integration.test.ts` |
+| earlier-turn-abstention | frozen turn scope only | `src/main/reviewer/reviewer-regression-gate.integration.test.ts` |
+| fabricated-current-turn-reference | current-turn concrete identifier trace | `src/main/reviewer/reviewer-regression-gate.integration.test.ts` |
+| user-stop | routed cancellation evidence | `src/main/reviewer/reviewer-regression-gate.integration.test.ts` |
+| plan-completion | effective current-turn Plan | `src/main/reviewer/reviewer-regression-gate.integration.test.ts` |
+| tabular-values | bounded columns and row targets | `src/main/reviewer/reviewer-regression-gate.integration.test.ts` |
+| opaque-binary-generation | artifact trace; byte-free limitation if content is attempted | `src/main/reviewer/reviewer-regression-gate.integration.test.ts` |
