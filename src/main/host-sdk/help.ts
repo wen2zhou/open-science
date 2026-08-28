@@ -187,7 +187,7 @@ const DELEGATE_DESCRIPTOR: HostSdkHelpOperationDescriptor = {
         name: 'inputs',
         type: 'string[]',
         required: false,
-        description: 'Immutable Version ids staged read-only under ./inputs/.'
+        description: 'Immutable versionId (not artifactId); read-only ./inputs/.'
       },
       {
         name: 'outputSchema',
