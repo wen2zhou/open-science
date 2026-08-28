@@ -24,8 +24,11 @@ import {
 } from '../../shared/reviewer'
 import {
   assertBlockInScope,
+  toLimitedMediaArtifactMetadata,
+  toMediaArtifactMetadata,
   type ReviewerArtifactReadOptions,
   type ReviewerArtifactReadResult,
+  type MediaArtifactMetadata,
   type ReviewLimitation,
   type ReviewerHostServer
 } from './host-sdk'
@@ -406,6 +409,7 @@ type ReviewerMcpServerOptions = {
   entryPath?: string
   transport?: 'tcp' | 'pipe'
   requestBytes?: number
+  supportsImageInput?: boolean | (() => boolean)
 }
 
 // Maps model-submitted checks onto the turn scope, enforcing the single-sourcing contract
@@ -686,7 +690,10 @@ export class ReviewerMcpServer {
             'record the actual targets returned. partial=true means the response omits the rest of ' +
             'the file and is sufficient when those targets fully cover the claim; do not create a ' +
             'warning for that. Limitations distinguish target truncation, corrupt content, unsupported ' +
-            'formats, and budget exhaustion. For byte windows, continue from nextOffset while ' +
+            'formats, and budget exhaustion. PNG/JPEG/GIF/WebP content is returned as bounded MCP ' +
+            'image content, never base64 JSON text. If this Reviewer cannot accept images, the read ' +
+            'returns an unsupported-model-capability limitation; that limits Coverage and is not a ' +
+            'finding. For byte windows, continue from nextOffset while ' +
             'the review budget remains. An out-of-scope ' +
             'file Version id is rejected.',
           inputSchema: reviewerArtifactReadInputSchema
@@ -752,23 +759,42 @@ export class ReviewerMcpServer {
                 `Trusted file role mismatch for Version ${id}: expected ${trustedRole}, got ${artifact.role}.`
               )
             }
-            const limitations =
+            let limitations =
               'limitations' in artifact
                 ? artifact.limitations.map((limitation) => ({ ...limitation }))
                 : []
+            const isMedia = 'kind' in artifact && artifact.kind === 'media'
+            const supportsImageInput =
+              typeof this.options.supportsImageInput === 'function'
+                ? this.options.supportsImageInput()
+                : this.options.supportsImageInput === true
+            const mediaDelivered =
+              isMedia && artifact.delivery === 'delivered' && supportsImageInput
+            if (isMedia && !supportsImageInput) {
+              limitations = [
+                ...limitations,
+                {
+                  kind: 'unsupported-model-capability' as const,
+                  subjectId: id,
+                  detail: 'The active Reviewer model does not accept image content.'
+                }
+              ]
+            }
             const partial =
               ('partial' in artifact && artifact.partial === true) ||
               ('truncated' in artifact && artifact.truncated === true) ||
               limitations.some(
                 (limitation) =>
-                  limitation.kind === 'truncated' || limitation.kind === 'budget-exhausted'
+                  limitation.kind === 'truncated' ||
+                  limitation.kind === 'budget-exhausted' ||
+                  limitation.kind === 'unsupported-model-capability'
               )
             const media = 'media' in artifact ? artifact.media : undefined
             this.evidenceAccess.artifactReads.set(id, {
               role: trustedRole,
               traceRead: attempted.traceRead,
               contentRead: attempted.contentRead,
-              mediaRead: attempted.mediaRead || (media?.length ?? 0) > 0,
+              mediaRead: attempted.mediaRead || mediaDelivered || (media?.length ?? 0) > 0,
               partial: attempted.partial || partial,
               requestedTargets: attempted.requestedTargets,
               actualTargets:
@@ -777,6 +803,32 @@ export class ReviewerMcpServer {
                   : attempted.actualTargets,
               limitations: [...attempted.limitations, ...limitations]
             })
+            if (isMedia) {
+              // Explicitly sever bytes before constructing JSON text. Base64 is allowed only in
+              // the MCP image block, never in the metadata response or an error path.
+              const { data: detachedData, ...withoutData } = artifact as MediaArtifactMetadata & {
+                data?: Buffer
+              }
+              const mediaData = artifact.delivery === 'delivered' ? detachedData : undefined
+              const byteFreeMedia = withoutData as MediaArtifactMetadata
+              const metadata = mediaDelivered
+                ? toMediaArtifactMetadata(byteFreeMedia)
+                : toLimitedMediaArtifactMetadata(byteFreeMedia, limitations)
+              return {
+                content: [
+                  { type: 'text' as const, text: JSON.stringify(metadata) },
+                  ...(mediaDelivered
+                    ? [
+                        {
+                          type: 'image' as const,
+                          data: mediaData!.toString('base64'),
+                          mimeType: artifact.mimeType
+                        }
+                      ]
+                    : [])
+                ]
+              }
+            }
             const textArtifact = media
               ? {
                   ...artifact,

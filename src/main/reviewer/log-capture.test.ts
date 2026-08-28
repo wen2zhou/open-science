@@ -26,6 +26,110 @@ type FakeUpdate = {
 }
 
 describe('driveReviewerToStop — log capture via onUpdate', () => {
+  it('records media access distinctly without persisting MCP image base64', async () => {
+    const base64 = Buffer.alloc(128, 7).toString('base64')
+    const updates: FakeUpdate[] = [
+      {
+        kind: 'session_update',
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'tc-media',
+          toolName: 'mcp__open_science_reviewer__read_artifact',
+          rawInput: { id: 'plot-version', view: 'content' }
+        }
+      },
+      {
+        kind: 'session_update',
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'tc-media',
+          rawOutput: JSON.stringify({
+            content: [
+              { type: 'text', text: '{"kind":"media","mimeType":"image/png"}' },
+              { type: 'image', data: base64, mimeType: 'image/png' }
+            ]
+          }),
+          status: 'completed'
+        }
+      },
+      { kind: 'stop', stopReason: 'end_turn' }
+    ]
+    let index = 0
+    const session = { nextUpdate: async (): Promise<FakeUpdate> => updates[index++]! }
+    const log: ReviewerLogEntry[] = []
+
+    await driveReviewerToStop(
+      session,
+      { timeoutMs: 1000, maxUpdates: 100 },
+      { onUpdate: (entry) => log.push(entry) }
+    )
+
+    expect(log).toHaveLength(1)
+    expect(log[0]).toMatchObject({ kind: 'tool', evidenceKind: 'media', status: 'ok' })
+    expect(log[0]?.kind === 'tool' ? log[0].rawOutput : '').toContain(
+      '[omitted: MCP image content]'
+    )
+    expect(JSON.stringify(log)).not.toContain(base64)
+  })
+
+  it('redacts media through the bounded sanitizer for cyclic and deeply nested output', async () => {
+    const base64 = Buffer.alloc(256, 9).toString('base64')
+    const rawOutput: Record<string, unknown> = {
+      content: [{ type: 'image', data: base64, mimeType: 'image/png' }]
+    }
+    rawOutput.cycle = rawOutput
+    let deep: Record<string, unknown> = rawOutput
+    for (let index = 0; index < 30; index++) {
+      const next: Record<string, unknown> = {}
+      deep.next = next
+      deep = next
+    }
+    const updates: FakeUpdate[] = [
+      {
+        kind: 'session_update',
+        update: {
+          sessionUpdate: 'tool_call',
+          toolCallId: 'tc-cyclic-media',
+          toolName: 'mcp__open_science_reviewer__read_artifact'
+        }
+      },
+      {
+        kind: 'session_update',
+        update: {
+          sessionUpdate: 'tool_call_update',
+          toolCallId: 'tc-cyclic-media',
+          rawOutput,
+          status: 'completed'
+        }
+      },
+      { kind: 'stop', stopReason: 'end_turn' }
+    ]
+    let index = 0
+    const session = { nextUpdate: async (): Promise<FakeUpdate> => updates[index++]! }
+    const log: ReviewerLogEntry[] = []
+
+    await driveReviewerToStop(
+      session,
+      {
+        timeoutMs: 1000,
+        maxUpdates: 100,
+        logLimits: {
+          maxTextEntryBytes: 512,
+          maxToolInputBytes: 512,
+          maxToolOutputBytes: 512,
+          maxLogBytes: 2_048
+        }
+      },
+      { onUpdate: (entry) => log.push(entry) }
+    )
+
+    expect(log[0]).toMatchObject({ kind: 'tool', evidenceKind: 'media', status: 'ok' })
+    expect(JSON.stringify(log)).not.toContain(base64)
+    expect(log[0]?.kind === 'tool' ? log[0].rawOutput : '').toContain(
+      '[omitted: MCP image content]'
+    )
+  })
+
   it('collects agent_thought_chunk updates into thought entries', async () => {
     const updates: FakeUpdate[] = [
       {

@@ -323,7 +323,13 @@ export const runReviewAssessment = async (
       evidence,
       options.mode,
       trackedChecks.map((check) => check.id),
-      { command: process.execPath, entryPath: reviewerMcpEntryPath }
+      {
+        command: process.execPath,
+        entryPath: reviewerMcpEntryPath,
+        // The Reviewer backend is captured after its session is built but before it can invoke a
+        // tool, so capability is resolved lazily at the content-read boundary.
+        supportsImageInput: () => acpRuntime.captureBackend?.()?.context.supportsImageInput === true
+      }
     )
     await mcpServer.start()
 

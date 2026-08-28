@@ -161,6 +161,8 @@ export const REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND = [
   'not by itself justify a pass, warn, or fail. Record the limitation in Coverage and narrow the',
   'conclusion. A Coverage limitation alone is not substantive verification: do not create a check',
   'only to restate it. The fabricated-reference exception remains the only not-found exception.',
+  'If the Reviewer model lacks image capability, record unsupported-model-capability in Coverage;',
+  'inability to see the image is not evidence against the Agent and must not create a finding.',
   'A targeted response marked partial means only that the whole file was not returned. When the',
   'requested target fully covers the claim, that response is sufficient evidence and can support a',
   'normal pass, warn, or fail. Only treat the target as unavailable when that target itself is',

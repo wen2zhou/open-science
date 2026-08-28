@@ -20,7 +20,13 @@ import {
 import { REVIEWER_BRIDGE_NAMESPACED_TOOLS } from './bridge-tools'
 import { createReviewerMcpStdioProxy } from './mcp-stdio-proxy'
 import type { TurnScope } from '../../shared/reviewer'
-import type { ArtifactContent, ExecRecord, OrderedBlock, ReviewerHostServer } from './host-sdk'
+import type {
+  ArtifactContent,
+  ExecRecord,
+  MediaArtifactContent,
+  OrderedBlock,
+  ReviewerHostServer
+} from './host-sdk'
 import { fetchOverSocket } from '../local-rpc-transport'
 import { ResourceBudgetExceededError } from '../resource-budget'
 
@@ -90,6 +96,16 @@ const passingCheck = {
   status: 'pass' as const,
   claim: 'The audited turn is supported',
   evidence: 'The frozen turn content was read and verified.'
+}
+
+const expectMcpMetadataByteFree = (text: string | undefined, forbiddenBytes: Buffer): unknown => {
+  expect(text).toBeTruthy()
+  expect(text).not.toContain(forbiddenBytes.toString('base64'))
+  expect(text).not.toContain('"type":"Buffer"')
+  expect(text).not.toContain('"data"')
+  const parsed = JSON.parse(text ?? 'null') as unknown
+  expect(parsed).not.toHaveProperty('data')
+  return parsed
 }
 
 describe('mapChecksToScope', () => {
@@ -910,12 +926,8 @@ describe('ReviewerMcpServer HTTP transport', () => {
         partial: true,
         limitations: []
       })
-    const server = new ReviewerMcpServer(
-      scope,
-      vi.fn().mockResolvedValue(undefined),
-      evidence,
-      'initial'
-    )
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    const server = new ReviewerMcpServer(scope, onSubmit, evidence, 'initial')
     const { endpoint, token } = await server.start()
 
     try {
@@ -1233,6 +1245,230 @@ describe('ReviewerMcpServer HTTP transport', () => {
       expect(hugeSpan.result?.isError).toBe(true)
       expect(a1Column.result?.isError).toBe(true)
       expect(evidence.readArtifact).not.toHaveBeenCalled()
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it('returns image data only as an MCP image block and records media Coverage distinctly', async () => {
+    const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const evidence = createReviewerEvidence()
+    const deliveredMedia = {
+      id: 'artifact-csv',
+      kind: 'media',
+      delivery: 'delivered',
+      role: 'work_product',
+      filename: 'plot.png',
+      mimeType: 'image/png',
+      checksum: 'a'.repeat(64),
+      sizeBytes: imageBytes.length,
+      offset: 0,
+      returnedBytes: imageBytes.length,
+      truncated: false,
+      limitations: [],
+      data: imageBytes
+    } satisfies MediaArtifactContent
+    ;(deliveredMedia as MediaArtifactContent & Record<string, unknown>).bytes = imageBytes
+    vi.mocked(evidence.readArtifact).mockResolvedValue(deliveredMedia)
+    const server = new ReviewerMcpServer(
+      scope,
+      vi.fn().mockResolvedValue(undefined),
+      evidence,
+      'initial',
+      [],
+      { supportsImageInput: true }
+    )
+    const { endpoint, token } = await server.start()
+
+    try {
+      const { sessionId, headers } = await initialize(endpoint, token)
+      const response = await callTool(endpoint, sessionId, headers, 'read_artifact', {
+        id: 'artifact-csv',
+        view: 'content'
+      })
+      const [metadata, image] = response.result?.content ?? []
+      expect(expectMcpMetadataByteFree(metadata?.text, imageBytes)).toMatchObject({
+        kind: 'media',
+        delivery: 'delivered',
+        filename: 'plot.png',
+        mimeType: 'image/png'
+      })
+      expect(metadata?.text).not.toContain('"bytes"')
+      expect(image).toEqual({
+        type: 'image',
+        data: imageBytes.toString('base64'),
+        mimeType: 'image/png'
+      })
+      expect(server.evidenceCoverage.artifactReads?.get('artifact-csv')).toMatchObject({
+        contentRead: true,
+        mediaRead: true,
+        partial: false,
+        limitations: []
+      })
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it('returns a typed limitation without image data for a text-only Reviewer', async () => {
+    const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const evidence = createReviewerEvidence()
+    const deliveredMedia = {
+      id: 'artifact-csv',
+      kind: 'media',
+      delivery: 'delivered',
+      role: 'work_product',
+      filename: 'plot.png',
+      mimeType: 'image/png',
+      checksum: 'a'.repeat(64),
+      sizeBytes: imageBytes.length,
+      offset: 0,
+      returnedBytes: imageBytes.length,
+      truncated: false,
+      limitations: [],
+      data: imageBytes
+    } satisfies MediaArtifactContent
+    ;(deliveredMedia as MediaArtifactContent & Record<string, unknown>).bytes = imageBytes
+    vi.mocked(evidence.readArtifact).mockResolvedValue(deliveredMedia)
+    const onSubmit = vi.fn().mockResolvedValue(undefined)
+    const server = new ReviewerMcpServer(scope, onSubmit, evidence, 'initial', [], {
+      supportsImageInput: false
+    })
+    const { endpoint, token } = await server.start()
+
+    try {
+      const { sessionId, headers } = await initialize(endpoint, token)
+      const response = await callTool(endpoint, sessionId, headers, 'read_artifact', {
+        id: 'artifact-csv',
+        view: 'content'
+      })
+      expect(response.result?.content).toHaveLength(1)
+      const metadata = expectMcpMetadataByteFree(
+        response.result?.content?.[0]?.text,
+        imageBytes
+      ) as {
+        limitations?: Array<{ kind?: string }>
+        delivery?: string
+      }
+      expect(metadata.delivery).toBe('limited')
+      expect(response.result?.content?.[0]?.text).not.toContain('"bytes"')
+      expect(metadata.limitations).toContainEqual(
+        expect.objectContaining({ kind: 'unsupported-model-capability' })
+      )
+      expect(server.evidenceCoverage.artifactReads?.get('artifact-csv')).toMatchObject({
+        contentRead: true,
+        mediaRead: false,
+        partial: true,
+        limitations: expect.arrayContaining([
+          expect.objectContaining({ kind: 'unsupported-model-capability' })
+        ])
+      })
+      await callTool(endpoint, sessionId, headers, 'read_turn', {}, 3)
+      const submission = await callTool(
+        endpoint,
+        sessionId,
+        headers,
+        'submit_findings',
+        { checks: [] },
+        4
+      )
+      expect(submission.result?.isError).not.toBe(true)
+      expect(onSubmit).toHaveBeenCalledWith([], scope, {})
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it('keeps budget-limited media metadata byte-free and emits no image block', async () => {
+    const imageBytes = Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])
+    const evidence = createReviewerEvidence()
+    const limitedMedia = {
+      id: 'artifact-csv',
+      kind: 'media',
+      delivery: 'limited',
+      role: 'work_product',
+      filename: 'large.png',
+      mimeType: 'image/png',
+      checksum: 'a'.repeat(64),
+      sizeBytes: 4096,
+      offset: 0,
+      returnedBytes: 0,
+      truncated: true,
+      limitations: [{ kind: 'budget-exhausted' as const, subjectId: 'artifact-csv' }]
+    } satisfies MediaArtifactContent
+    ;(limitedMedia as MediaArtifactContent & Record<string, unknown>).data = imageBytes
+    ;(limitedMedia as MediaArtifactContent & Record<string, unknown>).bytes = imageBytes
+    vi.mocked(evidence.readArtifact).mockResolvedValue(limitedMedia)
+    const server = new ReviewerMcpServer(
+      scope,
+      vi.fn().mockResolvedValue(undefined),
+      evidence,
+      'initial',
+      [],
+      { supportsImageInput: true }
+    )
+    const { endpoint, token } = await server.start()
+
+    try {
+      const { sessionId, headers } = await initialize(endpoint, token)
+      const response = await callTool(endpoint, sessionId, headers, 'read_artifact', {
+        id: 'artifact-csv',
+        view: 'content'
+      })
+      expect(response.result?.content).toHaveLength(1)
+      expect(
+        expectMcpMetadataByteFree(response.result?.content?.[0]?.text, imageBytes)
+      ).toMatchObject({ delivery: 'limited', limitations: [{ kind: 'budget-exhausted' }] })
+      expect(response.result?.content?.[0]?.text).not.toContain('"bytes"')
+      expect(server.evidenceCoverage.artifactReads?.get('artifact-csv')).toMatchObject({
+        mediaRead: false,
+        partial: true
+      })
+    } finally {
+      await server.stop()
+    }
+  })
+
+  it('keeps unsupported opaque-binary metadata free of raw and encoded bytes', async () => {
+    const opaqueBytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef])
+    const evidence = createReviewerEvidence()
+    const unsupported = {
+      id: 'artifact-csv',
+      kind: 'unsupported',
+      role: 'work_product',
+      filename: 'archive.zip',
+      mimeType: 'application/zip',
+      checksum: 'b'.repeat(64),
+      sizeBytes: opaqueBytes.length,
+      offset: 0,
+      returnedBytes: 0,
+      truncated: false,
+      limitations: [{ kind: 'unsupported-format' as const, subjectId: 'artifact-csv' }]
+    } satisfies ArtifactContent
+    vi.mocked(evidence.readArtifact).mockResolvedValue(unsupported)
+    const server = new ReviewerMcpServer(
+      scope,
+      vi.fn().mockResolvedValue(undefined),
+      evidence,
+      'initial'
+    )
+    const { endpoint, token } = await server.start()
+
+    try {
+      const { sessionId, headers } = await initialize(endpoint, token)
+      const response = await callTool(endpoint, sessionId, headers, 'read_artifact', {
+        id: 'artifact-csv',
+        view: 'content'
+      })
+      expect(response.result?.content).toHaveLength(1)
+      const text = response.result?.content?.[0]?.text
+      expect(text).not.toContain(opaqueBytes.toString('base64'))
+      expect(text).not.toContain('"type":"Buffer"')
+      expect(text).not.toContain('"data"')
+      expect(JSON.parse(text ?? 'null')).toMatchObject({
+        kind: 'unsupported',
+        limitations: [{ kind: 'unsupported-format' }]
+      })
     } finally {
       await server.stop()
     }

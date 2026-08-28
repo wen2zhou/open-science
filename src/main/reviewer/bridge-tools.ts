@@ -36,7 +36,9 @@ export const REVIEWER_BRIDGE_NAMESPACED_TOOLS: ResponsesBridgeNamespacedTool[] =
       'visual, presentation, text, or value claims; omitted view remains content. XLSX targets use ' +
       'sheet/rowStart/rowEnd/columns; PDF/DOCX pages and PPTX slides use pages. A partial response ' +
       'is sufficient when the returned targets fully cover the claim. Set includePreview for a ' +
-      'bounded rendered page/slide image when text alone cannot verify a visual claim.',
+      'bounded rendered page/slide image when text alone cannot verify a visual claim. Supported ' +
+      'raster images are MCP image blocks, never base64 JSON; unsupported format or model ' +
+      'capability only limits Coverage and is not itself a finding.',
     parameters: z.toJSONSchema(reviewerArtifactReadInputSchema, { target: 'draft-7' })
   },
   {

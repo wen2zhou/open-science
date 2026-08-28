@@ -98,18 +98,65 @@ export type TabularArtifactContent = ArtifactContentWindow & {
   rowCountComplete?: boolean
 }
 
-// Raw content for non-tabular artifacts (text UTF-8 or base64-encoded binary).
+// Raw content is text-only. Opaque binary is never encoded into Reviewer JSON.
 export type RawArtifactContent = ArtifactContentWindow & {
   id: string
   role: 'work_product' | 'source_document'
   kind: 'raw'
   content: string
-  encoding: 'utf8' | 'base64'
+  encoding: 'utf8'
 }
 
-// Artifact content as returned by host.read_artifact(id): column-addressable for CSV/TSV, raw otherwise.
+type MediaArtifactBase = {
+  id: string
+  kind: 'media'
+  role: 'work_product' | 'source_document'
+  filename: string
+  mimeType: SupportedReviewerImageMimeType
+  checksum: string
+  limitations: ReviewLimitation[]
+}
+
+export type DeliveredMediaArtifactContent = MediaArtifactBase & {
+  delivery: 'delivered'
+  sizeBytes: number
+  offset: 0
+  returnedBytes: number
+  truncated: false
+  limitations: []
+  data: Buffer
+}
+
+export type LimitedMediaArtifactContent = MediaArtifactBase & {
+  delivery: 'limited'
+  sizeBytes: number
+  offset: 0
+  returnedBytes: 0
+  truncated: true
+  limitations: ReviewLimitation[]
+}
+
+export type MediaArtifactContent = DeliveredMediaArtifactContent | LimitedMediaArtifactContent
+
+export type MediaArtifactMetadata =
+  Omit<DeliveredMediaArtifactContent, 'data'> | LimitedMediaArtifactContent
+
+export type UnsupportedArtifactContent = ArtifactContentWindow & {
+  id: string
+  kind: 'unsupported'
+  role: 'work_product' | 'source_document'
+  filename: string
+  mimeType?: string
+  checksum: string
+  limitations: ReviewLimitation[]
+}
+
 export type ArtifactContent =
-  TabularArtifactContent | RawArtifactContent | StructuredArtifactContent
+  | TabularArtifactContent
+  | RawArtifactContent
+  | StructuredArtifactContent
+  | MediaArtifactContent
+  | UnsupportedArtifactContent
 
 export type ReviewLimitation = {
   kind:
@@ -237,6 +284,58 @@ export type ReviewerArtifactReadOptions = {
   columns?: string[]
   includePreview?: boolean
 }
+
+export type SupportedReviewerImageMimeType = 'image/png' | 'image/jpeg' | 'image/gif' | 'image/webp'
+
+// Explicit allowlist used at every JSON boundary. Never serialize MediaArtifactContent by spread:
+// delivered results intentionally carry enumerable bytes so cloning cannot silently drop them.
+export const toMediaArtifactMetadata = (
+  artifact: MediaArtifactContent | MediaArtifactMetadata
+): MediaArtifactMetadata => {
+  const common = {
+    id: artifact.id,
+    kind: 'media' as const,
+    role: artifact.role,
+    filename: artifact.filename,
+    mimeType: artifact.mimeType,
+    checksum: artifact.checksum,
+    sizeBytes: artifact.sizeBytes,
+    offset: 0 as const
+  }
+  return artifact.delivery === 'delivered'
+    ? {
+        ...common,
+        delivery: 'delivered',
+        returnedBytes: artifact.returnedBytes,
+        truncated: false,
+        limitations: []
+      }
+    : {
+        ...common,
+        delivery: 'limited',
+        returnedBytes: 0,
+        truncated: true,
+        limitations: artifact.limitations
+      }
+}
+
+export const toLimitedMediaArtifactMetadata = (
+  artifact: MediaArtifactContent | MediaArtifactMetadata,
+  limitations: ReviewLimitation[]
+): LimitedMediaArtifactContent => ({
+  id: artifact.id,
+  kind: 'media',
+  role: artifact.role,
+  filename: artifact.filename,
+  mimeType: artifact.mimeType,
+  checksum: artifact.checksum,
+  delivery: 'limited',
+  sizeBytes: artifact.sizeBytes,
+  offset: 0,
+  returnedBytes: 0,
+  truncated: true,
+  limitations
+})
 
 type ArtifactVerification = {
   path: string
@@ -434,7 +533,11 @@ export class ReviewerHostServer {
     }
 
     res.writeHead(200, { 'content-type': 'application/json' })
-    res.end(JSON.stringify({ result }))
+    const jsonResult =
+      typeof result === 'object' && result !== null && 'kind' in result && result.kind === 'media'
+        ? toMediaArtifactMetadata(result as MediaArtifactContent)
+        : result
+    res.end(JSON.stringify({ result: jsonResult }))
   }
 
   // Returns the ordered blocks for this turn with their content and metadata.
@@ -556,7 +659,7 @@ export class ReviewerHostServer {
       )
     }
 
-    const filename = resolvedVersion?.filename ?? artifactMeta?.path ?? artifactMeta?.name
+    const filename = resolvedVersion?.filename ?? artifactMeta?.path ?? artifactMeta?.name ?? id
     const structuredFormat = detectStructuredFormat(
       resolvedVersion?.contentType ?? artifactMeta?.mimeType,
       filename
@@ -705,28 +808,90 @@ export class ReviewerHostServer {
       sizeBytes: verification.sizeBytes,
       sample: verification.sample
     }
-    const isText = isLikelyText(read.sample)
     let result: ArtifactContent
-    const base64Window = (): RawArtifactContent => {
-      const truncated = offset + read.returnedBytes < read.sizeBytes
-      return {
+    const contentType = resolvedVersion?.contentType ?? artifactMeta?.mimeType
+    const imageMimeType = detectSupportedImageMimeType(read.sample)
+
+    if (imageMimeType) {
+      if (offset !== 0) {
+        throw new Error('Reviewer image content reads do not accept an offset.')
+      }
+      const sourceComplete = read.returnedBytes === read.sizeBytes
+      const baseMetadataBytes = Buffer.byteLength(
+        JSON.stringify({
+          id,
+          kind: 'media',
+          role: 'work_product',
+          delivery: 'delivered',
+          filename,
+          mimeType: imageMimeType,
+          checksum: verification.checksum,
+          sizeBytes: read.sizeBytes,
+          offset: 0,
+          returnedBytes: read.returnedBytes,
+          truncated: false,
+          limitations: []
+        }),
+        'utf8'
+      )
+      const encodedMediaBytes = 4 * Math.ceil(read.page.length / 3)
+      const complete =
+        sourceComplete && baseMetadataBytes + encodedMediaBytes <= remainingSessionBytes
+      const limitations: ReviewLimitation[] = complete
+        ? []
+        : [
+            {
+              kind: 'budget-exhausted',
+              subjectId: id,
+              detail: `Image content requires ${read.sizeBytes} source bytes and exceeds the bounded media transport budget.`
+            }
+          ]
+      const metadata: MediaArtifactBase = {
         id,
         role,
-        kind: 'raw',
-        content: read.page.toString('base64'),
-        encoding: 'base64',
-        sizeBytes: read.sizeBytes,
-        offset,
-        returnedBytes: read.returnedBytes,
-        truncated,
-        ...(truncated ? { nextOffset: offset + read.returnedBytes } : {})
+        kind: 'media',
+        filename,
+        mimeType: imageMimeType,
+        checksum: verification.checksum,
+        limitations
       }
-    }
-
-    if (isText) {
+      if (complete) {
+        result = {
+          ...metadata,
+          delivery: 'delivered',
+          sizeBytes: read.sizeBytes,
+          offset: 0,
+          returnedBytes: read.returnedBytes,
+          truncated: false,
+          limitations: [],
+          data: read.page
+        }
+      } else {
+        result = {
+          ...metadata,
+          delivery: 'limited',
+          sizeBytes: read.sizeBytes,
+          offset: 0,
+          returnedBytes: 0,
+          truncated: true,
+          limitations
+        }
+      }
+    } else if (
+      isDeclaredTextContentType(contentType) ||
+      isTabularArtifact(contentType, filename) ||
+      (!contentType && isLikelyText(read.sample))
+    ) {
       const safePage = decodeUtf8Page(read.page, offset)
       if (read.returnedBytes > 0 && (safePage.offset !== offset || safePage.returnedBytes === 0)) {
-        result = base64Window()
+        result = unsupportedArtifactContent({
+          id,
+          role,
+          filename,
+          contentType,
+          checksum: verification.checksum,
+          sizeBytes: read.sizeBytes
+        })
       } else {
         const text = safePage.content
         const truncated = safePage.offset + safePage.returnedBytes < read.sizeBytes
@@ -741,8 +906,6 @@ export class ReviewerHostServer {
         // A byte page can split a quoted record, escaped quote, or header. Return incomplete tabular
         // files as raw UTF-8 windows so following nextOffset reconstructs exact source bytes; only a
         // complete table is safe to project into column-addressable data.
-        const contentType = resolvedVersion?.contentType ?? artifactMeta?.mimeType
-        const filename = resolvedVersion?.filename ?? artifactMeta?.path
         if (isTabularArtifact(contentType, filename) && window.offset === 0 && !window.truncated) {
           const parsed = parseTabular(text, detectDelimiter(contentType, filename))
           result = {
@@ -760,10 +923,24 @@ export class ReviewerHostServer {
         }
       }
     } else {
-      result = base64Window()
+      result = unsupportedArtifactContent({
+        id,
+        role,
+        filename,
+        contentType,
+        checksum: verification.checksum,
+        sizeBytes: read.sizeBytes
+      })
     }
 
-    const responseBytes = Buffer.byteLength(JSON.stringify(result), 'utf8')
+    const responseBytes =
+      Buffer.byteLength(
+        JSON.stringify(result.kind === 'media' ? toMediaArtifactMetadata(result) : result),
+        'utf8'
+      ) +
+      (result.kind === 'media' && result.delivery === 'delivered'
+        ? 4 * Math.ceil(result.data.length / 3)
+        : 0)
     assertWithinResourceBudget(
       'reviewer-session',
       this.reviewerBytesReturned + responseBytes,
@@ -1418,6 +1595,67 @@ const hasStructuredTargets = (options: ReviewerArtifactReadOptions): boolean =>
   options.columns !== undefined ||
   options.includePreview !== undefined
 
+const TEXT_APPLICATION_MIME_TYPES = new Set([
+  'application/json',
+  'application/ld+json',
+  'application/xml',
+  'application/yaml',
+  'application/x-yaml',
+  'image/svg+xml'
+])
+
+const isDeclaredTextContentType = (mimeType?: string): boolean => {
+  const normalized = mimeType?.toLowerCase().split(';')[0]?.trim()
+  return (
+    normalized?.startsWith('text/') === true || TEXT_APPLICATION_MIME_TYPES.has(normalized ?? '')
+  )
+}
+
+const startsWithBytes = (value: Buffer, prefix: readonly number[]): boolean =>
+  value.length >= prefix.length && prefix.every((byte, index) => value[index] === byte)
+
+// Trust file signatures, not user-controlled extensions or MIME declarations. These are the only
+// raster formats the Reviewer transport admits as active MCP image content.
+const detectSupportedImageMimeType = (
+  sample: Buffer
+): SupportedReviewerImageMimeType | undefined => {
+  if (startsWithBytes(sample, [0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])) {
+    return 'image/png'
+  }
+  if (startsWithBytes(sample, [0xff, 0xd8, 0xff])) return 'image/jpeg'
+  const gifHeader = sample.subarray(0, 6).toString('ascii')
+  if (gifHeader === 'GIF87a' || gifHeader === 'GIF89a') return 'image/gif'
+  if (
+    sample.length >= 12 &&
+    sample.subarray(0, 4).toString('ascii') === 'RIFF' &&
+    sample.subarray(8, 12).toString('ascii') === 'WEBP'
+  ) {
+    return 'image/webp'
+  }
+  return undefined
+}
+
+const unsupportedArtifactContent = (input: {
+  id: string
+  role: 'work_product' | 'source_document'
+  filename: string
+  contentType?: string
+  checksum: string
+  sizeBytes: number
+}): UnsupportedArtifactContent => ({
+  id: input.id,
+  kind: 'unsupported',
+  role: input.role,
+  filename: input.filename,
+  ...(input.contentType ? { mimeType: input.contentType } : {}),
+  checksum: input.checksum,
+  sizeBytes: input.sizeBytes,
+  offset: 0,
+  returnedBytes: 0,
+  truncated: false,
+  limitations: [{ kind: 'unsupported-format', subjectId: input.id }]
+})
+
 // Returns true when the artifact should be parsed as a tabular structure.
 const isTabularArtifact = (mimeType?: string, path?: string): boolean => {
   if (mimeType && TABULAR_MIME_TYPES.has(mimeType.toLowerCase().split(';')[0]?.trim() ?? '')) {
@@ -1607,8 +1845,9 @@ class _ReviewerHost:
         accept exact 1-based pages (slides for PPTX). A partial targeted response is sufficient
         when those targets fully cover the claim.
 
-        For all other artifacts returns:
-          {'kind': 'raw', 'id': ..., 'content': '...', 'encoding': 'utf8'|'base64'}
+        Text returns bounded UTF-8. Supported images are available only through the MCP image
+        content transport. Other binary formats return bounded metadata and a typed limitation;
+        binary bytes are never embedded in this JSON compatibility response.
         """
         params = {"id": artifact_id}
         optional = {

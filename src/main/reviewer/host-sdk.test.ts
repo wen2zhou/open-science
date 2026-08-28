@@ -77,7 +77,11 @@ const makeScope = (artifactVersionIds: string[] = [V1]): TurnScope => ({
 // Writes an artifact into the REAL managed layout the app uses:
 // <root>/artifacts/<projectId>/<sessionId>/<messageId>/<filename>, keyed by the colon-composite
 // version id <sessionId>:<messageId>:<filename>.
-const writeArtifact = async (root: string, versionId: string, content: string): Promise<void> => {
+const writeArtifact = async (
+  root: string,
+  versionId: string,
+  content: string | Uint8Array
+): Promise<void> => {
   const firstColon = versionId.indexOf(':')
   const secondColon = versionId.indexOf(':', firstColon + 1)
   const sessionId = versionId.slice(0, firstColon)
@@ -124,6 +128,14 @@ const post = async (
     body: JSON.stringify({ method, params })
   })
   return response.json() as Promise<{ result?: unknown; error?: string }>
+}
+
+const expectByteFreeMetadata = (value: unknown, forbiddenBytes: Buffer): void => {
+  const serialized = JSON.stringify(value)
+  expect(serialized).not.toContain(forbiddenBytes.toString('base64'))
+  expect(serialized).not.toContain('"type":"Buffer"')
+  expect(serialized).not.toContain('"data"')
+  expect(value).not.toHaveProperty('data')
 }
 
 // ---------------------------------------------------------------------------
@@ -1044,7 +1056,7 @@ describe('host.read_artifact — tabular CSV', () => {
     })
   })
 
-  it('falls back to advancing base64 pages when text-classified bytes are invalid UTF-8', async () => {
+  it('does not encode invalid UTF-8 bytes into text content', async () => {
     const nativeVersionId = 'native-version-invalid-utf8'
     const nativePath = join(tmpDir, 'immutable-invalid-utf8', 'content')
     const bytes = Buffer.from([0xff, 0xfe, 0x61])
@@ -1059,30 +1071,16 @@ describe('host.read_artifact — tabular CSV', () => {
       { readBytes: 2, sessionBytes: 1_000 }
     )
 
-    const first = await server.readArtifact(nativeVersionId)
-    if (!('kind' in first) || first.kind !== 'raw') throw new Error('Expected raw content.')
-    expect(first).toMatchObject({
-      kind: 'raw',
-      encoding: 'base64',
-      content: bytes.subarray(0, 2).toString('base64'),
-      offset: 0,
-      returnedBytes: 2,
-      nextOffset: 2,
-      truncated: true
+    const result = await server.readArtifact(nativeVersionId)
+    expect(result).toMatchObject({
+      kind: 'unsupported',
+      returnedBytes: 0,
+      limitations: [{ kind: 'unsupported-format', subjectId: nativeVersionId }]
     })
-    await expect(
-      server.readArtifact(nativeVersionId, { offset: first.nextOffset })
-    ).resolves.toMatchObject({
-      kind: 'raw',
-      encoding: 'utf8',
-      content: 'a',
-      offset: 2,
-      returnedBytes: 1,
-      truncated: false
-    })
+    expect(JSON.stringify(result)).not.toContain(bytes.subarray(0, 2).toString('base64'))
   })
 
-  it('preserves invalid UTF-8 prefixes before valid text in the same page', async () => {
+  it('treats invalid UTF-8 prefixes as opaque instead of leaking encoded bytes', async () => {
     const nativeVersionId = 'native-version-invalid-utf8-prefix'
     const nativePath = join(tmpDir, 'immutable-invalid-utf8-prefix', 'content')
     const bytes = Buffer.from([0x80, 0x61, 0x62])
@@ -1097,27 +1095,13 @@ describe('host.read_artifact — tabular CSV', () => {
       { readBytes: 2, sessionBytes: 1_000 }
     )
 
-    const first = await server.readArtifact(nativeVersionId)
-    if (!('kind' in first) || first.kind !== 'raw') throw new Error('Expected raw content.')
-    expect(first).toMatchObject({
-      kind: 'raw',
-      encoding: 'base64',
-      content: bytes.subarray(0, 2).toString('base64'),
-      offset: 0,
-      returnedBytes: 2,
-      nextOffset: 2,
-      truncated: true
+    const result = await server.readArtifact(nativeVersionId)
+    expect(result).toMatchObject({
+      kind: 'unsupported',
+      returnedBytes: 0,
+      limitations: [{ kind: 'unsupported-format', subjectId: nativeVersionId }]
     })
-    await expect(
-      server.readArtifact(nativeVersionId, { offset: first.nextOffset })
-    ).resolves.toMatchObject({
-      kind: 'raw',
-      encoding: 'utf8',
-      content: 'b',
-      offset: 2,
-      returnedBytes: 1,
-      truncated: false
-    })
+    expect(JSON.stringify(result)).not.toContain(bytes.subarray(0, 2).toString('base64'))
   })
 
   it('returns paged CSV as reconstructable raw windows across quoted records', async () => {
@@ -1282,6 +1266,105 @@ describe('host.read_artifact — non-tabular', () => {
 
     const result = body.result as { kind: string }
     expect(result.kind).toBe('raw')
+  })
+
+  it.each([
+    ['plot.png', 'image/png', Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a])],
+    ['plot.jpg', 'image/jpeg', Buffer.from([0xff, 0xd8, 0xff, 0xd9])],
+    ['plot.gif', 'image/gif', Buffer.from('GIF89a', 'ascii')],
+    ['plot.webp', 'image/webp', Buffer.from('RIFF0000WEBP', 'ascii')]
+  ])('returns bounded %s media bytes outside JSON metadata', async (filename, mimeType, bytes) => {
+    const versionId = `session-1:msg-1:${filename}`
+    await writeArtifact(tmpDir, versionId, bytes)
+    server = new ReviewerHostServer(
+      makeSession({
+        artifacts: [{ id: versionId, kind: 'managed-file', path: filename, mimeType }]
+      }),
+      makeScope([versionId]),
+      tmpDir
+    )
+
+    const result = await server.readArtifact(versionId)
+
+    expect(result).toMatchObject({
+      id: versionId,
+      kind: 'media',
+      delivery: 'delivered',
+      filename,
+      mimeType,
+      sizeBytes: bytes.length,
+      returnedBytes: bytes.length,
+      truncated: false
+    })
+    if (!('kind' in result) || result.kind !== 'media' || result.delivery !== 'delivered') {
+      throw new Error('Expected delivered media content.')
+    }
+    expect(result.data).toEqual(bytes)
+
+    ;({ endpoint, token } = await server.start())
+    const compatibility = await post(endpoint, token, 'read_artifact', { id: versionId })
+    expect(compatibility.result).toMatchObject({ kind: 'media', delivery: 'delivered' })
+    expectByteFreeMetadata(compatibility.result, bytes)
+  })
+
+  it('returns only bounded opaque-binary metadata and an unsupported-format limitation', async () => {
+    const versionId = 'session-1:msg-1:archive.zip'
+    const bytes = Buffer.from([0x50, 0x4b, 0x03, 0x04, 0xde, 0xad, 0xbe, 0xef])
+    await writeArtifact(tmpDir, versionId, bytes)
+    server = new ReviewerHostServer(
+      makeSession({
+        artifacts: [
+          { id: versionId, kind: 'managed-file', path: 'archive.zip', mimeType: 'application/zip' }
+        ]
+      }),
+      makeScope([versionId]),
+      tmpDir
+    )
+
+    const result = await server.readArtifact(versionId)
+
+    expect(result).toMatchObject({
+      id: versionId,
+      kind: 'unsupported',
+      filename: 'archive.zip',
+      mimeType: 'application/zip',
+      sizeBytes: bytes.length,
+      limitations: [{ kind: 'unsupported-format', subjectId: versionId }]
+    })
+    expectByteFreeMetadata(result, bytes)
+  })
+
+  it('does not return a partial invalid image when media exceeds the bounded read budget', async () => {
+    const versionId = 'session-1:msg-1:large.png'
+    const bytes = Buffer.concat([
+      Buffer.from([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a]),
+      Buffer.alloc(64, 1)
+    ])
+    await writeArtifact(tmpDir, versionId, bytes)
+    server = new ReviewerHostServer(
+      makeSession({
+        artifacts: [
+          { id: versionId, kind: 'managed-file', path: 'large.png', mimeType: 'image/png' }
+        ]
+      }),
+      makeScope([versionId]),
+      tmpDir,
+      undefined,
+      undefined,
+      { readBytes: 16, sessionBytes: 1_000 }
+    )
+
+    await expect(server.readArtifact(versionId)).resolves.toMatchObject({
+      kind: 'media',
+      delivery: 'limited',
+      sizeBytes: bytes.length,
+      returnedBytes: 0,
+      truncated: true,
+      limitations: expect.arrayContaining([
+        expect.objectContaining({ kind: 'budget-exhausted', subjectId: versionId })
+      ])
+    })
+    expectByteFreeMetadata(await server.readArtifact(versionId), bytes)
   })
 })
 

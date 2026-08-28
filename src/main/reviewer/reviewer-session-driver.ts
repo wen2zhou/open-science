@@ -236,8 +236,13 @@ const MAX_STRUCTURED_OBJECT_ENTRIES = 200
 const MAX_STRUCTURED_DEPTH = 12
 
 const OMITTED_RAW_VALUE = Symbol('omitted-raw-value')
+const REVIEWER_MEDIA_LOG_MARKER = '[omitted: MCP image content]'
 
-type StructuredValueBudget = { remainingBytes: number }
+type StructuredValueBudget = {
+  remainingBytes: number
+  redactMcpImageData?: boolean
+  mediaRead?: boolean
+}
 type SanitizedRawValue = {
   value: unknown | typeof OMITTED_RAW_VALUE
   truncated: boolean
@@ -377,12 +382,14 @@ const sanitizeRawValue = (
       truncated = true
       break
     }
-    const sanitized = sanitizeRawValue(
-      (value as Record<string, unknown>)[key],
-      budget,
-      depth + 1,
-      ancestors
-    )
+    const child =
+      budget.redactMcpImageData &&
+      key === 'data' &&
+      (value as Record<string, unknown>).type === 'image'
+        ? REVIEWER_MEDIA_LOG_MARKER
+        : (value as Record<string, unknown>)[key]
+    if (child === REVIEWER_MEDIA_LOG_MARKER && key === 'data') budget.mediaRead = true
+    const sanitized = sanitizeRawValue(child, budget, depth + 1, ancestors)
     if (sanitized.value === OMITTED_RAW_VALUE) {
       budget.remainingBytes = snapshot
       truncated = true
@@ -409,11 +416,42 @@ const sanitizeRawValue = (
 
 const stringifyRawWithinLimit = (
   value: unknown,
-  maxBytes: number
-): { text: string; truncated: boolean } => {
-  if (typeof value === 'string') return appendWithinUtf8Limit('', value, maxBytes)
-  const sanitized = sanitizeRawValue(value, { remainingBytes: Math.max(0, maxBytes) })
-  if (sanitized.value === OMITTED_RAW_VALUE) return { text: '', truncated: true }
+  maxBytes: number,
+  options: { redactMcpImageData?: boolean } = {}
+): { text: string; truncated: boolean; mediaRead: boolean } => {
+  let candidate = value
+  if (typeof value === 'string') {
+    if (!options.redactMcpImageData) {
+      const bounded = appendWithinUtf8Limit('', value, maxBytes)
+      return { ...bounded, mediaRead: false }
+    }
+    const looksLikeMedia = /"type"\s*:\s*"image"/.test(value) && /"data"\s*:/.test(value)
+    if (!looksLikeMedia) {
+      const bounded = appendWithinUtf8Limit('', value, maxBytes)
+      return { ...bounded, mediaRead: false }
+    }
+    // Avoid parsing an attacker-sized serialized tool result. A known image-shaped payload over the
+    // bounded parse allowance is replaced wholesale, so no base64 prefix can enter the log.
+    if (Buffer.byteLength(value, 'utf8') > maxBytes * 4) {
+      const bounded = appendWithinUtf8Limit('', REVIEWER_MEDIA_LOG_MARKER, maxBytes)
+      return { text: bounded.text, truncated: true, mediaRead: true }
+    }
+    try {
+      candidate = JSON.parse(value) as unknown
+    } catch {
+      const bounded = appendWithinUtf8Limit('', REVIEWER_MEDIA_LOG_MARKER, maxBytes)
+      return { text: bounded.text, truncated: true, mediaRead: true }
+    }
+  }
+  const budget: StructuredValueBudget = {
+    remainingBytes: Math.max(0, maxBytes),
+    redactMcpImageData: options.redactMcpImageData,
+    mediaRead: false
+  }
+  const sanitized = sanitizeRawValue(candidate, budget)
+  if (sanitized.value === OMITTED_RAW_VALUE) {
+    return { text: '', truncated: true, mediaRead: budget.mediaRead === true }
+  }
   let serialized: string
   try {
     serialized = JSON.stringify(sanitized.value) ?? String(sanitized.value)
@@ -422,7 +460,11 @@ const stringifyRawWithinLimit = (
     sanitized.truncated = true
   }
   const bounded = appendWithinUtf8Limit('', serialized, maxBytes)
-  return { text: bounded.text, truncated: sanitized.truncated || bounded.truncated }
+  return {
+    text: bounded.text,
+    truncated: sanitized.truncated || bounded.truncated,
+    mediaRead: budget.mediaRead === true
+  }
 }
 
 const flushThought = (
@@ -635,8 +677,11 @@ export const driveReviewerToStop = async (
             changedFields.push('rawInput')
           }
           if (u.rawOutput !== undefined) {
-            const rawOutput = stringifyRawWithinLimit(u.rawOutput, logLimits.maxToolOutputBytes)
+            const rawOutput = stringifyRawWithinLimit(u.rawOutput, logLimits.maxToolOutputBytes, {
+              redactMcpImageData: entry.toolName.endsWith('read_artifact')
+            })
             entry.rawOutput = rawOutput.text
+            if (rawOutput.mediaRead) entry.evidenceKind = 'media'
             if (rawOutput.truncated) entry.rawOutputTruncated = true
             else delete entry.rawOutputTruncated
             changedFields.push('rawOutput')

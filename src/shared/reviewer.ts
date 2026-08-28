@@ -28,6 +28,7 @@ export type ReviewerLogEntry =
       rawInputTruncated?: boolean
       rawOutputTruncated?: boolean
       reviewLogTruncated?: boolean
+      evidenceKind?: 'media'
       status?: 'ok' | 'error'
       exitCode?: number | null
     }

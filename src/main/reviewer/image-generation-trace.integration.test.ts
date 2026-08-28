@@ -200,6 +200,11 @@ describe('Reviewer image-generation trace fixture', () => {
         {}
       )
       expect(contentResolver).not.toHaveBeenCalled()
+      expect(mcp.evidenceCoverage.artifactReads?.get(version.versionId)).toMatchObject({
+        traceRead: true,
+        contentRead: false,
+        mediaRead: false
+      })
     } finally {
       await mcp?.stop().catch(() => undefined)
       await fixture.dispose()
