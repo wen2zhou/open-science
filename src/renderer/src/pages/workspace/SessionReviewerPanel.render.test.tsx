@@ -243,12 +243,28 @@ describe('SessionReviewerPanel — Reviewer usage', () => {
       '[data-testid="reviewer-usage-toggle"]'
     )
     expect(toggle?.textContent).toContain('Reviewer usage')
+    expect(toggle?.tagName).toBe('BUTTON')
+    expect(toggle?.getAttribute('type')).toBe('button')
+    expect(toggle?.tabIndex).toBe(0)
     expect(toggle?.className).toContain('text-muted-foreground')
+    expect(toggle?.className).toContain('focus-visible:outline-none')
+    expect(toggle?.className).toContain('focus-visible:ring-[3px]')
+    expect(toggle?.className).toContain('focus-visible:ring-ring/50')
+    expect(toggle?.className).toContain('motion-reduce:transition-none')
+    expect(toggle?.querySelector('svg')?.getAttribute('class')).toContain(
+      'motion-reduce:transition-none'
+    )
+    expect(toggle?.getAttribute('aria-expanded')).toBe('false')
     expect(toggle?.getAttribute('aria-controls')).toBeTruthy()
     expect(container.querySelector('[data-testid="reviewer-usage-body"]')).toBeNull()
 
+    act(() => toggle?.focus())
+    expect(document.activeElement).toBe(toggle)
+
     act(() => toggle?.click())
     const body = container.querySelector('[data-testid="reviewer-usage-body"]')
+    expect(toggle?.getAttribute('aria-expanded')).toBe('true')
+    expect(body?.id).toBe(toggle?.getAttribute('aria-controls'))
     expect(body?.textContent).toContain('Total tokens')
     expect(body?.textContent).toContain('1,250')
     expect(body?.textContent).toContain('Model turns')

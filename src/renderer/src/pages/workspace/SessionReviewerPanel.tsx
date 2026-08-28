@@ -148,6 +148,7 @@ const LogEntryIcon = ({ kind }: { kind: 'thought' | 'message' }): React.JSX.Elem
 const ReviewerLogRow = ({ entry }: { entry: ReviewerLogEntry }): React.JSX.Element => {
   const { t } = useTranslation()
   const [expanded, setExpanded] = useState(false)
+  const detailsId = useId()
   const rowClassName = 'flex items-start gap-1.5 py-0.5 text-[11px] leading-[1.45]'
 
   if (entry.kind === 'thought') {
@@ -189,15 +190,19 @@ const ReviewerLogRow = ({ entry }: { entry: ReviewerLogEntry }): React.JSX.Eleme
     <div className="py-0.5">
       <button
         type="button"
-        className="flex w-full items-center gap-1.5 text-left text-[11px] leading-[1.45] text-text-400 hover:text-text-300 transition-colors"
+        className="flex w-full items-center gap-1.5 text-left text-[11px] leading-[1.45] text-text-400 transition-colors duration-150 hover:text-text-300 focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 motion-reduce:transition-none disabled:pointer-events-none disabled:opacity-50"
         onClick={() => setExpanded((v) => !v)}
         aria-expanded={expanded}
+        aria-controls={hasDetails ? detailsId : undefined}
         data-testid="tool-log-row-toggle"
         disabled={!hasDetails}
       >
         <span className="w-3.5 shrink-0 text-center">
           <ChevronRight
-            className={cn('h-3 w-3 transition-transform duration-150', expanded ? 'rotate-90' : '')}
+            className={cn(
+              'h-3 w-3 transition-transform duration-150 motion-reduce:transition-none',
+              expanded ? 'rotate-90' : ''
+            )}
             aria-hidden
           />
         </span>
@@ -211,7 +216,7 @@ const ReviewerLogRow = ({ entry }: { entry: ReviewerLogEntry }): React.JSX.Eleme
       </button>
 
       {expanded && hasDetails && (
-        <div className="ml-5 mt-1 space-y-1" data-testid="tool-log-row-details">
+        <div id={detailsId} className="ml-5 mt-1 space-y-1" data-testid="tool-log-row-details">
           {entry.rawInput ? (
             <div>
               <div className="mb-0.5 text-[10px] font-semibold uppercase tracking-wide text-text-400">
@@ -273,14 +278,17 @@ const MutedDisclosure = ({
     <>
       <button
         type="button"
-        className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground hover:text-foreground transition-colors"
+        className="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground transition-colors duration-150 hover:text-foreground focus-visible:outline-none focus-visible:ring-[3px] focus-visible:ring-ring/50 motion-reduce:transition-none"
         onClick={() => setExpanded((value) => !value)}
         aria-expanded={expanded}
         aria-controls={bodyId}
         data-testid={toggleTestId}
       >
         <ChevronRight
-          className={cn('h-3 w-3 transition-transform duration-150', expanded ? 'rotate-90' : '')}
+          className={cn(
+            'h-3 w-3 transition-transform duration-150 motion-reduce:transition-none',
+            expanded ? 'rotate-90' : ''
+          )}
           aria-hidden
         />
         {label(expanded)}
