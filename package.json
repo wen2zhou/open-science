@@ -31,6 +31,7 @@
     "test:cli": "vitest run packages/open-science",
     "test:npm-release": "vitest run scripts/validate-npm-release.test.ts",
     "test:coverage": "vitest run --coverage",
+    "eval:reviewer": "node scripts/reviewer-model-evaluation.mjs",
     "typecheck:node": "tsc --noEmit -p tsconfig.node.json --composite false",
     "typecheck:web": "tsc --noEmit -p tsconfig.web.json --composite false",
     "typecheck": "npm run typecheck:node && npm run typecheck:web",

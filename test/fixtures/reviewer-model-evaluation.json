@@ -1,0 +1,59 @@
+{
+  "schemaVersion": 1,
+  "model": "glm-5.3-flash",
+  "strategy": "proposed-unified",
+  "source": ".scratch/reviewer-enhance/prototype/live-eval-report.md#final-unified-proposed-only-validation",
+  "runs": 15,
+  "providerUsage": {
+    "inputTokens": 61495,
+    "outputTokens": 3865
+  },
+  "totalLatencyMs": 194700,
+  "batches": [
+    {
+      "fixtureId": "image-method-result",
+      "runs": 3,
+      "semanticPasses": 3,
+      "evidenceRoutePasses": 3,
+      "extraContentReads": 1,
+      "allowedExtraContentReads": 1,
+      "note": "Trace was sufficient; one opportunistic bounded image content read was observed and retained in this record."
+    },
+    {
+      "fixtureId": "image-label-mismatch",
+      "runs": 3,
+      "semanticPasses": 3,
+      "evidenceRoutePasses": 3,
+      "extraContentReads": 0,
+      "allowedExtraContentReads": 0,
+      "note": "All runs used image content and detected the exact rendered unit contradiction."
+    },
+    {
+      "fixtureId": "targeted-source",
+      "runs": 3,
+      "semanticPasses": 3,
+      "evidenceRoutePasses": 3,
+      "extraContentReads": 0,
+      "allowedExtraContentReads": 0,
+      "note": "All runs read only the requested source pages and accepted partial file coverage as sufficient."
+    },
+    {
+      "fixtureId": "csv-regression",
+      "runs": 3,
+      "semanticPasses": 3,
+      "evidenceRoutePasses": 3,
+      "extraContentReads": 0,
+      "allowedExtraContentReads": 0,
+      "note": "All runs were substantively correct using trace or bounded tabular content."
+    },
+    {
+      "fixtureId": "unsupported-binary",
+      "runs": 3,
+      "semanticPasses": 3,
+      "evidenceRoutePasses": 3,
+      "extraContentReads": 0,
+      "allowedExtraContentReads": 0,
+      "note": "All runs used trace only and emitted no unsupported-content finding."
+    }
+  ]
+}

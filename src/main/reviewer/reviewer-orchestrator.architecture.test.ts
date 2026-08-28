@@ -302,6 +302,7 @@ describe('Reviewer orchestrator architecture', () => {
       'errorMessage String?',
       'model String @default("")',
       'reviewerLog String @default("[]")',
+      'tokenUsage String?',
       'createdAt DateTime @default(now())',
       'updatedAt DateTime @updatedAt',
       'findings Finding[]',
