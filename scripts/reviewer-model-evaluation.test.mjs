@@ -5,7 +5,8 @@ import { describe, expect, it } from 'vitest'
 import {
   REVIEWER_REGRESSION_SCENARIOS,
   evaluateReviewerModelCapture,
-  renderReviewerModelEvaluation
+  renderReviewerModelEvaluation,
+  sealReviewerModelCapture
 } from './reviewer-model-evaluation.mjs'
 
 const fixtureUrl = new URL('../test/fixtures/reviewer-model-evaluation.json', import.meta.url)
@@ -35,28 +36,43 @@ describe('Reviewer enhancement regression gate', () => {
 
     expect(result.semanticAccuracy).toBe(1)
     expect(result.evidenceRouteAccuracy).toBe(1)
-    expect(result.providerUsage).toEqual({ inputTokens: 61_495, outputTokens: 3_865 })
-    expect(result.totalLatencyMs).toBe(194_700)
-    expect(result.extraContentReads).toEqual({ observed: 1, allowed: 1, withinBound: true })
+    expect(result.providerUsage).toEqual({
+      inputTokens: 38_425,
+      cachedTokens: 34_624,
+      outputTokens: 3_159
+    })
+    expect(result.totalLatencyMs).toBe(259_519)
+    expect(result.extraContentReads).toEqual({ observed: 0, allowed: 1, withinBound: true })
     expect(result.rows.find(({ fixtureId }) => fixtureId === 'image-method-result')).toMatchObject({
-      extraContentReads: 1,
-      note: expect.stringMatching(/opportunistic/i)
+      extraContentReads: 0,
+      note: expect.stringMatching(/disclosed/i)
     })
 
     const report = renderReviewerModelEvaluation(capture, result)
     expect(report).toContain('100.0%')
-    expect(report).toContain('61,495')
-    expect(report).toContain('194,700 ms')
-    expect(report).toContain('1 / 1')
+    expect(report).toContain('38,425')
+    expect(report).toContain('259,519 ms')
+    expect(report).toContain('0 / 1')
+    expect(report).not.toContain('.scratch')
   })
 
-  it('fails closed when semantic, route, usage, latency, or read accounting is absent', () => {
-    expect(() =>
-      evaluateReviewerModelCapture({
-        schemaVersion: 1,
-        model: 'fixture-model',
-        batches: [{ fixtureId: 'missing-measurements', runs: 1 }]
-      })
-    ).toThrow(/semanticPasses/)
+  it('fails closed when raw output is absent or a captured run is changed', async () => {
+    const capture = JSON.parse(await readFile(fixtureUrl, 'utf8'))
+    const missingRaw = structuredClone(capture)
+    delete missingRaw.runs[0].raw
+    expect(() => evaluateReviewerModelCapture(missingRaw)).toThrow(/raw\.checks/)
+
+    const tampered = structuredClone(capture)
+    tampered.runs[0].latencyMs += 1
+    expect(() => evaluateReviewerModelCapture(tampered)).toThrow(/sha256/)
+  })
+
+  it('seals newly captured runs and then recomputes scores from raw checks and routes', async () => {
+    const capture = JSON.parse(await readFile(fixtureUrl, 'utf8'))
+    const unsealed = structuredClone(capture)
+    delete unsealed.runs[0].sha256
+    const resealed = sealReviewerModelCapture(unsealed)
+
+    expect(() => evaluateReviewerModelCapture(resealed)).not.toThrow()
   })
 })
