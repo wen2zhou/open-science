@@ -185,6 +185,7 @@ const RUNTIME_SCHEMA_TABLE_DDLS = [
     "errorMessage" TEXT,
     "model" TEXT NOT NULL DEFAULT '',
     "reviewerLog" TEXT NOT NULL DEFAULT '[]',
+    "tokenUsage" TEXT,
     "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
     "updatedAt" DATETIME NOT NULL,
     CONSTRAINT "Review_lifecycle_check" CHECK ("lifecycle" IN ('running', 'complete', 'error')),

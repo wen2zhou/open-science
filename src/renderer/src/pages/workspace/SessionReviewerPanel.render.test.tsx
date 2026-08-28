@@ -221,6 +221,67 @@ describe('SessionReviewerPanel — pass outcome', () => {
   })
 })
 
+describe('SessionReviewerPanel — Reviewer usage', () => {
+  it('shows usage only after expanding the muted disclosure', () => {
+    act(() => {
+      root.render(
+        <SessionReviewerPanel
+          review={makeReview({
+            tokenUsage: {
+              inputTokens: 1_000,
+              cacheTokens: 200,
+              outputTokens: 50,
+              turnCount: 2
+            }
+          })}
+          activeFindingId={undefined}
+        />
+      )
+    })
+
+    const toggle = container.querySelector<HTMLButtonElement>(
+      '[data-testid="reviewer-usage-toggle"]'
+    )
+    expect(toggle?.textContent).toContain('Reviewer usage')
+    expect(toggle?.className).toContain('text-muted-foreground')
+    expect(toggle?.getAttribute('aria-controls')).toBeTruthy()
+    expect(container.querySelector('[data-testid="reviewer-usage-body"]')).toBeNull()
+
+    act(() => toggle?.click())
+    const body = container.querySelector('[data-testid="reviewer-usage-body"]')
+    expect(body?.textContent).toContain('Total tokens')
+    expect(body?.textContent).toContain('1,250')
+    expect(body?.textContent).toContain('Model turns')
+  })
+
+  it('omits usage for historical Reviews without provider data', () => {
+    act(() => {
+      root.render(<SessionReviewerPanel review={makeReview()} activeFindingId={undefined} />)
+    })
+
+    expect(container.querySelector('[data-testid="reviewer-usage"]')).toBeNull()
+  })
+
+  it('omits usage defensively when individually safe categories have an unsafe total', () => {
+    act(() => {
+      root.render(
+        <SessionReviewerPanel
+          review={makeReview({
+            tokenUsage: {
+              inputTokens: Number.MAX_SAFE_INTEGER,
+              cacheTokens: 0,
+              outputTokens: 1
+            }
+          })}
+          activeFindingId={undefined}
+        />
+      )
+    })
+
+    expect(container.querySelector('[data-testid="reviewer-usage"]')).toBeNull()
+  })
+})
+
 describe('SessionReviewerPanel — stale review notice', () => {
   it('shows a stale notice in the header when the review is flagged stale', () => {
     const staleReview = makeReview({ stale: true })

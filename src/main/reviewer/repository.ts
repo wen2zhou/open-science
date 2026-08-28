@@ -4,6 +4,7 @@ import { dirname, relative, resolve, sep } from 'node:path'
 
 import type { PrismaClient, Review as PrismaReview } from '@prisma/client'
 
+import { sanitizeAcpTurnTokenUsage, type AcpTurnTokenUsage } from '../../shared/acp'
 import type {
   CheckStatus,
   CreateReviewInput,
@@ -109,6 +110,11 @@ const parseJson = <T>(value: string, fallback: T): T => {
   }
 }
 
+const serializeTokenUsage = (value: unknown): string | null => {
+  const usage = sanitizeAcpTurnTokenUsage(value)
+  return usage ? JSON.stringify(usage) : null
+}
+
 const EMPTY_SCOPE = (turnMessageId: string): TurnScope => ({
   turnMessageId,
   blocks: [],
@@ -137,6 +143,9 @@ const toReview = (row: PrismaReview): Review => ({
   errorMessage: row.errorMessage ?? undefined,
   model: row.model,
   reviewerLog: parseJson<ReviewerLogEntry[]>(row.reviewerLog, []),
+  tokenUsage: sanitizeAcpTurnTokenUsage(
+    row.tokenUsage ? parseJson<unknown>(row.tokenUsage, undefined) : undefined
+  ),
   createdAt: row.createdAt.getTime(),
   updatedAt: row.updatedAt.getTime()
 })
@@ -213,7 +222,8 @@ class ReviewRepository {
         outcome: input.outcome ?? null,
         errorMessage: input.errorMessage ?? null,
         model: input.model ?? '',
-        reviewerLog: JSON.stringify(input.reviewerLog ?? [])
+        reviewerLog: JSON.stringify(input.reviewerLog ?? []),
+        tokenUsage: serializeTokenUsage(input.tokenUsage)
       }
     })
 
@@ -315,6 +325,9 @@ class ReviewRepository {
     if (patch.errorMessage !== undefined) data.errorMessage = patch.errorMessage
     if (patch.model !== undefined) data.model = patch.model
     if (patch.reviewerLog !== undefined) data.reviewerLog = JSON.stringify(patch.reviewerLog)
+    if (patch.tokenUsage !== undefined) {
+      data.tokenUsage = serializeTokenUsage(patch.tokenUsage)
+    }
 
     const client = await this.getClient()
     const row = await client.review.update({ where: { id }, data })
@@ -372,6 +385,7 @@ class ReviewRepository {
     checks: NewCheck[]
     expectedSourceFindingIds: string[]
     reviewerLog?: ReviewerLogEntry[]
+    tokenUsage?: AcpTurnTokenUsage
   }): Promise<ReviewWithChecks> {
     if (input.mode !== 'initial' && input.mode !== 'tracked') {
       throw new Error('Review submission mode must be initial or tracked.')
@@ -527,7 +541,8 @@ class ReviewRepository {
           lifecycle: 'complete',
           outcome,
           errorMessage: null,
-          reviewerLog: JSON.stringify(input.reviewerLog ?? [])
+          reviewerLog: JSON.stringify(input.reviewerLog ?? []),
+          ...(input.tokenUsage ? { tokenUsage: serializeTokenUsage(input.tokenUsage) } : {})
         }
       })
       const { checks, submittedChecks } = await loadReviewSubmissionProjection(

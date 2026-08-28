@@ -313,6 +313,16 @@ export type AcpTurnTokenUsage = {
   turnCount?: number
 }
 
+// Returns the provider-neutral whole-turn total only when adding the independently valid token
+// categories remains exact. JavaScript rounds integers beyond MAX_SAFE_INTEGER, so an unsafe sum is
+// unavailable rather than a plausible-looking total.
+export const getAcpTurnTokenTotal = (
+  usage: Pick<AcpTurnTokenUsage, 'inputTokens' | 'cacheTokens' | 'outputTokens'>
+): number | undefined => {
+  const total = usage.inputTokens + usage.cacheTokens + usage.outputTokens
+  return Number.isSafeInteger(total) && total >= 0 ? total : undefined
+}
+
 export type AcpModelStepTokenUsage = Omit<AcpTurnTokenUsage, 'turnCount'>
 
 export type AcpModelCallUsage = AcpModelStepTokenUsage & {
@@ -380,12 +390,13 @@ export const toAcpTurnTokenUsage = (value: unknown): AcpTurnTokenUsage | undefin
   if (!Number.isSafeInteger(cacheTokens)) return undefined
 
   const hasCacheBreakdown = usage.cachedReadTokens != null && usage.cachedWriteTokens != null
-  return {
+  const normalized: AcpTurnTokenUsage = {
     inputTokens,
     cacheTokens,
     ...(hasCacheBreakdown ? { cachedReadTokens, cachedWriteTokens } : {}),
     outputTokens
   }
+  return getAcpTurnTokenTotal(normalized) === undefined ? undefined : normalized
 }
 
 // Re-validates the durable projection when loading session JSON, dropping unknown or unsafe values.
@@ -410,13 +421,56 @@ export const sanitizeAcpTurnTokenUsage = (value: unknown): AcpTurnTokenUsage | u
     Number.isSafeInteger(cachedReadTokens + cachedWriteTokens) &&
     cachedReadTokens + cachedWriteTokens === cacheTokens
 
-  return {
+  const sanitized: AcpTurnTokenUsage = {
     inputTokens,
     cacheTokens,
     ...(hasCacheBreakdown ? { cachedReadTokens, cachedWriteTokens } : {}),
     outputTokens,
     ...(turnCount !== undefined && turnCount > 0 ? { turnCount } : {})
   }
+  return getAcpTurnTokenTotal(sanitized) === undefined ? undefined : sanitized
+}
+
+// Safely combines provider-reported usage from multiple prompt turns that belong to one logical
+// run (for example, a Reviewer protocol-recovery turn). Optional details are retained only when
+// both operands report them; overflow makes the aggregate unavailable instead of persisting an
+// unsafe or misleading value.
+export const sumAcpTurnTokenUsage = (
+  left: AcpTurnTokenUsage,
+  right: AcpTurnTokenUsage
+): AcpTurnTokenUsage | undefined => {
+  const inputTokens = left.inputTokens + right.inputTokens
+  const cacheTokens = left.cacheTokens + right.cacheTokens
+  const outputTokens = left.outputTokens + right.outputTokens
+  const hasCacheBreakdown =
+    left.cachedReadTokens !== undefined &&
+    left.cachedWriteTokens !== undefined &&
+    right.cachedReadTokens !== undefined &&
+    right.cachedWriteTokens !== undefined
+  const cachedReadTokens = (left.cachedReadTokens ?? 0) + (right.cachedReadTokens ?? 0)
+  const cachedWriteTokens = (left.cachedWriteTokens ?? 0) + (right.cachedWriteTokens ?? 0)
+  const hasTurnCount = left.turnCount !== undefined && right.turnCount !== undefined
+  const turnCount = (left.turnCount ?? 0) + (right.turnCount ?? 0)
+
+  if (
+    !Number.isSafeInteger(inputTokens) ||
+    !Number.isSafeInteger(cacheTokens) ||
+    !Number.isSafeInteger(outputTokens) ||
+    !Number.isSafeInteger(cachedReadTokens) ||
+    !Number.isSafeInteger(cachedWriteTokens) ||
+    !Number.isSafeInteger(turnCount)
+  ) {
+    return undefined
+  }
+
+  const aggregate: AcpTurnTokenUsage = {
+    inputTokens,
+    cacheTokens,
+    ...(hasCacheBreakdown ? { cachedReadTokens, cachedWriteTokens } : {}),
+    outputTokens,
+    ...(hasTurnCount ? { turnCount } : {})
+  }
+  return getAcpTurnTokenTotal(aggregate) === undefined ? undefined : aggregate
 }
 
 export const sanitizeAcpModelCallUsage = (value: unknown): AcpModelCallUsage | undefined => {

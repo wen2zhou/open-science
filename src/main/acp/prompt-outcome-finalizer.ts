@@ -2,6 +2,7 @@ import type { PromptResponse } from '@agentclientprotocol/sdk'
 
 import {
   ACP_PROMPT_FAILED_EVENT_TITLE,
+  sumAcpTurnTokenUsage,
   type AcpModelCallUsage,
   type AcpRuntimeEvent,
   type AcpTerminalContextWindow,
@@ -73,43 +74,6 @@ const inferredCallContextUsedTokens = (call: AcpProviderModelCallUsage): number 
   return Number.isSafeInteger(used) ? used : undefined
 }
 
-const sumTurnUsage = (
-  left: AcpTurnTokenUsage,
-  right: AcpTurnTokenUsage
-): AcpTurnTokenUsage | undefined => {
-  const inputTokens = left.inputTokens + right.inputTokens
-  const cacheTokens = left.cacheTokens + right.cacheTokens
-  const outputTokens = left.outputTokens + right.outputTokens
-  const hasCacheBreakdown =
-    left.cachedReadTokens !== undefined &&
-    left.cachedWriteTokens !== undefined &&
-    right.cachedReadTokens !== undefined &&
-    right.cachedWriteTokens !== undefined
-  const cachedReadTokens = (left.cachedReadTokens ?? 0) + (right.cachedReadTokens ?? 0)
-  const cachedWriteTokens = (left.cachedWriteTokens ?? 0) + (right.cachedWriteTokens ?? 0)
-  const hasTurnCount = left.turnCount !== undefined && right.turnCount !== undefined
-  const turnCount = (left.turnCount ?? 0) + (right.turnCount ?? 0)
-
-  if (
-    !Number.isSafeInteger(inputTokens) ||
-    !Number.isSafeInteger(cacheTokens) ||
-    !Number.isSafeInteger(outputTokens) ||
-    !Number.isSafeInteger(cachedReadTokens) ||
-    !Number.isSafeInteger(cachedWriteTokens) ||
-    !Number.isSafeInteger(turnCount)
-  ) {
-    return undefined
-  }
-
-  return {
-    inputTokens,
-    cacheTokens,
-    ...(hasCacheBreakdown ? { cachedReadTokens, cachedWriteTokens } : {}),
-    outputTokens,
-    ...(hasTurnCount ? { turnCount } : {})
-  }
-}
-
 export class AcpPromptOutcomeFinalizer {
   // Detached ask-user replies resume as new provider prompts but keep the original Message identity.
   // Retain a bounded running total so every later stop describes that complete visible user turn.
@@ -129,7 +93,7 @@ export class AcpPromptOutcomeFinalizer {
       !turnUsage || previous?.unavailable
         ? undefined
         : previous?.turnUsage
-          ? sumTurnUsage(previous.turnUsage, turnUsage)
+          ? sumAcpTurnTokenUsage(previous.turnUsage, turnUsage)
           : turnUsage
     const accumulatedModelCalls =
       !accumulated || !modelCalls || previous?.modelCallsUnavailable

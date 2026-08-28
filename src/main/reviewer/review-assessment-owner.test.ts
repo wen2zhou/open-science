@@ -29,6 +29,8 @@ const harness = vi.hoisted(() => ({
     | (() => Promise<{
         kind: string
         stopReason?: string
+        usage?: unknown
+        _meta?: unknown
         update?: { sessionUpdate?: string; [key: string]: unknown }
       }>)
     | undefined,
@@ -592,6 +594,101 @@ describe('review assessment owner', () => {
           actualTargets: [{ pages: [4] }]
         }
       ]
+    })
+  })
+
+  it('aggregates provider usage across a protocol recovery turn', async () => {
+    harness.submission = undefined
+    const updates = [
+      {
+        kind: 'stop',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 10, cachedReadTokens: 3, cachedWriteTokens: 2, outputTokens: 4 },
+        _meta: { 'open-science/model-turn-count': 1 }
+      },
+      {
+        kind: 'stop',
+        stopReason: 'end_turn',
+        usage: { inputTokens: 20, cachedReadTokens: 4, cachedWriteTokens: 1, outputTokens: 6 },
+        _meta: { 'open-science/model-turn-count': 2 }
+      }
+    ]
+    let index = 0
+    harness.nextUpdate = async () => {
+      const update = updates[index++]!
+      if (index === updates.length) await harness.submit?.([])
+      return update
+    }
+    const reviewRepository = makeRepository()
+
+    await runReviewAssessment({ ...commonOptions(reviewRepository), mode: 'initial' })
+
+    expect(
+      vi.mocked(reviewRepository.commitScopedSubmission).mock.calls[0]?.[0].tokenUsage
+    ).toEqual({
+      inputTokens: 30,
+      cacheTokens: 10,
+      cachedReadTokens: 7,
+      cachedWriteTokens: 3,
+      outputTokens: 10,
+      turnCount: 3
+    })
+  })
+
+  it('omits recovery usage when the combined total exceeds the safe integer range', async () => {
+    harness.submission = undefined
+    const updates = [
+      {
+        kind: 'stop',
+        stopReason: 'end_turn',
+        _meta: {
+          'open-science/turn-usage': {
+            inputTokens: Number.MAX_SAFE_INTEGER - 2,
+            cacheTokens: 1,
+            outputTokens: 1
+          }
+        }
+      },
+      {
+        kind: 'stop',
+        stopReason: 'end_turn',
+        _meta: {
+          'open-science/turn-usage': { inputTokens: 0, cacheTokens: 0, outputTokens: 1 }
+        }
+      }
+    ]
+    let index = 0
+    harness.nextUpdate = async () => {
+      const update = updates[index++]!
+      if (index === updates.length) await harness.submit?.([])
+      return update
+    }
+    const reviewRepository = makeRepository()
+
+    await runReviewAssessment({ ...commonOptions(reviewRepository), mode: 'initial' })
+
+    expect(
+      vi.mocked(reviewRepository.commitScopedSubmission).mock.calls[0]?.[0].tokenUsage
+    ).toBeUndefined()
+  })
+
+  it('retains acquired usage when a later Reviewer error prevents completion', async () => {
+    harness.submission = undefined
+    harness.nextUpdate = async () => ({
+      kind: 'stop',
+      stopReason: 'cancelled',
+      usage: { inputTokens: 10, cachedReadTokens: 2, cachedWriteTokens: 1, outputTokens: 4 }
+    })
+    const reviewRepository = makeRepository()
+
+    const result = await runReviewAssessment({
+      ...commonOptions(reviewRepository),
+      mode: 'initial'
+    })
+
+    expect(result.review).toMatchObject({
+      lifecycle: 'error',
+      tokenUsage: { inputTokens: 10, cacheTokens: 3, outputTokens: 4 }
     })
   })
 

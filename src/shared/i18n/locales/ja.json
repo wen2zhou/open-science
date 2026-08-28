@@ -1780,6 +1780,8 @@
     "Review unavailable": "レビューは利用できません",
     "Reviewer": "レビュアー",
     "Reviewer log": "レビュアーログ",
+    "Reviewer usage": "レビュアーの使用量",
+    "Model turns": "モデルターン",
     "Reviewer log content was truncated to fit the size limit.": "レビュアーログの内容はサイズ制限に収まるよう切り詰められました。",
     "Reviewer model Model": "レビュアーモデル",
     "Reviewer model Reasoning effort": "レビュアーモデルの推論強度",

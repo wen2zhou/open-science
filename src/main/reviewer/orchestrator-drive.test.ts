@@ -6,7 +6,13 @@ import { describe, it, expect } from 'vitest'
 
 import { driveReviewerToStop } from './orchestrator'
 
-type FakeUpdate = { kind: string; stopReason?: string; update?: { sessionUpdate?: string } }
+type FakeUpdate = {
+  kind: string
+  stopReason?: string
+  usage?: unknown
+  _meta?: unknown
+  update?: { sessionUpdate?: string }
+}
 
 describe('driveReviewerToStop', () => {
   it('returns the stop reason when the reviewer stops', async () => {
@@ -17,6 +23,59 @@ describe('driveReviewerToStop', () => {
     await expect(driveReviewerToStop(session, { timeoutMs: 1000, maxUpdates: 100 })).resolves.toBe(
       'end_turn'
     )
+  })
+
+  it('reports validated provider usage from the stop response', async () => {
+    const observed: unknown[] = []
+    const session = {
+      nextUpdate: async (): Promise<FakeUpdate> => ({
+        kind: 'stop',
+        stopReason: 'end_turn',
+        usage: {
+          inputTokens: 11,
+          cachedReadTokens: 3,
+          cachedWriteTokens: 2,
+          outputTokens: 5
+        },
+        _meta: { 'open-science/model-turn-count': 2 }
+      })
+    }
+
+    await driveReviewerToStop(
+      session,
+      { timeoutMs: 1000, maxUpdates: 100 },
+      { onStop: (usage) => observed.push(usage) }
+    )
+
+    expect(observed).toEqual([
+      {
+        inputTokens: 11,
+        cacheTokens: 5,
+        cachedReadTokens: 3,
+        cachedWriteTokens: 2,
+        outputTokens: 5,
+        turnCount: 2
+      }
+    ])
+  })
+
+  it('reports unavailable usage for malformed stop metadata', async () => {
+    const observed: unknown[] = []
+    const session = {
+      nextUpdate: async (): Promise<FakeUpdate> => ({
+        kind: 'stop',
+        stopReason: 'end_turn',
+        usage: { inputTokens: -1, outputTokens: 5 }
+      })
+    }
+
+    await driveReviewerToStop(
+      session,
+      { timeoutMs: 1000, maxUpdates: 100 },
+      { onStop: (usage) => observed.push(usage) }
+    )
+
+    expect(observed).toEqual([undefined])
   })
 
   it('throws a timeout error if the reviewer never stops within the deadline', async () => {

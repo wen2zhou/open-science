@@ -291,13 +291,25 @@ const applyRebuildTableSet = async (
 
 const applySqliteMigrationOperations = async (
   client: SqliteExecutor,
-  operations: readonly SqliteMigrationOperation[]
+  operations: readonly SqliteMigrationOperation[],
+  futureColumns: Readonly<Record<string, readonly { name: string; definition: string }[]>> = {}
 ): Promise<void> => {
   for (const operation of operations) {
     switch (operation.kind) {
-      case 'rebuild-table-set':
-        await applyRebuildTableSet(client, operation)
+      case 'rebuild-table-set': {
+        const compatibleOperation: SqliteRebuildTableSetOperation = {
+          ...operation,
+          tables: operation.tables.map((table) => ({
+            ...table,
+            optionalLegacyColumns: [
+              ...(table.optionalLegacyColumns ?? []),
+              ...(futureColumns[table.tableName] ?? [])
+            ]
+          }))
+        }
+        await applyRebuildTableSet(client, compatibleOperation)
         break
+      }
     }
   }
 }

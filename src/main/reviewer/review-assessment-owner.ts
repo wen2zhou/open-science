@@ -4,6 +4,7 @@ import { homedir } from 'node:os'
 
 import type { ActiveSession } from '@agentclientprotocol/sdk'
 
+import { sumAcpTurnTokenUsage, type AcpTurnTokenUsage } from '../../shared/acp'
 import type {
   DelegatedReviewEvidenceScope,
   NewCheck,
@@ -289,11 +290,26 @@ export const runReviewAssessment = async (
   let reviewerSessionFailed = false
   let reviewerSessionError: unknown
   const capturedLog: ReviewerLogEntry[] = []
+  let tokenUsage: AcpTurnTokenUsage | undefined
+  let tokenUsageAvailable = true
   const reviewerLogDriveCallbacks: ReviewerLogDriveCallbacks = {
     onUpdate: (entry: ReviewerLogEntry): void => {
       capturedLog.push(entry)
     },
-    logState: {}
+    logState: {},
+    onStop: (usage: AcpTurnTokenUsage | undefined): void => {
+      if (!usage || !tokenUsageAvailable) {
+        tokenUsage = undefined
+        tokenUsageAvailable = false
+        return
+      }
+      if (!tokenUsage) {
+        tokenUsage = usage
+        return
+      }
+      tokenUsage = sumAcpTurnTokenUsage(tokenUsage, usage)
+      if (!tokenUsage) tokenUsageAvailable = false
+    }
   }
   initializeReviewerLogBudget(reviewerLogDriveCallbacks, {
     finalLogEntryReserveBytes: REVIEWER_COVERAGE_LOG_RESERVE_BYTES
@@ -422,6 +438,7 @@ export const runReviewAssessment = async (
       reviewRepository.updateReview(review.id, {
         lifecycle: 'error',
         errorMessage,
+        ...(tokenUsage ? { tokenUsage } : {}),
         ...(includeReviewerLog ? { reviewerLog: capturedLog } : {})
       })
     )
@@ -471,7 +488,8 @@ export const runReviewAssessment = async (
         reviewId: review.id,
         checks: checksReceived,
         expectedSourceFindingIds: trackedChecks.map((check) => check.id),
-        reviewerLog: capturedLog
+        reviewerLog: capturedLog,
+        ...(tokenUsage ? { tokenUsage } : {})
       })
     )
     review = finalReview

@@ -31,6 +31,7 @@ import { sessionProjectionMigration } from './migrations/0013-session-projection
 import { reviewQueryIndexesMigration } from './migrations/0014-review-query-indexes'
 import { sessionModelCallUsageMigration } from './migrations/0015-session-model-call-usage'
 import { computeJobSensitiveDataEncryptionMigration } from './migrations/0016-compute-job-sensitive-data-encryption'
+import { reviewerTokenUsageMigration } from './migrations/0018-reviewer-token-usage'
 import {
   agentMemoryProjectScopeMigration,
   MEMORY_AUXILIARY_SCHEMA_OBJECTS,
@@ -285,6 +286,12 @@ const COMPUTE_JOB_SENSITIVE_DATA_ENCRYPTION_CHECKSUM = checksumMigrationPayload(
   computeJobSensitiveDataEncryptionMigration.verifiers,
   computeJobSensitiveDataEncryptionMigration.operations
 )
+const REVIEWER_TOKEN_USAGE_CHECKSUM = checksumMigrationPayload(
+  reviewerTokenUsageMigration.id,
+  reviewerTokenUsageMigration.statements,
+  reviewerTokenUsageMigration.verifiers,
+  reviewerTokenUsageMigration.operations
+)
 const DATABASE_DOMAIN_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints = Object.fromEntries(
   databaseDomainConstraintsMigration.verifiers[0].tables.map(({ table, constraints }) => [
     table,
@@ -459,6 +466,12 @@ const MIGRATION_MANIFEST = [
   {
     ...agentMemoryProjectScopeMigration,
     checksum: AGENT_MEMORY_PROJECT_SCOPE_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...reviewerTokenUsageMigration,
+    checksum: REVIEWER_TOKEN_USAGE_CHECKSUM,
     backupOnApply: 'required',
     backupRetention: 'retain'
   }
@@ -1199,7 +1212,8 @@ const applyBaselineMigration = async (
 
 const applyManifestMigration = async (
   client: PrismaClient,
-  migration: MigrationManifestEntry
+  migration: MigrationManifestEntry,
+  futureColumns: Readonly<Record<string, readonly { name: string; definition: string }[]>> = {}
 ): Promise<void> => {
   try {
     await client.$transaction(async (transaction) => {
@@ -1218,7 +1232,11 @@ const applyManifestMigration = async (
         for (const statement of migration.statements) {
           await migrationSqlExecutor.execute(transaction, statement)
         }
-        await applySqliteMigrationOperations(transactionClient, migration.operations ?? [])
+        await applySqliteMigrationOperations(
+          transactionClient,
+          migration.operations ?? [],
+          futureColumns
+        )
       }
       try {
         await runMigrationVerifiers(transactionClient, migration.verifiers)
@@ -1406,10 +1424,22 @@ const migrateApplicationDatabaseWithManifest = async (
     nextIndex = 1
   }
 
+  const reviewerUsageIndex = manifest.findIndex(
+    (candidate) =>
+      candidate.id === reviewerTokenUsageMigration.id &&
+      candidate.checksum === REVIEWER_TOKEN_USAGE_CHECKSUM
+  )
   for (const migration of manifest.slice(nextIndex)) {
     options.onProgress?.({ phase: 'migrating', migrationId: migration.id })
     await backupBeforeMigration(migration)
-    await applyManifestMigration(client, migration)
+    const migrationIndex = manifest.indexOf(migration)
+    await applyManifestMigration(
+      client,
+      migration,
+      reviewerUsageIndex > migrationIndex
+        ? { Review: [{ name: 'tokenUsage', definition: '"tokenUsage" TEXT' }] }
+        : {}
+    )
     applied.push(migration.id)
   }
 

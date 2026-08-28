@@ -1,6 +1,13 @@
 // Drives one Reviewer ACP session to its terminal update while projecting its streamed action log.
 
 import { extractProviderToolName, extractTerminalMeta } from '../acp/runtime-events'
+import {
+  ACP_MODEL_TURN_COUNT_META_KEY,
+  ACP_TURN_TOKEN_USAGE_META_KEY,
+  sanitizeAcpTurnTokenUsage,
+  toAcpTurnTokenUsage,
+  type AcpTurnTokenUsage
+} from '../../shared/acp'
 import type { ReviewerLogEntry } from '../../shared/reviewer'
 
 type ReviewerLogLimits = {
@@ -36,6 +43,8 @@ type DrivableSession = {
   nextUpdate: () => Promise<{
     kind: string
     stopReason?: string
+    usage?: unknown
+    _meta?: unknown
     update?: { sessionUpdate?: string; [key: string]: unknown }
   }>
 }
@@ -55,6 +64,29 @@ export type ReviewerLogDriveCallbacks = {
   onUpdate?: (entry: ReviewerLogEntry) => void
   // Reuse one state object when multiple drives append to the same persisted Review log.
   logState?: { budget?: ReviewerLogBudget }
+  // Captures validated provider usage from the terminal response without coupling the Reviewer to
+  // any rendered transcript or evidence model.
+  onStop?: (usage: AcpTurnTokenUsage | undefined) => void
+}
+
+const stopTokenUsage = (response: {
+  usage?: unknown
+  _meta?: unknown
+}): AcpTurnTokenUsage | undefined => {
+  const meta =
+    typeof response._meta === 'object' && response._meta !== null && !Array.isArray(response._meta)
+      ? (response._meta as Record<string, unknown>)
+      : undefined
+  const usage =
+    sanitizeAcpTurnTokenUsage(meta?.[ACP_TURN_TOKEN_USAGE_META_KEY]) ??
+    toAcpTurnTokenUsage(response.usage)
+  if (!usage) return undefined
+
+  const turnCount = meta?.[ACP_MODEL_TURN_COUNT_META_KEY]
+  return sanitizeAcpTurnTokenUsage({
+    ...usage,
+    ...(typeof turnCount === 'number' ? { turnCount } : {})
+  })
 }
 
 // In-flight accumulator for streaming content (thought/message chunks are assembled into whole entries).
@@ -526,7 +558,7 @@ export const driveReviewerToStop = async (
 ): Promise<string | undefined> => {
   const { timeoutMs, maxUpdates, signal } = options
   const logLimits = { ...DEFAULT_REVIEWER_LOG_LIMITS, ...options.logLimits }
-  const { onUpdate, logState } = callbacks ?? {}
+  const { onUpdate, onStop, logState } = callbacks ?? {}
   let logBudget = logState?.budget
   if (!logBudget && onUpdate) {
     logBudget = new ReviewerLogBudget(
@@ -579,6 +611,7 @@ export const driveReviewerToStop = async (
       if (result.kind === 'stop') {
         // Flush any in-flight streaming chunks before returning.
         flushAccumulator(acc, emitUpdate)
+        onStop?.(stopTokenUsage(result))
         return result.stopReason
       }
 

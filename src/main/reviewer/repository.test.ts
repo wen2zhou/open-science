@@ -105,6 +105,7 @@ describe('review repository (integration)', () => {
     expect(stored.turnMessageId).toBe('a1')
     expect(stored.scope).toEqual(scope('a1'))
     expect(stored.model).toBe('claude-opus-4-8')
+    expect(stored.tokenUsage).toBeUndefined()
 
     // v2: checks (not findings) include pass+warn+fail
     expect(stored.checks).toHaveLength(3)
@@ -126,6 +127,79 @@ describe('review repository (integration)', () => {
     // pass check has no locator
     expect(stored.checks[2]!.status).toBe('pass')
     expect(stored.checks[2]!.locator).toBeUndefined()
+  })
+
+  it('persists validated Reviewer usage across a database restart', async () => {
+    const repository = await createRepository()
+    const review = await repository.createReview({
+      projectId: 'project-1',
+      sessionId: 'session-usage',
+      turnMessageId: 'usage-turn',
+      scope: scope('usage-turn'),
+      tokenUsage: {
+        inputTokens: 100,
+        cacheTokens: 30,
+        cachedReadTokens: 20,
+        cachedWriteTokens: 10,
+        outputTokens: 12,
+        turnCount: 2
+      }
+    })
+
+    await client!.$disconnect()
+    client = createProjectDbClient(storageRoot!)
+    await migrateApplicationDatabase(client)
+    const restartedRepository = new ReviewRepository(() => Promise.resolve(client!))
+
+    const [stored] = await restartedRepository.getReviewsForProjectSession(
+      'project-1',
+      'session-usage'
+    )
+    expect(stored.id).toBe(review.id)
+    expect(stored.tokenUsage).toEqual({
+      inputTokens: 100,
+      cacheTokens: 30,
+      cachedReadTokens: 20,
+      cachedWriteTokens: 10,
+      outputTokens: 12,
+      turnCount: 2
+    })
+  })
+
+  it('treats invalid persisted Reviewer usage as unavailable', async () => {
+    const repository = await createRepository()
+    const review = await repository.createReview({
+      projectId: 'project-1',
+      sessionId: 'session-invalid-usage',
+      turnMessageId: 'usage-turn',
+      scope: scope('usage-turn')
+    })
+    await client!.review.update({
+      where: { id: review.id },
+      data: { tokenUsage: JSON.stringify({ inputTokens: -1, cacheTokens: 0, outputTokens: 0 }) }
+    })
+
+    const [stored] = await repository.getReviewsForProjectSession(
+      'project-1',
+      'session-invalid-usage'
+    )
+    expect(stored.tokenUsage).toBeUndefined()
+  })
+
+  it('does not persist invalid Reviewer usage supplied at a repository boundary', async () => {
+    const repository = await createRepository()
+    const review = await repository.createReview({
+      projectId: 'project-1',
+      sessionId: 'session-rejected-usage',
+      turnMessageId: 'usage-turn',
+      scope: scope('usage-turn'),
+      tokenUsage: { inputTokens: Number.MAX_SAFE_INTEGER, cacheTokens: 0, outputTokens: 1 }
+    })
+
+    expect(review.tokenUsage).toBeUndefined()
+    await expect(
+      client!.review.findUniqueOrThrow({ where: { id: review.id } })
+    ).resolves.toMatchObject({ tokenUsage: null })
   })
 
   it('retains an error Review row when its frozen scope snapshot cannot be published', async () => {

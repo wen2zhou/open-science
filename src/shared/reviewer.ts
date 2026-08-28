@@ -11,6 +11,8 @@
 // session's actual action stream (thinking / tool calls / tool results / messages) is captured and
 // stored, replacing the self-authored reasoning prose. submit_findings no longer accepts `reasoning`.
 
+import type { AcpTurnTokenUsage } from './acp'
+
 // One entry in the captured reviewer session action log.
 // Streaming chunks (agent_thought_chunk, agent_message_chunk) are assembled into whole entries.
 // tool entries carry the real tool name + input/output from the ACP session update stream.
@@ -226,6 +228,9 @@ export type Review = {
   // Captured reviewer session log: thinking, tool calls, tool results, and messages.
   // Replaces the old self-authored `reasoning` string (issue 13).
   reviewerLog: ReviewerLogEntry[]
+  // Provider-reported usage for this Reviewer run. Absent for historical rows and whenever any
+  // prompt turn in the run did not report valid usage.
+  tokenUsage?: AcpTurnTokenUsage
   createdAt: number
   updatedAt: number
   // Transient (never persisted): set at load time when the turn's current scope no longer matches the
@@ -299,6 +304,7 @@ export type CreateReviewInput = {
   lifecycle?: ReviewLifecycle
   outcome?: ReviewOutcome | null
   reviewerLog?: ReviewerLogEntry[]
+  tokenUsage?: AcpTurnTokenUsage
   errorMessage?: string
   scopeSnapshot?: ReviewScopeSnapshotBlock[]
 }
@@ -311,6 +317,7 @@ export type UpdateReviewPatch = {
   errorMessage?: string | null
   model?: string
   reviewerLog?: ReviewerLogEntry[]
+  tokenUsage?: AcpTurnTokenUsage | null
 }
 
 // A check to persist under a review; id/reviewId are assigned by the repository.
