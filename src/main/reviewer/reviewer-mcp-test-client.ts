@@ -11,7 +11,7 @@ export type SubmittedReviewerCheck = {
 }
 
 type ToolResult = {
-  content?: Array<{ text?: string }>
+  content?: Array<{ type?: string; text?: string; data?: string; mimeType?: string }>
   isError?: boolean
 }
 
@@ -29,15 +29,27 @@ export type FrozenReviewerTurnBlock = {
   content?: string
   artifactIds?: string[]
   turnPlan?: {
-    status: string
+    versionId: string
+    status: 'approved' | 'active' | 'completed' | 'superseded'
     content: unknown
-    binding: string
+    binding: 'current-turn'
   }
 }
 
 export type ReviewerCheckFixture =
   | SubmittedReviewerCheck[]
   | ((blocks: readonly FrozenReviewerTurnBlock[]) => SubmittedReviewerCheck[])
+
+export type ReviewerProtocolResult = {
+  blocks: FrozenReviewerTurnBlock[]
+  toolResults: Array<{ name: string; arguments: Record<string, unknown>; result: ToolResult }>
+}
+
+type ReviewerProtocolOptions = {
+  artifactView?: 'trace' | 'content'
+  artifactReads?: Array<{ id: string; view?: 'trace' | 'content' } & Record<string, unknown>>
+  executionActivityIds?: string[]
+}
 
 const MCP_ACCEPT = 'application/json, text/event-stream'
 
@@ -47,12 +59,24 @@ const parseMcpSseBody = (body: string): JsonRpcResponse => {
   return json ? (JSON.parse(json) as JsonRpcResponse) : {}
 }
 
-export const callSubmitFindingsAfterReadingEvidence = async (
+export function callSubmitFindingsAfterReadingEvidence(
   mcpBaseUrl: string,
   token: string,
   checkFixture: ReviewerCheckFixture,
-  options: { artifactView?: 'trace' | 'content' } = {}
-): Promise<void> => {
+  options: ReviewerProtocolOptions & { capture: true }
+): Promise<ReviewerProtocolResult>
+export function callSubmitFindingsAfterReadingEvidence(
+  mcpBaseUrl: string,
+  token: string,
+  checkFixture: ReviewerCheckFixture,
+  options?: ReviewerProtocolOptions
+): Promise<void>
+export async function callSubmitFindingsAfterReadingEvidence(
+  mcpBaseUrl: string,
+  token: string,
+  checkFixture: ReviewerCheckFixture,
+  options: ReviewerProtocolOptions & { capture?: boolean } = {}
+): Promise<ReviewerProtocolResult | void> {
   const baseHeaders = {
     'content-type': 'application/json',
     accept: MCP_ACCEPT,
@@ -86,6 +110,7 @@ export const callSubmitFindingsAfterReadingEvidence = async (
   })
 
   let nextId = 2
+  const toolResults: ReviewerProtocolResult['toolResults'] = []
   const callTool = async (name: string, args: Record<string, unknown>): Promise<ToolResult> => {
     const response = await fetch(mcpBaseUrl, {
       method: 'POST',
@@ -103,19 +128,22 @@ export const callSubmitFindingsAfterReadingEvidence = async (
     if (payload.result?.isError) {
       throw new Error(payload.result.content?.[0]?.text ?? `${name} returned an error`)
     }
-    return payload.result ?? {}
+    const result = payload.result ?? {}
+    toolResults.push({ name, arguments: args, result })
+    return result
   }
 
   const turn = await callTool('read_turn', {})
   const blocks = JSON.parse(turn.content?.[0]?.text ?? '[]') as FrozenReviewerTurnBlock[]
   const checks = typeof checkFixture === 'function' ? checkFixture(blocks) : checkFixture
   const blocksByIndex = new Map(blocks.map((block) => [block.blockIndex, block]))
-  const activityIds = new Set(
-    checks.flatMap((check) => {
+  const activityIds = new Set([
+    ...(options.executionActivityIds ?? []),
+    ...checks.flatMap((check) => {
       const block = check.locator ? blocksByIndex.get(check.locator.blockRef.blockIndex) : undefined
       return block?.kind === 'activity' ? [block.sourceId] : []
     })
-  )
+  ])
   for (const activityId of activityIds) {
     await callTool('query_execution_log', { activityId })
   }
@@ -126,6 +154,9 @@ export const callSubmitFindingsAfterReadingEvidence = async (
       id: artifactVersionId,
       ...(options.artifactView ? { view: options.artifactView } : {})
     })
+  }
+  for (const artifactRead of options.artifactReads ?? []) {
+    await callTool('read_artifact', artifactRead)
   }
 
   const scopedChecks = checks.map((check) => {
@@ -141,4 +172,5 @@ export const callSubmitFindingsAfterReadingEvidence = async (
     }
   })
   await callTool('submit_findings', { checks: scopedChecks })
+  if (options.capture) return { blocks, toolResults }
 }

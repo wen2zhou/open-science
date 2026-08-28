@@ -764,13 +764,19 @@ export class ReviewerMcpServer {
                 ? artifact.limitations.map((limitation) => ({ ...limitation }))
                 : []
             const isMedia = 'kind' in artifact && artifact.kind === 'media'
+            const media = 'media' in artifact ? artifact.media : undefined
             const supportsImageInput =
               typeof this.options.supportsImageInput === 'function'
                 ? this.options.supportsImageInput()
                 : this.options.supportsImageInput === true
             const mediaDelivered =
               isMedia && artifact.delivery === 'delivered' && supportsImageInput
-            if (isMedia && !supportsImageInput) {
+            const hasImageContent = isMedia || (media?.length ?? 0) > 0
+            if (
+              hasImageContent &&
+              !supportsImageInput &&
+              !limitations.some(({ kind }) => kind === 'unsupported-model-capability')
+            ) {
               limitations = [
                 ...limitations,
                 {
@@ -789,12 +795,14 @@ export class ReviewerMcpServer {
                   limitation.kind === 'budget-exhausted' ||
                   limitation.kind === 'unsupported-model-capability'
               )
-            const media = 'media' in artifact ? artifact.media : undefined
             this.evidenceAccess.artifactReads.set(id, {
               role: trustedRole,
               traceRead: attempted.traceRead,
               contentRead: attempted.contentRead,
-              mediaRead: attempted.mediaRead || mediaDelivered || (media?.length ?? 0) > 0,
+              mediaRead:
+                attempted.mediaRead ||
+                mediaDelivered ||
+                (supportsImageInput && (media?.length ?? 0) > 0),
               partial: attempted.partial || partial,
               requestedTargets: attempted.requestedTargets,
               actualTargets:
@@ -832,13 +840,16 @@ export class ReviewerMcpServer {
             const textArtifact = media
               ? {
                   ...artifact,
-                  media: media.map(({ pageNumber, mimeType }) => ({ pageNumber, mimeType }))
+                  media: media.map(({ pageNumber, mimeType }) => ({ pageNumber, mimeType })),
+                  limitations
                 }
-              : artifact
+              : 'limitations' in artifact
+                ? { ...artifact, limitations }
+                : artifact
             return {
               content: [
                 { type: 'text' as const, text: JSON.stringify(textArtifact) },
-                ...(media ?? []).map(({ data, mimeType }) => ({
+                ...(supportsImageInput ? (media ?? []) : []).map(({ data, mimeType }) => ({
                   type: 'image' as const,
                   data,
                   mimeType
