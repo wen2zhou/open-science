@@ -29,6 +29,7 @@ type GateFixture = {
   artifact?: ReviewerArtifactReadResult
   artifactRead?: Record<string, unknown>
   artifactView?: 'trace' | 'content'
+  executionActivityIds?: string[]
   supportsImageInput?: boolean
   checks: SubmittedReviewerCheck[]
   expectedOutcome: 'pass' | 'flagged'
@@ -224,6 +225,7 @@ const fixtures: GateFixture[] = [
         }
       }
     ],
+    executionActivityIds: ['gate-activity'],
     expectedOutcome: 'flagged'
   },
   {
@@ -306,6 +308,7 @@ describe('Reviewer enhancement executable end-to-end gate', () => {
           artifactReads: fixture.artifactRead
             ? [fixture.artifactRead as { id: string }]
             : undefined,
+          executionActivityIds: fixture.executionActivityIds,
           capture: true
         }
       )
@@ -319,6 +322,11 @@ describe('Reviewer enhancement executable end-to-end gate', () => {
       ).toBe(fixture.expectedOutcome)
       expect(protocol.toolResults.map(({ name }) => name)).toContain('read_turn')
       expect(protocol.toolResults.at(-1)?.name).toBe('submit_findings')
+      if (fixture.executionActivityIds) {
+        expect(server.evidenceCoverage.executionLogActivityIds).toEqual(
+          new Set(fixture.executionActivityIds)
+        )
+      }
       if (fixture.expectedCoverage) {
         const versionId = fixture.artifactRole === 'source_document' ? SOURCE_ID : VERSION_ID
         expect(server.evidenceCoverage.artifactReads?.get(versionId)).toMatchObject(
