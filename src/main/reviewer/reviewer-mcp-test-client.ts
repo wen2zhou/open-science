@@ -27,6 +27,13 @@ export type FrozenReviewerTurnBlock = {
   contentHash: string
   role?: string
   content?: string
+  responseToMessageId?: string
+  interrupted?: boolean
+  turnTerminationHistory?: Array<{
+    kind: string
+    stopReason?: string
+    timestamp: number
+  }>
   artifactIds?: string[]
   turnPlan?: {
     versionId: string
