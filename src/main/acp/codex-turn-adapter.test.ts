@@ -183,7 +183,7 @@ describe('Codex turn adapter', () => {
     })
   })
 
-  it('omits an unsafe context numerator without discarding otherwise valid usage', async () => {
+  it('omits unsafe usage when the category total and context numerator overflow', async () => {
     const probe = await createCodexTurnAdapter().begin({
       providerSessionId: 'provider-session-1',
       cwd: '/workspace'
@@ -198,22 +198,7 @@ describe('Codex turn adapter', () => {
       }
     } satisfies PromptResponse
 
-    expect(await probe.finalize({ response })).toEqual({
-      turnUsage: {
-        inputTokens: Number.MAX_SAFE_INTEGER,
-        cacheTokens: 1,
-        cachedReadTokens: 1,
-        cachedWriteTokens: 0,
-        outputTokens: 0
-      },
-      lastModelStepUsage: {
-        inputTokens: Number.MAX_SAFE_INTEGER,
-        cacheTokens: 1,
-        cachedReadTokens: 1,
-        cachedWriteTokens: 0,
-        outputTokens: 0
-      }
-    })
+    expect(await probe.finalize({ response })).toEqual({})
   })
 
   it('publishes terminal facts at most once and closes cancelled probes', async () => {
