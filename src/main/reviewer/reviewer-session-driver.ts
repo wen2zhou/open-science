@@ -46,9 +46,10 @@ type DriveOptions = {
   maxUpdates: number
   signal?: AbortSignal
   logLimits?: Partial<ReviewerLogLimits>
+  finalLogEntryReserveBytes?: number
 }
 
-type DriveCallbacks = {
+export type ReviewerLogDriveCallbacks = {
   // Called for each update that should be captured into the reviewer log.
   // The caller assembles streaming chunks into whole entries and appends them.
   onUpdate?: (entry: ReviewerLogEntry) => void
@@ -95,9 +96,13 @@ class ReviewerLogBudget {
 
   constructor(
     private readonly maxBytes: number,
-    private readonly onUpdate: (entry: ReviewerLogEntry) => void
+    private readonly onUpdate: (entry: ReviewerLogEntry) => void,
+    finalEntryReserveBytes = 0
   ) {
-    this.contentLimit = Math.max(2, maxBytes - REVIEW_LOG_TRUNCATION_RESERVE_BYTES)
+    this.contentLimit = Math.max(
+      2,
+      maxBytes - Math.max(REVIEW_LOG_TRUNCATION_RESERVE_BYTES, finalEntryReserveBytes)
+    )
   }
 
   emit(entry: ReviewerLogEntry): void {
@@ -113,6 +118,21 @@ class ReviewerLogBudget {
     this.entryBytes.set(entry, bytes)
     this.totalBytes += separatorBytes + bytes
     this.onUpdate(entry)
+  }
+
+  remainingFinalEntryBytes(): number {
+    return Math.max(0, this.maxBytes - this.totalBytes - (this.entries.length > 0 ? 1 : 0))
+  }
+
+  emitFinal(entry: ReviewerLogEntry): boolean {
+    const bytes = serializedEntryBytes(entry)
+    const separatorBytes = this.entries.length > 0 ? 1 : 0
+    if (this.totalBytes + separatorBytes + bytes > this.maxBytes) return false
+    this.entries.push(entry)
+    this.entryBytes.set(entry, bytes)
+    this.totalBytes += separatorBytes + bytes
+    this.onUpdate(entry)
+    return true
   }
 
   reconcileTool(
@@ -172,6 +192,28 @@ class ReviewerLogBudget {
       this.onUpdate(marker)
     }
   }
+}
+
+export const appendFinalReviewerLogEntry = (
+  callbacks: ReviewerLogDriveCallbacks,
+  createEntry: (maxEntryBytes: number) => ReviewerLogEntry
+): boolean => {
+  const budget = callbacks.logState?.budget
+  if (!budget) return false
+  return budget.emitFinal(createEntry(budget.remainingFinalEntryBytes()))
+}
+
+export const initializeReviewerLogBudget = (
+  callbacks: ReviewerLogDriveCallbacks,
+  options: { maxLogBytes?: number; finalLogEntryReserveBytes?: number } = {}
+): void => {
+  if (!callbacks.onUpdate || callbacks.logState?.budget) return
+  callbacks.logState ??= {}
+  callbacks.logState.budget = new ReviewerLogBudget(
+    options.maxLogBytes ?? DEFAULT_REVIEWER_LOG_LIMITS.maxLogBytes,
+    callbacks.onUpdate,
+    options.finalLogEntryReserveBytes
+  )
 }
 
 // Extracts a text chunk from an ACP update's content field (may be a { type:'text', text:string } block).
@@ -438,14 +480,18 @@ const ABORTED = Symbol('reviewer-drive-aborted')
 export const driveReviewerToStop = async (
   session: DrivableSession,
   options: DriveOptions,
-  callbacks?: DriveCallbacks
+  callbacks?: ReviewerLogDriveCallbacks
 ): Promise<string | undefined> => {
   const { timeoutMs, maxUpdates, signal } = options
   const logLimits = { ...DEFAULT_REVIEWER_LOG_LIMITS, ...options.logLimits }
   const { onUpdate, logState } = callbacks ?? {}
   let logBudget = logState?.budget
   if (!logBudget && onUpdate) {
-    logBudget = new ReviewerLogBudget(logLimits.maxLogBytes, onUpdate)
+    logBudget = new ReviewerLogBudget(
+      logLimits.maxLogBytes,
+      onUpdate,
+      options.finalLogEntryReserveBytes
+    )
     if (logState) logState.budget = logBudget
   }
   const emitUpdate = logBudget

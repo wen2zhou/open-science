@@ -856,7 +856,64 @@ describe('ReviewRepository — reviewerLog round-trip', () => {
         status: 'ok',
         exitCode: 0
       },
-      { kind: 'message', text: 'Review complete.' }
+      { kind: 'message', text: 'Review complete.' },
+      {
+        kind: 'tool',
+        toolName: 'review_coverage',
+        rawOutput: JSON.stringify({
+          turnRead: true,
+          artifactReads: [
+            {
+              versionId: 'source-v1',
+              role: 'source_document',
+              traceRead: true,
+              contentRead: true,
+              mediaRead: false,
+              requestedTargets: [{ pages: [4] }],
+              actualTargets: [{ pages: [4] }],
+              partial: false,
+              limitations: []
+            },
+            {
+              versionId: 'source-unavailable',
+              role: 'source_document',
+              traceRead: false,
+              contentRead: true,
+              mediaRead: false,
+              requestedTargets: [{ pages: [1] }],
+              actualTargets: [],
+              partial: true,
+              limitations: [
+                {
+                  kind: 'content-missing',
+                  subjectId: 'source-unavailable',
+                  detail: 'Source content missing from immutable storage'
+                }
+              ]
+            },
+            {
+              versionId: 'source-sheet',
+              role: 'source_document',
+              traceRead: false,
+              contentRead: true,
+              mediaRead: false,
+              requestedTargets: [
+                { sheet: 'Results', rowStart: 100, rowEnd: 120, columns: ['D', 'E'] }
+              ],
+              actualTargets: [],
+              partial: true,
+              limitations: [
+                {
+                  kind: 'budget-exhausted',
+                  subjectId: 'source-sheet',
+                  detail: 'Reviewer session budget exhausted'
+                }
+              ]
+            }
+          ]
+        }),
+        status: 'ok'
+      }
     ]
 
     await repository.createReview({
@@ -873,7 +930,7 @@ describe('ReviewRepository — reviewerLog round-trip', () => {
     const reviews = await repository.getReviewsForSession('session-1')
     expect(reviews).toHaveLength(1)
     const reloaded = reviews[0]!
-    expect(reloaded.reviewerLog).toHaveLength(3)
+    expect(reloaded.reviewerLog).toHaveLength(4)
     expect(reloaded.reviewerLog[0]).toEqual({
       kind: 'thought',
       text: 'Let me read the turn first.'
@@ -890,6 +947,31 @@ describe('ReviewRepository — reviewerLog round-trip', () => {
       exitCode: 0
     })
     expect(reloaded.reviewerLog[2]).toEqual({ kind: 'message', text: 'Review complete.' })
+    expect(
+      JSON.parse(
+        reloaded.reviewerLog[3]?.kind === 'tool' ? reloaded.reviewerLog[3].rawOutput! : '{}'
+      )
+    ).toMatchObject({
+      artifactReads: expect.arrayContaining([
+        expect.objectContaining({
+          versionId: 'source-v1',
+          role: 'source_document',
+          mediaRead: false
+        }),
+        expect.objectContaining({
+          versionId: 'source-unavailable',
+          requestedTargets: [{ pages: [1] }],
+          actualTargets: [],
+          limitations: [expect.objectContaining({ kind: 'content-missing' })]
+        }),
+        expect.objectContaining({
+          versionId: 'source-sheet',
+          requestedTargets: [{ sheet: 'Results', rowStart: 100, rowEnd: 120, columns: ['D', 'E'] }],
+          actualTargets: [],
+          limitations: [expect.objectContaining({ kind: 'budget-exhausted' })]
+        })
+      ])
+    })
 
     await client.$disconnect()
   })

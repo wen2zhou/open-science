@@ -156,8 +156,10 @@ describe('REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND — yaml-grounded disciplines', (
       expect(rubric).toMatch(/no.*reasoning|reasoning.*no longer|do not.*reasoning/i)
     })
 
-    it('specifies call submit_findings exactly once, no prose', () => {
-      expect(rubric).toMatch(/exactly once|call.*once/i)
+    it('specifies one accepted submission with validation recovery and no prose', () => {
+      expect(rubric).toMatch(/one accepted|accepted submission/i)
+      expect(rubric).toMatch(/validation error[\s\S]*correct[\s\S]*retry/i)
+      expect(rubric).toMatch(/second accepted|after.*accepted[\s\S]*closed/i)
       expect(rubric).toMatch(/no.*prose|do not write.*prose/i)
     })
 
@@ -173,6 +175,50 @@ describe('REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND — yaml-grounded disciplines', (
   describe('warn criteria — artifact-reserved', () => {
     it('mentions warn is reserved for artifacts (labels/legends/units)', () => {
       expect(rubric).toMatch(/warn.*artifact|label.*legend.*unit|artifact.*warn/i)
+    })
+  })
+
+  describe('single-turn evidence policy', () => {
+    it('routes claims through their minimum sufficient evidence', () => {
+      expect(rubric).toMatch(/minimum sufficient evidence/i)
+      expect(rubric).toMatch(/execution.*generation.*saved.*execution log|action claim.*execution/i)
+      expect(rubric).toMatch(/visible-content claim[\s\S]*artifact content/i)
+      expect(rubric).toMatch(/source document claim[\s\S]*source document content/i)
+    })
+
+    it('uses trusted source roles and immutable current-Turn reachability without history', () => {
+      expect(rubric).toMatch(/never elevate a work[\s\S]*filename.*contents.*agent/i)
+      expect(rubric).toMatch(
+        /earlier-turn upload[\s\S]*current execution or artifact provenance[\s\S]*immutable version/i
+      )
+      expect(rubric).toMatch(/do not read earlier conversation history/i)
+    })
+
+    it('treats attached/generated/saved/produced alone as existence or action claims', () => {
+      expect(rubric).toMatch(
+        /attached.*generated.*saved.*produced[\s\S]*existence or action claim[\s\S]*not.*content/i
+      )
+    })
+
+    it('keeps ordinary unavailable evidence in Coverage instead of manufacturing checks', () => {
+      expect(rubric).toMatch(/coverage is not a verdict/i)
+      expect(rubric).toMatch(
+        /missing.*unavailable.*unsupported.*partial.*budget[\s\S]*not.*pass.*warn.*fail/i
+      )
+      expect(rubric).toMatch(/coverage limitation[\s\S]*do not create.*check/i)
+      expect(rubric).not.toMatch(
+        /use "warn" when you attempted verification[\s\S]*could not confirm or refute/i
+      )
+      expect(rubric).toMatch(
+        /no "inconclusive" status[\s\S]*ordinary non-confirmation[\s\S]*coverage[\s\S]*do not convert it into warn or fail/i
+      )
+      expect(rubric).toMatch(
+        /source document[\s\S]*target location itself is insufficient or[\s\S]*truncated[\s\S]*narrow exception/i
+      )
+    })
+
+    it('accepts a partial targeted response when the requested target covers the claim', () => {
+      expect(rubric).toMatch(/partial[\s\S]*target[\s\S]*fully covers the claim[\s\S]*sufficient/i)
     })
   })
 })

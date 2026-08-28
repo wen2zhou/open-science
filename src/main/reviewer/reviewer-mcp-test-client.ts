@@ -38,7 +38,8 @@ const parseMcpSseBody = (body: string): JsonRpcResponse => {
 export const callSubmitFindingsAfterReadingEvidence = async (
   mcpBaseUrl: string,
   token: string,
-  checks: SubmittedReviewerCheck[]
+  checks: SubmittedReviewerCheck[],
+  options: { artifactView?: 'trace' | 'content' } = {}
 ): Promise<void> => {
   const baseHeaders = {
     'content-type': 'application/json',
@@ -108,7 +109,10 @@ export const callSubmitFindingsAfterReadingEvidence = async (
   for (const artifactVersionId of new Set(
     checks.flatMap((check) => (check.artifactVersionId ? [check.artifactVersionId] : []))
   )) {
-    await callTool('read_artifact', { id: artifactVersionId })
+    await callTool('read_artifact', {
+      id: artifactVersionId,
+      ...(options.artifactView ? { view: options.artifactView } : {})
+    })
   }
 
   const scopedChecks = checks.map((check) => {

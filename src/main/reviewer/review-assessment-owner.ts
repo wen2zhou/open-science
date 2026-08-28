@@ -16,16 +16,22 @@ import type { PersistedChatSession } from '../../shared/session-persistence'
 import { createLogger, errorLogFields } from '../logger'
 import type { ReviewerAcpRuntime } from './acp-runtime'
 import { resolveTurnScopeWithArtifactDigests } from './artifact-digest'
-import { ReviewerHostServer, type ArtifactVersionContentResolver } from './host-sdk'
-import { ReviewerMcpServer } from './mcp-server'
+import { ReviewerHostServer, type ArtifactVersionEvidenceResolvers } from './host-sdk'
+import { ReviewerMcpServer, serializeReviewerEvidenceCoverage } from './mcp-server'
 import type { ReviewRepository } from './repository'
-import { driveReviewerToStop } from './reviewer-session-driver'
+import {
+  appendFinalReviewerLogEntry,
+  driveReviewerToStop,
+  initializeReviewerLogBudget,
+  type ReviewerLogDriveCallbacks
+} from './reviewer-session-driver'
 import {
   INITIAL_REVIEW_CHECKABILITY_GUIDANCE,
   REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND
 } from './rubric'
 import { buildReviewScopeSnapshot } from './scope-snapshot'
 import { assertDelegatedReviewEvidenceScope } from './scope'
+import { resolveReviewerTurnEvidence, type ReviewerFileEvidenceResolver } from './turn-evidence'
 
 const log = createLogger('reviewer:orchestrator')
 
@@ -42,7 +48,8 @@ type CommonAssessmentOptions = {
   runSessionMutation?: ReviewMutationRunner
   acpRuntime: ReviewerAcpRuntime
   artifactStorageRoot: string
-  artifactVersionContentResolver?: ArtifactVersionContentResolver
+  artifactVersionResolvers?: ArtifactVersionEvidenceResolvers
+  reviewerFileEvidenceResolver?: ReviewerFileEvidenceResolver
   reviewerMcpEntryPath?: string
   model: string
   onReviewUpdate?: (review: ReviewWithChecks) => void
@@ -84,8 +91,81 @@ const REVIEWER_BRIDGE_SCOPE_ERROR =
 
 const REVIEWER_PROTOCOL_RECOVERY_PROMPT =
   'Your previous turn ended without calling submit_findings. Continue using only the provided ' +
-  'Reviewer MCP tools: call read_turn, then call submit_findings exactly once. Do not use any ' +
-  'other tools or write assistant prose.'
+  'Reviewer MCP tools: call read_turn, then complete the Review with one accepted submit_findings ' +
+  'submission. Correct validation errors within this Review Turn. Do not use any other tools or ' +
+  'write assistant prose.'
+
+const REVIEWER_COVERAGE_LOG_RESERVE_BYTES = 8 * 1_024
+
+const buildBoundedCoverageLogEntry = (
+  coverage: ReturnType<typeof serializeReviewerEvidenceCoverage>,
+  maxEntryBytes: number
+): ReviewerLogEntry => {
+  const entryFor = (value: typeof coverage): ReviewerLogEntry => ({
+    kind: 'tool',
+    toolName: 'review_coverage',
+    rawOutput: JSON.stringify(value),
+    status: 'ok'
+  })
+  const fits = (entry: ReviewerLogEntry): boolean =>
+    Buffer.byteLength(JSON.stringify(entry), 'utf8') <= maxEntryBytes
+  const full = entryFor(coverage)
+  if (fits(full)) return full
+
+  const bounded: typeof coverage = {
+    ...coverage,
+    executionLogActivityIds: [...coverage.executionLogActivityIds],
+    artifactReads: coverage.artifactReads.map((read) => ({
+      ...read,
+      requestedTargets: [...read.requestedTargets],
+      actualTargets: [...read.actualTargets],
+      limitations: [...read.limitations]
+    })),
+    truncation: {
+      kind: 'coverage-truncated',
+      omittedArtifactReads: 0,
+      omittedExecutionLogActivityIds: 0,
+      omittedRequestedTargets: 0,
+      omittedActualTargets: 0,
+      omittedLimitations: 0
+    }
+  }
+  const truncation = bounded.truncation!
+  let entry = entryFor(bounded)
+  while (!fits(entry)) {
+    const read = bounded.artifactReads.findLast((candidate) => candidate.limitations.length > 0)
+    if (read) {
+      read.limitations = read.limitations.slice(0, -1)
+      truncation.omittedLimitations++
+    } else {
+      const actualRead = bounded.artifactReads.findLast(
+        (candidate) => candidate.actualTargets.length > 0
+      )
+      if (actualRead) {
+        actualRead.actualTargets = actualRead.actualTargets.slice(0, -1)
+        truncation.omittedActualTargets++
+      } else {
+        const requestedRead = bounded.artifactReads.findLast(
+          (candidate) => candidate.requestedTargets.length > 0
+        )
+        if (requestedRead) {
+          requestedRead.requestedTargets = requestedRead.requestedTargets.slice(0, -1)
+          truncation.omittedRequestedTargets++
+        } else if (bounded.artifactReads.length > 0) {
+          bounded.artifactReads.pop()
+          truncation.omittedArtifactReads++
+        } else if (bounded.executionLogActivityIds.length > 0) {
+          bounded.executionLogActivityIds.pop()
+          truncation.omittedExecutionLogActivityIds++
+        } else {
+          break
+        }
+      }
+    }
+    entry = entryFor(bounded)
+  }
+  return entry
+}
 
 type ReviewerCleanupResult = {
   rejectedToolCalls: number
@@ -148,7 +228,8 @@ export const runReviewAssessment = async (
     runSessionMutation,
     acpRuntime,
     artifactStorageRoot,
-    artifactVersionContentResolver,
+    artifactVersionResolvers,
+    reviewerFileEvidenceResolver,
     reviewerMcpEntryPath,
     model,
     onReviewUpdate,
@@ -162,17 +243,28 @@ export const runReviewAssessment = async (
     session,
     scopeTurnMessageId,
     artifactStorageRoot,
-    artifactVersionContentResolver,
+    artifactVersionResolvers?.content,
     evidenceScope?.messageBranchId
   )
   if (evidenceScope) assertDelegatedReviewEvidenceScope(session, scope, evidenceScope)
-  const scopeSnapshot = buildReviewScopeSnapshot(session, scope)
+  const turnEvidence = await resolveReviewerTurnEvidence(
+    session,
+    scope,
+    reviewerFileEvidenceResolver
+  )
+  const enrichedScope: TurnScope = {
+    ...scope,
+    ...(turnEvidence.sourceDocumentVersionIds.length > 0
+      ? { sourceDocumentVersionIds: turnEvidence.sourceDocumentVersionIds }
+      : {})
+  }
+  const scopeSnapshot = buildReviewScopeSnapshot(session, enrichedScope, turnEvidence)
   let review = await runReviewMutation(runSessionMutation, () =>
     reviewRepository.createReview({
       projectId,
       sessionId,
       turnMessageId,
-      scope,
+      scope: enrichedScope,
       lifecycle: 'running',
       model,
       scopeSnapshot
@@ -197,23 +289,30 @@ export const runReviewAssessment = async (
   let reviewerSessionFailed = false
   let reviewerSessionError: unknown
   const capturedLog: ReviewerLogEntry[] = []
-  const reviewerLogDriveCallbacks = {
+  const reviewerLogDriveCallbacks: ReviewerLogDriveCallbacks = {
     onUpdate: (entry: ReviewerLogEntry): void => {
       capturedLog.push(entry)
     },
     logState: {}
   }
+  initializeReviewerLogBudget(reviewerLogDriveCallbacks, {
+    finalLogEntryReserveBytes: REVIEWER_COVERAGE_LOG_RESERVE_BYTES
+  })
 
   try {
     const evidence = new ReviewerHostServer(
       session,
-      scope,
+      enrichedScope,
       artifactStorageRoot,
-      artifactVersionContentResolver,
-      scopeSnapshot
+      artifactVersionResolvers?.content,
+      scopeSnapshot,
+      {},
+      artifactVersionResolvers?.trace,
+      artifactVersionResolvers?.pagedContent,
+      turnEvidence.sourceDocumentEvidence
     )
     mcpServer = new ReviewerMcpServer(
-      scope,
+      enrichedScope,
       async (checks: NewCheck[]) => {
         checksReceived = checks
         checksSubmitted = true
@@ -228,7 +327,7 @@ export const runReviewAssessment = async (
     )
     await mcpServer.start()
 
-    const reviewerPrompt = buildReviewerPrompt(scope, options.mode, trackedChecks)
+    const reviewerPrompt = buildReviewerPrompt(enrichedScope, options.mode, trackedChecks)
     const built = await acpRuntime.buildReviewerSession({
       cwd: session.cwd || homedir(),
       mcpServers: [mcpServer.toAcpMcpServerConfig()],
@@ -279,6 +378,12 @@ export const runReviewAssessment = async (
     reviewerSessionFailed = true
     reviewerSessionError = error
   } finally {
+    if (mcpServer) {
+      const coverage = serializeReviewerEvidenceCoverage(mcpServer.evidenceCoverage)
+      appendFinalReviewerLogEntry(reviewerLogDriveCallbacks, (maxEntryBytes) =>
+        buildBoundedCoverageLogEntry(coverage, maxEntryBytes)
+      )
+    }
     const cleanup = await cleanupReviewerResources(acpRuntime, reviewerSession, mcpServer)
     rejectedToolCalls = cleanup.rejectedToolCalls
     reviewerBridgeScoped = cleanup.reviewerBridgeScoped
