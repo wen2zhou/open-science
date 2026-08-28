@@ -20,12 +20,24 @@ type JsonRpcResponse = {
   error?: { message?: string }
 }
 
-type FrozenBlock = {
+export type FrozenReviewerTurnBlock = {
   blockIndex: number
   kind: 'message' | 'activity'
   sourceId: string
   contentHash: string
+  role?: string
+  content?: string
+  artifactIds?: string[]
+  turnPlan?: {
+    status: string
+    content: unknown
+    binding: string
+  }
 }
+
+export type ReviewerCheckFixture =
+  | SubmittedReviewerCheck[]
+  | ((blocks: readonly FrozenReviewerTurnBlock[]) => SubmittedReviewerCheck[])
 
 const MCP_ACCEPT = 'application/json, text/event-stream'
 
@@ -38,7 +50,7 @@ const parseMcpSseBody = (body: string): JsonRpcResponse => {
 export const callSubmitFindingsAfterReadingEvidence = async (
   mcpBaseUrl: string,
   token: string,
-  checks: SubmittedReviewerCheck[],
+  checkFixture: ReviewerCheckFixture,
   options: { artifactView?: 'trace' | 'content' } = {}
 ): Promise<void> => {
   const baseHeaders = {
@@ -95,7 +107,8 @@ export const callSubmitFindingsAfterReadingEvidence = async (
   }
 
   const turn = await callTool('read_turn', {})
-  const blocks = JSON.parse(turn.content?.[0]?.text ?? '[]') as FrozenBlock[]
+  const blocks = JSON.parse(turn.content?.[0]?.text ?? '[]') as FrozenReviewerTurnBlock[]
+  const checks = typeof checkFixture === 'function' ? checkFixture(blocks) : checkFixture
   const blocksByIndex = new Map(blocks.map((block) => [block.blockIndex, block]))
   const activityIds = new Set(
     checks.flatMap((check) => {

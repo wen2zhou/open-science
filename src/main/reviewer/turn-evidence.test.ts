@@ -218,4 +218,62 @@ describe('Reviewer Turn evidence discovery', () => {
     expect(blocks.every((block) => !('turnPlan' in block.payload))).toBe(true)
     expect(blocks.every((block) => !('fileEvidence' in block.payload))).toBe(true)
   })
+
+  it('exposes routed user requirements and cancellation history to the reviewer', async () => {
+    const interrupted = session([])
+    interrupted.messages[0].contextWindowSamples = [
+      {
+        id: 'cancel-1',
+        timestamp: 2,
+        termination: { kind: 'stop', stopReason: 'cancelled' },
+        contextWindow: { used: 10, size: 100 },
+        source: 'provider-response'
+      },
+      {
+        id: 'complete-1',
+        timestamp: 3,
+        termination: { kind: 'stop', stopReason: 'end_turn' },
+        contextWindow: { used: 12, size: 100 },
+        source: 'provider-response'
+      }
+    ]
+    interrupted.messages.splice(1, 0, {
+      id: 'user-intervention',
+      role: 'user',
+      content: 'Stop generating the CSV; provide a prose summary instead.',
+      responseToMessageId: 'user-1',
+      status: 'complete',
+      eventIds: [],
+      createdAt: 2.5,
+      updatedAt: 2.5
+    })
+    const interventionScope: TurnScope = {
+      ...scope,
+      blocks: [
+        scope.blocks[0]!,
+        {
+          id: 'message:user-intervention',
+          kind: 'message',
+          sourceId: 'user-intervention',
+          blockIndex: 1,
+          contentHash: 'i'
+        },
+        { ...scope.blocks[1]!, blockIndex: 2 },
+        { ...scope.blocks[2]!, blockIndex: 3 }
+      ]
+    }
+
+    const evidence = await resolveReviewerTurnEvidence(interrupted, interventionScope)
+    const blocks = buildReviewScopeSnapshot(interrupted, interventionScope, evidence)
+
+    expect(blocks[0]?.payload.turnTerminationHistory).toEqual([
+      { kind: 'stop', stopReason: 'cancelled', timestamp: 2 },
+      { kind: 'stop', stopReason: 'end_turn', timestamp: 3 }
+    ])
+    expect(blocks[1]?.payload).toMatchObject({
+      role: 'user',
+      responseToMessageId: 'user-1',
+      content: 'Stop generating the CSV; provide a prose summary instead.'
+    })
+  })
 })

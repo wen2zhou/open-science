@@ -31,6 +31,17 @@ const activityPayload = (activity: PersistedToolActivity): Record<string, unknow
   terminalExitCode: activity.terminalExitCode
 })
 
+const turnTerminationHistory = (
+  message: PersistedChatSession['messages'][number] | undefined
+): Array<Record<string, unknown>> | undefined => {
+  const history = message?.contextWindowSamples?.map((sample) => ({
+    kind: sample.termination.kind,
+    ...(sample.termination.kind === 'stop' ? { stopReason: sample.termination.stopReason } : {}),
+    timestamp: sample.timestamp
+  }))
+  return history && history.length > 0 ? history : undefined
+}
+
 const SECRET_KEY = /(authorization|cookie|credential|password|secret|token|api[_-]?key)/iu
 const MAX_ARRAY_ENTRIES = 200
 const MAX_OBJECT_ENTRIES = 200
@@ -99,6 +110,9 @@ export const buildReviewScopeSnapshot = (
             return {
               role: message?.role,
               content: message?.content,
+              responseToMessageId: message?.responseToMessageId,
+              interrupted: message?.interrupted,
+              turnTerminationHistory: turnTerminationHistory(message),
               artifactIds: message?.artifactIds
             }
           })()

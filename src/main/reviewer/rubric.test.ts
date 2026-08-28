@@ -86,6 +86,16 @@ describe('REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND — yaml-grounded disciplines', (
         /not.found.*convicts|resolves to nothing.*finding|traces nowhere.*finding/i
       )
     })
+
+    it('keeps current-Turn retrieval framing mandatory even when a specific identifier is present', () => {
+      expect(rubric).not.toContain(
+        'The moment a specific identifier is present, this exception governs regardless of framing.'
+      )
+      expect(rubric).toMatch(
+        /specific identifier[\s\S]*unless the target turn explicitly frames[\s\S]*newly retrieved or established/i
+      )
+      expect(rubric).toMatch(/earlier-turn carried identifiers[\s\S]*ordinary abstention rule/i)
+    })
   })
 
   // -----------------------------------------------------------------------
@@ -179,6 +189,26 @@ describe('REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND — yaml-grounded disciplines', (
   })
 
   describe('single-turn evidence policy', () => {
+    it('uses only effective required Plan deliverables for completion', () => {
+      expect(rubric).toMatch(/effective current-turn plan/i)
+      expect(rubric).toMatch(/missing required deliverable[\s\S]*fail/i)
+      expect(rubric).toMatch(/superseded[\s\S]*optional[\s\S]*not requirements/i)
+    })
+
+    it('treats user stops and replacement instructions as completion boundaries', () => {
+      expect(rubric).toMatch(/user (stop|cancellation)[\s\S]*completion boundary/i)
+      expect(rubric).toMatch(/interrupted work[\s\S]*not a missing deliverable/i)
+      expect(rubric).toMatch(/ignores|works around/i)
+      expect(rubric).toMatch(/reason or replacement instruction[\s\S]*current-turn requirement/i)
+    })
+
+    it('abstains across turns except for newly established concrete external references', () => {
+      expect(rubric).toMatch(/may originate in an earlier turn[\s\S]*no finding/i)
+      expect(rubric).toMatch(
+        /newly retrieved or established[\s\S]*warn in prose[\s\S]*fail in a saved artifact/i
+      )
+    })
+
     it('routes claims through their minimum sufficient evidence', () => {
       expect(rubric).toMatch(/minimum sufficient evidence/i)
       expect(rubric).toMatch(/execution.*generation.*saved.*execution log|action claim.*execution/i)

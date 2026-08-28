@@ -944,6 +944,12 @@ describe('ReviewerCard — rubric module assertion', () => {
     )
   })
 
+  it('rubric contains the targeted-source unverifiable-after-attempt warn criterion', async () => {
+    const { REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND } = await import('../../../main/reviewer/rubric')
+    expect(REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND).toContain('warn')
+    expect(REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND).toContain('unverifiable after the attempt')
+  })
+
   it('rubric contains verification discipline including "only report when you have evidence"', async () => {
     const { REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND } = await import('../../../main/reviewer/rubric')
     expect(REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND).toContain('contradicts')
@@ -956,6 +962,7 @@ describe('ReviewerCard — rubric module assertion', () => {
     expect(REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND).toContain(
       'validation error is not an accepted submission'
     )
+    expect(REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND).toMatch(/one accepted submit_findings submission/i)
   })
 
   it('rubric scopes Phase-1 reference-checking to in-session sources only', async () => {

@@ -61,6 +61,27 @@ export const REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND = [
   '"Would a reader acting on this turn be misled, or is the work incomplete?"',
   '',
 
+  '## Current-Turn completion boundary',
+  'Treat only the starting user request, routed user interventions in read_turn, and the effective current-Turn Plan',
+  'attached to that starting message as completion authority. A missing required deliverable',
+  'inside that boundary is a `fail`. Superseded Plan content, unapproved Plan content,',
+  'and work explicitly described as optional are not requirements and cannot create a missing-',
+  'deliverable finding. Do not revive requirements from an earlier Turn.',
+  '',
+  'A user stop or cancellation changes the completion boundary. Interrupted work is not a missing deliverable',
+  'unless later current-Turn evidence shows the Agent ignores the stop or',
+  'worked around it and continued that work. A reason or replacement instruction carried by the',
+  'stop is itself a current-Turn requirement: check whether the Agent stopped, adjusted, or replaced',
+  'the work as directed. An unqualified stop is satisfied when the Agent stops and awaits direction;',
+  'continuing around it is a completion-boundary violation.',
+  '',
+  'For an ordinary value or claimed action that may originate in an earlier Turn, produce no finding',
+  'when current-Turn evidence neither supports nor contradicts it. Do not treat absence as proof that',
+  'the Agent fabricated or omitted earlier work. The only not-found exception is a concrete external',
+  'reference explicitly presented as newly retrieved or established in this Turn: if untraceable,',
+  'warn in prose and fail in a saved artifact under the fabricated-reference rule below.',
+  '',
+
   // §5.3 — Artifact vs prose weighting
   // yaml:88-94 — restored to yaml fidelity (not the flattened current wording)
   '## Weight by where the claim lives',
@@ -213,7 +234,9 @@ export const REVIEWER_RUBRIC_SYSTEM_PROMPT_APPEND = [
   // yaml:224-229 — off-ramp: background-knowledge attribution without specific identifier
   'Off-ramp: a background-knowledge attribution carrying NO specific checkable identifier',
   '(no PMID, DOI, accession, or bare "Author et al. YEAR") is domain recall, not this exception.',
-  'The moment a specific identifier is present, this exception governs regardless of framing.',
+  'A specific identifier is still outside this exception unless the target Turn explicitly frames',
+  'it as newly retrieved or established. Earlier-Turn carried identifiers remain subject to the',
+  'ordinary abstention rule when current-Turn evidence neither supports nor contradicts them.',
   '',
 
   // §5.9 — Verification discipline (prevents hallucinated findings)
