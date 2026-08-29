@@ -587,6 +587,23 @@ describe('WorkspaceMessageItem user message actions', () => {
     expect(container.querySelector('[data-slot="user-message-bubble"]')).toBeNull()
     expect(container.querySelector('[aria-label="Edit message"]')).toBeNull()
   })
+
+  it('keeps a reloaded Compute completion presentation out of the user bubble', async () => {
+    await renderItem(
+      createMessage({
+        content: 'A remote job has finished. Please analyze the results.',
+        presentation: { kind: 'compute-job-completion' }
+      }),
+      { canEditMessage: true }
+    )
+
+    expect(container.querySelector('[data-testid="compute-job-completion-event"]')).not.toBeNull()
+    expect(container.textContent).toContain('Remote job completed')
+    expect(container.textContent).toContain('Analysis started automatically')
+    expect(container.textContent).not.toContain('A remote job has finished')
+    expect(container.querySelector('[data-slot="user-message-bubble"]')).toBeNull()
+    expect(container.querySelector('[aria-label="Edit message"]')).toBeNull()
+  })
   it('keeps the normal Session transcript gutter by default', async () => {
     await renderItem(createMessage())
 
