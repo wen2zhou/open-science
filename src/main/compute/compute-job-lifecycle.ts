@@ -44,6 +44,21 @@ export class ComputeJobLifecycle {
     })
   }
 
+  async recoverRemoteHandle(
+    jobId: string,
+    observedStatus: ActiveJobStatus,
+    remoteHandle: string
+  ): Promise<ComputeJobTransitionResult> {
+    return this.apply(jobId, [observedStatus], {
+      ...(observedStatus === 'submitted'
+        ? { status: 'running' as const, startedAt: new Date() }
+        : {}),
+      remoteHandle,
+      lastPollError: null,
+      retryAfterUserAction: false
+    })
+  }
+
   async dispatchError(
     jobId: string,
     failure: { errorCode: string; stderrTail?: string }
@@ -65,6 +80,20 @@ export class ComputeJobLifecycle {
     })
   }
 
+  async failRemoteHandleRecovery(
+    jobId: string,
+    observedStatus: ActiveJobStatus,
+    diagnostic: string
+  ): Promise<ComputeJobTransitionResult> {
+    return this.apply(jobId, [observedStatus], {
+      status: 'error',
+      errorCode: 'dispatch_failed',
+      lastPollError: diagnostic,
+      retryAfterUserAction: false,
+      finishedAt: new Date()
+    })
+  }
+
   async finishPolled(jobId: string, result: PolledJobFinish): Promise<ComputeJobTransitionResult> {
     return this.apply(jobId, ['submitted', 'running'], {
       status: result.status,
@@ -72,6 +101,8 @@ export class ComputeJobLifecycle {
       stdoutTail: result.stdoutTail,
       stderrTail: result.stderrTail,
       errorCode: result.errorCode,
+      lastPollError: null,
+      retryAfterUserAction: false,
       finishedAt: new Date()
     })
   }
@@ -91,11 +122,12 @@ export class ComputeJobLifecycle {
   async recordPollError(
     jobId: string,
     observedStatus: ActiveJobStatus,
-    message: string
+    message: string,
+    retryAfterUserAction = true
   ): Promise<ComputeJobTransitionResult> {
     return this.apply(jobId, [observedStatus], {
       lastPollError: message,
-      retryAfterUserAction: true
+      retryAfterUserAction
     })
   }
 

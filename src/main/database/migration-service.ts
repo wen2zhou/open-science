@@ -38,6 +38,7 @@ import {
 } from './migrations/0017-agent-memory-project-scope'
 import { sessionAuxiliaryTurnUsageMigration } from './migrations/0018-session-auxiliary-turn-usage'
 import { sessionUsageAttributionMigration } from './migrations/0019-session-usage-attribution'
+import { computeJobOperationMigration } from './migrations/0020-compute-job-operation'
 import {
   applySqliteMigrationOperations,
   type SqliteMigrationOperation
@@ -299,6 +300,12 @@ const COMPUTE_JOB_SENSITIVE_DATA_ENCRYPTION_CHECKSUM = checksumMigrationPayload(
   computeJobSensitiveDataEncryptionMigration.verifiers,
   computeJobSensitiveDataEncryptionMigration.operations
 )
+const COMPUTE_JOB_OPERATION_CHECKSUM = checksumMigrationPayload(
+  computeJobOperationMigration.id,
+  computeJobOperationMigration.statements,
+  computeJobOperationMigration.verifiers,
+  computeJobOperationMigration.operations
+)
 const DATABASE_DOMAIN_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints = Object.fromEntries(
   databaseDomainConstraintsMigration.verifiers[0].tables.map(({ table, constraints }) => [
     table,
@@ -365,6 +372,16 @@ const AGENT_MEMORY_PROJECT_SCOPE_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstr
 const SESSION_AUXILIARY_TURN_USAGE_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints =
   Object.fromEntries(
     sessionAuxiliaryTurnUsageMigration.verifiers
+      .filter((verifier) => verifier.kind === 'check-constraints-exist')
+      .flatMap((verifier) => verifier.tables)
+      .map(({ table, constraints }) => [
+        table,
+        Object.fromEntries(constraints.map(({ name, expression }) => [name, expression]))
+      ])
+  )
+const COMPUTE_JOB_OPERATION_ALLOWED_SUFFIX_CHECKS: AllowedSuffixCheckConstraints =
+  Object.fromEntries(
+    computeJobOperationMigration.verifiers
       .filter((verifier) => verifier.kind === 'check-constraints-exist')
       .flatMap((verifier) => verifier.tables)
       .map(({ table, constraints }) => [
@@ -495,6 +512,12 @@ const MIGRATION_MANIFEST = [
   {
     ...sessionUsageAttributionMigration,
     checksum: SESSION_USAGE_ATTRIBUTION_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
+  },
+  {
+    ...computeJobOperationMigration,
+    checksum: COMPUTE_JOB_OPERATION_CHECKSUM,
     backupOnApply: 'required',
     backupRetention: 'retain'
   }
@@ -1423,6 +1446,11 @@ const migrateApplicationDatabaseWithManifest = async (
       candidate.id === sessionAuxiliaryTurnUsageMigration.id &&
       candidate.checksum === SESSION_AUXILIARY_TURN_USAGE_CHECKSUM
   )
+  const adoptsComputeJobOperation = manifest.some(
+    (candidate) =>
+      candidate.id === computeJobOperationMigration.id &&
+      candidate.checksum === COMPUTE_JOB_OPERATION_CHECKSUM
+  )
   const adoptedLegacy = appliedCount === 0 && hasExistingApplicationTables
   const allowedSuffixChecks = mergeAllowedSuffixChecks(
     adoptsDatabaseDomainConstraints ? DATABASE_DOMAIN_ALLOWED_SUFFIX_CHECKS : {},
@@ -1432,7 +1460,8 @@ const migrateApplicationDatabaseWithManifest = async (
     adoptsComputePasswordAuth ? COMPUTE_PASSWORD_AUTH_ALLOWED_SUFFIX_CHECKS : {},
     adoptsCrossResourceTags ? CROSS_RESOURCE_TAGS_ALLOWED_SUFFIX_CHECKS : {},
     adoptsAgentMemoryProjectScope ? AGENT_MEMORY_PROJECT_SCOPE_ALLOWED_SUFFIX_CHECKS : {},
-    adoptsSessionAuxiliaryTurnUsage ? SESSION_AUXILIARY_TURN_USAGE_ALLOWED_SUFFIX_CHECKS : {}
+    adoptsSessionAuxiliaryTurnUsage ? SESSION_AUXILIARY_TURN_USAGE_ALLOWED_SUFFIX_CHECKS : {},
+    adoptsComputeJobOperation ? COMPUTE_JOB_OPERATION_ALLOWED_SUFFIX_CHECKS : {}
   )
 
   let nextIndex = appliedCount
@@ -1475,6 +1504,7 @@ export {
   VISION_EVIDENCE_CHECKSUM,
   COMPUTE_PASSWORD_AUTH_CHECKSUM,
   TAG_ORDERING_CHECKSUM,
+  COMPUTE_JOB_OPERATION_CHECKSUM,
   REVIEW_QUERY_INDEXES_CHECKSUM,
   AGENT_MEMORY_PROJECT_SCOPE_CHECKSUM,
   DatabaseMigrationError,

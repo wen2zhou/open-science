@@ -201,6 +201,7 @@ export const createSessionMessageGraphOwner = <
     parts,
     annotations,
     turnIntent,
+    attribution,
     cwd,
     projectId,
     permissionProfile,
@@ -220,7 +221,6 @@ export const createSessionMessageGraphOwner = <
     const normalizedAgentBackendId = agentBackendId?.trim() || undefined
     const normalizedAgentModel = agentModel?.trim() || undefined
     const uploads = attachments.map(createPersistedUpload)
-
     if (!sessionId || (!trimmedContent && uploads.length === 0 && !annotations?.length)) {
       return undefined
     }
@@ -238,6 +238,7 @@ export const createSessionMessageGraphOwner = <
         turnIntent,
         sortIndex: createSortIndex()
       }),
+      ...(attribution ? { attribution } : {}),
       ...(agentTarget ? { agentTarget } : {})
     }
     const activeRun: ActiveRun = {

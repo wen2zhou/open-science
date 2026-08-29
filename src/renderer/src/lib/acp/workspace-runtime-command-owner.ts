@@ -4,6 +4,7 @@ import * as annotationProtocol from '../../../../shared/annotations'
 import type { ActivePlanProjection } from '../../../../shared/session-plan/contract'
 import {
   collectSessionReferences,
+  type MessageAttribution,
   type MessagePart,
   type PersistedMessageAgentTarget,
   type SessionReference
@@ -45,6 +46,8 @@ type SendWorkspaceMessageIntent = {
   branchSourceSessionId?: string
   branchSourceMessageId?: string
   text: string
+  attribution?: MessageAttribution
+  requireExistingSession?: boolean
   turnIntent?: 'plan-first'
   planContinuation?: Pick<ActivePlanProjection, 'artifactVersionId' | 'revision'> & {
     pendingAction?: 'review' | 'approve' | 'reject'
@@ -74,7 +77,6 @@ type SendWorkspaceMessageCommand = SendWorkspaceMessageIntent & {
   supportsImageRelay?: boolean
   truncateFromMessageId?: string
   allowCompactionRecovery?: boolean
-  requireExistingSession?: boolean
 }
 type SendWorkspaceMessageResult = { sessionId: string; messageId: string }
 type WorkspaceCommandLifecycle = {
@@ -524,6 +526,7 @@ const sendWorkspaceMessage = async (
         annotations,
         parts: input.parts,
         turnIntent: input.turnIntent,
+        attribution: input.attribution,
         cwd,
         projectId: input.projectId ?? session.projectId,
         agentFrameworkId: input.agentFrameworkId,
@@ -607,6 +610,7 @@ const sendWorkspaceMessage = async (
       annotations,
       parts: input.parts,
       turnIntent: input.turnIntent,
+      attribution: input.attribution,
       cwd: input.cwd,
       projectId: input.projectId ?? prepared.appendOwnership.projectId,
       agentFrameworkId: prepared.appendOwnership.agentFrameworkId,

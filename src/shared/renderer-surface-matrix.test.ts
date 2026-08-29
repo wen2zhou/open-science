@@ -71,6 +71,7 @@ const computePaths = [
   'compute.get',
   'compute.hostEnabledSet',
   'compute.hostSelectedSet',
+  'compute.jobsCancel',
   'compute.jobsList',
   'compute.jobsMarkConsumed',
   'compute.jobsPendingNotification',

@@ -35,6 +35,7 @@ export type AppendUserMessageInput = {
   parts?: MessagePart[]
   annotations?: Annotation[]
   turnIntent?: PersistedChatMessage['turnIntent']
+  attribution?: PersistedChatMessage['attribution']
   cwd?: string
   projectId?: string
   permissionProfile?: ChatSession['permissionProfile']

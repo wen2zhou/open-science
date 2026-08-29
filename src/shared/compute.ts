@@ -310,6 +310,29 @@ export type ComputeApprovalRequest = {
 export type ComputeJobStatus =
   'queued' | 'submitted' | 'running' | 'success' | 'failed' | 'timeout' | 'error'
 
+export type ComputeJobIntegrityIssueCode =
+  | 'unknown-status'
+  | 'unknown-error-code'
+  | 'sensitive-fields-unavailable'
+  | 'malformed-remote-handle'
+  | 'consumed-without-notification'
+  | 'consumed-before-notified'
+  | 'notified-before-terminal'
+
+export type ComputeJobIntegrityIssue = Readonly<{
+  jobId: string
+  sessionId: string
+  projectId: string
+  code: ComputeJobIntegrityIssueCode
+  disposition: 'quarantined' | 'needs-attention' | 'recovery-required'
+  rawStatus: string
+  rawErrorCode?: string
+}>
+
+// Additive logical projection. Existing clients can continue reading `status`; cancellation-aware
+// clients use this field to distinguish durable intent from confirmed termination.
+export type ComputeJobCancellationStatus = 'cancelling' | 'cancelled'
+
 // A compute job record, normalized for cross-process sharing (main → renderer via IPC, main → repl
 // via JSON RPC). Timestamps are epoch milliseconds; JSON columns are parsed at the repository
 // boundary to their respective types.
@@ -320,6 +343,12 @@ export type ComputeJob = {
   session_id: string
   project_id: string
   status: ComputeJobStatus
+  // Additive compatibility diagnostics. Unknown persisted status values keep their raw spelling and
+  // are quarantined from lifecycle scans; status remains the legacy closed projection for callers.
+  raw_status?: string
+  integrity_issues?: ComputeJobIntegrityIssue[]
+  needs_attention?: boolean
+  cancellation_status?: ComputeJobCancellationStatus
   intent: string
   command: string
   command_hash: string
@@ -360,10 +389,12 @@ export type ComputeJob = {
 export type JobStatusResult = {
   job_id: string
   status: ComputeJobStatus
+  cancellation_status?: ComputeJobCancellationStatus
   exit_code: number | undefined
   stdout_tail: string | undefined
   stderr_tail: string | undefined
   remote_workdir: string | undefined
+  harvest_error: string | undefined
 }
 
 // Full job result shape returned by attach_job().result() (spec §11.4, design §9).
@@ -372,6 +403,7 @@ export type JobStatusResult = {
 export type JobResult = {
   job_id: string
   status: ComputeJobStatus
+  cancellation_status?: ComputeJobCancellationStatus
   exit_code: number | undefined
   // Workspace-relative paths of featured output files (hpc/<jobId>/featured/*).
   featured_files: string[]
@@ -385,6 +417,7 @@ export type JobResult = {
   remote_workdir: string | undefined
   stdout_tail: string | undefined
   stderr_tail: string | undefined
+  harvest_error: string | undefined
 }
 
 // Result returned by submit_job (immediate, before dispatch completes). remote_workdir is
@@ -395,6 +428,13 @@ export type SubmitJobResult = {
   status: 'queued' | 'submitted'
   remote_workdir: string
 }
+
+export type CancelComputeJobRequest = Readonly<{
+  jobId: string
+  providerId: string
+  sessionId: string
+  projectId: string
+}>
 
 // Error codes for compute jobs (Phase 3a subset of spec §12).
 export type ComputeJobErrorCode =
@@ -419,7 +459,12 @@ export type JobSummary = {
   shape: string
   // Session the job was submitted in — needed for the renderer store to filter by active session.
   session_id: string
+  project_id?: string
   status: ComputeJobStatus
+  raw_status?: string
+  integrity_issues?: ComputeJobIntegrityIssue[]
+  needs_attention?: boolean
+  cancellation_status?: ComputeJobCancellationStatus
   intent: string
   created_at: number
   started_at: number | undefined

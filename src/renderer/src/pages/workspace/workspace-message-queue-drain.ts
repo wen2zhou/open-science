@@ -47,6 +47,14 @@ const dispatchQueuedSession = (
   if (!item || item.phase === 'sending' || item.phase === 'error') return
   const contextError = queueItemContextError(session, item)
   if (contextError) {
+    if (item.kind === 'application') {
+      const remaining = owner.itemsFor(sessionId).filter((candidate) => candidate.id !== item.id)
+      if (remaining.length === 0) owner.queues.delete(sessionId)
+      else owner.queues.set(sessionId, remaining)
+      owner.emit()
+      item.application?.resolve(undefined)
+      return
+    }
     owner.replaceItem(sessionId, item.id, {
       phase: 'error',
       error: contextError,
@@ -87,24 +95,26 @@ const dispatchQueuedSession = (
       const result = item.revisionMessageId
         ? await current.runtime.resendEditedMessage!(sessionId, item.revisionMessageId, {
             text: item.text,
-            annotations: item.snapshot.annotations,
-            referencedArtifacts: docToArtifactRefs(item.snapshot.doc),
-            parts: docToMessageParts(item.snapshot.doc),
+            annotations: item.snapshot?.annotations,
+            referencedArtifacts: item.snapshot ? docToArtifactRefs(item.snapshot.doc) : undefined,
+            parts: item.snapshot ? docToMessageParts(item.snapshot.doc) : undefined,
             forcedSkillIds: item.forcedSkillIds
           })
         : await current.runtime.sendMessage({
             sessionId,
             text: item.text,
-            attachments: item.snapshot.attachments,
-            annotations: item.snapshot.annotations,
-            referencedArtifacts: docToArtifactRefs(item.snapshot.doc),
-            parts: docToMessageParts(item.snapshot.doc),
+            attachments: item.snapshot?.attachments,
+            annotations: item.snapshot?.annotations,
+            referencedArtifacts: item.snapshot ? docToArtifactRefs(item.snapshot.doc) : undefined,
+            parts: item.snapshot ? docToMessageParts(item.snapshot.doc) : undefined,
             cwd: item.cwd,
             projectId: item.projectId,
             permissionProfile: item.permissionProfile,
             agentConfiguration: item.agentConfiguration,
             forcedSkillIds: item.forcedSkillIds,
-            specialistId: item.specialistId
+            specialistId: item.specialistId,
+            attribution: item.application?.attribution,
+            requireExistingSession: item.kind === 'application' ? true : undefined
           })
       if (!result) {
         const latest = owner.resolveOptions(optionsRef.current)
@@ -134,15 +144,24 @@ const dispatchQueuedSession = (
         owner.queues.set(sessionId, remaining)
       }
       owner.emit(MESSAGE_QUEUE_ANNOUNCEMENTS.sent)
+      item.application?.resolve(typeof result === 'object' ? result : undefined)
     } catch (error) {
       if (owner.dispatches.get(sessionId) === activeDispatch) {
         owner.dispatches.delete(sessionId)
       }
-      owner.replaceItem(sessionId, item.id, {
-        phase: 'error',
-        error: { kind: 'send', detail: queueErrorMessage(error) },
-        deferredUntilIdle: false
-      })
+      if (item.kind === 'application') {
+        const remaining = owner.itemsFor(sessionId).filter((candidate) => candidate.id !== item.id)
+        if (remaining.length === 0) owner.queues.delete(sessionId)
+        else owner.queues.set(sessionId, remaining)
+        owner.emit()
+        item.application?.resolve(undefined)
+      } else {
+        owner.replaceItem(sessionId, item.id, {
+          phase: 'error',
+          error: { kind: 'send', detail: queueErrorMessage(error) },
+          deferredUntilIdle: false
+        })
+      }
     } finally {
       activeDispatch.settled = true
       resolveCompletion()
@@ -175,7 +194,7 @@ const sendQueuedItemNow = async (
   if (!sessionId) return
   const items = owner.itemsFor(sessionId)
   const item = items.find((candidate) => candidate.id === itemId)
-  if (!item || queueItemIsBusy(item)) return
+  if (!item?.snapshot || queueItemIsBusy(item)) return
   const hasPayload = queuedItemHasPayload(item)
   owner.queues.set(sessionId, [
     { ...item, phase: 'sending', error: undefined, deferredUntilIdle: false },
