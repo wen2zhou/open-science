@@ -3,9 +3,9 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import type { JobSummary } from '../../../shared/compute'
 import { extractJobIdFromActivity, findActivitiesForJob } from './job-binding-utils'
 import type { ToolActivity } from '@/stores/session-store'
+import { makeJob } from '@/test-utils/compute-job'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -18,27 +18,6 @@ const makeActivity = (overrides: Partial<ToolActivity> = {}): ToolActivity => ({
   sortIndex: 0,
   createdAt: Date.now(),
   updatedAt: Date.now(),
-  ...overrides
-})
-
-const makeJob = (overrides: Partial<JobSummary> = {}): JobSummary => ({
-  job_id: 'job-abc',
-  provider_id: 'ssh:biowulf',
-  display_name: 'biowulf',
-  shape: 'direct_ssh',
-  session_id: 'sess-1',
-  status: 'running',
-  intent: 'Run EDA',
-  created_at: Date.now(),
-  started_at: Date.now(),
-  finished_at: undefined,
-  exit_code: undefined,
-  error_code: undefined,
-  remote_workdir: '/home/user/.openscience/jobs/job-abc',
-  stdout_tail: undefined,
-  stderr_tail: undefined,
-  notified_at: undefined,
-  notification_consumed_at: undefined,
   ...overrides
 })
 

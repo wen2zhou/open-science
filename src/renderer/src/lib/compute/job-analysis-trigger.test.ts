@@ -4,38 +4,30 @@
 
 import { describe, expect, it, vi } from 'vitest'
 
-import type { JobSummary } from '../../../../shared/compute'
 import {
   buildAnalysisPrompt,
   createJobAnalysisTrigger,
   type JobAnalysisTriggerDeps
 } from './job-analysis-trigger'
+import { makeJob as makeComputeJob } from '@/test-utils/compute-job'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-const makeJob = (overrides: Partial<JobSummary> = {}): JobSummary => ({
-  job_id: 'job-1',
-  provider_id: 'ssh:biowulf',
-  display_name: 'biowulf',
-  shape: 'direct_ssh',
-  session_id: 'sess-1',
-  status: 'success',
-  intent: 'Salary analysis',
-  created_at: 1000,
-  started_at: 1100,
-  finished_at: 1200,
-  exit_code: 0,
-  error_code: undefined,
-  remote_workdir: undefined,
-  stdout_tail: undefined,
-  stderr_tail: undefined,
-  notified_at: 2000,
-  notification_consumed_at: undefined,
-  featured_files: ['hpc/job-1/featured/result.txt'],
-  featured_file_count: 1,
-  left_on_remote_count: 0,
-  ...overrides
-})
+const makeJob = (overrides: Parameters<typeof makeComputeJob>[0] = {}) =>
+  makeComputeJob({
+    job_id: 'job-1',
+    status: 'success',
+    intent: 'Salary analysis',
+    started_at: 1100,
+    finished_at: 1200,
+    exit_code: 0,
+    remote_workdir: undefined,
+    notified_at: 2000,
+    featured_files: ['hpc/job-1/featured/result.txt'],
+    featured_file_count: 1,
+    left_on_remote_count: 0,
+    ...overrides
+  })
 
 const createDeps = (overrides: Partial<JobAnalysisTriggerDeps> = {}): JobAnalysisTriggerDeps => ({
   isSessionInFlight: vi.fn().mockReturnValue(false),
