@@ -32,11 +32,11 @@ type ReaperOptions = Readonly<{
 const cancellationStatus = (
   cancellation: ComputeJobOperationRecord | null
 ): JobStatusResult['cancellation_status'] =>
-    cancellation?.phase === 'active'
-      ? 'cancelling'
-      : cancellation?.outcome === 'fulfilled'
-        ? 'cancelled'
-        : undefined
+  cancellation?.phase === 'active'
+    ? 'cancelling'
+    : cancellation?.outcome === 'fulfilled'
+      ? 'cancelled'
+      : undefined
 
 class ComputeJobCancellationOwner {
   constructor(

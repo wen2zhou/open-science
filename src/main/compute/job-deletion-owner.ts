@@ -399,11 +399,7 @@ const createComputeJobDeletionOwner = (
     lifecycle: new ComputeJobLifecycle(deps.jobRepository)
   })
 
-export {
-  ComputeJobDeletionOwner,
-  cleanupCommand,
-  createComputeJobDeletionOwner
-}
+export { ComputeJobDeletionOwner, cleanupCommand, createComputeJobDeletionOwner }
 export type {
   ComputeJobDeletionLifecycle,
   ComputeJobDeletionOwnerDeps,
