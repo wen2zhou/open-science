@@ -390,7 +390,7 @@ export class ComputeJobWorkflowOwner {
 
   async getJob(jobId: string, scope?: ComputeJobReadScope): Promise<ComputeJob> {
     if (!this.jobRepository) {
-      throw new Error('ComputeJobRepository is required to call getJobStatus.')
+      throw new Error('ComputeJobRepository is required to read Compute Jobs.')
     }
     const job = await this.jobRepository.get(jobId)
     if (!job) {
