@@ -12,6 +12,7 @@ import {
   type ComputeJobOperationRecord,
   type ComputeJobOperationScope
 } from './compute-job-operation-repository'
+import { projectJobStatus } from './compute-job-status'
 import type { ComputeJobRepository } from './job-repository'
 import { parseRemoteJobHandle } from './remote-job-handle'
 import {
@@ -28,24 +29,14 @@ type ReaperOptions = Readonly<{
   onConfirmed?: (jobId: string) => void | Promise<void>
 }>
 
-const toStatus = (
-  job: ComputeJob,
+const cancellationStatus = (
   cancellation: ComputeJobOperationRecord | null
-): JobStatusResult => ({
-  job_id: job.job_id,
-  status: job.status,
-  cancellation_status:
+): JobStatusResult['cancellation_status'] =>
     cancellation?.phase === 'active'
       ? 'cancelling'
       : cancellation?.outcome === 'fulfilled'
         ? 'cancelled'
-        : undefined,
-  exit_code: job.exit_code,
-  stdout_tail: job.stdout_tail,
-  stderr_tail: job.stderr_tail,
-  remote_workdir: job.remote_workdir,
-  harvest_error: job.harvest_error
-})
+        : undefined
 
 class ComputeJobCancellationOwner {
   constructor(
@@ -58,12 +49,12 @@ class ComputeJobCancellationOwner {
     const result = await this.operations.request(jobId, 'cancel', scope, this.now())
     if (!result.found) throw new ComputeHostUnavailableError()
     const job = await this.requireOwnedJob(jobId, scope)
-    return toStatus(job, result.record)
+    return projectJobStatus(job, cancellationStatus(result.record))
   }
 
   async status(jobId: string, scope: ComputeJobOperationScope): Promise<JobStatusResult> {
     const job = await this.requireOwnedJob(jobId, scope)
-    return toStatus(job, await this.operations.get(jobId, 'cancel'))
+    return projectJobStatus(job, cancellationStatus(await this.operations.get(jobId, 'cancel')))
   }
 
   private async requireOwnedJob(
