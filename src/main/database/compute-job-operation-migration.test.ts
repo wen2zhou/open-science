@@ -76,36 +76,21 @@ describe('Compute Job operation migration', () => {
       'updatedAt'
     ])
 
-    await expect(
-      client.$executeRawUnsafe(
-        `UPDATE "ComputeJobOperation" SET "kind" = 'invalid' WHERE "jobId" = 'historical-job'`
-      )
-    ).rejects.toThrow(/constraint/i)
-    await expect(
-      client.$executeRawUnsafe(
-        `UPDATE "ComputeJobOperation" SET "phase" = 'settled' WHERE "jobId" = 'historical-job'`
-      )
-    ).rejects.toThrow(/constraint/i)
-    await expect(
-      client.$executeRawUnsafe(
-        `UPDATE "ComputeJobOperation" SET "attemptCount" = -1 WHERE "jobId" = 'historical-job'`
-      )
-    ).rejects.toThrow(/constraint/i)
-    await expect(
-      client.$executeRawUnsafe(
-        `UPDATE "ComputeJobOperation" SET "revision" = 0 WHERE "jobId" = 'historical-job'`
-      )
-    ).rejects.toThrow(/constraint/i)
-    await expect(
-      client.$executeRawUnsafe(
-        `UPDATE "ComputeJobOperation" SET "outcome" = 'fulfilled' WHERE "jobId" = 'historical-job'`
-      )
-    ).rejects.toThrow(/constraint/i)
-    await expect(
-      client.$executeRawUnsafe(
-        `UPDATE "ComputeJobOperation" SET "claimToken" = 'unpaired' WHERE "jobId" = 'historical-job'`
-      )
-    ).rejects.toThrow(/constraint/i)
+    const rejectedUpdates = [
+      `"kind" = 'invalid'`,
+      `"phase" = 'settled'`,
+      `"attemptCount" = -1`,
+      `"revision" = 0`,
+      `"outcome" = 'fulfilled'`,
+      `"claimToken" = 'unpaired'`
+    ]
+    for (const update of rejectedUpdates) {
+      await expect(
+        client.$executeRawUnsafe(
+          `UPDATE "ComputeJobOperation" SET ${update} WHERE "jobId" = 'historical-job'`
+        )
+      ).rejects.toThrow(/constraint/i)
+    }
     await expect(
       client.$executeRawUnsafe(
         `UPDATE "ComputeJobOperation" SET "phase" = 'settled', "outcome" = 'fulfilled', "settledAt" = CURRENT_TIMESTAMP, "eligibleAt" = CURRENT_TIMESTAMP WHERE "jobId" = 'historical-job'`
