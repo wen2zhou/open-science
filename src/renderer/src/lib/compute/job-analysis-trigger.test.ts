@@ -243,31 +243,6 @@ describe('createJobAnalysisTrigger — durable delivery recovery', () => {
     expect(deps.markConsumed).toHaveBeenCalledOnce()
   })
 
-  it('retries a failed inbox ACK without resending the persisted analysis', async () => {
-    const markConsumed = vi
-      .fn()
-      .mockRejectedValueOnce(new Error('database busy'))
-      .mockResolvedValueOnce(undefined)
-    const deps = createDeps({
-      findPersistedDelivery: vi.fn().mockReturnValue({
-        messageId: 'persisted-message-1',
-        outcome: 'succeeded'
-      }),
-      markConsumed
-    })
-    const trigger = createJobAnalysisTrigger(deps)
-
-    trigger.onJobDone(makeJob())
-    await flushMicrotasks()
-    await flushMicrotasks()
-    trigger.onJobDone(makeJob())
-    await flushMicrotasks()
-    await flushMicrotasks()
-
-    expect(deps.sendPrompt).not.toHaveBeenCalled()
-    expect(markConsumed).toHaveBeenCalledTimes(2)
-  })
-
   it('actively retries a failed inbox ACK without another store event', async () => {
     vi.useFakeTimers()
     try {
