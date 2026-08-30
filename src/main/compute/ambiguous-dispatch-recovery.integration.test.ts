@@ -36,6 +36,35 @@ describe('ambiguous Compute Job dispatch recovery', () => {
   let jobRepository: ComputeJobRepository
   let service: ComputeService
 
+  const createSubmittedJob = async ({
+    id,
+    remoteWorkdir,
+    intent = 'restart recovery',
+    command = 'sleep 60',
+    timeoutSeconds
+  }: {
+    id: string
+    remoteWorkdir: string
+    intent?: string
+    command?: string
+    timeoutSeconds?: number
+  }): Promise<void> => {
+    await jobRepository.create({
+      allowUnencryptedPersistence: true,
+      id,
+      providerId: 'ssh:recovery-host',
+      shape: 'direct_ssh',
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      intent,
+      command,
+      commandHash: 'hash',
+      timeoutSeconds,
+      remoteWorkdir,
+      initialStatus: 'submitted'
+    })
+  }
+
   beforeEach(async () => {
     database = await createMigratedComputeTestDatabase('open-science-dispatch-recovery-')
     hostRepository = new ComputeHostRepository(() => Promise.resolve(database.client))
@@ -54,18 +83,9 @@ describe('ambiguous Compute Job dispatch recovery', () => {
 
   it('adopts a launched submitted job after restart when its PID still owns the deterministic workdir', async () => {
     const remoteWorkdir = '/scratch/.openscience/jobs/job-running'
-    await jobRepository.create({
-      allowUnencryptedPersistence: true,
+    await createSubmittedJob({
       id: 'job-running',
-      providerId: 'ssh:recovery-host',
-      shape: 'direct_ssh',
-      sessionId: 'session-1',
-      projectId: 'project-1',
-      intent: 'restart recovery',
-      command: 'sleep 60',
-      commandHash: 'hash',
-      remoteWorkdir,
-      initialStatus: 'submitted'
+      remoteWorkdir
     })
     const run = vi.fn(async () =>
       successfulRun(
@@ -102,18 +122,10 @@ describe('ambiguous Compute Job dispatch recovery', () => {
 
   it('adopts a launched job when lsof proves cwd on a host without procfs', async () => {
     const remoteWorkdir = '/scratch/.openscience/jobs/job-lsof'
-    await jobRepository.create({
-      allowUnencryptedPersistence: true,
+    await createSubmittedJob({
       id: 'job-lsof',
-      providerId: 'ssh:recovery-host',
-      shape: 'direct_ssh',
-      sessionId: 'session-1',
-      projectId: 'project-1',
       intent: 'portable restart recovery',
-      command: 'sleep 60',
-      commandHash: 'hash',
-      remoteWorkdir,
-      initialStatus: 'submitted'
+      remoteWorkdir
     })
     const run = vi.fn<ComputeConnectionLease['run']>(async (command) =>
       successfulRun(
@@ -139,18 +151,10 @@ describe('ambiguous Compute Job dispatch recovery', () => {
 
   it('converges an already-exited submitted job to terminal state and starts harvest after restart', async () => {
     const remoteWorkdir = '/scratch/.openscience/jobs/job-exited'
-    await jobRepository.create({
-      allowUnencryptedPersistence: true,
+    await createSubmittedJob({
       id: 'job-exited',
-      providerId: 'ssh:recovery-host',
-      shape: 'direct_ssh',
-      sessionId: 'session-1',
-      projectId: 'project-1',
-      intent: 'restart recovery',
       command: 'exit 7',
-      commandHash: 'hash',
-      remoteWorkdir,
-      initialStatus: 'submitted'
+      remoteWorkdir
     })
     const connectionBroker: ComputeConnectionBrokerAcquirer = {
       acquire: vi.fn(async () => ({
@@ -192,18 +196,10 @@ describe('ambiguous Compute Job dispatch recovery', () => {
 
   it('never adopts a reused PID whose cwd does not match the job workdir', async () => {
     const remoteWorkdir = '/scratch/.openscience/jobs/job-vanished'
-    await jobRepository.create({
-      allowUnencryptedPersistence: true,
+    await createSubmittedJob({
       id: 'job-vanished',
-      providerId: 'ssh:recovery-host',
-      shape: 'direct_ssh',
-      sessionId: 'session-1',
-      projectId: 'project-1',
-      intent: 'restart recovery',
       command: 'run-and-vanish',
-      commandHash: 'hash',
-      remoteWorkdir,
-      initialStatus: 'submitted'
+      remoteWorkdir
     })
     const connectionBroker: ComputeConnectionBrokerAcquirer = {
       acquire: vi.fn(async () => ({
@@ -246,18 +242,9 @@ describe('ambiguous Compute Job dispatch recovery', () => {
 
   it('keeps a submitted job recoverable when the recovery protocol is missing cwd_match', async () => {
     const remoteWorkdir = '/scratch/.openscience/jobs/job-incomplete-protocol'
-    await jobRepository.create({
-      allowUnencryptedPersistence: true,
+    await createSubmittedJob({
       id: 'job-incomplete-protocol',
-      providerId: 'ssh:recovery-host',
-      shape: 'direct_ssh',
-      sessionId: 'session-1',
-      projectId: 'project-1',
-      intent: 'restart recovery',
-      command: 'sleep 60',
-      commandHash: 'hash',
-      remoteWorkdir,
-      initialStatus: 'submitted'
+      remoteWorkdir
     })
     const connectionBroker: ComputeConnectionBrokerAcquirer = {
       acquire: vi.fn(async () => ({
@@ -433,19 +420,11 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       stderr_path: `${remoteWorkdir}/stderr`,
       workdir: remoteWorkdir
     }
-    await jobRepository.create({
-      allowUnencryptedPersistence: true,
+    await createSubmittedJob({
       id: jobId,
-      providerId: 'ssh:recovery-host',
-      shape: 'direct_ssh',
-      sessionId: 'session-1',
-      projectId: 'project-1',
       intent: 'fail-closed timeout recovery',
-      command: 'sleep 60',
-      commandHash: 'hash',
       timeoutSeconds: 10,
-      remoteWorkdir,
-      initialStatus: 'submitted'
+      remoteWorkdir
     })
     await jobRepository.updateIfStatus(jobId, ['submitted'], {
       status: 'running',
@@ -646,18 +625,9 @@ describe('ambiguous Compute Job dispatch recovery', () => {
   })
 
   it('keeps an existing but inconclusive remote workdir submitted for a later recovery tick', async () => {
-    await jobRepository.create({
-      allowUnencryptedPersistence: true,
+    await createSubmittedJob({
       id: 'job-inconclusive',
-      providerId: 'ssh:recovery-host',
-      shape: 'direct_ssh',
-      sessionId: 'session-1',
-      projectId: 'project-1',
-      intent: 'restart recovery',
-      command: 'sleep 60',
-      commandHash: 'hash',
-      remoteWorkdir: '/scratch/.openscience/jobs/job-inconclusive',
-      initialStatus: 'submitted'
+      remoteWorkdir: '/scratch/.openscience/jobs/job-inconclusive'
     })
     const connectionBroker: ComputeConnectionBrokerAcquirer = {
       acquire: vi.fn(async () => ({
@@ -705,18 +675,9 @@ describe('ambiguous Compute Job dispatch recovery', () => {
 
   it('requires consecutive pending observations before settling interrupted dispatch', async () => {
     const remoteWorkdir = '/scratch/.openscience/jobs/job-nonconsecutive'
-    await jobRepository.create({
-      allowUnencryptedPersistence: true,
+    await createSubmittedJob({
       id: 'job-nonconsecutive',
-      providerId: 'ssh:recovery-host',
-      shape: 'direct_ssh',
-      sessionId: 'session-1',
-      projectId: 'project-1',
-      intent: 'restart recovery',
-      command: 'sleep 60',
-      commandHash: 'hash',
-      remoteWorkdir,
-      initialStatus: 'submitted'
+      remoteWorkdir
     })
     const pendingOutput = [
       'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
