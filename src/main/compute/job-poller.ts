@@ -574,21 +574,18 @@ export class JobPoller {
         if (!current || (current.status !== 'submitted' && current.status !== 'running')) return
 
         const handle = parseRemoteJobHandle(current.remote_handle, current.remote_workdir)
-        const workdir = current.remote_workdir
-        if (
-          !handle ||
-          !workdir ||
-          handle.workdir !== workdir ||
-          !Number.isSafeInteger(handle.pid) ||
-          handle.pid <= 1
-        ) {
+        if (!handle) {
           await this._recordTimeoutTerminationUnconfirmed(current)
           return
         }
         // Probe failures are unknown ownership and fail closed. The termination operation repeats
         // the same cwd guard before signalling, closing the probe-to-signal PID reuse window.
         try {
-          const ownership = await probeRemoteJobProcessOwnership(handle.pid, workdir, connection)
+          const ownership = await probeRemoteJobProcessOwnership(
+            handle.pid,
+            handle.workdir,
+            connection
+          )
           if (ownership === 'unknown') {
             if (signal.aborted) return
             await this._recordTimeoutTerminationUnconfirmed(current)
@@ -597,7 +594,7 @@ export class JobPoller {
           if (ownership === 'owned') {
             const terminated = await terminateRemoteJobProcessIfOwned(
               handle.pid,
-              workdir,
+              handle.workdir,
               connection
             )
             if (!terminated) {

@@ -559,4 +559,17 @@ describe('ComputeJobDeletionOwner', () => {
     expect(harness.runner.run).not.toHaveBeenCalled()
     expect(harness.lifecycle.deleteOwnerRows).not.toHaveBeenCalled()
   })
+
+  it('rejects an active handle whose derived paths escape the durable workdir', async () => {
+    const unsafe = job()
+    const handle = JSON.parse(unsafe.remote_handle ?? '{}') as Record<string, unknown>
+    handle.stderr_path = '/tmp/stderr'
+    const harness = createHarness([job({ remote_handle: JSON.stringify(handle) })])
+
+    await expect(harness.owner.prepareSessionJobDeletion('project-1', 'session-1')).rejects.toThrow(
+      /invalid remote handle/i
+    )
+    expect(harness.runner.run).not.toHaveBeenCalled()
+    expect(harness.lifecycle.deleteOwnerRows).not.toHaveBeenCalled()
+  })
 })
