@@ -1,13 +1,8 @@
-import { mkdtemp, rm } from 'node:fs/promises'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
-
-import type { PrismaClient } from '@prisma/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import type { SshRunner } from './ssh-runner'
-import { createProjectDbClient, migrateApplicationDatabase } from '../projects/prisma-client'
 import type { ComputeApprovalBroker } from './compute-approval-broker'
+import { createMigratedComputeTestDatabase } from './compute-integration.test-support'
 import {
   ComputeConnectionError,
   type ComputeConnectionBroker,
@@ -36,18 +31,15 @@ const serviceBroker = (run: ComputeConnectionLease['run']): ComputeConnectionBro
 })
 
 describe('ambiguous Compute Job dispatch recovery', () => {
-  let storageRoot: string
-  let client: PrismaClient
+  let database: Awaited<ReturnType<typeof createMigratedComputeTestDatabase>>
   let hostRepository: ComputeHostRepository
   let jobRepository: ComputeJobRepository
   let service: ComputeService
 
   beforeEach(async () => {
-    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-dispatch-recovery-'))
-    client = createProjectDbClient(storageRoot)
-    await migrateApplicationDatabase(client)
-    hostRepository = new ComputeHostRepository(() => Promise.resolve(client))
-    jobRepository = new ComputeJobRepository(() => Promise.resolve(client))
+    database = await createMigratedComputeTestDatabase('open-science-dispatch-recovery-')
+    hostRepository = new ComputeHostRepository(() => Promise.resolve(database.client))
+    jobRepository = database.repositories.jobs
     await hostRepository.create({ sshAlias: 'recovery-host' })
     service = new ComputeService({
       runner: { run: vi.fn() } as unknown as SshRunner,
@@ -57,8 +49,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
   })
 
   afterEach(async () => {
-    await client.$disconnect()
-    await rm(storageRoot, { recursive: true, force: true })
+    await database.dispose()
   })
 
   it('adopts a launched submitted job after restart when its PID still owns the deterministic workdir', async () => {
