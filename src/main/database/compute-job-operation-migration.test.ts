@@ -77,18 +77,19 @@ describe('Compute Job operation migration', () => {
     ])
 
     const rejectedUpdates = [
-      `"kind" = 'invalid'`,
-      `"phase" = 'settled'`,
-      `"attemptCount" = -1`,
-      `"revision" = 0`,
-      `"outcome" = 'fulfilled'`,
-      `"claimToken" = 'unpaired'`
+      { label: 'invalid kind', update: `"kind" = 'invalid'` },
+      { label: 'settled phase without outcome', update: `"phase" = 'settled'` },
+      { label: 'negative attempt count', update: `"attemptCount" = -1` },
+      { label: 'non-positive revision', update: `"revision" = 0` },
+      { label: 'active outcome', update: `"outcome" = 'fulfilled'` },
+      { label: 'unpaired claim token', update: `"claimToken" = 'unpaired'` }
     ]
-    for (const update of rejectedUpdates) {
+    for (const { label, update } of rejectedUpdates) {
       await expect(
         client.$executeRawUnsafe(
           `UPDATE "ComputeJobOperation" SET ${update} WHERE "jobId" = 'historical-job'`
-        )
+        ),
+        label
       ).rejects.toThrow(/constraint/i)
     }
     await expect(
