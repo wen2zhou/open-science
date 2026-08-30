@@ -13,7 +13,9 @@ import { makeJob as makeComputeJob } from '@/test-utils/compute-job'
 
 // ── helpers ──────────────────────────────────────────────────────────────────
 
-const makeJob = (overrides: Parameters<typeof makeComputeJob>[0] = {}) =>
+const makeJob = (
+  overrides: Parameters<typeof makeComputeJob>[0] = {}
+): ReturnType<typeof makeComputeJob> =>
   makeComputeJob({
     job_id: 'job-1',
     status: 'success',

@@ -91,7 +91,9 @@ vi.mock('@/components/ui/button', () => ({
   )
 }))
 
-const makeJob = (overrides: Parameters<typeof makeComputeJob>[0] = {}) =>
+const makeJob = (
+  overrides: Parameters<typeof makeComputeJob>[0] = {}
+): ReturnType<typeof makeComputeJob> =>
   makeComputeJob({
     job_id: 'job-abc',
     project_id: 'project-1',
