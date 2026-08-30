@@ -5,7 +5,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { extractJobIdFromActivity, findActivitiesForJob } from './job-binding-utils'
 import type { ToolActivity } from '@/stores/session-store'
-import { makeJob } from '@/test-utils/compute-job'
+import { makeJob as makeComputeJob } from '@/test-utils/compute-job'
 
 // ─── helpers ─────────────────────────────────────────────────────────────────
 
@@ -20,6 +20,22 @@ const makeActivity = (overrides: Partial<ToolActivity> = {}): ToolActivity => ({
   updatedAt: Date.now(),
   ...overrides
 })
+
+const makeJob = (
+  overrides: Parameters<typeof makeComputeJob>[0] = {}
+): ReturnType<typeof makeComputeJob> => {
+  const now = Date.now()
+  return makeComputeJob({
+    job_id: 'job-abc',
+    session_id: 'sess-1',
+    status: 'running',
+    intent: 'Run EDA',
+    created_at: now,
+    started_at: now,
+    remote_workdir: '/home/user/.openscience/jobs/job-abc',
+    ...overrides
+  })
+}
 
 // ─── extractJobIdFromActivity ────────────────────────────────────────────────
 

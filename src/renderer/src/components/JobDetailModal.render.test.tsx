@@ -93,15 +93,22 @@ vi.mock('@/components/ui/button', () => ({
 
 const makeJob = (
   overrides: Parameters<typeof makeComputeJob>[0] = {}
-): ReturnType<typeof makeComputeJob> =>
-  makeComputeJob({
+): ReturnType<typeof makeComputeJob> => {
+  const now = Date.now()
+  return makeComputeJob({
     job_id: 'job-abc',
+    session_id: 'sess-1',
     project_id: 'project-1',
+    status: 'running',
     intent: 'Run EDA analysis',
+    created_at: now,
+    started_at: now,
+    remote_workdir: '/home/user/.openscience/jobs/job-abc',
     stdout_tail: 'stdout output line 1\nline 2',
     stderr_tail: 'stderr output line 1',
     ...overrides
   })
+}
 
 let container: HTMLDivElement
 let root: Root

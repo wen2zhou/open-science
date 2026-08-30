@@ -18,8 +18,10 @@ const makeJob = (
 ): ReturnType<typeof makeComputeJob> =>
   makeComputeJob({
     job_id: 'job-1',
+    session_id: 'sess-1',
     status: 'success',
     intent: 'Salary analysis',
+    created_at: 1000,
     started_at: 1100,
     finished_at: 1200,
     exit_code: 0,

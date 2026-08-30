@@ -8,7 +8,11 @@ const makeJob = (overrides: Partial<JobSummary> = {}): JobSummary =>
   makeComputeJob({
     job_id: 'job-1',
     session_id: 'session-abc',
+    status: 'running',
     intent: 'Salary analysis',
+    created_at: 1000,
+    started_at: 1000,
+    remote_workdir: undefined,
     ...overrides
   })
 
