@@ -583,37 +583,30 @@ describe('message attribution persistence', () => {
     ).toEqual({ kind: 'compute-job-completion' })
   })
 
-  it('drops an extended Compute completion presentation marker', () => {
+  it.each([
+    [
+      'an extended marker',
+      'user',
+      'Analyze completed remote jobs.',
+      { kind: 'compute-job-completion', rendererClaim: true }
+    ],
+    [
+      'a marker from an Agent message',
+      'agent',
+      'Analysis result.',
+      { kind: 'compute-job-completion' }
+    ]
+  ] as const)('drops %s', (_label, role, content, presentation) => {
     const session = normalizeSessionFile({
       ...createSessionWithActivity(undefined),
       messages: [
         {
           id: 'compute-presentation-message-1',
-          role: 'user',
-          content: 'Analyze completed remote jobs.',
+          role,
+          content,
           status: 'complete',
           eventIds: [],
-          presentation: { kind: 'compute-job-completion', rendererClaim: true },
-          createdAt: 2,
-          updatedAt: 2
-        }
-      ]
-    })
-
-    expect(session?.messages[0]?.presentation).toBeUndefined()
-  })
-
-  it('drops a Compute completion presentation marker from an Agent message', () => {
-    const session = normalizeSessionFile({
-      ...createSessionWithActivity(undefined),
-      messages: [
-        {
-          id: 'compute-presentation-message-1',
-          role: 'agent',
-          content: 'Analysis result.',
-          status: 'complete',
-          eventIds: [],
-          presentation: { kind: 'compute-job-completion' },
+          presentation,
           createdAt: 2,
           updatedAt: 2
         }
