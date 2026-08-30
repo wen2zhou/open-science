@@ -270,14 +270,6 @@ describe('RemoteJobRow', () => {
     expect(container.textContent).toContain('Run EDA analysis')
   })
 
-  it('shows "running" status text for running jobs', () => {
-    const job = makeJob({ status: 'running' })
-    act(() => {
-      root.render(<RemoteJobRow job={job} onOpen={vi.fn()} />)
-    })
-    expect(container.textContent).toContain('Running')
-  })
-
   it('distinguishes waiting, submitting, and running states', () => {
     const queued = makeJob({ status: 'queued' })
     act(() => {
