@@ -1,5 +1,5 @@
 // Tests for the analysis turn trigger: receives done-state job broadcasts and auto-fires a
-// sendPrompt per session, batching same-session done jobs, queuing when a turn is in flight,
+// sendPrompt per session, batching same-session done jobs, delegating readiness to admission,
 // and marking notificationConsumedAt only on success. Pure renderer logic per design §11.
 
 import { describe, expect, it, vi } from 'vitest'
@@ -38,7 +38,6 @@ const makeJob = (overrides: Partial<JobSummary> = {}): JobSummary => ({
 })
 
 const createDeps = (overrides: Partial<JobAnalysisTriggerDeps> = {}): JobAnalysisTriggerDeps => ({
-  isSessionInFlight: vi.fn().mockReturnValue(false),
   sendPrompt: vi.fn().mockResolvedValue({ sessionId: 'sess-1', messageId: 'msg-1' }),
   findPersistedDelivery: vi.fn().mockReturnValue(undefined),
   getDeliveryOutcome: vi.fn().mockReturnValue('succeeded'),
@@ -471,65 +470,18 @@ describe('createJobAnalysisTrigger — batching', () => {
   })
 })
 
-describe('createJobAnalysisTrigger — queuing', () => {
-  it('queues when session is in flight and sends after notifyTurnEnd', async () => {
-    let turnEndCallback: (() => void) | undefined
-    const deps = createDeps({
-      isSessionInFlight: vi.fn().mockReturnValue(true),
-      onTurnEnd: vi.fn((_sessionId, cb) => {
-        turnEndCallback = cb
-      })
-    })
+describe('createJobAnalysisTrigger — application queue admission', () => {
+  it('hands off each job once even while application admission remains pending', async () => {
+    const sendPrompt = vi.fn(() => new Promise<undefined>(() => undefined))
+    const deps = createDeps({ sendPrompt })
     const trigger = createJobAnalysisTrigger(deps)
 
     trigger.onJobDone(makeJob())
-    await flushMicrotasks()
-
-    // Not sent yet — queued
-    expect(deps.sendPrompt).not.toHaveBeenCalled()
-    expect(deps.onTurnEnd).toHaveBeenCalledWith('sess-1', expect.any(Function))
-
-    // Turn ends
-    ;(deps.isSessionInFlight as ReturnType<typeof vi.fn>).mockReturnValue(false)
-    turnEndCallback?.()
-    await flushMicrotasks()
-
-    expect(deps.sendPrompt).toHaveBeenCalledTimes(1)
-  })
-
-  it('does not re-queue when a second done broadcast arrives for a queued job', async () => {
-    let turnEndCallback: (() => void) | undefined
-    const deps = createDeps({
-      isSessionInFlight: vi.fn().mockReturnValue(true),
-      onTurnEnd: vi.fn((_sessionId, cb) => {
-        turnEndCallback = cb
-      })
-    })
-    const trigger = createJobAnalysisTrigger(deps)
-
-    trigger.onJobDone(makeJob())
-    trigger.onJobDone(makeJob()) // same job again
-    await flushMicrotasks()
-
-    ;(deps.isSessionInFlight as ReturnType<typeof vi.fn>).mockReturnValue(false)
-    turnEndCallback?.()
-    await flushMicrotasks()
-
-    expect(deps.sendPrompt).toHaveBeenCalledTimes(1)
-    expect(deps.onTurnEnd).toHaveBeenCalledTimes(1)
-  })
-
-  it('logs queued and in-flight job ids for observability', async () => {
-    const deps = createDeps({
-      isSessionInFlight: vi.fn().mockReturnValue(true),
-      onTurnEnd: vi.fn()
-    })
-    const trigger = createJobAnalysisTrigger(deps)
-
     trigger.onJobDone(makeJob())
     await flushMicrotasks()
 
-    expect(deps.log).toHaveBeenCalled()
+    expect(sendPrompt).toHaveBeenCalledOnce()
+    expect(deps.onTurnEnd).not.toHaveBeenCalled()
   })
 })
 

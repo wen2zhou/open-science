@@ -3,7 +3,7 @@
 // Receives done-state job broadcasts (notified_at set, notification_consumed_at null) and
 // auto-fires a sendPrompt for each affected session. Key behaviors:
 //  - Batch: multiple done jobs for the same session in one microtask tick → one prompt.
-//  - Queue: session in flight → register onTurnEnd callback, fire after the turn finishes.
+//  - Admission: hands each batch to the shared application Message queue, which owns readiness.
 //  - Idempotent: jobs with notification_consumed_at set are skipped; in-flight job ids are
 //    tracked in a memory Set so duplicate broadcasts don't re-queue.
 //  - markConsumed only after a successful durable delivery; ACK failures retry with bounded backoff.
@@ -58,8 +58,6 @@ export const buildAnalysisPrompt = (jobs: JobSummary[]): string => {
 
 // Injected dependencies so the trigger is fully testable without React or Electron.
 export type JobAnalysisTriggerDeps = {
-  // Returns true if the given session currently has a prompt in flight (ACP single-in-flight guard).
-  isSessionInFlight: (sessionId: string) => boolean
   // Sends a prompt to a session; resolves to a result object on success or undefined on failure.
   sendPrompt: (
     sessionId: string,
@@ -96,10 +94,8 @@ export type JobAnalysisTriggerDeps = {
 }
 
 type PendingBatch = {
-  // jobs waiting to be sent once the session is free
+  // Jobs waiting for the same-tick batching window to close.
   jobs: Map<string, JobSummary>
-  // whether we've already registered an onTurnEnd callback for this session
-  waitRegistered: boolean
 }
 
 type InFlightSet = Set<string> // job_id values currently being processed (in analysis turn or queued)
@@ -127,9 +123,6 @@ export const buildComputeDeliveryKey = (sessionId: string, jobIds: readonly stri
 export type JobAnalysisTrigger = {
   // Process a new done-state job broadcast.
   onJobDone: (job: JobSummary) => void
-  // Notify the trigger that a session's turn has ended (called by the turn-end listener).
-  // Exposed separately so hook integration can wire this without coupling to onTurnEnd dep.
-  _notifyTurnEnd: (sessionId: string) => void
   stop: () => void
 }
 
@@ -381,26 +374,6 @@ export const createJobAnalysisTrigger = (deps: JobAnalysisTriggerDeps): JobAnaly
       })
   }
 
-  const notifyTurnEnd = (sessionId: string): void => {
-    const batch = pendingBySession.get(sessionId)
-    if (!batch || batch.jobs.size === 0) return
-
-    // Reset waitRegistered so a new callback can be registered if needed.
-    batch.waitRegistered = false
-
-    if (deps.isSessionInFlight(sessionId)) {
-      // Another turn started; re-register.
-      if (!batch.waitRegistered) {
-        batch.waitRegistered = true
-        deps.onTurnEnd(sessionId, () => notifyTurnEnd(sessionId))
-        deps.log('analysis-turn:requeued', `session=${sessionId} still-in-flight`)
-      }
-      return
-    }
-
-    scheduleFlush(sessionId)
-  }
-
   const onJobDone = (job: JobSummary): void => {
     if (stopped) return
     if (!isDoneState(job)) return
@@ -424,7 +397,7 @@ export const createJobAnalysisTrigger = (deps: JobAnalysisTriggerDeps): JobAnaly
     let batch = pendingBySession.get(sessionId)
 
     if (!batch) {
-      batch = { jobs: new Map(), waitRegistered: false }
+      batch = { jobs: new Map() }
       pendingBySession.set(sessionId, batch)
     }
 
@@ -434,17 +407,8 @@ export const createJobAnalysisTrigger = (deps: JobAnalysisTriggerDeps): JobAnaly
 
     deps.log('analysis-turn:queued', `session=${sessionId} job=${jobId}`)
 
-    if (deps.isSessionInFlight(sessionId)) {
-      // Session has a turn running — wait for it to finish.
-      if (!batch.waitRegistered) {
-        batch.waitRegistered = true
-        deps.onTurnEnd(sessionId, () => notifyTurnEnd(sessionId))
-        deps.log('analysis-turn:waiting-for-turn-end', `session=${sessionId} job=${jobId}`)
-      }
-      return
-    }
-
-    // Session is idle — flush on next microtask (allows batching of same-tick arrivals).
+    // Admit on the next microtask so same-tick arrivals batch. The shared application Message queue
+    // owns every readiness barrier and keeps the admission pending until this Session is sendable.
     scheduleFlush(sessionId)
   }
 
@@ -460,5 +424,5 @@ export const createJobAnalysisTrigger = (deps: JobAnalysisTriggerDeps): JobAnaly
     inFlight.clear()
   }
 
-  return { onJobDone, _notifyTurnEnd: notifyTurnEnd, stop }
+  return { onJobDone, stop }
 }

@@ -150,7 +150,7 @@ describe('useJobAnalysisEffect persistence readiness', () => {
     expect(jobsMarkConsumed).not.toHaveBeenCalled()
   })
 
-  it('removes a queued turn-end listener when persistence becomes unavailable', async () => {
+  it('removes a delivery turn-end listener when persistence becomes unavailable', async () => {
     jobsPendingNotification.mockResolvedValueOnce([])
     useSessionStore.setState({
       ...createInitialSessionState(),
@@ -182,7 +182,7 @@ describe('useJobAnalysisEffect persistence readiness', () => {
     })
     await act(async () => new Promise((resolve) => setTimeout(resolve, 0)))
 
-    expect(sendMessage).not.toHaveBeenCalled()
+    expect(sendMessage).toHaveBeenCalledOnce()
     expect(jobsMarkConsumed).not.toHaveBeenCalled()
   })
 
