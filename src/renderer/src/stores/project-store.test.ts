@@ -107,6 +107,26 @@ describe('project store', () => {
     expect(useProjectStore.getState().projects[0]).toEqual(created)
   })
 
+  it('keeps the cache unchanged when a create or update resolves without a project', async () => {
+    const original = createProject({ name: 'Original' })
+    setProjectsApi({
+      create: vi.fn().mockResolvedValue(undefined),
+      update: vi.fn().mockResolvedValue(undefined)
+    })
+    useProjectStore.setState({ projects: [original], isLoaded: true })
+
+    await expect(
+      useProjectStore.getState().createProject({ name: 'Missing' })
+    ).resolves.toBeUndefined()
+    await expect(
+      useProjectStore
+        .getState()
+        .updateProject({ id: original.id, expectedUpdatedAt: 1, name: 'Missing' })
+    ).resolves.toBeUndefined()
+
+    expect(useProjectStore.getState().projects).toEqual([original])
+  })
+
   it('does not let a late update result replace a newer lifecycle projection', async () => {
     const original = createProject({ name: 'Original', updatedAt: 1 })
     const command = createDeferred<Project>()
