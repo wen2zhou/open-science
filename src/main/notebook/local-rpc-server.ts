@@ -424,6 +424,25 @@ class RpcHttpError extends Error {
   }
 }
 
+class BackgroundHostMethodUnsafeError extends RpcHttpError {
+  readonly detail: Readonly<{
+    code: 'BACKGROUND_HOST_METHOD_UNSAFE'
+    method: string
+    retryable: false
+    hint: string
+  }>
+
+  constructor(method: string) {
+    super(409, `${method} is not safe for background REPL execution.`)
+    this.detail = {
+      code: 'BACKGROUND_HOST_METHOD_UNSAFE',
+      method,
+      retryable: false,
+      hint: 'Run this Host SDK operation in foreground repl_execute.'
+    }
+  }
+}
+
 const ARTIFACT_RPC_METHODS = new Set<ArtifactRpcMethod>([
   'artifactReserveWrite',
   'artifactReleaseWrite',
@@ -523,6 +542,7 @@ const notebookExecutionInputFingerprint = (
             ? 'python'
             : null,
         method === 'execute' && typeof input?.cellId === 'string' ? input.cellId : null,
+        input?.background === true,
         kernelSkillIds,
         artifactVersionInputs
       ])
@@ -595,12 +615,12 @@ class NotebookLocalRpcServer {
     string,
     Map<NotebookExecutionRpcMethod, NotebookExecutionAuthorization | 'ambiguous'>
   >()
-  // Retains claimed durable foreground authorizations for the active prompt so a lost HTTP response
-  // can retry the exact request with the same submission identity. Data and REPL lifecycles remain
-  // separate owners; a newly authorized call takes precedence and turn/session teardown clears both.
+  // Retains claimed durable execution authorizations for the active prompt so a lost HTTP response
+  // can retry the exact request with the same submission identity. Each execution lifecycle remains
+  // a separate owner; a newly authorized call takes precedence and turn/session teardown clears both.
   private readonly claimedDurableExecutionAuthorizations = new Map<
     string,
-    Map<'execute' | 'executeControl', NotebookExecutionAuthorization>
+    Map<NotebookExecutionRpcMethod, NotebookExecutionAuthorization>
   >()
   private readonly consumedExecutionToolCalls = new Map<string, Set<string>>()
   private readonly computeSubmissionInvocations = new Map<
@@ -995,10 +1015,7 @@ class NotebookLocalRpcServer {
     byMethod?.delete(method)
     if (byMethod?.size === 0) this.executionAuthorizations.delete(sessionId)
     if (!authorization) {
-      const claimed =
-        method === 'execute' || method === 'executeControl'
-          ? this.claimedDurableExecutionAuthorizations.get(sessionId)?.get(method)
-          : undefined
+      const claimed = this.claimedDurableExecutionAuthorizations.get(sessionId)?.get(method)
       const activePrompt =
         this.activeArtifactTurnBindings.get(sessionId)?.provenanceContext.promptMessageId
       return claimed &&
@@ -1018,13 +1035,11 @@ class NotebookLocalRpcServer {
     ) {
       return undefined
     }
-    if (method === 'execute' || method === 'executeControl') {
-      const claimed =
-        this.claimedDurableExecutionAuthorizations.get(sessionId) ??
-        new Map<'execute' | 'executeControl', NotebookExecutionAuthorization>()
-      claimed.set(method, authorization)
-      this.claimedDurableExecutionAuthorizations.set(sessionId, claimed)
-    }
+    const claimed =
+      this.claimedDurableExecutionAuthorizations.get(sessionId) ??
+      new Map<NotebookExecutionRpcMethod, NotebookExecutionAuthorization>()
+    claimed.set(method, authorization)
+    this.claimedDurableExecutionAuthorizations.set(sessionId, claimed)
     return authorization.executionInvocationId
   }
 
@@ -1631,6 +1646,17 @@ class NotebookLocalRpcServer {
           if (MEMORY_RPC_METHODS.has(method) && sessionBinding.memoryTools !== true) {
             throw new RpcHttpError(403, 'Memory is disabled for this Session.')
           }
+          if (sessionBinding.activeControlInvocation?.executionMode === 'background') {
+            if (method === 'requestUserInput') {
+              throw new BackgroundHostMethodUnsafeError('host.requestUserInput')
+            }
+            if (method === 'agentsCall' && params.op === 'switch') {
+              throw new BackgroundHostMethodUnsafeError('host.agents.switch')
+            }
+            if (method === 'viewImageCall') {
+              throw new BackgroundHostMethodUnsafeError('host.viewImage')
+            }
+          }
           if (MEMORY_RPC_METHODS.has(method) && this.isMemoryEnabledForSession) {
             let memoryEnabled = false
             try {
@@ -1962,18 +1988,20 @@ class NotebookLocalRpcServer {
       const serializedError =
         error instanceof NotebookBackgroundRunError
           ? error.detail
-          : error instanceof PlanCommandError
-            ? { code: error.code, message }
-            : error instanceof StructuredOutputError
-              ? {
-                  code: error.code,
-                  ...(error.keyword ? { keyword: error.keyword } : {}),
-                  ...(error.instancePath !== undefined
-                    ? { instance_path: error.instancePath }
-                    : {}),
-                  ...(error.property ? { property: error.property } : {})
-                }
-              : message
+          : error instanceof BackgroundHostMethodUnsafeError
+            ? error.detail
+            : error instanceof PlanCommandError
+              ? { code: error.code, message }
+              : error instanceof StructuredOutputError
+                ? {
+                    code: error.code,
+                    ...(error.keyword ? { keyword: error.keyword } : {}),
+                    ...(error.instancePath !== undefined
+                      ? { instance_path: error.instancePath }
+                      : {}),
+                    ...(error.property ? { property: error.property } : {})
+                  }
+                : message
 
       if (error instanceof ResourceBudgetExceededError) {
         closeRequestAfterResponse(request, response)
@@ -2942,7 +2970,9 @@ class NotebookLocalRpcServer {
           signal
         )
         const backgroundRunId =
-          method === 'execute' && params.background === true && isRecord(result)
+          (method === 'execute' || method === 'executeControl' || method === 'executeShell') &&
+          params.background === true &&
+          isRecord(result)
             ? result.runId
             : undefined
         if (typeof backgroundRunId === 'string') {

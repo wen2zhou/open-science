@@ -190,6 +190,14 @@ const notebookRunCandidate = (value: unknown): boolean => {
         typeof value.frozenShellContext.timeoutMs !== 'number' ||
         !Number.isFinite(value.frozenShellContext.timeoutMs) ||
         typeof value.frozenShellContext.platform !== 'string')) ||
+    (value.shellConcurrency !== undefined &&
+      (!isRecord(value.shellConcurrency) ||
+        !Number.isSafeInteger(value.shellConcurrency.limit) ||
+        Number(value.shellConcurrency.limit) < 1 ||
+        (value.shellConcurrency.slot !== undefined &&
+          (!Number.isSafeInteger(value.shellConcurrency.slot) ||
+            Number(value.shellConcurrency.slot) < 1 ||
+            Number(value.shellConcurrency.slot) > Number(value.shellConcurrency.limit))))) ||
     typeof value.cellId !== 'string' ||
     (value.source !== 'agent' && value.source !== 'user') ||
     typeof value.script !== 'string' ||

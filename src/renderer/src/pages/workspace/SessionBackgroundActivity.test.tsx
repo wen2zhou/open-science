@@ -85,4 +85,89 @@ describe('Session background activity ledger', () => {
     })
     expect(container.textContent).toContain('Cancelling')
   })
+
+  it('shows a JavaScript REPL Run with its persistent lane and active controls', async () => {
+    const cancelBackgroundRun = vi.fn().mockResolvedValue(undefined)
+    vi.stubGlobal('window', {
+      ...window,
+      setInterval: window.setInterval.bind(window),
+      clearInterval: window.clearInterval.bind(window),
+      api: {
+        notebook: {
+          state: vi.fn().mockResolvedValue({
+            runs: [
+              run({
+                runId: 'repl-run-1',
+                kernelKind: 'repl',
+                script: 'await host.llm("summarize")',
+                environment: undefined
+              })
+            ]
+          }),
+          onChanged: vi.fn(() => () => undefined),
+          cancelBackgroundRun
+        }
+      }
+    })
+    const open = vi.fn()
+    const container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(<SessionBackgroundActivity notebook={notebook} onOpenNotebook={open} />)
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('JavaScript REPL'))
+    expect(container.textContent).toContain('Persistent REPL')
+    expect(container.textContent).toContain('Running')
+    expect(container.textContent).toMatch(/0m \d{2}s/u)
+    expect([...container.querySelectorAll('button')].map((button) => button.textContent)).toEqual([
+      'Open',
+      'Cancel'
+    ])
+  })
+
+  it('shows Shell Commands with bounded slot state in the dense Session ledger', async () => {
+    vi.stubGlobal('window', {
+      ...window,
+      setInterval: window.setInterval.bind(window),
+      clearInterval: window.clearInterval.bind(window),
+      api: {
+        notebook: {
+          state: vi.fn().mockResolvedValue({
+            runs: [
+              run({
+                runId: 'shell-running',
+                kernelKind: 'bash',
+                script: 'long-command',
+                shellConcurrency: { limit: 2, slot: 1 }
+              }),
+              run({
+                runId: 'shell-queued',
+                kernelKind: 'bash',
+                script: 'next-command',
+                status: 'queued',
+                shellConcurrency: { limit: 2 }
+              })
+            ]
+          }),
+          onChanged: vi.fn(() => () => undefined),
+          cancelBackgroundRun: vi.fn().mockResolvedValue(undefined)
+        }
+      }
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(<SessionBackgroundActivity notebook={notebook} onOpenNotebook={vi.fn()} />)
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('long-command'))
+
+    expect(container.textContent).toContain('Shell Command')
+    expect(container.textContent).toContain('Shell slot 1 of 2')
+    expect(container.textContent).toContain('Waiting for shell slot')
+    expect(container.textContent).not.toContain('Compute Job')
+  })
 })

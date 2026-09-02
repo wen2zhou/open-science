@@ -499,13 +499,18 @@ class NotebookSessionLifecycleOwner {
 
   dispose(): Promise<{ reaped: boolean }> {
     if (this.disposalPromise) return this.disposalPromise
-    this.terminal = true
-    this.abortAllOperations(new Error('Notebook runtime is disposed.'))
+    this.beginDisposal()
     const disposal = this.options.runtimeBindings.withGlobalTeardown(() =>
       this.options.sessions.dispose()
     )
     this.disposalPromise = disposal
     return disposal
+  }
+
+  beginDisposal(): void {
+    if (this.terminal) return
+    this.terminal = true
+    this.abortAllOperations(new Error('Notebook runtime is disposed.'))
   }
 
   private abortAllOperations(reason: Error): void {

@@ -686,7 +686,9 @@ describe('notebook local RPC server', () => {
     const server = new NotebookLocalRpcServer({
       execute: vi.fn(async (request: unknown) => request),
       executeControl: vi.fn(async (request: unknown) => request),
-      executeShell: vi.fn(async (request: unknown) => request)
+      executeControlBackground: vi.fn(async (request: unknown) => request),
+      executeShell: vi.fn(async (request: unknown) => request),
+      executeShellBackground: vi.fn(async (request: unknown) => request)
     } as never)
     const connections: Array<Awaited<ReturnType<typeof server.issueSessionConnection>>> = []
     const dispatch = async (
@@ -895,6 +897,83 @@ describe('notebook local RPC server', () => {
         result: { executionInvocationId: replId }
       })
 
+      setTurn('repl-background-mismatch')
+      server.authorizeExecution({
+        sessionId: 'repl-background-mismatch',
+        toolCallId: 'tool-repl-background-mismatch',
+        promptMessageId: 'prompt-1',
+        method: 'executeControl',
+        rawInput: { code: 'return 1', background: true }
+      })
+      const mismatchConnection = await server.issueSessionConnection(
+        'repl-background-mismatch',
+        'project-1',
+        'root-frame-repl-background-mismatch'
+      )
+      connections.push(mismatchConnection)
+      const backgroundMismatch = await fetchLocalRpc(
+        mismatchConnection,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${mismatchConnection.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'executeControl',
+            params: {
+              sessionId: 'repl-background-mismatch',
+              workspaceCwd: '/workspace',
+              code: 'return 1',
+              timeoutMs: 1_815_000
+            }
+          })
+        },
+        'Notebook background mode authorization mismatch'
+      )
+      expect(await backgroundMismatch.json()).not.toMatchObject({
+        result: { executionInvocationId: expect.any(String) }
+      })
+
+      setTurn('repl-background')
+      const backgroundId = server.authorizeExecution({
+        sessionId: 'repl-background',
+        toolCallId: 'tool-repl-background',
+        promptMessageId: 'prompt-1',
+        method: 'executeControl',
+        rawInput: { code: 'return 1', background: true }
+      })
+      const backgroundConnection = await server.issueSessionConnection(
+        'repl-background',
+        'project-1',
+        'root-frame-repl-background'
+      )
+      connections.push(backgroundConnection)
+      const backgroundResponse = await fetchLocalRpc(
+        backgroundConnection,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${backgroundConnection.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'executeControl',
+            params: {
+              sessionId: 'repl-background',
+              workspaceCwd: '/workspace',
+              code: 'return 1',
+              background: true,
+              timeoutMs: 1_815_000
+            }
+          })
+        },
+        'Notebook background mode authorization'
+      )
+      expect(await backgroundResponse.json()).toMatchObject({
+        result: { executionInvocationId: backgroundId, background: true }
+      })
+
       setTurn('shell-default')
       const shellId = server.authorizeExecution({
         sessionId: 'shell-default',
@@ -932,6 +1011,113 @@ describe('notebook local RPC server', () => {
       expect(shellResponse.status).toBe(200)
       expect(await shellResponse.json()).toMatchObject({
         result: { executionInvocationId: shellId }
+      })
+      const shellRetry = await fetchLocalRpc(
+        shellConnection,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${shellConnection.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'executeShell',
+            params: {
+              sessionId: 'shell-default',
+              workspaceCwd: '/workspace',
+              command: 'echo hi',
+              timeoutMs: 120_000
+            }
+          })
+        },
+        'Notebook Shell execution RPC retry'
+      )
+      expect(await shellRetry.json()).toMatchObject({
+        result: { executionInvocationId: shellId }
+      })
+
+      setTurn('shell-background-mismatch')
+      server.authorizeExecution({
+        sessionId: 'shell-background-mismatch',
+        toolCallId: 'tool-shell-background-mismatch',
+        promptMessageId: 'prompt-1',
+        method: 'executeShell',
+        rawInput: { command: 'echo hi', background: true }
+      })
+      const shellMismatchConnection = await server.issueSessionConnection(
+        'shell-background-mismatch',
+        'project-1',
+        'root-frame-shell-background-mismatch'
+      )
+      connections.push(shellMismatchConnection)
+      const shellBackgroundMismatch = await fetchLocalRpc(
+        shellMismatchConnection,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${shellMismatchConnection.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'executeShell',
+            params: {
+              sessionId: 'shell-background-mismatch',
+              workspaceCwd: '/workspace',
+              command: 'echo hi'
+            }
+          })
+        },
+        'Notebook Shell background mode authorization mismatch'
+      )
+      expect(await shellBackgroundMismatch.json()).not.toMatchObject({
+        result: { executionInvocationId: expect.any(String) }
+      })
+
+      setTurn('shell-background')
+      const shellBackgroundId = server.authorizeExecution({
+        sessionId: 'shell-background',
+        toolCallId: 'tool-shell-background',
+        promptMessageId: 'prompt-1',
+        method: 'executeShell',
+        rawInput: { command: 'echo hi', background: true }
+      })
+      const shellBackgroundConnection = await server.issueSessionConnection(
+        'shell-background',
+        'project-1',
+        'root-frame-shell-background'
+      )
+      connections.push(shellBackgroundConnection)
+      const dispatchShellBackground = async (): Promise<Record<string, unknown>> => {
+        const response = await fetchLocalRpc(
+          shellBackgroundConnection,
+          {
+            method: 'POST',
+            headers: {
+              authorization: `Bearer ${shellBackgroundConnection.token}`,
+              'content-type': 'application/json'
+            },
+            body: JSON.stringify({
+              method: 'executeShell',
+              params: {
+                sessionId: 'shell-background',
+                workspaceCwd: '/workspace',
+                command: 'echo hi',
+                background: true
+              }
+            })
+          },
+          'Notebook background Shell execution RPC'
+        )
+        expect(response.status).toBe(200)
+        return ((await response.json()) as { result: Record<string, unknown> }).result
+      }
+      await expect(dispatchShellBackground()).resolves.toMatchObject({
+        executionInvocationId: shellBackgroundId,
+        background: true
+      })
+      await expect(dispatchShellBackground()).resolves.toMatchObject({
+        executionInvocationId: shellBackgroundId,
+        background: true
       })
     } finally {
       for (const connection of connections) connection.release?.()
@@ -3535,13 +3721,159 @@ describe('notebook local RPC server', () => {
     }
   })
 
-  it('retains the input-run lease until an admitted background Run reaches terminal state', async () => {
+  it.each([
+    ['execute', 'executeBackground'],
+    ['executeControl', 'executeControlBackground']
+  ] as const)(
+    'retains the input-run lease until an admitted background Run reaches terminal state for %s',
+    async (method, serviceMethod) => {
+      const completion = createDeferred()
+      const close = vi.fn()
+      const executeBackground = vi.fn().mockResolvedValue({ runId: 'run-background-1' })
+      const executeControlBackground = vi.fn().mockResolvedValue({ runId: 'run-background-1' })
+      const waitForBackgroundRun = vi.fn(() => completion.promise)
+      const server = new NotebookLocalRpcServer(
+        { executeBackground, executeControlBackground, waitForBackgroundRun } as never,
+        {
+          transport: 'tcp',
+          token: 'secret-token',
+          inputRegistry: {
+            registerTurn: vi.fn().mockResolvedValue(undefined),
+            getTurnInputs: () => [registeredInput],
+            openRun: vi.fn().mockResolvedValue({
+              getRunInputFiles: () => [registeredInput],
+              resolve: vi.fn().mockResolvedValue('/managed/groups.csv'),
+              close
+            }),
+            clearSession: vi.fn()
+          }
+        }
+      )
+      const connection = await server.ensureStarted()
+      server.setArtifactTurnBinding('session-1', {
+        ownerExecutionId: 'execution-1',
+        projectId: 'default-project',
+        provenanceContext: {
+          rootFrameId: 'root-frame-1',
+          agentFrameId: 'root-frame-1',
+          messageBranchId: 'branch-1',
+          runtimeSegmentId: 'runtime-1',
+          promptMessageId: 'message-user-1'
+        }
+      })
+      await server.registerNotebookTurnInputs({
+        projectId: 'default-project',
+        appSessionId: 'session-1',
+        promptMessageId: 'message-user-1',
+        uploads: [],
+        references: []
+      })
+
+      try {
+        const response = await fetch(connection.endpoint, {
+          method: 'POST',
+          headers: {
+            authorization: 'Bearer secret-token',
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method,
+            params: {
+              sessionId: 'session-1',
+              workspaceCwd: '/workspace',
+              code: 'print("later")',
+              background: true
+            }
+          })
+        })
+
+        expect(response.status).toBe(200)
+        await expect(response.json()).resolves.toEqual({ result: { runId: 'run-background-1' } })
+        expect(
+          { executeBackground, executeControlBackground }[serviceMethod]
+        ).toHaveBeenCalledOnce()
+        expect(waitForBackgroundRun).toHaveBeenCalledWith('run-background-1')
+        expect(close).not.toHaveBeenCalled()
+
+        completion.resolve()
+        await vi.waitFor(() => expect(close).toHaveBeenCalledOnce())
+      } finally {
+        completion.resolve()
+        await server.close()
+      }
+    }
+  )
+
+  it('rejects outer-completion Host SDK methods from a background REPL with structured guidance', async () => {
+    const dispatch = vi.fn()
+    const server = new NotebookLocalRpcServer({} as never, {
+      transport: 'tcp',
+      agentsService: { read: dispatch, dispatch }
+    })
+    const connection = await server.issueControlConnection('session-1', 'project-1', 'frame-1')
+    const release = connection.beginControlInvocation({
+      turnId: 'run-background-1',
+      controlInvocationGeneration: 1,
+      toolInvocationId: 'run-background-1',
+      originatingUserMessageId: 'message-user-1',
+      executionMode: 'background'
+    })
+
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({ method: 'agentsCall', params: { op: 'switch', name: null } })
+      })
+
+      expect(response.status).toBe(409)
+      await expect(response.json()).resolves.toEqual({
+        error: {
+          code: 'BACKGROUND_HOST_METHOD_UNSAFE',
+          method: 'host.agents.switch',
+          retryable: false,
+          hint: 'Run this Host SDK operation in foreground repl_execute.'
+        }
+      })
+      expect(dispatch).not.toHaveBeenCalled()
+
+      const viewImageResponse = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: `Bearer ${connection.token}`,
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'viewImageCall',
+          params: { source: { path: 'results/plot.png' } }
+        })
+      })
+      expect(viewImageResponse.status).toBe(409)
+      await expect(viewImageResponse.json()).resolves.toEqual({
+        error: {
+          code: 'BACKGROUND_HOST_METHOD_UNSAFE',
+          method: 'host.viewImage',
+          retryable: false,
+          hint: 'Run this Host SDK operation in foreground repl_execute.'
+        }
+      })
+    } finally {
+      release()
+      connection.release()
+      await server.close()
+    }
+  })
+
+  it('retains frozen inputs for an admitted background Shell Run after the RPC response', async () => {
     const completion = createDeferred()
     const close = vi.fn()
-    const executeBackground = vi.fn().mockResolvedValue({ runId: 'run-background-1' })
+    const executeShellBackground = vi.fn().mockResolvedValue({ runId: 'shell-background-1' })
     const waitForBackgroundRun = vi.fn(() => completion.promise)
     const server = new NotebookLocalRpcServer(
-      { executeBackground, waitForBackgroundRun } as never,
+      { executeShellBackground, waitForBackgroundRun } as never,
       {
         transport: 'tcp',
         token: 'secret-token',
@@ -3558,23 +3890,16 @@ describe('notebook local RPC server', () => {
       }
     )
     const connection = await server.ensureStarted()
-    server.setArtifactTurnBinding('session-1', {
-      ownerExecutionId: 'execution-1',
+    server.setArtifactTurnBinding('session-shell', {
+      ownerExecutionId: 'execution-shell',
       projectId: 'default-project',
       provenanceContext: {
-        rootFrameId: 'root-frame-1',
-        agentFrameId: 'root-frame-1',
-        messageBranchId: 'branch-1',
-        runtimeSegmentId: 'runtime-1',
-        promptMessageId: 'message-user-1'
+        rootFrameId: 'root-frame-shell',
+        agentFrameId: 'root-frame-shell',
+        messageBranchId: 'branch-shell',
+        runtimeSegmentId: 'runtime-shell',
+        promptMessageId: 'message-shell'
       }
-    })
-    await server.registerNotebookTurnInputs({
-      projectId: 'default-project',
-      appSessionId: 'session-1',
-      promptMessageId: 'message-user-1',
-      uploads: [],
-      references: []
     })
 
     try {
@@ -3585,20 +3910,26 @@ describe('notebook local RPC server', () => {
           'content-type': 'application/json'
         },
         body: JSON.stringify({
-          method: 'execute',
+          method: 'executeShell',
           params: {
-            sessionId: 'session-1',
+            sessionId: 'session-shell',
             workspaceCwd: '/workspace',
-            code: 'print("later")',
+            command: 'long-command',
             background: true
           }
         })
       })
 
       expect(response.status).toBe(200)
-      await expect(response.json()).resolves.toEqual({ result: { runId: 'run-background-1' } })
-      expect(executeBackground).toHaveBeenCalledOnce()
-      expect(waitForBackgroundRun).toHaveBeenCalledWith('run-background-1')
+      expect(executeShellBackground).toHaveBeenCalledWith(
+        expect.objectContaining({
+          background: true,
+          registeredInputFiles: [registeredInput],
+          inputRunLeaseId: expect.any(String)
+        }),
+        expect.any(AbortSignal)
+      )
+      expect(waitForBackgroundRun).toHaveBeenCalledWith('shell-background-1')
       expect(close).not.toHaveBeenCalled()
 
       completion.resolve()

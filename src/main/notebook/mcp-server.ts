@@ -94,11 +94,21 @@ const executeToolSchema = {
 
 const replExecuteToolSchema = {
   code: z.string(),
+  background: z
+    .boolean()
+    .optional()
+    .describe(
+      'Return after durable admission; keep this JavaScript REPL Run active in the Session.'
+    ),
   timeoutMs: z.number().int().positive().default(NOTEBOOK_REPL_DEFAULT_TIMEOUT_MS)
 }
 
 const bashExecuteToolSchema = {
   command: z.string(),
+  background: z
+    .boolean()
+    .optional()
+    .describe('Return after durable admission; keep this Shell Command active in the Session.'),
   timeoutMs: z.number().int().positive().optional()
 }
 
@@ -220,6 +230,7 @@ const REPL_EXECUTE_DOC = [
   'Use `await host.capabilities()` to feature-gate optional host namespaces; load the `self-awareness` Skill for its boolean contract and current capability map.',
   'Only this kernel can call temporary tool-less inference (`await host.llm(prompt)` or a bounded prompt batch), connectors (`await host.mcp(server, method, args)`), remote compute (`host.compute`; load its skill for the API), Specialist management (`host.agents`), and other optional namespaces reported by `host.capabilities()` and `host.help()`.',
   HOST_SDK_DISCOVERY_GUIDANCE,
+  'Use foreground when reasoning needs the result now; use background:true only for longer independent work. Background-safe calls include host.mcp, host.compute, host.llm, host.delegate, and read-only Host SDK operations. host.viewImage, host.agents.switch, and live user input are unsafe in background execution because their results require the live foreground response. Save the returned runId; do not poll frequently. A Turn end or MCP disconnect does not cancel an accepted background Run; cancel it explicitly with background_run. If a Host SDK operation reports BACKGROUND_HOST_METHOD_UNSAFE, continue in foreground.',
   'Globals persist and a trailing expression is returned. Return results directly when they are for Agent inspection. The default execution deadline covers the Host SDK maximum 30-minute bounded wait; an explicit timeoutMs still overrides it. To hand off large data from the REPL to Python/R, write it under process.env.OPEN_SCIENCE_HANDOFF_DIR; Python/R reads the same OPEN_SCIENCE_HANDOFF_DIR path. Use notebook_execute for analysis code.'
 ].join('\n')
 
@@ -246,8 +257,10 @@ const buildShellExecuteDoc = (platform: NodeJS.Platform = process.platform): str
     ...(platformContract ? [platformContract] : []),
     `Stateless: each call is a fresh process, so cwd, variables, jobs, and functions do not persist. It starts in the data-kernel workspace and shares the handoff directory exposed as ${handoffVariable}; do not resolve handoff relative to cwd.`,
     exitCodeContract,
+    'Use foreground when reasoning needs the result now; use background:true for a longer independent command. Save the returned runId. Do not poll frequently; Session activity tracks completion. Turn end or MCP disconnect does not stop an accepted background Run; explicitly cancel with background_run.',
+    'Background commands must stay application-managed. Do not use &, nohup, setsid, disown, Start-Process, Start-Job, or equivalent detached-process mechanisms; use background:true instead.',
     'Do NOT copy a generated notebook output into the workspace with this tool. For a final chart, image, report, CSV, or other user-facing file, call `write_artifact_file` with the same relative filename you saved with (it resolves against the notebook session data dir); it copies the file safely on every platform.',
-    'Use only for one-off command inspection. Run Python/R with notebook_execute, JavaScript with repl_execute, and installs with manage_packages; never execute analysis scripts, inline code, or installers here.'
+    'Use only for one managed command. Run Python/R with notebook_execute, JavaScript with repl_execute, and installs with manage_packages; never execute analysis scripts, inline code, or installers here.'
   ].join('\n')
 }
 
@@ -285,7 +298,7 @@ type NotebookToolContent =
   { type: 'text'; text: string } | { type: 'image'; data: string; mimeType: string }
 
 const notebookRpcSignal = (
-  method: string,
+  _method: string,
   signal: AbortSignal | undefined
 ): AbortSignal | undefined => signal
 
@@ -563,6 +576,32 @@ const compactArtifacts = (value: unknown): unknown[] => {
   })
 }
 
+const compactFileEvidence = (value: unknown): Record<string, unknown> | undefined => {
+  const record = asRecord(value)
+  if (!record) return undefined
+  return {
+    ...pickDefined(record, [
+      'schemaVersion',
+      'activityId',
+      'activityKind',
+      'state',
+      'evidenceId',
+      'checksum',
+      'storageKey',
+      'relationCount',
+      'generationCount',
+      'scientificOutputCount',
+      'initialViewState',
+      'managedRootsFinalState',
+      'scientificOutputAnalysis',
+      'fileReads',
+      'externalPaths',
+      'writerAttribution'
+    ]),
+    ...(Array.isArray(record.reasonCodes) ? { reasonCodes: record.reasonCodes.slice(0, 32) } : {})
+  }
+}
+
 const compactExecutionOutputs = (
   value: unknown,
   canonicalTraceback: string
@@ -663,6 +702,7 @@ const compactNotebookExecutionResult = (raw: unknown, input: unknown = {}): unkn
   const compactOutputs = compactExecutionOutputs(record.outputs, stream('traceback'))
   const workingFiles = compactWorkingFiles(record.workingFiles)
   const artifacts = compactArtifacts(record.artifacts)
+  const fileEvidence = compactFileEvidence(record.fileEvidence)
   const staleness = compactStaleness(record.staleness, EXECUTION_STALENESS_LIMITS)
   const filesOmitted =
     (Array.isArray(record.workingFiles) && record.workingFiles.length > workingFiles.length) ||
@@ -733,6 +773,7 @@ const compactNotebookExecutionResult = (raw: unknown, input: unknown = {}): unkn
     ...(compactOutputs.omitted > 0 ? { omittedOutputCount: compactOutputs.omitted } : {}),
     ...(workingFiles.length ? { workingFiles } : {}),
     ...(artifacts.length ? { artifacts } : {}),
+    ...(fileEvidence ? { fileEvidence } : {}),
     ...(record.cwdBefore !== record.cwdAfter && record.cwdAfter !== undefined
       ? { cwdAfter: record.cwdAfter }
       : {}),
@@ -760,7 +801,8 @@ const compactBackgroundRunReceipt = (raw: unknown): unknown => {
         'status',
         'acceptedAt',
         'lifecycleScope',
-        'submissionIdentity'
+        'submissionIdentity',
+        'shellConcurrency'
       ])
     : raw
 }
@@ -1384,7 +1426,10 @@ const NOTEBOOK_RPC_TOOLS: NotebookRpcToolDefinition[] = [
     description: REPL_EXECUTE_DOC,
     method: 'executeControl',
     inputSchema: replExecuteToolSchema,
-    mapResult: compactReplExecutionResult,
+    mapResult: (raw, input) =>
+      asRecord(input)?.background === true
+        ? compactBackgroundRunReceipt(raw)
+        : compactReplExecutionResult(raw),
     includeViewImages: true,
     resultLimitChars: NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT,
     progressMessage: 'Control-plane REPL execution is still running.'
@@ -1395,7 +1440,10 @@ const NOTEBOOK_RPC_TOOLS: NotebookRpcToolDefinition[] = [
     description: BASH_EXECUTE_DOC,
     method: 'executeShell',
     inputSchema: bashExecuteToolSchema,
-    mapResult: compactNotebookExecutionResult,
+    mapResult: (raw, input) =>
+      asRecord(input)?.background === true
+        ? compactBackgroundRunReceipt(raw)
+        : compactNotebookExecutionResult(raw),
     resultLimitChars: NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT
   },
   {

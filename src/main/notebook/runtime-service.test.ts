@@ -46,7 +46,8 @@ import {
   type NotebookEnvironmentManifest,
   type NotebookEnvironmentStatus,
   type NotebookLanguage,
-  type NotebookRunInputFile
+  type NotebookRunInputFile,
+  type NotebookRunProvenanceContext
 } from '../../shared/notebook'
 import type {
   DiscoveredInterpreter,
@@ -2896,6 +2897,7 @@ describe('notebook runtime service', () => {
       turnId: 'notebook-run-42-1',
       controlInvocationGeneration: 1,
       toolInvocationId: 'notebook-run-42-1',
+      executionMode: 'foreground',
       attachmentIds: [],
       artifactIds: []
     })
@@ -2903,6 +2905,7 @@ describe('notebook runtime service', () => {
       turnId: 'notebook-run-42-2',
       controlInvocationGeneration: 2,
       toolInvocationId: 'notebook-run-42-2',
+      executionMode: 'foreground',
       attachmentIds: [],
       artifactIds: []
     })
@@ -2918,6 +2921,88 @@ describe('notebook runtime service', () => {
 
     await service.shutdown({ sessionId: 'session-1', workspaceCwd: projectWorkspace })
     expect(release).toHaveBeenCalledOnce()
+  })
+
+  it('holds the background REPL capability and Agent Frame invocation through terminalization without entering the completion gate', async () => {
+    const root = await createStorageRoot()
+    const dispatched = createDeferred<void>()
+    const releaseExecution = createDeferred<void>()
+    const releaseInvocation = vi.fn()
+    const beginControlInvocation = vi.fn(() => releaseInvocation)
+    const completeControlInvocation = vi.fn(async () => [])
+    const completionInterceptor = vi.fn()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      backgroundExecutionEnabled: true,
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          dispatched.resolve()
+          await releaseExecution.promise
+          return {
+            status: 'completed',
+            stdout: 'done',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    service.setMcpRpcConnectionResolver(async () => ({
+      endpoint: 'http://127.0.0.1:1/x',
+      token: 'control-token',
+      beginControlInvocation,
+      completeControlInvocation
+    }))
+    service.setControlCompletionInterceptor({ intercept: completionInterceptor })
+    const provenanceContext = {
+      rootFrameId: 'frame-root',
+      agentFrameId: 'frame-child',
+      messageBranchId: 'branch-child',
+      runtimeSegmentId: 'segment-child',
+      promptMessageId: 'prompt-child'
+    }
+
+    const receipt = await service.executeControlBackground({
+      sessionId: 'session-repl-lease',
+      workspaceCwd: root,
+      code: 'await safeHostCall()',
+      background: true,
+      executionInvocationId: 'submission-repl-lease',
+      provenanceContext
+    })
+    await dispatched.promise
+
+    expect(beginControlInvocation).toHaveBeenCalledWith({
+      turnId: receipt.runId,
+      controlInvocationGeneration: expect.any(Number),
+      toolInvocationId: receipt.runId,
+      executionMode: 'background',
+      originatingTurnId: 'prompt-child',
+      originatingUserMessageId: 'prompt-child',
+      attachmentIds: [],
+      artifactIds: []
+    })
+    expect(releaseInvocation).not.toHaveBeenCalled()
+    expect(completionInterceptor).not.toHaveBeenCalled()
+
+    releaseExecution.resolve()
+    await service.waitForBackgroundRun(receipt.runId)
+    expect(releaseInvocation).toHaveBeenCalledOnce()
+    expect(completeControlInvocation).toHaveBeenCalledWith(receipt.runId)
+    await expect(
+      service.getBackgroundRun({
+        sessionId: 'session-repl-lease',
+        workspaceCwd: root,
+        runId: receipt.runId,
+        agentFrameId: 'frame-child'
+      })
+    ).resolves.toMatchObject({ run: { agentFrameId: 'frame-child', status: 'completed' } })
   })
 
   it('discards transient images on failed execution and captured completion', async () => {
@@ -3364,6 +3449,232 @@ describe('notebook runtime service', () => {
         source: 'agent'
       })
       expect(state.runs[0].text.stdout).toContain('hi')
+    })
+
+    it('returns a durable background Shell receipt before execution completes and exposes its result', async () => {
+      const root = await createStorageRoot()
+      const executionStarted = createDeferred<void>()
+      const releaseExecution = createDeferred<void>()
+      const execute = vi.fn<NotebookShellProcess['execute']>(async () => {
+        executionStarted.resolve()
+        await releaseExecution.promise
+        return { stdout: 'finished\n', stderr: '', exitCode: 0 }
+      })
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        shellProcess: { execute },
+        backgroundExecutionEnabled: true
+      })
+      const request = {
+        sessionId: 'session-shell-background',
+        workspaceCwd: root,
+        command: 'long-running-shell',
+        background: true,
+        executionInvocationId: 'shell-background-submission'
+      }
+
+      const receipt = await service.executeShellBackground(request)
+      expect(receipt).toMatchObject({
+        executionType: 'shell-command',
+        sessionId: request.sessionId,
+        status: expect.stringMatching(/queued|running/),
+        lifecycleScope: 'app-process',
+        submissionIdentity: request.executionInvocationId
+      })
+      await executionStarted.promise
+      await expect(
+        service.getBackgroundRun({ ...request, runId: receipt.runId })
+      ).resolves.toMatchObject({
+        receipt: { runId: receipt.runId, executionType: 'shell-command' },
+        run: { kernelKind: 'bash', status: 'running' }
+      })
+
+      releaseExecution.resolve()
+      await service.waitForBackgroundRun(receipt.runId)
+      await expect(
+        service.getBackgroundRun({ ...request, submissionIdentity: request.executionInvocationId })
+      ).resolves.toMatchObject({
+        receipt: { runId: receipt.runId },
+        run: { status: 'completed', exitCode: 0, text: { stdout: 'finished\n' } }
+      })
+      expect(execute).toHaveBeenCalledOnce()
+    })
+
+    it.each(['linux', 'win32'] as const)(
+      'keeps background Shell Runs in bounded FIFO order and cancels a queued Run idempotently on %s',
+      async (platform) => {
+        const root = await createStorageRoot()
+        const entered: string[] = []
+        const releaseFirst = createDeferred<void>()
+        const execute = vi.fn<NotebookShellProcess['execute']>(async ({ command }) => {
+          entered.push(command)
+          if (command === 'first') await releaseFirst.promise
+          return { stdout: command, stderr: '', exitCode: 0 }
+        })
+        const service = new NotebookRuntimeService({
+          configRoot: root,
+          dataRoot: root,
+          projectId: 'default-project',
+          repository: new NotebookRunRepository(root),
+          shellProcess: { execute },
+          shellConcurrencyLimit: 1,
+          backgroundExecutionEnabled: true,
+          platform
+        })
+        const scope = { sessionId: 'session-shell-fifo', workspaceCwd: root, background: true }
+        const first = await service.executeShellBackground({
+          ...scope,
+          command: 'first',
+          executionInvocationId: 'shell-first'
+        })
+        const secondRequest = {
+          ...scope,
+          command: 'second',
+          executionInvocationId: 'shell-second'
+        }
+        const second = await service.executeShellBackground(secondRequest)
+
+        await vi.waitFor(async () => {
+          const state = await service.state(scope)
+          expect(state.runs.find((run) => run.runId === first.runId)).toMatchObject({
+            status: 'running',
+            executionMode: 'background',
+            shellConcurrency: { limit: 1, slot: 1 }
+          })
+          expect(state.runs.find((run) => run.runId === second.runId)).toMatchObject({
+            status: 'queued',
+            executionMode: 'background',
+            shellConcurrency: { limit: 1 }
+          })
+        })
+        await vi.waitFor(() => expect(entered).toEqual(['first']))
+
+        const cancelled = await service.cancelBackgroundRun({
+          ...secondRequest,
+          runId: second.runId
+        })
+        expect(cancelled.run).toMatchObject({ status: 'cancelled', exitCode: null })
+        await expect(
+          service.cancelBackgroundRun({ ...secondRequest, runId: second.runId })
+        ).resolves.toMatchObject({ run: { status: 'cancelled' } })
+        expect(entered).toEqual(['first'])
+
+        releaseFirst.resolve()
+        await service.waitForBackgroundRun(first.runId)
+        expect(entered).toEqual(['first'])
+      }
+    )
+
+    it.each(['linux', 'win32'] as const)(
+      'recovers a lost background Shell receipt and idempotently cancels running work on %s',
+      async (platform) => {
+        const root = await createStorageRoot()
+        let executions = 0
+        const execute = vi.fn<NotebookShellProcess['execute']>(
+          (request) =>
+            new Promise((resolve) => {
+              executions += 1
+              request.signal?.addEventListener(
+                'abort',
+                () =>
+                  resolve({
+                    stdout: 'side-effect-once',
+                    stderr: 'Shell command was cancelled.',
+                    exitCode: null,
+                    cancelled: true
+                  }),
+                { once: true }
+              )
+            })
+        )
+        const service = new NotebookRuntimeService({
+          configRoot: root,
+          dataRoot: root,
+          projectId: 'default-project',
+          repository: new NotebookRunRepository(root),
+          shellProcess: { execute },
+          backgroundExecutionEnabled: true,
+          platform
+        })
+        const request = {
+          sessionId: 'session-shell-response-loss',
+          workspaceCwd: root,
+          command: 'append-one-row',
+          background: true,
+          executionInvocationId: 'shell-response-loss-submission'
+        }
+
+        const first = await service.executeShellBackground(request)
+        const recovered = await service.executeShellBackground(request)
+
+        expect(recovered.runId).toBe(first.runId)
+        await vi.waitFor(() => expect(executions).toBe(1))
+        await service.cancelBackgroundRun({ ...request, runId: first.runId })
+        expect(executions).toBe(1)
+      }
+    )
+
+    it('keeps a background Shell Run retryable when its durable result is temporarily unreadable', async () => {
+      const root = await createStorageRoot()
+      const repository = new NotebookRunRepository(root)
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository,
+        backgroundExecutionEnabled: true
+      })
+      vi.spyOn(repository, 'findRun').mockRejectedValueOnce(new Error('temporary read failure'))
+
+      await expect(
+        service.getBackgroundRun({
+          sessionId: 'session-shell-unreadable',
+          workspaceCwd: root,
+          runId: 'shell-run-unreadable'
+        })
+      ).rejects.toMatchObject({
+        detail: {
+          code: 'BACKGROUND_RUN_RESULT_UNAVAILABLE',
+          stage: 'query',
+          retryable: true,
+          runId: 'shell-run-unreadable'
+        },
+        message: expect.stringContaining('temporarily unavailable')
+      })
+    })
+
+    it.each([
+      ['linux' as const, 'nohup long-command >/tmp/out 2>&1 &', 'nohup'],
+      ['linux' as const, 'long-command &', '&'],
+      ['win32' as const, 'Start-Process long-command', 'Start-Process'],
+      ['win32' as const, 'Start-Job { long-command }', 'Start-Job']
+    ])('blocks unmanaged %s Shell detachment via %s', async (platform, command, mechanism) => {
+      const root = await createStorageRoot()
+      const execute = vi.fn<NotebookShellProcess['execute']>()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        shellProcess: { execute },
+        platform
+      })
+
+      await expect(
+        service.executeShell({ sessionId: 'session-detached', workspaceCwd: root, command })
+      ).rejects.toMatchObject({
+        detail: {
+          code: 'UNMANAGED_SHELL_BACKGROUND_BLOCKED',
+          stage: 'pre-admission',
+          retryable: false,
+          hint: expect.stringContaining('background:true')
+        },
+        message: expect.stringContaining(mechanism)
+      })
+      expect(execute).not.toHaveBeenCalled()
     })
 
     it('routes one admitted call through the shell process port and preserves its public result', async () => {
@@ -4015,7 +4326,7 @@ describe('notebook runtime service', () => {
       expect(new Set(state.runs.map((run) => run.runId)).size).toBe(2)
     })
 
-    // POSIX-only: relies on `trap '' TERM` and signal-0 process probes. Windows signal semantics
+    // POSIX-only: relies on process-group signals and signal-0 process probes. Windows semantics
     // differ entirely and use taskkill-backed tree termination instead.
     it.skipIf(process.platform === 'win32')(
       'SIGKILLs a timed-out command that ignores SIGTERM instead of leaving it running',
@@ -4027,24 +4338,29 @@ describe('notebook runtime service', () => {
         const marker = `os-notebook-shell-test-${randomUUID()}`
         const descendantPidPath = join(root, `${marker}.pid`)
         const quoteForShell = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
+        const descendantScript = "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30_000)"
+        const parentScript = [
+          "const { spawn } = require('node:child_process')",
+          "const { writeFileSync } = require('node:fs')",
+          "process.on('SIGTERM', () => {})",
+          `const child = spawn(process.execPath, ['-e', ${JSON.stringify(descendantScript)}, ${JSON.stringify(marker)}], { stdio: 'ignore' })`,
+          `writeFileSync(${JSON.stringify(descendantPidPath)}, String(child.pid))`,
+          'setTimeout(() => {}, 30_000)'
+        ].join('; ')
 
         const execution = service.executeShell({
           sessionId: 'session-1',
           workspaceCwd: root,
-          // The shell records its real descendant's PID before waiting. Both ignore SIGTERM, so the
-          // timeout cleanup must escalate and reap the whole tree rather than only the direct shell.
-          command: `trap '' TERM; ${quoteForShell(process.execPath)} -e ${quoteForShell(
-            "process.on('SIGTERM', () => {}); setTimeout(() => {}, 30_000)"
-          )} ${quoteForShell(marker)} & descendant_pid=$!; printf '%s' "$descendant_pid" > ${quoteForShell(
-            descendantPidPath
-          )}; wait "$descendant_pid" # ${marker}`,
-          timeoutMs: 2_000
+          // A foreground Node parent records its real descendant's PID. Both ignore SIGTERM, so
+          // cleanup must escalate and reap the group without relying on forbidden shell detachment.
+          command: `${quoteForShell(process.execPath)} -e ${quoteForShell(parentScript)}`,
+          timeoutMs: 4_000
         })
 
         // Start the execution first, then require the descendant to be observable well before the
         // timeout. This prevents a loaded runner from taking the process-tree snapshot before the
         // fixture has spawned the process that the cleanup contract is meant to cover.
-        const readinessDeadline = Date.now() + 1_500
+        const readinessDeadline = Date.now() + 3_000
         let descendantPid: number | undefined
         while (descendantPid === undefined && Date.now() < readinessDeadline) {
           try {
@@ -4841,6 +5157,208 @@ describe('notebook runtime service', () => {
     })
   })
 
+  it('returns a durable background receipt before REPL execution completes and preserves its lane result', async () => {
+    const root = await createStorageRoot()
+    const executionStarted = createDeferred<void>()
+    const releaseExecution = createDeferred<void>()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      backgroundExecutionEnabled: true,
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          executionStarted.resolve()
+          await releaseExecution.promise
+          return {
+            status: 'completed',
+            stdout: 'globalThis.answer = 42\n',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+
+    const receipt = await service.executeControlBackground({
+      projectId: 'default-project',
+      sessionId: 'session-repl-background',
+      workspaceCwd: root,
+      code: 'globalThis.answer = 42',
+      background: true,
+      executionInvocationId: 'submission-repl-background-1'
+    })
+
+    expect(receipt).toMatchObject({
+      executionType: 'javascript-repl',
+      projectId: 'default-project',
+      sessionId: 'session-repl-background',
+      status: expect.stringMatching(/queued|running/),
+      lifecycleScope: 'app-process',
+      submissionIdentity: 'submission-repl-background-1'
+    })
+    await executionStarted.promise
+    await expect(
+      service.getBackgroundRun({
+        projectId: 'default-project',
+        sessionId: 'session-repl-background',
+        workspaceCwd: root,
+        runId: receipt.runId
+      })
+    ).resolves.toMatchObject({ run: { kernelKind: 'repl', status: 'running' } })
+
+    releaseExecution.resolve()
+    await service.waitForBackgroundRun(receipt.runId)
+    await expect(
+      service.getBackgroundRun({
+        projectId: 'default-project',
+        sessionId: 'session-repl-background',
+        workspaceCwd: root,
+        submissionIdentity: 'submission-repl-background-1'
+      })
+    ).resolves.toMatchObject({
+      receipt: { runId: receipt.runId, executionType: 'javascript-repl' },
+      run: { status: 'completed', text: { stdout: 'globalThis.answer = 42\n' } }
+    })
+  })
+
+  it('cancels a background REPL idempotently and reports persistent namespace loss', async () => {
+    const root = await createStorageRoot()
+    const dispatched = createDeferred<void>()
+    let executions = 0
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      backgroundExecutionEnabled: true,
+      executorFactory: () => ({
+        execute: (request) => {
+          executions += 1
+          dispatched.resolve()
+          return new Promise<NotebookExecutionResult>((resolve) => {
+            request.signal?.addEventListener(
+              'abort',
+              () =>
+                resolve({
+                  status: 'cancelled',
+                  kernelDispatched: true,
+                  stdout: '',
+                  stderr: 'REPL stopped; the persistent namespace was terminated.',
+                  traceback: '',
+                  cwdAfter: request.cwd,
+                  outputs: []
+                }),
+              { once: true }
+            )
+          })
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const request = {
+      projectId: 'default-project',
+      sessionId: 'session-repl-cancel',
+      workspaceCwd: root,
+      code: 'await neverSettles()',
+      background: true,
+      executionInvocationId: 'submission-repl-cancel'
+    }
+
+    const receipt = await service.executeControlBackground(request)
+    const recovered = await service.executeControlBackground(request)
+    expect(recovered.runId).toBe(receipt.runId)
+    await dispatched.promise
+
+    const cancelled = await service.cancelBackgroundRun({ ...request, runId: receipt.runId })
+    expect(cancelled).toMatchObject({
+      receipt: { executionType: 'javascript-repl' },
+      run: {
+        status: 'cancelled',
+        text: { stderr: 'REPL stopped; the persistent namespace was terminated.' }
+      }
+    })
+    await expect(
+      service.cancelBackgroundRun({ ...request, runId: receipt.runId })
+    ).resolves.toMatchObject({ run: { status: 'cancelled' } })
+    expect(executions).toBe(1)
+  })
+
+  it('keeps background and later foreground REPL work on one FIFO lane', async () => {
+    const root = await createStorageRoot()
+    const firstDispatched = createDeferred<void>()
+    const releaseFirst = createDeferred<void>()
+    const entered: string[] = []
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      backgroundExecutionEnabled: true,
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          entered.push(request.code)
+          if (request.code === 'globalThis.order = [1]') {
+            firstDispatched.resolve()
+            await releaseFirst.promise
+          }
+          return {
+            status: 'completed',
+            stdout: request.code,
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const base = {
+      sessionId: 'session-repl-fifo',
+      workspaceCwd: root,
+      background: true
+    }
+
+    const first = await service.executeControlBackground({
+      ...base,
+      code: 'globalThis.order = [1]',
+      executionInvocationId: 'submission-repl-fifo-1'
+    })
+    await firstDispatched.promise
+    const second = await service.executeControlBackground({
+      ...base,
+      code: 'globalThis.order.push(2)',
+      executionInvocationId: 'submission-repl-fifo-2'
+    })
+    const foreground = service.executeControl({
+      sessionId: base.sessionId,
+      workspaceCwd: root,
+      code: 'globalThis.order.push(3)'
+    })
+
+    await expect(service.getBackgroundRun({ ...base, runId: second.runId })).resolves.toMatchObject(
+      { run: { status: 'queued' } }
+    )
+    expect(entered).toEqual(['globalThis.order = [1]'])
+
+    releaseFirst.resolve()
+    await Promise.all([
+      service.waitForBackgroundRun(first.runId),
+      service.waitForBackgroundRun(second.runId),
+      foreground
+    ])
+    expect(entered).toEqual([
+      'globalThis.order = [1]',
+      'globalThis.order.push(2)',
+      'globalThis.order.push(3)'
+    ])
+  })
+
   it('does not persist a Run when background execution is cancelled before durable admission', async () => {
     const root = await createStorageRoot()
     const repository = new NotebookRunRepository(root)
@@ -4906,7 +5424,7 @@ describe('notebook runtime service', () => {
         shutdown: async () => ({ reaped: true })
       })
     })
-    const provenance = (agentFrameId: string) => ({
+    const provenance = (agentFrameId: string): NotebookRunProvenanceContext => ({
       rootFrameId: 'frame-root',
       agentFrameId,
       messageBranchId: `branch-${agentFrameId}`,

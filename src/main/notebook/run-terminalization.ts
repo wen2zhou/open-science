@@ -202,7 +202,8 @@ class NotebookRunTerminalizationOwner {
           stderr: errorMessage(error),
           traceback: '',
           cwdAfter: runningRun.cwdBefore,
-          outputs: []
+          outputs: [],
+          ...(runningRun.kernelKind === 'bash' ? { exitCode: null } : {})
         }
         await this.commitOrRememberTerminalRun(
           request.session,
@@ -244,7 +245,8 @@ class NotebookRunTerminalizationOwner {
       traceback: '',
       cwdAfter: queuedRun.cwdBefore,
       outputs: [],
-      kernelDispatched: false
+      kernelDispatched: false,
+      ...(queuedRun.kernelKind === 'bash' ? { exitCode: null } : {})
     })
     const result = await this.options.repository.transitionRun({
       projectId: session.projectId,

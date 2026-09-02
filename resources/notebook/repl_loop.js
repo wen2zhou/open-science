@@ -2836,7 +2836,19 @@ async function agentsRpc(op, params = {}, sessionId = COMPUTE_SESSION_ID) {
     // Server-side method errors are already `host.agents.<method>: <message>`. Boundary failures
     // (auth, unknown method) are not method-scoped, so prefix them with the op the caller invoked so
     // the agent always sees a host.agents.* namespaced, secret-free message.
-    const serverMessage = body.error || 'host.agents HTTP ' + res.status
+    const structuredError = body.error
+    const serverMessage =
+      structuredError &&
+      typeof structuredError === 'object' &&
+      typeof structuredError.code === 'string'
+        ? [
+            structuredError.code,
+            typeof structuredError.method === 'string' ? structuredError.method : null,
+            typeof structuredError.hint === 'string' ? structuredError.hint : null
+          ]
+            .filter(Boolean)
+            .join(': ')
+        : body.error || 'host.agents HTTP ' + res.status
     const publicMethod =
       {
         list_skills: 'listSkills',

@@ -46,13 +46,14 @@ export type NotebookRunStatus =
 
 export type NotebookBackgroundRunReceipt = Readonly<{
   runId: string
-  executionType: 'python-notebook-run' | 'r-notebook-run'
+  executionType: 'python-notebook-run' | 'r-notebook-run' | 'javascript-repl' | 'shell-command'
   projectId: string
   sessionId: string
   status: NotebookRunStatus
   acceptedAt: number
   lifecycleScope: 'app-process'
   submissionIdentity: string
+  shellConcurrency?: Readonly<{ limit: number; slot?: number }>
 }>
 
 export type NotebookBackgroundRunResult = Readonly<{
@@ -521,6 +522,10 @@ export type NotebookRunRecord = {
     timeoutMs: number
     platform: NodeJS.Platform
   }
+  shellConcurrency?: {
+    limit: number
+    slot?: number
+  }
   // App-owned one-shot identity joining an authorized ACP tool call to the execution admitted by
   // the authenticated Notebook RPC bridge. Optional keeps existing run.json documents readable.
   executionInvocationId?: string
@@ -937,6 +942,7 @@ export type ExecuteNotebookCodeRequest = NotebookSessionRequest & {
 // Distinct from data cells: no run history, no NotebookLanguage — just code and an optional timeout.
 export type ExecuteNotebookControlRequest = NotebookSessionRequest & {
   code: string
+  background?: boolean
   timeoutMs?: number
 }
 
@@ -945,5 +951,6 @@ export type ExecuteNotebookControlRequest = NotebookSessionRequest & {
 // optional timeout.
 export type ExecuteShellRequest = NotebookSessionRequest & {
   command: string
+  background?: boolean
   timeoutMs?: number
 }

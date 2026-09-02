@@ -232,6 +232,7 @@ const controlRunFingerprint = (
         version: 1,
         lane: notebookLaneKey(session.lane),
         code: request.code,
+        ...(request.background ? { executionMode: 'background' } : {}),
         timeoutMs: request.timeoutMs ?? null,
         provenanceContext: request.provenanceContext ?? null,
         inputFiles: immutableInputIdentities(request.registeredInputFiles)
@@ -250,6 +251,7 @@ const shellRunFingerprint = (
         version: 1,
         lane: notebookLaneKey(session.lane),
         command: request.command,
+        ...(request.background ? { executionMode: 'background' } : {}),
         provenanceContext: request.provenanceContext ?? null,
         inputFiles: request.registeredInputFiles ?? [],
         frozenShellContext
@@ -284,13 +286,19 @@ const publicShellResult = (
 
 type ShellQueueWaiter = {
   signal?: AbortSignal
-  resolve: (release: () => void) => void
+  resolve: (lease: ShellAdmissionLease) => void
   reject: (reason?: unknown) => void
   abort?: () => void
 }
 
+type ShellAdmissionLease = Readonly<{
+  slot: number
+  limit: number
+  release: () => void
+}>
+
 class BoundedShellAdmission {
-  private readonly activeByProject = new Map<string, number>()
+  private readonly activeSlotsByProject = new Map<string, Set<number>>()
   private readonly queuedByProject = new Map<string, ShellQueueWaiter[]>()
 
   constructor(private readonly limit: number) {
@@ -299,13 +307,16 @@ class BoundedShellAdmission {
     }
   }
 
-  acquire(projectId: string, signal?: AbortSignal): Promise<() => void> {
+  acquire(projectId: string, signal?: AbortSignal): Promise<ShellAdmissionLease> {
     if (signal?.aborted) return Promise.reject(signal.reason)
-    if ((this.activeByProject.get(projectId) ?? 0) < this.limit) {
-      this.activeByProject.set(projectId, (this.activeByProject.get(projectId) ?? 0) + 1)
-      return Promise.resolve(this.releaseOnce(projectId))
+    const activeSlots = this.activeSlotsByProject.get(projectId) ?? new Set<number>()
+    if (activeSlots.size < this.limit) {
+      const slot = this.nextAvailableSlot(activeSlots)
+      activeSlots.add(slot)
+      this.activeSlotsByProject.set(projectId, activeSlots)
+      return Promise.resolve(this.lease(projectId, slot))
     }
-    return new Promise<() => void>((resolve, reject) => {
+    return new Promise<ShellAdmissionLease>((resolve, reject) => {
       const waiter: ShellQueueWaiter = { signal, resolve, reject }
       waiter.abort = () => {
         const queue = this.queuedByProject.get(projectId)
@@ -321,7 +332,18 @@ class BoundedShellAdmission {
     })
   }
 
-  private releaseOnce(projectId: string): () => void {
+  private nextAvailableSlot(activeSlots: ReadonlySet<number>): number {
+    for (let slot = 1; slot <= this.limit; slot += 1) {
+      if (!activeSlots.has(slot)) return slot
+    }
+    throw new Error('Shell concurrency slot accounting exceeded its configured limit.')
+  }
+
+  private lease(projectId: string, slot: number): ShellAdmissionLease {
+    return { slot, limit: this.limit, release: this.releaseOnce(projectId, slot) }
+  }
+
+  private releaseOnce(projectId: string, slot: number): () => void {
     let released = false
     return () => {
       if (released) return
@@ -332,13 +354,17 @@ class BoundedShellAdmission {
         waiter.signal?.removeEventListener('abort', waiter.abort!)
         if (waiter.signal?.aborted) continue
         if (queue.length === 0) this.queuedByProject.delete(projectId)
-        waiter.resolve(this.releaseOnce(projectId))
+        waiter.resolve(this.lease(projectId, slot))
         return
       }
-      const remaining = (this.activeByProject.get(projectId) ?? 1) - 1
-      if (remaining === 0) this.activeByProject.delete(projectId)
-      else this.activeByProject.set(projectId, remaining)
+      const activeSlots = this.activeSlotsByProject.get(projectId)
+      activeSlots?.delete(slot)
+      if (activeSlots?.size === 0) this.activeSlotsByProject.delete(projectId)
     }
+  }
+
+  capacity(): number {
+    return this.limit
   }
 }
 
@@ -359,7 +385,11 @@ class NotebookExecutionOwner {
   >()
   private readonly activeControlSubmissions = new Map<
     string,
-    { fingerprint: string; promise: Promise<NotebookControlResult> }
+    {
+      fingerprint: string
+      admitted: Promise<NotebookRunRecord>
+      promise: Promise<NotebookControlResult>
+    }
   >()
   // Keeps only the latest terminal foreground result per REPL lane. Durable Run history remains the
   // canonical result; this bounded transient copy preserves view-image blocks when a lost local-RPC
@@ -374,7 +404,11 @@ class NotebookExecutionOwner {
   >()
   private readonly activeShellSubmissions = new Map<
     string,
-    { fingerprint: string; promise: Promise<NotebookShellResult> }
+    {
+      fingerprint: string
+      admitted: Promise<NotebookRunRecord>
+      promise: Promise<NotebookShellResult>
+    }
   >()
   private readonly liveShellRuns = new Map<
     string,
@@ -527,6 +561,8 @@ class NotebookExecutionOwner {
       resolveAdmitted = resolve
       rejectAdmitted = reject
     })
+    // The admission promise is an internal replay seam. The primary execution promise remains the
+    // public error surface, so admission failures must not become unhandled when no retry is waiting.
     void admitted.catch(() => undefined)
     const promise = (async () => {
       if (request.executionInvocationId) {
@@ -854,7 +890,8 @@ class NotebookExecutionOwner {
   async executeControl(
     session: NotebookSessionAggregate,
     request: ExecuteNotebookControlRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onAdmitted?: (run: NotebookRunRecord) => void
   ): Promise<NotebookControlResult> {
     const submissionFingerprint = controlRunFingerprint(session, request)
     const initialIdentity = request.executionInvocationId
@@ -868,16 +905,28 @@ class NotebookExecutionOwner {
       if (active.fingerprint !== submissionFingerprint) {
         throw new NotebookRunSubmissionConflictError(submissionIdentity)
       }
+      if (onAdmitted) void active.admitted.then(onAdmitted, () => undefined)
       return active.promise
     }
     const completed = this.completedControlSubmissions.get(laneKey)
-    if (request.executionInvocationId && completed?.submissionIdentity === submissionIdentity) {
+    if (
+      !request.background &&
+      request.executionInvocationId &&
+      completed?.submissionIdentity === submissionIdentity
+    ) {
       if (completed.fingerprint !== submissionFingerprint) {
         throw new NotebookRunSubmissionConflictError(submissionIdentity)
       }
       return completed.result
     }
 
+    let resolveAdmitted!: (run: NotebookRunRecord) => void
+    let rejectAdmitted!: (error: unknown) => void
+    const admitted = new Promise<NotebookRunRecord>((resolve, reject) => {
+      resolveAdmitted = resolve
+      rejectAdmitted = reject
+    })
+    void admitted.catch(() => undefined)
     const promise = (async () => {
       if (request.executionInvocationId) {
         const existing = await this.options.runTerminalization.findSubmission(
@@ -888,6 +937,8 @@ class NotebookExecutionOwner {
           if (existing.submissionFingerprint !== submissionFingerprint) {
             throw new NotebookRunSubmissionConflictError(submissionIdentity)
           }
+          resolveAdmitted(existing)
+          onAdmitted?.(existing)
           return controlResultFromRun(existing)
         }
       }
@@ -899,14 +950,21 @@ class NotebookExecutionOwner {
         identity.sequence,
         submissionIdentity,
         submissionFingerprint,
-        signal
+        signal,
+        (run) => {
+          resolveAdmitted(run)
+          onAdmitted?.(run)
+        }
       )
-    })()
-    const entry = { fingerprint: submissionFingerprint, promise }
+    })().catch((error) => {
+      rejectAdmitted(error)
+      throw error
+    })
+    const entry = { fingerprint: submissionFingerprint, admitted, promise }
     this.activeControlSubmissions.set(submissionKey, entry)
     try {
       const result = await promise
-      if (request.executionInvocationId) {
+      if (!request.background && request.executionInvocationId) {
         this.completedControlSubmissions.set(laneKey, {
           submissionIdentity,
           fingerprint: submissionFingerprint,
@@ -928,7 +986,8 @@ class NotebookExecutionOwner {
     controlInvocationGeneration: number,
     submissionIdentity: string,
     submissionFingerprint: string,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onAdmitted?: (run: NotebookRunRecord) => void
   ): Promise<NotebookControlResult> {
     const admittedAt = Date.now()
     const replWasTerminated =
@@ -936,6 +995,7 @@ class NotebookExecutionOwner {
     const kernelEpochId = session.kernelEpoch('repl', replWasTerminated).id
     const queuedRun: NotebookRunRecord = {
       runId: controlInvocationId,
+      executionMode: request.background ? 'background' : 'foreground',
       submissionIdentity,
       submissionFingerprint,
       admittedAt,
@@ -977,7 +1037,12 @@ class NotebookExecutionOwner {
       cwd: session.cwd,
       platform: this.options.platform
     })
-    const durableAdmission = await this.options.runTerminalization.admit({ session, queuedRun })
+    const durableAdmission = await this.options.runTerminalization.admit({
+      session,
+      queuedRun,
+      signal
+    })
+    onAdmitted?.(durableAdmission.run)
     if (!durableAdmission.admitted) return controlResultFromRun(durableAdmission.run)
     this.options.notifyAvailable(session, 'agent')
 
@@ -1011,7 +1076,7 @@ class NotebookExecutionOwner {
     try {
       // The completion gate deliberately stays outside enqueueControl: an approved continuation may
       // re-enter this same Session and must not deadlock behind the old invocation's handoff.
-      const interceptor = this.controlCompletionInterceptor
+      const interceptor = request.background ? undefined : this.controlCompletionInterceptor
       let result: NotebookControlResult
       if (!interceptor) {
         result = await rawRun
@@ -1092,6 +1157,7 @@ class NotebookExecutionOwner {
                 turnId: runId,
                 controlInvocationGeneration,
                 toolInvocationId: runId,
+                executionMode: request.background ? 'background' : 'foreground',
                 ...(request.provenanceContext
                   ? {
                       originatingTurnId: request.provenanceContext.promptMessageId,
@@ -1167,7 +1233,8 @@ class NotebookExecutionOwner {
   async executeShell(
     session: NotebookSessionAggregate,
     request: ExecuteShellRequest,
-    signal?: AbortSignal
+    signal?: AbortSignal,
+    onAdmitted?: (run: NotebookRunRecord) => void
   ): Promise<NotebookShellResult> {
     this.assertShellAdmissionAvailable(session)
     const platform = this.options.platform ?? process.platform
@@ -1208,8 +1275,18 @@ class NotebookExecutionOwner {
       if (active.fingerprint !== submissionFingerprint) {
         throw new NotebookRunSubmissionConflictError(submissionIdentity)
       }
+      if (onAdmitted) void active.admitted.then(onAdmitted, () => undefined)
       return active.promise
     }
+    let resolveAdmitted!: (run: NotebookRunRecord) => void
+    let rejectAdmitted!: (error: unknown) => void
+    const admitted = new Promise<NotebookRunRecord>((resolve, reject) => {
+      resolveAdmitted = resolve
+      rejectAdmitted = reject
+    })
+    // The admission promise is an internal replay seam. The primary execution promise remains the
+    // public error surface, so admission failures must not become unhandled when no retry is waiting.
+    void admitted.catch(() => undefined)
     const promise = (async (): Promise<NotebookShellResult> => {
       if (request.executionInvocationId) {
         const existing = await this.options.runTerminalization.findSubmission(
@@ -1220,6 +1297,8 @@ class NotebookExecutionOwner {
           if (existing.submissionFingerprint !== submissionFingerprint) {
             throw new NotebookRunSubmissionConflictError(submissionIdentity)
           }
+          resolveAdmitted(existing)
+          onAdmitted?.(existing)
           return publicShellResult(existing)
         }
       }
@@ -1229,10 +1308,12 @@ class NotebookExecutionOwner {
       const admittedAt = Date.now()
       const queuedRun: NotebookRunRecord = {
         runId,
+        executionMode: request.background ? 'background' : 'foreground',
         submissionIdentity,
         submissionFingerprint,
         admittedAt,
         frozenShellContext,
+        shellConcurrency: { limit: this.shellAdmission.capacity() },
         ...(request.executionInvocationId
           ? { executionInvocationId: request.executionInvocationId }
           : {}),
@@ -1303,10 +1384,13 @@ class NotebookExecutionOwner {
         preparedShell = await this.shellProcess.prepare?.(shellProcessRequest)
         durableAdmission = await this.options.runTerminalization.admit({ session, queuedRun })
       } catch (error) {
+        rejectAdmitted(error)
         preparedShell?.dispose()
         finishLifecycle()
         throw error
       }
+      resolveAdmitted(durableAdmission.run)
+      onAdmitted?.(durableAdmission.run)
       if (!durableAdmission.admitted) {
         preparedShell?.dispose()
         finishLifecycle()
@@ -1323,9 +1407,9 @@ class NotebookExecutionOwner {
         await liveRun.requestCancellation(lifecycleSignal.reason)
       }
       this.options.notifyAvailable(session, 'agent')
-      let release: (() => void) | undefined
+      let lease: ShellAdmissionLease | undefined
       try {
-        release = await this.shellAdmission.acquire(session.projectId, lifecycleSignal)
+        lease = await this.shellAdmission.acquire(session.projectId, lifecycleSignal)
       } catch (error) {
         preparedShell?.dispose()
         const cancelled = await this.options.runTerminalization.cancelQueued(
@@ -1345,7 +1429,11 @@ class NotebookExecutionOwner {
       try {
         const terminalized = await this.options.runTerminalization.runAdmitted({
           session,
-          queuedRun: { ...durableAdmission.run, inputFiles: queuedRun.inputFiles },
+          queuedRun: {
+            ...durableAdmission.run,
+            inputFiles: queuedRun.inputFiles,
+            shellConcurrency: { limit: lease.limit, slot: lease.slot }
+          },
           invoke: async () => {
             const workingFileObservation = await startWorkingFileObservation({
               dataRoot: session.dataRoot,
@@ -1434,11 +1522,13 @@ class NotebookExecutionOwner {
         }
       } finally {
         preparedShell?.dispose()
-        release()
+        lease.release()
         finishLifecycle()
       }
     })()
-    const entry = { fingerprint: submissionFingerprint, promise }
+    // Fail duplicate callers waiting for admission even when an error occurs before durable admit.
+    void promise.catch(rejectAdmitted)
+    const entry = { fingerprint: submissionFingerprint, admitted, promise }
     this.activeShellSubmissions.set(submissionKey, entry)
     try {
       return await promise

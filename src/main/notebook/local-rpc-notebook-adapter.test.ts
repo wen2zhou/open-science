@@ -17,7 +17,18 @@ const createCapability = (): NotebookLocalRpcCapability =>
         vi.fn(async (request: unknown) => ({ method, request }))
       ])
     ),
-    executeBackground: vi.fn(async (request: unknown) => ({ method: 'executeBackground', request }))
+    executeBackground: vi.fn(async (request: unknown) => ({
+      method: 'executeBackground',
+      request
+    })),
+    executeControlBackground: vi.fn(async (request: unknown) => ({
+      method: 'executeControlBackground',
+      request
+    })),
+    executeShellBackground: vi.fn(async (request: unknown) => ({
+      method: 'executeShellBackground',
+      request
+    }))
   }) as unknown as NotebookLocalRpcCapability
 
 const request = {
@@ -62,7 +73,7 @@ const requestByMethod = {
   getBackgroundRun: { ...request, action: 'query', runId: 'run-1' },
   cancelBackgroundRun: { ...request, action: 'cancel', runId: 'run-1' },
   executeControl: { ...request, code: 'return 1' },
-  executeShell: { ...request, command: 'echo hi' },
+  executeShell: { ...request, command: 'echo hi', background: true },
   requestNetworkAccess: {
     ...request,
     hostname: 'data.example.org',
@@ -125,36 +136,35 @@ describe('notebook local RPC adapter', () => {
     }
   })
 
-  it.each(NOTEBOOK_LOCAL_RPC_METHODS.filter((method) => method !== 'execute'))(
-    'preserves request, result and error identity for %s',
-    async (method) => {
-      const capability = createCapability()
-      const methodRequest = requestByMethod[method]
-      const handler = resolveNotebookLocalRpcHandler(capability, method, methodRequest)
-      const methodMock = (
-        capability as unknown as Record<NotebookLocalRpcMethod, ReturnType<typeof vi.fn>>
-      )[method]
-      const result = { method }
-      methodMock.mockResolvedValueOnce(result)
+  it.each(
+    NOTEBOOK_LOCAL_RPC_METHODS.filter((method) => method !== 'execute' && method !== 'executeShell')
+  )('preserves request, result and error identity for %s', async (method) => {
+    const capability = createCapability()
+    const methodRequest = requestByMethod[method]
+    const handler = resolveNotebookLocalRpcHandler(capability, method, methodRequest)
+    const methodMock = (
+      capability as unknown as Record<NotebookLocalRpcMethod, ReturnType<typeof vi.fn>>
+    )[method]
+    const result = { method }
+    methodMock.mockResolvedValueOnce(result)
 
-      await expect(handler(methodRequest)).resolves.toBe(result)
-      expect(methodMock).toHaveBeenCalledTimes(1)
-      expect(methodMock.mock.calls[0]?.[0]).toBe(methodRequest)
-      for (const otherMethod of NOTEBOOK_LOCAL_RPC_METHODS) {
-        if (otherMethod === method) continue
-        expect(
-          (capability as unknown as Record<NotebookLocalRpcMethod, ReturnType<typeof vi.fn>>)[
-            otherMethod
-          ]
-        ).not.toHaveBeenCalled()
-      }
-
-      if (method === 'bindRuntime' || method === 'switchRuntime') return
-      const failure = new Error(`${method} failed`)
-      methodMock.mockRejectedValueOnce(failure)
-      await expect(handler(methodRequest)).rejects.toBe(failure)
+    await expect(handler(methodRequest)).resolves.toBe(result)
+    expect(methodMock).toHaveBeenCalledTimes(1)
+    expect(methodMock.mock.calls[0]?.[0]).toBe(methodRequest)
+    for (const otherMethod of NOTEBOOK_LOCAL_RPC_METHODS) {
+      if (otherMethod === method) continue
+      expect(
+        (capability as unknown as Record<NotebookLocalRpcMethod, ReturnType<typeof vi.fn>>)[
+          otherMethod
+        ]
+      ).not.toHaveBeenCalled()
     }
-  )
+
+    if (method === 'bindRuntime' || method === 'switchRuntime') return
+    const failure = new Error(`${method} failed`)
+    methodMock.mockRejectedValueOnce(failure)
+    await expect(handler(methodRequest)).rejects.toBe(failure)
+  })
 
   it('maps Agent-facing kernel Skill IDs to the runtime request at the adapter boundary', async () => {
     const capability = createCapability()
@@ -172,6 +182,36 @@ describe('notebook local RPC adapter', () => {
     })
     expect(runtimeRequest).not.toHaveProperty('kernelSkillIds')
     expect(capability.execute).not.toHaveBeenCalled()
+  })
+
+  it('routes background REPL requests through durable background admission', async () => {
+    const capability = createCapability()
+    const methodRequest = { ...requestByMethod.executeControl, background: true }
+    const handler = resolveNotebookLocalRpcHandler(capability, 'executeControl', methodRequest)
+    const cancellation = new AbortController()
+
+    await handler(methodRequest, cancellation.signal)
+
+    expect(capability.executeControlBackground).toHaveBeenCalledWith(
+      methodRequest,
+      cancellation.signal
+    )
+    expect(capability.executeControl).not.toHaveBeenCalled()
+  })
+
+  it('routes background Shell requests through the durable admission path', async () => {
+    const capability = createCapability()
+    const methodRequest = requestByMethod.executeShell
+    const handler = resolveNotebookLocalRpcHandler(capability, 'executeShell', methodRequest)
+    const cancellation = new AbortController()
+
+    await handler(methodRequest, cancellation.signal)
+
+    expect(capability.executeShellBackground).toHaveBeenCalledWith(
+      methodRequest,
+      cancellation.signal
+    )
+    expect(capability.executeShell).not.toHaveBeenCalled()
   })
 
   it.each(['bindRuntime', 'switchRuntime'] as const)(

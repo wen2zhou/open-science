@@ -54,6 +54,7 @@ import type { NotebookKernelExecutorOptions } from './kernel-executor'
 import { saveIpynbAll } from './save-ipynb-all'
 import { englishNativeTranslator, type NativeTranslator } from '../locale/main-process-messages'
 import type { ProbeDeps } from './mirror-probe'
+import { detachedShellMechanism } from './shell-detachment-policy'
 import {
   installPackages as installPackagesDefault,
   type InstallDeps,
@@ -385,14 +386,15 @@ class NotebookRuntimeService {
   private runLifecycleRecovery: Promise<void> | undefined
   private readonly backgroundRuns = new Map<
     string,
-    { controller: AbortController; completion: Promise<NotebookRunSummary> }
+    { controller: AbortController; completion: Promise<unknown> }
   >()
   private readonly backgroundExecutionEnabled: boolean
 
   constructor(private readonly options: NotebookRuntimeServiceOptions) {
     this.backgroundExecutionEnabled =
       options.backgroundExecutionEnabled ??
-      process.env.OPEN_SCIENCE_PYTHON_R_BACKGROUND_EXECUTION === '1'
+      (process.env.OPEN_SCIENCE_PYTHON_R_BACKGROUND_EXECUTION === '1' ||
+        process.env.OPEN_SCIENCE_SHELL_BACKGROUND_EXECUTION === '1')
     const defaultProjectId = resolveProjectId(options)
     this.repository = options.repository ?? new NotebookRunRepository(options.dataRoot)
     this.exportReader = new NotebookExportReader({
@@ -1122,13 +1124,21 @@ class NotebookRuntimeService {
     }
     return {
       runId: run.runId,
-      executionType: run.kernelKind === 'r' ? 'r-notebook-run' : 'python-notebook-run',
+      executionType:
+        run.kernelKind === 'repl'
+          ? 'javascript-repl'
+          : run.kernelKind === 'bash'
+            ? 'shell-command'
+            : run.kernelKind === 'r'
+              ? 'r-notebook-run'
+              : 'python-notebook-run',
       projectId,
       sessionId,
       status: run.status,
       acceptedAt: run.admittedAt ?? run.startedAt,
       lifecycleScope: 'app-process',
-      submissionIdentity: run.submissionIdentity
+      submissionIdentity: run.submissionIdentity,
+      ...(run.shellConcurrency ? { shellConcurrency: run.shellConcurrency } : {})
     }
   }
 
@@ -1150,32 +1160,47 @@ class NotebookRuntimeService {
         'Provide runId or submissionIdentity.'
       )
     }
-    return this.sessionLifecycle.runProjectOperation(request, async () => {
-      const projectId = resolveProjectId(request, this.options.projectId)
-      const lane = request.agentFrameId
-        ? createFrameNotebookLane(projectId, request.sessionId, request.agentFrameId)
-        : createRootNotebookLane(projectId, request.sessionId, `root-frame-${request.sessionId}`)
-      const found = await this.repository.findRun(projectId, request.sessionId, lane, request)
-      if (!found || found.run.executionMode !== 'background') {
-        throw new NotebookBackgroundRunError(
-          {
-            code: 'BACKGROUND_RUN_NOT_FOUND',
-            stage: 'query',
-            retryable: true,
-            hint: 'Check the saved runId and submissionIdentity before deciding whether to resubmit.',
-            ...(request.runId ? { runId: request.runId } : {}),
-            ...(request.submissionIdentity
-              ? { submissionIdentity: request.submissionIdentity }
-              : {})
-          },
-          'No matching local background Run exists in this Agent Frame.'
-        )
-      }
-      return {
-        receipt: this.backgroundReceipt(projectId, request.sessionId, found.run),
-        run: this.sessionReadModel.toRunSummaryFromDocument(found.document, found.run)
-      }
-    })
+    try {
+      return await this.sessionLifecycle.runProjectOperation(request, async () => {
+        const projectId = resolveProjectId(request, this.options.projectId)
+        const lane = request.agentFrameId
+          ? createFrameNotebookLane(projectId, request.sessionId, request.agentFrameId)
+          : createRootNotebookLane(projectId, request.sessionId, `root-frame-${request.sessionId}`)
+        const found = await this.repository.findRun(projectId, request.sessionId, lane, request)
+        if (!found || found.run.executionMode !== 'background') {
+          throw new NotebookBackgroundRunError(
+            {
+              code: 'BACKGROUND_RUN_NOT_FOUND',
+              stage: 'query',
+              retryable: true,
+              hint: 'Check the saved runId and submissionIdentity before deciding whether to resubmit.',
+              ...(request.runId ? { runId: request.runId } : {}),
+              ...(request.submissionIdentity
+                ? { submissionIdentity: request.submissionIdentity }
+                : {})
+            },
+            'No matching local background Run exists in this Agent Frame.'
+          )
+        }
+        return {
+          receipt: this.backgroundReceipt(projectId, request.sessionId, found.run),
+          run: this.sessionReadModel.toRunSummaryFromDocument(found.document, found.run)
+        }
+      })
+    } catch (error) {
+      if (error instanceof NotebookBackgroundRunError) throw error
+      throw new NotebookBackgroundRunError(
+        {
+          code: 'BACKGROUND_RUN_RESULT_UNAVAILABLE',
+          stage: 'query',
+          retryable: true,
+          hint: 'Keep the Run receipt and retry the query later; do not resubmit the command.',
+          ...(request.runId ? { runId: request.runId } : {}),
+          ...(request.submissionIdentity ? { submissionIdentity: request.submissionIdentity } : {})
+        },
+        'The local background Run result is temporarily unavailable.'
+      )
+    }
   }
 
   async cancelBackgroundRun(
@@ -1212,6 +1237,17 @@ class NotebookRuntimeService {
     request: ExecuteNotebookControlRequest,
     signal?: AbortSignal
   ): Promise<NotebookControlResult> {
+    if (request.background) {
+      throw new NotebookBackgroundRunError(
+        {
+          code: 'BACKGROUND_EXECUTION_REQUIRES_BACKGROUND_API',
+          stage: 'pre-admission',
+          retryable: false,
+          hint: 'Submit background work through repl_execute with background:true.'
+        },
+        'Background execution must use the background admission path.'
+      )
+    }
     return this.sessionLifecycle.runProjectOperation(request, async (deletionSignal) => {
       assertNotebookCodeWithinLimit(request.code)
       const session = await this.sessionLifecycle.ensure(request)
@@ -1223,12 +1259,101 @@ class NotebookRuntimeService {
     })
   }
 
+  async executeControlBackground(
+    request: ExecuteNotebookControlRequest,
+    transportSignal?: AbortSignal
+  ): Promise<NotebookBackgroundRunReceipt> {
+    if (!this.backgroundExecutionEnabled) {
+      throw new NotebookBackgroundRunError(
+        {
+          code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED',
+          stage: 'pre-admission',
+          retryable: false,
+          hint: 'Use foreground execution unless background execution is enabled.'
+        },
+        'Background execution is disabled.'
+      )
+    }
+    if (transportSignal?.aborted) throw transportSignal.reason
+    assertNotebookCodeWithinLimit(request.code)
+    const controller = new AbortController()
+    const cancelBeforeReceipt = (): void => controller.abort(transportSignal?.reason)
+    transportSignal?.addEventListener('abort', cancelBeforeReceipt, { once: true })
+    let resolveReceipt!: (receipt: NotebookBackgroundRunReceipt) => void
+    let rejectReceipt!: (error: unknown) => void
+    const receiptPromise = new Promise<NotebookBackgroundRunReceipt>((resolve, reject) => {
+      resolveReceipt = resolve
+      rejectReceipt = reject
+    })
+    const projectId = resolveProjectId(request, this.options.projectId)
+    let admittedRunId: string | undefined
+    const completion = this.sessionLifecycle
+      .runProjectOperation(request, async (deletionSignal) => {
+        const session = await this.sessionLifecycle.ensure(request)
+        return this.executionOwner.executeControl(
+          session,
+          request,
+          AbortSignal.any([controller.signal, deletionSignal]),
+          (admitted) => {
+            admittedRunId = admitted.runId
+            transportSignal?.removeEventListener('abort', cancelBeforeReceipt)
+            if (!this.backgroundRuns.has(admitted.runId)) {
+              this.backgroundRuns.set(admitted.runId, { controller, completion })
+            }
+            resolveReceipt(this.backgroundReceipt(projectId, request.sessionId, admitted))
+          }
+        )
+      })
+      .finally(() => transportSignal?.removeEventListener('abort', cancelBeforeReceipt))
+    completion.catch((error) => {
+      if (admittedRunId) return
+      rejectReceipt(
+        error instanceof NotebookBackgroundRunError
+          ? error
+          : new NotebookBackgroundRunError(
+              {
+                code:
+                  typeof (error as { code?: unknown })?.code === 'string'
+                    ? ((error as { code: string }).code ?? 'BACKGROUND_RUN_ADMISSION_FAILED')
+                    : 'BACKGROUND_RUN_ADMISSION_FAILED',
+                stage: 'pre-admission',
+                retryable: true,
+                hint: 'Query by submissionIdentity before deciding whether to submit again.',
+                ...(request.executionInvocationId
+                  ? { submissionIdentity: request.executionInvocationId }
+                  : {})
+              },
+              error instanceof Error ? error.message : String(error)
+            )
+      )
+    })
+    const removeCompletedRun = (): void => {
+      if (admittedRunId && this.backgroundRuns.get(admittedRunId)?.completion === completion) {
+        this.backgroundRuns.delete(admittedRunId)
+      }
+    }
+    void completion.then(removeCompletedRun, removeCompletedRun)
+    return receiptPromise
+  }
+
   // Compatibility facade for stateless shell execution. The owner deliberately admits calls without
   // a per-Session queue while the repository continues to serialize durable run writes.
   async executeShell(
     request: ExecuteShellRequest,
     signal?: AbortSignal
   ): Promise<NotebookShellResult> {
+    this.assertManagedShellCommand(request)
+    if (request.background) {
+      throw new NotebookBackgroundRunError(
+        {
+          code: 'BACKGROUND_EXECUTION_REQUIRES_BACKGROUND_API',
+          stage: 'pre-admission',
+          retryable: false,
+          hint: 'Submit background work through bash_execute with background:true.'
+        },
+        'Background execution must use the background admission path.'
+      )
+    }
     return this.sessionLifecycle.runProjectOperation(request, async (deletionSignal) => {
       assertNotebookCodeWithinLimit(request.command)
       const session = await this.sessionLifecycle.ensure(request)
@@ -1238,6 +1363,103 @@ class NotebookRuntimeService {
         signal ? AbortSignal.any([signal, deletionSignal]) : deletionSignal
       )
     })
+  }
+
+  async executeShellBackground(
+    request: ExecuteShellRequest,
+    transportSignal?: AbortSignal
+  ): Promise<NotebookBackgroundRunReceipt> {
+    if (!this.backgroundExecutionEnabled) {
+      throw new NotebookBackgroundRunError(
+        {
+          code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED',
+          stage: 'pre-admission',
+          retryable: false,
+          hint: 'Use foreground execution unless background execution is enabled.'
+        },
+        'Background execution is disabled.'
+      )
+    }
+    const backgroundRequest = { ...request, background: true }
+    this.assertManagedShellCommand(backgroundRequest)
+    transportSignal?.throwIfAborted()
+    assertNotebookCodeWithinLimit(backgroundRequest.command)
+    const controller = new AbortController()
+    const cancelBeforeReceipt = (): void => controller.abort(transportSignal?.reason)
+    transportSignal?.addEventListener('abort', cancelBeforeReceipt, { once: true })
+    let resolveReceipt!: (receipt: NotebookBackgroundRunReceipt) => void
+    let rejectReceipt!: (error: unknown) => void
+    const receiptPromise = new Promise<NotebookBackgroundRunReceipt>((resolve, reject) => {
+      resolveReceipt = resolve
+      rejectReceipt = reject
+    })
+    const projectId = resolveProjectId(backgroundRequest, this.options.projectId)
+    let admittedRunId: string | undefined
+    const completion = this.sessionLifecycle
+      .runProjectOperation(backgroundRequest, async (deletionSignal) => {
+        const session = await this.sessionLifecycle.ensure(backgroundRequest)
+        return this.executionOwner.executeShell(
+          session,
+          backgroundRequest,
+          AbortSignal.any([controller.signal, deletionSignal]),
+          (admitted) => {
+            admittedRunId = admitted.runId
+            transportSignal?.removeEventListener('abort', cancelBeforeReceipt)
+            if (!this.backgroundRuns.has(admitted.runId)) {
+              this.backgroundRuns.set(admitted.runId, { controller, completion })
+            }
+            resolveReceipt(this.backgroundReceipt(projectId, backgroundRequest.sessionId, admitted))
+          }
+        )
+      })
+      .finally(() => transportSignal?.removeEventListener('abort', cancelBeforeReceipt))
+    completion.catch((error) => {
+      if (!admittedRunId) {
+        rejectReceipt(
+          error instanceof NotebookBackgroundRunError
+            ? error
+            : new NotebookBackgroundRunError(
+                {
+                  code:
+                    typeof (error as { code?: unknown })?.code === 'string'
+                      ? ((error as { code: string }).code ?? 'BACKGROUND_RUN_ADMISSION_FAILED')
+                      : 'BACKGROUND_RUN_ADMISSION_FAILED',
+                  stage: 'pre-admission',
+                  retryable: true,
+                  hint: 'Query by submissionIdentity before deciding whether to submit again.',
+                  ...(backgroundRequest.executionInvocationId
+                    ? { submissionIdentity: backgroundRequest.executionInvocationId }
+                    : {})
+                },
+                error instanceof Error ? error.message : String(error)
+              )
+        )
+      }
+    })
+    const removeCompletedRun = (): void => {
+      if (admittedRunId && this.backgroundRuns.get(admittedRunId)?.completion === completion) {
+        this.backgroundRuns.delete(admittedRunId)
+      }
+    }
+    void completion.then(removeCompletedRun, removeCompletedRun)
+    return receiptPromise
+  }
+
+  private assertManagedShellCommand(request: ExecuteShellRequest): void {
+    const mechanism = detachedShellMechanism(
+      request.command,
+      this.options.platform ?? process.platform
+    )
+    if (!mechanism) return
+    throw new NotebookBackgroundRunError(
+      {
+        code: 'UNMANAGED_SHELL_BACKGROUND_BLOCKED',
+        stage: 'pre-admission',
+        retryable: false,
+        hint: 'Remove the detached-process mechanism and submit the command with background:true.'
+      },
+      `Unmanaged Shell background mechanism ${mechanism} is not allowed.`
+    )
   }
 
   async requestNetworkAccess(
@@ -1662,6 +1884,7 @@ class NotebookRuntimeService {
     // application disposal has crossed this point.
     this.environmentOperations.dispose()
     this.executionOwner.fenceShellRuns({ global: true })
+    this.sessionLifecycle.beginDisposal()
     // Mark recovery disposed first, but do not let slow startup filesystem reconciliation consume the
     // quit budget before kernel teardown even starts. Await both so non-quit module disposal still leaves
     // no recovery work behind once this terminal operation resolves.

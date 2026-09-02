@@ -30,6 +30,20 @@ const taskName = (run: NotebookRunRecord): string =>
     ?.trim()
     .slice(0, 80) || run.runId
 
+const shellLaneLabel = (
+  run: NotebookRunRecord,
+  t: (key: string, values?: Record<string, number>) => string
+): string | undefined => {
+  if (run.kernelKind !== 'bash') return undefined
+  const concurrency = run.shellConcurrency
+  return concurrency?.slot
+    ? t('Shell slot {{slot}} of {{limit}}', {
+        slot: concurrency.slot,
+        limit: concurrency.limit
+      })
+    : t('Waiting for shell slot')
+}
+
 const SessionBackgroundActivity = ({
   notebook,
   onOpenNotebook
@@ -132,13 +146,23 @@ const SessionBackgroundActivity = ({
             className="grid min-h-10 min-w-[680px] grid-cols-[minmax(180px,1.4fr)_110px_110px_90px_140px] items-center gap-2 border-t border-border-200 px-3 py-1.5 text-[11px]"
           >
             <span className="min-w-0 truncate font-medium" title={taskName(run)}>
-              <span className="mr-2 inline-grid size-6 place-items-center rounded-md bg-bg-200 font-mono text-[10px] text-text-100">
-                {run.kernelKind === 'r' ? 'R' : 'Python'}
+              <span className="mr-2 inline-grid min-h-6 place-items-center rounded-md bg-bg-200 px-2 font-mono text-[10px] text-text-100">
+                {run.kernelKind === 'bash'
+                  ? t('Shell Command')
+                  : run.kernelKind === 'repl'
+                    ? t('JavaScript REPL')
+                    : run.kernelKind === 'r'
+                      ? 'R'
+                      : 'Python'}
               </span>
               {taskName(run)}
             </span>
             <span className="truncate text-text-100">
-              {run.environment ?? (run.kernelKind === 'r' ? 'R' : 'Python')}
+              {run.kernelKind === 'repl'
+                ? t('Persistent REPL')
+                : (shellLaneLabel(run, t) ??
+                  run.environment ??
+                  (run.kernelKind === 'r' ? 'R' : 'Python'))}
             </span>
             <span className="flex items-center gap-1.5 text-text-100" aria-live="polite">
               <StatusIcon

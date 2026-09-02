@@ -117,10 +117,12 @@ const notebookLocalRpcRequestSchemas = {
   }),
   executeControl: notebookSessionRequestSchema.extend({
     code: z.string(),
+    background: z.boolean().optional(),
     timeoutMs: positiveTimeoutSchema.optional()
   }),
   executeShell: notebookSessionRequestSchema.extend({
     command: z.string(),
+    background: z.boolean().optional(),
     timeoutMs: positiveTimeoutSchema.optional()
   }),
   requestNetworkAccess: notebookSessionRequestSchema.extend({
@@ -210,8 +212,13 @@ type NotebookLocalRpcCapability = {
   getBackgroundRun(request: NotebookBackgroundRunLookupRequest): Promise<unknown>
   cancelBackgroundRun(request: NotebookBackgroundRunLookupRequest): Promise<unknown>
   waitForBackgroundRun(runId: string): Promise<void>
+  executeControlBackground(
+    request: ExecuteNotebookControlRequest,
+    signal?: AbortSignal
+  ): Promise<unknown>
   executeControl(request: ExecuteNotebookControlRequest, signal?: AbortSignal): Promise<unknown>
   executeShell(request: ExecuteShellRequest, signal?: AbortSignal): Promise<unknown>
+  executeShellBackground(request: ExecuteShellRequest, signal?: AbortSignal): Promise<unknown>
   requestNetworkAccess(
     request: RequestNotebookNetworkAccessRequest,
     signal?: AbortSignal
@@ -319,8 +326,12 @@ const resolveNotebookLocalRpcHandler = (
           : capability.execute(runtimeRequest, signal)
       }
     case 'executeControl':
-      return (request, signal) =>
-        capability.executeControl(parseNotebookLocalRpcRequest('executeControl', request), signal)
+      return (request, signal) => {
+        const parsed = parseNotebookLocalRpcRequest('executeControl', request)
+        return parsed.background
+          ? capability.executeControlBackground(parsed, signal)
+          : capability.executeControl(parsed, signal)
+      }
     case 'getBackgroundRun':
       return (request) =>
         capability.getBackgroundRun(parseNotebookLocalRpcRequest('getBackgroundRun', request))
@@ -328,8 +339,12 @@ const resolveNotebookLocalRpcHandler = (
       return (request) =>
         capability.cancelBackgroundRun(parseNotebookLocalRpcRequest('cancelBackgroundRun', request))
     case 'executeShell':
-      return (request, signal) =>
-        capability.executeShell(parseNotebookLocalRpcRequest('executeShell', request), signal)
+      return (request, signal) => {
+        const parsed = parseNotebookLocalRpcRequest('executeShell', request)
+        return parsed.background
+          ? capability.executeShellBackground(parsed, signal)
+          : capability.executeShell(parsed, signal)
+      }
     case 'requestNetworkAccess':
       return (request, signal) =>
         capability.requestNetworkAccess(
