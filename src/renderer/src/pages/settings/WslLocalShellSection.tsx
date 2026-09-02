@@ -5,6 +5,13 @@ import { useTranslation } from 'react-i18next'
 import { Button } from '@/components/ui/button'
 import { ErrorNotice } from '@/components/error-notice'
 import { Input } from '@/components/ui/input'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
 import type { WslReadiness, WslSetupSnapshot } from '../../../../shared/wsl-setup'
 import { SettingsField, SettingsSection } from './SettingsLayout'
 
@@ -42,6 +49,9 @@ const recoveryCopy = (
       return t('Choose an exact non-root Linux user, then save and check again.')
     case 'wsl_workspace_path_unsupported':
     case 'wsl_workspace_unreachable':
+    case 'wsl_workspace_not_local':
+    case 'wsl_workspace_not_ntfs':
+    case 'wsl_workspace_volume_unavailable':
       return t('Move the Open Science data folder to a local NTFS drive, then check again.')
     default:
       return undefined
@@ -168,18 +178,18 @@ export const WslLocalShellSection = (): React.JSX.Element => {
         {snapshot.distros.length > 0 ? (
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
             <SettingsField label={t('WSL2 distribution')}>
-              <select
-                className="h-9 rounded-md border border-input bg-background px-3 text-sm"
-                value={distro}
-                onChange={(event) => setDistro(event.target.value)}
-                disabled={busy}
-              >
-                {snapshot.distros.map((item) => (
-                  <option key={item.name} value={item.name} disabled={item.version !== 2}>
-                    {item.name} {item.version === 1 ? t('(WSL1 — unsupported)') : ''}
-                  </option>
-                ))}
-              </select>
+              <Select value={distro} onValueChange={setDistro} disabled={busy}>
+                <SelectTrigger aria-label={t('WSL2 distribution')}>
+                  <SelectValue />
+                </SelectTrigger>
+                <SelectContent>
+                  {snapshot.distros.map((item) => (
+                    <SelectItem key={item.name} value={item.name} disabled={item.version !== 2}>
+                      {item.name} {item.version === 1 ? t('(WSL1 — unsupported)') : ''}
+                    </SelectItem>
+                  ))}
+                </SelectContent>
+              </Select>
             </SettingsField>
             <SettingsField label={t('Linux user')}>
               <Input

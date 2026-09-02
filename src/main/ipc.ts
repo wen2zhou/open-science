@@ -272,6 +272,7 @@ import { LocalFsService } from './local-fs/service'
 import { SettingsService } from './settings/service'
 import { SettingsRepository } from './settings/repository'
 import { WslSetupOwner } from './wsl/wsl-setup-owner'
+import { probeWindowsVolume } from './wsl/windows-volume-probe'
 import { SettingsSnapshotCommitOwner } from './settings/settings-snapshot-commit-owner'
 import type { SettingsDocumentStore } from './settings/document-store'
 import { NetworkProxyRuntime } from './settings/network-proxy-runtime'
@@ -529,7 +530,8 @@ const createApplicationModules = async (
   const wslSetup = new WslSetupOwner({
     // Managed workspaces, handoff data, and caches live below this local NTFS mount root. The
     // execution adapter will still validate each invocation's concrete authorized paths.
-    workspacePath: resolveDataRoot(),
+    workspacePath: resolveDataRoot,
+    volumeProbe: probeWindowsVolume,
     readSelection: async () => (await settingsRepository.getSettings()).wslSelection,
     writeSelection: (selection) => settingsRepository.setWslSelection(selection)
   })

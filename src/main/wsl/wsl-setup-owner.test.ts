@@ -18,9 +18,18 @@ const makeRunner = (...responses: ReturnType<typeof result>[]): WslCommandRunner
   run: vi.fn(async () => responses.shift() ?? result())
 })
 
+type OwnerOptions = ConstructorParameters<typeof WslSetupOwner>[0]
+const makeOwner = (
+  options: Omit<OwnerOptions, 'volumeProbe'> & Partial<Pick<OwnerOptions, 'volumeProbe'>>
+): WslSetupOwner =>
+  new WslSetupOwner({
+    volumeProbe: async () => ({ kind: 'local-ntfs' }),
+    ...options
+  })
+
 describe('WslSetupOwner', () => {
   it('distinguishes platform, restart, and distro-required setup states', async () => {
-    const absent = new WslSetupOwner({
+    const absent = makeOwner({
       runner: makeRunner(result('', 1, 'WSL is not installed')),
       workspacePath: 'C:\\science',
       readSelection: async () => undefined,
@@ -31,7 +40,7 @@ describe('WslSetupOwner', () => {
       errorCode: 'wsl_not_installed'
     })
 
-    const restart = new WslSetupOwner({
+    const restart = makeOwner({
       runner: makeRunner(result('', 1, 'A system restart is required')),
       workspacePath: 'C:\\science',
       readSelection: async () => undefined,
@@ -42,7 +51,7 @@ describe('WslSetupOwner', () => {
       errorCode: 'wsl_restart_required'
     })
 
-    const noDistro = new WslSetupOwner({
+    const noDistro = makeOwner({
       runner: makeRunner(result('Default Version: 2'), result('')),
       workspacePath: 'C:\\science',
       readSelection: async () => undefined,
@@ -53,7 +62,7 @@ describe('WslSetupOwner', () => {
       errorCode: 'wsl_distro_missing'
     })
 
-    const localizedList = new WslSetupOwner({
+    const localizedList = makeOwner({
       runner: makeRunner(result('默认版本: 2'), result('* Ubuntu-24.04 已停止 2')),
       workspacePath: 'C:\\science',
       readSelection: async () => undefined,
@@ -66,7 +75,7 @@ describe('WslSetupOwner', () => {
   })
 
   it('classifies localized platform failures without depending on translated prose', async () => {
-    const restart = new WslSetupOwner({
+    const restart = makeOwner({
       runner: makeRunner(result('', 1, '需要重新启动'), result('WSL 2.4.0')),
       workspacePath: 'C:\\science',
       readSelection: async () => undefined,
@@ -77,7 +86,7 @@ describe('WslSetupOwner', () => {
       errorCode: 'wsl_restart_required'
     })
 
-    const absent = new WslSetupOwner({
+    const absent = makeOwner({
       runner: makeRunner(result('', 1, '找不到命令', 'not-found')),
       workspacePath: 'C:\\science',
       readSelection: async () => undefined,
@@ -100,7 +109,7 @@ describe('WslSetupOwner', () => {
       result('ok'),
       result('/mnt/c/science\nok')
     )
-    const owner = new WslSetupOwner({
+    const owner = makeOwner({
       runner,
       workspacePath: 'C:\\science',
       readSelection: async () => undefined,
@@ -130,6 +139,52 @@ describe('WslSetupOwner', () => {
   })
 
   it.each([
+    [{ kind: 'not-local' as const }, 'wsl_workspace_not_local'],
+    [{ kind: 'not-ntfs' as const, fileSystem: 'exFAT' }, 'wsl_workspace_not_ntfs'],
+    [{ kind: 'not-ntfs' as const, fileSystem: 'ReFS' }, 'wsl_workspace_not_ntfs'],
+    [{ kind: 'unavailable' as const }, 'wsl_workspace_volume_unavailable']
+  ])('never becomes ready for an unsupported Windows volume', async (volume, errorCode) => {
+    const owner = makeOwner({
+      runner: makeRunner(result('Default Version: 2'), result('* Ubuntu Running 2')),
+      workspacePath: 'Z:\\science',
+      volumeProbe: vi.fn(async () => volume),
+      readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),
+      writeSelection: vi.fn()
+    })
+
+    await expect(owner.probe()).resolves.toMatchObject({
+      state: 'failed',
+      errorCode,
+      readiness: { wsl2: true, localWorkspace: false }
+    })
+  })
+
+  it('resolves the configured data root when probing instead of capturing it at construction', async () => {
+    let configuredRoot = 'C:\\default-data'
+    const volumeProbe = vi.fn(async () => ({ kind: 'local-ntfs' as const }))
+    const runner = makeRunner(
+      result('Default Version: 2'),
+      result('* Ubuntu Running 2'),
+      result('1000\nscientist'),
+      result('/usr/bin/bash\n/usr/bin/bwrap'),
+      result('ok'),
+      result('/mnt/d/custom-data\nok')
+    )
+    const owner = makeOwner({
+      runner,
+      workspacePath: () => configuredRoot,
+      volumeProbe,
+      readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),
+      writeSelection: vi.fn()
+    })
+
+    configuredRoot = 'D:\\custom-data'
+    await expect(owner.probe()).resolves.toMatchObject({ state: 'ready' })
+    expect(volumeProbe).toHaveBeenCalledWith('D:\\custom-data')
+    expect(runner.run).toHaveBeenLastCalledWith(expect.arrayContaining(['D:\\custom-data']))
+  })
+
+  it.each([
     [
       'WSL1 distro',
       'wsl1_unsupported',
@@ -151,7 +206,7 @@ describe('WslSetupOwner', () => {
       )
     ]
   ])('fails safely for %s', async (_label, errorCode, runner) => {
-    const owner = new WslSetupOwner({
+    const owner = makeOwner({
       runner,
       workspacePath: 'C:\\science',
       readSelection: async () => ({ distro: 'Ubuntu', user: 'root' }),
@@ -161,7 +216,7 @@ describe('WslSetupOwner', () => {
   })
 
   it('reports missing dependencies and unsupported workspace paths with actionable stable codes', async () => {
-    const missing = new WslSetupOwner({
+    const missing = makeOwner({
       runner: makeRunner(
         result('Default Version: 2'),
         result('* Ubuntu Running 2'),
@@ -177,7 +232,7 @@ describe('WslSetupOwner', () => {
       errorCode: 'wsl_bwrap_missing'
     })
 
-    const unsupported = new WslSetupOwner({
+    const unsupported = makeOwner({
       runner: makeRunner(result('Default Version: 2'), result('* Ubuntu Running 2')),
       workspacePath: '\\\\server\\share',
       readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),

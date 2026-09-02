@@ -49,6 +49,10 @@ describe('WslLocalShellSection', () => {
     await act(async () => root.render(<WslLocalShellSection />))
     await flush()
 
+    const trigger = container.querySelector('[data-slot="select-trigger"]')
+    expect(trigger?.className).toContain('h-8')
+    expect(container.querySelector('select')).toBeNull()
+
     const input = container.querySelector('input') as HTMLInputElement
     await act(async () => {
       Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set?.call(
@@ -73,14 +77,14 @@ describe('WslLocalShellSection', () => {
     probe.mockResolvedValue({
       state: 'failed',
       distros: [],
-      errorCode: 'wsl_workspace_path_unsupported',
-      readiness: { wsl2: true },
+      errorCode: 'wsl_workspace_not_ntfs',
+      readiness: { wsl2: true, localWorkspace: false },
       operationReference: 'a1b2c3d4'
     })
     await act(async () => root.render(<WslLocalShellSection />))
     await flush()
 
-    expect(container.textContent).toContain('wsl_workspace_path_unsupported · a1b2c3d4')
+    expect(container.textContent).toContain('wsl_workspace_not_ntfs · a1b2c3d4')
     expect(container.textContent).toContain(
       'Move the Open Science data folder to a local NTFS drive'
     )

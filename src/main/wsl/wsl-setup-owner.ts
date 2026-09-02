@@ -10,6 +10,7 @@ import type {
   WslSetupState
 } from '../../shared/wsl-setup'
 import { createLogger } from '../logger'
+import type { WindowsVolumeProbeResult } from './windows-volume-probe'
 
 export type WslCommandResult = Readonly<{
   stdout: string
@@ -24,7 +25,8 @@ export interface WslCommandRunner {
 
 type WslSetupOwnerOptions = Readonly<{
   runner?: WslCommandRunner
-  workspacePath: string
+  workspacePath: string | (() => string)
+  volumeProbe(path: string): Promise<WindowsVolumeProbeResult>
   readSelection(): Promise<WslSelection | undefined>
   writeSelection(selection: WslSelection): Promise<unknown>
   operationReference?: () => string
@@ -198,14 +200,26 @@ export class WslSetupOwner {
         errorCode: 'wsl1_unsupported'
       })
     }
-    if (
-      !/^[A-Za-z]:\\/.test(this.options.workspacePath) ||
-      this.options.workspacePath.startsWith('\\\\')
-    ) {
+    const workspacePath = this.workspacePath()
+    if (!/^[A-Za-z]:\\/.test(workspacePath) || workspacePath.startsWith('\\\\')) {
       return setupSnapshot('failed', operationReference, distros, {
         selection,
         readiness: this.readiness({ wsl2: true }),
         errorCode: 'wsl_workspace_path_unsupported'
+      })
+    }
+    const volume = await this.options.volumeProbe(workspacePath)
+    if (volume.kind !== 'local-ntfs') {
+      const errorCode =
+        volume.kind === 'not-local'
+          ? 'wsl_workspace_not_local'
+          : volume.kind === 'not-ntfs'
+            ? 'wsl_workspace_not_ntfs'
+            : 'wsl_workspace_volume_unavailable'
+      return setupSnapshot('failed', operationReference, distros, {
+        selection,
+        readiness: this.readiness({ wsl2: true, localWorkspace: false }),
+        errorCode
       })
     }
 
@@ -283,7 +297,7 @@ export class WslSetupOwner {
       '-lc',
       'guest_path=$(wslpath -u "$1") && printf "%s\\n" "$guest_path" && test -d "$guest_path" && printf ok',
       '--',
-      this.options.workspacePath
+      workspacePath
     ])
     const workspaceLines = clean(workspace.stdout).split('\n')
     if (workspace.exitCode !== 0 || workspaceLines.at(-1) !== 'ok') {
@@ -319,6 +333,12 @@ export class WslSetupOwner {
 
   private readiness(ready: Partial<WslReadiness> = {}): WslReadiness {
     return ready
+  }
+
+  private workspacePath(): string {
+    return typeof this.options.workspacePath === 'function'
+      ? this.options.workspacePath()
+      : this.options.workspacePath
   }
 
   private reference(): string {
