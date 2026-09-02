@@ -63,7 +63,11 @@ describe('WslSetupOwner', () => {
     })
 
     const localizedList = makeOwner({
-      runner: makeRunner(result('默认版本: 2'), result('* Ubuntu-24.04 已停止 2')),
+      runner: makeRunner(
+        result('默认版本: 2'),
+        result('Ubuntu-24.04'),
+        result('* Ubuntu-24.04 已停止 2')
+      ),
       workspacePath: 'C:\\science',
       readSelection: async () => undefined,
       writeSelection: vi.fn()
@@ -103,6 +107,7 @@ describe('WslSetupOwner', () => {
     const log = { info: vi.fn(), warn: vi.fn() }
     const runner = makeRunner(
       result('Default Version: 2'),
+      result('Ubuntu-24.04'),
       result('* Ubuntu-24.04 Running 2'),
       result('1000\nscientist'),
       result('/usr/bin/bash\n/usr/bin/bwrap'),
@@ -127,7 +132,7 @@ describe('WslSetupOwner', () => {
     })
     expect(snapshot.operationReference).toMatch(/^[a-f0-9]{8}$/)
     expect(runner.run).toHaveBeenNthCalledWith(
-      5,
+      6,
       expect.arrayContaining([
         'bwrap --unshare-all --ro-bind / / --proc /proc --dev /dev -- true && printf ok'
       ])
@@ -138,6 +143,48 @@ describe('WslSetupOwner', () => {
     expect(logged).not.toContain('C:\\\\science')
   })
 
+  it('keeps exact distro names when verbose states contain localized words', async () => {
+    const writeSelection = vi.fn()
+    const nulSeparated = (value: string): string => [...value].join('\0')
+    const runner = makeRunner(
+      result('Default Version: 2'),
+      result(nulSeparated('Ubuntu Pro\r\nDebian 中文\r\nSUSE Dev')),
+      result(
+        nulSeparated(
+          '  NAME                  STATE             VERSION\r\n' +
+            '* Ubuntu Pro            En ejecución      2\r\n' +
+            '  Debian 中文            Wird ausgeführt   1\r\n' +
+            '  SUSE Dev               正在 运行           2'
+        )
+      ),
+      result('1000\nscientist'),
+      result('/usr/bin/bash\n/usr/bin/bwrap'),
+      result('ok'),
+      result('/mnt/c/science\nok')
+    )
+    const owner = makeOwner({
+      runner,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection
+    })
+
+    const snapshot = await owner.select({ distro: 'Ubuntu Pro', user: 'scientist' })
+
+    expect(writeSelection).toHaveBeenCalledWith({ distro: 'Ubuntu Pro', user: 'scientist' })
+    expect(snapshot).toMatchObject({
+      state: 'ready',
+      selection: { distro: 'Ubuntu Pro', user: 'scientist' },
+      distros: [
+        { name: 'Ubuntu Pro', version: 2, isDefault: true },
+        { name: 'Debian 中文', version: 1, isDefault: false },
+        { name: 'SUSE Dev', version: 2, isDefault: false }
+      ]
+    })
+    expect(runner.run).toHaveBeenNthCalledWith(2, ['--list', '--quiet'])
+    expect(runner.run).toHaveBeenNthCalledWith(3, ['--list', '--verbose'])
+  })
+
   it.each([
     [{ kind: 'not-local' as const }, 'wsl_workspace_not_local'],
     [{ kind: 'not-ntfs' as const, fileSystem: 'exFAT' }, 'wsl_workspace_not_ntfs'],
@@ -145,7 +192,11 @@ describe('WslSetupOwner', () => {
     [{ kind: 'unavailable' as const }, 'wsl_workspace_volume_unavailable']
   ])('never becomes ready for an unsupported Windows volume', async (volume, errorCode) => {
     const owner = makeOwner({
-      runner: makeRunner(result('Default Version: 2'), result('* Ubuntu Running 2')),
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu'),
+        result('* Ubuntu Running 2')
+      ),
       workspacePath: 'Z:\\science',
       volumeProbe: vi.fn(async () => volume),
       readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),
@@ -164,6 +215,7 @@ describe('WslSetupOwner', () => {
     const volumeProbe = vi.fn(async () => ({ kind: 'local-ntfs' as const }))
     const runner = makeRunner(
       result('Default Version: 2'),
+      result('Ubuntu'),
       result('* Ubuntu Running 2'),
       result('1000\nscientist'),
       result('/usr/bin/bash\n/usr/bin/bwrap'),
@@ -188,18 +240,24 @@ describe('WslSetupOwner', () => {
     [
       'WSL1 distro',
       'wsl1_unsupported',
-      makeRunner(result('Default Version: 2'), result('* Ubuntu Stopped 1'))
+      makeRunner(result('Default Version: 2'), result('Ubuntu'), result('* Ubuntu Stopped 1'))
     ],
     [
       'root user',
       'wsl_root_user',
-      makeRunner(result('Default Version: 2'), result('* Ubuntu Running 2'), result('0\nroot'))
+      makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu'),
+        result('* Ubuntu Running 2'),
+        result('0\nroot')
+      )
     ],
     [
       'uninitialized distro',
       'wsl_first_launch_required',
       makeRunner(
         result('Default Version: 2'),
+        result('Ubuntu'),
         result('* Ubuntu Stopped 2'),
         result('', 1, 'localized first-launch failure'),
         result('', 1, 'localized first-launch failure')
@@ -219,6 +277,7 @@ describe('WslSetupOwner', () => {
     const missing = makeOwner({
       runner: makeRunner(
         result('Default Version: 2'),
+        result('Ubuntu'),
         result('* Ubuntu Running 2'),
         result('1000\nscientist'),
         result('/usr/bin/bash\n', 1)
@@ -233,7 +292,11 @@ describe('WslSetupOwner', () => {
     })
 
     const unsupported = makeOwner({
-      runner: makeRunner(result('Default Version: 2'), result('* Ubuntu Running 2')),
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu'),
+        result('* Ubuntu Running 2')
+      ),
       workspacePath: '\\\\server\\share',
       readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),
       writeSelection: vi.fn()

@@ -70,21 +70,36 @@ const executeWsl: WslCommandRunner = {
 
 const clean = (value: string): string => value.replaceAll('\0', '').replaceAll('\r', '').trim()
 
-export const parseWslDistros = (output: string): WslDistro[] => {
-  const distros: WslDistro[] = []
-  for (const rawLine of clean(output).split('\n')) {
-    const line = rawLine.trim()
-    if (!line || /^NAME\s+STATE\s+VERSION$/i.test(line)) continue
-    // State and the table header are localized by Windows; the version is the stable final column.
-    const match = line.match(/^(\*)?\s*(.+?)\s+\S+\s+([12])$/i)
-    if (!match) continue
-    distros.push({
-      name: match[2].trim(),
-      version: Number(match[3]) as 1 | 2,
-      isDefault: !!match[1]
+export const parseWslDistros = (quietOutput: string, verboseOutput: string): WslDistro[] => {
+  const names = clean(quietOutput)
+    .split('\n')
+    .map((line) => line.trim())
+    .filter(Boolean)
+  const verboseLines = clean(verboseOutput).split('\n')
+  const longestNamesFirst = [...names].sort((left, right) => right.length - left.length)
+  const details = new Map<string, Omit<WslDistro, 'name'>>()
+
+  for (const rawLine of verboseLines) {
+    const defaultMatch = rawLine.trimStart().match(/^\*\s*/)
+    const line = defaultMatch ? rawLine.trimStart().slice(defaultMatch[0].length) : rawLine.trim()
+    const name = longestNamesFirst.find(
+      (candidate) => line.startsWith(candidate) && /^\s/.test(line.slice(candidate.length))
+    )
+    if (!name) continue
+    // The exact name comes from --quiet. Only the stable numeric final column is interpreted;
+    // the localized state between them may contain any number of words.
+    const versionMatch = line.slice(name.length).match(/\s+.+\s+([12])\s*$/)
+    if (!versionMatch) continue
+    details.set(name, {
+      version: Number(versionMatch[1]) as 1 | 2,
+      isDefault: !!defaultMatch
     })
   }
-  return distros
+
+  return names.flatMap((name) => {
+    const detail = details.get(name)
+    return detail ? [{ name, ...detail }] : []
+  })
 }
 
 const setupSnapshot = (
@@ -173,11 +188,15 @@ export class WslSetupOwner {
       return setupSnapshot(failure.state, operationReference, [], { errorCode: failure.code })
     }
 
+    const names = await this.runner.run(['--list', '--quiet'])
+    if (names.exitCode !== 0) {
+      return setupSnapshot('failed', operationReference, [], { errorCode: 'wsl_probe_failed' })
+    }
     const listed = await this.runner.run(['--list', '--verbose'])
     if (listed.exitCode !== 0) {
       return setupSnapshot('failed', operationReference, [], { errorCode: 'wsl_probe_failed' })
     }
-    const distros = parseWslDistros(listed.stdout)
+    const distros = parseWslDistros(names.stdout, listed.stdout)
     if (distros.length === 0) {
       return setupSnapshot('distro-required', operationReference, [], {
         errorCode: 'wsl_distro_missing'
