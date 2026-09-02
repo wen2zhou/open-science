@@ -7,6 +7,7 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { DEFAULT_NOTEBOOK_NETWORK_SETTINGS } from '../../shared/notebook-network'
 import type { Logger } from '../logger'
+import type { NotebookSandboxCleanupReason, NotebookSandboxProcessOutcome } from './process-sandbox'
 
 const backend = vi.hoisted(() => ({
   request: undefined as
@@ -61,11 +62,11 @@ beforeEach(() => {
   backend.status.mockResolvedValue({ kind: 'ready', warnings: [] })
   backend.installWindows.mockResolvedValue({ cancelled: false })
   backend.removeWindows.mockResolvedValue({ cancelled: false })
-  backend.cleanup.mockResolvedValue({
-    processesTerminated: true,
+  backend.cleanup.mockImplementation(async (processOutcome) => ({
+    processesTerminated: processOutcome.processesTerminated,
     networkClosed: true,
     temporaryResourcesRemoved: true
-  })
+  }))
   backend.wrap.mockImplementation(
     async (command: {
       onNetworkAccessRequest: (request: {
@@ -87,11 +88,14 @@ beforeEach(() => {
         env: { HTTPS_PROXY: 'http://127.0.0.1:4567' },
         annotateStderr: (stderr: string) => stderr,
         resetNetworkConnections: backend.resetNetworkConnections,
-        cleanup: async () => {
+        cleanup: async (
+          _reason: NotebookSandboxCleanupReason,
+          processOutcome: NotebookSandboxProcessOutcome
+        ) => {
           if (cleaned) return
           cleaned = true
           controller.abort(new Error('Notebook process ended.'))
-          return backend.cleanup()
+          return backend.cleanup(processOutcome)
         }
       }
     }
@@ -262,7 +266,7 @@ describe('NotebookNetworkSandboxOwner', () => {
     const nextExecution = wrapped.beginExecution?.()
     await expect(backend.request?.({ host: 'data.example.org', port: 443 })).resolves.toBe(false)
     nextExecution?.()
-    await wrapped.cleanup('exit')
+    await wrapped.cleanup('exit', { processesTerminated: true })
 
     const nextCommand = await owner.wrap({
       executable: '/usr/bin/python',
@@ -281,7 +285,7 @@ describe('NotebookNetworkSandboxOwner', () => {
       }
     })
     await expect(backend.request?.({ host: 'data.example.org', port: 443 })).resolves.toBe(false)
-    await nextCommand.cleanup('exit')
+    await nextCommand.cleanup('exit', { processesTerminated: true })
     const commandTempRoot = backend.wrap.mock.calls[0]?.[0].env.TMPDIR as string
     await vi.waitFor(() => expect(existsSync(commandTempRoot)).toBe(false))
     await owner.dispose()
@@ -327,7 +331,7 @@ describe('NotebookNetworkSandboxOwner', () => {
       })
     ).resolves.toEqual({ hostname: 'data.example.org', status: 'unavailable' })
     expect(requestDecision).toHaveBeenCalledOnce()
-    await wrapped.cleanup('exit')
+    await wrapped.cleanup('exit', { processesTerminated: true })
     await owner.dispose()
 
     const serialized = JSON.stringify(records)
@@ -458,8 +462,8 @@ describe('NotebookNetworkSandboxOwner', () => {
       expect.objectContaining({ hostname: 'data.example.org', runtime: 'bash' })
     )
 
-    await python.cleanup('exit')
-    await bash.cleanup('exit')
+    await python.cleanup('exit', { processesTerminated: true })
+    await bash.cleanup('exit', { processesTerminated: true })
     await owner.dispose()
   })
 
@@ -530,10 +534,10 @@ describe('NotebookNetworkSandboxOwner', () => {
     await expect(retryRequest({ host: 'data.example.org', port: 443 })).resolves.toBe(true)
     endRetry?.()
 
-    await first.cleanup('exit')
-    await second.cleanup('exit')
-    await unrelated.cleanup('exit')
-    await retry.cleanup('exit')
+    await first.cleanup('exit', { processesTerminated: true })
+    await second.cleanup('exit', { processesTerminated: true })
+    await unrelated.cleanup('exit', { processesTerminated: true })
+    await retry.cleanup('exit', { processesTerminated: true })
     await owner.dispose()
   })
 
@@ -583,7 +587,7 @@ describe('NotebookNetworkSandboxOwner', () => {
     expect(backend.updatePolicy).toHaveBeenCalledWith(
       expect.objectContaining({ allowedDomains: expect.arrayContaining(['data.example.org']) })
     )
-    await wrapped.cleanup('exit')
+    await wrapped.cleanup('exit', { processesTerminated: true })
     await owner.dispose()
   })
 
@@ -647,8 +651,8 @@ describe('NotebookNetworkSandboxOwner', () => {
         deniedWriteRoots: []
       }
     })
-    const firstCleanup = wrapped.cleanup('exit')
-    const secondCleanup = wrapped.cleanup('cancel')
+    const firstCleanup = wrapped.cleanup('exit', { processesTerminated: true })
+    const secondCleanup = wrapped.cleanup('cancel', { processesTerminated: true })
     await expect(firstCleanup).resolves.toEqual({
       processesTerminated: true,
       networkClosed: true,
@@ -705,20 +709,22 @@ describe('NotebookNetworkSandboxOwner', () => {
     expect(backend.wrap.mock.calls[0]?.[0]).toMatchObject({ target: { kind: 'native' } })
     expect(backend.wrap.mock.calls[1]?.[0]).toMatchObject({ target })
     expect(backend.wrap.mock.calls[1]?.[0]?.command).toBe("'/usr/bin/python' 'script.py'")
-    await native.cleanup('exit')
+    await native.cleanup('exit', { processesTerminated: true })
     backend.cleanup.mockResolvedValueOnce({
-      processesTerminated: true,
+      processesTerminated: false,
       networkClosed: false,
       temporaryResourcesRemoved: false
     })
-    await expect(wsl2.cleanup('timeout')).resolves.toEqual({
-      processesTerminated: true,
+    await expect(wsl2.cleanup('timeout', { processesTerminated: false })).resolves.toEqual({
+      processesTerminated: false,
       networkClosed: false,
       temporaryResourcesRemoved: false
     })
     const diagnosticText = JSON.stringify(records)
     expect(diagnosticText).toContain('sandbox cleanup completed')
-    expect(diagnosticText).toContain('"incompleteStageCount":2')
+    expect(diagnosticText).toContain('"phase":"sandbox-cleanup"')
+    expect(diagnosticText).toContain('"result":"incomplete"')
+    expect(diagnosticText).toContain('"incompleteStageCount":3')
     expect(diagnosticText).not.toContain('python script.py')
     expect(diagnosticText).not.toContain('C:\\\\workspace')
     expect(diagnosticText).not.toContain('researcher')
@@ -783,7 +789,7 @@ describe('NotebookNetworkSandboxOwner', () => {
         })
       })
     )
-    await wrapped.cleanup('exit')
+    await wrapped.cleanup('exit', { processesTerminated: true })
     await owner.dispose()
   })
 
@@ -818,7 +824,7 @@ describe('NotebookNetworkSandboxOwner', () => {
     })
 
     expect(backend.wrap.mock.calls.at(-1)?.[0].filesystem.deniedWriteRoots).toContain(gitPointer)
-    await wrapped.cleanup('exit')
+    await wrapped.cleanup('exit', { processesTerminated: true })
     await owner.dispose()
   })
 
@@ -872,7 +878,7 @@ describe('NotebookNetworkSandboxOwner', () => {
     expect(decisionSignal?.aborted).toBe(true)
     await expect(result).resolves.toEqual({ hostname: 'data.example.org', status: 'denied' })
     expect(persistAlwaysAllow).not.toHaveBeenCalled()
-    await wrapped.cleanup('exit')
+    await wrapped.cleanup('exit', { processesTerminated: true })
     await owner.dispose()
   })
 })

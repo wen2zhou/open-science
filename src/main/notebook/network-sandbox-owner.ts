@@ -256,18 +256,20 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       throw error
     }
     let cleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
-    const cleanup: NotebookSandboxedSpawn['cleanup'] = (reason) => {
+    const cleanup: NotebookSandboxedSpawn['cleanup'] = (reason, processOutcome) => {
       if (cleanupPromise) return cleanupPromise
       activeExecutionGrants = new Set()
       executionActive = false
       cleanupPromise = (async () => {
         const [sandboxCleanup, temporaryCleanup] = await Promise.allSettled([
-          wrapped.cleanup(reason),
+          wrapped.cleanup(reason, processOutcome),
           rm(commandTempRoot, { recursive: true, force: true })
         ])
         const result: NotebookSandboxCleanupResult = {
           processesTerminated:
-            sandboxCleanup.status === 'fulfilled' && sandboxCleanup.value.processesTerminated,
+            processOutcome.processesTerminated &&
+            sandboxCleanup.status === 'fulfilled' &&
+            sandboxCleanup.value.processesTerminated,
           networkClosed:
             sandboxCleanup.status === 'fulfilled' && sandboxCleanup.value.networkClosed,
           temporaryResourcesRemoved:
@@ -276,6 +278,8 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
             temporaryCleanup.status === 'fulfilled'
         }
         this.log.info('sandbox cleanup completed', {
+          phase: 'sandbox-cleanup',
+          result: Object.values(result).every(Boolean) ? 'complete' : 'incomplete',
           platform: this.platform,
           target: invocation.target?.kind ?? 'native',
           runtime: invocation.runtime,
@@ -289,7 +293,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     }
     const [executable, ...args] = wrapped.argv
     if (!executable) {
-      await cleanup('spawn-failed')
+      await cleanup('spawn-failed', { processesTerminated: true })
       throw new Error('Notebook network sandbox returned an empty command.')
     }
     return {

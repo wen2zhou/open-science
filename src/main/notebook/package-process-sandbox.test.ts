@@ -82,6 +82,6 @@ describe('sandboxedPackageSpawn', () => {
     )
     expect(endExecution).toHaveBeenCalledOnce()
     expect(cleanup).toHaveBeenCalledOnce()
-    expect(cleanup).toHaveBeenCalledWith('exit')
+    expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated: true })
   })
 })

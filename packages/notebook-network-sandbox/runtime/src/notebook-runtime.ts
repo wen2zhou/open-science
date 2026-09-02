@@ -62,6 +62,10 @@ type SandboxCleanupResult = Readonly<{
   temporaryResourcesRemoved: boolean
 }>
 
+type SandboxProcessOutcome = Readonly<{
+  processesTerminated: boolean
+}>
+
 type NetworkWrapRequest = Readonly<{
   target?: NotebookSandboxTarget
   command: string
@@ -275,7 +279,8 @@ const wrap = async (
 
 const closeContext = async (
   commandId: string,
-  context: RuntimeContext
+  context: RuntimeContext,
+  processOutcome: SandboxProcessOutcome
 ): Promise<SandboxCleanupResult> => {
   const [network, temporaryResources] = await Promise.allSettled([
     context.gateway.close(),
@@ -283,23 +288,28 @@ const closeContext = async (
   ])
   violations.forget(commandId)
   return {
-    processesTerminated: true,
+    processesTerminated: processOutcome.processesTerminated,
     networkClosed: network.status === 'fulfilled',
     temporaryResourcesRemoved: temporaryResources.status === 'fulfilled'
   }
 }
 
-const cleanupAfterCommand = async (commandId: string): Promise<SandboxCleanupResult> => {
+const cleanupAfterCommand = async (
+  commandId: string,
+  processOutcome: SandboxProcessOutcome
+): Promise<SandboxCleanupResult> => {
   const context = commandContexts.get(commandId)
   if (!context) {
     return {
-      processesTerminated: true,
+      processesTerminated: processOutcome.processesTerminated,
       networkClosed: true,
       temporaryResourcesRemoved: true
     }
   }
   commandContexts.delete(commandId)
-  const task = closeContext(commandId, context).finally(() => finishing.delete(task))
+  const task = closeContext(commandId, context, processOutcome).finally(() =>
+    finishing.delete(task)
+  )
   finishing.add(task)
   return task
 }
@@ -322,7 +332,10 @@ const updateConfig = (config: NetworkRuntimeConfig): void => {
 const reset = async (): Promise<void> => {
   const active = [...commandContexts.entries()]
   commandContexts.clear()
-  await Promise.all([...finishing, ...active.map(([id, context]) => closeContext(id, context))])
+  await Promise.all([
+    ...finishing,
+    ...active.map(([id, context]) => closeContext(id, context, { processesTerminated: false }))
+  ])
   finishing.clear()
   violations.clear()
   runtimeConfig = undefined

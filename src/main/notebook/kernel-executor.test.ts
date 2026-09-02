@@ -3258,10 +3258,10 @@ const delayedSandboxCleanup = (
   const gate = new Promise<void>((resolve) => {
     release = resolve
   })
-  const cleanup = vi.fn(async () => {
+  const cleanup = vi.fn(async (_reason, processOutcome: { processesTerminated: boolean }) => {
     await gate
     return {
-      processesTerminated: true,
+      processesTerminated: processOutcome.processesTerminated,
       networkClosed: true,
       temporaryResourcesRemoved: true
     }
@@ -3305,7 +3305,11 @@ describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
           return result
         })
 
-      await vi.waitFor(() => expect(sandbox.cleanup).toHaveBeenCalledWith('exit'))
+      await vi.waitFor(() =>
+        expect(sandbox.cleanup).toHaveBeenCalledWith('exit', {
+          processesTerminated: process.platform !== 'win32'
+        })
+      )
       expect(completed).toBe(false)
       sandbox.release()
       await expect(execution).resolves.toMatchObject({ status: 'failed' })
@@ -3341,7 +3345,11 @@ describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
           return result
         })
 
-      await vi.waitFor(() => expect(sandbox.cleanup).toHaveBeenCalledWith('spawn-failed'))
+      await vi.waitFor(() =>
+        expect(sandbox.cleanup).toHaveBeenCalledWith('spawn-failed', {
+          processesTerminated: true
+        })
+      )
       expect(completed).toBe(false)
       sandbox.release()
       await expect(execution).resolves.toMatchObject({ status: 'failed' })
@@ -3373,7 +3381,9 @@ describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
         completed = true
       })
 
-      await vi.waitFor(() => expect(sandbox.cleanup).toHaveBeenCalledWith('cancel'))
+      await vi.waitFor(() =>
+        expect(sandbox.cleanup).toHaveBeenCalledWith('cancel', { processesTerminated: true })
+      )
       expect(completed).toBe(false)
       sandbox.release()
       await termination
@@ -3402,7 +3412,11 @@ describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
         projectId: 'project-1'
       })
       procFor(executor, 'repl')?.child.emit('error', new Error('kernel handle failed'))
-      await vi.waitFor(() => expect(sandbox.cleanup).toHaveBeenCalledWith('spawn-failed'))
+      await vi.waitFor(() =>
+        expect(sandbox.cleanup).toHaveBeenCalledWith('spawn-failed', {
+          processesTerminated: true
+        })
+      )
       const shutdown = executor.shutdown().then((result) => {
         completed = true
         return result
@@ -3441,7 +3455,9 @@ describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
         return result
       })
 
-      await vi.waitFor(() => expect(sandbox.cleanup).toHaveBeenCalledWith('cancel'))
+      await vi.waitFor(() =>
+        expect(sandbox.cleanup).toHaveBeenCalledWith('cancel', { processesTerminated: true })
+      )
       expect(completed).toBe(false)
       sandbox.release()
       await expect(shutdown).resolves.toEqual({ reaped: true })

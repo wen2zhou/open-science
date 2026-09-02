@@ -15,6 +15,10 @@ export type NotebookSandboxCleanupResult = Readonly<{
   temporaryResourcesRemoved: boolean
 }>
 
+export type NotebookSandboxProcessOutcome = Readonly<{
+  processesTerminated: boolean
+}>
+
 export type NotebookSandboxInvocation = Readonly<{
   target?: NotebookSandboxTarget
   executable: string
@@ -42,7 +46,10 @@ export type NotebookSandboxedSpawn = Readonly<{
   env: NodeJS.ProcessEnv
   beginExecution?: () => () => void
   annotateStderr: (stderr: string) => string
-  cleanup: (reason: NotebookSandboxCleanupReason) => Promise<NotebookSandboxCleanupResult>
+  cleanup: (
+    reason: NotebookSandboxCleanupReason,
+    processOutcome: NotebookSandboxProcessOutcome
+  ) => Promise<NotebookSandboxCleanupResult>
 }>
 
 export type NotebookNetworkAccessDecisionRequest = Readonly<{

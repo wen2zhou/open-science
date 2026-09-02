@@ -2,8 +2,16 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { dirname } from 'node:path'
 
 import { protectManagedRuntimeWrites } from './managed-runtime-guard'
-import type { NotebookProcessSandbox, NotebookSandboxCleanupReason } from './process-sandbox'
-import { registerOwnedPosixProcessGroup, terminateProcessTree } from '../process-tree'
+import type {
+  NotebookProcessSandbox,
+  NotebookSandboxCleanupReason,
+  NotebookSandboxProcessOutcome
+} from './process-sandbox'
+import {
+  registerOwnedPosixProcessGroup,
+  terminateProcessTree,
+  type ProcessTreeKillResult
+} from '../process-tree'
 import { resolveWindowsPowerShellExecutable } from '../windows-powershell'
 import { NOTEBOOK_SHELL_DEFAULT_TIMEOUT_MS } from '../../shared/notebook'
 import {
@@ -178,12 +186,15 @@ const resolveShellInvocation = (
 // may safely tear down or remove the Session workspace after this promise resolves.
 const terminateShellOnTimeout = async (
   child: ChildProcess,
-  terminateTree: (process: ChildProcess) => Promise<unknown> = terminateProcessTree
-): Promise<void> => {
+  platform: NodeJS.Platform = process.platform,
+  terminateTree: (process: ChildProcess) => Promise<ProcessTreeKillResult> = terminateProcessTree
+): Promise<ProcessTreeKillResult> => {
+  void platform
   try {
-    await terminateTree(child)
+    return await terminateTree(child)
   } catch {
     // Preserve runShellCommand's never-reject contract even when the best-effort terminator fails.
+    return { reaped: false }
   }
 }
 
@@ -193,6 +204,7 @@ const runShellCommand = (
   options: NotebookShellProcessRequest & {
     platform?: NodeJS.Platform
     processSandbox?: NotebookProcessSandbox
+    terminateTree?: (process: ChildProcess) => Promise<ProcessTreeKillResult>
   }
 ): Promise<NotebookShellResult> => {
   const run = async (): Promise<NotebookShellResult> => {
@@ -284,10 +296,13 @@ const runShellCommand = (
       // Timeout owns settlement even if Windows taskkill emits exit before its promise resolves.
       let timedOut = false
       let cancelled = false
+      let exited = false
+      let failed = false
 
       const finish = async (
         result: NotebookShellResult,
-        cleanupReason: NotebookSandboxCleanupReason
+        cleanupReason: NotebookSandboxCleanupReason,
+        processOutcome: NotebookSandboxProcessOutcome
       ): Promise<void> => {
         if (settled) return
         settled = true
@@ -296,7 +311,7 @@ const runShellCommand = (
         endSandboxExecution?.()
         const normalized = normalizePowerShellStderr(result.stderr)
         const stderr = sandboxed ? sandboxed.annotateStderr(normalized) : normalized
-        await sandboxed?.cleanup(cleanupReason)
+        await sandboxed?.cleanup(cleanupReason, processOutcome)
         resolve({ ...result, stderr })
       }
 
@@ -304,11 +319,13 @@ const runShellCommand = (
         result: NotebookShellResult,
         cleanupReason: 'cancel' | 'timeout'
       ): void => {
-        void terminateShellOnTimeout(child).then(() => void finish(result, cleanupReason))
+        void terminateShellOnTimeout(child, platform, options.terminateTree).then(({ reaped }) => {
+          void finish(result, cleanupReason, { processesTerminated: reaped })
+        })
       }
 
       const abort = (): void => {
-        if (settled || timedOut || cancelled) return
+        if (settled || timedOut || cancelled || exited || failed) return
         cancelled = true
         clearTimeout(timeoutTimer)
         terminateAndFinish(
@@ -325,7 +342,7 @@ const runShellCommand = (
       }
 
       const timeoutTimer = setTimeout(() => {
-        if (settled || cancelled) return
+        if (settled || cancelled || exited || failed) return
         timedOut = true
         const timeoutResult: NotebookShellResult = {
           stdout,
@@ -375,7 +392,10 @@ const runShellCommand = (
         )
       })
       child.once('error', (error) => {
-        if (!timedOut && !cancelled)
+        if (timedOut || cancelled || exited || failed) return
+        failed = true
+        clearTimeout(timeoutTimer)
+        void terminateShellOnTimeout(child, platform, options.terminateTree).then(({ reaped }) => {
           void finish(
             {
               stdout,
@@ -383,15 +403,22 @@ const runShellCommand = (
               exitCode: null,
               ...(truncated ? { truncated: true } : {})
             },
-            'spawn-failed'
+            'spawn-failed',
+            { processesTerminated: reaped }
           )
+        })
       })
       child.once('exit', (code) => {
-        if (!timedOut && !cancelled)
+        if (timedOut || cancelled || exited || failed) return
+        exited = true
+        clearTimeout(timeoutTimer)
+        void terminateShellOnTimeout(child, platform, options.terminateTree).then(({ reaped }) => {
           void finish(
             { stdout, stderr, exitCode: code, ...(truncated ? { truncated: true } : {}) },
-            'exit'
+            'exit',
+            { processesTerminated: reaped }
           )
+        })
       })
     })
   }

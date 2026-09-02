@@ -30,11 +30,11 @@ beforeEach(() => {
   for (const mock of Object.values(backend)) mock.mockReset()
   backend.initialize.mockResolvedValue(undefined)
   backend.refreshWindowsProtection.mockResolvedValue({ warnings: [], errors: [] })
-  backend.cleanupAfterCommand.mockResolvedValue({
-    processesTerminated: true,
+  backend.cleanupAfterCommand.mockImplementation(async (_commandId, processOutcome) => ({
+    processesTerminated: processOutcome.processesTerminated,
     networkClosed: true,
     temporaryResourcesRemoved: true
-  })
+  }))
   backend.reset.mockResolvedValue(undefined)
 })
 
@@ -157,7 +157,7 @@ describe('NotebookNetworkSandbox', () => {
       signal: expect.any(AbortSignal)
     })
     expect(decisionSignal?.aborted).toBe(false)
-    await wrapped.cleanup('exit')
+    await wrapped.cleanup('exit', { processesTerminated: true })
     expect(decisionSignal?.aborted).toBe(true)
     await expect(decision?.({ host: 'new.example.org', port: 443, commandId })).resolves.toBe(false)
     await sandbox.dispose()
@@ -180,7 +180,7 @@ describe('NotebookNetworkSandbox', () => {
     const decision = backend.initialize.mock.calls[0]?.[1]
 
     await expect(decision?.({ host: 'new.example.org', port: 443, commandId })).resolves.toBe(false)
-    await wrapped.cleanup('exit')
+    await wrapped.cleanup('exit', { processesTerminated: true })
     await sandbox.dispose()
   })
 
@@ -206,7 +206,7 @@ describe('NotebookNetworkSandbox', () => {
       commandId
     })
 
-    await wrapped.cleanup('exit')
+    await wrapped.cleanup('exit', { processesTerminated: true })
     resolveDecision?.(true)
 
     await expect(decision).resolves.toBe(false)
@@ -228,21 +228,23 @@ describe('NotebookNetworkSandbox', () => {
     expect(wrapped.annotateStderr('curl failed')).toBe('annotated stderr')
     wrapped.resetNetworkConnections()
     expect(backend.resetCommandConnections).toHaveBeenCalledWith(expect.any(String))
-    const firstCleanup = wrapped.cleanup('exit')
-    const secondCleanup = wrapped.cleanup('cancel')
+    const firstCleanup = wrapped.cleanup('timeout', { processesTerminated: false })
+    const secondCleanup = wrapped.cleanup('cancel', { processesTerminated: true })
     await expect(firstCleanup).resolves.toEqual({
-      processesTerminated: true,
+      processesTerminated: false,
       networkClosed: true,
       temporaryResourcesRemoved: true
     })
     await expect(secondCleanup).resolves.toEqual({
-      processesTerminated: true,
+      processesTerminated: false,
       networkClosed: true,
       temporaryResourcesRemoved: true
     })
     expect(firstCleanup).toBe(secondCleanup)
     expect(backend.cleanupAfterCommand).toHaveBeenCalledOnce()
-    expect(backend.cleanupAfterCommand).toHaveBeenCalledWith(expect.any(String))
+    expect(backend.cleanupAfterCommand).toHaveBeenCalledWith(expect.any(String), {
+      processesTerminated: false
+    })
     await sandbox.dispose()
   })
 
@@ -277,8 +279,8 @@ describe('NotebookNetworkSandbox', () => {
 
     expect(backend.wrap.mock.calls[0]?.[0]).toMatchObject({ target: { kind: 'native' } })
     expect(backend.wrap.mock.calls[1]?.[0]).toMatchObject({ target })
-    await native.cleanup('exit')
-    await wsl2.cleanup('exit')
+    await native.cleanup('exit', { processesTerminated: true })
+    await wsl2.cleanup('exit', { processesTerminated: true })
     await sandbox.dispose()
   })
 
@@ -302,8 +304,8 @@ describe('NotebookNetworkSandbox', () => {
         onNetworkAccessRequest: denyNetwork
       })
 
-      await first.cleanup('exit')
-      await second.cleanup('exit')
+      await first.cleanup('exit', { processesTerminated: true })
+      await second.cleanup('exit', { processesTerminated: true })
       expect(backend.wrap).toHaveBeenCalledTimes(2)
     } finally {
       await sandbox.dispose()

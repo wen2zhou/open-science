@@ -112,9 +112,23 @@ describe('Notebook runtime configuration updates', () => {
   it('reports incomplete network cleanup without rejecting the completion path', async () => {
     gateway.close.mockRejectedValueOnce(new Error('private gateway detail'))
 
-    await expect(NotebookNetworkRuntime.cleanupAfterCommand('command-1')).resolves.toEqual({
+    await expect(
+      NotebookNetworkRuntime.cleanupAfterCommand('command-1', { processesTerminated: true })
+    ).resolves.toEqual({
       processesTerminated: true,
       networkClosed: false,
+      temporaryResourcesRemoved: true
+    })
+  })
+
+  it('reports the observed process teardown outcome instead of assuming termination', async () => {
+    await expect(
+      NotebookNetworkRuntime.cleanupAfterCommand('command-1', {
+        processesTerminated: false
+      })
+    ).resolves.toEqual({
+      processesTerminated: false,
+      networkClosed: true,
       temporaryResourcesRemoved: true
     })
   })
@@ -129,7 +143,7 @@ describe('Notebook runtime configuration updates', () => {
     )
 
     try {
-      void NotebookNetworkRuntime.cleanupAfterCommand('command-1')
+      void NotebookNetworkRuntime.cleanupAfterCommand('command-1', { processesTerminated: true })
       const wrapping = NotebookNetworkRuntime.wrap({
         command: 'curl https://example.com',
         commandId: 'command-2',

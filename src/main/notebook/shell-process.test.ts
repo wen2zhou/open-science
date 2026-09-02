@@ -15,6 +15,7 @@ import {
 import { NOTEBOOK_TEXT_LIMIT_BYTES } from './content-limits'
 import type { NotebookProcessSandbox } from './process-sandbox'
 import { normalizeFilesystemLayout } from '../../../packages/notebook-network-sandbox/runtime/src/platform/filesystem-layout.js'
+import { terminateProcessTree } from '../process-tree'
 
 afterEach(() => vi.unstubAllEnvs())
 
@@ -172,7 +173,7 @@ describe('notebook shell process behavior', () => {
       )
 
       let settled = false
-      const termination = terminateShellOnTimeout(child, terminateTree).then(() => {
+      const termination = terminateShellOnTimeout(child, 'win32', terminateTree).then(() => {
         settled = true
       })
 
@@ -182,7 +183,39 @@ describe('notebook shell process behavior', () => {
       expect(settled).toBe(false)
 
       finishTermination?.({ reaped: true })
-      await expect(termination).resolves.toBeUndefined()
+      return expect(termination).resolves.toEqual({ reaped: true })
+    })
+
+    it('waits for bounded POSIX process-tree reaping before reporting termination', async () => {
+      const child = Object.assign(new EventEmitter(), { pid: 4321 }) as unknown as ChildProcess
+      let finishTermination: ((result: { reaped: boolean }) => void) | undefined
+      const terminateTree = vi.fn(
+        () =>
+          new Promise<{ reaped: boolean }>((resolve) => {
+            finishTermination = resolve
+          })
+      )
+      let completed = false
+
+      const termination = terminateShellOnTimeout(child, 'linux', terminateTree).then((result) => {
+        completed = true
+        return result
+      })
+
+      await new Promise((resolve) => setTimeout(resolve, 0))
+      expect(terminateTree).toHaveBeenCalledWith(child)
+      expect(completed).toBe(false)
+      finishTermination?.({ reaped: true })
+      await expect(termination).resolves.toEqual({ reaped: true })
+    })
+
+    it('reports an incomplete bounded POSIX teardown without claiming success', async () => {
+      const child = { pid: 4321 } as unknown as ChildProcess
+      const terminateTree = vi.fn(async () => ({ reaped: false }))
+
+      await expect(terminateShellOnTimeout(child, 'darwin', terminateTree)).resolves.toEqual({
+        reaped: false
+      })
     })
   })
 
@@ -269,7 +302,55 @@ describe('notebook shell process behavior', () => {
       expect(beginExecution).toHaveBeenCalledOnce()
       expect(endExecution).toHaveBeenCalledOnce()
       expect(cleanup).toHaveBeenCalledOnce()
-      expect(cleanup).toHaveBeenCalledWith('exit')
+      expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated: true })
+    })
+
+    it('waits for exit-tree inspection and reports an incomplete outcome exactly', async () => {
+      let releaseInspection: (() => void) | undefined
+      const inspectionGate = new Promise<void>((resolve) => {
+        releaseInspection = resolve
+      })
+      const terminateTree = vi.fn(async () => {
+        await inspectionGate
+        return { reaped: false }
+      })
+      const cleanup = vi.fn().mockResolvedValue({
+        processesTerminated: false,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn(async (invocation) => ({
+          executable: invocation.executable,
+          args: invocation.args,
+          env: invocation.env,
+          annotateStderr: (stderr: string) => stderr,
+          cleanup
+        }))
+      }
+      let completed = false
+
+      const completion = runShellCommand({
+        command: 'exit 0',
+        cwd: process.cwd(),
+        handoffDir: process.cwd(),
+        runtimeRoot: join(process.cwd(), '.open-science-test-runtime'),
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        platform: 'linux',
+        processSandbox,
+        terminateTree
+      }).then((result) => {
+        completed = true
+        return result
+      })
+
+      await vi.waitFor(() => expect(terminateTree).toHaveBeenCalledOnce())
+      expect(completed).toBe(false)
+      expect(cleanup).not.toHaveBeenCalled()
+      releaseInspection?.()
+      await expect(completion).resolves.toMatchObject({ exitCode: 0 })
+      expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated: false })
     })
 
     it.each([
@@ -319,9 +400,63 @@ describe('notebook shell process behavior', () => {
         })
 
         expect(cleanup).toHaveBeenCalledOnce()
-        expect(cleanup).toHaveBeenCalledWith(reason)
+        expect(cleanup).toHaveBeenCalledWith(reason, { processesTerminated: true })
       }
     )
+
+    it.each([
+      { name: 'successful reaping', reaped: true },
+      { name: 'bounded reaping failure', reaped: false }
+    ])('waits for $name before timeout cleanup completes', async ({ reaped }) => {
+      let releaseReaping: (() => void) | undefined
+      const reapingGate = new Promise<void>((resolve) => {
+        releaseReaping = resolve
+      })
+      const terminateTree = vi.fn(async (child: ChildProcess) => {
+        const actual = await terminateProcessTree(child)
+        expect(actual).toEqual({ reaped: true })
+        await reapingGate
+        return { reaped }
+      })
+      const cleanup = vi.fn(async (_reason, processOutcome: { processesTerminated: boolean }) => ({
+        processesTerminated: processOutcome.processesTerminated,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      }))
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn(async (invocation) => ({
+          executable: invocation.executable,
+          args: invocation.args,
+          env: invocation.env,
+          annotateStderr: (stderr: string) => stderr,
+          cleanup
+        }))
+      }
+      let completed = false
+
+      const completion = runShellCommand({
+        command: 'sleep 5',
+        cwd: process.cwd(),
+        handoffDir: process.cwd(),
+        runtimeRoot: join(process.cwd(), '.open-science-test-runtime'),
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        platform: 'linux',
+        timeoutMs: 25,
+        processSandbox,
+        terminateTree
+      }).then((result) => {
+        completed = true
+        return result
+      })
+
+      await vi.waitFor(() => expect(terminateTree).toHaveBeenCalledOnce())
+      expect(completed).toBe(false)
+      expect(cleanup).not.toHaveBeenCalled()
+      releaseReaping?.()
+      await expect(completion).resolves.toMatchObject({ exitCode: null })
+      expect(cleanup).toHaveBeenCalledWith('timeout', { processesTerminated: reaped })
+    })
 
     it('awaits one structured cleanup when process spawning fails', async () => {
       const cleanup = vi.fn().mockResolvedValue({
@@ -353,7 +488,38 @@ describe('notebook shell process behavior', () => {
       ).resolves.toMatchObject({ exitCode: null })
 
       expect(cleanup).toHaveBeenCalledOnce()
-      expect(cleanup).toHaveBeenCalledWith('spawn-failed')
+      expect(cleanup).toHaveBeenCalledWith('spawn-failed', { processesTerminated: true })
+    })
+
+    it('reports bounded spawn-failure teardown failure without assuming termination', async () => {
+      const cleanup = vi.fn().mockResolvedValue({
+        processesTerminated: false,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn(async (invocation) => ({
+          executable: join(process.cwd(), 'missing-sandbox-executable'),
+          args: invocation.args,
+          env: invocation.env,
+          annotateStderr: (stderr: string) => stderr,
+          cleanup
+        }))
+      }
+
+      await runShellCommand({
+        command: 'echo unreachable',
+        cwd: process.cwd(),
+        handoffDir: process.cwd(),
+        runtimeRoot: join(process.cwd(), '.open-science-test-runtime'),
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        platform: 'linux',
+        processSandbox,
+        terminateTree: vi.fn(async () => ({ reaped: false }))
+      })
+
+      expect(cleanup).toHaveBeenCalledWith('spawn-failed', { processesTerminated: false })
     })
 
     it('reserves stderr capacity after stdout reaches its capture limit', async () => {

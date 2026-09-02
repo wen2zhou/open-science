@@ -40,6 +40,10 @@ export type NotebookSandboxCleanupResult = Readonly<{
   temporaryResourcesRemoved: boolean
 }>
 
+export type NotebookSandboxProcessOutcome = Readonly<{
+  processesTerminated: boolean
+}>
+
 export type NotebookNetworkAccessRequest = Readonly<{
   host: string
   port?: number
@@ -82,7 +86,10 @@ export type NotebookSandboxedProcess = Readonly<{
   env: NodeJS.ProcessEnv
   annotateStderr: (stderr: string) => string
   resetNetworkConnections: () => void
-  cleanup: (reason: NotebookSandboxCleanupReason) => Promise<NotebookSandboxCleanupResult>
+  cleanup: (
+    reason: NotebookSandboxCleanupReason,
+    processOutcome: NotebookSandboxProcessOutcome
+  ) => Promise<NotebookSandboxCleanupResult>
 }>
 
 export type NotebookNetworkSandboxOptions = Readonly<{

@@ -16,6 +16,7 @@ import type {
   NotebookNetworkSandboxOptions,
   NotebookNetworkSandboxStatus,
   NotebookSandboxCleanupResult,
+  NotebookSandboxProcessOutcome,
   NotebookSandboxCommand,
   NotebookSandboxedProcess
 } from './types.js'
@@ -142,7 +143,7 @@ class NotebookNetworkSandbox {
         }
       })
     } catch (error) {
-      await this.#backend.cleanupAfterCommand(commandId)
+      await this.#backend.cleanupAfterCommand(commandId, { processesTerminated: true })
       throw error
     }
     const controller = new AbortController()
@@ -162,7 +163,8 @@ class NotebookNetworkSandbox {
       env: wrapped.env,
       annotateStderr: (stderr) => this.#backend.annotateStderr(commandId, stderr),
       resetNetworkConnections: () => this.#backend.resetCommandConnections(commandId),
-      cleanup: () => (cleanupPromise ??= this.#releaseCommand(commandId, true))
+      cleanup: (_reason, processOutcome) =>
+        (cleanupPromise ??= this.#releaseCommand(commandId, true, processOutcome))
     }
   }
 
@@ -232,7 +234,9 @@ class NotebookNetworkSandbox {
     if (!this.#initialized) return
     this.#initialized = false
     await Promise.all(
-      [...this.#activeCommands.keys()].map((commandId) => this.#releaseCommand(commandId, false))
+      [...this.#activeCommands.keys()].map((commandId) =>
+        this.#releaseCommand(commandId, false, { processesTerminated: false })
+      )
     )
     try {
       await this.#backend.reset()
@@ -243,12 +247,13 @@ class NotebookNetworkSandbox {
 
   #releaseCommand(
     commandId: string,
-    cleanupBackend: boolean
+    cleanupBackend: boolean,
+    processOutcome: NotebookSandboxProcessOutcome
   ): Promise<NotebookSandboxCleanupResult> {
     const command = this.#activeCommands.get(commandId)
     if (!command) {
       return Promise.resolve({
-        processesTerminated: true,
+        processesTerminated: processOutcome.processesTerminated,
         networkClosed: true,
         temporaryResourcesRemoved: true
       })
@@ -256,9 +261,9 @@ class NotebookNetworkSandbox {
     this.#activeCommands.delete(commandId)
     command.detachSignal?.()
     command.controller.abort(new Error('Notebook process ended.'))
-    if (cleanupBackend) return this.#backend.cleanupAfterCommand(commandId)
+    if (cleanupBackend) return this.#backend.cleanupAfterCommand(commandId, processOutcome)
     return Promise.resolve({
-      processesTerminated: true,
+      processesTerminated: processOutcome.processesTerminated,
       networkClosed: true,
       temporaryResourcesRemoved: true
     })
@@ -277,6 +282,7 @@ export type {
   NotebookSandboxCommand,
   NotebookSandboxCleanupReason,
   NotebookSandboxCleanupResult,
+  NotebookSandboxProcessOutcome,
   NotebookSandboxTarget,
   NotebookSandboxResources,
   NotebookSandboxedProcess,
