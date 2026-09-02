@@ -37,6 +37,24 @@ const successfulDispatchRun = (pid: number): Awaited<ReturnType<ComputeConnectio
     ].join('\n')
   )
 
+const successfulRunningRecoveryRun = (
+  pid: number
+): Awaited<ReturnType<ComputeConnectionLease['run']>> =>
+  successfulRun(
+    [
+      'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+      'workdir:1',
+      'exit_code:',
+      `pid:${pid}`,
+      'cwd_match:1',
+      'started_at:',
+      'OPEN_SCIENCE_DISPATCH_EVIDENCE_V1',
+      'object:0:file:1:10:20:30',
+      'object:1:file:1:11:21:31',
+      'object:2:file:1:12:5:32'
+    ].join('\n')
+  )
+
 const serviceBroker = (run: ComputeConnectionLease['run']): ComputeConnectionBroker => ({
   acquire: vi.fn(async () => ({ run, upload: vi.fn(), download: vi.fn() })),
   beginHostDeletion: vi.fn(async () => undefined),
@@ -75,6 +93,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       commandHash: 'hash',
       timeoutSeconds,
       remoteWorkdir,
+      ownerMarker: 'owner-token-1234567890',
       initialStatus: 'submitted'
     })
   }
@@ -101,17 +120,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       id: 'job-running',
       remoteWorkdir
     })
-    const run = vi.fn(async () =>
-      successfulRun(
-        [
-          'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
-          'workdir:1',
-          'exit_code:',
-          'pid:4321',
-          'cwd_match:1'
-        ].join('\n')
-      )
-    )
+    const run = vi.fn(async () => successfulRunningRecoveryRun(4321))
     const connectionBroker = serviceBroker(run)
     const poller = new JobPoller({
       connectionBroker,
@@ -131,7 +140,45 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       stderr_path: `${remoteWorkdir}/stderr`,
       workdir: remoteWorkdir
     })
+    expect(adopted?.remote_object_evidence?.map(({ path }) => path)).toEqual([
+      'command.sh',
+      'launcher.sh',
+      'job.pid'
+    ])
     expect(run).toHaveBeenCalledOnce()
+  })
+
+  it('keeps a running witness submitted when complete cleanup evidence is unavailable', async () => {
+    const remoteWorkdir = '/scratch/.openscience/jobs/job-evidence-unproven'
+    await createSubmittedJob({ id: 'job-evidence-unproven', remoteWorkdir })
+    const run = vi.fn(async () =>
+      successfulRun(
+        [
+          'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+          'workdir:1',
+          'exit_code:',
+          'pid:4321',
+          'cwd_match:1',
+          'started_at:'
+        ].join('\n')
+      )
+    )
+
+    await new JobPoller({
+      connectionBroker: serviceBroker(run),
+      hostRepository,
+      jobRepository,
+      dispatchTracker: new DispatchTracker()
+    }).tick()
+
+    await expect(service.getJobStatus('job-evidence-unproven')).resolves.toMatchObject({
+      status: 'submitted'
+    })
+    await expect(jobRepository.get('job-evidence-unproven')).resolves.toMatchObject({
+      remote_handle: undefined,
+      remote_object_evidence: undefined,
+      last_poll_error: 'dispatch_recovery_ambiguous'
+    })
   })
 
   it('adopts a launched job when lsof proves cwd on a host without procfs', async () => {
@@ -142,15 +189,17 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       remoteWorkdir
     })
     const run = vi.fn<ComputeConnectionLease['run']>(async (command) =>
-      successfulRun(
-        [
-          'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
-          'workdir:1',
-          'exit_code:',
-          'pid:4321',
-          command.includes('command -v lsof') ? 'cwd_match:1' : 'cwd_match:0'
-        ].join('\n')
-      )
+      command.includes('command -v lsof')
+        ? successfulRunningRecoveryRun(4321)
+        : successfulRun(
+            [
+              'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+              'workdir:1',
+              'exit_code:',
+              'pid:4321',
+              'cwd_match:0'
+            ].join('\n')
+          )
     )
 
     await new JobPoller({
@@ -322,17 +371,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       .fn<ComputeConnectionLease['run']>()
       .mockResolvedValueOnce(ownerPreflightRun())
       .mockRejectedValueOnce(new ComputeConnectionError('host_unreachable'))
-      .mockResolvedValueOnce(
-        successfulRun(
-          [
-            'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
-            'workdir:1',
-            'exit_code:',
-            'pid:2468',
-            'cwd_match:1'
-          ].join('\n')
-        )
-      )
+      .mockResolvedValueOnce(successfulRunningRecoveryRun(2468))
     const connectionBroker = serviceBroker(run)
     const dispatchingService = new ComputeService({
       runner: { run: vi.fn() } as unknown as SshRunner,
@@ -365,13 +404,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
   })
 
   it('keeps a launched job recoverable when persisting its local handle fails', async () => {
-    const recoveryOutput = [
-      'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
-      'workdir:1',
-      'exit_code:',
-      'pid:2468',
-      'cwd_match:1'
-    ].join('\n')
+    const recoveryOutput = successfulRunningRecoveryRun(2468).stdout
     const run = vi
       .fn<ComputeConnectionLease['run']>()
       .mockResolvedValueOnce(ownerPreflightRun())

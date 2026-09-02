@@ -11,21 +11,18 @@ import { join } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import type { ComputeJobCleanupReceipt, ComputeJobStatus } from '../../shared/compute'
+import type { ComputeJobStatus, JobSummary } from '../../shared/compute'
 import { computeProviderId } from '../../shared/compute'
+import { ArtifactRepository } from '../artifacts/repository'
 import { createProjectDbClient, migrateApplicationDatabase } from '../projects/prisma-client'
 import { getNotebookSessionRoot } from '../notebook/repository'
 import { ComputeApprovalBroker } from './compute-approval-broker'
 import { ComputeService } from './compute-service'
-import {
-  ComputeConnectionError,
-  SshConfigComputeConnectionBroker,
-  type AcquireComputeConnectionRequest,
-  type ComputeConnectionBroker
-} from './connection-broker'
+import { SshConfigComputeConnectionBroker } from './connection-broker'
 import { harvestJob } from './harvest-engine'
 import { ComputeJobOperationRepository } from './compute-job-operation-repository'
 import { ComputeJobRepository } from './job-repository'
+import { emitJobNotification } from './job-notifier'
 import { JobPoller } from './job-poller'
 import { quoteRemotePath, shellSingleQuote } from './remote-path-security'
 import { ComputeHostRepository } from './repository'
@@ -98,35 +95,6 @@ const exactFixtureTeardownCommand = (fixture: RemoteFixture): string => {
     'fi'
   ].join('\n')
 }
-
-const faultCleanupBroker = (
-  delegate: ComputeConnectionBroker,
-  mode: 'unreachable' | 'timeout'
-): ComputeConnectionBroker => ({
-  acquire: async (providerId: string, request: AcquireComputeConnectionRequest) => {
-    if (request.intent !== 'job_cleanup') return delegate.acquire(providerId, request)
-    if (mode === 'unreachable') throw new ComputeConnectionError('host_unreachable')
-    await new Promise<void>((_resolve, reject) => {
-      const signal = request.signal
-      if (!signal) {
-        reject(new Error('Timeout certification requires an AbortSignal.'))
-        return
-      }
-      const abort = (): void => reject(signal.reason)
-      if (signal.aborted) abort()
-      else signal.addEventListener('abort', abort, { once: true })
-    })
-    throw new Error('Unreachable timeout fault continuation.')
-  },
-  clearAuthenticationFailure: async (providerId) => {
-    await delegate.clearAuthenticationFailure?.(providerId)
-  },
-  invalidateAuthenticationIdentity: (providerId) =>
-    delegate.invalidateAuthenticationIdentity?.(providerId),
-  beginHostDeletion: (providerId) => delegate.beginHostDeletion(providerId),
-  abortHostDeletion: (providerId) => delegate.abortHostDeletion(providerId),
-  completeHostDeletion: (providerId) => delegate.completeHostDeletion(providerId)
-})
 
 describeIf('Compute Job cleanup real SSH certification', () => {
   const suiteMarker = randomUUID()
@@ -274,6 +242,71 @@ describeIf('Compute Job cleanup real SSH certification', () => {
       'published artifact from staged input\n'
     )
 
+    const artifactRepository = new ArtifactRepository(storageRoot)
+    const artifactRunId = `cleanup-cert-run-${suiteMarker}`
+    const artifactMessageId = `cleanup-cert-message-${suiteMarker}`
+    await artifactRepository.writePendingFile({
+      projectId,
+      sessionId,
+      runId: artifactRunId,
+      filename: 'certified-result.txt',
+      mimeType: 'text/plain',
+      source: { kind: 'localPath', path: localOutput }
+    })
+    await artifactRepository.finalizeRunArtifacts({
+      projectId,
+      sessionId,
+      runId: artifactRunId,
+      messageId: artifactMessageId
+    })
+    const artifactBefore = await artifactRepository.listMessageFiles({
+      projectId,
+      sessionId,
+      messageId: artifactMessageId
+    })
+    expect(artifactBefore).toHaveLength(1)
+    await expect(readFile(artifactBefore[0]!.path, 'utf8')).resolves.toBe(
+      'published artifact from staged input\n'
+    )
+
+    const notificationProjection: JobSummary[] = []
+    const harvestedJob = await jobRepository.get(completed.job_id)
+    if (!harvestedJob) throw new Error('Harvested cleanup fixture disappeared before notification.')
+    await emitJobNotification(harvestedJob, {
+      jobRepository,
+      hostRepository,
+      storageRoot,
+      broadcast: (summary) => notificationProjection.push(summary)
+    })
+    expect(notificationProjection).toHaveLength(1)
+    expect(notificationProjection[0]).toMatchObject({
+      job_id: completed.job_id,
+      status: 'success',
+      featured_file_count: 1,
+      harvest_error: undefined
+    })
+    const analysisMessageId = `cleanup-cert-analysis-${suiteMarker}`
+    await jobRepository.transitionAnalysis({
+      sessionId,
+      jobIds: [completed.job_id],
+      messageId: analysisMessageId,
+      state: 'dispatched'
+    })
+    await jobRepository.transitionAnalysis({
+      sessionId,
+      jobIds: [completed.job_id],
+      messageId: analysisMessageId,
+      state: 'succeeded'
+    })
+    const lifecycleBefore = await jobRepository.get(completed.job_id)
+    expect(lifecycleBefore).toMatchObject({
+      notified_at: expect.any(Number),
+      notification_consumed_at: expect.any(Number),
+      analysis_state: 'succeeded',
+      analysis_message_id: analysisMessageId,
+      analysis_updated_at: expect.any(Number)
+    })
+
     const sibling = await submit("sleep 20; printf 'sibling survived\\n' > sibling.txt", {
       outputManifest: JSON.stringify(['sibling.txt']),
       timeoutSeconds: 60
@@ -292,6 +325,31 @@ describeIf('Compute Job cleanup real SSH certification', () => {
     await expect(readFile(localOutput, 'utf8')).resolves.toBe(
       'published artifact from staged input\n'
     )
+    const artifactAfter = await artifactRepository.listMessageFiles({
+      projectId,
+      sessionId,
+      messageId: artifactMessageId
+    })
+    expect(artifactAfter).toEqual(artifactBefore)
+    await expect(readFile(artifactAfter[0]!.path, 'utf8')).resolves.toBe(
+      'published artifact from staged input\n'
+    )
+    const lifecycleAfter = await jobRepository.get(completed.job_id)
+    expect(lifecycleAfter).toMatchObject({
+      notified_at: lifecycleBefore!.notified_at,
+      notification_consumed_at: lifecycleBefore!.notification_consumed_at,
+      analysis_state: lifecycleBefore!.analysis_state,
+      analysis_message_id: lifecycleBefore!.analysis_message_id,
+      analysis_updated_at: lifecycleBefore!.analysis_updated_at
+    })
+    const duplicateNotifications: JobSummary[] = []
+    await emitJobNotification(lifecycleAfter!, {
+      jobRepository,
+      hostRepository,
+      storageRoot,
+      broadcast: (summary) => duplicateNotifications.push(summary)
+    })
+    expect(duplicateNotifications).toEqual([])
 
     await harvest(sibling.job_id)
     await expect(service.getJobResult(sibling.job_id, scope)).resolves.toMatchObject({
@@ -363,51 +421,37 @@ describeIf('Compute Job cleanup real SSH certification', () => {
     expect(rechecked).not.toEqual(protectedReceipt)
   }, 300_000)
 
-  it('projects unreachable and caller-timeout attempts as indeterminate and converges on retry', async () => {
-    const certifyFault = async (
-      mode: 'unreachable' | 'timeout'
-    ): Promise<ComputeJobCleanupReceipt> => {
-      const submitted = await submit(`printf '${mode} retry\\n' > result.txt`, {
-        outputManifest: JSON.stringify(['result.txt']),
-        timeoutSeconds: 60
-      })
-      await harvest(submitted.job_id)
-      const faultService = new ComputeService({
-        runner: new SystemSshRunner(),
-        repository: hostRepository,
-        approvalBroker: approvalBroker(),
-        jobRepository,
-        operationRepository,
-        storageRoot,
-        connectionBroker: faultCleanupBroker(connectionBroker, mode)
-      })
-      const signal = mode === 'timeout' ? AbortSignal.timeout(10) : undefined
-      const uncertain = await faultService.cleanupJob(
-        submitted.job_id,
-        scope,
-        `${mode}-${suiteMarker}`,
-        signal
-      )
-      expect(uncertain).toMatchObject({
-        outcome: 'indeterminate',
-        workspace_removed: false,
-        retained_object_counts: { remote_state_uncertain: 1 },
-        retained_object_count_unknown: true,
-        retry_recommended: true,
-        retry_conditions: ['host_reachable']
-      })
-      expect(uncertain.disposition.length).toBeGreaterThan(0)
-      await expect(service.getJobStatus(submitted.job_id, scope)).resolves.toMatchObject({
-        last_cleanup: uncertain
-      })
-      return service.cleanupJob(submitted.job_id, scope, `${mode}-retry-${suiteMarker}`)
-    }
-
-    await expect(certifyFault('unreachable')).resolves.toMatchObject({
-      outcome: 'workspace_removed',
-      workspace_removed: true
+  it('projects a caller timeout through the real SSH broker as indeterminate and converges on retry', async () => {
+    const submitted = await submit("printf 'timeout retry\\n' > result.txt", {
+      outputManifest: JSON.stringify(['result.txt']),
+      timeoutSeconds: 60
     })
-    await expect(certifyFault('timeout')).resolves.toMatchObject({
+    await harvest(submitted.job_id)
+    const expiredSignal = AbortSignal.timeout(1)
+    await new Promise((resolve) => setTimeout(resolve, 5))
+    expect(expiredSignal.aborted).toBe(true)
+
+    const uncertain = await service.cleanupJob(
+      submitted.job_id,
+      scope,
+      `timeout-${suiteMarker}`,
+      expiredSignal
+    )
+    expect(uncertain).toMatchObject({
+      outcome: 'indeterminate',
+      workspace_removed: false,
+      retained_object_counts: { remote_state_uncertain: 1 },
+      retained_object_count_unknown: true,
+      retry_recommended: true,
+      retry_conditions: ['host_reachable']
+    })
+    expect(uncertain.disposition.length).toBeGreaterThan(0)
+    await expect(service.getJobStatus(submitted.job_id, scope)).resolves.toMatchObject({
+      last_cleanup: uncertain
+    })
+    await expect(
+      service.cleanupJob(submitted.job_id, scope, `timeout-retry-${suiteMarker}`)
+    ).resolves.toMatchObject({
       outcome: 'workspace_removed',
       workspace_removed: true
     })

@@ -177,10 +177,17 @@ const brokerFromRunners = (
       ({
         run: (command, options) => sshRunner.run({} as never, command, options),
         upload: vi.fn(async () => undefined),
-        download: async (remotePath, localPath, maxBytes) => {
+        download: async (remotePath, localPath, maxBytes, verifiedFile) => {
           if (!scpRunner.copyFromRemoteBounded)
             throw new Error('bounded remote copy is unavailable')
-          return scpRunner.copyFromRemoteBounded({} as never, remotePath, localPath, maxBytes)
+          return scpRunner.copyFromRemoteBounded(
+            {} as never,
+            remotePath,
+            localPath,
+            maxBytes,
+            undefined,
+            verifiedFile ? { verifiedFile } : undefined
+          )
         }
       }) satisfies ComputeConnectionLease
   )
@@ -212,7 +219,7 @@ const makeJobRepo = (
 
 // Build a find-printf output string from an array of {path, size_bytes} entries.
 const findOutput = (entries: { path: string; size_bytes: number }[]): string =>
-  entries.map((e) => `${e.path}\t${e.size_bytes}`).join('\n')
+  entries.map((e, index) => `${e.path}\t1\t${index + 1}\t${e.size_bytes}\t1`).join('\n')
 
 const identityFindOutput = (
   entries: Array<{
@@ -1631,7 +1638,14 @@ describe('harvestJob - bounded logs and disk reserve', () => {
       expect.any(Object),
       expect.stringContaining('/growing.result'),
       expect.any(String),
-      1
+      1,
+      undefined,
+      {
+        verifiedFile: expect.objectContaining({
+          relativePath: 'growing.result',
+          sizeBytes: 1
+        })
+      }
     )
     const finalUpdate = updates[0]!.data as Record<string, unknown>
     expect(finalUpdate.harvestError).toContain('download exceeded the allowed byte budget')

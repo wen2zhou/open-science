@@ -119,6 +119,7 @@ it('recovers malformed handles from durable workdirs without blocking a healthy 
         command: 'echo done',
         commandHash: `${jobId}-hash`,
         remoteWorkdir: `~/.openscience/jobs/${jobId}`,
+        ownerMarker: 'owner-token-1234567890',
         initialStatus: 'running'
       })
     }
@@ -145,7 +146,12 @@ it('recovers malformed handles from durable workdirs without blocking a healthy 
             'workdir:1',
             'exit_code:',
             `pid:${pid}`,
-            'cwd_match:1'
+            'cwd_match:1',
+            'started_at:',
+            'OPEN_SCIENCE_DISPATCH_EVIDENCE_V1',
+            'object:0:file:1:10:20:30',
+            'object:1:file:1:11:21:31',
+            'object:2:file:1:12:5:32'
           ].join('\n'),
           stderr: '',
           truncated: false,
@@ -192,6 +198,11 @@ it('recovers malformed handles from durable workdirs without blocking a healthy 
         stderr_path: `~/.openscience/jobs/${jobId}/stderr`,
         workdir: `~/.openscience/jobs/${jobId}`
       })
+      expect(recovered?.remote_object_evidence?.map(({ path }) => path)).toEqual([
+        'command.sh',
+        'launcher.sh',
+        'job.pid'
+      ])
     }
     expect(await jobRepository.get('healthy-job')).toMatchObject({
       status: 'success',
@@ -219,6 +230,7 @@ it('safely converges a persistently ambiguous malformed handle across poller res
         command: 'echo done',
         commandHash: `${jobId}-hash`,
         remoteWorkdir: `~/.openscience/jobs/${jobId}`,
+        ownerMarker: 'owner-token-1234567890',
         initialStatus: 'running'
       })
     }

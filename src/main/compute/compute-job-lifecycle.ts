@@ -41,13 +41,15 @@ export class ComputeJobLifecycle {
     jobId: string,
     remoteHandle: string,
     startedAt = new Date(),
-    remoteWorkdir?: string
+    remoteWorkdir?: string,
+    remoteObjectEvidence?: UpdateJobRequest['remoteObjectEvidence']
   ): Promise<ComputeJobTransitionResult> {
     return this.apply(jobId, ['submitted'], {
       status: 'running',
       remoteHandle,
       startedAt,
-      ...(remoteWorkdir === undefined ? {} : { remoteWorkdir })
+      ...(remoteWorkdir === undefined ? {} : { remoteWorkdir }),
+      ...(remoteObjectEvidence === undefined ? {} : { remoteObjectEvidence })
     })
   }
 
@@ -55,11 +57,13 @@ export class ComputeJobLifecycle {
     jobId: string,
     observedStatus: ActiveJobStatus,
     remoteHandle: string,
-    startedAt = new Date()
+    startedAt = new Date(),
+    remoteObjectEvidence?: UpdateJobRequest['remoteObjectEvidence']
   ): Promise<ComputeJobTransitionResult> {
     return this.apply(jobId, [observedStatus], {
       ...(observedStatus === 'submitted' ? { status: 'running' as const, startedAt } : {}),
       remoteHandle,
+      ...(remoteObjectEvidence === undefined ? {} : { remoteObjectEvidence }),
       lastPollError: null,
       retryAfterUserAction: false
     })

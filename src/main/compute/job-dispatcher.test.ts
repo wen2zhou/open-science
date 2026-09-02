@@ -828,7 +828,7 @@ describe('dispatchJob', () => {
       upload: vi.fn(async () => undefined),
       download: vi.fn()
     }
-    const { repo, transition } = makeJobRepo(job)
+    const { repo, transition, update } = makeJobRepo(job)
 
     await dispatchJob(job.job_id, {
       connectionBroker: { acquire: vi.fn(async () => connection) },
@@ -838,7 +838,10 @@ describe('dispatchJob', () => {
     })
 
     expect(run).toBeGreaterThanOrEqual(3)
-    expect(transition).toHaveBeenCalledWith(job.job_id, ['running'], {
+    expect(transition).toHaveBeenCalledWith(job.job_id, ['submitted'], {
+      status: 'running',
+      remoteHandle: expect.any(String),
+      startedAt: expect.any(Date),
       remoteObjectEvidence: [
         expect.objectContaining({ path: 'command.sh', role: 'control' }),
         expect.objectContaining({ path: 'launcher.sh', role: 'control' }),
@@ -855,6 +858,7 @@ describe('dispatchJob', () => {
         })
       ]
     })
+    expect(update).not.toHaveBeenCalled()
   })
 
   it('transitions to error when job is not found', async () => {

@@ -1,7 +1,11 @@
 import type { ComputeJob } from '../../shared/compute'
 import { ComputeConnectionError, type ComputeConnectionLease } from './connection-broker'
 import type { ComputeJobLifecycle } from './compute-job-lifecycle'
-import { classifyComputeJobExit, probeRemoteLaunch } from './remote-launch-recovery'
+import {
+  classifyComputeJobExit,
+  probeRemoteLaunch,
+  recoveryEvidenceRequestForJob
+} from './remote-launch-recovery'
 
 // A valid recovery witness may observe the deterministic directory after mkdir but before job.pid
 // is written. Require two consecutive observations before proving that launch was interrupted.
@@ -52,9 +56,10 @@ export class SubmittedJobRecovery {
   ): Promise<SubmittedJobRecoveryResult> {
     if (job.status !== 'submitted' && job.status !== 'running') return { kind: 'none' }
     const observedStatus = job.status
+    const evidenceRequest = recoveryEvidenceRequestForJob(job)
     let observation
     try {
-      observation = await probeRemoteLaunch(connection, job.remote_workdir!)
+      observation = await probeRemoteLaunch(connection, job.remote_workdir!, evidenceRequest)
     } catch (error) {
       this.pendingTicks.delete(job.job_id)
       await this.lifecycle.recordPollError(
@@ -67,11 +72,21 @@ export class SubmittedJobRecovery {
 
     if (observation.kind === 'running') {
       this.pendingTicks.delete(job.job_id)
+      if (!observation.evidence) {
+        await this.lifecycle.recordPollError(
+          job.job_id,
+          observedStatus,
+          'dispatch_recovery_evidence_unproven',
+          false
+        )
+        return { kind: 'none' }
+      }
       await this.lifecycle.recoverRemoteHandle(
         job.job_id,
         observedStatus,
         JSON.stringify(observation.handle),
-        observation.startedAt
+        observation.startedAt,
+        observation.evidence
       )
       return { kind: 'none' }
     }

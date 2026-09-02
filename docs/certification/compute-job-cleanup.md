@@ -28,13 +28,17 @@ The suite creates UUID-scoped Project, Session, Job, invocation, and owner-marke
 checks:
 
 - full removal after output and complete-log harvest while the local result remains readable;
+- a local Artifact published through `ArtifactRepository`, the durable notification projection, and
+  the succeeded automatic-analysis record remain readable and byte-for-byte/state-for-state
+  unchanged after cleanup; cleanup does not emit a second notification;
 - an active sibling Job, later submission, and direct command on the same Provider continue to work;
 - a remote-resident producer output is partially cleaned and protected by an active managed
   downstream reference;
 - replay of the same invocation returns the same receipt, while a new invocation after the consumer
   terminates re-evaluates the retained reasons;
-- deterministic connection-seam faults project unreachable and caller-timeout attempts as
-  `indeterminate`, and a later real-connection retry converges;
+- an already-expired caller `AbortSignal` passes through the production
+  `SshConfigComputeConnectionBroker`, projects the attempt as `indeterminate`, and a later
+  real-connection retry converges;
 - receipt outcomes, stable reason codes, retry conditions, counts, and disposition remain sufficient
   for an Agent without inspecting database internals or issuing a raw deletion command.
 
@@ -43,6 +47,22 @@ The current public seam has no operation that releases an explicitly remote-resi
 `active_downstream_reference` to disappear but `only_remote_copy` to remain. This is not reported as
 full reclamation. A future retention-release API must add a certification step before claiming that
 the producer workspace can be completely removed after downstream completion.
+
+Transient host unreachability is also an outstanding real-host certification prerequisite. The
+suite does not rewrite the user's SSH config, substitute a fake hostname, or require an implicit
+second alias. Certify this only when a release operator supplies a second dedicated alias whose
+network reachability can be safely toggled, then record the real broker observation. A synthetic
+`host_unreachable` adapter is not evidence for this item and is intentionally absent from this
+suite.
+
+## Current certification blockers
+
+- No real-host result exists unless the operator explicitly supplies both gate variables above.
+  A default skipped run means `not_run_unauthorized`, never `pass`.
+- `host_unreachable` remains `not_run_blocked` until a safe, operator-controlled unreachable alias
+  is available without modifying the user's SSH configuration.
+- Full reclamation of `left_on_remote` remains `not_run_blocked` because the product has no public
+  retention-release seam. Partial retention and downstream-reference release are still observed.
 
 ## Evidence record
 
@@ -58,10 +78,14 @@ commands containing research data, file contents, credentials, or raw stderr. Us
   "tests": {
     "workspace_removed": "pass",
     "local_result_preserved": "pass",
+    "artifact_preserved": "pass",
+    "notification_projection_preserved": "pass",
+    "analysis_history_preserved": "pass",
     "downstream_protection_released": "pass",
     "provider_reused": "pass",
-    "unreachable_retry": "pass",
-    "timeout_retry": "pass"
+    "unreachable_retry": "not_run_blocked",
+    "timeout_retry": "pass",
+    "left_on_remote_full_release": "not_run_blocked"
   },
   "receipts": [
     {
@@ -76,13 +100,47 @@ commands containing research data, file contents, credentials, or raw stderr. Us
       "disposition": "The verified remote Job workspace was removed."
     }
   ],
+  "observations": [
+    {
+      "scenario": "full-removal",
+      "remote_workspace_before": "present_owner_marker_matched",
+      "remote_workspace_after": "absent",
+      "local_result_before_after": "readable_same_bytes",
+      "artifact_before_after": "readable_same_repository_projection_and_bytes",
+      "notification_before_after": "same_durable_timestamps_no_second_emit",
+      "analysis_before_after": "same_succeeded_message_and_timestamp",
+      "sibling_job": "completed",
+      "provider_reuse": "direct_command_and_followup_job_succeeded"
+    },
+    {
+      "scenario": "caller-timeout",
+      "connection_seam": "production_ssh_config_broker",
+      "signal": "expired_before_cleanup_connection_acquisition",
+      "first_outcome": "indeterminate",
+      "retry_outcome": "workspace_removed"
+    }
+  ],
+  "blockers": [
+    {
+      "scenario": "host-unreachable",
+      "status": "not_run_blocked",
+      "reason": "no operator-authorized safely toggleable alias"
+    },
+    {
+      "scenario": "left-on-remote-full-release",
+      "status": "not_run_blocked",
+      "reason": "no public retention-release seam"
+    }
+  ],
   "unexpected_findings": []
 }
 ```
 
 Counts and receipts must be copied from the product result, but Job IDs and paths must be replaced
 with scenario labels. Store evidence only in an approved release record; this repository document is
-the procedure, not a place for environment-specific data.
+the procedure, not a place for environment-specific data. Record every `not_run_unauthorized` and
+`not_run_blocked` item explicitly; do not omit it or convert a fault-adapter result into real-host
+evidence.
 
 ## Safe teardown
 

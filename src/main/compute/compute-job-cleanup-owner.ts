@@ -9,6 +9,7 @@ import {
 import type { ComputeConnectionBrokerAcquirer } from './connection-broker'
 import {
   ComputeJobOperationRepository,
+  type ClaimedComputeJobOperation,
   type ComputeJobOperationScope
 } from './compute-job-operation-repository'
 import type { ComputeJobRepository } from './job-repository'
@@ -71,6 +72,37 @@ class ComputeJobCleanupOwner {
     private readonly now: () => Date = () => new Date()
   ) {}
 
+  private settlementLostReceipt(jobId: string): ComputeJobCleanupReceipt {
+    return receipt(jobId, 'indeterminate', {
+      retained_object_counts: { remote_state_uncertain: 1 },
+      retained_object_count_unknown: true,
+      retry_recommended: true,
+      retry_conditions: ['host_reachable'],
+      disposition:
+        'Cleanup finished after its durable operation claim changed; read the latest Job state before retrying.'
+    })
+  }
+
+  private async settleOrReadAuthoritative(
+    claim: ClaimedComputeJobOperation,
+    candidate: ComputeJobCleanupReceipt,
+    indeterminate = false
+  ): Promise<ComputeJobCleanupReceipt> {
+    if (await this.operations.settleCleanup(claim, candidate, this.now(), indeterminate)) {
+      return candidate
+    }
+    try {
+      const latest = await this.operations.get(claim.jobId, 'cleanup')
+      if (latest?.phase === 'settled' && latest.receipt) return latest.receipt
+      if (latest?.phase === 'active' && latest.receipt?.outcome === 'indeterminate') {
+        return latest.receipt
+      }
+    } catch {
+      // The caller still needs a conservative result when the authoritative operation cannot be read.
+    }
+    return this.settlementLostReceipt(claim.jobId)
+  }
+
   async recoverIndeterminate(): Promise<void> {
     const operations = await this.operations.findIndeterminateCleanup(this.now())
     for (const operation of operations) {
@@ -123,14 +155,16 @@ class ComputeJobCleanupOwner {
     invocationId: string,
     signal?: AbortSignal
   ): Promise<ComputeJobCleanupReceipt> {
-    const existing = this.inFlight.get(jobId)
+    await this.requireOwnedJob(jobId, scope)
+    const inFlightKey = [jobId, scope.projectId, scope.sessionId, scope.providerId].join('\0')
+    const existing = this.inFlight.get(inFlightKey)
     if (existing) return existing
     const cleanup = this.performCleanup(jobId, scope, invocationId, signal)
-    this.inFlight.set(jobId, cleanup)
+    this.inFlight.set(inFlightKey, cleanup)
     try {
       return await cleanup
     } finally {
-      if (this.inFlight.get(jobId) === cleanup) this.inFlight.delete(jobId)
+      if (this.inFlight.get(inFlightKey) === cleanup) this.inFlight.delete(inFlightKey)
     }
   }
 
@@ -150,7 +184,17 @@ class ComputeJobCleanupOwner {
         disposition: 'The source Job is still active; no remote objects were modified.'
       })
     }
-    if (job.status !== 'error' && job.harvested_at === undefined) {
+    const cancelledBeforeRemoteSubmission =
+      job.status === 'failed' &&
+      job.cancellation_status === 'cancelled' &&
+      job.submitted_at === undefined &&
+      job.started_at === undefined &&
+      job.remote_handle === undefined
+    if (
+      !cancelledBeforeRemoteSubmission &&
+      job.status !== 'error' &&
+      job.harvested_at === undefined
+    ) {
       return receipt(jobId, 'not_ready', {
         retained_object_counts: { harvest_pending: 1 },
         retained_object_count_unknown: true,
@@ -159,8 +203,8 @@ class ComputeJobCleanupOwner {
         disposition: 'Result collection has not settled; no remote objects were modified.'
       })
     }
-    const workdir = parseRemoteJobWorkdir(job.job_id, job.remote_workdir)
-    if (!job.owner_marker || !workdir) {
+    const workdir = parseRemoteJobWorkdir(job.job_id, job.remote_workdir) ?? undefined
+    if (!cancelledBeforeRemoteSubmission && (!job.owner_marker || !workdir)) {
       return receipt(jobId, 'nothing_deleted', {
         retained_object_counts: { ownership_unproven: 1 },
         retained_object_count_unknown: true,
@@ -169,7 +213,11 @@ class ComputeJobCleanupOwner {
       })
     }
     const remoteHandle = parseRemoteJobHandle(job.remote_handle, workdir)
-    if ((job.status !== 'error' || job.remote_handle !== undefined) && !remoteHandle) {
+    if (
+      !cancelledBeforeRemoteSubmission &&
+      (job.status !== 'error' || job.remote_handle !== undefined) &&
+      !remoteHandle
+    ) {
       return receipt(jobId, 'nothing_deleted', {
         retained_object_counts: { ownership_unproven: 1 },
         retained_object_count_unknown: true,
@@ -222,6 +270,17 @@ class ComputeJobCleanupOwner {
         })
       }
 
+      if (cancelledBeforeRemoteSubmission) {
+        return this.settleOrReadAuthoritative(
+          claim,
+          receipt(jobId, 'nothing_deleted', {
+            disposition:
+              'The Job was cancelled before remote submission; no remote cleanup was required.'
+          })
+        )
+      }
+      if (!workdir || !job.owner_marker) throw new ComputeHostUnavailableError()
+
       const host = await this.hosts.get(job.provider_id)
       if (!host) throw new ComputeHostUnavailableError()
       const leftOnRemote = parseLeftOnRemotePaths({ ...job, remote_workdir: workdir })
@@ -257,8 +316,7 @@ class ComputeJobCleanupOwner {
           disposition:
             'The remote cleanup result could not be confirmed; inspect the latest Job state and retry.'
         })
-        await this.operations.settleCleanup(claim, uncertain, this.now(), true)
-        return uncertain
+        return this.settleOrReadAuthoritative(claim, uncertain, true)
       }
 
       if (result.verification === 'ownership_unproven') {
@@ -268,8 +326,7 @@ class ComputeJobCleanupOwner {
           retry_conditions: ['manual_review'],
           disposition: 'Remote workspace ownership could not be proven; all objects were retained.'
         })
-        await this.operations.settleCleanup(claim, denied, this.now())
-        return denied
+        return this.settleOrReadAuthoritative(claim, denied)
       }
       if (result.verification === 'source_active') {
         const notReady = receipt(jobId, 'not_ready', {
@@ -280,8 +337,7 @@ class ComputeJobCleanupOwner {
           disposition:
             'The tracked source process is still active; no remote objects were modified.'
         })
-        await this.operations.settleCleanup(claim, notReady, this.now())
-        return notReady
+        return this.settleOrReadAuthoritative(claim, notReady)
       }
       const retained: Partial<Record<ComputeJobCleanupReason, number>> = {}
       if (referenced.size > 0) retained.active_downstream_reference = referenced.size
@@ -305,8 +361,7 @@ class ComputeJobCleanupOwner {
             ? 'Safe remote objects were deleted; protected or unknown objects remain.'
             : 'No remote object could currently be proven safe to delete.'
       })
-      await this.operations.settleCleanup(claim, settled, this.now())
-      return settled
+      return this.settleOrReadAuthoritative(claim, settled)
     } finally {
       admitted.release()
     }

@@ -3,10 +3,11 @@
 // This module never handles credentials — all key material stays in the OS ssh-agent.
 
 import { execFile, spawn } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { createWriteStream, existsSync } from 'node:fs'
 import { stat } from 'node:fs/promises'
 import { platform } from 'node:os'
-import { join } from 'node:path'
+import { posix, join } from 'node:path'
 
 import {
   GLOB_CHARS,
@@ -137,7 +138,75 @@ export type BoundedScpResult = ScpResult & {
 export type ScpRunOptions = Readonly<{
   env?: NodeJS.ProcessEnv
   signal?: AbortSignal
+  verifiedFile?: VerifiedRemoteFileDownload
 }>
+
+export type VerifiedRemoteFileDownload = Readonly<{
+  workdir: string
+  relativePath: string
+  device: string
+  inode: string
+  sizeBytes: number
+  modifiedAtNanoseconds: string
+}>
+
+const unsignedInteger = /^(?:0|[1-9]\d*)$/
+
+const buildPinnedRemoteReadCommand = (
+  remotePath: string,
+  boundedBytes: number,
+  verification: VerifiedRemoteFileDownload
+): string => {
+  const { workdir, relativePath, device, inode, sizeBytes, modifiedAtNanoseconds } = verification
+  if (
+    !relativePath ||
+    relativePath.startsWith('/') ||
+    relativePath.split('/').some((part) => !part || part === '.' || part === '..') ||
+    remotePath !== `${workdir}/${relativePath}` ||
+    SHELL_UNSAFE_CHARS.test(remotePath) ||
+    !unsignedInteger.test(device) ||
+    !unsignedInteger.test(inode) ||
+    !Number.isSafeInteger(sizeBytes) ||
+    sizeBytes < 0 ||
+    !unsignedInteger.test(modifiedAtNanoseconds)
+  ) {
+    throw new Error('Unsafe verified remote download identity.')
+  }
+  const modifiedAtSeconds = (BigInt(modifiedAtNanoseconds) / 1_000_000_000n).toString()
+  const sourceParent = posix.dirname(remotePath)
+  const pinPath = `${sourceParent}/.${posix.basename(remotePath)}.openscience-harvest-${randomUUID()}.pin`
+  const expectedIdentity = `${device}:${inode}:${sizeBytes}:${modifiedAtSeconds}`
+  return [
+    'set -f',
+    `workdir_input=${shellSingleQuote(workdir)}`,
+    `source_input=${shellSingleQuote(remotePath)}`,
+    `source_parent_input=${shellSingleQuote(sourceParent)}`,
+    `pin_input=${shellSingleQuote(pinPath)}`,
+    'case "$workdir_input" in "~/"*) workdir=$HOME/${workdir_input#??} ;; *) workdir=$workdir_input ;; esac',
+    'case "$source_input" in "~/"*) source_path=$HOME/${source_input#??} ;; *) source_path=$source_input ;; esac',
+    'case "$source_parent_input" in "~/"*) source_parent=$HOME/${source_parent_input#??} ;; *) source_parent=$source_parent_input ;; esac',
+    'case "$pin_input" in "~/"*) pin_path=$HOME/${pin_input#??} ;; *) pin_path=$pin_input ;; esac',
+    'path_no_symlinks() {',
+    '  pns_path=$1; pns_current=; pns_old_ifs=$IFS; IFS=/; set -- $pns_path; IFS=$pns_old_ifs',
+    '  for pns_part do [ -n "$pns_part" ] || continue; pns_current=$pns_current/$pns_part; [ -d "$pns_current" ] && [ ! -L "$pns_current" ] || return 1; done',
+    '}',
+    'stat_file_identity() {',
+    `  stat -c '%d:%i:%s:%Y' "$1" 2>/dev/null || stat -f '%d:%i:%z:%m' "$1" 2>/dev/null`,
+    '}',
+    `expected_identity=${shellSingleQuote(expectedIdentity)}`,
+    'path_no_symlinks "$workdir" && path_no_symlinks "$source_parent" || exit 76',
+    '[ -f "$source_path" ] && [ ! -L "$source_path" ] || exit 76',
+    '[ "$(stat_file_identity "$source_path")" = "$expected_identity" ] || exit 76',
+    '[ ! -e "$pin_path" ] && [ ! -L "$pin_path" ] || exit 76',
+    'ln -P "$source_path" "$pin_path" || exit 76',
+    '[ -f "$pin_path" ] && [ ! -L "$pin_path" ] && [ "$(stat_file_identity "$pin_path")" = "$expected_identity" ] || { rm -f "$pin_path"; exit 76; }',
+    'cleanup_pin() {',
+    '  path_no_symlinks "$workdir" && path_no_symlinks "$source_parent" && [ -f "$pin_path" ] && [ ! -L "$pin_path" ] && [ "$(stat_file_identity "$pin_path")" = "$expected_identity" ] && rm -f "$pin_path"',
+    '}',
+    `trap 'status=$?; trap - EXIT; cleanup_pin || status=79; exit "$status"' EXIT`,
+    `head -c ${boundedBytes + 1} -- "$pin_path"`
+  ].join('\n')
+}
 
 // Injectable scp runner interface for testability. The real implementation spawns system scp.
 export interface ScpRunner {
@@ -242,8 +311,9 @@ export class SystemScpRunner implements ScpRunner {
   ): Promise<BoundedScpResult> {
     options.signal?.throwIfAborted()
     const boundedBytes = Math.max(0, Math.floor(maxBytes))
-    const remoteCommand =
-      'head -c ' + String(boundedBytes + 1) + ' -- ' + shellRemotePath(remotePath)
+    const remoteCommand = options.verifiedFile
+      ? buildPinnedRemoteReadCommand(remotePath, boundedBytes, options.verifiedFile)
+      : 'head -c ' + String(boundedBytes + 1) + ' -- ' + shellRemotePath(remotePath)
 
     return new Promise((resolve, reject) => {
       const stderrChunks: Buffer[] = []

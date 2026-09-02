@@ -279,7 +279,8 @@ const downloadFile = async (
   remoteWorkdir: string,
   relativePath: string,
   localDestPath: string,
-  maxBytes: number
+  maxBytes: number,
+  identity: ComputeJobRemoteObjectIdentity | undefined
 ): Promise<number> => {
   const pathError = validateRelativePath(relativePath)
   if (pathError) {
@@ -287,6 +288,16 @@ const downloadFile = async (
   }
 
   const absRemotePath = remoteWorkdir + '/' + relativePath
+
+  if (
+    identity?.kind !== 'file' ||
+    identity.device === undefined ||
+    identity.inode === undefined ||
+    identity.size_bytes === undefined ||
+    identity.modified_at_ns === undefined
+  ) {
+    throw new Error('Remote file identity is unavailable for a no-follow download.')
+  }
 
   if (SHELL_UNSAFE_CHARS.test(absRemotePath)) {
     throw new Error(
@@ -296,7 +307,14 @@ const downloadFile = async (
 
   await mkdir(dirname(localDestPath), { recursive: true })
 
-  const result = await connection.download(absRemotePath, localDestPath, maxBytes)
+  const result = await connection.download(absRemotePath, localDestPath, maxBytes, {
+    workdir: remoteWorkdir,
+    relativePath,
+    device: identity.device,
+    inode: identity.inode,
+    sizeBytes: identity.size_bytes,
+    modifiedAtNanoseconds: identity.modified_at_ns
+  })
   const connectionFailure = classifyConnectionFailure(result, false)
   if (connectionFailure) throw connectionFailure
   if (result.exceeded) {
@@ -775,7 +793,8 @@ const harvestJobUnchecked = async (
         remoteWorkdir,
         relativePath,
         temporaryPath,
-        maxBytes
+        maxBytes,
+        remoteIdentityByPath.get(relativePath)
       )
       deps.signal?.throwIfAborted()
       await rename(temporaryPath, localPath)

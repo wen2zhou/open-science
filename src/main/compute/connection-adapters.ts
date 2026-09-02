@@ -334,8 +334,8 @@ class PasswordSshAdapter implements ComputeConnectionAdapter {
     return {
       run: (command, options) => withLease((lease) => lease.run(command, options)),
       upload: (localPath, remotePath) => withLease((lease) => lease.upload(localPath, remotePath)),
-      download: (remotePath, localPath, maxBytes) =>
-        withLease((lease) => lease.download(remotePath, localPath, maxBytes)),
+      download: (remotePath, localPath, maxBytes, verifiedFile) =>
+        withLease((lease) => lease.download(remotePath, localPath, maxBytes, verifiedFile)),
       redactSensitiveOutputs: (values) =>
         credentialLease.withPassword(async (password) =>
           values.map((value) => redactPassword(value, password))
@@ -428,7 +428,7 @@ class PasswordSshAdapter implements ComputeConnectionAdapter {
           if (failure) throw failure
           if (result.exitCode !== 0) throw new Error('Remote file upload failed.')
         }),
-      download: async (remotePath, localPath, maxBytes): Promise<BoundedScpResult> =>
+      download: async (remotePath, localPath, maxBytes, verifiedFile): Promise<BoundedScpResult> =>
         withAskpass(async (askpass) => {
           if (!this.scpRunner) throw new ComputeConnectionError('unsupported_auth_configuration')
           if (!this.scpRunner.copyFromRemoteBounded)
@@ -439,7 +439,11 @@ class PasswordSshAdapter implements ComputeConnectionAdapter {
             localPath,
             maxBytes,
             10 * 60 * 1000,
-            { env: askpass.env, signal: request.signal }
+            {
+              env: askpass.env,
+              signal: request.signal,
+              ...(verifiedFile ? { verifiedFile } : {})
+            }
           )
           if (result.exceeded) return result
           const failure = classifyPasswordConnectionFailure(result, askpass)

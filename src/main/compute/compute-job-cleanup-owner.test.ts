@@ -56,6 +56,7 @@ const harness = (
   run: ReturnType<typeof vi.fn>
   requestCleanup: ReturnType<typeof vi.fn>
   settleCleanup: ReturnType<typeof vi.fn>
+  getOperation: ReturnType<typeof vi.fn>
   findIndeterminateCleanup: ReturnType<typeof vi.fn>
 } => {
   const operation = {
@@ -77,6 +78,7 @@ const harness = (
   } as const
   const requestCleanup = vi.fn(async () => ({ found: true as const, record: operation }))
   const settleCleanup = vi.fn(async () => true)
+  const getOperation = vi.fn(async () => operation)
   const findIndeterminateCleanup = vi.fn(async () => [])
   const operations = {
     requestCleanup,
@@ -84,7 +86,7 @@ const harness = (
       operation: { ...requested, revision: requested.revision + 1, claimToken: 'claim' },
       jobId: requested.jobId
     })),
-    get: vi.fn(async () => operation),
+    get: getOperation,
     findActiveReferences: vi.fn(async () => []),
     findIndeterminateCleanup,
     settleCleanup
@@ -116,6 +118,7 @@ const harness = (
     run,
     requestCleanup,
     settleCleanup,
+    getOperation,
     findIndeterminateCleanup
   }
 }
@@ -208,6 +211,132 @@ describe('ComputeJobCleanupOwner', () => {
     const [firstReceipt, replayReceipt] = await Promise.all([first, replay])
     expect(replayReceipt).toEqual(firstReceipt)
     expect(test.settleCleanup).toHaveBeenCalledOnce()
+  })
+
+  it('validates trusted scope before joining an in-flight cleanup', async () => {
+    const test = harness(job())
+    let release!: () => void
+    test.run.mockImplementation(
+      () =>
+        new Promise((resolve) => {
+          release = () =>
+            resolve({
+              stdout: 'OSCLEANUP1|VERIFIED|2|0|0|1',
+              stderr: '',
+              exitCode: 0,
+              timedOut: false,
+              truncated: false
+            })
+        })
+    )
+
+    const owned = test.owner.cleanup('job-1', scope, 'owned-invocation')
+    await vi.waitFor(() => expect(test.run).toHaveBeenCalledOnce())
+    const wrongScope = test.owner.cleanup(
+      'job-1',
+      { ...scope, projectId: 'other-project' },
+      'cross-scope-invocation'
+    )
+    release()
+
+    await expect(owned).resolves.toMatchObject({ outcome: 'workspace_removed' })
+    await expect(wrongScope).rejects.toThrow()
+    expect(test.requestCleanup).toHaveBeenCalledOnce()
+    expect(test.run).toHaveBeenCalledOnce()
+  })
+
+  it('does not return a determinate local receipt after losing the settlement claim', async () => {
+    const test = harness(job())
+    test.settleCleanup.mockResolvedValue(false)
+    test.getOperation.mockResolvedValue({
+      id: 'operation',
+      jobId: 'job-1',
+      kind: 'cleanup',
+      phase: 'active',
+      outcome: null,
+      revision: 3,
+      attemptCount: 2,
+      eligibleAt: null,
+      claimToken: 'new-owner',
+      claimExpiresAt: new Date(60_000),
+      createdAt: new Date(0),
+      settledAt: null,
+      updatedAt: new Date(30_000),
+      requestId: 'new-invocation',
+      receipt: null
+    })
+
+    await expect(test.owner.cleanup('job-1', scope, 'stale-invocation')).resolves.toMatchObject({
+      outcome: 'indeterminate',
+      workspace_removed: false,
+      retained_object_counts: { remote_state_uncertain: 1 },
+      retained_object_count_unknown: true,
+      retry_recommended: true
+    })
+  })
+
+  it('returns the authoritative settled receipt after a lease takeover wins settlement', async () => {
+    const test = harness(job())
+    const authoritativeReceipt = {
+      job_id: 'job-1',
+      outcome: 'nothing_deleted' as const,
+      workspace_removed: false,
+      deleted_object_count: 0,
+      retained_object_counts: { active_downstream_reference: 1 },
+      retained_object_count_unknown: false,
+      retry_recommended: true,
+      retry_conditions: ['downstream_terminal' as const],
+      disposition: 'A newer lease retained an active downstream reference.'
+    }
+    test.settleCleanup.mockResolvedValue(false)
+    test.getOperation.mockResolvedValue({
+      id: 'operation',
+      jobId: 'job-1',
+      kind: 'cleanup',
+      phase: 'settled',
+      outcome: 'fulfilled',
+      revision: 4,
+      attemptCount: 2,
+      eligibleAt: null,
+      claimToken: null,
+      claimExpiresAt: null,
+      createdAt: new Date(0),
+      settledAt: new Date(45_000),
+      updatedAt: new Date(45_000),
+      requestId: 'new-invocation',
+      receipt: authoritativeReceipt
+    })
+
+    await expect(test.owner.cleanup('job-1', scope, 'stale-invocation')).resolves.toEqual(
+      authoritativeReceipt
+    )
+  })
+
+  it('settles a queued-stage cancellation without harvest or SSH', async () => {
+    const test = harness(
+      job({
+        status: 'failed',
+        cancellation_status: 'cancelled',
+        submitted_at: undefined,
+        started_at: undefined,
+        remote_handle: undefined,
+        harvested_at: undefined
+      })
+    )
+
+    await expect(test.owner.cleanup('job-1', scope, 'queued-cancel')).resolves.toMatchObject({
+      outcome: 'nothing_deleted',
+      workspace_removed: false,
+      deleted_object_count: 0,
+      retained_object_counts: {},
+      retained_object_count_unknown: false,
+      retry_recommended: false,
+      retry_conditions: []
+    })
+    expect(test.requestCleanup).toHaveBeenCalledOnce()
+    expect(test.settleCleanup).toHaveBeenCalledOnce()
+    expect(test.acquire).not.toHaveBeenCalled()
+    expect(test.run).not.toHaveBeenCalled()
   })
 
   it('startup recovery only checks absence and settles a confirmed missing workspace', async () => {

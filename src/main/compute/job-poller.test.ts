@@ -1333,7 +1333,11 @@ describe('JobPoller', () => {
   )
 
   it('recovers a detached submitted job from job.pid after restart', async () => {
-    const job = makeJob({ status: 'submitted', remote_handle: undefined })
+    const job = makeJob({
+      status: 'submitted',
+      remote_handle: undefined,
+      owner_marker: 'owner-token-1234567890'
+    })
     const update = vi.fn((_id: string, updates: unknown) =>
       Promise.resolve({ ...job, ...(updates as object) })
     )
@@ -1350,7 +1354,11 @@ describe('JobPoller', () => {
         'exit_code:',
         'pid:1234',
         'cwd_match:1',
-        `started_at:${RECOVERED_STARTED_AT_SECONDS}`
+        `started_at:${RECOVERED_STARTED_AT_SECONDS}`,
+        'OPEN_SCIENCE_DISPATCH_EVIDENCE_V1',
+        'object:0:file:1:10:20:30',
+        'object:1:file:1:11:21:31',
+        'object:2:file:1:12:5:32'
       ].join('\n'),
       stderr: '',
       truncated: false,
@@ -1381,7 +1389,12 @@ describe('JobPoller', () => {
       expect.objectContaining({
         status: 'running',
         remoteHandle: expect.stringContaining('"pid":1234'),
-        startedAt: RECOVERED_STARTED_AT
+        startedAt: RECOVERED_STARTED_AT,
+        remoteObjectEvidence: expect.arrayContaining([
+          expect.objectContaining({ path: 'command.sh', role: 'control' }),
+          expect.objectContaining({ path: 'launcher.sh', role: 'control' }),
+          expect.objectContaining({ path: 'job.pid', role: 'control' })
+        ])
       })
     )
     expect(update).not.toHaveBeenCalledWith(

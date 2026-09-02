@@ -525,6 +525,49 @@ describe('SystemScpRunner', () => {
     }
   })
 
+  it('pins a verified regular inode without following symlinks before streaming it', async () => {
+    const dir = await mkdtemp(join(tmpdir(), 'scp-pinned-test-'))
+    const localPath = join(dir, 'result.bin')
+    try {
+      const child = new FakeChild()
+      spawnMock.mockReturnValueOnce(child as unknown as ReturnType<typeof spawnMock>)
+      const promise = runner.copyFromRemoteBounded(
+        { sshBinary: '/usr/bin/ssh', host: 'cluster', extraArgs: [] },
+        '~/.openscience/jobs/job-1/nested/result.bin',
+        localPath,
+        10,
+        undefined,
+        {
+          verifiedFile: {
+            workdir: '~/.openscience/jobs/job-1',
+            relativePath: 'nested/result.bin',
+            device: '11',
+            inode: '12',
+            sizeBytes: 3,
+            modifiedAtNanoseconds: '13000000000'
+          }
+        }
+      )
+      child.stdout.emit('data', Buffer.from('abc'))
+      child.stdout.emit('end')
+      child.emit('close', 0)
+
+      await expect(promise).resolves.toMatchObject({ bytesWritten: 3, exceeded: false })
+      const remoteCommand = spawnMock.mock.calls[0]?.[1]?.at(-1) as string
+      expect(remoteCommand).toContain('path_no_symlinks "$workdir"')
+      expect(remoteCommand).toContain('path_no_symlinks "$source_parent"')
+      expect(remoteCommand).toContain('ln -P "$source_path" "$pin_path"')
+      expect(remoteCommand).toContain('11:12:3:13')
+      expect(remoteCommand).toContain('head -c 11 -- "$pin_path"')
+      expect(remoteCommand).toContain('cleanup_pin')
+      expect(remoteCommand).not.toContain(
+        "head -c 11 -- ~/'.openscience/jobs/job-1/nested/result.bin'"
+      )
+    } finally {
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
   it('returns exitCode 0 and the captured stderr on a clean child close', async () => {
     const child = new FakeChild()
     execFileMock.mockReturnValueOnce(child as unknown as ReturnType<typeof execFileMock>)

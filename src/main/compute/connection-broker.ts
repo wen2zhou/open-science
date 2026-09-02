@@ -3,7 +3,8 @@ import {
   buildScpUploadArgs,
   resolveScpBinary,
   type BoundedScpResult,
-  type ScpRunner
+  type ScpRunner,
+  type VerifiedRemoteFileDownload
 } from './scp-runner'
 import { resolveSshTarget, type ResolvedSshTarget, type SshRunner } from './ssh-runner'
 
@@ -29,7 +30,12 @@ type AcquireComputeConnectionRequest = Readonly<{
 interface ComputeConnectionLease {
   run(remoteCommand: string, options: ConnectionRunOptions): Promise<ConnectionRunResult>
   upload(localPath: string, remotePath: string): Promise<void>
-  download(remotePath: string, localPath: string, maxBytes: number): Promise<BoundedScpResult>
+  download(
+    remotePath: string,
+    localPath: string,
+    maxBytes: number,
+    verifiedFile?: VerifiedRemoteFileDownload
+  ): Promise<BoundedScpResult>
   // Password leases expose post-parse redaction so structured protocol fields remain intact while
   // user-visible or persisted payloads can still be scrubbed before crossing their boundary.
   redactSensitiveOutputs?(values: readonly string[]): Promise<string[]>
@@ -236,9 +242,9 @@ class SshConfigComputeConnectionBroker implements ComputeConnectionBroker {
         this.withActiveOperation(providerId, generation, () => lease.run(remoteCommand, options)),
       upload: (localPath, remotePath) =>
         this.withActiveOperation(providerId, generation, () => lease.upload(localPath, remotePath)),
-      download: (remotePath, localPath, maxBytes) =>
+      download: (remotePath, localPath, maxBytes, verifiedFile) =>
         this.withActiveOperation(providerId, generation, () =>
-          lease.download(remotePath, localPath, maxBytes)
+          lease.download(remotePath, localPath, maxBytes, verifiedFile)
         ),
       ...(lease.redactSensitiveOutputs
         ? {
@@ -336,7 +342,8 @@ class SshConfigComputeConnectionBroker implements ComputeConnectionBroker {
     const download = async (
       remotePath: string,
       localPath: string,
-      maxBytes: number
+      maxBytes: number,
+      verifiedFile?: VerifiedRemoteFileDownload
     ): Promise<BoundedScpResult> => {
       const scpRunner = this.dependencies.scpRunner
       if (!scpRunner) throw new ComputeConnectionError('unsupported_auth_configuration')
@@ -348,7 +355,7 @@ class SshConfigComputeConnectionBroker implements ComputeConnectionBroker {
         localPath,
         maxBytes,
         10 * 60 * 1000,
-        { signal: request.signal }
+        { signal: request.signal, ...(verifiedFile ? { verifiedFile } : {}) }
       )
       const failure = classifyConnectionFailure(result, false)
       if (failure) throw failure
@@ -412,8 +419,8 @@ class SshConfigComputeConnectionBroker implements ComputeConnectionBroker {
     return {
       run: (command, options) => observe(() => lease.run(command, options)),
       upload: (localPath, remotePath) => observe(() => lease.upload(localPath, remotePath)),
-      download: (remotePath, localPath, maxBytes) =>
-        observe(() => lease.download(remotePath, localPath, maxBytes)),
+      download: (remotePath, localPath, maxBytes, verifiedFile) =>
+        observe(() => lease.download(remotePath, localPath, maxBytes, verifiedFile)),
       ...(lease.redactSensitiveOutputs
         ? {
             redactSensitiveOutputs: (values: readonly string[]) =>

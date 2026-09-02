@@ -20,7 +20,11 @@ import type { ComputeJobRepository } from './job-repository'
 import type { ComputeHostRepository } from './repository'
 import { sharedDispatchTracker, type DispatchTracker } from './dispatch-tracker'
 import { ComputeJobLifecycle } from './compute-job-lifecycle'
-import { classifyComputeJobExit, probeRemoteLaunch } from './remote-launch-recovery'
+import {
+  classifyComputeJobExit,
+  probeRemoteLaunch,
+  recoveryEvidenceRequestForJob
+} from './remote-launch-recovery'
 import {
   cleanupComputeJobFileEvidence,
   publishComputeJobFileEvidence,
@@ -578,14 +582,13 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     workdir
   }
 
-  const transition = await lifecycle.dispatchRunning(jobId, JSON.stringify(handle))
-  if (transition.kind === 'applied') {
-    // Execution is already durably running if this additive evidence write fails. Missing evidence
-    // fails cleanup closed; it must never cause a second launcher to be started.
-    await lifecycle.recordCleanupEvidence(jobId, ['running'], {
-      remoteObjectEvidence: protocol.evidence
-    })
-  }
+  await lifecycle.dispatchRunning(
+    jobId,
+    JSON.stringify(handle),
+    new Date(),
+    undefined,
+    protocol.evidence
+  )
 }
 
 const isDefinitivePreLaunchConnectionError = (error: unknown): boolean =>
@@ -616,8 +619,18 @@ const recoverAmbiguousRemoteLaunch = async (
   invalidProtocolOutput?: string
 ): Promise<void> => {
   let observation
+  const evidenceRequest = recoveryEvidenceRequestForJob(job)
+  if (!evidenceRequest) {
+    await lifecycle.recordPollError(
+      job.job_id,
+      'submitted',
+      'dispatch_recovery_evidence_unproven',
+      false
+    )
+    return
+  }
   try {
-    observation = await probeRemoteLaunch(connection, workdir)
+    observation = await probeRemoteLaunch(connection, workdir, evidenceRequest)
   } catch (error) {
     // A failed recovery probe cannot distinguish "not launched" from "launched but unreachable".
     // Keep the durable submitted row for the poller to retry instead of inventing a terminal error.
@@ -630,7 +643,13 @@ const recoverAmbiguousRemoteLaunch = async (
   }
 
   if (observation.kind === 'running') {
-    await lifecycle.dispatchRunning(job.job_id, JSON.stringify(observation.handle))
+    await lifecycle.dispatchRunning(
+      job.job_id,
+      JSON.stringify(observation.handle),
+      observation.startedAt,
+      undefined,
+      observation.evidence
+    )
     return
   }
   if (observation.kind === 'exited') {

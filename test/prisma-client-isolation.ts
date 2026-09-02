@@ -1,5 +1,5 @@
 import { createHash, randomUUID } from 'node:crypto'
-import { cp, mkdir, rename, rm } from 'node:fs/promises'
+import { cp, mkdir, readdir, readFile, rename, rm } from 'node:fs/promises'
 import { readFileSync } from 'node:fs'
 import { join, resolve } from 'node:path'
 
@@ -10,6 +10,30 @@ type PrismaClientCheck = (options: {
 }) => void
 
 const sourceSchemaPath = (root: string): string => join(root, 'prisma', 'schema.prisma')
+
+export const fingerprintGeneratedPrismaClient = async (clientRoot: string): Promise<string> => {
+  const hash = createHash('sha256')
+  const visit = async (directory: string, prefix = ''): Promise<void> => {
+    const entries = await readdir(directory, { withFileTypes: true })
+    entries.sort((left, right) => left.name.localeCompare(right.name))
+    for (const entry of entries) {
+      const relativePath = prefix ? `${prefix}/${entry.name}` : entry.name
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) {
+        await visit(path, relativePath)
+        continue
+      }
+      if (!entry.isFile()) {
+        throw new Error(`Generated Prisma Client contains an unsupported entry: ${relativePath}`)
+      }
+      const contents = await readFile(path)
+      hash.update(`${relativePath.length}:${relativePath}:${contents.length}:`)
+      hash.update(contents)
+    }
+  }
+  await visit(clientRoot)
+  return hash.digest('hex')
+}
 
 export const prismaClientSnapshotPath = (root = resolve('.')): string => {
   const schema = readFileSync(sourceSchemaPath(root))
@@ -47,12 +71,25 @@ export const ensurePrismaClientSnapshot = async (root = resolve('.')): Promise<s
   // Verify the shared install before copying. Worktrees intentionally symlink node_modules to the
   // main checkout, where another checkout can run prisma generate concurrently.
   verify(source)
+  const sourceFingerprint = await fingerprintGeneratedPrismaClient(source)
   await mkdir(join(root, '.vitest'), { recursive: true })
   const temporary = `${destination}.copy-${process.pid}-${randomUUID()}`
   try {
     await cp(source, temporary, { recursive: true, errorOnExist: true })
-    // Detect a generate that raced the copy instead of publishing a mixed client snapshot.
+    // Schema parity alone cannot detect a mixed DMMF, JavaScript runtime, or native engine. Hash the
+    // complete generated tree on both sides so a generate racing this copy can never be published.
     verify(temporary)
+    verify(source)
+    const [copiedFingerprint, sourceFingerprintAfterCopy] = await Promise.all([
+      fingerprintGeneratedPrismaClient(temporary),
+      fingerprintGeneratedPrismaClient(source)
+    ])
+    if (
+      copiedFingerprint !== sourceFingerprint ||
+      sourceFingerprintAfterCopy !== sourceFingerprint
+    ) {
+      throw new Error('Generated Prisma Client changed while the Vitest snapshot was copied.')
+    }
     try {
       await rename(temporary, destination)
     } catch (error) {
