@@ -179,6 +179,12 @@ type NotebookExecutor = NotebookSessionExecutor
 
 type NotebookRuntimeServiceCallbacks = NotebookSessionLifecycleCallbacks
 
+// Background execution is part of the normal Notebook contract. Environment flags remain an
+// emergency/rollout override: unset means enabled, exact "1" enables, and any other explicit value
+// disables the corresponding surface.
+const backgroundExecutionEnabledByDefault = (environmentValue: string | undefined): boolean =>
+  environmentValue === undefined || environmentValue === '1'
+
 // The session-scoped connector RPC capability injected into the persistent control-plane REPL. The
 // service caches it for the RuntimeSession lifetime because the child captures it only when spawned;
 // release revokes that capability when the runtime session is shut down.
@@ -422,15 +428,15 @@ class NotebookRuntimeService {
     this.pythonRBackgroundExecutionEnabled =
       options.pythonRBackgroundExecutionEnabled ??
       options.backgroundExecutionEnabled ??
-      process.env.OPEN_SCIENCE_PYTHON_R_BACKGROUND_EXECUTION === '1'
+      backgroundExecutionEnabledByDefault(process.env.OPEN_SCIENCE_PYTHON_R_BACKGROUND_EXECUTION)
     this.replBackgroundExecutionEnabled =
       options.replBackgroundExecutionEnabled ??
       options.backgroundExecutionEnabled ??
-      process.env.OPEN_SCIENCE_REPL_BACKGROUND_EXECUTION === '1'
+      backgroundExecutionEnabledByDefault(process.env.OPEN_SCIENCE_REPL_BACKGROUND_EXECUTION)
     this.shellBackgroundExecutionEnabled =
       options.shellBackgroundExecutionEnabled ??
       options.backgroundExecutionEnabled ??
-      process.env.OPEN_SCIENCE_SHELL_BACKGROUND_EXECUTION === '1'
+      backgroundExecutionEnabledByDefault(process.env.OPEN_SCIENCE_SHELL_BACKGROUND_EXECUTION)
     const defaultProjectId = resolveProjectId(options)
     this.repository = options.repository ?? new NotebookRunRepository(options.dataRoot)
     this.exportReader = new NotebookExportReader({

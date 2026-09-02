@@ -5620,7 +5620,8 @@ describe('notebook runtime service', () => {
       configRoot: root,
       dataRoot: root,
       projectId: 'default-project',
-      repository
+      repository,
+      backgroundExecutionEnabled: false
     })
     await service.execute({
       sessionId: 'session-foreground-fingerprint',
@@ -5683,6 +5684,76 @@ describe('notebook runtime service', () => {
     ).rejects.toMatchObject({
       detail: { code: 'BACKGROUND_EXECUTION_REQUIRES_BACKGROUND_API', retryable: false }
     })
+  })
+
+  it('enables each background execution API by default without changing foreground execution', async () => {
+    const root = await createStorageRoot()
+    const execute = vi.fn(
+      async (request: NotebookExecutionRequest): Promise<NotebookExecutionResult> => ({
+        status: 'completed',
+        stdout: 'done',
+        stderr: '',
+        traceback: '',
+        cwdAfter: request.cwd,
+        outputs: []
+      })
+    )
+    const shellExecute = vi.fn<NotebookShellProcess['execute']>(async () => ({
+      stdout: 'done',
+      stderr: '',
+      exitCode: 0
+    }))
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute,
+        shutdown: async () => ({ reaped: true })
+      }),
+      shellProcess: { execute: shellExecute }
+    })
+
+    const python = await service.executeBackground({
+      sessionId: 'session-default-python-background',
+      workspaceCwd: root,
+      code: 'print(1)',
+      background: true,
+      executionInvocationId: 'default-python-background'
+    })
+    const repl = await service.executeControlBackground({
+      sessionId: 'session-default-repl-background',
+      workspaceCwd: root,
+      code: '1 + 1',
+      background: true,
+      executionInvocationId: 'default-repl-background'
+    })
+    const shell = await service.executeShellBackground({
+      sessionId: 'session-default-shell-background',
+      workspaceCwd: root,
+      command: 'echo done',
+      background: true,
+      executionInvocationId: 'default-shell-background'
+    })
+    const foreground = await service.execute({
+      sessionId: 'session-default-foreground',
+      workspaceCwd: root,
+      code: 'print(2)',
+      executionInvocationId: 'default-foreground'
+    })
+
+    expect(python.executionType).toBe('python-notebook-run')
+    expect(repl.executionType).toBe('javascript-repl')
+    expect(shell.executionType).toBe('shell-command')
+    expect(foreground.status).toBe('completed')
+    await Promise.all([
+      service.waitForBackgroundRun(python.runId),
+      service.waitForBackgroundRun(repl.runId),
+      service.waitForBackgroundRun(shell.runId)
+    ])
+    expect(execute).toHaveBeenCalledTimes(3)
+    expect(shellExecute).toHaveBeenCalledOnce()
   })
 
   it('scopes the Python/R background execution flag to notebook Runs', async () => {
