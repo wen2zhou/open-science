@@ -2313,7 +2313,7 @@ describe('notebook runtime service', () => {
     })
   })
 
-  it('serializes only the raw control executions for one session', async () => {
+  it('durably admits queued control executions while preserving the single REPL FIFO lane', async () => {
     const root = await createStorageRoot()
     const entered: string[] = []
     let releaseFirst: (() => void) | undefined
@@ -2361,8 +2361,17 @@ describe('notebook runtime service', () => {
       code: 'second'
     })
 
-    await new Promise((resolve) => setTimeout(resolve, 0))
-    expect(entered).toEqual(['first'])
+    await vi.waitFor(async () => {
+      expect(entered).toEqual(['first'])
+      await expect(
+        service.state({ sessionId: 'session-1', workspaceCwd: root })
+      ).resolves.toMatchObject({
+        runs: [
+          expect.objectContaining({ kernelKind: 'repl', script: 'first', status: 'running' }),
+          expect.objectContaining({ kernelKind: 'repl', script: 'second', status: 'queued' })
+        ]
+      })
+    })
 
     releaseFirst?.()
     await expect(Promise.all([first, second])).resolves.toMatchObject([
@@ -2370,6 +2379,268 @@ describe('notebook runtime service', () => {
       { stdout: 'second' }
     ])
     expect(entered).toEqual(['first', 'second'])
+  })
+
+  it('turns foreground Stop into durable cancellation before a queued REPL run dispatches', async () => {
+    const root = await createStorageRoot()
+    let releaseFirst: (() => void) | undefined
+    const firstBlocked = new Promise<void>((resolve) => {
+      releaseFirst = resolve
+    })
+    let announceFirst: (() => void) | undefined
+    const firstEntered = new Promise<void>((resolve) => {
+      announceFirst = resolve
+    })
+    const execute = vi.fn(
+      async (request: NotebookExecutionRequest): Promise<NotebookExecutionResult> => {
+        announceFirst?.()
+        await firstBlocked
+        return {
+          status: 'completed',
+          stdout: request.code,
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }
+      }
+    )
+    const repository = new NotebookRunRepository(root)
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      executorFactory: () => ({ execute, shutdown: async () => ({ reaped: true }) })
+    })
+
+    const first = service.executeControl({
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      code: 'first'
+    })
+    await firstEntered
+    const stop = new AbortController()
+    const second = service.executeControl(
+      { sessionId: 'session-1', workspaceCwd: root, code: 'second' },
+      stop.signal
+    )
+    await vi.waitFor(async () => {
+      const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
+      expect(state.runs.at(-1)).toMatchObject({ script: 'second', status: 'queued' })
+    })
+
+    stop.abort(new Error('Stop requested'))
+    await expect(second).resolves.toMatchObject({
+      status: 'cancelled',
+      stderr: 'Stop requested'
+    })
+    expect(execute).toHaveBeenCalledOnce()
+    const document = await repository.findExisting('default-project', 'session-1')
+    expect(document?.runs.at(-1)).toMatchObject({
+      script: 'second',
+      status: 'cancelled',
+      kernelDispatched: false
+    })
+
+    releaseFirst?.()
+    await first
+  })
+
+  it('does not admit or dispatch REPL work when foreground Stop precedes durable admission', async () => {
+    const root = await createStorageRoot()
+    const execute = vi.fn()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({ execute, shutdown: async () => ({ reaped: true }) })
+    })
+    const stop = new AbortController()
+    stop.abort(new Error('Stop before admission'))
+
+    await expect(
+      service.executeControl(
+        { sessionId: 'session-1', workspaceCwd: root, code: 'return 1' },
+        stop.signal
+      )
+    ).rejects.toThrow('Stop before admission')
+    expect(execute).not.toHaveBeenCalled()
+    await expect(
+      service.state({ sessionId: 'session-1', workspaceCwd: root })
+    ).resolves.toMatchObject({ runs: [] })
+  })
+
+  it('waits for a running REPL Stop outcome and durably reports namespace impact', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    let announceDispatch: (() => void) | undefined
+    const dispatched = new Promise<void>((resolve) => {
+      announceDispatch = resolve
+    })
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      executorFactory: () => ({
+        execute: (request) =>
+          new Promise<NotebookExecutionResult>((resolve) => {
+            announceDispatch?.()
+            request.signal?.addEventListener(
+              'abort',
+              () =>
+                resolve({
+                  status: 'cancelled',
+                  kernelDispatched: true,
+                  stdout: '',
+                  stderr: 'REPL stopped; the persistent namespace was terminated.',
+                  traceback: '',
+                  cwdAfter: request.cwd,
+                  outputs: []
+                }),
+              { once: true }
+            )
+          }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const stop = new AbortController()
+    const execution = service.executeControl(
+      { sessionId: 'session-1', workspaceCwd: root, code: 'await longOperation()' },
+      stop.signal
+    )
+    await dispatched
+
+    stop.abort(new Error('Stop requested'))
+    await expect(execution).resolves.toMatchObject({
+      status: 'cancelled',
+      stderr: 'REPL stopped; the persistent namespace was terminated.'
+    })
+    const document = await repository.findExisting('default-project', 'session-1')
+    expect(document?.runs.at(-1)).toMatchObject({
+      status: 'cancelled',
+      kernelDispatched: true,
+      text: { stderr: 'REPL stopped; the persistent namespace was terminated.' }
+    })
+  })
+
+  it('returns the canonical foreground REPL result when a submission identity is retried', async () => {
+    const root = await createStorageRoot()
+    const execute = vi.fn(
+      async (request: NotebookExecutionRequest): Promise<NotebookExecutionResult> => ({
+        status: 'completed',
+        stdout: 'stable result',
+        stderr: '',
+        traceback: '',
+        cwdAfter: request.cwd,
+        outputs: []
+      })
+    )
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute,
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const completeControlInvocation = vi.fn(async () => [
+      { data: Buffer.from('stable image').toString('base64'), mimeType: 'image/png' as const }
+    ])
+    service.setMcpRpcConnectionResolver(async () => ({
+      endpoint: 'http://127.0.0.1:1/x',
+      token: 'session-token',
+      completeControlInvocation,
+      discardControlInvocation: vi.fn()
+    }))
+    const request = {
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      code: 'return globalThis.answer',
+      executionInvocationId: 'control-submission-1'
+    }
+
+    const first = await service.executeControl(request)
+    const retry = await service.executeControl(request)
+
+    const expected = {
+      status: 'completed',
+      stdout: 'stable result',
+      viewImages: [{ data: Buffer.from('stable image').toString('base64'), mimeType: 'image/png' }]
+    }
+    expect(first).toMatchObject(expected)
+    expect(retry).toMatchObject(expected)
+    expect(execute).toHaveBeenCalledOnce()
+    expect(completeControlInvocation).toHaveBeenCalledOnce()
+    await expect(service.state(request)).resolves.toMatchObject({
+      runs: [expect.objectContaining({ kernelKind: 'repl', status: 'completed' })]
+    })
+  })
+
+  it('rejects reuse of a foreground REPL submission identity for different work', async () => {
+    const root = await createStorageRoot()
+    const execute = vi.fn(
+      async (request: NotebookExecutionRequest): Promise<NotebookExecutionResult> => ({
+        status: 'completed',
+        stdout: request.code,
+        stderr: '',
+        traceback: '',
+        cwdAfter: request.cwd,
+        outputs: []
+      })
+    )
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute,
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const request = {
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      executionInvocationId: 'control-submission-1'
+    }
+
+    await service.executeControl({ ...request, code: 'return 1' })
+    await expect(service.executeControl({ ...request, code: 'return 2' })).rejects.toThrow(
+      'NOTEBOOK_RUN_SUBMISSION_CONFLICT'
+    )
+    expect(execute).toHaveBeenCalledOnce()
+  })
+
+  it('does not dispatch the REPL when durable queued admission fails', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    vi.spyOn(repository, 'appendOrGetRun').mockRejectedValue(new Error('REPL admission failed'))
+    const execute = vi.fn()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      executorFactory: () => ({
+        execute,
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+
+    await expect(
+      service.executeControl({
+        sessionId: 'session-1',
+        workspaceCwd: root,
+        code: 'return 1',
+        executionInvocationId: 'control-admission-failure'
+      })
+    ).rejects.toThrow('REPL admission failed')
+    expect(execute).not.toHaveBeenCalled()
   })
 
   it('intercepts an approved control completion before repl_execute can return it to the old prompt', async () => {
@@ -3763,6 +4034,78 @@ describe('notebook runtime service', () => {
       runId: 'run-1',
       status: 'interrupted',
       interruptionReason: 'app-terminated'
+    })
+  })
+
+  it('recovers an admitted REPL run as interrupted without redispatching stale control work', async () => {
+    const root = await createStorageRoot()
+    const lane = createRootNotebookLane(
+      'default-project',
+      'crashed-repl',
+      'root-frame-crashed-repl'
+    )
+    const priorRepository = new NotebookRunRepository(root)
+    await priorRepository.loadOrCreate({
+      projectId: 'default-project',
+      sessionId: 'crashed-repl',
+      lane,
+      workspaceCwd: root
+    })
+    await priorRepository.appendOrGetRun({
+      projectId: 'default-project',
+      sessionId: 'crashed-repl',
+      lane,
+      run: {
+        runId: 'repl-run-1',
+        submissionIdentity: 'repl-submission-1',
+        submissionFingerprint: 'a'.repeat(64),
+        admittedAt: 100,
+        kernelEpochId: 'repl-epoch-1',
+        frozenRuntimeTarget: {
+          language: 'repl',
+          environment: 'control-plane',
+          processKey: 'repl'
+        },
+        cellId: 'repl-repl-run-1',
+        source: 'agent',
+        inputKind: 'cell',
+        kernelKind: 'repl',
+        script: 'globalThis.staleWriter = true',
+        status: 'queued',
+        startedAt: 100,
+        cwdBefore: root,
+        text: { stdout: '', stderr: '', traceback: '', plain: [] },
+        outputs: [],
+        artifacts: [],
+        workingFiles: [],
+        inputFiles: []
+      }
+    })
+    const execute = vi.fn()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({ execute, shutdown: async () => ({ reaped: true }) })
+    })
+
+    await service.recoverInterruptedOperations()
+
+    const recovered = await new NotebookRunRepository(root).findExisting(
+      'default-project',
+      'crashed-repl'
+    )
+    expect(recovered?.runs[0]).toMatchObject({
+      runId: 'repl-run-1',
+      status: 'interrupted',
+      interruptionReason: 'app-terminated'
+    })
+    expect(execute).not.toHaveBeenCalled()
+    await expect(
+      service.state({ sessionId: 'crashed-repl', workspaceCwd: root })
+    ).resolves.toMatchObject({
+      runs: [expect.objectContaining({ status: 'interrupted' })]
     })
   })
 

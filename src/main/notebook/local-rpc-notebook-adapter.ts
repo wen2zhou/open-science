@@ -210,7 +210,7 @@ type NotebookLocalRpcCapability = {
   getBackgroundRun(request: NotebookBackgroundRunLookupRequest): Promise<unknown>
   cancelBackgroundRun(request: NotebookBackgroundRunLookupRequest): Promise<unknown>
   waitForBackgroundRun(runId: string): Promise<void>
-  executeControl(request: ExecuteNotebookControlRequest): Promise<unknown>
+  executeControl(request: ExecuteNotebookControlRequest, signal?: AbortSignal): Promise<unknown>
   executeShell(request: ExecuteShellRequest): Promise<unknown>
   requestNetworkAccess(
     request: RequestNotebookNetworkAccessRequest,
@@ -319,8 +319,8 @@ const resolveNotebookLocalRpcHandler = (
           : capability.execute(runtimeRequest, signal)
       }
     case 'executeControl':
-      return (request) =>
-        capability.executeControl(parseNotebookLocalRpcRequest('executeControl', request))
+      return (request, signal) =>
+        capability.executeControl(parseNotebookLocalRpcRequest('executeControl', request), signal)
     case 'getBackgroundRun':
       return (request) =>
         capability.getBackgroundRun(parseNotebookLocalRpcRequest('getBackgroundRun', request))

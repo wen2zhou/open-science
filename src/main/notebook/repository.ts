@@ -198,7 +198,7 @@ const notebookRunCandidate = (value: unknown): boolean => {
     const target = isRecord(value.frozenRuntimeTarget) ? value.frozenRuntimeTarget : undefined
     if (
       !target ||
-      (target.language !== 'python' && target.language !== 'r') ||
+      (target.language !== 'python' && target.language !== 'r' && target.language !== 'repl') ||
       typeof target.environment !== 'string' ||
       typeof target.processKey !== 'string' ||
       (target.runtimeId !== undefined && typeof target.runtimeId !== 'string') ||

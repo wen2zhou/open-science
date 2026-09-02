@@ -1199,11 +1199,18 @@ class NotebookRuntimeService {
 
   // Compatibility facade for the control-plane REPL. Admission, capability lifetime, dispatch,
   // terminalization, and completion interception belong to NotebookExecutionOwner.
-  async executeControl(request: ExecuteNotebookControlRequest): Promise<NotebookControlResult> {
+  async executeControl(
+    request: ExecuteNotebookControlRequest,
+    signal?: AbortSignal
+  ): Promise<NotebookControlResult> {
     return this.sessionLifecycle.runProjectOperation(request, async (deletionSignal) => {
       assertNotebookCodeWithinLimit(request.code)
       const session = await this.sessionLifecycle.ensure(request)
-      return this.executionOwner.executeControl(session, request, deletionSignal)
+      return this.executionOwner.executeControl(
+        session,
+        request,
+        signal ? AbortSignal.any([signal, deletionSignal]) : deletionSignal
+      )
     })
   }
 
@@ -1453,13 +1460,12 @@ class NotebookRuntimeService {
   // repair-required) paths all populate the journal, so each reconcile action below is wired to a real effect.
   async recoverInterruptedOperations(): Promise<void> {
     this.runLifecycleRecovery ??= (async () => {
-      // Start every recovery barrier before awaiting any one of them so no new kernel or prefix
-      // mutation can slip through while durable Run reconciliation is still starting.
-      await Promise.all([
-        this.repository.recoverAllRunLifecycles(),
-        this.kernelProcessLifecycle.recover(),
-        this.recoveryCoordinator.recover()
-      ])
+      // Publish every startup barrier before yielding so neither execution admission nor prefix
+      // mutation can race recovery while another durable owner is still being fenced.
+      const runRecovery = this.repository.recoverAllRunLifecycles()
+      const kernelRecovery = this.kernelProcessLifecycle.recover()
+      const operationRecovery = this.recoveryCoordinator.recover()
+      await Promise.all([runRecovery, kernelRecovery, operationRecovery])
     })()
     await this.runLifecycleRecovery
   }
@@ -1471,8 +1477,10 @@ class NotebookRuntimeService {
   // too, not just materialize/install).
   async ensureRecovered(): Promise<void> {
     await this.runLifecycleRecovery
-    await this.kernelProcessLifecycle.ensureReady()
-    await this.recoveryCoordinator.ensureReady()
+    await Promise.all([
+      this.kernelProcessLifecycle.ensureReady(),
+      this.recoveryCoordinator.ensureReady()
+    ])
   }
 
   // Throws if `prefix` is one recovery couldn't confirm free of a live orphan (see blockedPrefixes).

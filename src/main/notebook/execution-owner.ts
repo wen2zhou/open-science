@@ -8,6 +8,7 @@ import type {
   NotebookCell,
   NotebookLanguage,
   NotebookOutput,
+  NotebookRunInputFile,
   NotebookRunRecord,
   NotebookRunProvenanceContext,
   NotebookRunSource,
@@ -54,15 +55,11 @@ import { getNotebookInputRoot } from './input-staging'
 
 type NotebookControlResult = Pick<
   NotebookSessionExecutionResult,
-  | 'status'
-  | 'stdout'
-  | 'stderr'
-  | 'traceback'
-  | 'outputs'
-  | 'truncated'
-  | 'workingFiles'
-  | 'fileEvidence'
-> & { viewImages?: readonly TransientViewImage[] }
+  'stdout' | 'stderr' | 'traceback' | 'outputs' | 'truncated' | 'workingFiles' | 'fileEvidence'
+> & {
+  status: Exclude<NotebookRunStatus, 'queued' | 'running'>
+  viewImages?: readonly TransientViewImage[]
+}
 
 type NotebookControlCompletionInterceptor = {
   intercept<T>(options: {
@@ -164,6 +161,39 @@ const runAgentFrameId = (
   provenanceContext: NotebookRunProvenanceContext | undefined
 ): string => provenanceContext?.agentFrameId ?? notebookLaneScope(session.lane).agentFrameId
 
+type ImmutableInputIdentity = Pick<
+  NotebookRunInputFile,
+  | 'inputFileVersionId'
+  | 'sourceKind'
+  | 'sourceFileId'
+  | 'sourceProjectId'
+  | 'sourceSessionId'
+  | 'filename'
+  | 'sizeBytes'
+  | 'checksum'
+> & {
+  sourceVersionNumber: number | null
+  contentType: string | null
+}
+
+const immutableInputIdentities = (
+  inputs: readonly NotebookRunInputFile[] | undefined
+): ImmutableInputIdentity[] =>
+  (inputs ?? [])
+    .map((input) => ({
+      inputFileVersionId: input.inputFileVersionId,
+      sourceKind: input.sourceKind,
+      sourceFileId: input.sourceFileId,
+      sourceVersionNumber: input.sourceVersionNumber ?? null,
+      sourceProjectId: input.sourceProjectId,
+      sourceSessionId: input.sourceSessionId,
+      filename: input.filename,
+      contentType: input.contentType ?? null,
+      sizeBytes: input.sizeBytes,
+      checksum: input.checksum
+    }))
+    .sort((left, right) => left.inputFileVersionId.localeCompare(right.inputFileVersionId))
+
 const dataRunFingerprint = (
   session: NotebookSessionAggregate,
   cell: Readonly<NotebookCell>,
@@ -183,24 +213,44 @@ const dataRunFingerprint = (
         inputKind: request.inputKind ?? 'cell',
         provenanceContext: request.provenanceContext ?? null,
         allowedHelperSkillIds: [...(request.registeredHelperSkillIds ?? [])].sort(),
-        inputFiles: (request.registeredInputFiles ?? [])
-          .map((input) => ({
-            inputFileVersionId: input.inputFileVersionId,
-            sourceKind: input.sourceKind,
-            sourceFileId: input.sourceFileId,
-            sourceVersionNumber: input.sourceVersionNumber ?? null,
-            sourceProjectId: input.sourceProjectId,
-            sourceSessionId: input.sourceSessionId,
-            filename: input.filename,
-            contentType: input.contentType ?? null,
-            sizeBytes: input.sizeBytes,
-            checksum: input.checksum
-          }))
-          .sort((left, right) => left.inputFileVersionId.localeCompare(right.inputFileVersionId)),
+        inputFiles: immutableInputIdentities(request.registeredInputFiles),
         helperModuleIds: helperModuleIds ?? []
       })
     )
     .digest('hex')
+
+const controlRunFingerprint = (
+  session: NotebookSessionAggregate,
+  request: ExecuteNotebookControlRequest
+): string =>
+  createHash('sha256')
+    .update(
+      JSON.stringify({
+        version: 1,
+        lane: notebookLaneKey(session.lane),
+        code: request.code,
+        timeoutMs: request.timeoutMs ?? null,
+        provenanceContext: request.provenanceContext ?? null,
+        inputFiles: immutableInputIdentities(request.registeredInputFiles)
+      })
+    )
+    .digest('hex')
+
+const controlResultFromRun = (run: NotebookRunRecord): NotebookControlResult => {
+  if (run.status === 'queued' || run.status === 'running') {
+    throw new Error(`REPL Run ${run.runId} has no terminal foreground result.`)
+  }
+  return {
+    status: run.status,
+    stdout: run.text.stdout,
+    stderr: run.text.stderr,
+    traceback: run.text.traceback,
+    outputs: run.outputs,
+    ...(run.truncated ? { truncated: true } : {}),
+    workingFiles: run.workingFiles,
+    fileEvidence: run.fileEvidence
+  }
+}
 
 class NotebookExecutionOwner {
   private readonly shellProcess: NotebookShellProcess
@@ -214,6 +264,21 @@ class NotebookExecutionOwner {
         run: NotebookRunRecord
         dependencyProjection: NotebookDependencyProjection
       }>
+    }
+  >()
+  private readonly activeControlSubmissions = new Map<
+    string,
+    { fingerprint: string; promise: Promise<NotebookControlResult> }
+  >()
+  // Keeps only the latest terminal foreground result per REPL lane. Durable Run history remains the
+  // canonical result; this bounded transient copy preserves view-image blocks when a lost local-RPC
+  // response retries the same authorized submission during the active app lifetime.
+  private readonly completedControlSubmissions = new Map<
+    string,
+    {
+      submissionIdentity: string
+      fingerprint: string
+      result: NotebookControlResult
     }
   >()
 
@@ -608,17 +673,157 @@ class NotebookExecutionOwner {
     request: ExecuteNotebookControlRequest,
     signal?: AbortSignal
   ): Promise<NotebookControlResult> {
-    const { runId: controlInvocationId, sequence: controlInvocationGeneration } =
-      this.options.runTerminalization.allocateRunIdentity()
-    const rawRun = session.enqueueControl(() =>
-      this.executeControlExclusive(
+    const submissionFingerprint = controlRunFingerprint(session, request)
+    const initialIdentity = request.executionInvocationId
+      ? undefined
+      : this.options.runTerminalization.allocateRunIdentity()
+    const submissionIdentity = request.executionInvocationId ?? initialIdentity!.runId
+    const laneKey = notebookLaneKey(session.lane)
+    const submissionKey = `${laneKey}:${submissionIdentity}`
+    const active = this.activeControlSubmissions.get(submissionKey)
+    if (active) {
+      if (active.fingerprint !== submissionFingerprint) {
+        throw new NotebookRunSubmissionConflictError(submissionIdentity)
+      }
+      return active.promise
+    }
+    const completed = this.completedControlSubmissions.get(laneKey)
+    if (request.executionInvocationId && completed?.submissionIdentity === submissionIdentity) {
+      if (completed.fingerprint !== submissionFingerprint) {
+        throw new NotebookRunSubmissionConflictError(submissionIdentity)
+      }
+      return completed.result
+    }
+
+    const promise = (async () => {
+      if (request.executionInvocationId) {
+        const existing = await this.options.runTerminalization.findSubmission(
+          session,
+          submissionIdentity
+        )
+        if (existing) {
+          if (existing.submissionFingerprint !== submissionFingerprint) {
+            throw new NotebookRunSubmissionConflictError(submissionIdentity)
+          }
+          return controlResultFromRun(existing)
+        }
+      }
+      const identity = initialIdentity ?? this.options.runTerminalization.allocateRunIdentity()
+      return this.executeControlDurable(
         session,
         request,
-        controlInvocationId,
-        controlInvocationGeneration,
+        identity.runId,
+        identity.sequence,
+        submissionIdentity,
+        submissionFingerprint,
         signal
       )
-    )
+    })()
+    const entry = { fingerprint: submissionFingerprint, promise }
+    this.activeControlSubmissions.set(submissionKey, entry)
+    try {
+      const result = await promise
+      if (request.executionInvocationId) {
+        this.completedControlSubmissions.set(laneKey, {
+          submissionIdentity,
+          fingerprint: submissionFingerprint,
+          result
+        })
+      }
+      return result
+    } finally {
+      if (this.activeControlSubmissions.get(submissionKey) === entry) {
+        this.activeControlSubmissions.delete(submissionKey)
+      }
+    }
+  }
+
+  private async executeControlDurable(
+    session: NotebookSessionAggregate,
+    request: ExecuteNotebookControlRequest,
+    controlInvocationId: string,
+    controlInvocationGeneration: number,
+    submissionIdentity: string,
+    submissionFingerprint: string,
+    signal?: AbortSignal
+  ): Promise<NotebookControlResult> {
+    const admittedAt = Date.now()
+    const replWasTerminated =
+      session.kernelStatus('repl') === 'terminated' || session.hasDurableKernelTermination('repl')
+    const kernelEpochId = session.kernelEpoch('repl', replWasTerminated).id
+    const queuedRun: NotebookRunRecord = {
+      runId: controlInvocationId,
+      submissionIdentity,
+      submissionFingerprint,
+      admittedAt,
+      kernelEpochId,
+      ...(request.executionInvocationId
+        ? { executionInvocationId: request.executionInvocationId }
+        : {}),
+      cellId: `repl-${controlInvocationId}`,
+      source: 'agent',
+      inputKind: 'cell',
+      kernelKind: 'repl',
+      script: request.code,
+      status: 'queued',
+      startedAt: admittedAt,
+      cwdBefore: session.cwd,
+      ...request.provenanceContext,
+      agentFrameId: runAgentFrameId(session, request.provenanceContext),
+      text: { stdout: '', stderr: '', traceback: '', plain: [] },
+      outputs: [],
+      artifacts: [],
+      workingFiles: [],
+      inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
+    }
+    queuedRun.frozenRuntimeTarget = {
+      language: 'repl',
+      environment: 'control-plane',
+      processKey: 'repl'
+    }
+
+    // Resolve and retain the Session-owned Host SDK capability before the durable admission point.
+    // The per-invocation scope is opened only when this FIFO entry actually dispatches.
+    signal?.throwIfAborted()
+    const mcpRpc = await session.resolveMcpRpcConnection(this.options.getMcpRpcConnectionResolver())
+    signal?.throwIfAborted()
+    const blockedMutation = detectManagedRuntimeMutation({
+      source: request.code,
+      surface: 'repl',
+      runtimeRoot: session.runtimeRoot,
+      cwd: session.cwd,
+      platform: this.options.platform
+    })
+    const durableAdmission = await this.options.runTerminalization.admit({ session, queuedRun })
+    if (!durableAdmission.admitted) return controlResultFromRun(durableAdmission.run)
+    this.options.notifyAvailable(session, 'agent')
+
+    const rawRun = (async (): Promise<NotebookControlResult> => {
+      try {
+        return await session.enqueueControl(
+          () =>
+            this.executeControlExclusive(
+              session,
+              request,
+              durableAdmission.run,
+              controlInvocationGeneration,
+              replWasTerminated,
+              mcpRpc,
+              blockedMutation,
+              signal
+            ),
+          signal
+        )
+      } catch (error) {
+        if (!signal?.aborted || error !== signal.reason) throw error
+        const run = await this.options.runTerminalization.cancelQueued(
+          session,
+          durableAdmission.run,
+          signal.reason
+        )
+        return controlResultFromRun(run)
+      }
+    })()
 
     try {
       // The completion gate deliberately stays outside enqueueControl: an approved continuation may
@@ -671,56 +876,26 @@ class NotebookExecutionOwner {
   private async executeControlExclusive(
     session: NotebookSessionAggregate,
     request: ExecuteNotebookControlRequest,
-    runId: string,
+    queuedRun: NotebookRunRecord,
     controlInvocationGeneration: number,
+    replWasTerminated: boolean,
+    mcpRpc: NotebookSessionMcpRpcConnection | undefined,
+    blockedMutation: ReturnType<typeof detectManagedRuntimeMutation>,
     signal?: AbortSignal
   ): Promise<NotebookControlResult> {
-    this.options.notifyAvailable(session, 'agent')
-    const replWasTerminated =
-      session.kernelStatus('repl') === 'terminated' || session.hasDurableKernelTermination('repl')
-    const kernelEpochId = session.kernelEpoch('repl', replWasTerminated).id
-    const runningRun: NotebookRunRecord = {
-      runId,
-      kernelEpochId,
-      ...(request.executionInvocationId
-        ? { executionInvocationId: request.executionInvocationId }
-        : {}),
-      cellId: `repl-${runId}`,
-      source: 'agent',
-      inputKind: 'cell',
-      kernelKind: 'repl',
-      script: request.code,
-      status: 'running',
-      startedAt: Date.now(),
-      cwdBefore: session.cwd,
-      ...request.provenanceContext,
-      agentFrameId: runAgentFrameId(session, request.provenanceContext),
-      text: { stdout: '', stderr: '', traceback: '', plain: [] },
-      outputs: [],
-      artifacts: [],
-      workingFiles: [],
-      inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
-    }
-
-    // The Session Aggregate caches the capability for its lifetime. One invocation lease then wraps
-    // exactly the raw control dispatch and is released before completion interception begins.
-    const mcpRpc = await session.resolveMcpRpcConnection(this.options.getMcpRpcConnectionResolver())
-    const blockedMutation = detectManagedRuntimeMutation({
-      source: request.code,
-      surface: 'repl',
-      runtimeRoot: session.runtimeRoot,
-      cwd: session.cwd,
-      platform: this.options.platform
-    })
-    if (!blockedMutation) {
-      session.clearKernelTerminated('repl')
-      this.setReplStatus(session, 'running')
-    }
+    const runId = queuedRun.runId
+    const kernelEpochId = queuedRun.kernelEpochId
 
     let executedOnLiveKernel = !blockedMutation
-    const { result } = await this.options.runTerminalization.run({
+    const terminalized = await this.options.runTerminalization.runAdmitted({
       session,
-      runningRun,
+      queuedRun,
+      startLive: () => {
+        if (!blockedMutation) {
+          session.clearKernelTerminated('repl')
+          this.setReplStatus(session, 'running')
+        }
+      },
       invoke: () =>
         (blockedMutation
           ? Promise.resolve(
@@ -782,7 +957,7 @@ class NotebookExecutionOwner {
         })
     })
 
-    if (executedOnLiveKernel && !session.isKernelTerminated('repl')) {
+    if (terminalized.dispatched && executedOnLiveKernel && !session.isKernelTerminated('repl')) {
       this.setReplStatus(session, 'idle')
       // A terminated status is durable; clear it once, while ordinary running/idle transitions stay
       // in memory and do not rewrite the whole run.json document.
@@ -790,6 +965,9 @@ class NotebookExecutionOwner {
         await this.options.persistRecoveredKernelIdle(session, 'repl')
       }
     }
+
+    const result = terminalized.result
+    if (!result) return controlResultFromRun(terminalized.run)
 
     return {
       status: result.status,
