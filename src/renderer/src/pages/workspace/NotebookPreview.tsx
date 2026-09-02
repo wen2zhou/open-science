@@ -88,6 +88,8 @@ const envStatusDotClass = (status: NotebookEnvironmentStatus['status'] | undefin
 export type NotebookPreviewItem = PreviewToolItem & {
   toolKind: 'notebook'
   notebook: NotebookSessionReference
+  notebookRunId?: string
+  notebookRunFocusRequest?: number
 }
 
 type NotebookPreviewProps = {
@@ -516,6 +518,7 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   const latestNotebookState = useRef<NotebookSessionState | undefined>(undefined)
   const stateLoadInFlight = useRef<Promise<boolean> | undefined>(undefined)
   const stateReloadQueued = useRef(false)
+  const lastFocusedRunRequest = useRef<string | undefined>(undefined)
   const notebookRequest = createNotebookRequest(item.notebook)
   const notebookRequestKey = JSON.stringify(notebookRequest)
   const latestNotebookRequest = useRef({ request: notebookRequest, key: notebookRequestKey })
@@ -683,6 +686,34 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   const visibleRuns = activeDataLanguage
     ? kindRuns.filter((run) => resolveRunEnvironment(run) === effectiveActiveEnv)
     : kindRuns
+  const focusedRun = item.notebookRunId
+    ? frameRuns.find((run) => run.runId === item.notebookRunId)
+    : undefined
+
+  useEffect(() => {
+    if (!focusedRun?.agentFrameId) return
+    setFrameFilter(`frame:${focusedRun.agentFrameId}`)
+    setActiveKind(resolveRunKernelKind(focusedRun))
+    setActiveEnv(resolveRunEnvironment(focusedRun))
+  }, [
+    focusedRun?.agentFrameId,
+    focusedRun?.environment,
+    focusedRun?.kernelKind,
+    item.notebookRunFocusRequest
+  ])
+
+  useEffect(() => {
+    if (!item.notebookRunId || !visibleRuns.some((run) => run.runId === item.notebookRunId)) return
+    const requestKey = `${item.notebookRunId}:${item.notebookRunFocusRequest ?? 0}`
+    if (lastFocusedRunRequest.current === requestKey) return
+    const target = [
+      ...(cellsViewportRef.current?.querySelectorAll<HTMLElement>('[data-run-id]') ?? [])
+    ].find((candidate) => candidate.dataset.runId === item.notebookRunId)
+    if (target && typeof target.scrollIntoView === 'function') {
+      lastFocusedRunRequest.current = requestKey
+      target.scrollIntoView({ block: 'center' })
+    }
+  }, [cellsViewportRef, item.notebookRunFocusRequest, item.notebookRunId, visibleRuns])
   const visibleRunIndexById = new Map(visibleRuns.map((run, index) => [run.runId, index]))
   const visibleStalenessForRun = (run: NotebookRunRecord): NotebookRunStaleness | undefined => {
     const staleness = notebookState?.runStaleness?.[run.runId]
@@ -981,17 +1012,18 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
         {visibleRuns.map((run, index) => {
           const staleness = visibleStalenessForRun(run)
           return (
-            <NotebookRunCell
-              key={run.runId}
-              run={run}
-              index={index}
-              staleness={staleness}
-              causedByRunIndex={
-                staleness?.state === 'stale'
-                  ? visibleRunIndexById.get(staleness.causedByRunId)
-                  : undefined
-              }
-            />
+            <div key={run.runId} data-run-id={run.runId}>
+              <NotebookRunCell
+                run={run}
+                index={index}
+                staleness={staleness}
+                causedByRunIndex={
+                  staleness?.state === 'stale'
+                    ? visibleRunIndexById.get(staleness.causedByRunId)
+                    : undefined
+                }
+              />
+            </div>
           )
         })}
       </div>

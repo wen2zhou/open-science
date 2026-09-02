@@ -177,7 +177,7 @@ const dataRunFingerprint = (
         lane: notebookLaneKey(session.lane),
         code: cell.code,
         language: cell.language,
-        executionMode: request.background ? 'background' : 'foreground',
+        ...(request.background ? { executionMode: 'background' } : {}),
         timeoutMs: request.timeoutMs ?? null,
         source: request.source ?? 'agent',
         inputKind: request.inputKind ?? 'cell',
@@ -270,7 +270,7 @@ class NotebookExecutionOwner {
       if (active.fingerprint !== submissionFingerprint) {
         throw new NotebookRunSubmissionConflictError(submissionIdentity)
       }
-      if (onAdmitted) void active.admitted.then(onAdmitted)
+      if (onAdmitted) void active.admitted.then(onAdmitted, () => undefined)
       return active.promise
     }
     let resolveAdmitted!: (run: NotebookRunRecord) => void
@@ -417,7 +417,12 @@ class NotebookExecutionOwner {
         sessionId: session.sessionId
       })
     }
-    const durableAdmission = await this.options.runTerminalization.admit({ session, queuedRun })
+    signal?.throwIfAborted()
+    const durableAdmission = await this.options.runTerminalization.admit({
+      session,
+      queuedRun,
+      signal
+    })
     if (!durableAdmission.admitted) {
       onAdmitted?.(durableAdmission.run)
       const dependencyProjection = await this.options

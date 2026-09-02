@@ -5,6 +5,7 @@ import type {
   NotebookKernelMetadata,
   NotebookLanguage,
   NotebookRunRecord,
+  NotebookRunDocument,
   NotebookRunCursor,
   NotebookRunStaleness,
   NotebookRunSummary,
@@ -308,6 +309,25 @@ class NotebookSessionReadModel<Session extends NotebookSessionReadSource> {
       ...(dependencyProjection?.invalidatedByRunId[run.runId]?.length
         ? { invalidatedRuns: dependencyProjection.invalidatedByRunId[run.runId] }
         : {})
+    }
+  }
+
+  toRunSummaryFromDocument(
+    document: NotebookRunDocument,
+    run: NotebookRunRecord
+  ): NotebookRunSummary {
+    const inputFiles = (run.inputFiles ?? []).map((input) => {
+      const publicInput = { ...input } as Partial<typeof input>
+      delete publicInput.storageKey
+      return publicInput as NotebookRunSummary['inputFiles'][number]
+    })
+    return {
+      ...this.toPublicRunRecord(run),
+      inputFiles,
+      notebookSessionRoot: document.notebookSessionRoot,
+      dataRoot: document.dataRoot,
+      runtimeRoot: getRuntimeRoot(this.options.storageRoot),
+      kernelName: document.kernel.kernelName ?? 'python3'
     }
   }
 

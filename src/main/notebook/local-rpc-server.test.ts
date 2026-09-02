@@ -9,7 +9,11 @@ import type { PrismaClient } from '@prisma/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ABOUT_YOU_MEMORY_CATEGORY_ID } from '../../shared/memory'
-import type { NotebookRunInputFile, NotebookRunProvenanceContext } from '../../shared/notebook'
+import {
+  NotebookBackgroundRunError,
+  type NotebookRunInputFile,
+  type NotebookRunProvenanceContext
+} from '../../shared/notebook'
 import { PlanCommandError } from '../../shared/session-plan/contract'
 import { ArtifactTurnOwner } from '../acp/artifact-turn-owner'
 import { ArtifactRepository } from '../artifacts/repository'
@@ -3577,6 +3581,94 @@ describe('notebook local RPC server', () => {
       await vi.waitFor(() => expect(close).toHaveBeenCalledOnce())
     } finally {
       completion.resolve()
+      await server.close()
+    }
+  })
+
+  it('preserves structured background recovery errors on the local RPC wire', async () => {
+    const detail = {
+      code: 'BACKGROUND_RUN_NOT_FOUND',
+      stage: 'query' as const,
+      retryable: true,
+      hint: 'Query by submissionIdentity before deciding whether to resubmit.',
+      submissionIdentity: 'submission-1'
+    }
+    const server = new NotebookLocalRpcServer(
+      {
+        getBackgroundRun: vi.fn(async () => {
+          throw new NotebookBackgroundRunError(detail, 'No matching Run.')
+        })
+      } as never,
+      { transport: 'tcp', token: 'secret-token' }
+    )
+    const connection = await server.ensureStarted()
+
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer secret-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'getBackgroundRun',
+          params: {
+            sessionId: 'session-1',
+            workspaceCwd: '/workspace',
+            submissionIdentity: 'submission-1'
+          }
+        })
+      })
+      expect(response.status).toBe(500)
+      await expect(response.json()).resolves.toEqual({ error: detail })
+    } finally {
+      await server.close()
+    }
+  })
+
+  it('overwrites a background lookup lane with the authenticated Agent Frame', async () => {
+    const getBackgroundRun = vi.fn(async (request: unknown) => request)
+    const server = new NotebookLocalRpcServer({ getBackgroundRun } as never, { transport: 'tcp' })
+    const connection = await server.issueSessionConnection('session-1', 'project-1', 'frame-bound')
+    server.setArtifactTurnBinding('session-1', {
+      ownerExecutionId: 'execution-1',
+      projectId: 'project-1',
+      provenanceContext: {
+        rootFrameId: 'frame-bound',
+        agentFrameId: 'frame-bound',
+        messageBranchId: 'branch-1',
+        runtimeSegmentId: 'runtime-1',
+        promptMessageId: 'prompt-1'
+      }
+    })
+
+    try {
+      const response = await fetchLocalRpc(
+        connection,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${connection.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'getBackgroundRun',
+            params: {
+              sessionId: 'session-1',
+              workspaceCwd: '/workspace',
+              runId: 'run-1',
+              agentFrameId: 'frame-forged'
+            }
+          })
+        },
+        'background lookup frame binding test'
+      )
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toEqual({
+        result: expect.objectContaining({ agentFrameId: 'frame-bound' })
+      })
+    } finally {
+      connection.release?.()
       await server.close()
     }
   })

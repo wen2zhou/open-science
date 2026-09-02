@@ -41,6 +41,8 @@ import {
   callNotebookRpc,
   buildNotebookToolContent,
   compactNotebookExecutionResult,
+  compactBackgroundRunReceipt,
+  compactBackgroundRunResult,
   compactNotebookStateResult,
   compactManagePackagesResult,
   compactInspectPackagesResult,
@@ -639,6 +641,17 @@ describe('notebook_execute tool', () => {
     expect(tool?.description).toContain('Save the returned runId')
     expect(tool?.description).toContain('Do not poll frequently')
     expect(tool?.description).toContain('explicitly cancel')
+    const receipt = {
+      runId: 'run-1',
+      executionType: 'python-notebook-run',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      status: 'queued',
+      acceptedAt: 123,
+      lifecycleScope: 'app-process',
+      submissionIdentity: 'submission-1'
+    }
+    expect(tool?.mapResult?.(receipt, { background: true })).toEqual(receipt)
   })
 
   it('accepts an optional language enum defaulting to python when omitted', () => {
@@ -886,6 +899,58 @@ describe('background_run tool', () => {
       runId: 'run-1'
     })
     expect(() => schema.parse({ action: 'retry', runId: 'run-1' })).toThrow()
+  })
+
+  it('preserves the durable receipt and compacts nested terminal output without losing identity', () => {
+    const receipt = {
+      runId: 'run-1',
+      executionType: 'python-notebook-run',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      status: 'completed',
+      acceptedAt: 123,
+      lifecycleScope: 'app-process',
+      submissionIdentity: 'submission-1'
+    }
+    expect(compactBackgroundRunReceipt(receipt)).toEqual(receipt)
+    expect(
+      compactBackgroundRunResult({
+        receipt,
+        run: {
+          runId: 'run-1',
+          status: 'completed',
+          text: { stdout: 'x'.repeat(30_000), stderr: '', traceback: '' },
+          outputs: []
+        }
+      })
+    ).toMatchObject({
+      receipt,
+      run: { runId: 'run-1', status: 'completed', truncated: true }
+    })
+  })
+
+  it('preserves the structured recovery envelope through the MCP RPC client', async () => {
+    const detail = {
+      code: 'BACKGROUND_RUN_NOT_FOUND',
+      stage: 'query',
+      retryable: true,
+      hint: 'Query before resubmitting.',
+      submissionIdentity: 'submission-1'
+    }
+    await expect(
+      callNotebookRpc(
+        {
+          endpoint: 'http://127.0.0.1:4567',
+          token: 'secret-token',
+          projectId: 'default-project',
+          sessionId: 'session-1',
+          workspaceCwd: '/workspace'
+        },
+        'getBackgroundRun',
+        { submissionIdentity: 'submission-1' },
+        async () => ({ ok: false, status: 500, json: async () => ({ error: detail }) }) as Response
+      )
+    ).rejects.toThrow(JSON.stringify(detail))
   })
 })
 
@@ -1796,11 +1861,14 @@ describe('compactNotebookExecutionResult', () => {
   })
 
   it('applies the compact projection and global budget to every execution tool', () => {
-    for (const name of ['notebook_execute', 'bash_execute']) {
-      const tool = NOTEBOOK_RPC_TOOLS.find((entry) => entry.name === name)
-      expect(tool?.mapResult).toBe(compactNotebookExecutionResult)
-      expect(tool?.resultLimitChars).toBe(NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT)
-    }
+    const notebookTool = NOTEBOOK_RPC_TOOLS.find((entry) => entry.name === 'notebook_execute')
+    expect(notebookTool?.mapResult?.(runSummary({ stdout: 'ok' }), {})).toEqual(
+      compactNotebookExecutionResult(runSummary({ stdout: 'ok' }))
+    )
+    expect(notebookTool?.resultLimitChars).toBe(NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT)
+    const bashTool = NOTEBOOK_RPC_TOOLS.find((entry) => entry.name === 'bash_execute')
+    expect(bashTool?.mapResult).toBe(compactNotebookExecutionResult)
+    expect(bashTool?.resultLimitChars).toBe(NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT)
     const replTool = NOTEBOOK_RPC_TOOLS.find((entry) => entry.name === 'repl_execute')
     expect(replTool?.mapResult).not.toBe(compactNotebookExecutionResult)
     expect(replTool?.resultLimitChars).toBe(NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT)

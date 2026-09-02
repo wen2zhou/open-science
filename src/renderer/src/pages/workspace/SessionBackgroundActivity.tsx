@@ -6,7 +6,7 @@ import type { NotebookRunRecord, NotebookSessionReference } from '../../../../sh
 
 type Props = {
   notebook: NotebookSessionReference
-  onOpenNotebook: (notebook: NotebookSessionReference) => void
+  onOpenNotebook: (notebook: NotebookSessionReference, runId?: string) => void
 }
 
 const terminalStatuses = new Set<NotebookRunRecord['status']>([
@@ -154,7 +154,7 @@ const SessionBackgroundActivity = ({
               <button
                 type="button"
                 className="rounded-md border border-border-200 px-2 py-1 hover:bg-bg-200"
-                onClick={() => onOpenNotebook(notebook)}
+                onClick={() => onOpenNotebook(notebook, run.runId)}
               >
                 {t('Open')}
               </button>
@@ -166,7 +166,11 @@ const SessionBackgroundActivity = ({
                   onClick={() => {
                     setCancelling((current) => new Set(current).add(run.runId))
                     void window.api.notebook
-                      .cancelBackgroundRun({ ...notebook, runId: run.runId })
+                      .cancelBackgroundRun({
+                        ...notebook,
+                        runId: run.runId,
+                        agentFrameId: run.agentFrameId
+                      })
                       .catch(() =>
                         setCancelling((current) => {
                           const next = new Set(current)

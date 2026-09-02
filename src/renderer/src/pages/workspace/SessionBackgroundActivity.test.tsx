@@ -20,6 +20,7 @@ const notebook: NotebookSessionReference = {
 
 const run = (overrides: Partial<NotebookRunRecord> = {}): NotebookRunRecord => ({
   runId: 'run-1',
+  agentFrameId: 'frame-1',
   executionMode: 'background',
   cellId: 'cell-1',
   source: 'agent',
@@ -75,9 +76,13 @@ describe('Session background activity ledger', () => {
 
     const buttons = [...container.querySelectorAll('button')]
     act(() => buttons.find((button) => button.textContent === 'Open')?.click())
-    expect(open).toHaveBeenCalledWith(notebook)
+    expect(open).toHaveBeenCalledWith(notebook, 'run-1')
     act(() => buttons.find((button) => button.textContent === 'Cancel')?.click())
-    expect(cancelBackgroundRun).toHaveBeenCalledWith({ ...notebook, runId: 'run-1' })
+    expect(cancelBackgroundRun).toHaveBeenCalledWith({
+      ...notebook,
+      runId: 'run-1',
+      agentFrameId: 'frame-1'
+    })
     expect(container.textContent).toContain('Cancelling')
   })
 })

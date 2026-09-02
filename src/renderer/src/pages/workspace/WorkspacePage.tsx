@@ -1069,8 +1069,10 @@ const WorkspacePage = ({
   }
 
   // Opens the right preview when the user explicitly selects the notebook entry.
-  const openNotebookPreview = (notebook: NotebookSessionReference): void => {
-    usePreviewWorkbenchStore.getState().upsertAndActivateItem(createNotebookPreviewItem(notebook))
+  const openNotebookPreview = (notebook: NotebookSessionReference, runId?: string): void => {
+    usePreviewWorkbenchStore
+      .getState()
+      .upsertAndActivateItem(createNotebookPreviewItem(notebook, runId))
   }
 
   // Opens the project file library as a stable preview workbench tool tab.

@@ -68,6 +68,7 @@ type AppendNotebookRunRequest = {
   sessionId: string
   run: NotebookRunRecord
   lane: NotebookLaneIdentity
+  signal?: AbortSignal
 }
 
 type UpdateNotebookRunRequest = AppendNotebookRunRequest
@@ -80,6 +81,10 @@ type NotebookRunMutationResult = {
   document: NotebookRunDocument
   run: NotebookRunRecord
 }
+type NotebookRunLookupResult = Readonly<{
+  document: NotebookRunDocument
+  run: NotebookRunRecord
+}>
 
 type AppendOrGetNotebookRunResult = NotebookRunMutationResult & { admitted: boolean }
 type TransitionNotebookRunResult = NotebookRunMutationResult & { transitioned: boolean }
@@ -672,6 +677,7 @@ class NotebookRunRepository {
           canonicalRun = existing
           return current
         }
+        request.signal?.throwIfAborted()
         admitted = true
         canonicalRun = normalizeRun(current.notebookSessionRoot, run)
         return { ...current, runs: [...current.runs, canonicalRun], updatedAt: Date.now() }
@@ -690,6 +696,26 @@ class NotebookRunRepository {
     await this.saveQueue
     const document = await this.loadExisting(projectId, sessionId, lane)
     return document.runs.find((run) => run.submissionIdentity === submissionIdentity)
+  }
+
+  async findRun(
+    projectId: string,
+    sessionId: string,
+    lane: NotebookLaneIdentity,
+    lookup: Readonly<{ runId?: string; submissionIdentity?: string }>
+  ): Promise<NotebookRunLookupResult | undefined> {
+    await this.saveQueue
+    const document = await this.loadExisting(projectId, sessionId, lane).catch((error) => {
+      if (isMissingFileError(error)) return undefined
+      throw error
+    })
+    if (!document) return undefined
+    const run = document.runs.find((candidate) =>
+      lookup.runId
+        ? candidate.runId === lookup.runId
+        : candidate.submissionIdentity === lookup.submissionIdentity
+    )
+    return run ? { document, run } : undefined
   }
 
   // Compare-and-set transition used by the lifecycle owner. A racing terminal winner is returned
@@ -1386,6 +1412,7 @@ export {
 export type {
   AppendNotebookRunRequest,
   AppendOrGetNotebookRunResult,
+  NotebookRunLookupResult,
   LoadNotebookRunDocumentRequest,
   TransitionNotebookRunRequest,
   TransitionNotebookRunResult,

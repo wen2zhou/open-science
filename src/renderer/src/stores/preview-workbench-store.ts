@@ -70,6 +70,8 @@ export type PreviewToolItem = PreviewItemBase & {
   type: 'tool'
   toolKind?: 'notebook' | 'files' | 'reviewer' | 'plan' | 'subagents'
   notebook?: NotebookSessionReference
+  notebookRunId?: string
+  notebookRunFocusRequest?: number
   // Reviewer-specific: which session's reviews to show, which review to select, and the active
   // finding to scroll to.
   reviewerSessionId?: string
@@ -303,14 +305,20 @@ const mergeRestoredPreviewSlice = (
   }
 }
 
+let notebookRunFocusRequest = 0
+
 // Builds the stable preview tab identity for the notebook attached to one chat session.
-const createNotebookPreviewItem = (notebook: NotebookSessionReference): PreviewToolItem => ({
+const createNotebookPreviewItem = (
+  notebook: NotebookSessionReference,
+  runId?: string
+): PreviewToolItem => ({
   id: `tool:${notebook.sessionId}:notebook`,
   sessionId: notebook.sessionId,
   type: 'tool',
   toolKind: 'notebook',
   title: 'Notebook',
-  notebook
+  notebook,
+  ...(runId ? { notebookRunId: runId, notebookRunFocusRequest: ++notebookRunFocusRequest } : {})
 })
 
 const createSessionPlanPreviewItem = (

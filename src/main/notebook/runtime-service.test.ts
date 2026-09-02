@@ -4,6 +4,7 @@ import { chmod, mkdir, mkdtemp, readFile, realpath, rm, writeFile } from 'node:f
 import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest'
+import { NotebookBackgroundRunError } from '../../shared/notebook'
 
 import type {
   NotebookExecutionRequest,
@@ -4149,6 +4150,199 @@ describe('notebook runtime service', () => {
     ).resolves.toMatchObject({
       receipt: { runId: receipt.runId },
       run: { status: 'completed', text: { stdout: 'finished\n' } }
+    })
+  })
+
+  it('does not persist a Run when background execution is cancelled before durable admission', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const admissionReached = createDeferred<void>()
+    const releaseAdmission = createDeferred<void>()
+    const appendOrGetRun = repository.appendOrGetRun.bind(repository)
+    vi.spyOn(repository, 'appendOrGetRun').mockImplementation(async (request) => {
+      admissionReached.resolve()
+      await releaseAdmission.promise
+      return appendOrGetRun(request)
+    })
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      backgroundExecutionEnabled: true
+    })
+    const cancellation = new AbortController()
+    const submission = service.executeBackground(
+      {
+        sessionId: 'session-background-aborted',
+        workspaceCwd: root,
+        code: 'must_not_run()',
+        background: true,
+        executionInvocationId: 'submission-aborted'
+      },
+      cancellation.signal
+    )
+    await admissionReached.promise
+    cancellation.abort(new Error('MCP disconnected before admission'))
+    releaseAdmission.resolve()
+
+    await expect(submission).rejects.toMatchObject({
+      detail: { code: 'BACKGROUND_RUN_ADMISSION_FAILED', stage: 'pre-admission' }
+    })
+    const document = await repository.findAnyExisting(
+      'default-project',
+      'session-background-aborted'
+    )
+    expect(document?.runs).toEqual([])
+  })
+
+  it('uses bounded Agent Frame-scoped background lookup and rejects cross-frame cancellation', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const readSessionRuns = vi.spyOn(repository, 'readSessionRuns')
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      backgroundExecutionEnabled: true,
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: 'done',
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const provenance = (agentFrameId: string) => ({
+      rootFrameId: 'frame-root',
+      agentFrameId,
+      messageBranchId: `branch-${agentFrameId}`,
+      runtimeSegmentId: `runtime-${agentFrameId}`,
+      promptMessageId: `prompt-${agentFrameId}`
+    })
+    const first = await service.executeBackground({
+      sessionId: 'session-lanes',
+      workspaceCwd: root,
+      code: 'first()',
+      background: true,
+      executionInvocationId: 'shared-submission',
+      provenanceContext: provenance('frame-a')
+    })
+    const second = await service.executeBackground({
+      sessionId: 'session-lanes',
+      workspaceCwd: root,
+      code: 'second()',
+      background: true,
+      executionInvocationId: 'shared-submission',
+      provenanceContext: provenance('frame-b')
+    })
+    readSessionRuns.mockClear()
+
+    await expect(
+      service.getBackgroundRun({
+        sessionId: 'session-lanes',
+        workspaceCwd: root,
+        submissionIdentity: 'shared-submission',
+        agentFrameId: 'frame-b'
+      })
+    ).resolves.toMatchObject({ receipt: { runId: second.runId } })
+    await expect(
+      service.cancelBackgroundRun({
+        sessionId: 'session-lanes',
+        workspaceCwd: root,
+        runId: first.runId,
+        agentFrameId: 'frame-b'
+      })
+    ).rejects.toMatchObject({
+      detail: { code: 'BACKGROUND_RUN_NOT_FOUND', stage: 'cancel' }
+    })
+    await expect(
+      service.getBackgroundRun({
+        sessionId: 'session-lanes',
+        workspaceCwd: root,
+        runId: first.runId,
+        agentFrameId: 'frame-with-no-document'
+      })
+    ).rejects.toMatchObject({
+      detail: { code: 'BACKGROUND_RUN_NOT_FOUND', stage: 'query' }
+    })
+    expect(readSessionRuns).not.toHaveBeenCalled()
+  })
+
+  it('preserves the legacy foreground submission fingerprint and returns structured errors', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository
+    })
+    await service.execute({
+      sessionId: 'session-foreground-fingerprint',
+      workspaceCwd: root,
+      code: 'print(1)',
+      executionInvocationId: 'legacy-submission'
+    })
+    const document = await repository.findExisting(
+      'default-project',
+      'session-foreground-fingerprint'
+    )
+    const expected = createHash('sha256')
+      .update(
+        JSON.stringify({
+          version: 1,
+          lane: JSON.stringify([
+            'default-project',
+            'session-foreground-fingerprint',
+            'root',
+            null,
+            null
+          ]),
+          code: 'print(1)',
+          language: 'python',
+          timeoutMs: null,
+          source: 'agent',
+          inputKind: 'cell',
+          provenanceContext: null,
+          allowedHelperSkillIds: [],
+          inputFiles: [],
+          helperModuleIds: []
+        })
+      )
+      .digest('hex')
+    expect(document?.runs[0].submissionFingerprint).toBe(expected)
+
+    await expect(
+      service.executeBackground({
+        sessionId: 'session-disabled-background',
+        workspaceCwd: root,
+        code: 'later()',
+        background: true
+      })
+    ).rejects.toEqual(
+      expect.objectContaining<Partial<NotebookBackgroundRunError>>({
+        detail: expect.objectContaining({
+          code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED',
+          stage: 'pre-admission',
+          retryable: false
+        })
+      })
+    )
+    await expect(
+      service.execute({
+        sessionId: 'session-disabled-background',
+        workspaceCwd: root,
+        code: 'must_not_be_mislabeled()',
+        background: true
+      })
+    ).rejects.toMatchObject({
+      detail: { code: 'BACKGROUND_EXECUTION_REQUIRES_BACKGROUND_API', retryable: false }
     })
   })
 

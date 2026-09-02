@@ -60,9 +60,32 @@ export type NotebookBackgroundRunResult = Readonly<{
   run: NotebookRunSummary
 }>
 
+export type NotebookBackgroundRunErrorDetail = Readonly<{
+  code: string
+  stage: 'pre-admission' | 'query' | 'cancel'
+  retryable: boolean
+  hint: string
+  runId?: string
+  submissionIdentity?: string
+}>
+
+export class NotebookBackgroundRunError extends Error {
+  readonly name = 'NotebookBackgroundRunError'
+
+  constructor(
+    readonly detail: NotebookBackgroundRunErrorDetail,
+    message: string
+  ) {
+    super(message)
+  }
+}
+
 export type NotebookBackgroundRunLookupRequest = NotebookSessionRequest & {
   runId?: string
   submissionIdentity?: string
+  // The authenticated local RPC bridge overwrites this with its capability-bound Agent Frame.
+  // Renderer Session management supplies the frame recorded on the selected Run.
+  agentFrameId?: string
 }
 
 export type NotebookRunProvenanceContext = {

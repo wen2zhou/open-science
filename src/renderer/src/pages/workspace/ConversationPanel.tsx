@@ -376,7 +376,7 @@ type ConversationPanelWorkflows = {
 
 type ConversationPanelSessionTools = {
   notebookReference: NotebookSessionReference | undefined
-  openNotebook: (notebook: NotebookSessionReference) => void
+  openNotebook: (notebook: NotebookSessionReference, runId?: string) => void
   openJobs: (sessionId: string) => void
 }
 

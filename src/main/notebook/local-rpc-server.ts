@@ -9,7 +9,10 @@ import {
 } from '../../shared/compute'
 import type { HostLineageGraph, HostLineageVersion } from '../../shared/host-lineage'
 import { isCurrentInFlight } from '../../shared/in-flight-promise'
-import type { NotebookRunProvenanceContext } from '../../shared/notebook'
+import {
+  NotebookBackgroundRunError,
+  type NotebookRunProvenanceContext
+} from '../../shared/notebook'
 import type { HostArtifactCatalogItem } from '../../shared/project-files'
 import {
   createArtifactVersionLocator,
@@ -1907,6 +1910,12 @@ class NotebookLocalRpcServer {
         ) {
           throw new RpcHttpError(403, 'Notebook RPC capability does not match active Agent Frame.')
         }
+        if (method === 'getBackgroundRun' || method === 'cancelBackgroundRun') {
+          resolvedParams = {
+            ...resolvedParams,
+            agentFrameId: authenticatedBinding.agentFrameId
+          }
+        }
       }
       if (
         authenticatedBinding &&
@@ -1943,16 +1952,20 @@ class NotebookLocalRpcServer {
       if (response.destroyed) return
       const message = error instanceof Error ? error.message : String(error)
       const serializedError =
-        error instanceof PlanCommandError
-          ? { code: error.code, message }
-          : error instanceof StructuredOutputError
-            ? {
-                code: error.code,
-                ...(error.keyword ? { keyword: error.keyword } : {}),
-                ...(error.instancePath !== undefined ? { instance_path: error.instancePath } : {}),
-                ...(error.property ? { property: error.property } : {})
-              }
-            : message
+        error instanceof NotebookBackgroundRunError
+          ? error.detail
+          : error instanceof PlanCommandError
+            ? { code: error.code, message }
+            : error instanceof StructuredOutputError
+              ? {
+                  code: error.code,
+                  ...(error.keyword ? { keyword: error.keyword } : {}),
+                  ...(error.instancePath !== undefined
+                    ? { instance_path: error.instancePath }
+                    : {}),
+                  ...(error.property ? { property: error.property } : {})
+                }
+              : message
 
       if (error instanceof ResourceBudgetExceededError) {
         closeRequestAfterResponse(request, response)

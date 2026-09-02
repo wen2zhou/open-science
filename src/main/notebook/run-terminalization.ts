@@ -52,6 +52,7 @@ type TerminalizeNotebookRunRequest<Result extends NotebookRunTerminalResult> = {
 type AdmitNotebookRunRequest = {
   session: NotebookRunTerminalizationSession
   queuedRun: NotebookRunRecord
+  signal?: AbortSignal
 }
 
 type RunAdmittedNotebookRunRequest<Result extends NotebookRunTerminalResult> = Omit<
@@ -144,7 +145,8 @@ class NotebookRunTerminalizationOwner {
       projectId: request.session.projectId,
       sessionId: request.session.sessionId,
       lane: request.session.lane,
-      run: request.queuedRun
+      run: request.queuedRun,
+      signal: request.signal
     })
     if (admission.admitted) this.options.notifyChanged(request.session)
     return { run: admission.run, admitted: admission.admitted }

@@ -106,11 +106,13 @@ const notebookLocalRpcRequestSchemas = {
   getBackgroundRun: notebookSessionRequestSchema.extend({
     runId: z.string().min(1).optional(),
     submissionIdentity: z.string().min(1).optional(),
+    agentFrameId: z.string().min(1).optional(),
     action: z.enum(['query', 'cancel']).optional()
   }),
   cancelBackgroundRun: notebookSessionRequestSchema.extend({
     runId: z.string().min(1).optional(),
     submissionIdentity: z.string().min(1).optional(),
+    agentFrameId: z.string().min(1).optional(),
     action: z.enum(['query', 'cancel']).optional()
   }),
   executeControl: notebookSessionRequestSchema.extend({
