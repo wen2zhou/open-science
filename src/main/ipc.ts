@@ -271,6 +271,7 @@ import { GrantedLocalRootsRepository } from './local-fs/granted-roots-repository
 import { LocalFsService } from './local-fs/service'
 import { SettingsService } from './settings/service'
 import { SettingsRepository } from './settings/repository'
+import { WslSetupOwner } from './wsl/wsl-setup-owner'
 import { SettingsSnapshotCommitOwner } from './settings/settings-snapshot-commit-owner'
 import type { SettingsDocumentStore } from './settings/document-store'
 import { NetworkProxyRuntime } from './settings/network-proxy-runtime'
@@ -525,6 +526,13 @@ const createApplicationModules = async (
     settingsStore ?? resolveConfigRoot(),
     (operation) => specialistPackageSkillAdapter.runMutationExclusive(operation)
   )
+  const wslSetup = new WslSetupOwner({
+    // Managed workspaces, handoff data, and caches live below this local NTFS mount root. The
+    // execution adapter will still validate each invocation's concrete authorized paths.
+    workspacePath: resolveDataRoot(),
+    readSelection: async () => (await settingsRepository.getSettings()).wslSelection,
+    writeSelection: (selection) => settingsRepository.setWslSelection(selection)
+  })
   const networkProxyRuntime = new NetworkProxyRuntime({
     setProxy: (config) => session.defaultSession.setProxy(config)
   })
@@ -649,6 +657,7 @@ const createApplicationModules = async (
       getNotebookNetworkStatus: () => notebookNetworkSandbox.status(),
       installNotebookNetwork: () => notebookNetworkSandbox.installWindows(),
       removeNotebookNetwork: () => notebookNetworkSandbox.removeWindows(),
+      wslSetup,
       resolveCodexProxyEnvironment: () =>
         Promise.resolve(networkProxyRuntime.getChildProcessProxyEnvironment())
     })

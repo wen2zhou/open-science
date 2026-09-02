@@ -67,6 +67,7 @@ import {
   type UpsertProviderRequest,
   type ValidateProviderRequest
 } from '../../shared/settings'
+import type { SelectWslProfileRequest } from '../../shared/wsl-setup'
 import { SettingsService } from './service'
 import { connectorTemplateExportSelection } from './connector-template'
 import type { SettingsWorkflows } from './workflows'
@@ -343,6 +344,10 @@ const registerSettingsIpcHandlers = ({
 
   ipcMainHandle('settings:get-package-mirror', () => service.getPackageMirror())
   ipcMainHandle('settings:get-notebook-network-status', () => service.getNotebookNetworkStatus())
+  ipcMainHandle('settings:probe-wsl-setup', () => service.probeWslSetup())
+  ipcMainHandle('settings:select-wsl-profile', (_event, request: SelectWslProfileRequest) =>
+    service.selectWslProfile(request)
+  )
   ipcMainHandle('settings:set-package-mirror', (_event, request: SetPackageMirrorRequest) =>
     snapshotCommits.projectAfter(service.setPackageMirror(request))
   )

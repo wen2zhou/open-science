@@ -41,6 +41,7 @@ import {
 } from './settings-search-shortcut'
 import { PythonIcon, RIcon } from './language-icons'
 import { NotebookNetworkProtectionBanner } from './NotebookNetworkProtectionBanner'
+import { WslLocalShellSection } from './WslLocalShellSection'
 import { envReadyLine, managedLine, providerType } from './runtimes-panel-view'
 import { provisionProgressText } from '../workspace/provision-progress-text'
 
@@ -829,6 +830,7 @@ const RuntimesPanel = ({
           })
         )}
       </SettingsSection>
+      {window.api.platform === 'win32' ? <WslLocalShellSection /> : null}
 
       <AlertDialog.Root
         open={managedRepair !== null}

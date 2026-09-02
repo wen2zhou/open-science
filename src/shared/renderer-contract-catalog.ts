@@ -34,6 +34,7 @@ import type {
   SideChatStartRequest,
   SideChatStartResponse
 } from './side-chat'
+import type { SelectWslProfileRequest, WslSetupSnapshot } from './wsl-setup'
 import type { SourcePreviewLoadState } from './source-preview'
 import type {
   ArtifactPreviewResult,
@@ -1937,6 +1938,13 @@ export const RENDERER_API_CONTRACT = Object.freeze({
     'settings',
     ['settings:get-notebook-network-status', LOCAL]
   ),
+  'settings.probeWslSetup': callable<() => Promise<WslSetupSnapshot>>()('settings', [
+    'settings:probe-wsl-setup',
+    LOCAL
+  ]),
+  'settings.selectWslProfile': callable<
+    (request: SelectWslProfileRequest) => Promise<WslSetupSnapshot>
+  >()('settings', ['settings:select-wsl-profile', LOCAL]),
   'settings.installNotebookNetwork': callable<() => Promise<NotebookNetworkStatus>>()('settings', [
     'settings:install-notebook-network',
     LOCAL

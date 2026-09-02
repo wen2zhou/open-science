@@ -84,6 +84,7 @@ import { startDiagnosticOperation } from '../diagnostics/operation'
 import type { PackageMirror } from '../../shared/mirror'
 import type { NetworkProxySettings } from '../../shared/network-proxy'
 import type { NotebookNetworkSettings, NotebookNetworkStatus } from '../../shared/notebook-network'
+import type { SelectWslProfileRequest, WslSetupSnapshot } from '../../shared/wsl-setup'
 import type { GrantedLocalRoot } from '../../shared/local-fs'
 import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement } from '../../shared/notebook-runtime'
@@ -209,6 +210,10 @@ export type SettingsServiceOptions = {
   getNotebookNetworkStatus?: () => Promise<NotebookNetworkStatus>
   installNotebookNetwork?: () => Promise<{ cancelled: boolean }>
   removeNotebookNetwork?: () => Promise<{ cancelled: boolean }>
+  wslSetup?: {
+    probe(): Promise<WslSetupSnapshot>
+    select(request: SelectWslProfileRequest): Promise<WslSetupSnapshot>
+  }
   // Encrypted-token controller for claude-isolated; default-constructed against this.configRoot
   // when omitted. Storage is delegated to the host's SettingsRepository + encrypt/tryDecryptKey
   // pipeline, mirroring how CodexAuthController delegates to openCodexAuthSession.
@@ -238,6 +243,7 @@ class SettingsService {
   private readonly getNotebookNetworkStatusImpl: () => Promise<NotebookNetworkStatus>
   private readonly installNotebookNetworkImpl: () => Promise<{ cancelled: boolean }>
   private readonly removeNotebookNetworkImpl: () => Promise<{ cancelled: boolean }>
+  private readonly wslSetup?: SettingsServiceOptions['wslSetup']
   private readonly userClaudeDir: string
   private readonly log: Logger
   private customServerAuthenticator?: (serverId: string) => Promise<void>
@@ -300,6 +306,7 @@ class SettingsService {
       (async () => {
         throw new Error('Notebook network sandbox removal is unavailable.')
       })
+    this.wslSetup = options.wslSetup
     this.log = options.log ?? createLogger('settings')
     this.preferences = new SettingsPreferencesModule(this.repository)
     this.notebookRuntimeSettings = new NotebookRuntimeSettingsModule(this.repository)
@@ -481,6 +488,16 @@ class SettingsService {
   async removeNotebookNetwork(): Promise<NotebookNetworkStatus> {
     await this.removeNotebookNetworkImpl()
     return this.getNotebookNetworkStatusImpl()
+  }
+
+  probeWslSetup(): Promise<WslSetupSnapshot> {
+    if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
+    return this.wslSetup.probe()
+  }
+
+  selectWslProfile(request: SelectWslProfileRequest): Promise<WslSetupSnapshot> {
+    if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
+    return this.wslSetup.select(request)
   }
 
   private async migrateLegacyKeyRefs(settings: StoredSettings): Promise<StoredSettings> {

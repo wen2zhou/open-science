@@ -396,6 +396,7 @@ describe('Settings backend ownership architecture', () => {
       'setToolBlocked',
       'setToolPolicy',
       'setVisionModel',
+      'setWslSelection',
       'updateClaudeIsolatedCredentialsIfExists',
       'updateClaudeIsolatedValidationIfKeyMatches',
       'updateClaudeSharedValidationIfUnchanged',
@@ -489,10 +490,10 @@ describe('Settings backend ownership architecture', () => {
         logoutClaudeShared logoutIsolatedClaude logoutIsolatedCodex logoutXaiOAuth markOnboardingComplete
         markPathsNormalized migrateAgentHomeSkillIdentities previewAgentHomeSkill previewCustomServerTemplateExport
         previewCustomServerTemplateImport previewGitHubSkill previewSkillArchive previewSkillZip
-        provisionedConnectorSkillNames publishHostSkill refreshProviderModels registeredHelperCatalog rememberCodexAutoHttpsFallback removeCustomServer removeDeviceCredential removeGitHubToken removeNotebookNetwork
+        probeWslSetup provisionedConnectorSkillNames publishHostSkill refreshProviderModels registeredHelperCatalog rememberCodexAutoHttpsFallback removeCustomServer removeDeviceCredential removeGitHubToken removeNotebookNetwork
         removeManualInterpreter resolveActiveModelChangeTarget resolveActiveReasoningEffort
         resolveAdmittedSubagentBackend resolveAgentBackend resolveDeviceOAuthCredential resolveExplicitAgentBackend resolveSkillDocument resolveSubagentExecutionModel saveCustomServerOAuthState saveGitHubToken
-        scanRepoSkills setActiveProvider setAgentEnvironmentCreationEnabled setAgentFramework setAgentRouting setAppIconVariant setClosePreference
+        scanRepoSkills selectWslProfile setActiveProvider setAgentEnvironmentCreationEnabled setAgentFramework setAgentRouting setAppIconVariant setClosePreference
         setComputeBookmarks setConnectorAutoAllow setConnectorEnabled
         setConversationSkillImportEnabled setCustomServerAuthenticator setCustomServerEnabled
         setDataRoot setDefaultPermissionProfile setDeviceCredentialAuthenticator setEnvironmentEnabled setInstallAuthorized
@@ -704,7 +705,8 @@ describe('Settings backend ownership architecture', () => {
       'showNotificationContent',
       'subagentModel',
       'version',
-      'visionModel'
+      'visionModel',
+      'wslSelection'
     ])
     expect(typePropertyNames(settingsPaths.types, 'StoredProvider')).toEqual([
       'accountEmail',

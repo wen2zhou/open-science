@@ -84,6 +84,7 @@ describe('settings document codec', () => {
       computeGrants: [{ projectId: 'p1', operation: 'download', providerId: 'c1' }],
       notebookRuntimes: { python: { source: 'managed' } },
       agentEnvironmentCreationEnabled: false,
+      wslSelection: { distro: ' Ubuntu-24.04 ', user: ' scientist ' },
       defaultPermissionProfile: 'ask',
       dataRoot,
       unknown: true
@@ -100,6 +101,7 @@ describe('settings document codec', () => {
       },
       computeGrants: [{ projectId: 'p1', operation: 'download', providerId: 'c1' }],
       agentEnvironmentCreationEnabled: false,
+      wslSelection: { distro: 'Ubuntu-24.04', user: 'scientist' },
       defaultPermissionProfile: 'ask',
       dataRoot
     })

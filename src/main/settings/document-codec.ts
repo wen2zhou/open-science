@@ -303,6 +303,11 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
   if (value.notebookNetwork !== undefined) {
     settings.notebookNetwork = normalizeNotebookNetworkSettings(value.notebookNetwork)
   }
+  if (isRecord(value.wslSelection)) {
+    const distro = asString(value.wslSelection.distro)?.trim()
+    const user = asString(value.wslSelection.user)?.trim()
+    if (distro && user) settings.wslSelection = { distro, user }
+  }
 
   const pathsNormalizedAt = asNumber(value.pathsNormalizedAt)
   if (pathsNormalizedAt !== undefined) settings.pathsNormalizedAt = pathsNormalizedAt
