@@ -84,6 +84,7 @@ import type {
 } from '../../shared/notebook-runtime'
 import type { NotebookRuntimeSettings } from '../settings/capabilities'
 import { NotebookRecoveryCoordinator } from './recovery-coordinator'
+import { KernelProcessLifecycleOwner } from './kernel-process-lifecycle'
 import { managedNotebookWorkingCache } from './windows-micromamba-working-cache'
 import { NotebookRuntimeRepairOwner } from './runtime-repair'
 import { NotebookRuntimeRepairPolicy } from './runtime-repair-policy'
@@ -361,6 +362,7 @@ class NotebookRuntimeService {
     ((language: NotebookLanguage) => Promise<RuntimeEnablement | undefined>) | undefined
   private readonly runtimeBindingOwner: NotebookRuntimeBindingOwner
   private readonly recoveryCoordinator: NotebookRecoveryCoordinator
+  private readonly kernelProcessLifecycle: KernelProcessLifecycleOwner
   private readonly runtimeLogger: RuntimeDiagnosticLogger
   private readonly environmentStateTracker: Pick<
     EnvironmentStateTracker,
@@ -387,6 +389,10 @@ class NotebookRuntimeService {
       }
     })
     const runtimeRoot = getRuntimeRoot(options.dataRoot)
+    this.kernelProcessLifecycle = new KernelProcessLifecycleOwner({
+      storageRoot: options.dataRoot,
+      platform: options.platform
+    })
     const workingCache = managedNotebookWorkingCache(options.platform, !options.installPackagesImpl)
     this.repairPolicy = new NotebookRuntimeRepairPolicy(runtimeRoot)
     this.recoveryCoordinator = new NotebookRecoveryCoordinator(
@@ -447,6 +453,8 @@ class NotebookRuntimeService {
       sessions: this.sessions,
       runtimeBindings: this.runtimeBindingOwner,
       waitForRevocationDrains: () => this.environmentOperations.waitForRevocationDrains(),
+      ensureProcessRecovery: () => this.kernelProcessLifecycle.ensureReady(),
+      processLifecycle: this.kernelProcessLifecycle,
       executorFactory: options.executorFactory,
       defaultExecutorOptions: () => ({
         ...resolveDefaultExecutorOptions(),
@@ -1186,7 +1194,12 @@ class NotebookRuntimeService {
   // download (staging cleanup), materialize (verify/rebuild the env prefix), and install (flag
   // repair-required) paths all populate the journal, so each reconcile action below is wired to a real effect.
   async recoverInterruptedOperations(): Promise<void> {
-    await this.recoveryCoordinator.recover()
+    // Publish both startup barriers before yielding. Environment operations already rely on
+    // recoveryCoordinator.recover() becoming visible synchronously; adding the kernel fence must not
+    // create a window in which prefix mutation starts before that existing barrier is installed.
+    const kernelRecovery = this.kernelProcessLifecycle.recover()
+    const operationRecovery = this.recoveryCoordinator.recover()
+    await Promise.all([kernelRecovery, operationRecovery])
   }
 
   // Awaited by materialize/install before they touch a prefix, so startup recovery has finished
@@ -1195,6 +1208,7 @@ class NotebookRuntimeService {
   // startup env gate and UI provision/repair handlers can share the SAME barrier (they touch prefixes
   // too, not just materialize/install).
   async ensureRecovered(): Promise<void> {
+    await this.kernelProcessLifecycle.ensureReady()
     await this.recoveryCoordinator.ensureReady()
   }
 

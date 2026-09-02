@@ -318,6 +318,7 @@ class NotebookExecutionOwner {
           const executionResult = await session
             .execute({
               runId,
+              kernelEpochId,
               code: cell.code,
               ...(helperPlan.injections.length ? { helperModules: helperPlan.injections } : {}),
               cwd: cwdBefore,
@@ -481,8 +482,12 @@ class NotebookExecutionOwner {
     signal?: AbortSignal
   ): Promise<NotebookControlResult> {
     this.options.notifyAvailable(session, 'agent')
+    const replWasTerminated =
+      session.kernelStatus('repl') === 'terminated' || session.hasDurableKernelTermination('repl')
+    const kernelEpochId = session.kernelEpoch('repl', replWasTerminated).id
     const runningRun: NotebookRunRecord = {
       runId,
+      kernelEpochId,
       ...(request.executionInvocationId
         ? { executionInvocationId: request.executionInvocationId }
         : {}),
@@ -513,9 +518,6 @@ class NotebookExecutionOwner {
       cwd: session.cwd,
       platform: this.options.platform
     })
-    const replWasTerminated =
-      !blockedMutation &&
-      (session.kernelStatus('repl') === 'terminated' || session.hasDurableKernelTermination('repl'))
     if (!blockedMutation) {
       session.clearKernelTerminated('repl')
       this.setReplStatus(session, 'running')
@@ -558,6 +560,7 @@ class NotebookExecutionOwner {
               return session
                 .execute({
                   runId,
+                  kernelEpochId,
                   code: request.code,
                   kind: 'repl',
                   cwd: session.cwd,
