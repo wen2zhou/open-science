@@ -1922,6 +1922,8 @@
     "Restore missing default Global permissions without changing other remembered permissions.": "Восстановите недостающие глобальные разрешения по умолчанию, не изменяя остальные запомненные разрешения.",
     "Remembered scopes apply to commands starting with:": "Запомненные диапазоны применяются к командам, начинающимся с:",
     "Remote": "Удалённый",
+    "Compute Job": "Вычислительное задание",
+    "Remote · {{host}}": "Удалённо · {{host}}",
     "Remote App Access": "Удалённый доступ к приложению",
     "Remote Browser Access": "Удалённый доступ через браузер",
     "Remote access is not initialized yet.": "Доступ издалека еще не инициализирован.",

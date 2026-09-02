@@ -18,6 +18,7 @@ import type {
 } from '../../../../shared/acp'
 import type { LinkedFolderFileReference } from '../../../../shared/artifacts'
 import type { NotebookSessionReference } from '../../../../shared/notebook'
+import type { JobSummary } from '../../../../shared/compute'
 import type {
   PermissionProfileId,
   SessionPermissionProfileState
@@ -378,6 +379,7 @@ type ConversationPanelSessionTools = {
   notebookReference: NotebookSessionReference | undefined
   openNotebook: (notebook: NotebookSessionReference, runId?: string) => void
   openJobs: (sessionId: string) => void
+  openJob?: (job: JobSummary) => void
 }
 
 type ConversationPanelSubagents = {
@@ -578,7 +580,12 @@ const ConversationPanel = ({
     running: isSavingAsSkill,
     request: onSaveAsSkill
   } = saveAsSkill
-  const { notebookReference, openNotebook: onOpenNotebook, openJobs: onOpenJobList } = sessionTools
+  const {
+    notebookReference,
+    openNotebook: onOpenNotebook,
+    openJobs: onOpenJobList,
+    openJob: onOpenJob
+  } = sessionTools
   const { unavailable: subagentUnavailable, stop: onStopSubagents } = subagents
   const specialistId = activeSession
     ? specialist.view.specialist.barrierInFlight
@@ -1275,6 +1282,7 @@ const ConversationPanel = ({
                   <SessionBackgroundActivity
                     notebook={notebookReference}
                     onOpenNotebook={onOpenNotebook}
+                    onOpenComputeJob={onOpenJob ?? ((job) => onOpenJobList(job.session_id))}
                   />
                 ) : null}
 

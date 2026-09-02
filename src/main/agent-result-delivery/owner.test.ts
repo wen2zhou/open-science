@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AgentResultDelivery } from '../../shared/agent-result-delivery'
 import { AgentResultDeliveryOwner } from './owner'
@@ -58,6 +58,8 @@ const harness = (
 }
 
 describe('AgentResultDeliveryOwner', () => {
+  afterEach(() => vi.useRealTimers())
+
   it('batches pending outcomes from one Session into one app continuation', async () => {
     const { owner, repository, sendContinuation } = harness()
 
@@ -111,5 +113,21 @@ describe('AgentResultDeliveryOwner', () => {
 
     expect(repository.claimPending).not.toHaveBeenCalled()
     expect(sendContinuation).not.toHaveBeenCalled()
+  })
+
+  it('retries a queued Session after the current Turn releases the branch', async () => {
+    vi.useFakeTimers()
+    let available = false
+    const { owner, sendContinuation } = harness({
+      canStartSessionTurn: async () => available,
+      batchDelayMs: 50
+    })
+
+    await expect(owner.drainSession('session-1')).resolves.toBe('queued')
+    available = true
+    await vi.advanceTimersByTimeAsync(50)
+
+    expect(sendContinuation).toHaveBeenCalledOnce()
+    owner.dispose()
   })
 })

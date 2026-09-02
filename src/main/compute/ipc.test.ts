@@ -862,6 +862,38 @@ describe('compute handlers — jobsList', () => {
     expect(findBySession).toHaveBeenCalledWith('sess-1', undefined)
   })
 
+  it('projects the durable Agent Result Delivery path without changing Compute Job truth', async () => {
+    const job = makeJob({ session_id: 'sess-1' })
+    const hasDeliveryPath = vi.fn().mockResolvedValue(true)
+    const handlers = createComputeHandlers(
+      mockRepository({ list: vi.fn().mockResolvedValue([]) }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockJobRepository({ findBySession: vi.fn().mockResolvedValue([job]) }),
+      undefined,
+      undefined,
+      '/tmp/test-storage',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { hasDeliveryPath }
+    )
+
+    const result = await handlers.jobsList({ sessionId: 'sess-1' })
+
+    expect(result[0]).toMatchObject({
+      job_id: 'job-1',
+      status: 'running',
+      result_delivery_path: 'agent-result-delivery'
+    })
+    expect(hasDeliveryPath).toHaveBeenCalledWith('job-1')
+  })
+
   it('retains a safe needs-attention projection in the renderer jobs list', async () => {
     const findBySession = vi.fn().mockResolvedValue([
       makeJob({

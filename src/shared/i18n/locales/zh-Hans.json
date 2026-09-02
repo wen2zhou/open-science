@@ -1921,6 +1921,8 @@
     "Restore missing default Global permissions without changing other remembered permissions.": "恢复缺失的默认全局权限，不会更改其他已记住的权限。",
     "Remembered scopes apply to commands starting with:": "记住的范围适用于以下开头的命令：",
     "Remote": "远程",
+    "Compute Job": "Compute 作业",
+    "Remote · {{host}}": "远程 · {{host}}",
     "Remote App Access": "远程 App 访问",
     "Remote Browser Access": "远程浏览器访问",
     "Remote access is not initialized yet.": "远程访问尚未初始化。",

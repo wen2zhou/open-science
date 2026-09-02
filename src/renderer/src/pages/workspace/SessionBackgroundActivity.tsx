@@ -4,10 +4,12 @@ import { Circle, CircleCheck, CircleX, Clock3, Loader2 } from 'lucide-react'
 
 import type { NotebookRunRecord, NotebookSessionReference } from '../../../../shared/notebook'
 import type { AgentResultDelivery } from '../../../../shared/agent-result-delivery'
+import type { JobSummary } from '../../../../shared/compute'
 
 type Props = {
   notebook: NotebookSessionReference
   onOpenNotebook: (notebook: NotebookSessionReference, runId?: string) => void
+  onOpenComputeJob?: (job: JobSummary) => void
 }
 
 const terminalStatuses = new Set<NotebookRunRecord['status']>([
@@ -47,26 +49,30 @@ const shellLaneLabel = (
 
 const SessionBackgroundActivity = ({
   notebook,
-  onOpenNotebook
+  onOpenNotebook,
+  onOpenComputeJob
 }: Props): React.JSX.Element | null => {
   const { t } = useTranslation()
   const [runs, setRuns] = useState<NotebookRunRecord[]>([])
   const [deliveries, setDeliveries] = useState<AgentResultDelivery[]>([])
+  const [computeJobs, setComputeJobs] = useState<JobSummary[]>([])
   const [now, setNow] = useState(() => Date.now())
   const [cancelling, setCancelling] = useState<Set<string>>(() => new Set())
 
   useEffect(() => {
     let active = true
     const load = async (): Promise<void> => {
-      const [state, activity] = await Promise.all([
+      const [state, activity, jobs] = await Promise.all([
         window.api.notebook.state(notebook).catch(() => undefined),
         window.api.agentResultDelivery
           .getSessionActivity({ sessionId: notebook.sessionId })
-          .catch(() => undefined)
+          .catch(() => undefined),
+        window.api.compute?.jobsList({ sessionId: notebook.sessionId }).catch(() => undefined)
       ])
       if (!active || !state) return
       setRuns(state.runs.filter((run) => run.executionMode === 'background'))
       if (activity) setDeliveries([...activity.awaitingAgent])
+      if (jobs) setComputeJobs(jobs)
       setCancelling((current) => {
         const next = new Set(
           [...current].filter((runId) =>
@@ -84,13 +90,25 @@ const SessionBackgroundActivity = ({
         void load()
       }
     })
+    const stopCompute = window.api.compute?.onJobUpdated((job) => {
+      if (job.session_id === notebook.sessionId && job.project_id === notebook.projectId) {
+        void load()
+      }
+    })
     return () => {
       active = false
       stop()
+      stopCompute?.()
     }
   }, [notebook])
 
-  const hasLiveRun = runs.some((run) => run.status === 'queued' || run.status === 'running')
+  const hasLiveRun =
+    runs.some((run) => run.status === 'queued' || run.status === 'running') ||
+    computeJobs.some(
+      (job) =>
+        job.cancellation_status !== 'cancelled' &&
+        (job.status === 'queued' || job.status === 'submitted' || job.status === 'running')
+    )
   useEffect(() => {
     if (!hasLiveRun) return
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
@@ -109,7 +127,25 @@ const SessionBackgroundActivity = ({
   }, [deliveries.length, notebook.sessionId])
 
   const deliveryByRunId = useMemo(
-    () => new Map(deliveries.map((delivery) => [delivery.context.runId, delivery])),
+    () =>
+      new Map(
+        deliveries.flatMap((delivery) =>
+          delivery.context.sourceKind === 'compute-job'
+            ? []
+            : [[delivery.context.runId, delivery] as const]
+        )
+      ),
+    [deliveries]
+  )
+  const deliveryByJobId = useMemo(
+    () =>
+      new Map(
+        deliveries.flatMap((delivery) =>
+          delivery.context.sourceKind === 'compute-job'
+            ? [[delivery.context.jobId, delivery] as const]
+            : []
+        )
+      ),
     [deliveries]
   )
   const ordered = useMemo(
@@ -126,7 +162,33 @@ const SessionBackgroundActivity = ({
         }),
     [deliveryByRunId, runs]
   )
-  if (ordered.length === 0) return null
+  const orderedComputeJobs = useMemo(
+    () =>
+      [...computeJobs]
+        .filter((job) => {
+          const active =
+            job.cancellation_status !== 'cancelled' &&
+            (job.status === 'queued' || job.status === 'submitted' || job.status === 'running')
+          return active || deliveryByJobId.has(job.job_id)
+        })
+        .sort((left, right) => {
+          const leftActive =
+            left.cancellation_status !== 'cancelled' &&
+            (left.status === 'queued' || left.status === 'submitted' || left.status === 'running')
+          const rightActive =
+            right.cancellation_status !== 'cancelled' &&
+            (right.status === 'queued' ||
+              right.status === 'submitted' ||
+              right.status === 'running')
+          return leftActive === rightActive
+            ? right.created_at - left.created_at
+            : leftActive
+              ? -1
+              : 1
+        }),
+    [computeJobs, deliveryByJobId]
+  )
+  if (ordered.length === 0 && orderedComputeJobs.length === 0) return null
 
   const statusLabel = (run: NotebookRunRecord): string => {
     if (cancelling.has(run.runId)) return t('Cancelling')
@@ -243,6 +305,134 @@ const SessionBackgroundActivity = ({
                           setCancelling((current) => {
                             const next = new Set(current)
                             next.delete(run.runId)
+                            return next
+                          })
+                        )
+                    }}
+                  >
+                    {t('Cancel')}
+                  </button>
+                ) : delivery ? (
+                  <button
+                    type="button"
+                    className="rounded-md border border-border-200 px-2 py-1 hover:bg-bg-200"
+                    onClick={() => {
+                      void window.api.agentResultDelivery
+                        .dismiss({ sessionId: notebook.sessionId, deliveryId: delivery.id })
+                        .then((dismissed) => {
+                          if (dismissed) {
+                            setDeliveries((current) =>
+                              current.filter((candidate) => candidate.id !== delivery.id)
+                            )
+                          }
+                        })
+                    }}
+                  >
+                    {t('Dismiss')}
+                  </button>
+                ) : null}
+              </span>
+            </div>
+          </Fragment>
+        )
+      })}
+      {orderedComputeJobs.map((job, index) => {
+        const isActive =
+          job.cancellation_status !== 'cancelled' &&
+          (job.status === 'queued' || job.status === 'submitted' || job.status === 'running')
+        const previous = orderedComputeJobs[index - 1]
+        const previousActive =
+          previous &&
+          previous.cancellation_status !== 'cancelled' &&
+          (previous.status === 'queued' ||
+            previous.status === 'submitted' ||
+            previous.status === 'running')
+        const showGroup = index === 0 || previousActive !== isActive
+        const isCancelling = cancelling.has(job.job_id) || job.cancellation_status === 'cancelling'
+        const delivery = deliveryByJobId.get(job.job_id)
+        const status = isCancelling
+          ? t('Cancelling')
+          : delivery?.state === 'needs-attention'
+            ? t('Needs Agent')
+            : delivery
+              ? t('Pending delivery')
+              : job.cancellation_status === 'cancelled'
+                ? t('Cancelled')
+                : job.status === 'queued' || job.status === 'submitted'
+                  ? t('Queued')
+                  : job.status === 'running'
+                    ? t('Running')
+                    : job.status === 'success'
+                      ? t('Completed')
+                      : job.status === 'timeout'
+                        ? t('Timed out')
+                        : t('Failed')
+        const StatusIcon = isCancelling
+          ? Loader2
+          : job.status === 'success'
+            ? CircleCheck
+            : isActive
+              ? job.status === 'running'
+                ? Circle
+                : Clock3
+              : CircleX
+        const startedAt = job.started_at ?? job.created_at
+        const endedAt = job.finished_at ?? (isActive ? now : startedAt)
+        const seconds = Math.max(0, Math.floor((endedAt - startedAt) / 1_000))
+        const duration = `${Math.floor(seconds / 60)}m ${String(seconds % 60).padStart(2, '0')}s`
+        return (
+          <Fragment key={`compute:${job.job_id}`}>
+            {showGroup ? (
+              <div className="min-w-[680px] border-t border-border-200 bg-bg-100 px-3 py-1 text-[10px] font-semibold tracking-wide text-text-300 uppercase">
+                {isActive ? t('Active') : t('Awaiting Agent')}
+              </div>
+            ) : null}
+            <div className="grid min-h-10 min-w-[680px] grid-cols-[minmax(180px,1.4fr)_110px_110px_90px_140px] items-center gap-2 border-t border-border-200 px-3 py-1.5 text-[11px]">
+              <span className="min-w-0 truncate font-medium" title={job.intent}>
+                <span className="mr-2 inline-grid min-h-6 place-items-center rounded-md bg-bg-200 px-2 font-mono text-[10px] text-text-100">
+                  {t('Compute Job')}
+                </span>
+                {job.intent}
+              </span>
+              <span className="truncate text-text-100">
+                {t('Remote · {{host}}', { host: job.display_name })}
+              </span>
+              <span className="flex items-center gap-1.5 text-text-100" aria-live="polite">
+                <StatusIcon
+                  className={
+                    isCancelling ? 'size-3.5 animate-spin motion-reduce:animate-none' : 'size-3.5'
+                  }
+                  aria-hidden="true"
+                />
+                {status}
+              </span>
+              <span className="tabular-nums text-text-100">{duration}</span>
+              <span className="flex justify-end gap-1">
+                <button
+                  type="button"
+                  className="rounded-md border border-border-200 px-2 py-1 hover:bg-bg-200"
+                  onClick={() => onOpenComputeJob?.(job)}
+                >
+                  {t('Open')}
+                </button>
+                {isActive ? (
+                  <button
+                    type="button"
+                    disabled={isCancelling}
+                    className="rounded-md border border-border-200 px-2 py-1 text-status-failure-foreground hover:bg-status-failure-surface disabled:opacity-50 dark:text-status-failure-dark-foreground"
+                    onClick={() => {
+                      setCancelling((current) => new Set(current).add(job.job_id))
+                      void window.api.compute
+                        .jobsCancel({
+                          jobId: job.job_id,
+                          providerId: job.provider_id,
+                          sessionId: notebook.sessionId,
+                          projectId: notebook.projectId
+                        })
+                        .catch(() =>
+                          setCancelling((current) => {
+                            const next = new Set(current)
+                            next.delete(job.job_id)
                             return next
                           })
                         )

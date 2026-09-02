@@ -1784,6 +1784,8 @@
     "Remembered permissions": "Gespeicherte Berechtigungen",
     "Remembered scopes apply to commands starting with:": "Gespeicherte Bereiche gelten für Befehle, die beginnen mit:",
     "Remote": "Remote",
+    "Compute Job": "Compute-Job",
+    "Remote · {{host}}": "Remote · {{host}}",
     "Remote App Access": "Remote-App-Zugriff",
     "Remote Browser Access": "Remote-Browserzugriff",
     "Remote access is not initialized yet.": "Der Fernzugriff ist noch nicht initialisiert.",

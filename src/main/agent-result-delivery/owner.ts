@@ -2,11 +2,13 @@ import { randomUUID } from 'node:crypto'
 
 import type {
   AgentResultDelivery,
-  AgentResultDeliveryContext
+  TerminalAgentResultDeliveryContext
 } from '../../shared/agent-result-delivery'
 
 type DeliveryRepository = {
-  recordTerminalOutcome(context: AgentResultDeliveryContext): Promise<AgentResultDelivery>
+  recordTerminalOutcome(
+    context: TerminalAgentResultDeliveryContext
+  ): Promise<AgentResultDelivery | undefined>
   recoverExpiredClaims(now?: number): Promise<number>
   listPendingSessionIds(): Promise<string[]>
   claimPending(
@@ -51,16 +53,40 @@ type AgentResultDeliveryOwnerOptions = Readonly<{
 }>
 
 const buildDeliveryPrompt = (deliveries: readonly AgentResultDelivery[]): string => {
-  const outcomes = deliveries.map(({ context }) => ({
-    runId: context.runId,
-    executionType: context.executionType,
-    terminalStatus: context.terminalStatus,
-    resultSummary: context.resultSummary,
-    ...(context.errorGuidance ? { errorGuidance: context.errorGuidance } : {}),
-    sessionId: context.sessionId,
-    ...(context.agentFrameId ? { agentFrameId: context.agentFrameId } : {}),
-    ...(context.provenance ? { provenance: context.provenance } : {})
-  }))
+  const outcomes = deliveries.map(({ context }) =>
+    context.sourceKind === 'compute-job'
+      ? {
+          sourceKind: 'compute-job',
+          jobId: context.jobId,
+          executionType: context.executionType,
+          terminalStatus: context.terminalStatus,
+          ...('resultSummary' in context ? { resultSummary: context.resultSummary } : {}),
+          ...('errorGuidance' in context && context.errorGuidance
+            ? { errorGuidance: context.errorGuidance }
+            : {}),
+          sessionId: context.sessionId,
+          computeHost: context.computeHost,
+          ...('remoteWorkdir' in context && context.remoteWorkdir
+            ? { remoteWorkdir: context.remoteWorkdir }
+            : {}),
+          ...('featuredFiles' in context ? { featuredFiles: context.featuredFiles } : {}),
+          ...('leftOnRemote' in context ? { leftOnRemote: context.leftOnRemote } : {}),
+          ...('harvestError' in context && context.harvestError
+            ? { harvestError: context.harvestError }
+            : {})
+        }
+      : {
+          sourceKind: 'local-run',
+          runId: context.runId,
+          executionType: context.executionType,
+          terminalStatus: context.terminalStatus,
+          resultSummary: context.resultSummary,
+          ...(context.errorGuidance ? { errorGuidance: context.errorGuidance } : {}),
+          sessionId: context.sessionId,
+          ...(context.agentFrameId ? { agentFrameId: context.agentFrameId } : {}),
+          ...(context.provenance ? { provenance: context.provenance } : {})
+        }
+  )
   return [
     'Background execution outcomes are now available for this Session.',
     'Treat these as durable execution facts. Decide the next step from each outcome; do not rerun work unless your reasoning requires it.',
@@ -78,15 +104,23 @@ class AgentResultDeliveryOwner {
     this.now = options.now ?? Date.now
   }
 
-  async enqueue(context: AgentResultDeliveryContext): Promise<AgentResultDelivery> {
-    const delivery = await this.options.repository.recordTerminalOutcome(context)
-    if (delivery.state !== 'pending' || this.scheduled.has(context.sessionId)) return delivery
+  private schedule(sessionId: string): void {
+    if (this.scheduled.has(sessionId)) return
     const timer = setTimeout(() => {
-      this.scheduled.delete(context.sessionId)
-      void this.drainSession(context.sessionId)
+      this.scheduled.delete(sessionId)
+      void this.drainSession(sessionId)
     }, this.options.batchDelayMs ?? 250)
     timer.unref?.()
-    this.scheduled.set(context.sessionId, timer)
+    this.scheduled.set(sessionId, timer)
+  }
+
+  async enqueue(
+    context: TerminalAgentResultDeliveryContext
+  ): Promise<AgentResultDelivery | undefined> {
+    const delivery = await this.options.repository.recordTerminalOutcome(context)
+    if (!delivery) return undefined
+    if (delivery.state !== 'pending') return delivery
+    this.schedule(context.sessionId)
     return delivery
   }
 
@@ -105,7 +139,10 @@ class AgentResultDeliveryOwner {
   async drainSession(
     sessionId: string
   ): Promise<'idle' | 'queued' | 'consumed' | 'needs-attention'> {
-    if (!(await this.options.canStartSessionTurn(sessionId))) return 'queued'
+    if (!(await this.options.canStartSessionTurn(sessionId))) {
+      this.schedule(sessionId)
+      return 'queued'
+    }
     const now = this.now()
     const claimToken = this.createId()
     const deliveries = await this.options.repository.claimPending(sessionId, {

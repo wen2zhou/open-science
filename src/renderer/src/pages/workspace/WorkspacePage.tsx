@@ -1323,7 +1323,8 @@ const WorkspacePage = ({
             sessionTools={{
               notebookReference: activeNotebookReference,
               openNotebook: openNotebookPreview,
-              openJobs: sessionController.actions.openJobList
+              openJobs: sessionController.actions.openJobList,
+              openJob: sessionController.actions.openJob
             }}
             subagents={{
               unavailable: activeSession
@@ -1394,6 +1395,7 @@ const WorkspacePage = ({
         key={sessionController.view.dialogs.jobList.sessionId}
         open={sessionController.view.dialogs.jobList.open}
         sessionId={sessionController.view.dialogs.jobList.sessionId}
+        initialJob={sessionController.view.dialogs.jobList.initialJob}
         onClose={sessionController.actions.closeJobList}
       />
 

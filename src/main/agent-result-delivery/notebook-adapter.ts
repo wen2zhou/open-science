@@ -1,4 +1,4 @@
-import type { AgentResultDeliveryContext } from '../../shared/agent-result-delivery'
+import type { LocalRunAgentResultDeliveryContext } from '../../shared/agent-result-delivery'
 import type { NotebookRunRecord } from '../../shared/notebook'
 
 const SUMMARY_LIMIT = 8_000
@@ -29,7 +29,7 @@ const errorGuidance = (run: NotebookRunRecord): string | undefined => {
 const notebookRunDeliveryContext = (
   session: Readonly<{ projectId: string; sessionId: string }>,
   run: NotebookRunRecord
-): AgentResultDeliveryContext | undefined => {
+): LocalRunAgentResultDeliveryContext | undefined => {
   if (run.executionMode !== 'background' || run.status === 'queued' || run.status === 'running') {
     return undefined
   }

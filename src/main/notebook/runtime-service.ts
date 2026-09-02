@@ -140,7 +140,7 @@ import {
 } from './content-limits'
 import { NotebookHelperModuleHost, type NotebookHelperModuleCatalog } from './helper-module-host'
 import { deleteNotebookProjectInputs, deleteNotebookSessionInputs } from './input-staging'
-import type { AgentResultDeliveryContext } from '../../shared/agent-result-delivery'
+import type { LocalRunAgentResultDeliveryContext } from '../../shared/agent-result-delivery'
 import { notebookRunDeliveryContext } from '../agent-result-delivery/notebook-adapter'
 
 // The default stays outside CN mirror routing when no explicit locale is injected.
@@ -193,7 +193,7 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
     lifecycle: NotebookExecutorLifecycleCallbacks
   ) => NotebookExecutor
   callbacks?: NotebookRuntimeServiceCallbacks
-  onBackgroundRunTerminal?: (context: AgentResultDeliveryContext) => Promise<void>
+  onBackgroundRunTerminal?: (context: LocalRunAgentResultDeliveryContext) => Promise<void>
   // Resolves the connector RPC connection to inject into the kernel spawn env. Usually set after
   // construction via setMcpRpcConnectionResolver, since the RPC server is constructed with this
   // service as a dependency (constructing them in the other order would cycle).

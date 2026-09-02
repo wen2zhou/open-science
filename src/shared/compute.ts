@@ -516,6 +516,9 @@ export type JobSummary = {
   left_on_remote_count?: number
   left_on_remote?: Array<{ uri: string; size_mb: number; reason: string }>
   harvest_error?: string
+  // Read-side marker derived from the durable Agent Result Delivery ledger. When present, the
+  // renderer must not start the legacy completion-analysis path for this Job.
+  result_delivery_path?: 'agent-result-delivery'
 }
 
 // The existing per-Session feed supports workspace history. The non-terminal variant is a bounded

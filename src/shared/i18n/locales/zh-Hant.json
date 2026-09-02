@@ -1918,6 +1918,8 @@
     "Restore missing default Global permissions without changing other remembered permissions.": "恢復缺少的預設全域權限，不會變更其他已記住的權限。",
     "Remembered scopes apply to commands starting with:": "記住的範圍適用於以下開頭的命令：",
     "Remote": "遠端",
+    "Compute Job": "Compute 作業",
+    "Remote · {{host}}": "遠端 · {{host}}",
     "Remote App Access": "遠端 App 存取",
     "Remote Browser Access": "遠端瀏覽器存取",
     "Remote access is not initialized yet.": "遠端存取尚未初始化。",

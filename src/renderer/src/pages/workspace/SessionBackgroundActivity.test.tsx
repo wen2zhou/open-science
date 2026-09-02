@@ -73,6 +73,78 @@ describe('Session background activity ledger', () => {
     vi.unstubAllGlobals()
   })
 
+  it('shows remote Compute Jobs in the Session ledger and delegates active Cancel to Compute', async () => {
+    const jobsCancel = vi.fn().mockResolvedValue({ status: 'running' })
+    const openJobs = vi.fn()
+    vi.stubGlobal('window', {
+      ...window,
+      setInterval: window.setInterval.bind(window),
+      clearInterval: window.clearInterval.bind(window),
+      api: {
+        agentResultDelivery: emptyDeliveryApi(),
+        notebook: {
+          state: vi.fn().mockResolvedValue({ runs: [] }),
+          onChanged: vi.fn(() => () => undefined),
+          cancelBackgroundRun: vi.fn()
+        },
+        compute: {
+          jobsList: vi.fn().mockResolvedValue([
+            {
+              job_id: 'job-1',
+              provider_id: 'host-1',
+              display_name: 'Cluster One',
+              shape: 'cpu',
+              session_id: 'session-1',
+              project_id: 'project-1',
+              status: 'running',
+              intent: 'Fit remote model',
+              created_at: Date.now() - 5_000,
+              started_at: Date.now() - 4_000,
+              finished_at: undefined,
+              exit_code: undefined,
+              error_code: undefined,
+              remote_workdir: '/remote/job-1',
+              stdout_tail: undefined,
+              stderr_tail: undefined,
+              notified_at: undefined,
+              notification_consumed_at: undefined,
+              result_delivery_path: 'agent-result-delivery'
+            }
+          ]),
+          onJobUpdated: vi.fn(() => () => undefined),
+          jobsCancel
+        }
+      }
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(
+        <SessionBackgroundActivity
+          notebook={notebook}
+          onOpenNotebook={vi.fn()}
+          onOpenComputeJob={openJobs}
+        />
+      )
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('Fit remote model'))
+
+    expect(container.textContent).toContain('Compute Job')
+    expect(container.textContent).toContain('Remote · Cluster One')
+    const buttons = [...container.querySelectorAll('button')]
+    act(() => buttons.find((button) => button.textContent === 'Open')?.click())
+    expect(openJobs).toHaveBeenCalledWith(expect.objectContaining({ job_id: 'job-1' }))
+    act(() => buttons.find((button) => button.textContent === 'Cancel')?.click())
+    expect(jobsCancel).toHaveBeenCalledWith({
+      jobId: 'job-1',
+      providerId: 'host-1',
+      sessionId: 'session-1',
+      projectId: 'project-1'
+    })
+  })
+
   it('shows only background Runs and exposes Open plus active-only Cancel', async () => {
     const cancelBackgroundRun = vi.fn().mockResolvedValue(undefined)
     const onChanged = vi.fn(() => () => undefined)

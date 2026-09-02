@@ -1,13 +1,15 @@
 import type { NotebookRunStatus } from './notebook'
+import type { ComputeJobStatus } from './compute'
 
 export type AgentResultDeliveryState =
   'waiting-result' | 'pending' | 'claimed' | 'consumed' | 'needs-attention' | 'dismissed'
 
-export type AgentResultExecutionType = 'python' | 'r' | 'repl' | 'shell'
+export type AgentResultExecutionType = 'python' | 'r' | 'repl' | 'shell' | 'compute-job'
 
-export type AgentResultDeliveryContext = Readonly<{
+export type LocalRunAgentResultDeliveryContext = Readonly<{
+  sourceKind?: 'local-run'
   runId: string
-  executionType: AgentResultExecutionType
+  executionType: Exclude<AgentResultExecutionType, 'compute-job'>
   terminalStatus: Exclude<NotebookRunStatus, 'queued' | 'running'>
   resultSummary: string
   errorGuidance?: string
@@ -21,6 +23,47 @@ export type AgentResultDeliveryContext = Readonly<{
     executionInvocationId?: string
   }>
 }>
+
+export type ComputeJobAgentResultDeliveryContext = Readonly<{
+  sourceKind: 'compute-job'
+  jobId: string
+  executionType: 'compute-job'
+  terminalStatus:
+    Extract<ComputeJobStatus, 'success' | 'failed' | 'timeout' | 'error'> | 'cancelled'
+  resultSummary: string
+  errorGuidance?: string
+  projectId: string
+  sessionId: string
+  computeHost: Readonly<{
+    providerId: string
+    displayName: string
+  }>
+  remoteWorkdir?: string
+  featuredFiles: readonly string[]
+  leftOnRemote: readonly Readonly<{ uri: string; size_mb: number; reason: string }>[]
+  harvestError?: string
+}>
+
+export type ComputeJobAgentResultWaitingContext = Readonly<{
+  sourceKind: 'compute-job'
+  jobId: string
+  executionType: 'compute-job'
+  terminalStatus: 'waiting-result'
+  projectId: string
+  sessionId: string
+  computeHost: Readonly<{
+    providerId: string
+    displayName: string
+  }>
+}>
+
+export type AgentResultDeliveryContext =
+  | LocalRunAgentResultDeliveryContext
+  | ComputeJobAgentResultDeliveryContext
+  | ComputeJobAgentResultWaitingContext
+
+export type TerminalAgentResultDeliveryContext =
+  LocalRunAgentResultDeliveryContext | ComputeJobAgentResultDeliveryContext
 
 export type AgentResultDelivery = Readonly<{
   id: string

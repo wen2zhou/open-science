@@ -1917,6 +1917,8 @@
     "Restore missing default Global permissions without changing other remembered permissions.": "Restaurez les autorisations globales par défaut manquantes sans modifier les autres autorisations mémorisées.",
     "Remembered scopes apply to commands starting with:": "Les portées mémorisées s'appliquent aux commandes commençant par :",
     "Remote": "À distance",
+    "Compute Job": "Tâche de calcul",
+    "Remote · {{host}}": "À distance · {{host}}",
     "Remote App Access": "Accès aux applications à distance",
     "Remote Browser Access": "Accès au navigateur à distance",
     "Remote access is not initialized yet.": "L'accès à distance n'est pas encore initialisé.",

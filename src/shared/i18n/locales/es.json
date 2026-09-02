@@ -1917,6 +1917,8 @@
     "Restore missing default Global permissions without changing other remembered permissions.": "Restaure los permisos globales predeterminados que falten sin cambiar los demás permisos recordados.",
     "Remembered scopes apply to commands starting with:": "Los ámbitos recordados se aplican a los comandos que comienzan con:",
     "Remote": "Remoto",
+    "Compute Job": "Trabajo de cálculo",
+    "Remote · {{host}}": "Remoto · {{host}}",
     "Remote App Access": "Acceso remoto a la aplicación",
     "Remote Browser Access": "Acceso remoto al navegador",
     "Remote access is not initialized yet.": "El acceso remoto aún no se ha inicializado.",

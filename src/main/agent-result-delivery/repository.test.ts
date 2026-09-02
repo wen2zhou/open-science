@@ -103,4 +103,67 @@ describe('AgentResultDeliveryRepository', () => {
       context: { runId: 'run-1', terminalStatus: 'cancelled' }
     })
   })
+
+  it('registers a nonterminal Compute Job without backfilling an unregistered terminal Job', async () => {
+    const registration = {
+      jobId: 'job-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      providerId: 'host-1',
+      displayName: 'Cluster One'
+    }
+
+    const waiting = await repository.registerComputeJob(registration)
+
+    expect(waiting).toMatchObject({
+      id: 'compute-job:job-1',
+      state: 'waiting-result'
+    })
+    await expect(repository.hasComputeJobDeliveryPath('job-1')).resolves.toBe(true)
+    await expect(repository.hasComputeJobDeliveryPath('old-terminal-job')).resolves.toBe(false)
+    await expect(
+      repository.recordTerminalOutcome({
+        sourceKind: 'compute-job',
+        jobId: 'old-terminal-job',
+        executionType: 'compute-job',
+        terminalStatus: 'success',
+        resultSummary: 'Old result',
+        projectId: 'project-1',
+        sessionId: 'session-1',
+        computeHost: { providerId: 'host-1', displayName: 'Cluster One' },
+        featuredFiles: [],
+        leftOnRemote: []
+      })
+    ).resolves.toBeUndefined()
+  })
+
+  it('moves a registered Compute Job to pending exactly once when its harvested result arrives', async () => {
+    await repository.registerComputeJob({
+      jobId: 'job-1',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      providerId: 'host-1',
+      displayName: 'Cluster One'
+    })
+    const outcome = {
+      sourceKind: 'compute-job' as const,
+      jobId: 'job-1',
+      executionType: 'compute-job' as const,
+      terminalStatus: 'success' as const,
+      resultSummary: 'featured: result.csv',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      computeHost: { providerId: 'host-1', displayName: 'Cluster One' },
+      featuredFiles: ['hpc/job-1/featured/result.csv'],
+      leftOnRemote: []
+    }
+
+    const first = await repository.recordTerminalOutcome(outcome)
+    const replay = await repository.recordTerminalOutcome(outcome)
+
+    expect(first).toMatchObject({ state: 'pending', context: outcome })
+    expect(replay).toEqual(first)
+    await expect(repository.listAwaitingAgent('session-1')).resolves.toEqual([first])
+    await expect(repository.listWaitingComputeJobIds()).resolves.toEqual([])
+  })
 })

@@ -36,6 +36,7 @@ import { MemoryRepository } from './memory/repository'
 import { MemoryService } from './memory/service'
 import { AgentResultDeliveryRepository } from './agent-result-delivery/repository'
 import { AgentResultDeliveryOwner } from './agent-result-delivery/owner'
+import { ComputeJobResultDeliveryAdapter } from './agent-result-delivery/compute-adapter'
 import { registerAgentResultDeliveryIpcHandlers } from './agent-result-delivery/ipc'
 import {
   LIFECYCLE_CHANNELS,
@@ -71,7 +72,7 @@ import {
 import { ArtifactProvenanceRepository } from './artifacts/provenance-repository'
 import { ProvenanceMessageSnapshotRepository } from './artifacts/provenance-message-snapshot'
 import { ArtifactRunRegistry } from './artifacts/run-registry'
-import { createComputeIpcModule } from './compute/ipc'
+import { broadcastJobUpdated, createComputeIpcModule, toJobSummary } from './compute/ipc'
 import { createComputeArtifactResolver } from './compute/compute-service'
 import { bindComputeApprovalSessionLifecycle } from './compute/approval-session-lifecycle'
 import type { ComputeJobOwnerLiveness } from './compute/job-deletion-owner'
@@ -760,8 +761,10 @@ const createApplicationModules = async (
             message.status === 'complete'
         )
       },
-      canStartSessionTurn: (sessionId: string) =>
-        !(runtimeRef.current?.getState().promptInFlightSessionIds ?? []).includes(sessionId)
+      canStartSessionTurn: (sessionId: string) => {
+        const runtime = runtimeRef.current
+        return runtime ? !runtime.getState().promptInFlightSessionIds.includes(sessionId) : false
+      }
     },
     (options) => {
       const owner = new AgentResultDeliveryOwner(options)
@@ -772,6 +775,10 @@ const createApplicationModules = async (
       }
     }
   )
+  const computeJobResultDelivery = new ComputeJobResultDeliveryAdapter({
+    repository: agentResultDeliveryRepository,
+    enqueue: (context) => agentResultDelivery.enqueue(context)
+  })
   const userSkillCatalogObserverRef: { current: UserSkillCatalogObserver | undefined } = {
     current: undefined
   }
@@ -1894,7 +1901,8 @@ const createApplicationModules = async (
           }
         }
       }
-    }
+    },
+    computeJobResultDelivery
   )
   surfaceAdapters = beforeAcpAdapters
   const {
@@ -1961,7 +1969,25 @@ const createApplicationModules = async (
       storageRoot: dataRoot
     },
     (dependencies) => {
-      const jobPoller = createComputeJobRuntime(dependencies)
+      const jobPoller = createComputeJobRuntime(dependencies, {
+        broadcast: (summary) => {
+          void (async () => {
+            let owned = false
+            try {
+              await computeJobResultDelivery.observeNotification(summary)
+              owned = await computeJobResultDelivery.hasDeliveryPath(summary.job_id)
+            } catch (error) {
+              createLogger('agent-result-delivery').warn(
+                'Compute Job result delivery observation failed',
+                diagnosticErrorFields(error)
+              )
+            }
+            broadcastJobUpdated(
+              owned ? { ...summary, result_delivery_path: 'agent-result-delivery' } : summary
+            )
+          })()
+        }
+      })
       return {
         name: 'compute-job-runtime',
         capability: undefined,
@@ -2006,6 +2032,22 @@ const createApplicationModules = async (
           } catch (error) {
             createLogger('compute:file-evidence').warn(
               'Compute Job file-evidence startup reconciliation failed closed.',
+              diagnosticErrorFields(error)
+            )
+          }
+          try {
+            await computeJobResultDelivery.takeOver(
+              await computeIpcModule.handlers.jobsList({ nonTerminal: true })
+            )
+            await computeJobResultDelivery.recoverWaiting(async (jobId) => {
+              const job = await jobRepository.get(jobId)
+              if (!job) return undefined
+              const host = await hostRepository.get(job.provider_id).catch(() => null)
+              return toJobSummary(job, host?.displayName ?? job.provider_id, dataRoot)
+            })
+          } catch (error) {
+            createLogger('agent-result-delivery').warn(
+              'Compute Job result delivery recovery failed; Compute lifecycle will continue',
               diagnosticErrorFields(error)
             )
           }

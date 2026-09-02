@@ -3,10 +3,21 @@ import type { AgentResultDelivery as PrismaAgentResultDelivery, PrismaClient } f
 import type {
   AgentResultDelivery,
   AgentResultDeliveryContext,
-  AgentResultDeliveryState
+  AgentResultDeliveryState,
+  ComputeJobAgentResultDeliveryContext,
+  LocalRunAgentResultDeliveryContext,
+  TerminalAgentResultDeliveryContext
 } from '../../shared/agent-result-delivery'
 
 type DeliveryClient = Pick<PrismaClient, 'agentResultDelivery' | '$transaction'>
+
+type ComputeJobDeliveryRegistration = Readonly<{
+  jobId: string
+  projectId: string
+  sessionId: string
+  providerId: string
+  displayName: string
+}>
 
 const dateMs = (value: Date | null): number | undefined => value?.getTime()
 
@@ -37,9 +48,101 @@ const toDelivery = (row: PrismaAgentResultDelivery): AgentResultDelivery => ({
 class AgentResultDeliveryRepository {
   constructor(private readonly getClient: () => Promise<DeliveryClient>) {}
 
-  async recordTerminalOutcome(context: AgentResultDeliveryContext): Promise<AgentResultDelivery> {
+  async registerComputeJob(
+    registration: ComputeJobDeliveryRegistration
+  ): Promise<AgentResultDelivery> {
+    const client = await this.getClient()
+    const context: AgentResultDeliveryContext = {
+      sourceKind: 'compute-job',
+      jobId: registration.jobId,
+      executionType: 'compute-job',
+      terminalStatus: 'waiting-result',
+      projectId: registration.projectId,
+      sessionId: registration.sessionId,
+      computeHost: {
+        providerId: registration.providerId,
+        displayName: registration.displayName
+      }
+    }
+    const row = await client.agentResultDelivery.upsert({
+      where: {
+        sourceKind_sourceId: { sourceKind: 'compute-job', sourceId: registration.jobId }
+      },
+      create: {
+        id: `compute-job:${registration.jobId}`,
+        sourceKind: 'compute-job',
+        sourceId: registration.jobId,
+        projectId: registration.projectId,
+        sessionId: registration.sessionId,
+        executionType: 'compute-job',
+        terminalStatus: 'waiting-result',
+        contextJson: JSON.stringify(context),
+        state: 'waiting-result'
+      },
+      update: {}
+    })
+    if (
+      row.projectId !== registration.projectId ||
+      row.sessionId !== registration.sessionId ||
+      row.executionType !== 'compute-job'
+    ) {
+      throw new Error(`Conflicting delivery registration for Compute Job ${registration.jobId}.`)
+    }
+    return toDelivery(row)
+  }
+
+  async hasComputeJobDeliveryPath(jobId: string): Promise<boolean> {
+    const client = await this.getClient()
+    return (
+      (await client.agentResultDelivery.count({
+        where: { sourceKind: 'compute-job', sourceId: jobId }
+      })) > 0
+    )
+  }
+
+  async listWaitingComputeJobIds(): Promise<string[]> {
+    const client = await this.getClient()
+    const rows = await client.agentResultDelivery.findMany({
+      where: { sourceKind: 'compute-job', state: 'waiting-result' },
+      select: { sourceId: true },
+      orderBy: { createdAt: 'asc' }
+    })
+    return rows.map(({ sourceId }) => sourceId)
+  }
+
+  async recordTerminalOutcome(
+    context: LocalRunAgentResultDeliveryContext
+  ): Promise<AgentResultDelivery>
+  async recordTerminalOutcome(
+    context: ComputeJobAgentResultDeliveryContext
+  ): Promise<AgentResultDelivery | undefined>
+  async recordTerminalOutcome(
+    context: TerminalAgentResultDeliveryContext
+  ): Promise<AgentResultDelivery | undefined> {
     const client = await this.getClient()
     const contextJson = JSON.stringify(context)
+    if (context.sourceKind === 'compute-job') {
+      const updated = await client.agentResultDelivery.updateMany({
+        where: {
+          sourceKind: 'compute-job',
+          sourceId: context.jobId,
+          state: 'waiting-result'
+        },
+        data: {
+          terminalStatus: context.terminalStatus,
+          contextJson,
+          state: 'pending'
+        }
+      })
+      const row = await client.agentResultDelivery.findUnique({
+        where: { sourceKind_sourceId: { sourceKind: 'compute-job', sourceId: context.jobId } }
+      })
+      if (!row) return undefined
+      if (updated.count === 0 && row.contextJson !== contextJson) {
+        throw new Error(`Conflicting terminal outcome for Compute Job ${context.jobId}.`)
+      }
+      return toDelivery(row)
+    }
     const id = `local-run:${context.runId}`
     const row = await client.agentResultDelivery.upsert({
       where: { sourceKind_sourceId: { sourceKind: 'local-run', sourceId: context.runId } },
@@ -190,4 +293,4 @@ class AgentResultDeliveryRepository {
 }
 
 export { AgentResultDeliveryRepository }
-export type { DeliveryClient }
+export type { ComputeJobDeliveryRegistration, DeliveryClient }
