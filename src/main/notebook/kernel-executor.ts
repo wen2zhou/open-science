@@ -903,11 +903,15 @@ class NotebookKernelExecutor implements NotebookExecutor {
       const tokenPipe = child.stdio[rpcTokenFileDescriptor]
       if (!tokenPipe || !('end' in tokenPipe)) {
         child.kill()
-        sandboxed?.cleanup()
+        await sandboxed?.cleanup('spawn-failed')
         throw new Error('Notebook RPC credential pipe was not created.')
       }
       tokenPipe.on('error', () => undefined)
       tokenPipe.end(request.mcpRpcToken)
+    }
+    if (sandboxed) {
+      child.once('exit', () => void sandboxed.cleanup('exit'))
+      child.once('error', () => void sandboxed.cleanup('spawn-failed'))
     }
     try {
       await new Promise<void>((resolve, reject) => {
@@ -915,7 +919,7 @@ class NotebookKernelExecutor implements NotebookExecutor {
         child.once('error', reject)
       })
     } catch (error) {
-      sandboxed?.cleanup()
+      await sandboxed?.cleanup('spawn-failed')
       throw error
     }
     return {

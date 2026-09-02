@@ -78,11 +78,45 @@ afterEach(async () => {
 })
 
 describe('Notebook runtime configuration updates', () => {
+  it('fails closed when an explicit WSL2 target has no adapter', async () => {
+    await expect(
+      NotebookNetworkRuntime.wrap({
+        target: {
+          kind: 'wsl2',
+          profileId: 'profile-1',
+          distro: 'Ubuntu',
+          user: 'researcher'
+        },
+        command: 'echo sandboxed',
+        commandId: 'wsl2-command',
+        cwd: 'C:\\workspace',
+        env: {},
+        filesystem: {
+          readOnlyRoots: [],
+          readWriteRoots: ['C:\\workspace'],
+          deniedReadRoots: [],
+          deniedWriteRoots: []
+        }
+      })
+    ).rejects.toThrow('Notebook WSL2 sandbox target is not available yet.')
+    expect(CommandGateway.open).toHaveBeenCalledOnce()
+  })
+
   it('disconnects existing tunnels before they can outlive a policy change', () => {
     NotebookNetworkRuntime.updateConfig(config([]))
 
     expect(gateway.updateParentProxy).toHaveBeenCalledWith(undefined)
     expect(gateway.resetConnections).toHaveBeenCalledOnce()
+  })
+
+  it('reports incomplete network cleanup without rejecting the completion path', async () => {
+    gateway.close.mockRejectedValueOnce(new Error('private gateway detail'))
+
+    await expect(NotebookNetworkRuntime.cleanupAfterCommand('command-1')).resolves.toEqual({
+      processesTerminated: true,
+      networkClosed: false,
+      temporaryResourcesRemoved: true
+    })
   })
 
   it('opens the next command only after the previous gateway has closed', async () => {
@@ -95,7 +129,7 @@ describe('Notebook runtime configuration updates', () => {
     )
 
     try {
-      NotebookNetworkRuntime.cleanupAfterCommand('command-1')
+      void NotebookNetworkRuntime.cleanupAfterCommand('command-1')
       const wrapping = NotebookNetworkRuntime.wrap({
         command: 'curl https://example.com',
         commandId: 'command-2',

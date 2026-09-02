@@ -222,7 +222,11 @@ describe('notebook shell process behavior', () => {
 
     it('wraps Notebook Bash with the shared process sandbox', async () => {
       const inputRoot = join(process.cwd(), '.open-science-test-inputs')
-      const cleanup = vi.fn()
+      const cleanup = vi.fn().mockResolvedValue({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
       const endExecution = vi.fn()
       const beginExecution = vi.fn(() => endExecution)
       const processSandbox: NotebookProcessSandbox = {
@@ -265,6 +269,91 @@ describe('notebook shell process behavior', () => {
       expect(beginExecution).toHaveBeenCalledOnce()
       expect(endExecution).toHaveBeenCalledOnce()
       expect(cleanup).toHaveBeenCalledOnce()
+      expect(cleanup).toHaveBeenCalledWith('exit')
+    })
+
+    it.each([
+      {
+        name: 'timeout',
+        command: 'sleep 5',
+        timeoutMs: 25,
+        reason: 'timeout' as const,
+        signal: undefined
+      },
+      {
+        name: 'cancel',
+        command: 'sleep 5',
+        timeoutMs: 5_000,
+        reason: 'cancel' as const,
+        signal: AbortSignal.timeout(25)
+      }
+    ])(
+      'awaits one structured cleanup after $name',
+      async ({ command, timeoutMs, reason, signal }) => {
+        const cleanup = vi.fn().mockResolvedValue({
+          processesTerminated: true,
+          networkClosed: true,
+          temporaryResourcesRemoved: true
+        })
+        const processSandbox: NotebookProcessSandbox = {
+          wrap: vi.fn(async (invocation) => ({
+            executable: invocation.executable,
+            args: invocation.args,
+            env: invocation.env,
+            annotateStderr: (stderr: string) => stderr,
+            cleanup
+          }))
+        }
+
+        await runShellCommand({
+          command,
+          cwd: process.cwd(),
+          handoffDir: process.cwd(),
+          runtimeRoot: join(process.cwd(), '.open-science-test-runtime'),
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          platform: 'linux',
+          timeoutMs,
+          signal,
+          processSandbox
+        })
+
+        expect(cleanup).toHaveBeenCalledOnce()
+        expect(cleanup).toHaveBeenCalledWith(reason)
+      }
+    )
+
+    it('awaits one structured cleanup when process spawning fails', async () => {
+      const cleanup = vi.fn().mockResolvedValue({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn(async (invocation) => ({
+          executable: join(process.cwd(), 'missing-sandbox-executable'),
+          args: invocation.args,
+          env: invocation.env,
+          annotateStderr: (stderr: string) => stderr,
+          cleanup
+        }))
+      }
+
+      await expect(
+        runShellCommand({
+          command: 'echo unreachable',
+          cwd: process.cwd(),
+          handoffDir: process.cwd(),
+          runtimeRoot: join(process.cwd(), '.open-science-test-runtime'),
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          platform: 'linux',
+          processSandbox
+        })
+      ).resolves.toMatchObject({ exitCode: null })
+
+      expect(cleanup).toHaveBeenCalledOnce()
+      expect(cleanup).toHaveBeenCalledWith('spawn-failed')
     })
 
     it('reserves stderr capacity after stdout reaches its capture limit', async () => {

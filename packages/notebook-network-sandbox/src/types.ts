@@ -23,6 +23,23 @@ export type NotebookFilesystemPolicy = Readonly<{
   deniedWriteRoots: readonly string[]
 }>
 
+export type NotebookSandboxTarget =
+  | Readonly<{ kind: 'native' }>
+  | Readonly<{
+      kind: 'wsl2'
+      profileId: string
+      distro: string
+      user: string
+    }>
+
+export type NotebookSandboxCleanupReason = 'exit' | 'cancel' | 'timeout' | 'spawn-failed'
+
+export type NotebookSandboxCleanupResult = Readonly<{
+  processesTerminated: boolean
+  networkClosed: boolean
+  temporaryResourcesRemoved: boolean
+}>
+
 export type NotebookNetworkAccessRequest = Readonly<{
   host: string
   port?: number
@@ -44,6 +61,7 @@ export type NotebookNetworkSandboxStatus =
   | Readonly<{ kind: 'error'; message: string }>
 
 export type NotebookSandboxCommand = Readonly<{
+  target?: NotebookSandboxTarget
   command: string
   // Protected Windows launches use the exact process argv so PowerShell never has to initialize the
   // AppContainer's working drive before the requested process can start.
@@ -64,7 +82,7 @@ export type NotebookSandboxedProcess = Readonly<{
   env: NodeJS.ProcessEnv
   annotateStderr: (stderr: string) => string
   resetNetworkConnections: () => void
-  cleanup: () => void
+  cleanup: (reason: NotebookSandboxCleanupReason) => Promise<NotebookSandboxCleanupResult>
 }>
 
 export type NotebookNetworkSandboxOptions = Readonly<{

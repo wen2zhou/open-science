@@ -47,7 +47,23 @@ type NetworkAskCallback = (request: {
   commandId?: string
 }) => Promise<boolean>
 
+type NotebookSandboxTarget =
+  | Readonly<{ kind: 'native' }>
+  | Readonly<{
+      kind: 'wsl2'
+      profileId: string
+      distro: string
+      user: string
+    }>
+
+type SandboxCleanupResult = Readonly<{
+  processesTerminated: boolean
+  networkClosed: boolean
+  temporaryResourcesRemoved: boolean
+}>
+
 type NetworkWrapRequest = Readonly<{
+  target?: NotebookSandboxTarget
   command: string
   executable?: string
   args?: readonly string[]
@@ -71,7 +87,7 @@ let approval: NetworkAskCallback | undefined
 let destinationPolicy: DestinationPolicy | undefined
 let windowsProtectedGatewayPort: number | undefined
 const commandContexts = new Map<string, RuntimeContext>()
-const finishing = new Set<Promise<void>>()
+const finishing = new Set<Promise<unknown>>()
 const violations = new ViolationLog()
 
 const parentSettings = (config: NetworkRuntimeConfig): ParentProxySettings | undefined => {
@@ -169,6 +185,10 @@ const wrap = async (
   if (finishing.size > 0) await Promise.allSettled([...finishing])
   const config = runtimeConfig
   if (!config) throw new Error('Notebook process runtime is not initialized.')
+  const target = request.target ?? { kind: 'native' }
+  if (target.kind === 'wsl2') {
+    throw new Error('Notebook WSL2 sandbox target is not available yet.')
+  }
   const filesystem = normalizeFilesystemLayout({
     ...request.filesystem,
     ...((process.platform === 'darwin' || process.platform === 'linux') &&
@@ -253,17 +273,35 @@ const wrap = async (
   }
 }
 
-const closeContext = async (commandId: string, context: RuntimeContext): Promise<void> => {
-  await Promise.allSettled([context.gateway.close(), context.releasePlatform?.()])
+const closeContext = async (
+  commandId: string,
+  context: RuntimeContext
+): Promise<SandboxCleanupResult> => {
+  const [network, temporaryResources] = await Promise.allSettled([
+    context.gateway.close(),
+    context.releasePlatform?.()
+  ])
   violations.forget(commandId)
+  return {
+    processesTerminated: true,
+    networkClosed: network.status === 'fulfilled',
+    temporaryResourcesRemoved: temporaryResources.status === 'fulfilled'
+  }
 }
 
-const cleanupAfterCommand = (commandId: string): void => {
+const cleanupAfterCommand = async (commandId: string): Promise<SandboxCleanupResult> => {
   const context = commandContexts.get(commandId)
-  if (!context) return
+  if (!context) {
+    return {
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    }
+  }
   commandContexts.delete(commandId)
   const task = closeContext(commandId, context).finally(() => finishing.delete(task))
   finishing.add(task)
+  return task
 }
 
 const resetCommandConnections = (commandId: string): void => {

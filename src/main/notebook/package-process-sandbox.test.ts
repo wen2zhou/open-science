@@ -18,7 +18,11 @@ afterEach(() => {
 describe('sandboxedPackageSpawn', () => {
   it('runs an installer through the Notebook sandbox and preserves its lifecycle', async () => {
     const endExecution = vi.fn()
-    const cleanup = vi.fn()
+    const cleanup = vi.fn().mockResolvedValue({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
     const processSandbox: NotebookProcessSandbox = {
       wrap: vi.fn(async (invocation) => ({
         executable: invocation.executable,
@@ -78,5 +82,6 @@ describe('sandboxedPackageSpawn', () => {
     )
     expect(endExecution).toHaveBeenCalledOnce()
     expect(cleanup).toHaveBeenCalledOnce()
+    expect(cleanup).toHaveBeenCalledWith('exit')
   })
 })

@@ -1,4 +1,22 @@
+export type NotebookSandboxTarget =
+  | Readonly<{ kind: 'native' }>
+  | Readonly<{
+      kind: 'wsl2'
+      profileId: string
+      distro: string
+      user: string
+    }>
+
+export type NotebookSandboxCleanupReason = 'exit' | 'cancel' | 'timeout' | 'spawn-failed'
+
+export type NotebookSandboxCleanupResult = Readonly<{
+  processesTerminated: boolean
+  networkClosed: boolean
+  temporaryResourcesRemoved: boolean
+}>
+
 export type NotebookSandboxInvocation = Readonly<{
+  target?: NotebookSandboxTarget
   executable: string
   args: readonly string[]
   env: NodeJS.ProcessEnv
@@ -24,7 +42,7 @@ export type NotebookSandboxedSpawn = Readonly<{
   env: NodeJS.ProcessEnv
   beginExecution?: () => () => void
   annotateStderr: (stderr: string) => string
-  cleanup: () => void
+  cleanup: (reason: NotebookSandboxCleanupReason) => Promise<NotebookSandboxCleanupResult>
 }>
 
 export type NotebookNetworkAccessDecisionRequest = Readonly<{

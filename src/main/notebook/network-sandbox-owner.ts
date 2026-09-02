@@ -17,6 +17,7 @@ import type {
   NotebookProcessSandbox,
   NotebookNetworkAccessDecisionRequest,
   NotebookNetworkAccessDecisionResult,
+  NotebookSandboxCleanupResult,
   NotebookSandboxedSpawn,
   NotebookSandboxInvocation
 } from './process-sandbox'
@@ -195,8 +196,12 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     let wrapped: Awaited<ReturnType<NotebookNetworkSandbox['wrap']>>
     try {
       wrapped = await this.sandbox!.wrap({
-        command: commandLine(invocation, this.platform),
-        ...(this.platform === 'win32'
+        target: invocation.target ?? { kind: 'native' },
+        command: commandLine(
+          invocation,
+          invocation.target?.kind === 'wsl2' ? 'linux' : this.platform
+        ),
+        ...(this.platform === 'win32' && invocation.target?.kind !== 'wsl2'
           ? { executable: invocation.executable, args: invocation.args }
           : {}),
         cwd: invocation.cwd,
@@ -250,21 +255,41 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       })
       throw error
     }
-    let cleaned = false
-    const cleanup = (): void => {
-      if (cleaned) return
-      cleaned = true
+    let cleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
+    const cleanup: NotebookSandboxedSpawn['cleanup'] = (reason) => {
+      if (cleanupPromise) return cleanupPromise
       activeExecutionGrants = new Set()
       executionActive = false
-      try {
-        wrapped.cleanup()
-      } finally {
-        void rm(commandTempRoot, { recursive: true, force: true }).catch(() => undefined)
-      }
+      cleanupPromise = (async () => {
+        const [sandboxCleanup, temporaryCleanup] = await Promise.allSettled([
+          wrapped.cleanup(reason),
+          rm(commandTempRoot, { recursive: true, force: true })
+        ])
+        const result: NotebookSandboxCleanupResult = {
+          processesTerminated:
+            sandboxCleanup.status === 'fulfilled' && sandboxCleanup.value.processesTerminated,
+          networkClosed:
+            sandboxCleanup.status === 'fulfilled' && sandboxCleanup.value.networkClosed,
+          temporaryResourcesRemoved:
+            sandboxCleanup.status === 'fulfilled' &&
+            sandboxCleanup.value.temporaryResourcesRemoved &&
+            temporaryCleanup.status === 'fulfilled'
+        }
+        this.log.info('sandbox cleanup completed', {
+          platform: this.platform,
+          target: invocation.target?.kind ?? 'native',
+          runtime: invocation.runtime,
+          reason,
+          ...result,
+          incompleteStageCount: Object.values(result).filter((complete) => !complete).length
+        })
+        return result
+      })()
+      return cleanupPromise
     }
     const [executable, ...args] = wrapped.argv
     if (!executable) {
-      cleanup()
+      await cleanup('spawn-failed')
       throw new Error('Notebook network sandbox returned an empty command.')
     }
     return {
@@ -272,7 +297,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       args,
       env: wrapped.env,
       beginExecution: () => {
-        if (cleaned) throw new Error('Notebook sandbox process is already closed.')
+        if (cleanupPromise) throw new Error('Notebook sandbox process is already closed.')
         if (executionActive) throw new Error('Notebook sandbox execution is already active.')
         wrapped.resetNetworkConnections()
         executionActive = true

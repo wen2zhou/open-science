@@ -30,6 +30,11 @@ beforeEach(() => {
   for (const mock of Object.values(backend)) mock.mockReset()
   backend.initialize.mockResolvedValue(undefined)
   backend.refreshWindowsProtection.mockResolvedValue({ warnings: [], errors: [] })
+  backend.cleanupAfterCommand.mockResolvedValue({
+    processesTerminated: true,
+    networkClosed: true,
+    temporaryResourcesRemoved: true
+  })
   backend.reset.mockResolvedValue(undefined)
 })
 
@@ -54,6 +59,23 @@ describe('NotebookNetworkSandbox', () => {
     expect(() => sandbox.updatePolicy({ allowedDomains: [], deniedDomains: [] })).toThrow(
       'Notebook network sandbox is not initialized.'
     )
+  })
+
+  it('awaits one backend cleanup when command preparation fails', async () => {
+    const sandbox = new NotebookNetworkSandbox(options())
+    vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    backend.wrap.mockRejectedValue(new Error('preparation failed'))
+
+    await sandbox.initialize()
+    await expect(
+      sandbox.wrap({
+        command: 'python notebook.py',
+        cwd: '/workspace',
+        onNetworkAccessRequest: denyNetwork
+      })
+    ).rejects.toThrow('preparation failed')
+    expect(backend.cleanupAfterCommand).toHaveBeenCalledOnce()
+    await sandbox.dispose()
   })
 
   it('owns one process sandbox, wraps commands, and releases ownership', async () => {
@@ -135,7 +157,7 @@ describe('NotebookNetworkSandbox', () => {
       signal: expect.any(AbortSignal)
     })
     expect(decisionSignal?.aborted).toBe(false)
-    wrapped.cleanup()
+    await wrapped.cleanup('exit')
     expect(decisionSignal?.aborted).toBe(true)
     await expect(decision?.({ host: 'new.example.org', port: 443, commandId })).resolves.toBe(false)
     await sandbox.dispose()
@@ -158,7 +180,7 @@ describe('NotebookNetworkSandbox', () => {
     const decision = backend.initialize.mock.calls[0]?.[1]
 
     await expect(decision?.({ host: 'new.example.org', port: 443, commandId })).resolves.toBe(false)
-    wrapped.cleanup()
+    await wrapped.cleanup('exit')
     await sandbox.dispose()
   })
 
@@ -184,7 +206,7 @@ describe('NotebookNetworkSandbox', () => {
       commandId
     })
 
-    wrapped.cleanup()
+    await wrapped.cleanup('exit')
     resolveDecision?.(true)
 
     await expect(decision).resolves.toBe(false)
@@ -206,10 +228,57 @@ describe('NotebookNetworkSandbox', () => {
     expect(wrapped.annotateStderr('curl failed')).toBe('annotated stderr')
     wrapped.resetNetworkConnections()
     expect(backend.resetCommandConnections).toHaveBeenCalledWith(expect.any(String))
-    wrapped.cleanup()
-    wrapped.cleanup()
+    const firstCleanup = wrapped.cleanup('exit')
+    const secondCleanup = wrapped.cleanup('cancel')
+    await expect(firstCleanup).resolves.toEqual({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+    await expect(secondCleanup).resolves.toEqual({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+    expect(firstCleanup).toBe(secondCleanup)
     expect(backend.cleanupAfterCommand).toHaveBeenCalledOnce()
     expect(backend.cleanupAfterCommand).toHaveBeenCalledWith(expect.any(String))
+    await sandbox.dispose()
+  })
+
+  it('defaults omitted targets to native and forwards explicit WSL2 targets', async () => {
+    const sandbox = new NotebookNetworkSandbox(options())
+    vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    backend.wrap.mockResolvedValue({ argv: ['sandboxed'], env: {} })
+    backend.cleanupAfterCommand.mockResolvedValue({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+
+    await sandbox.initialize()
+    const native = await sandbox.wrap({
+      command: 'python notebook.py',
+      cwd: '/workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+    const target = {
+      kind: 'wsl2' as const,
+      profileId: 'profile-1',
+      distro: 'Ubuntu',
+      user: 'researcher'
+    }
+    const wsl2 = await sandbox.wrap({
+      target,
+      command: 'python notebook.py',
+      cwd: 'C:\\workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+
+    expect(backend.wrap.mock.calls[0]?.[0]).toMatchObject({ target: { kind: 'native' } })
+    expect(backend.wrap.mock.calls[1]?.[0]).toMatchObject({ target })
+    await native.cleanup('exit')
+    await wsl2.cleanup('exit')
     await sandbox.dispose()
   })
 
@@ -233,8 +302,8 @@ describe('NotebookNetworkSandbox', () => {
         onNetworkAccessRequest: denyNetwork
       })
 
-      first.cleanup()
-      second.cleanup()
+      await first.cleanup('exit')
+      await second.cleanup('exit')
       expect(backend.wrap).toHaveBeenCalledTimes(2)
     } finally {
       await sandbox.dispose()

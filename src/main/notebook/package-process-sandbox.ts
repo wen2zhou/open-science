@@ -125,6 +125,6 @@ export const sandboxedPackageSpawn =
       return { ...result, stderr: sandboxed.annotateStderr(result.stderr) }
     } finally {
       if (!ended) endExecution?.()
-      sandboxed.cleanup()
+      await sandboxed.cleanup(ended ? 'exit' : 'spawn-failed')
     }
   }

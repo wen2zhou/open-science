@@ -2,7 +2,7 @@ import { spawn, type ChildProcess } from 'node:child_process'
 import { dirname } from 'node:path'
 
 import { protectManagedRuntimeWrites } from './managed-runtime-guard'
-import type { NotebookProcessSandbox } from './process-sandbox'
+import type { NotebookProcessSandbox, NotebookSandboxCleanupReason } from './process-sandbox'
 import { registerOwnedPosixProcessGroup, terminateProcessTree } from '../process-tree'
 import { resolveWindowsPowerShellExecutable } from '../windows-powershell'
 import { NOTEBOOK_SHELL_DEFAULT_TIMEOUT_MS } from '../../shared/notebook'
@@ -285,7 +285,10 @@ const runShellCommand = (
       let timedOut = false
       let cancelled = false
 
-      const finish = (result: NotebookShellResult): void => {
+      const finish = async (
+        result: NotebookShellResult,
+        cleanupReason: NotebookSandboxCleanupReason
+      ): Promise<void> => {
         if (settled) return
         settled = true
         clearTimeout(timeoutTimer)
@@ -293,25 +296,32 @@ const runShellCommand = (
         endSandboxExecution?.()
         const normalized = normalizePowerShellStderr(result.stderr)
         const stderr = sandboxed ? sandboxed.annotateStderr(normalized) : normalized
-        sandboxed?.cleanup()
+        await sandboxed?.cleanup(cleanupReason)
         resolve({ ...result, stderr })
       }
 
-      const terminateAndFinish = (result: NotebookShellResult): void => {
-        void terminateShellOnTimeout(child).then(() => finish(result))
+      const terminateAndFinish = (
+        result: NotebookShellResult,
+        cleanupReason: 'cancel' | 'timeout'
+      ): void => {
+        void terminateShellOnTimeout(child).then(() => void finish(result, cleanupReason))
       }
 
       const abort = (): void => {
         if (settled || timedOut || cancelled) return
         cancelled = true
         clearTimeout(timeoutTimer)
-        terminateAndFinish({
-          stdout,
-          stderr:
-            stderr + `${stderr && !stderr.endsWith('\n') ? '\n' : ''}Shell command was cancelled.`,
-          exitCode: null,
-          cancelled: true
-        })
+        terminateAndFinish(
+          {
+            stdout,
+            stderr:
+              stderr +
+              `${stderr && !stderr.endsWith('\n') ? '\n' : ''}Shell command was cancelled.`,
+            exitCode: null,
+            cancelled: true
+          },
+          'cancel'
+        )
       }
 
       const timeoutTimer = setTimeout(() => {
@@ -325,7 +335,7 @@ const runShellCommand = (
           exitCode: null,
           ...(truncated ? { truncated: true } : {})
         }
-        terminateAndFinish(timeoutResult)
+        terminateAndFinish(timeoutResult, 'timeout')
       }, timeoutMs)
 
       options.signal?.addEventListener('abort', abort, { once: true })
@@ -366,16 +376,22 @@ const runShellCommand = (
       })
       child.once('error', (error) => {
         if (!timedOut && !cancelled)
-          finish({
-            stdout,
-            stderr: stderr || error.message,
-            exitCode: null,
-            ...(truncated ? { truncated: true } : {})
-          })
+          void finish(
+            {
+              stdout,
+              stderr: stderr || error.message,
+              exitCode: null,
+              ...(truncated ? { truncated: true } : {})
+            },
+            'spawn-failed'
+          )
       })
       child.once('exit', (code) => {
         if (!timedOut && !cancelled)
-          finish({ stdout, stderr, exitCode: code, ...(truncated ? { truncated: true } : {}) })
+          void finish(
+            { stdout, stderr, exitCode: code, ...(truncated ? { truncated: true } : {}) },
+            'exit'
+          )
       })
     })
   }

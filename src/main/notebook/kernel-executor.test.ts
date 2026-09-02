@@ -359,7 +359,11 @@ gate('NotebookKernelExecutor (fake loop)', () => {
     cwdDir = await makeDefaultEnvCwd('os-kernel-network-sandbox-')
     const request = baseRequest(cwdDir)
     const requestController = new AbortController()
-    const cleanup = vi.fn()
+    const cleanup = vi.fn().mockResolvedValue({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
     const endExecution = vi.fn()
     const beginExecution = vi.fn(() => endExecution)
     const annotateStderr = vi.fn(
