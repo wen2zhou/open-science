@@ -84,6 +84,7 @@ import type {
 } from '../../shared/notebook-runtime'
 import type { NotebookRuntimeSettings } from '../settings/capabilities'
 import { NotebookRecoveryCoordinator } from './recovery-coordinator'
+import { KernelProcessLifecycleOwner } from './kernel-process-lifecycle'
 import { managedNotebookWorkingCache } from './windows-micromamba-working-cache'
 import { NotebookRuntimeRepairOwner } from './runtime-repair'
 import { NotebookRuntimeRepairPolicy } from './runtime-repair-policy'
@@ -361,6 +362,7 @@ class NotebookRuntimeService {
     ((language: NotebookLanguage) => Promise<RuntimeEnablement | undefined>) | undefined
   private readonly runtimeBindingOwner: NotebookRuntimeBindingOwner
   private readonly recoveryCoordinator: NotebookRecoveryCoordinator
+  private readonly kernelProcessLifecycle: KernelProcessLifecycleOwner
   private readonly runtimeLogger: RuntimeDiagnosticLogger
   private readonly environmentStateTracker: Pick<
     EnvironmentStateTracker,
@@ -388,6 +390,10 @@ class NotebookRuntimeService {
       }
     })
     const runtimeRoot = getRuntimeRoot(options.dataRoot)
+    this.kernelProcessLifecycle = new KernelProcessLifecycleOwner({
+      storageRoot: options.dataRoot,
+      platform: options.platform
+    })
     const workingCache = managedNotebookWorkingCache(options.platform, !options.installPackagesImpl)
     this.repairPolicy = new NotebookRuntimeRepairPolicy(runtimeRoot)
     this.recoveryCoordinator = new NotebookRecoveryCoordinator(
@@ -448,6 +454,8 @@ class NotebookRuntimeService {
       sessions: this.sessions,
       runtimeBindings: this.runtimeBindingOwner,
       waitForRevocationDrains: () => this.environmentOperations.waitForRevocationDrains(),
+      ensureProcessRecovery: () => this.kernelProcessLifecycle.ensureReady(),
+      processLifecycle: this.kernelProcessLifecycle,
       executorFactory: options.executorFactory,
       defaultExecutorOptions: () => ({
         ...resolveDefaultExecutorOptions(),
@@ -1197,8 +1205,13 @@ class NotebookRuntimeService {
   // repair-required) paths all populate the journal, so each reconcile action below is wired to a real effect.
   async recoverInterruptedOperations(): Promise<void> {
     this.runLifecycleRecovery ??= (async () => {
-      await this.repository.recoverAllRunLifecycles()
-      await this.recoveryCoordinator.recover()
+      // Start every recovery barrier before awaiting any one of them so no new kernel or prefix
+      // mutation can slip through while durable Run reconciliation is still starting.
+      await Promise.all([
+        this.repository.recoverAllRunLifecycles(),
+        this.kernelProcessLifecycle.recover(),
+        this.recoveryCoordinator.recover()
+      ])
     })()
     await this.runLifecycleRecovery
   }
@@ -1210,6 +1223,7 @@ class NotebookRuntimeService {
   // too, not just materialize/install).
   async ensureRecovered(): Promise<void> {
     await this.runLifecycleRecovery
+    await this.kernelProcessLifecycle.ensureReady()
     await this.recoveryCoordinator.ensureReady()
   }
 
