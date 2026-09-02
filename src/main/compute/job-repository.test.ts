@@ -47,6 +47,253 @@ afterEach(async () => {
 })
 
 describe('ComputeJob repository (SQLite integration)', () => {
+  it('linearizes managed reference creation against producer cleanup intent', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-managed-remote-reference-'))
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+    await migrateApplicationDatabase(client)
+    const repo = makeJobRepository(client)
+    const operations = new ComputeJobOperationRepository(() => Promise.resolve(client))
+    const uri = 'ssh://cluster/scratch/.openscience/jobs/producer/result.csv'
+    const createProducer = async (id: string): Promise<void> => {
+      await repo.create({
+        id,
+        providerId: 'ssh:cluster',
+        shape: 'direct_ssh',
+        sessionId: 'producer-session',
+        projectId: 'project',
+        intent: 'produce data',
+        command: 'true',
+        commandHash: `${id}-hash`,
+        initialStatus: 'submitted'
+      })
+      await repo.update(id, { status: 'success', finishedAt: new Date() })
+      await repo.update(id, {
+        harvestedAt: new Date(),
+        leftOnRemote: JSON.stringify([{ uri: uri.replace('producer', id) }])
+      })
+    }
+    await createProducer('producer')
+    const reference = await repo.resolveManagedRemoteInput(
+      'ssh:cluster',
+      'cluster',
+      uri,
+      'result.csv'
+    )
+
+    await repo.create({
+      id: 'consumer',
+      providerId: 'ssh:cluster',
+      shape: 'direct_ssh',
+      sessionId: 'consumer-session',
+      projectId: 'project',
+      intent: 'consume data',
+      command: 'true',
+      commandHash: 'consumer-hash',
+      managedRemoteReferences: [reference]
+    })
+    await expect(
+      client.computeJobRemoteReference.findMany({ where: { consumerJobId: 'consumer' } })
+    ).resolves.toEqual([
+      expect.objectContaining({
+        producerJobId: 'producer',
+        remotePath: '/scratch/.openscience/jobs/producer/result.csv',
+        uri
+      })
+    ])
+
+    await createProducer('producer-cleaning')
+    const cleaningUri = uri.replace('producer', 'producer-cleaning')
+    const cleaningReference = await repo.resolveManagedRemoteInput(
+      'ssh:cluster',
+      'cluster',
+      cleaningUri,
+      'result.csv'
+    )
+    await operations.requestCleanup(
+      'producer-cleaning',
+      { projectId: 'project', sessionId: 'producer-session', providerId: 'ssh:cluster' },
+      'cleanup-invocation',
+      new Date()
+    )
+
+    await expect(
+      repo.create({
+        id: 'late-consumer',
+        providerId: 'ssh:cluster',
+        shape: 'direct_ssh',
+        sessionId: 'consumer-session',
+        projectId: 'project',
+        intent: 'consume too late',
+        command: 'true',
+        commandHash: 'late-consumer-hash',
+        managedRemoteReferences: [cleaningReference]
+      })
+    ).rejects.toThrow(/being cleaned up/)
+    await expect(
+      client.computeJob.findUnique({ where: { id: 'late-consumer' } })
+    ).resolves.toBeNull()
+  })
+
+  it('persists cleanup intent, indeterminate receipt, replay, and a later revision', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-cleanup-operation-'))
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+    await migrateApplicationDatabase(client)
+    const repo = makeJobRepository(client)
+    const operations = new ComputeJobOperationRepository(() => Promise.resolve(client))
+    await repo.create({
+      id: 'cleanup-job',
+      providerId: 'ssh:cluster',
+      shape: 'direct_ssh',
+      sessionId: 'session',
+      projectId: 'project',
+      intent: 'cleanup persistence',
+      command: 'true',
+      commandHash: 'cleanup-hash'
+    })
+    await repo.update('cleanup-job', {
+      status: 'error',
+      errorCode: 'dispatch_failed',
+      finishedAt: new Date()
+    })
+    const operationScope = {
+      projectId: 'project',
+      sessionId: 'session',
+      providerId: 'ssh:cluster'
+    }
+    const requested = await operations.requestCleanup(
+      'cleanup-job',
+      operationScope,
+      'request-1',
+      new Date(1)
+    )
+    expect(requested.found).toBe(true)
+    if (!requested.found) throw new Error('cleanup operation was not created')
+    const firstClaim = await operations.claimCleanup(
+      requested.record,
+      new Date(2),
+      30_000,
+      'claim-1'
+    )
+    if (!firstClaim) throw new Error('cleanup operation was not claimed')
+    const uncertain = {
+      job_id: 'cleanup-job',
+      outcome: 'indeterminate' as const,
+      workspace_removed: false,
+      deleted_object_count: 0,
+      retained_object_counts: { remote_state_uncertain: 1 },
+      retained_object_count_unknown: true,
+      retry_recommended: true,
+      retry_conditions: ['host_reachable' as const],
+      disposition: 'Retry.'
+    }
+    await operations.settleCleanup(firstClaim, uncertain, new Date(3), true)
+    await expect(operations.get('cleanup-job', 'cleanup')).resolves.toMatchObject({
+      phase: 'active',
+      requestId: 'request-1',
+      receipt: uncertain
+    })
+    await expect(operations.findIndeterminateCleanup(new Date(4))).resolves.toEqual([
+      expect.objectContaining({ jobId: 'cleanup-job', receipt: uncertain })
+    ])
+    await expect(repo.get('cleanup-job')).resolves.toMatchObject({ cleanup_receipt: uncertain })
+
+    const replay = await operations.requestCleanup(
+      'cleanup-job',
+      operationScope,
+      'request-1',
+      new Date(4)
+    )
+    expect(replay).toMatchObject({ found: true, record: { receipt: uncertain } })
+    if (!replay.found) throw new Error('cleanup replay was not found')
+    const replayClaim = await operations.claimCleanup(replay.record, new Date(5), 30_000, 'claim-2')
+    if (!replayClaim) throw new Error('cleanup replay was not claimed')
+    const settled = { ...uncertain, outcome: 'workspace_removed' as const, workspace_removed: true }
+    await operations.settleCleanup(replayClaim, settled, new Date(6))
+
+    const next = await operations.requestCleanup(
+      'cleanup-job',
+      operationScope,
+      'request-2',
+      new Date(7)
+    )
+    expect(next).toMatchObject({
+      found: true,
+      record: { phase: 'active', requestId: 'request-2', receipt: null }
+    })
+  })
+
+  it('recovers one notification for a queued Job cancelled before remote submission', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-queued-cancel-notification-'))
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+    await migrateApplicationDatabase(client)
+    const repo = makeJobRepository(client)
+    const operations = new ComputeJobOperationRepository(() => Promise.resolve(client))
+    await repo.create({
+      id: 'queued-cancel',
+      providerId: 'ssh:cluster',
+      shape: 'direct_ssh',
+      sessionId: 'session',
+      projectId: 'project',
+      intent: 'queued work',
+      command: 'true',
+      commandHash: 'queued-cancel-hash',
+      initialStatus: 'queued'
+    })
+    await operations.request(
+      'queued-cancel',
+      'cancel',
+      { projectId: 'project', sessionId: 'session', providerId: 'ssh:cluster' },
+      new Date()
+    )
+
+    const [ready] = await repo.findNotificationReadyUnnotified()
+    expect(ready).toMatchObject({
+      job_id: 'queued-cancel',
+      status: 'failed',
+      cancellation_status: 'cancelled',
+      submitted_at: undefined,
+      harvested_at: undefined
+    })
+    await expect(repo.claimNotification('queued-cancel', new Date())).resolves.toMatchObject({
+      job_id: 'queued-cancel'
+    })
+    await expect(repo.claimNotification('queued-cancel', new Date())).resolves.toBeNull()
+  })
+
+  it('decodes a default-scratch retained URI back to its trusted tilde path', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-managed-tilde-uri-'))
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+    await migrateApplicationDatabase(client)
+    const repo = makeJobRepository(client)
+    const uri = 'ssh://cluster/~/.openscience/jobs/tilde-producer/result.csv'
+    await repo.create({
+      id: 'tilde-producer',
+      providerId: 'ssh:cluster',
+      shape: 'direct_ssh',
+      sessionId: 'session',
+      projectId: 'project',
+      intent: 'produce',
+      command: 'true',
+      commandHash: 'tilde-hash'
+    })
+    await repo.update('tilde-producer', { status: 'success', finishedAt: new Date() })
+    await repo.update('tilde-producer', {
+      harvestedAt: new Date(),
+      leftOnRemote: JSON.stringify([{ uri }])
+    })
+
+    await expect(
+      repo.resolveManagedRemoteInput('ssh:cluster', 'cluster', uri, 'result.csv')
+    ).resolves.toMatchObject({
+      remotePath: '~/.openscience/jobs/tilde-producer/result.csv',
+      uri
+    })
+  })
+
   it('persists credential conflicts reported while dispatching a migrated job', async () => {
     storageRoot = await mkdtemp(join(tmpdir(), 'open-science-job-credential-conflict-'))
 
@@ -1621,5 +1868,32 @@ describe('ComputeJob repository (SQLite integration)', () => {
     await expect(create('retry-job', 'project-1', 'session-1')).resolves.toMatchObject({
       job_id: 'retry-job'
     })
+  })
+
+  it('linearizes cleanup admission with owner-deletion barriers in both orders', async () => {
+    storageRoot = await mkdtemp(join(tmpdir(), 'open-science-cleanup-owner-barrier-'))
+    const client = createProjectDbClient(storageRoot)
+    disconnect = () => client.$disconnect()
+    await migrateApplicationDatabase(client)
+    const repo = makeJobRepository(client)
+
+    const admitted = await repo.admitCleanup('project', 'session', async () => 'admitted')
+    expect(admitted?.result).toBe('admitted')
+    let deletionFinished = false
+    const deletion = repo
+      .beginOwnerDeletion({ projectId: 'project', sessionId: 'session' })
+      .then(() => {
+        deletionFinished = true
+      })
+    await new Promise((resolve) => setTimeout(resolve, 0))
+    expect(deletionFinished).toBe(false)
+    admitted?.release()
+    await deletion
+    expect(deletionFinished).toBe(true)
+
+    await repo.beginOwnerDeletion({ projectId: 'other-project', sessionId: 'other-session' })
+    await expect(
+      repo.admitCleanup('other-project', 'other-session', async () => 'too-late')
+    ).resolves.toBeNull()
   })
 })

@@ -161,13 +161,33 @@ describe('Compute password authentication release gate', () => {
     const databaseBytes = await readFile(join(storageRoot, 'open-science.db'))
     expect(databaseBytes.includes(Buffer.from(secret, 'utf8'))).toBe(false)
 
-    const makeFailingBroker = (): {
+    const makeFailingBroker = (
+      ownerPreflight = false
+    ): {
       broker: SshConfigComputeConnectionBroker
       runner: SshRunner
     } => {
-      const failingRunner: SshRunner = {
-        run: vi
-          .fn()
+      const failingRun = vi.fn<SshRunner['run']>()
+      if (ownerPreflight) {
+        failingRun.mockImplementation(async (_target, command) =>
+          command.includes('.openscience-owner')
+            ? {
+                exitCode: 0,
+                stdout: '',
+                stderr: '',
+                truncated: false,
+                timedOut: false
+              }
+            : {
+                exitCode: 42,
+                stdout: '',
+                stderr: `vendor diagnostic accidentally included ${secret}`,
+                truncated: false,
+                timedOut: false
+              }
+        )
+      } else {
+        failingRun
           .mockResolvedValueOnce({
             exitCode: 255,
             stdout: '',
@@ -182,6 +202,9 @@ describe('Compute password authentication release gate', () => {
             truncated: false,
             timedOut: false
           })
+      }
+      const failingRunner: SshRunner = {
+        run: failingRun
       }
       const adapter = new PasswordSshAdapter(
         vault,
@@ -223,9 +246,10 @@ describe('Compute password authentication release gate', () => {
       intent: 'release gate',
       command: 'true',
       commandHash: 'release-gate-hash',
+      ownerMarker: 'release-gate-owner-token',
       initialStatus: 'submitted'
     })
-    const jobFailure = makeFailingBroker()
+    const jobFailure = makeFailingBroker(true)
     await dispatchJob('release-gate-job', {
       connectionBroker: jobFailure.broker,
       hostRepository: repository,

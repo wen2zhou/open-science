@@ -257,6 +257,55 @@ const job2 = await c.submitJob(
 )
 ```
 
+## Safe per-Job cleanup
+
+Cleanup comes after result use, never before it. In the analysis turn, call `result()`, inspect the
+outputs, publish the artifacts worth preserving, and establish every needed managed remote reference
+from a returned `left_on_remote` URI. Only after the current work has no further remote use should
+you call cleanup on that exact Job handle:
+
+```javascript
+const receipt = await c.attachJob(job_id).cleanup()
+// receipt → {
+//   job_id,
+//   outcome,
+//   workspace_removed,
+//   deleted_object_count,
+//   retained_object_counts,
+//   retained_object_count_unknown,
+//   retry_recommended,
+//   retry_conditions,
+//   disposition
+// }
+```
+
+`cleanup()` is one bounded, blocking cleanup attempt. It never cancels the Job, waits for another
+Job to finish, or accepts a remote path. The backend verifies ownership, lifecycle, harvest,
+object identity, remote residency, and active downstream references. It deletes only objects proven
+safe and returns a structured receipt; partial cleanup is a normal safe result. Do not use raw remote delete commands to bypass a retained object or a cleanup result.
+
+Interpret `outcome` and self-correct as follows:
+
+- `workspace_removed`: cleanup is complete. `workspace_removed` is the only fact that permits you to
+  say the remote workspace was removed; do not call cleanup again.
+- `partially_cleaned`: treat the attempt as safely settled. Use `retained_object_counts` to explain
+  what remains, and retry only after a returned `retry_conditions` value can change.
+- `nothing_deleted`: treat the attempt as safely settled with no deletion. Retry only when the
+  receipt recommends it and its returned condition can change.
+- `not_ready`: the receipt confirms no remote modification. Respect `retry_conditions` such as
+  `job_terminal`, `harvest_settled`, `downstream_terminal`, or `scope_deletion_finished`. Do not poll
+  tightly and do not substitute a raw delete command.
+- `indeterminate`: remote modification may have happened but could not be confirmed. Read the latest
+  Job status, then retry with the same Job handle when `host_reachable` is satisfied. Until a
+  determinate receipt arrives, do not claim that the remote workspace was removed.
+
+The stable retained reason codes are `source_job_active`, `harvest_pending`, `ownership_unproven`,
+`scope_deletion_active`, `active_downstream_reference`, `only_remote_copy`,
+`unknown_or_changed_object`, and `remote_state_uncertain`. Ownership that cannot be proven or an
+unknown/changed object requires preservation and user-visible explanation; never bypass it.
+`manual_review` means explain the retained state and wait for user direction rather than improvising
+a remote deletion.
+
 ## Submitting several jobs
 
 Submit a batch and let each job's analysis turn handle its results independently. The app

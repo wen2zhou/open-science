@@ -69,6 +69,27 @@ describe('remote-compute-ssh immediate failure guidance', () => {
     expect(status).not.toHaveBeenCalled()
     expect(result).toHaveBeenCalledOnce()
   })
+
+  it('documents the result-first cleanup lifecycle and every receipt outcome', async () => {
+    const skill = await readFile(skillPath, 'utf8')
+
+    expect(skill).toMatch(
+      /result\(\)[\s\S]*inspect[\s\S]*publish[\s\S]*managed remote reference[\s\S]*cleanup\(\)/i
+    )
+    expect(skill).toContain('attachJob(job_id).cleanup()')
+    for (const outcome of [
+      'workspace_removed',
+      'partially_cleaned',
+      'nothing_deleted',
+      'not_ready',
+      'indeterminate'
+    ]) {
+      expect(skill).toContain(`\`${outcome}\``)
+    }
+    expect(skill).toContain('Do not use raw remote delete commands')
+    expect(skill).toMatch(/Do not poll\s+tightly/)
+    expect(skill).toContain('do not claim that the remote workspace was removed')
+  })
 })
 
 const AsyncFunction = Object.getPrototypeOf(async function () {

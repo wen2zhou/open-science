@@ -50,6 +50,17 @@ const createHarness = (
     getJobStatus: vi.fn(async () => ({})),
     getJobResult: vi.fn(async () => ({})),
     cancelJob: vi.fn(async () => ({})),
+    cleanupJob: vi.fn(async () => ({
+      job_id: 'job-1',
+      outcome: 'workspace_removed' as const,
+      workspace_removed: true,
+      deleted_object_count: 1,
+      retained_object_counts: {},
+      retained_object_count_unknown: false,
+      retry_recommended: false,
+      retry_conditions: [],
+      disposition: 'Remote workspace removed.'
+    })),
     setSessionConcurrencyLimit: vi.fn(async () => undefined),
     getSessionConcurrencyStatus: vi.fn(async () => ({
       session_limit: null,
@@ -209,5 +220,28 @@ describe('AgentComputeService', () => {
       ...context,
       providerId: 'ssh:available'
     })
+  })
+
+  it('scopes cleanup to the trusted owner tuple and forwards the stable invocation', async () => {
+    const { raw, service } = createHarness()
+    const scope = {
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      providerId: 'ssh:available'
+    }
+    const signal = new AbortController().signal
+
+    await service.cleanupJob('job-1', scope, 'cleanup-invocation-1', signal)
+    await expect(
+      service.cleanupJob(
+        'job-hidden',
+        { ...scope, providerId: 'ssh:hidden' },
+        'cleanup-invocation-2',
+        signal
+      )
+    ).rejects.toMatchObject({ code: 'host_unavailable' })
+
+    expect(raw.cleanupJob).toHaveBeenCalledOnce()
+    expect(raw.cleanupJob).toHaveBeenCalledWith('job-1', scope, 'cleanup-invocation-1', signal)
   })
 })

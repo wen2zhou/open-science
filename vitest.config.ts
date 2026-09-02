@@ -1,6 +1,7 @@
 import { availableParallelism, cpus } from 'node:os'
 import { basename, dirname, resolve } from 'path'
 import { defineConfig, configDefaults } from 'vitest/config'
+import { prismaClientRuntimeAlias } from './test/prisma-client-isolation'
 
 const testRoot = resolve('.')
 const sharedInstallRoot = basename(dirname(testRoot)) === '.worktree' ? resolve('../..') : testRoot
@@ -134,13 +135,21 @@ export default defineConfig({
     // symlink. Keep that logical path so Vite does not resolve PDF workers outside the test root and
     // reject them before the component suite can run. A normal checkout already has a local install.
     preserveSymlinks: true,
-    alias: {
-      '@': resolve('src/renderer/src'),
-      '@renderer': resolve('src/renderer/src'),
-      'e-virt-table/dist/index.es.js': resolve('test/fixtures/fake-e-virt-table.ts')
-    }
+    alias: [
+      prismaClientRuntimeAlias(testRoot),
+      { find: '@', replacement: resolve('src/renderer/src') },
+      { find: '@renderer', replacement: resolve('src/renderer/src') },
+      {
+        find: 'e-virt-table/dist/index.es.js',
+        replacement: resolve('test/fixtures/fake-e-virt-table.ts')
+      }
+    ]
   },
   test: {
+    // node_modules is shared by local git worktrees. Snapshot the generated Prisma Client before
+    // workers start so a concurrent `prisma generate` in another checkout cannot change DMMF
+    // halfway through this suite. The exact alias above keeps native engines beside that snapshot.
+    globalSetup: ['./test/prisma-client-isolation.ts'],
     // Vitest shards each project independently. A valid full-suite shard can therefore contain no
     // files for one project even though its other projects execute tests.
     passWithNoTests: fullSuiteShardAllowsEmptyProjects(process.argv),

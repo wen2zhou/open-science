@@ -21,7 +21,12 @@ import { randomUUID } from 'node:crypto'
 import { access, mkdir, realpath, rename, rm, statfs, unlink } from 'node:fs/promises'
 import { dirname, join, relative, resolve } from 'node:path'
 
-import type { ComputeJob, JobSummary } from '../../shared/compute'
+import type {
+  ComputeJob,
+  ComputeJobRemoteObjectEvidence,
+  ComputeJobRemoteObjectIdentity,
+  JobSummary
+} from '../../shared/compute'
 import {
   hasImmutableExecutionFileEvidenceReference,
   parseOwnedExecutionFileEvidenceSummary
@@ -37,6 +42,7 @@ import {
 import {
   quoteRemotePath,
   SHELL_UNSAFE_CHARS,
+  shellSingleQuote,
   validateRelativeTransferPath
 } from './remote-path-security'
 import {
@@ -165,10 +171,32 @@ const ENUMERATE_TIMEOUT_MS = 60_000
 export const enumerateRemoteFiles = async (
   connection: ComputeConnectionLease,
   remoteWorkdir: string
-): Promise<FileEntry[]> => {
+): Promise<FileEntry[]> =>
+  (await enumerateRemoteFilesWithIdentity(connection, remoteWorkdir)).map(
+    ({ path, size_bytes }) => ({
+      path,
+      size_bytes
+    })
+  )
+
+type RemoteFileEntry = FileEntry & Readonly<{ identity?: ComputeJobRemoteObjectIdentity }>
+
+const enumerateRemoteFilesWithIdentity = async (
+  connection: ComputeConnectionLease,
+  remoteWorkdir: string
+): Promise<RemoteFileEntry[]> => {
   // Single-quote the workdir path for safe embedding in the SSH command.
   const quotedWorkdir = quoteRemotePath(remoteWorkdir)
-  const cmd = `find ${quotedWorkdir} -type f -printf '%P\\t%s\\n' 2>/dev/null || true`
+  const enumerateScript = [
+    'root=$1',
+    'shift',
+    'for path do',
+    '  relative_path=${path#"$root"/}',
+    `  identity=$(stat -c '%d:%i:%s:%Y' -- "$path" 2>/dev/null || stat -f '%d:%i:%z:%m' "$path" 2>/dev/null) || exit 71`,
+    `  printf '%s\\t%s\\n' "$relative_path" "$identity"`,
+    'done'
+  ].join('\n')
+  const cmd = `find -P ${quotedWorkdir} -type f -exec sh -c ${shellSingleQuote(enumerateScript)} sh ${quotedWorkdir} {} +`
 
   const result = await connection.run(cmd, {
     timeoutMs: ENUMERATE_TIMEOUT_MS,
@@ -193,17 +221,38 @@ export const enumerateRemoteFiles = async (
 
   if (!result.stdout.trim()) return []
 
-  const entries: FileEntry[] = []
+  const entries: RemoteFileEntry[] = []
   for (const line of result.stdout.split('\n')) {
     const trimmed = line.trimEnd()
     if (!trimmed) continue
-    const tab = trimmed.lastIndexOf('\t')
-    if (tab === -1) continue
-    const path = trimmed.slice(0, tab)
-    const sizeStr = trimmed.slice(tab + 1)
+    const fields = trimmed.split('\t')
+    const legacy = fields.length === 2
+    if (!legacy && fields.length !== 5) continue
+    const path = fields[0]!
+    const [device, inode, sizeStr, modifiedAtSeconds] = legacy
+      ? [undefined, undefined, fields[1], undefined]
+      : fields.slice(1)
     const size_bytes = Number.parseInt(sizeStr, 10)
     if (!path || Number.isNaN(size_bytes)) continue
-    entries.push({ path, size_bytes })
+    const hasIdentity =
+      /^\d+$/.test(device ?? '') &&
+      /^\d+$/.test(inode ?? '') &&
+      /^\d+$/.test(modifiedAtSeconds ?? '')
+    entries.push({
+      path,
+      size_bytes,
+      ...(hasIdentity
+        ? {
+            identity: {
+              kind: 'file' as const,
+              device,
+              inode,
+              size_bytes,
+              modified_at_ns: `${modifiedAtSeconds}000000000`
+            }
+          }
+        : {})
+    })
   }
   return entries
 }
@@ -388,6 +437,7 @@ const harvestJobUnchecked = async (
     publishedPath: string
     relativePath: string
   }> = []
+  const harvestedRemoteEvidence: ComputeJobRemoteObjectEvidence[] = []
   const remoteInputPaths: string[] = []
   if (job.input_manifest) {
     try {
@@ -477,7 +527,17 @@ const harvestJobUnchecked = async (
       harvestedAt: new Date(),
       harvestError,
       leftOnRemote: leftOnRemoteJson,
-      fileEvidence
+      fileEvidence,
+      ...(!harvestError
+        ? {
+            remoteObjectEvidence: [
+              ...(job.remote_object_evidence ?? []).filter(
+                (entry) => entry.role !== 'harvested_output' && entry.role !== 'harvested_log'
+              ),
+              ...harvestedRemoteEvidence
+            ]
+          }
+        : {})
     })
     if (
       evidencePublicationFailed &&
@@ -564,9 +624,9 @@ const harvestJobUnchecked = async (
   const remoteWorkdir = job.remote_workdir ?? `~/.openscience/jobs/${job.job_id}`
 
   // ── 3. Enumerate remote files ───────────────────────────────────────────────
-  let remoteFiles: FileEntry[]
+  let remoteFiles: RemoteFileEntry[]
   try {
-    remoteFiles = await enumerateRemoteFiles(connection, remoteWorkdir)
+    remoteFiles = await enumerateRemoteFilesWithIdentity(connection, remoteWorkdir)
   } catch (err) {
     if (deps.signal?.aborted) throw err
     if (err instanceof ComputeConnectionError) throw err
@@ -620,6 +680,9 @@ const harvestJobUnchecked = async (
     stagedInputs
   )
   const remoteSizeByPath = new Map(remoteFiles.map((entry) => [entry.path, entry.size_bytes]))
+  const remoteIdentityByPath = new Map(
+    remoteFiles.flatMap((entry) => (entry.identity ? [[entry.path, entry.identity] as const] : []))
+  )
   const plannedPaths = new Set([
     ...plannedClassification.featured,
     ...plannedClassification.hidden,
@@ -655,6 +718,11 @@ const harvestJobUnchecked = async (
 
   // ── 5. Download files ───────────────────────────────────────────────────────
   const errors: string[] = []
+  const downloadedRemoteObjects: Array<{
+    path: string
+    role: Extract<ComputeJobRemoteObjectEvidence['role'], 'harvested_output' | 'harvested_log'>
+    identity: ComputeJobRemoteObjectIdentity
+  }> = []
 
   // Helper: download one file, recording errors without throwing.
   const recordLimit = (
@@ -673,7 +741,7 @@ const harvestJobUnchecked = async (
   const safeDownload = async (
     relativePath: string,
     localPath: string,
-    recordAsEvidence = true
+    role: Extract<ComputeJobRemoteObjectEvidence['role'], 'harvested_output' | 'harvested_log'>
   ): Promise<boolean> => {
     deps.signal?.throwIfAborted()
     const expectedBytes = remoteSizeByPath.get(relativePath) ?? 0
@@ -712,13 +780,18 @@ const harvestJobUnchecked = async (
       deps.signal?.throwIfAborted()
       await rename(temporaryPath, localPath)
       remainingBudgetBytes = Math.max(0, remainingBudgetBytes - bytesWritten)
-      if (recordAsEvidence) {
+      const isTransientControlFile = relativePath === 'exit_code.tmp'
+      if (role === 'harvested_output' && !isTransientControlFile) {
         const publishedPath = join(harvestDir, relative(attemptDir, localPath))
         downloadedOutputs.push({
           attemptPath: localPath,
           publishedPath,
           relativePath: workspaceRelativePath(workspaceCwd, publishedPath)
         })
+      }
+      const identity = remoteIdentityByPath.get(relativePath)
+      if (identity && !isTransientControlFile) {
+        downloadedRemoteObjects.push({ path: relativePath, role, identity })
       }
       return true
     } catch (error) {
@@ -745,7 +818,7 @@ const harvestJobUnchecked = async (
       deps.signal?.throwIfAborted()
       const localPath = join(featuredDir, relativePath)
       await mkdir(dirname(localPath), { recursive: true })
-      await safeDownload(relativePath, localPath)
+      await safeDownload(relativePath, localPath, 'harvested_output')
     }
 
     // Download hidden files.
@@ -753,14 +826,14 @@ const harvestJobUnchecked = async (
       deps.signal?.throwIfAborted()
       const localPath = join(hiddenDir, relativePath)
       await mkdir(dirname(localPath), { recursive: true })
-      await safeDownload(relativePath, localPath)
+      await safeDownload(relativePath, localPath, 'harvested_output')
     }
 
     // ── 6. Build left_on_remote JSON and finalize ────────────────────────────────
     // Download full logs last; bounded tails remain available when the budget excludes them.
     for (const relativePath of classification.logs) {
       deps.signal?.throwIfAborted()
-      await safeDownload(relativePath, join(attemptDir, relativePath), false)
+      await safeDownload(relativePath, join(attemptDir, relativePath), 'harvested_log')
     }
   } finally {
     await reservation.release()
@@ -777,8 +850,55 @@ const harvestJobUnchecked = async (
       ? `harvest_failed: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? ` (and ${errors.length - 3} more)` : ''}`
       : null
 
-  deps.signal?.throwIfAborted()
   if (!harvestError) {
+    let afterDownload: RemoteFileEntry[]
+    try {
+      afterDownload = await enumerateRemoteFilesWithIdentity(connection, remoteWorkdir)
+    } catch (error) {
+      if (deps.signal?.aborted) throw error
+      if (error instanceof ComputeConnectionError) throw error
+      errors.push('Remote identity verification after download failed.')
+      afterDownload = []
+    }
+    const afterIdentityByPath = new Map(
+      afterDownload.flatMap((entry) =>
+        entry.identity ? [[entry.path, entry.identity] as const] : []
+      )
+    )
+    const exitCodeIdentity = remoteIdentityByPath.get('exit_code')
+    const exitCodeIdentityAfter = afterIdentityByPath.get('exit_code')
+    if (
+      exitCodeIdentity &&
+      exitCodeIdentityAfter &&
+      JSON.stringify(exitCodeIdentity) === JSON.stringify(exitCodeIdentityAfter)
+    ) {
+      harvestedRemoteEvidence.push({
+        path: 'exit_code',
+        role: 'control',
+        identity: exitCodeIdentityAfter
+      })
+    }
+    for (const downloaded of downloadedRemoteObjects) {
+      const afterIdentity = afterIdentityByPath.get(downloaded.path)
+      if (!afterIdentity || JSON.stringify(afterIdentity) !== JSON.stringify(downloaded.identity)) {
+        errors.push('A remote object changed while it was being downloaded.')
+        continue
+      }
+      harvestedRemoteEvidence.push({
+        path: downloaded.path,
+        role: downloaded.role,
+        identity: afterIdentity
+      })
+    }
+  }
+
+  const settledHarvestError =
+    errors.length > 0
+      ? `harvest_failed: ${errors.slice(0, 3).join('; ')}${errors.length > 3 ? ` (and ${errors.length - 3} more)` : ''}`
+      : null
+
+  deps.signal?.throwIfAborted()
+  if (!settledHarvestError) {
     let backedUp = false
     try {
       if (await pathExists(harvestDir)) {
@@ -797,6 +917,6 @@ const harvestJobUnchecked = async (
   }
 
   deps.signal?.throwIfAborted()
-  const updatedJob = await finalize(harvestError, JSON.stringify(leftOnRemote))
+  const updatedJob = await finalize(settledHarvestError, JSON.stringify(leftOnRemote))
   if (deps.broadcast) await notify(updatedJob)
 }

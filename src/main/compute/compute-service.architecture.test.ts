@@ -241,7 +241,8 @@ describe('Compute service architecture', () => {
         'promoteQueued',
         'recordPollError',
         'recoverRemoteHandle',
-        'recoverInterruptedDispatch'
+        'recoverInterruptedDispatch',
+        'recordCleanupEvidence'
       ].sort()
     )
     expect(calledMembersOn(computePaths.jobLifecycle, ['this', 'repository'])).toEqual(
@@ -410,6 +411,7 @@ describe('Compute service architecture', () => {
         'appendDetails',
         'callCommand',
         'cancelJob',
+        'cleanupJob',
         'clearScratchRoot',
         'download',
         'getDetails',
@@ -421,6 +423,7 @@ describe('Compute service architecture', () => {
         'list',
         'listDir',
         'probe',
+        'recoverIndeterminateJobCleanups',
         'replaceDetails',
         'setConcurrencyLimit',
         'setScratchRoot',
@@ -457,6 +460,7 @@ describe('Compute service architecture', () => {
     expect(referencedMembersOn(computePaths.jobRuntime, ['deps', 'computeService'])).toEqual([
       'handleJobCancellationConfirmed',
       'handleJobUpdated',
+      'recoverIndeterminateJobCleanups',
       'startQueueReconciliation',
       'stopQueueReconciliation'
     ])
@@ -467,6 +471,7 @@ describe('Compute service architecture', () => {
       'appendDetails',
       'callCommand',
       'cancelJob',
+      'cleanupJob',
       'download',
       'getDetails',
       'getJobResult',
@@ -528,6 +533,8 @@ describe('Compute service architecture', () => {
       'src/main/compute/compute-approval-broker.ts',
       'src/main/compute/compute-host-profile-owner.ts',
       'src/main/compute/compute-job-lifecycle.ts',
+      'src/main/compute/compute-job-cleanup-owner.ts',
+      'src/main/compute/compute-job-cleanup-remote.ts',
       'src/main/compute/job-deletion-owner.ts',
       'src/main/compute/compute-job-workflow-owner.ts',
       'src/main/compute/compute-job-status.ts',
@@ -544,6 +551,7 @@ describe('Compute service architecture', () => {
       'src/main/compute/harvest-engine.ts',
       'src/main/compute/compute-job-integrity.ts',
       'src/main/compute/job-repository.ts',
+      'src/main/compute/managed-remote-uri.ts',
       'src/main/compute/remote-job-process.ts',
       'src/main/compute/remote-job-handle.ts',
       'src/main/compute/remote-launch-recovery.ts',
@@ -581,6 +589,7 @@ describe('Compute service architecture', () => {
         'src/main/compute/compute-approval-broker.test.ts',
         'src/main/compute/connection-broker.test.ts',
         'src/main/compute/compute-job-lifecycle.test.ts',
+        'src/main/compute/compute-job-cleanup-owner.test.ts',
         'src/main/compute/job-deletion-owner.test.ts',
         'src/main/compute/session-enabled-hosts-owner.test.ts',
         'src/main/compute/compute-host-profile-owner.test.ts',
@@ -595,6 +604,7 @@ describe('Compute service architecture', () => {
         'src/main/compute/credential-vault.test.ts',
         'src/main/compute/compute-password-auth.architecture.test.ts',
         'src/main/compute/ambiguous-dispatch-recovery.integration.test.ts',
+        'src/main/compute/compute-job-cleanup.real-ssh.integration.test.ts',
         'src/main/compute/job-poll-protocol.integration.test.ts',
         'src/main/compute/job-notifier.integration.test.ts',
         'src/main/compute/job-deletion-runtime-drain.test.ts',
@@ -617,6 +627,8 @@ describe('Compute service architecture', () => {
         'src/main/compute/job-poller.test.ts',
         'src/main/compute/job-poll-output.test.ts',
         'src/main/compute/job-repository.test.ts',
+        'src/main/compute/compute-job-cleanup-remote.test.ts',
+        'src/main/compute/compute-job-cleanup-remote.integration.test.ts',
         'src/main/notebook/local-rpc-server.mcpcall.test.ts',
         'src/main/notebook/local-rpc-server.test.ts'
       ])

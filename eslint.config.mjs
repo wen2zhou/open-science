@@ -17,6 +17,7 @@ export default defineConfig(
       '**/out',
       // Local package caches and generated scratch trees are not repository source.
       '**/.pnpm-store/**',
+      '**/.vitest/**',
       '**/tmp/**',
       // Packaged e2e build output (electron-builder --dir into dist-e2e-*); bundled JS, not source.
       '**/dist-e2e-*',

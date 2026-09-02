@@ -5,6 +5,7 @@ export type ComputeJobTransitionResult = { kind: 'applied'; job: ComputeJob } | 
 
 type ActiveJobStatus = Extract<ComputeJobStatus, 'submitted' | 'running'>
 type PollTails = { stdoutTail: string | null; stderrTail: string | null }
+type CleanupEvidence = Pick<UpdateJobRequest, 'fileEvidence' | 'remoteObjectEvidence'>
 type PolledJobFinish = PollTails & {
   status: Extract<ComputeJobStatus, 'success' | 'failed' | 'timeout'>
   exitCode?: number
@@ -74,6 +75,14 @@ export class ComputeJobLifecycle {
       ...(failure.stderrTail === undefined ? {} : { stderrTail: failure.stderrTail }),
       finishedAt: new Date()
     })
+  }
+
+  async recordCleanupEvidence(
+    jobId: string,
+    expectedStatuses: readonly ComputeJobStatus[],
+    evidence: CleanupEvidence
+  ): Promise<ComputeJobTransitionResult> {
+    return this.apply(jobId, expectedStatuses, evidence)
   }
 
   async recoverInterruptedDispatch(jobId: string): Promise<ComputeJobTransitionResult> {

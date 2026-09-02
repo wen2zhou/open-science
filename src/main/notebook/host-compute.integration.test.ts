@@ -47,6 +47,7 @@ const startStub = async (
     dropFirstSubmitResponse?: boolean
     dropFirstSubmitBody?: boolean
     rejectSubmit?: boolean
+    dropFirstCleanupResponse?: boolean
   } = {}
 ): Promise<{
   endpoint: string
@@ -56,6 +57,7 @@ const startStub = async (
   const { createServer } = await import('node:http')
   const requests: Array<{ params?: Record<string, unknown> }> = []
   let droppedFirstSubmitResponse = false
+  let droppedFirstCleanupResponse = false
   const server = createServer((req, res) => {
     let body = ''
     req.on('data', (c) => (body += c))
@@ -88,14 +90,35 @@ const startStub = async (
           .end(JSON.stringify({ error: 'submission rejected' }))
         return
       }
+      if (
+        op === 'job_cleanup' &&
+        options.dropFirstCleanupResponse &&
+        !droppedFirstCleanupResponse
+      ) {
+        droppedFirstCleanupResponse = true
+        res.destroy()
+        return
+      }
       const result =
         op === 'submit_job'
           ? { job_id: 'job-1', provider_id: 'ssh:x', status: 'submitted' }
-          : op === 'list_compute'
-            ? ['ssh:x']
-            : op === 'details'
-              ? { doc: 'details', is_skeleton: false }
-              : { exit_code: 0, stdout: 'ok', stderr: '', truncated: false }
+          : op === 'job_cleanup'
+            ? {
+                job_id: request.params?.job_id,
+                outcome: 'workspace_removed',
+                workspace_removed: true,
+                deleted_object_count: 1,
+                retained_object_counts: {},
+                retained_object_count_unknown: false,
+                retry_recommended: false,
+                retry_conditions: [],
+                disposition: 'Remote workspace removed.'
+              }
+            : op === 'list_compute'
+              ? ['ssh:x']
+              : op === 'details'
+                ? { doc: 'details', is_skeleton: false }
+                : { exit_code: 0, stdout: 'ok', stderr: '', truncated: false }
       res.writeHead(200, { 'content-type': 'application/json' }).end(JSON.stringify({ result }))
     })
   })
@@ -181,7 +204,7 @@ gate('repl kernel host.compute', () => {
           "const job = await c.submitJob('analyze', 'run', { timeoutSeconds: 60, " +
           "inputs: [{ src: 'in.dat', dstFilename: 'input.dat' }, { remotePath: '/remote/ref.dat', dstFilename: 'ref.dat' }], " +
           "outputs: ['*.csv'], harvest: { exclude: ['tmp/**'], maxFileMb: 10, maxTotalMb: 20 } }); " +
-          'await c.attachJob(job.job_id).status(); await c.attachJob(job.job_id).result(); ' +
+          'await c.attachJob(job.job_id).status(); await c.attachJob(job.job_id).result(); await c.attachJob(job.job_id).cleanup(); ' +
           'await c.setConcurrencyLimit(2); console.log(JSON.stringify(job))',
         mcpRpcEndpoint: stub.endpoint,
         mcpRpcToken: 'tok',
@@ -222,6 +245,12 @@ gate('repl kernel host.compute', () => {
       },
       { op: 'job_status', provider_id: 'ssh:x', job_id: 'job-1' },
       { op: 'job_result', provider_id: 'ssh:x', job_id: 'job-1' },
+      {
+        op: 'job_cleanup',
+        provider_id: 'ssh:x',
+        job_id: 'job-1',
+        invocation_id: expect.any(String)
+      },
       { op: 'set_concurrency_limit', session_id: 'session-7', limit: 2 }
     ])
   })
@@ -280,6 +309,39 @@ gate('repl kernel host.compute', () => {
     expect(submissions).toHaveLength(2)
     expect(submissions[0]?.invocation_id).toEqual(expect.any(String))
     expect(submissions[1]?.invocation_id).toBe(submissions[0]?.invocation_id)
+  })
+
+  it('retries a lost cleanup response with the same invocation id', async () => {
+    const stub = await startStub({ dropFirstCleanupResponse: true })
+    const exec = makeExecutor()
+    const result = await exec.execute(
+      baseRequest({
+        code:
+          "const receipt = await host.compute.create('ssh:x').attachJob('job-1').cleanup(); " +
+          'console.log(JSON.stringify(receipt))',
+        mcpRpcEndpoint: stub.endpoint,
+        mcpRpcToken: 'tok',
+        sessionId: 'session-7',
+        projectId: 'proj-x'
+      })
+    )
+    await exec.shutdown()
+    stub.close()
+
+    expect(result.status).toBe('completed')
+    expect(result.stdout).toContain('workspace_removed')
+    const cleanups = stub
+      .received()
+      .map((request) => request.params)
+      .filter((params) => params?.op === 'job_cleanup')
+    expect(cleanups).toHaveLength(2)
+    expect(cleanups[0]).toEqual({
+      op: 'job_cleanup',
+      provider_id: 'ssh:x',
+      job_id: 'job-1',
+      invocation_id: expect.any(String)
+    })
+    expect(cleanups[1]?.invocation_id).toBe(cleanups[0]?.invocation_id)
   })
 
   it('does not retry submitJob HTTP errors', async () => {

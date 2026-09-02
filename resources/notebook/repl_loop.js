@@ -2781,7 +2781,9 @@ const hostSessions = Object.freeze({ list: hostSessionsList, inspect: hostSessio
 // token-isolation reasons documented on host.mcp above.
 async function computeRpc(params) {
   if (!RPC_ENDPOINT) throw new Error('host.compute is unavailable: connector RPC endpoint not set')
-  const isRetryableSubmit = params?.op === 'submit_job' && typeof params.invocation_id === 'string'
+  const isRetryableMutation =
+    (params?.op === 'submit_job' || params?.op === 'job_cleanup') &&
+    typeof params.invocation_id === 'string'
   const request = async () => {
     const res = await capturedRpcFetch(RPC_ENDPOINT, {
       method: 'POST',
@@ -2789,7 +2791,7 @@ async function computeRpc(params) {
       body: JSON.stringify({ method: 'computeCall', params })
     })
     const body = await res.json().catch((error) => {
-      if (isRetryableSubmit && res.ok) throw error
+      if (isRetryableMutation && res.ok) throw error
       return {}
     })
     return { res, body }
@@ -2798,7 +2800,7 @@ async function computeRpc(params) {
   try {
     response = await request()
   } catch (error) {
-    if (!isRetryableSubmit) throw error
+    if (!isRetryableMutation) throw error
     response = await request()
   }
   const { res, body } = response
@@ -3432,6 +3434,14 @@ const hostCompute = {
           },
           async cancel() {
             return computeRpc({ op: 'job_cancel', provider_id: providerId, job_id: jobId })
+          },
+          async cleanup() {
+            return computeRpc({
+              op: 'job_cleanup',
+              provider_id: providerId,
+              job_id: jobId,
+              invocation_id: randomUUID()
+            })
           },
           async result() {
             return computeRpc({ op: 'job_result', provider_id: providerId, job_id: jobId })

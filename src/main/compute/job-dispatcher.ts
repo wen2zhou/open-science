@@ -1,6 +1,10 @@
 import { createHash } from 'node:crypto'
 
-import type { ComputeJob } from '../../shared/compute'
+import type {
+  ComputeJob,
+  ComputeJobRemoteObjectEvidence,
+  ComputeJobRemoteObjectIdentity
+} from '../../shared/compute'
 import { hasImmutableExecutionFileEvidenceReference } from '../../shared/execution-file-evidence'
 import { createLogger, errorLogFields } from '../logger'
 import { decodeDataPath } from '../storage/data-path'
@@ -29,6 +33,8 @@ const DISPATCH_MAX_OUTPUT_BYTES = 4 * 1024
 // Timeout for the dispatch SSH connection (mkdir + write files + launch). Generous to accommodate
 // slow cluster file systems; the job itself runs detached so the connection can close after.
 const DISPATCH_TIMEOUT_MS = 120_000
+const OWNER_MARKER_FILE = '.openscience-owner'
+const DISPATCH_PROTOCOL_PREFIX = 'OPEN_SCIENCE_DISPATCH_V2'
 const log = createLogger('compute')
 
 // Remote handle stored in the DB once the job is launched.
@@ -83,6 +89,166 @@ export const computeRemoteWorkdir = (scratchRoot: string | undefined, jobId: str
   return `${root}/.openscience/jobs/${jobId}`
 }
 
+const buildOwnerMarkerCommand = (workdir: string, ownerMarker: string): string => {
+  const boundary = workdir.lastIndexOf('/.openscience/jobs/')
+  if (boundary < 0) throw new Error('Unsafe remote Compute Job owner boundary.')
+  const scratchRoot = boundary === 0 ? '/' : workdir.slice(0, boundary)
+  const markerQ = quoteRemotePath(`${workdir}/${OWNER_MARKER_FILE}`)
+  const markerValueQ = shellSingleQuote(ownerMarker)
+  return [
+    'set -eu',
+    'set -f',
+    'umask 077',
+    `scratch_input=${shellSingleQuote(scratchRoot)}`,
+    `workdir_input=${shellSingleQuote(workdir)}`,
+    'case "$scratch_input" in "~") scratch_root=$HOME ;; "~/"*) scratch_root=$HOME/${scratch_input#??} ;; *) scratch_root=$scratch_input ;; esac',
+    'case "$workdir_input" in "~/"*) workdir=$HOME/${workdir_input#??} ;; *) workdir=$workdir_input ;; esac',
+    'path_no_symlinks() {',
+    '  current=',
+    '  old_ifs=$IFS',
+    '  IFS=/',
+    '  set -- $1',
+    '  IFS=$old_ifs',
+    '  for part do',
+    '    [ -n "$part" ] || continue',
+    '    current=$current/$part',
+    '    [ -d "$current" ] && [ ! -L "$current" ] || return 1',
+    '  done',
+    '}',
+    'path_no_symlinks "$scratch_root" || exit 71',
+    'managed_root=${scratch_root%/}/.openscience',
+    'jobs_root=$managed_root/jobs',
+    'mkdir "$managed_root" 2>/dev/null || [ -d "$managed_root" ]',
+    '[ -d "$managed_root" ] && [ ! -L "$managed_root" ] || exit 71',
+    'mkdir "$jobs_root" 2>/dev/null || [ -d "$jobs_root" ]',
+    '[ -d "$jobs_root" ] && [ ! -L "$jobs_root" ] || exit 71',
+    'mkdir "$workdir" 2>/dev/null || [ -d "$workdir" ]',
+    'path_no_symlinks "$workdir" || exit 71',
+    `if [ -e ${markerQ} ] || [ -L ${markerQ} ]; then`,
+    `  [ -f ${markerQ} ] && [ ! -L ${markerQ} ] || exit 72`,
+    `  [ "$(cat ${markerQ} 2>/dev/null)" = ${markerValueQ} ] || exit 73`,
+    'else',
+    `  (set -C; printf '%s' ${markerValueQ} > ${markerQ}) 2>/dev/null || exit 74`,
+    'fi',
+    `path_no_symlinks "$workdir" && [ -f ${markerQ} ] && [ ! -L ${markerQ} ] && [ "$(cat ${markerQ} 2>/dev/null)" = ${markerValueQ} ] || exit 75`
+  ].join('\n')
+}
+
+type DispatchEvidenceDescriptor = Readonly<{
+  path: string
+  role: ComputeJobRemoteObjectEvidence['role']
+  kind: ComputeJobRemoteObjectIdentity['kind']
+}>
+
+const buildIdentityCaptureLines = (
+  workdir: string,
+  descriptors: readonly DispatchEvidenceDescriptor[]
+): string[] => {
+  const lines = [
+    'stat_file_identity() {',
+    '  stat -c \'%d:%i:%s:%Y\' -- "$1" 2>/dev/null || stat -f \'%d:%i:%z:%m\' "$1" 2>/dev/null',
+    '}',
+    'stat_link_identity() {',
+    '  stat -c \'%d:%i\' -- "$1" 2>/dev/null || stat -f \'%d:%i\' "$1" 2>/dev/null',
+    '}',
+    `printf '%s\\n' ${shellSingleQuote(DISPATCH_PROTOCOL_PREFIX)}`,
+    `printf 'pid:%s\\n' "$LAUNCHED_PID"`
+  ]
+  descriptors.forEach((descriptor, index) => {
+    const pathQ = quoteRemotePath(`${workdir}/${descriptor.path}`)
+    if (descriptor.kind === 'file') {
+      lines.push(
+        `[ -f ${pathQ} ] && [ ! -L ${pathQ} ] || exit 76`,
+        `object_identity=$(stat_file_identity ${pathQ}) || exit 76`,
+        `printf 'object:${index}:file:%s\\n' "$object_identity"`
+      )
+    } else {
+      lines.push(
+        `[ -L ${pathQ} ] || exit 76`,
+        `object_identity=$(stat_link_identity ${pathQ}) || exit 76`,
+        `link_target=$(readlink ${pathQ}) || exit 76`,
+        `link_target_b64=$(printf '%s' "$link_target" | base64 | tr -d '\\r\\n') || exit 76`,
+        `printf 'object:${index}:symlink:%s:%s\\n' "$object_identity" "$link_target_b64"`
+      )
+    }
+  })
+  return lines
+}
+
+const parseDispatchProtocol = (
+  stdout: string,
+  descriptors: readonly DispatchEvidenceDescriptor[]
+): { pid: number; evidence: ComputeJobRemoteObjectEvidence[] } | undefined => {
+  const lines = stdout.trim().split('\n')
+  // Compatibility with an already-started dispatch from the previous protocol. Such a job remains
+  // safe because absent evidence cannot authorize future cleanup.
+  if (lines.length === 1 && /^[1-9]\d*$/.test(lines[0]!)) {
+    const pid = Number(lines[0])
+    return Number.isSafeInteger(pid) && pid > 1 ? { pid, evidence: [] } : undefined
+  }
+  if (lines[0] !== DISPATCH_PROTOCOL_PREFIX || !/^pid:[1-9]\d*$/.test(lines[1] ?? '')) {
+    return undefined
+  }
+  const pid = Number(lines[1]!.slice('pid:'.length))
+  if (!Number.isSafeInteger(pid) || pid <= 1 || lines.length !== descriptors.length + 2) {
+    return undefined
+  }
+  const evidence: ComputeJobRemoteObjectEvidence[] = []
+  for (let index = 0; index < descriptors.length; index += 1) {
+    const descriptor = descriptors[index]!
+    const fields = lines[index + 2]!.split(':')
+    if (fields[0] !== 'object' || fields[1] !== String(index) || fields[2] !== descriptor.kind) {
+      return undefined
+    }
+    if (descriptor.kind === 'file') {
+      const [device, inode, size, modifiedAtSeconds] = fields.slice(3)
+      const sizeBytes = Number(size)
+      if (
+        fields.length !== 7 ||
+        !/^\d+$/.test(device ?? '') ||
+        !/^\d+$/.test(inode ?? '') ||
+        !Number.isSafeInteger(sizeBytes) ||
+        sizeBytes < 0 ||
+        !/^\d+$/.test(modifiedAtSeconds ?? '')
+      ) {
+        return undefined
+      }
+      evidence.push({
+        path: descriptor.path,
+        role: descriptor.role,
+        identity: {
+          kind: 'file',
+          device,
+          inode,
+          size_bytes: sizeBytes,
+          modified_at_ns: `${modifiedAtSeconds}000000000`
+        }
+      })
+    } else {
+      const [device, inode, targetBase64] = fields.slice(3)
+      if (
+        fields.length !== 6 ||
+        !/^\d+$/.test(device ?? '') ||
+        !/^\d+$/.test(inode ?? '') ||
+        targetBase64 === undefined
+      ) {
+        return undefined
+      }
+      evidence.push({
+        path: descriptor.path,
+        role: descriptor.role,
+        identity: {
+          kind: 'symlink',
+          device,
+          inode,
+          link_target: Buffer.from(targetBase64, 'base64').toString()
+        }
+      })
+    }
+  }
+  return { pid, evidence }
+}
+
 // Quotes a remote path for safe interpolation into a remote shell command, while still allowing a
 // leading `~` to be expanded to $HOME by the shell. A tilde inside double/single quotes is NOT
 // expanded by bash, so the `~/` prefix is left unquoted and only the remainder is single-quoted
@@ -102,7 +268,13 @@ export type StagedInputEntry =
       checksum?: string
       sizeBytes?: number
     }
-  | { kind: 'symlink'; remotePath: string; dstFilename: string; label: string }
+  | {
+      kind: 'symlink'
+      remotePath: string
+      dstFilename: string
+      label: string
+      managedUri?: string
+    }
 
 // Performs the remote staging for all entries: scp upload for 'upload' entries,
 // remote ln -s for 'symlink' entries. All-or-nothing: throws on first failure.
@@ -118,7 +290,9 @@ export const stageInputs = async (
       await connection.upload(entry.localPath, remoteDest)
     } else {
       // Remote symlink: ln -s /abs/path workdir/dst_filename
-      const quoted = shellSingleQuote(entry.remotePath)
+      const quoted = entry.managedUri
+        ? quoteRemotePath(entry.remotePath)
+        : shellSingleQuote(entry.remotePath)
       const destQ = quoteRemotePath(`${workdir}/${entry.dstFilename}`)
       const lnCmd = `ln -s ${quoted} ${destQ}`
       const result = await connection.run(lnCmd, {
@@ -206,7 +380,8 @@ const finalizeDispatchErrorEvidence = async (
       remoteInputPaths,
       reasonCodes: ['harvest-incomplete', 'remote-output-not-harvested']
     })
-    await deps.jobRepository.update(jobId, { fileEvidence })
+    const lifecycle = new ComputeJobLifecycle(deps.jobRepository, deps.onJobUpdated)
+    await lifecycle.recordCleanupEvidence(jobId, ['error'], { fileEvidence })
     await settleComputeJobFileEvidence({
       storageRoot: deps.storageRoot,
       projectId: job.project_id,
@@ -265,12 +440,36 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
 
   const workdir = job.remote_workdir ?? computeRemoteWorkdir(host.scratchRoot, jobId)
   const timeoutSecs = job.timeout_seconds ?? 86400 // default 24h
+  if (!job.owner_marker) {
+    await lifecycle.dispatchError(jobId, {
+      errorCode: 'dispatch_failed',
+      stderrTail: 'The remote Compute Job owner marker is unavailable.'
+    })
+    return
+  }
+
+  // Establish durable ownership before any platform file is uploaded, linked, written, or launched.
+  // Retried dispatches may reuse the same marker, but a mismatched or non-regular marker fails closed.
+  const ownerResult = await connection.run(buildOwnerMarkerCommand(workdir, job.owner_marker), {
+    timeoutMs: 30_000,
+    loginShell: false,
+    maxOutputBytes: 4 * 1024
+  })
+  const ownerConnectionFailure = classifyConnectionFailure(ownerResult, false)
+  if (ownerConnectionFailure) throw ownerConnectionFailure
+  if (ownerResult.exitCode !== 0) {
+    await lifecycle.dispatchError(jobId, {
+      errorCode: 'dispatch_failed',
+      stderrTail: 'Could not establish ownership of the remote Compute Job directory.'
+    })
+    return
+  }
 
   // Stage inputs declared in the manifest (all-or-nothing: failure → dispatch_failed).
+  let stagedEntries: StagedInputEntry[] = []
   if (job.input_manifest) {
-    let entries: StagedInputEntry[]
     try {
-      entries = (JSON.parse(job.input_manifest) as StagedInputEntry[]).map((entry) =>
+      stagedEntries = (JSON.parse(job.input_manifest) as StagedInputEntry[]).map((entry) =>
         entry.kind === 'upload'
           ? { ...entry, localPath: decodeDataPath(entry.localPath, deps.storageRoot)! }
           : entry
@@ -283,24 +482,8 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
       return
     }
 
-    // Mkdir workdir first so symlinks and uploads have a destination.
-    const mkdirResult = await connection.run(`mkdir -p ${quoteRemotePath(workdir)}`, {
-      timeoutMs: 30_000,
-      loginShell: false,
-      maxOutputBytes: 4 * 1024
-    })
-    const mkdirConnectionFailure = classifyConnectionFailure(mkdirResult, false)
-    if (mkdirConnectionFailure) throw mkdirConnectionFailure
-    if (mkdirResult.exitCode !== 0) {
-      await lifecycle.dispatchError(jobId, {
-        errorCode: 'dispatch_failed',
-        stderrTail: 'Could not prepare the remote Compute Job directory.'
-      })
-      return
-    }
-
     try {
-      await stageInputs(entries, workdir, connection)
+      await stageInputs(stagedEntries, workdir, connection)
     } catch (err) {
       if (err instanceof ComputeConnectionError) throw err
       const msg = err instanceof Error ? err.message : String(err)
@@ -319,12 +502,22 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
   // Encode to base64 to avoid all shell quoting/injection issues.
   const commandB64 = toBase64(commandScript)
   const launcherB64 = toBase64(launcherScript)
+  const evidenceDescriptors: DispatchEvidenceDescriptor[] = [
+    { path: 'command.sh', role: 'control', kind: 'file' },
+    { path: 'launcher.sh', role: 'control', kind: 'file' },
+    { path: 'job.pid', role: 'control', kind: 'file' },
+    ...stagedEntries.map((entry) => ({
+      path: entry.dstFilename,
+      role: entry.kind === 'upload' ? ('input_upload' as const) : ('input_symlink' as const),
+      kind: entry.kind === 'upload' ? ('file' as const) : ('symlink' as const)
+    }))
+  ]
 
   // One SSH command: mkdir workdir, write scripts via base64 pipes, launch detached, echo pid.
   // Stdout = the pid (we echo it last).
   const quotedWorkdir = quoteRemotePath(workdir)
   const dispatchCmd = [
-    `mkdir -p ${quotedWorkdir}`,
+    `[ -d ${quotedWorkdir} ] && [ ! -L ${quotedWorkdir} ]`,
     `cd ${quotedWorkdir}`,
     // Write command.sh and launcher.sh via base64 to avoid heredoc/quoting issues.
     `printf '%s' ${JSON.stringify(commandB64)} | base64 -d > command.sh`,
@@ -335,7 +528,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     // Write pid to file AND echo it so we can read it back in this round-trip.
     `LAUNCHED_PID=$!`,
     `echo $LAUNCHED_PID > job.pid`,
-    `echo $LAUNCHED_PID`
+    ...buildIdentityCaptureLines(workdir, evidenceDescriptors)
   ].join('\n')
 
   let runResult
@@ -369,12 +562,12 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
 
   // The dispatch protocol is exactly one positive integer line. Partial output and permissive
   // parseInt prefixes are ambiguous because adopting the wrong PID can later target another job.
-  const pidOutput = runResult.stdout.trim()
-  const pid = /^[1-9]\d*$/.test(pidOutput) ? Number(pidOutput) : Number.NaN
-  if (runResult.truncated || !Number.isSafeInteger(pid) || pid <= 1) {
+  const protocol = parseDispatchProtocol(runResult.stdout, evidenceDescriptors)
+  if (runResult.truncated || !protocol) {
     await recoverAmbiguousRemoteLaunch(job, connection, workdir, lifecycle, runResult.stdout)
     return
   }
+  const { pid } = protocol
 
   // Build the remote handle JSON.
   const handle: RemoteHandle = {
@@ -385,7 +578,14 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     workdir
   }
 
-  await lifecycle.dispatchRunning(jobId, JSON.stringify(handle))
+  const transition = await lifecycle.dispatchRunning(jobId, JSON.stringify(handle))
+  if (transition.kind === 'applied') {
+    // Execution is already durably running if this additive evidence write fails. Missing evidence
+    // fails cleanup closed; it must never cause a second launcher to be started.
+    await lifecycle.recordCleanupEvidence(jobId, ['running'], {
+      remoteObjectEvidence: protocol.evidence
+    })
+  }
 }
 
 const isDefinitivePreLaunchConnectionError = (error: unknown): boolean =>

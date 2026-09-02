@@ -461,6 +461,16 @@
       "expression": "\"leftOnRemote\" IS NULL OR (json_valid(\"leftOnRemote\") AND json_type(\"leftOnRemote\") = 'array')"
     },
     {
+      "tableName": "ComputeJob",
+      "name": "ComputeJob_remoteObjectEvidenceJson_check",
+      "expression": "\"remoteObjectEvidence\" IS NULL OR (json_valid(\"remoteObjectEvidence\") AND json_type(\"remoteObjectEvidence\") = 'array')"
+    },
+    {
+      "tableName": "ComputeJob",
+      "name": "ComputeJob_cleanupReceiptJson_check",
+      "expression": "\"cleanupReceipt\" IS NULL OR (json_valid(\"cleanupReceipt\") AND json_type(\"cleanupReceipt\") = 'object')"
+    },
+    {
       "tableName": "ComputeHost",
       "name": "ComputeHost_authenticationMode_check",
       "expression": "\"authenticationMode\" IN ('ssh_config', 'password')"
@@ -563,7 +573,7 @@
     {
       "tableName": "ComputeJobOperation",
       "name": "ComputeJobOperation_kind_check",
-      "expression": "\"kind\" = 'cancel'"
+      "expression": "\"kind\" IN ('cancel', 'cleanup')"
     },
     {
       "tableName": "ComputeJobOperation",
@@ -594,6 +604,11 @@
       "tableName": "ComputeJobOperation",
       "name": "ComputeJobOperation_settled_implementation_check",
       "expression": "\"phase\" = 'active' OR (\"eligibleAt\" IS NULL AND \"claimToken\" IS NULL AND \"claimExpiresAt\" IS NULL)"
+    },
+    {
+      "tableName": "ComputeJobOperation",
+      "name": "ComputeJobOperation_receiptJson_check",
+      "expression": "\"receipt\" IS NULL OR (json_valid(\"receipt\") AND json_type(\"receipt\") = 'object')"
     },
     {
       "tableName": "MemorySettings",

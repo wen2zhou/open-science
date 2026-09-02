@@ -526,7 +526,27 @@ const adaptMigrationOperationsForCurrentSchema = async (
           columns: [...current.columns.keys()]
         })
       } else {
-        tables.push(table)
+        const declaredColumns = new Set([
+          ...table.columns,
+          ...(table.optionalLegacyColumns ?? []).map(({ name }) => name)
+        ])
+        const currentDefinitions = new Map(
+          splitSqlDefinitions(canonicalTableDdl).flatMap((definition) => {
+            const match = definition.match(/^"([^"]+)"\s+/)
+            return match ? [[match[1]!, definition] as const] : []
+          })
+        )
+        const laterKnownColumns = [...existingColumns]
+          .filter((column) => !declaredColumns.has(column) && current.columns.has(column))
+          .map((name) => ({ name, definition: currentDefinitions.get(name) }))
+          .filter(
+            (column): column is { name: string; definition: string } =>
+              column.definition !== undefined
+          )
+        tables.push({
+          ...table,
+          optionalLegacyColumns: [...(table.optionalLegacyColumns ?? []), ...laterKnownColumns]
+        })
       }
     }
     const retainedIndexes = operation.indexes.filter((ddl) => {

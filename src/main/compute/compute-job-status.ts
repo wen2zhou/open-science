@@ -15,5 +15,6 @@ export const projectJobStatus = (
   stdout_tail: job.stdout_tail,
   stderr_tail: job.stderr_tail,
   remote_workdir: job.remote_workdir,
-  harvest_error: job.harvest_error
+  harvest_error: job.harvest_error,
+  ...(job.cleanup_receipt ? { last_cleanup: job.cleanup_receipt } : {})
 })

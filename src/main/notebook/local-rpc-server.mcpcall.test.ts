@@ -335,6 +335,17 @@ describe('computeCall RPC', () => {
       },
       serviceMethod: 'submitJob',
       signalIndex: 5
+    },
+    {
+      operation: 'job_cleanup',
+      params: {
+        op: 'job_cleanup',
+        provider_id: 'ssh:cluster',
+        job_id: 'job-1',
+        invocation_id: 'cleanup-1'
+      },
+      serviceMethod: 'cleanupJob',
+      signalIndex: 3
     }
   ] as const)(
     'aborts a pending $operation when the RPC client disconnects',
@@ -1394,6 +1405,55 @@ describe('computeCall RPC', () => {
       { sessionId: 's-42', projectId: 'project-1' },
       'ssh:biowulf',
       'job-42'
+    )
+  })
+
+  it('routes computeCall op=job_cleanup with trusted ownership and invocation identity', async () => {
+    const result = {
+      job_id: 'job-42',
+      outcome: 'workspace_removed',
+      workspace_removed: true,
+      deleted_object_count: 1,
+      retained_object_counts: {},
+      retained_object_count_unknown: false,
+      retry_recommended: false,
+      retry_conditions: [],
+      disposition: 'Remote workspace removed.'
+    }
+    const cleanupJob = vi.fn(async () => result)
+    server = new NotebookLocalRpcServer({ execute: async () => ({}) } as never, {
+      transport: 'tcp',
+      computeService: { cleanupJob } as never
+    })
+    const { endpoint, token } = await sessionConnection(server)
+    const response = await fetch(endpoint, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${token}`, 'content-type': 'application/json' },
+      body: JSON.stringify({
+        method: 'computeCall',
+        params: {
+          op: 'job_cleanup',
+          provider_id: 'ssh:biowulf',
+          job_id: 'job-42',
+          invocation_id: 'cleanup-invocation-1',
+          session_id: 'forged-session',
+          project_id: 'forged-project',
+          remote_path: '/forged/path'
+        }
+      })
+    })
+
+    expect(response.status).toBe(200)
+    await expect(response.json()).resolves.toEqual({ result })
+    expect(cleanupJob).toHaveBeenCalledWith(
+      'job-42',
+      {
+        sessionId: 's-42',
+        projectId: 'project-1',
+        providerId: 'ssh:biowulf'
+      },
+      'cleanup-invocation-1',
+      expect.any(AbortSignal)
     )
   })
 

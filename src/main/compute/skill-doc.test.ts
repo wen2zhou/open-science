@@ -73,6 +73,13 @@ describe('Remote Compute Skill document', () => {
     expect(doc).toContain("role === 'selected'")
     expect(doc).toContain('`last_probe_ok`, `probe_failed`, or `not_probed`')
     expect(doc).not.toContain('`connected`, `probe_failed`, or `not_probed`')
+    expect(doc).toContain('attachJob(job_id).cleanup()')
+    expect(doc).toContain('workspace_removed')
+    expect(doc).toContain('partially_cleaned')
+    expect(doc).toContain('nothing_deleted')
+    expect(doc).toContain('not_ready')
+    expect(doc).toContain('indeterminate')
+    expect(doc).toContain('Do not use raw remote delete commands')
   })
 
   it('keeps bundled model-compute examples on the camelCase contract', async () => {

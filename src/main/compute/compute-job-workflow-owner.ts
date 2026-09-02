@@ -25,6 +25,7 @@ import { sharedDispatchTracker } from './dispatch-tracker'
 import { computeRemoteWorkdir, dispatchJob, hashCommand } from './job-dispatcher'
 import type { StagedInputEntry } from './job-dispatcher'
 import {
+  type ManagedRemoteReference,
   type ComputeJobRepository,
   UnencryptedComputeJobPersistenceApprovalRequiredError
 } from './job-repository'
@@ -97,9 +98,15 @@ export const resolveInputs = async (
   rawInputs: RawInputSpec[],
   workspaceCwd: string | undefined,
   artifactResolver: ArtifactResolver | undefined,
-  scope?: ComputeJobReadScope
-): Promise<{ entries: StagedInputEntry[]; inputsSummary: string }> => {
+  scope?: ComputeJobReadScope,
+  resolveManagedRemoteInput?: (uri: string, dstFilename: string) => Promise<ManagedRemoteReference>
+): Promise<{
+  entries: StagedInputEntry[]
+  inputsSummary: string
+  managedRemoteReferences: ManagedRemoteReference[]
+}> => {
   const entries: StagedInputEntry[] = []
+  const managedRemoteReferences: ManagedRemoteReference[] = []
   const summaryParts: string[] = []
   const destinations = new Set<string>()
 
@@ -113,6 +120,31 @@ export const resolveInputs = async (
   for (const raw of rawInputs) {
     if ('remote_path' in raw) {
       const remotePath = raw.remote_path
+      if (remotePath.startsWith('ssh://')) {
+        if (!resolveManagedRemoteInput) {
+          throw new Error('Managed remote input URI cannot be resolved in this context.')
+        }
+        let parsed: URL
+        try {
+          parsed = new URL(remotePath)
+        } catch {
+          throw new Error(`Managed remote input URI is invalid: "${remotePath}"`)
+        }
+        const dstFilename = raw.dst_filename ?? basename(decodeURIComponent(parsed.pathname))
+        assertBareName(dstFilename, `remote_path "${remotePath}"`)
+        reserveDestination(dstFilename)
+        const reference = await resolveManagedRemoteInput(remotePath, dstFilename)
+        entries.push({
+          kind: 'symlink',
+          remotePath: reference.remotePath,
+          dstFilename,
+          label: remotePath,
+          managedUri: remotePath
+        })
+        managedRemoteReferences.push(reference)
+        summaryParts.push(`${dstFilename} (managed symlink)`)
+        continue
+      }
       if (!remotePath.startsWith('/')) {
         throw new Error(`remote_path must be an absolute path (got "${remotePath}")`)
       }
@@ -160,6 +192,7 @@ export const resolveInputs = async (
 
   return {
     entries,
+    managedRemoteReferences,
     inputsSummary:
       entries.length === 0
         ? ''
@@ -211,6 +244,7 @@ export class ComputeJobWorkflowOwner {
     if (!this.jobRepository) {
       throw new Error('ComputeJobRepository is required to call submitJob.')
     }
+    const jobRepository = this.jobRepository
 
     if (options.harvestConfig !== undefined) {
       let harvestConfig: unknown
@@ -266,19 +300,24 @@ export class ComputeJobWorkflowOwner {
     const timeoutSeconds = rawTimeout ?? JOB_DEFAULT_TIMEOUT_SECONDS
 
     let stagedEntries: StagedInputEntry[] = []
+    let managedRemoteReferences: ManagedRemoteReference[] = []
     let inputsSummary = ''
     if (options.inputs && options.inputs.length > 0) {
       const resolved = await resolveInputs(
         options.inputs,
         options.workspaceCwd,
         this.artifactResolver,
-        { ...context, providerId }
+        { ...context, providerId },
+        (uri, dstFilename) =>
+          jobRepository.resolveManagedRemoteInput(host.providerId, host.sshAlias, uri, dstFilename)
       )
       stagedEntries = resolved.entries
+      managedRemoteReferences = resolved.managedRemoteReferences
       inputsSummary = resolved.inputsSummary
     }
 
     const jobId = randomUUID()
+    const ownerMarker = randomUUID()
     const remoteWorkdir = computeRemoteWorkdir(host.scratchRoot, jobId)
     if (this.concurrencyManager) {
       const preview = await this.concurrencyManager.enqueue({
@@ -340,7 +379,7 @@ export class ComputeJobWorkflowOwner {
       }
     }
 
-    let allowUnencryptedPersistence = !this.jobRepository.isFieldProtectionAvailable()
+    let allowUnencryptedPersistence = !jobRepository.isFieldProtectionAvailable()
     await requestApproval(allowUnencryptedPersistence)
     signal?.throwIfAborted()
 
@@ -381,7 +420,6 @@ export class ComputeJobWorkflowOwner {
 
     const commandHash = hashCommand(command)
     const inputManifest = stagedEntries.length > 0 ? JSON.stringify(stagedEntries) : undefined
-    const jobRepository = this.jobRepository
     let dispatchHandoffHeld = false
     let rowCreated = false
     const createRow = async (initialStatus: 'submitted' | 'queued'): Promise<void> => {
@@ -425,8 +463,10 @@ export class ComputeJobWorkflowOwner {
         harvestConfig: options.harvestConfig,
         timeoutSeconds,
         remoteWorkdir,
+        ownerMarker,
         initialStatus,
-        allowUnencryptedPersistence
+        allowUnencryptedPersistence,
+        managedRemoteReferences
       })
       rowCreated = true
       this.handleJobUpdated(created)
@@ -608,7 +648,8 @@ const jobResultWithFiles = (
   remote_workdir: job.remote_workdir,
   stdout_tail: job.stdout_tail,
   stderr_tail: job.stderr_tail,
-  harvest_error: job.harvest_error
+  harvest_error: job.harvest_error,
+  ...(job.cleanup_receipt ? { last_cleanup: job.cleanup_receipt } : {})
 })
 
 async function scanDirRelative(dir: string, workspaceCwd: string): Promise<string[]> {

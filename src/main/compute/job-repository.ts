@@ -1,6 +1,10 @@
+import { randomUUID } from 'node:crypto'
+
 import type { ComputeJob as PrismaComputeJob, PrismaClient } from '@prisma/client'
 import type {
   ComputeJob,
+  ComputeJobCleanupReceipt,
+  ComputeJobRemoteObjectEvidence,
   ComputeJobAnalysisState,
   ComputeJobAnalysisTransition,
   ComputeJobIntegrityIssue,
@@ -16,6 +20,7 @@ import {
   parseOwnedExecutionFileEvidenceSummary,
   type ExecutionFileEvidenceSummary
 } from '../../shared/execution-file-evidence'
+import { decodeManagedRemoteUriPath } from './managed-remote-uri'
 
 // Only ComputeJob persistence and a transaction wrapper are needed.
 type ComputeJobClient = Pick<PrismaClient, '$transaction' | 'computeJob'>
@@ -82,9 +87,19 @@ export type CreateJobRequest = {
   harvestConfig?: string
   timeoutSeconds?: number
   remoteWorkdir?: string
+  ownerMarker?: string
   initialStatus?: ComputeJobStatus
   allowUnencryptedPersistence?: boolean
+  managedRemoteReferences?: ManagedRemoteReference[]
 }
+
+export type ManagedRemoteReference = Readonly<{
+  producerJobId: string
+  providerId: string
+  remotePath: string
+  uri: string
+  dstFilename: string
+}>
 
 export type UpdateJobRequest = {
   status?: ComputeJobStatus
@@ -110,6 +125,8 @@ export type UpdateJobRequest = {
   notifiedAt?: Date | null
   notificationConsumedAt?: Date | null
   fileEvidence?: ExecutionFileEvidenceSummary
+  remoteObjectEvidence?: ComputeJobRemoteObjectEvidence[]
+  cleanupReceipt?: ComputeJobCleanupReceipt
 }
 
 type ComputeJobUpdateData = Parameters<ComputeJobClient['computeJob']['update']>[0]['data']
@@ -130,6 +147,8 @@ type SensitiveJobProjection = Readonly<{
   lastPollError: string | undefined
   harvestError: string | undefined
   leftOnRemote: string | undefined
+  ownerMarker: string | undefined
+  remoteObjectEvidence: string | undefined
   unavailable: boolean
 }>
 
@@ -139,6 +158,10 @@ export class ComputeJobRepository {
   private readonly deletingProjects = new Set<string>()
   private readonly deletingSessions = new Set<string>()
   private readonly deletingProviders = new Set<string>()
+  private readonly admittedCleanups = new Map<
+    string,
+    { projectId: string; sessionId: string; settled: Promise<void>; release: () => void }
+  >()
 
   constructor(
     private readonly getClient: ComputeJobClientProvider,
@@ -166,16 +189,51 @@ export class ComputeJobRepository {
   }
 
   async beginOwnerDeletion(owner: ComputeJobOwner): Promise<void> {
+    let cleanupDrains: Promise<void>[] = []
     await this.runMutation(async () => {
       if (owner.sessionId === undefined) this.deletingProjects.add(owner.projectId)
       else this.deletingSessions.add(sessionOwnerKey(owner.projectId, owner.sessionId))
+      cleanupDrains = [...this.admittedCleanups.values()]
+        .filter(
+          (cleanup) =>
+            cleanup.projectId === owner.projectId &&
+            (owner.sessionId === undefined || cleanup.sessionId === owner.sessionId)
+        )
+        .map(({ settled }) => settled)
     })
+    await Promise.all(cleanupDrains)
   }
 
   async abortOwnerDeletion(owner: ComputeJobOwner): Promise<void> {
     await this.runMutation(async () => {
       if (owner.sessionId === undefined) this.deletingProjects.delete(owner.projectId)
       else this.deletingSessions.delete(sessionOwnerKey(owner.projectId, owner.sessionId))
+    })
+  }
+
+  isOwnerDeletionActive(projectId: string, sessionId: string): boolean {
+    return !this.isOwnerMutable(projectId, sessionId)
+  }
+
+  async admitCleanup<Result>(
+    projectId: string,
+    sessionId: string,
+    operation: () => Promise<Result>
+  ): Promise<{ result: Result; release: () => void } | null> {
+    return this.runMutation(async () => {
+      if (!this.isOwnerMutable(projectId, sessionId)) return null
+      const result = await operation()
+      let settle!: () => void
+      const token = randomUUID()
+      const settled = new Promise<void>((resolve) => {
+        settle = resolve
+      })
+      const release = (): void => {
+        if (!this.admittedCleanups.delete(token)) return
+        settle()
+      }
+      this.admittedCleanups.set(token, { projectId, sessionId, settled, release })
+      return { result, release }
     })
   }
 
@@ -239,6 +297,7 @@ export class ComputeJobRepository {
         harvestConfig: this.protectJsonOptional(request.harvestConfig, 'object', encrypt),
         timeoutSeconds: request.timeoutSeconds,
         remoteWorkdir: this.protectOptional(request.remoteWorkdir, encrypt),
+        ownerMarker: this.protectOptional(request.ownerMarker, encrypt),
         submittedAt: initialStatus === 'submitted' ? new Date() : undefined
       })
 
@@ -256,12 +315,117 @@ export class ComputeJobRepository {
         }
       }
 
-      const row = await client.computeJob.create({
-        data,
-        include: { operations: { where: { kind: 'cancel' } } }
+      const row = await client.$transaction(async (transaction) => {
+        const references = request.managedRemoteReferences ?? []
+        for (const reference of references) {
+          if (reference.providerId !== request.providerId) {
+            throw new Error('Managed remote input belongs to a different Compute Provider.')
+          }
+          const producer = await transaction.computeJob.findFirst({
+            where: {
+              id: reference.producerJobId,
+              providerId: request.providerId,
+              operations: { none: { kind: 'cleanup', phase: 'active' } }
+            },
+            include: { operations: { where: { kind: 'cancel' } } }
+          })
+          if (!producer || !this.retainsManagedRemoteObject(producer, reference)) {
+            throw new Error(
+              'Managed remote input is unavailable because its producer is being cleaned up.'
+            )
+          }
+        }
+        const created = await transaction.computeJob.create({
+          data,
+          include: { operations: { where: { kind: 'cancel' } } }
+        })
+        if (references.length > 0) {
+          await transaction.computeJobRemoteReference.createMany({
+            data: references.map((reference) => ({
+              id: randomUUID(),
+              producerJobId: reference.producerJobId,
+              consumerJobId: request.id,
+              providerId: reference.providerId,
+              remotePath: reference.remotePath,
+              uri: reference.uri,
+              dstFilename: reference.dstFilename
+            }))
+          })
+        }
+        return created
       })
       return this.toJob(row)
     })
+  }
+
+  async resolveManagedRemoteInput(
+    providerId: string,
+    sshAlias: string,
+    uri: string,
+    dstFilename: string
+  ): Promise<ManagedRemoteReference> {
+    let parsed: URL
+    try {
+      parsed = new URL(uri)
+    } catch {
+      throw new Error(`Managed remote input URI is invalid: "${uri}"`)
+    }
+    if (
+      parsed.protocol !== 'ssh:' ||
+      parsed.hostname !== sshAlias ||
+      parsed.search ||
+      parsed.hash
+    ) {
+      throw new Error('Managed remote input URI does not belong to this Compute Provider.')
+    }
+    const remotePath = decodeManagedRemoteUriPath(uri)
+    const client = await this.getClient()
+    const rows = await client.computeJob.findMany({
+      where: { providerId, leftOnRemote: { not: null } },
+      include: { operations: { where: { kind: 'cancel' } } },
+      orderBy: { createdAt: 'desc' }
+    })
+    const matches = rows.filter((row) => {
+      const job = this.toJob(row)
+      if (!job.left_on_remote) return false
+      try {
+        const entries = JSON.parse(job.left_on_remote) as Array<{ uri?: unknown }>
+        return entries.some((entry) => entry.uri === uri)
+      } catch {
+        return false
+      }
+    })
+    if (matches.length !== 1) {
+      throw new Error('Managed remote input URI does not identify one retained Compute Job object.')
+    }
+    return {
+      producerJobId: matches[0]!.id,
+      providerId,
+      remotePath,
+      uri,
+      dstFilename
+    }
+  }
+
+  private retainsManagedRemoteObject(
+    row: PrismaComputeJobWithOperation,
+    reference: ManagedRemoteReference
+  ): boolean {
+    const job = this.toJob(row)
+    if (!job.left_on_remote) return false
+    try {
+      const entries = JSON.parse(job.left_on_remote) as Array<{ uri?: unknown }>
+      return entries.some((entry) => {
+        if (entry.uri !== reference.uri) return false
+        try {
+          return decodeManagedRemoteUriPath(entry.uri) === reference.remotePath
+        } catch {
+          return false
+        }
+      })
+    } catch {
+      return false
+    }
   }
 
   async get(jobId: string): Promise<ComputeJob | null> {
@@ -317,7 +481,14 @@ export class ComputeJobRepository {
         notifiedAt: null,
         OR: [
           { status: 'error' },
-          { status: { in: ['success', 'failed', 'timeout'] }, harvestedAt: { not: null } }
+          { status: { in: ['success', 'failed', 'timeout'] }, harvestedAt: { not: null } },
+          {
+            status: 'failed',
+            submittedAt: null,
+            operations: {
+              some: { kind: 'cancel', phase: 'settled', outcome: 'fulfilled' }
+            }
+          }
         ]
       },
       include: { operations: { where: { kind: 'cancel' } } },
@@ -694,6 +865,9 @@ export class ComputeJobRepository {
       timeout_seconds: row.timeoutSeconds ?? undefined,
       remote_workdir: sensitive.remoteWorkdir,
       remote_handle: sensitive.remoteHandle,
+      owner_marker: sensitive.ownerMarker,
+      remote_object_evidence: parseRemoteObjectEvidence(sensitive.remoteObjectEvidence),
+      cleanup_receipt: parseCleanupReceipt(row.cleanupReceipt),
       exit_code: row.exitCode ?? undefined,
       stdout_tail: sensitive.stdoutTail,
       stderr_tail: sensitive.stderrTail,
@@ -756,6 +930,11 @@ export class ComputeJobRepository {
       harvestError: safely(() => this.revealOptional(row.harvestError, encrypted), undefined),
       leftOnRemote: safely(
         () => this.revealJsonOptional(row.leftOnRemote, 'array', encrypted),
+        undefined
+      ),
+      ownerMarker: safely(() => this.revealOptional(row.ownerMarker, encrypted), undefined),
+      remoteObjectEvidence: safely(
+        () => this.revealJsonOptional(row.remoteObjectEvidence, 'array', encrypted),
         undefined
       ),
       get unavailable() {
@@ -833,6 +1012,14 @@ export class ComputeJobRepository {
     if ('notificationConsumedAt' in updates)
       data.notificationConsumedAt = updates.notificationConsumedAt
     if (updates.fileEvidence !== undefined) data.fileEvidence = JSON.stringify(updates.fileEvidence)
+    if (updates.remoteObjectEvidence !== undefined)
+      data.remoteObjectEvidence = this.protectJson(
+        JSON.stringify(updates.remoteObjectEvidence),
+        'array',
+        sensitiveDataEncrypted
+      )
+    if (updates.cleanupReceipt !== undefined)
+      data.cleanupReceipt = JSON.stringify(updates.cleanupReceipt)
 
     return data
   }
@@ -925,6 +1112,27 @@ const parseFileEvidence = (row: PrismaComputeJob): ExecutionFileEvidenceSummary 
       parentActivityId: row.producerRunId ?? undefined,
       storageKey: `execution-file-evidence/${row.projectId}/${row.sessionId}/activity-${row.id}/evidence.json`
     })
+  } catch {
+    return undefined
+  }
+}
+
+const parseRemoteObjectEvidence = (
+  value: string | undefined
+): ComputeJobRemoteObjectEvidence[] | undefined => {
+  if (!value) return undefined
+  try {
+    const parsed = JSON.parse(value) as unknown
+    return Array.isArray(parsed) ? (parsed as ComputeJobRemoteObjectEvidence[]) : undefined
+  } catch {
+    return undefined
+  }
+}
+
+const parseCleanupReceipt = (value: string | null): ComputeJobCleanupReceipt | undefined => {
+  if (!value) return undefined
+  try {
+    return JSON.parse(value) as ComputeJobCleanupReceipt
   } catch {
     return undefined
   }

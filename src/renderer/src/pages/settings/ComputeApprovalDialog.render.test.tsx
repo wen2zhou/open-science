@@ -158,6 +158,9 @@ describe('ComputeApprovalDialog', () => {
     expect(dialogText).not.toContain('1 seconds')
     expect(dialogText).toContain('Remote workdir')
     expect(dialogText).toContain('/scratch/project/job-1')
+    expect(dialogText).toContain(
+      'Verified temporary resources created for this job may later be safely reclaimed by Open Science after ownership and lifecycle checks.'
+    )
   })
 
   it('warns without blocking approval when job data will be stored unencrypted', () => {

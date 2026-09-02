@@ -5,7 +5,7 @@ import { join } from 'node:path'
 // Regression guard (design.md §9): the agent-facing repl kernel must NOT expose a
 // "list jobs" or "list_jobs" method. Only the renderer IPC surface (`compute:jobs:list`)
 // is allowed to enumerate session jobs — the agent side only knows about handle-based
-// queries (`attachJob(jobId).status()`).
+// operations (`attachJob(jobId).status()/result()/cancel()/cleanup()`).
 //
 // If this test fails, a "list_jobs" method has been added to the repl kernel, which
 // would break the agent/renderer surface separation required by design.md §9.
@@ -28,10 +28,12 @@ describe('agent repl — no list_jobs method (design.md §9 regression guard)', 
     expect(replLoop).not.toMatch(/op:\s*['"]jobs_list['"]/)
   })
 
-  it('only has attachJob for per-job handle queries', () => {
+  it('keeps cleanup on the existing per-job handle without adding enumeration', () => {
     // attachJob should exist (the allowed handle-query path).
     expect(replLoop).toContain('attachJob')
     // job_status op is the allowed DB read-only query.
     expect(replLoop).toContain("op: 'job_status'")
+    expect(replLoop).toContain("op: 'job_cleanup'")
+    expect(replLoop).toMatch(/attachJob\(jobId\)[\s\S]*?async cleanup\(\)/)
   })
 })

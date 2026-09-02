@@ -150,13 +150,14 @@ const withOptionalLegacyColumns = (
   canonicalTableDdl: string,
   columns: readonly { name: string; definition: string }[]
 ): string => {
-  if (columns.length === 0) return canonicalTableDdl
+  const missingDefinitions = columns.filter(({ name }) => !canonicalTableDdl.includes(`"${name}" `))
+  if (missingDefinitions.length === 0) return canonicalTableDdl
   const constraintMarker = '\n    CONSTRAINT '
   const markerIndex = canonicalTableDdl.indexOf(constraintMarker)
   if (markerIndex === -1) {
     throw new Error('Canonical SQLite DDL cannot preserve optional columns without constraints.')
   }
-  const definitions = columns.map(({ definition }) => `    ${definition},`).join('\n')
+  const definitions = missingDefinitions.map(({ definition }) => `    ${definition},`).join('\n')
   return `${canonicalTableDdl.slice(0, markerIndex)}\n${definitions}${canonicalTableDdl.slice(markerIndex)}`
 }
 

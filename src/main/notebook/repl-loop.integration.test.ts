@@ -88,6 +88,7 @@ describe('repl_loop local RPC transport', () => {
           "callCommand: 'callCommand' in c, call_command: 'call_command' in c, " +
           "submitJob: 'submitJob' in c, submit_job: 'submit_job' in c, " +
           "attachJob: 'attachJob' in c, attach_job: 'attach_job' in c, " +
+          "cleanup: 'cleanup' in c.attachJob('job-1'), cleanup_job: 'cleanup_job' in c.attachJob('job-1'), " +
           "setConcurrencyLimit: 'setConcurrencyLimit' in c, set_concurrency_limit: 'set_concurrency_limit' in c" +
           '})'
       )
@@ -130,6 +131,8 @@ describe('repl_loop local RPC transport', () => {
         submit_job: false,
         attachJob: true,
         attach_job: false,
+        cleanup: true,
+        cleanup_job: false,
         setConcurrencyLimit: true,
         set_concurrency_limit: false
       })
@@ -3025,6 +3028,44 @@ gate('repl_loop.js host.compute', () => {
       // Public loginShell defaults to true; omitted timeoutSeconds stays omitted on the wire.
       expect(received.params?.login_shell).toBe(true)
       expect(received.params?.timeout_seconds).toBeUndefined()
+    } finally {
+      child.kill()
+    }
+  }, 60_000)
+
+  it('attachJob().cleanup() posts only the job cleanup identity fields', async () => {
+    next = {
+      status: 200,
+      body: {
+        result: {
+          job_id: 'job-42',
+          outcome: 'workspace_removed',
+          workspace_removed: true,
+          deleted_object_count: 1,
+          retained_object_counts: {},
+          retained_object_count_unknown: false,
+          retry_recommended: false,
+          retry_conditions: [],
+          disposition: 'Remote workspace removed.'
+        }
+      }
+    }
+    const { child, send } = startLoop({
+      OPEN_SCIENCE_MCP_RPC_ENDPOINT: endpoint,
+      OPEN_SCIENCE_MCP_RPC_TOKEN: 'tok'
+    })
+    try {
+      const r = await send(
+        "return JSON.stringify(await host.compute.create('ssh:biowulf').attachJob('job-42').cleanup())"
+      )
+      expect(r.error).toBeNull()
+      expect(r.result).toContain('workspace_removed')
+      expect(received.params).toEqual({
+        op: 'job_cleanup',
+        provider_id: 'ssh:biowulf',
+        job_id: 'job-42',
+        invocation_id: expect.any(String)
+      })
     } finally {
       child.kill()
     }

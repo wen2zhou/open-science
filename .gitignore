@@ -79,6 +79,7 @@ local/
 .mcp.json
 .codex/
 .worktree/
+.vitest/
 .playwright-cli/
 .claude/
 .ai/

@@ -355,6 +355,54 @@ export type ComputeJobIntegrityIssue = Readonly<{
 // Additive logical projection. Existing clients can continue reading `status`; cancellation-aware
 // clients use this field to distinguish durable intent from confirmed termination.
 export type ComputeJobCancellationStatus = 'cancelling' | 'cancelled'
+
+export type ComputeJobCleanupOutcome =
+  'workspace_removed' | 'partially_cleaned' | 'nothing_deleted' | 'not_ready' | 'indeterminate'
+
+export type ComputeJobCleanupReason =
+  | 'source_job_active'
+  | 'harvest_pending'
+  | 'ownership_unproven'
+  | 'scope_deletion_active'
+  | 'active_downstream_reference'
+  | 'only_remote_copy'
+  | 'unknown_or_changed_object'
+  | 'remote_state_uncertain'
+
+export type ComputeJobCleanupRetryCondition =
+  | 'job_terminal'
+  | 'harvest_settled'
+  | 'downstream_terminal'
+  | 'scope_deletion_finished'
+  | 'host_reachable'
+  | 'manual_review'
+
+export type ComputeJobCleanupReceipt = Readonly<{
+  job_id: string
+  outcome: ComputeJobCleanupOutcome
+  workspace_removed: boolean
+  deleted_object_count: number
+  retained_object_counts: Partial<Record<ComputeJobCleanupReason, number>>
+  retained_object_count_unknown: boolean
+  retry_recommended: boolean
+  retry_conditions: ComputeJobCleanupRetryCondition[]
+  disposition: string
+}>
+
+export type ComputeJobRemoteObjectIdentity = Readonly<{
+  kind: 'file' | 'symlink'
+  size_bytes?: number
+  modified_at_ns?: string
+  device?: string
+  inode?: string
+  link_target?: string
+}>
+
+export type ComputeJobRemoteObjectEvidence = Readonly<{
+  path: string
+  role: 'control' | 'input_upload' | 'input_symlink' | 'harvested_output' | 'harvested_log'
+  identity: ComputeJobRemoteObjectIdentity
+}>
 // A compute job record, normalized for cross-process sharing (main → renderer via IPC, main → repl
 // via JSON RPC). Timestamps are epoch milliseconds; JSON columns are parsed at the repository
 // boundary to their respective types.
@@ -384,6 +432,9 @@ export type ComputeJob = {
   timeout_seconds: number | undefined
   remote_workdir: string | undefined
   remote_handle: string | undefined
+  owner_marker?: string
+  remote_object_evidence?: ComputeJobRemoteObjectEvidence[]
+  cleanup_receipt?: ComputeJobCleanupReceipt
   exit_code: number | undefined
   stdout_tail: string | undefined
   stderr_tail: string | undefined
@@ -424,6 +475,7 @@ export type JobStatusResult = {
   stderr_tail: string | undefined
   remote_workdir: string | undefined
   harvest_error: string | undefined
+  last_cleanup?: ComputeJobCleanupReceipt
 }
 
 // Full job result shape returned by attach_job().result() (spec §11.4, design §9).
@@ -447,6 +499,7 @@ export type JobResult = {
   stdout_tail: string | undefined
   stderr_tail: string | undefined
   harvest_error: string | undefined
+  last_cleanup?: ComputeJobCleanupReceipt
 }
 
 // Result returned by submit_job (immediate, before dispatch completes). remote_workdir is

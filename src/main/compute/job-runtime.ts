@@ -21,7 +21,8 @@ type ComputeJobRuntimeDeps = {
     | 'handleJobCancellationConfirmed'
     | 'startQueueReconciliation'
     | 'stopQueueReconciliation'
-  >
+  > &
+    Partial<Pick<ComputeService, 'recoverIndeterminateJobCleanups'>>
   jobDeletionOwner?: Pick<ComputeJobDeletionOwner, 'bindRuntime'>
   hostRepository: ComputeHostRepository
   jobRepository: ComputeJobRepository
@@ -107,8 +108,12 @@ export const createComputeJobRuntime = (
     }
   }
   const unbindDeletionRuntime = deps.jobDeletionOwner?.bindRuntime(deletionRuntime)
+  let cleanupRecovery: Promise<void> | undefined
   return {
     start: () => {
+      cleanupRecovery = deps.computeService
+        .recoverIndeterminateJobCleanups?.()
+        .catch((error) => log.warn('compute cleanup recovery deferred', error))
       poller.start()
       cancellationReaper?.start()
       deps.computeService.startQueueReconciliation()
@@ -116,6 +121,7 @@ export const createComputeJobRuntime = (
     stop: async () => {
       unbindDeletionRuntime?.()
       await deps.computeService.stopQueueReconciliation()
+      await cleanupRecovery
       await Promise.all([poller.stop(), cancellationReaper?.stop()])
     }
   }

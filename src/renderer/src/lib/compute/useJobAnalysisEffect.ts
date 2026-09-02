@@ -56,6 +56,8 @@ type JobAnalysisRecoveryStatus = Readonly<{
   retry: () => void
 }>
 
+const PENDING_SCAN_INTERVAL_MS = 60_000
+
 // Subscribes to all done-state compute:job-updated broadcasts and runs the analysis turn trigger.
 // Also scans every Session for pending notifications on startup (restart recovery path).
 export const useJobAnalysisEffect = ({
@@ -85,6 +87,9 @@ export const useJobAnalysisEffect = ({
 
     let isActive = true
     let pendingScanRetry: ReturnType<typeof setTimeout> | undefined
+    let pendingScanInterval: ReturnType<typeof setTimeout> | undefined
+    let pendingScanRunning = false
+    let initialPendingScanSucceeded = false
     const turnEndUnsubscribes = new Set<() => void>()
 
     const loadAnalysisSession = async (sessionId: string): Promise<ChatSession | undefined> => {
@@ -203,16 +208,25 @@ export const useJobAnalysisEffect = ({
 
     const scanPendingJobs = (retryDelay = 1_000): void => {
       if (typeof window.api?.compute?.jobsPendingNotification !== 'function') return
+      if (pendingScanRunning) return
+      pendingScanRunning = true
       clearTimeout(pendingScanRetry)
       pendingScanRetry = undefined
+      clearTimeout(pendingScanInterval)
+      pendingScanInterval = undefined
 
       void window.api.compute
         .jobsPendingNotification({ allSessions: true })
         .then((jobs) => {
           if (!isActive) return
+          initialPendingScanSucceeded = true
           setError(undefined)
           const jobStore = useSessionJobStore.getState()
           for (const job of jobs) jobStore.applyUpdate(job)
+          pendingScanInterval = setTimeout(() => {
+            pendingScanInterval = undefined
+            scanPendingJobs()
+          }, PENDING_SCAN_INTERVAL_MS)
         })
         .catch((error) => {
           if (!isActive) return
@@ -223,12 +237,24 @@ export const useJobAnalysisEffect = ({
             scanPendingJobs(Math.min(retryDelay * 2, 30_000))
           }, retryDelay)
         })
+        .finally(() => {
+          pendingScanRunning = false
+        })
+    }
+
+    const scanAfterRecovery = (): void => {
+      if (initialPendingScanSucceeded) scanPendingJobs()
+    }
+    const scanWhenVisible = (): void => {
+      if (document.visibilityState === 'visible') scanAfterRecovery()
     }
 
     const initialState = useSessionJobStore.getState()
     retryScanRef.current = () => scanPendingJobs()
     feedNotifiedJobs(initialState)
     scanPendingJobs()
+    window.addEventListener('focus', scanAfterRecovery)
+    document.addEventListener('visibilitychange', scanWhenVisible)
 
     const unsubscribeJobs = useSessionJobStore.subscribe((state) => {
       feedNotifiedJobs(state)
@@ -238,6 +264,9 @@ export const useJobAnalysisEffect = ({
       isActive = false
       retryScanRef.current = () => undefined
       clearTimeout(pendingScanRetry)
+      clearTimeout(pendingScanInterval)
+      window.removeEventListener('focus', scanAfterRecovery)
+      document.removeEventListener('visibilitychange', scanWhenVisible)
       trigger.dispose()
       unsubscribeJobs()
       for (const unsubscribe of turnEndUnsubscribes) unsubscribe()

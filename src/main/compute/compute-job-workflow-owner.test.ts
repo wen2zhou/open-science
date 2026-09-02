@@ -277,7 +277,7 @@ describe('ComputeJobWorkflowOwner.submitJob', () => {
     expect(runner.run).not.toHaveBeenCalled()
   })
 
-  it('keeps an unexpected live dispatch failure recoverable when launch state is unknown', async () => {
+  it('terminalizes a definitive owner-marker preflight transport failure before launch', async () => {
     const jobs = new Map<string, import('../../shared/compute').ComputeJob>()
     const runner: SshRunner = { run: vi.fn(() => Promise.reject(new Error('transport crashed'))) }
     const { repo: jobRepo } = makeJobRepo(jobs)
@@ -328,8 +328,8 @@ describe('ComputeJobWorkflowOwner.submitJob', () => {
     await poller.tick()
 
     expect(jobs.get(submitted.job_id)).toMatchObject({
-      status: 'submitted',
-      error_code: undefined,
+      status: 'error',
+      error_code: 'dispatch_failed',
       started_at: undefined,
       remote_handle: undefined
     })
@@ -790,6 +790,17 @@ describe('ComputeJobWorkflowOwner.getJobStatus', () => {
       stderr_tail: '',
       error_code: undefined,
       harvest_error: 'harvest pending: authentication_failed',
+      cleanup_receipt: {
+        job_id: 'job-42',
+        outcome: 'workspace_removed',
+        workspace_removed: true,
+        deleted_object_count: 3,
+        retained_object_counts: {},
+        retained_object_count_unknown: false,
+        retry_recommended: false,
+        retry_conditions: [],
+        disposition: 'Removed.'
+      },
       created_at: 1,
       submitted_at: 1,
       started_at: 1,
@@ -809,6 +820,7 @@ describe('ComputeJobWorkflowOwner.getJobStatus', () => {
     expect(status.stdout_tail).toBe('hi\n')
     expect(status.remote_workdir).toBe('~/.openscience/jobs/job-42')
     expect(status.harvest_error).toBe('harvest pending: authentication_failed')
+    expect(status.last_cleanup).toEqual(job.cleanup_receipt)
 
     await expect(
       service.getJobStatus('job-42', {
@@ -991,6 +1003,35 @@ describe('resolveInputs — artifact source', () => {
 })
 
 describe('resolveInputs — remote_path source', () => {
+  it('resolves an exact retained ssh URI as a managed remote reference', async () => {
+    const uri = 'ssh://cluster/scratch/.openscience/jobs/producer/result.csv'
+    const reference = {
+      producerJobId: 'producer',
+      providerId: 'ssh:cluster',
+      remotePath: '/scratch/.openscience/jobs/producer/result.csv',
+      uri,
+      dstFilename: 'result.csv'
+    }
+    const resolved = await resolveInputs(
+      [{ remote_path: uri }],
+      undefined,
+      undefined,
+      undefined,
+      async () => reference
+    )
+
+    expect(resolved.entries).toEqual([
+      {
+        kind: 'symlink',
+        remotePath: reference.remotePath,
+        dstFilename: 'result.csv',
+        label: uri,
+        managedUri: uri
+      }
+    ])
+    expect(resolved.managedRemoteReferences).toEqual([reference])
+  })
+
   it('creates a symlink entry for an absolute remote path', async () => {
     const { entries, inputsSummary } = await resolveInputs(
       [{ remote_path: '/scratch/ref.fa', dst_filename: 'ref.fa' }],
@@ -1349,6 +1390,25 @@ describe('ComputeJobWorkflowOwner.getJobResult', () => {
     expect(result.featured_files).toEqual([])
     expect(result.output_files).toEqual([])
     expect(result.harvest_error).toBe('harvest pending: host_unreachable')
+  })
+
+  it('projects the latest durable cleanup receipt after caller recovery', async () => {
+    const cleanupReceipt = {
+      job_id: 'job-result-1',
+      outcome: 'partially_cleaned' as const,
+      workspace_removed: false,
+      deleted_object_count: 2,
+      retained_object_counts: { only_remote_copy: 1 },
+      retained_object_count_unknown: false,
+      retry_recommended: false,
+      retry_conditions: [],
+      disposition: 'One retained object remains.'
+    }
+    const service = makeServiceWithStorageRoot(baseJob({ cleanup_receipt: cleanupReceipt }), tmpDir)
+
+    await expect(service.getJobResult('job-result-1')).resolves.toMatchObject({
+      last_cleanup: cleanupReceipt
+    })
   })
 
   it('clean harvest: returns full file lists with workspace-relative paths', async () => {

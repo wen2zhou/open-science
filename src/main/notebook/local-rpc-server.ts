@@ -5,7 +5,8 @@ import {
   computeProbeSnapshot,
   type AgentComputeHostSummary,
   type ComputeHost,
-  type ComputeHostDetails
+  type ComputeHostDetails,
+  type ComputeJobCleanupReceipt
 } from '../../shared/compute'
 import type { HostLineageGraph, HostLineageVersion } from '../../shared/host-lineage'
 import { isCurrentInFlight } from '../../shared/in-flight-promise'
@@ -193,6 +194,12 @@ type NotebookLocalRpcServerOptions = {
       providerId: string,
       jobId: string
     ): Promise<unknown>
+    cleanupJob(
+      jobId: string,
+      scope: { sessionId: string; projectId: string; providerId: string },
+      invocationId: string,
+      signal?: AbortSignal
+    ): Promise<ComputeJobCleanupReceipt>
     getJobResult(
       context: { sessionId: string; projectId: string },
       providerId: string,
@@ -2524,6 +2531,18 @@ class NotebookLocalRpcServer {
         const providerId = typeof params.provider_id === 'string' ? params.provider_id : ''
         const jobId = typeof params.job_id === 'string' ? params.job_id : ''
         return this.computeService.cancelJob(context, providerId, jobId)
+      }
+
+      if (op === 'job_cleanup') {
+        const providerId = typeof params.provider_id === 'string' ? params.provider_id : ''
+        const jobId = typeof params.job_id === 'string' ? params.job_id : ''
+        const invocationId = typeof params.invocation_id === 'string' ? params.invocation_id : ''
+        return this.computeService.cleanupJob(
+          jobId,
+          { sessionId, projectId, providerId },
+          invocationId,
+          signal
+        )
       }
 
       // op='job_result' — full JobResult (spec §11.4, design §9). Non-blocking query: reads DB

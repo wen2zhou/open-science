@@ -18,40 +18,31 @@ import type {
 // Prompt text shown as the user message that kicks off the analysis turn. English per CLAUDE.md.
 export const buildAnalysisPrompt = (jobs: JobSummary[]): string => {
   const lines: string[] = [
-    `${jobs.length === 1 ? 'A remote job has' : `${jobs.length} remote jobs have`} finished. Please analyze the results.`,
+    `${jobs.length === 1 ? 'A remote Compute Job has' : `${jobs.length} remote Compute Jobs have`} finished. Read each result before taking further action.`,
     ''
   ]
 
   for (const job of jobs) {
-    lines.push(`## Job: ${job.job_id}`)
-    lines.push(`Status: ${job.status}`)
-
-    if (job.featured_files && job.featured_files.length > 0) {
-      lines.push(`Featured output files (workspace-relative paths):`)
-      for (const f of job.featured_files) {
-        lines.push(`  - ${f}`)
-      }
-    } else {
-      lines.push(`No featured output files (harvest may have been incomplete).`)
-    }
-
-    if (job.left_on_remote_count && job.left_on_remote_count > 0) {
-      lines.push(
-        `Note: ${job.left_on_remote_count} file(s) left on the remote host (too large or marked residency:remote).`
-      )
-    }
+    const executionStatus = job.cancellation_status === 'cancelled' ? 'cancelled' : job.status
+    const harvestStatus =
+      job.status === 'error' || job.cancellation_status === 'cancelled'
+        ? 'not applicable'
+        : job.harvest_error
+          ? 'failed'
+          : 'completed'
+    lines.push(`## Compute Job: ${job.job_id}`)
+    lines.push(`Execution status: ${executionStatus}`)
+    lines.push(`Harvest status: ${harvestStatus}`)
+    lines.push(`Featured outputs: ${job.featured_file_count ?? 0}`)
+    lines.push(`Objects left on remote: ${job.left_on_remote_count ?? 0}`)
 
     lines.push('')
     lines.push(
-      `Please use \`attachJob("${job.job_id}").result()\` to retrieve the full result dictionary, ` +
-        `examine the output files, and call \`write_artifact_file\` to publish any results worth preserving.`
+      `First use \`attachJob("${job.job_id}").result()\` to read the full result. Inspect the outputs and publish any results worth preserving. ` +
+        `If another Compute Job needs a remote object, establish its managed remote reference before cleanup. ` +
+        `Only when no further remote use remains, call \`cleanup()\` on the same attached Job handle and inspect its structured receipt. ` +
+        `Do not use a raw remote delete command.`
     )
-
-    if (job.status === 'failed' || job.status === 'timeout') {
-      lines.push(
-        `Note: the job exited with a non-zero status. Harvest completed but the remote workdir has been kept for inspection.`
-      )
-    }
 
     lines.push('')
   }

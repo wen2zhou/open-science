@@ -13,6 +13,7 @@ describe('createComputeJobRuntime', () => {
     const handleJobCancellationConfirmed = vi.fn(async () => undefined)
     const startQueueReconciliation = vi.fn()
     const stopQueueReconciliation = vi.fn(async () => undefined)
+    const recoverIndeterminateJobCleanups = vi.fn(async () => undefined)
     const start = vi.fn()
     const stop = vi.fn(async () => undefined)
     const pause = vi.fn(async () => undefined)
@@ -35,7 +36,8 @@ describe('createComputeJobRuntime', () => {
           handleJobUpdated,
           handleJobCancellationConfirmed,
           startQueueReconciliation,
-          stopQueueReconciliation
+          stopQueueReconciliation,
+          recoverIndeterminateJobCleanups
         },
         jobDeletionOwner,
         hostRepository,
@@ -69,6 +71,7 @@ describe('createComputeJobRuntime', () => {
     })
     expect(start).toHaveBeenCalledTimes(1)
     expect(startQueueReconciliation).toHaveBeenCalledTimes(1)
+    expect(recoverIndeterminateJobCleanups).toHaveBeenCalledTimes(1)
     expect(stop).toHaveBeenCalledTimes(1)
     expect(stopQueueReconciliation).toHaveBeenCalledTimes(1)
     expect(jobDeletionOwner.bindRuntime).toHaveBeenCalledWith({

@@ -23,6 +23,20 @@ const successfulRun = (stdout: string): Awaited<ReturnType<ComputeConnectionLeas
   truncated: false
 })
 
+const ownerPreflightRun = (): Awaited<ReturnType<ComputeConnectionLease['run']>> =>
+  successfulRun('')
+
+const successfulDispatchRun = (pid: number): Awaited<ReturnType<ComputeConnectionLease['run']>> =>
+  successfulRun(
+    [
+      'OPEN_SCIENCE_DISPATCH_V2',
+      `pid:${pid}`,
+      'object:0:file:1:10:20:30',
+      'object:1:file:1:11:21:31',
+      'object:2:file:1:12:5:32'
+    ].join('\n')
+  )
+
 const serviceBroker = (run: ComputeConnectionLease['run']): ComputeConnectionBroker => ({
   acquire: vi.fn(async () => ({ run, upload: vi.fn(), download: vi.fn() })),
   beginHostDeletion: vi.fn(async () => undefined),
@@ -306,6 +320,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
   it('adopts the remote launch when the dispatcher loses its SSH response', async () => {
     const run = vi
       .fn<ComputeConnectionLease['run']>()
+      .mockResolvedValueOnce(ownerPreflightRun())
       .mockRejectedValueOnce(new ComputeConnectionError('host_unreachable'))
       .mockResolvedValueOnce(
         successfulRun(
@@ -359,7 +374,8 @@ describe('ambiguous Compute Job dispatch recovery', () => {
     ].join('\n')
     const run = vi
       .fn<ComputeConnectionLease['run']>()
-      .mockResolvedValueOnce(successfulRun('2468'))
+      .mockResolvedValueOnce(ownerPreflightRun())
+      .mockResolvedValueOnce(successfulDispatchRun(2468))
       .mockResolvedValueOnce(successfulRun(recoveryOutput))
     const originalUpdateIfStatus = jobRepository.updateIfStatus.bind(jobRepository)
     let rejectHandlePersistence = true
@@ -391,7 +407,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       { sessionId: 'session-1', projectId: 'project-1' }
     )
 
-    await vi.waitFor(() => expect(run).toHaveBeenCalledOnce())
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2))
     await new Promise((resolve) => setTimeout(resolve, 20))
     await expect(dispatchingService.getJobStatus(submitted.job_id)).resolves.toMatchObject({
       status: 'submitted'
@@ -407,7 +423,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
     await expect(dispatchingService.getJobStatus(submitted.job_id)).resolves.toMatchObject({
       status: 'running'
     })
-    expect(run).toHaveBeenCalledTimes(2)
+    expect(run).toHaveBeenCalledTimes(3)
   })
 
   it('keeps a timed-out job active when its termination handle becomes untrustworthy', async () => {
@@ -479,6 +495,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
   ])('rejects a $name dispatch PID response unless recovery proves a launch', async (protocol) => {
     const run = vi
       .fn<ComputeConnectionLease['run']>()
+      .mockResolvedValueOnce(ownerPreflightRun())
       .mockResolvedValueOnce({ ...successfulRun(protocol.stdout), truncated: protocol.truncated })
       .mockResolvedValueOnce(
         successfulRun(
@@ -523,6 +540,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
   it('keeps a lost dispatcher response submitted when an immediate probe cannot prove it will not launch', async () => {
     const run = vi
       .fn<ComputeConnectionLease['run']>()
+      .mockResolvedValueOnce(ownerPreflightRun())
       .mockRejectedValueOnce(new ComputeConnectionError('host_unreachable'))
       .mockResolvedValueOnce(
         successfulRun(
@@ -554,7 +572,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       { sessionId: 'session-1', projectId: 'project-1' }
     )
 
-    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(3))
     await expect(dispatchingService.getJobStatus(submitted.job_id)).resolves.toMatchObject({
       status: 'submitted'
     })
@@ -567,6 +585,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
   it('records a retryable diagnostic when the immediate recovery probe also fails', async () => {
     const run = vi
       .fn<ComputeConnectionLease['run']>()
+      .mockResolvedValueOnce(ownerPreflightRun())
       .mockRejectedValueOnce(new ComputeConnectionError('host_unreachable'))
       .mockRejectedValueOnce(new ComputeConnectionError('timeout'))
     const dispatchingService = new ComputeService({
@@ -587,7 +606,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       { sessionId: 'session-1', projectId: 'project-1' }
     )
 
-    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(3))
     await expect(jobRepository.get(submitted.job_id)).resolves.toMatchObject({
       status: 'submitted',
       last_poll_error: 'timeout'
@@ -595,7 +614,10 @@ describe('ambiguous Compute Job dispatch recovery', () => {
   })
 
   it('keeps a fire-and-forget dispatch recoverable after a non-transport runner error', async () => {
-    const run = vi.fn<ComputeConnectionLease['run']>().mockRejectedValue(new Error('boom'))
+    const run = vi
+      .fn<ComputeConnectionLease['run']>()
+      .mockResolvedValueOnce(ownerPreflightRun())
+      .mockRejectedValue(new Error('boom'))
     const dispatchingService = new ComputeService({
       runner: { run: vi.fn() } as unknown as SshRunner,
       repository: hostRepository,
@@ -614,7 +636,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
       { sessionId: 'session-1', projectId: 'project-1' }
     )
 
-    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(2))
+    await vi.waitFor(() => expect(run).toHaveBeenCalledTimes(3))
     await expect(dispatchingService.getJobStatus(submitted.job_id)).resolves.toMatchObject({
       status: 'submitted'
     })

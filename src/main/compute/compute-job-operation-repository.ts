@@ -2,12 +2,15 @@ import { randomUUID } from 'node:crypto'
 
 import type { Prisma, PrismaClient } from '@prisma/client'
 
-import type { ComputeJobStatus } from '../../shared/compute'
+import type { ComputeJobCleanupReceipt, ComputeJobStatus } from '../../shared/compute'
 
-type OperationClient = Pick<PrismaClient, '$transaction' | 'computeJobOperation'>
+type OperationClient = Pick<
+  PrismaClient,
+  '$transaction' | 'computeJobOperation' | 'computeJobRemoteReference'
+>
 type OperationClientProvider = () => Promise<OperationClient>
 
-type ComputeJobOperationKind = 'cancel'
+type ComputeJobOperationKind = 'cancel' | 'cleanup'
 type ComputeJobOperationPhase = 'active' | 'settled'
 type ComputeJobOperationOutcome = 'fulfilled' | 'superseded'
 
@@ -25,6 +28,8 @@ type ComputeJobOperationRecord = Readonly<{
   createdAt: Date
   settledAt: Date | null
   updatedAt: Date
+  requestId: string | null
+  receipt: ComputeJobCleanupReceipt | null
 }>
 
 type ComputeJobOperationScope = Readonly<{
@@ -44,6 +49,7 @@ const TERMINAL_STATUSES = ['success', 'failed', 'timeout', 'error'] as const
 const asKind = (value: string): ComputeJobOperationKind => {
   switch (value) {
     case 'cancel':
+    case 'cleanup':
       return value
   }
   throw new Error(`Invalid Compute Job operation kind: ${value}`)
@@ -84,11 +90,14 @@ const toRecord = (row: {
   createdAt: Date
   settledAt: Date | null
   updatedAt: Date
+  requestId: string | null
+  receipt: string | null
 }): ComputeJobOperationRecord => ({
   ...row,
   kind: asKind(row.kind),
   phase: asPhase(row.phase),
-  outcome: asOutcome(row.outcome)
+  outcome: asOutcome(row.outcome),
+  receipt: row.receipt ? (JSON.parse(row.receipt) as ComputeJobCleanupReceipt) : null
 })
 
 class ComputeJobOperationRepository {
@@ -109,7 +118,7 @@ class ComputeJobOperationRepository {
   // exhaustive here so a future kind must define its persistence semantics explicitly.
   async request(
     jobId: string,
-    kind: ComputeJobOperationKind,
+    kind: 'cancel',
     scope: ComputeJobOperationScope,
     now: Date
   ): Promise<
@@ -177,7 +186,7 @@ class ComputeJobOperationRepository {
 
   // `eligibleAt = null` is ready now; a non-null value delays retry until that instant.
   async claimNext(
-    kind: ComputeJobOperationKind,
+    kind: 'cancel',
     now: Date,
     leaseMs: number,
     claimToken: string
@@ -248,6 +257,159 @@ class ComputeJobOperationRepository {
       })
       return { operation: toRecord(row), jobId: candidate.jobId }
     })
+  }
+
+  async requestCleanup(
+    jobId: string,
+    scope: ComputeJobOperationScope,
+    requestId: string,
+    now: Date
+  ): Promise<{ found: false } | { found: true; record: ComputeJobOperationRecord }> {
+    const client = await this.getClient()
+    return client.$transaction(async (transaction) => {
+      const job = await transaction.computeJob.findFirst({
+        where: {
+          id: jobId,
+          projectId: scope.projectId,
+          sessionId: scope.sessionId,
+          providerId: scope.providerId
+        },
+        select: { id: true }
+      })
+      if (!job) return { found: false } as const
+      const existing = await transaction.computeJobOperation.findUnique({
+        where: { jobId_kind: { jobId, kind: 'cleanup' } }
+      })
+      if (!existing) {
+        const created = await transaction.computeJobOperation.create({
+          data: { id: randomUUID(), jobId, kind: 'cleanup', requestId, updatedAt: now }
+        })
+        return { found: true, record: toRecord(created) } as const
+      }
+      if (existing.phase === 'active' || existing.requestId === requestId) {
+        return { found: true, record: toRecord(existing) } as const
+      }
+      const restarted = await transaction.computeJobOperation.update({
+        where: { id: existing.id },
+        data: {
+          phase: 'active',
+          outcome: null,
+          revision: { increment: 1 },
+          attemptCount: 0,
+          eligibleAt: null,
+          claimToken: null,
+          claimExpiresAt: null,
+          settledAt: null,
+          requestId,
+          receipt: null,
+          updatedAt: now
+        }
+      })
+      return { found: true, record: toRecord(restarted) } as const
+    })
+  }
+
+  async claimCleanup(
+    operation: ComputeJobOperationRecord,
+    now: Date,
+    leaseMs: number,
+    claimToken: string
+  ): Promise<ClaimedComputeJobOperation | null> {
+    const client = await this.getClient()
+    const claimed = await client.computeJobOperation.updateMany({
+      where: {
+        id: operation.id,
+        kind: 'cleanup',
+        phase: 'active',
+        revision: operation.revision,
+        OR: [{ claimToken: null }, { claimExpiresAt: { lte: now } }]
+      },
+      data: {
+        revision: { increment: 1 },
+        attemptCount: { increment: 1 },
+        claimToken,
+        claimExpiresAt: new Date(now.getTime() + leaseMs),
+        receipt: null,
+        updatedAt: now
+      }
+    })
+    if (claimed.count !== 1) return null
+    const row = await client.computeJobOperation.findUniqueOrThrow({ where: { id: operation.id } })
+    return { operation: toRecord(row), jobId: operation.jobId }
+  }
+
+  async settleCleanup(
+    claim: ClaimedComputeJobOperation,
+    receipt: ComputeJobCleanupReceipt,
+    now: Date,
+    indeterminate = false
+  ): Promise<boolean> {
+    const client = await this.getClient()
+    return client.$transaction(async (transaction) => {
+      const receiptJson = JSON.stringify(receipt)
+      const updated = await transaction.computeJobOperation.updateMany({
+        where: {
+          id: claim.operation.id,
+          kind: 'cleanup',
+          phase: 'active',
+          revision: claim.operation.revision,
+          claimToken: claim.operation.claimToken
+        },
+        data: indeterminate
+          ? {
+              revision: { increment: 1 },
+              claimToken: null,
+              claimExpiresAt: null,
+              receipt: receiptJson,
+              updatedAt: now
+            }
+          : {
+              phase: 'settled',
+              outcome: 'fulfilled',
+              revision: { increment: 1 },
+              eligibleAt: null,
+              claimToken: null,
+              claimExpiresAt: null,
+              receipt: receiptJson,
+              settledAt: now,
+              updatedAt: now
+            }
+      })
+      if (updated.count !== 1) return false
+      await transaction.computeJob.update({
+        where: { id: claim.jobId },
+        data: { cleanupReceipt: receiptJson }
+      })
+      return true
+    })
+  }
+
+  async findActiveReferences(jobId: string): Promise<Array<{ remotePath: string }>> {
+    const client = await this.getClient()
+    return client.computeJobRemoteReference.findMany({
+      where: {
+        producerJobId: jobId,
+        consumer: { is: { status: { in: [...ACTIVE_STATUSES] } } }
+      },
+      select: { remotePath: true }
+    })
+  }
+
+  async findIndeterminateCleanup(now: Date): Promise<ComputeJobOperationRecord[]> {
+    const client = await this.getClient()
+    const rows = await client.computeJobOperation.findMany({
+      where: {
+        kind: 'cleanup',
+        phase: 'active',
+        receipt: { not: null },
+        OR: [
+          { claimToken: null, claimExpiresAt: null },
+          { claimToken: { not: null }, claimExpiresAt: { lte: now } }
+        ]
+      },
+      orderBy: { updatedAt: 'asc' }
+    })
+    return rows.map(toRecord).filter(({ receipt }) => receipt?.outcome === 'indeterminate')
   }
 
   async fulfill(claim: ClaimedComputeJobOperation, now: Date): Promise<boolean> {

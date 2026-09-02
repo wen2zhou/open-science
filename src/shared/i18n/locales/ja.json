@@ -353,6 +353,7 @@
     "Allow remote job submission?": "リモートジョブの送信を許可しますか？",
     "The remote file will be copied into this Session's local cache. Approve only if you trust the source and path.": "リモートファイルはこの Session のローカルキャッシュにコピーされます。コピー元とパスを信頼できる場合にのみ承認してください。",
     "This job will run as your account on the host and is not sandboxed. Review the command, resources, remote workdir, and timeout before approving.": "このジョブはホスト上のアカウントとして実行され、サンドボックス化されません。承認する前に、コマンド、リソース、リモート作業ディレクトリ、タイムアウトを確認してください。",
+    "Verified temporary resources created for this job may later be safely reclaimed by Open Science after ownership and lifecycle checks.": "このジョブ用に作成された検証済みの一時リソースは、所有権とライフサイクルの確認後に Open Science が安全に回収できる場合があります。",
     "Remote path": "リモートパス",
     "{{count}} seconds_other": "{{count}} 秒",
     "remote file downloads from {{host}}": "{{host}} からのリモートファイルのダウンロード",

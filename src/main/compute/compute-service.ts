@@ -2,6 +2,7 @@ import type {
   ComputeHost,
   ComputeHostDetails,
   ComputeJob,
+  ComputeJobCleanupReceipt,
   DetailsAuthor,
   ExecResult,
   JobResult,
@@ -23,6 +24,7 @@ import type { ComputeConnectionBroker } from './connection-broker'
 import type { CredentialVault } from './credential-vault'
 import type { ComputeJobRepository } from './job-repository'
 import { ComputeJobCancellationOwner } from './compute-job-cancellation-owner'
+import { ComputeJobCleanupOwner } from './compute-job-cleanup-owner'
 import type { ComputeJobOperationRepository } from './compute-job-operation-repository'
 import type { ComputeHostRepository } from './repository'
 import type { ScpRunner } from './scp-runner'
@@ -69,6 +71,7 @@ export class ComputeService {
   private readonly remoteOperations: ComputeRemoteOperationOwner
   private readonly jobWorkflow: ComputeJobWorkflowOwner
   private readonly jobCancellation?: ComputeJobCancellationOwner
+  private readonly jobCleanup?: ComputeJobCleanupOwner
   private readonly repository: ComputeHostRepository
   private readonly concurrencyManager?: ConcurrencyManager
   private readonly credentialVault?: Pick<CredentialVault, 'credentialStatus'>
@@ -118,6 +121,15 @@ export class ComputeService {
     this.jobCancellation =
       operationRepository && jobRepository
         ? new ComputeJobCancellationOwner(operationRepository, jobRepository)
+        : undefined
+    this.jobCleanup =
+      operationRepository && jobRepository
+        ? new ComputeJobCleanupOwner(
+            operationRepository,
+            jobRepository,
+            repository,
+            effectiveConnectionBroker
+          )
         : undefined
   }
 
@@ -260,6 +272,25 @@ export class ComputeService {
       await this.concurrencyManager?.onJobCompleted()
     }
     return result
+  }
+
+  async cleanupJob(
+    jobId: string,
+    scope: ComputeJobReadScope,
+    invocationId: string,
+    signal?: AbortSignal
+  ): Promise<ComputeJobCleanupReceipt> {
+    if (!this.jobCleanup) {
+      throw new Error('ComputeJobOperationRepository is required to call cleanupJob.')
+    }
+    const result = await this.jobCleanup.cleanup(jobId, scope, invocationId, signal)
+    const job = await this.jobWorkflow.getJob(jobId, scope)
+    this.handleJobUpdated(job)
+    return result
+  }
+
+  async recoverIndeterminateJobCleanups(): Promise<void> {
+    await this.jobCleanup?.recoverIndeterminate()
   }
 
   handleJobCancellationConfirmed = async (job: ComputeJob): Promise<void> => {

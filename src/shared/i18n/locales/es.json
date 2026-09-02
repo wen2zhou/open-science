@@ -368,6 +368,7 @@
     "Allow remote job submission?": "¿Permitir el envío de un trabajo remoto?",
     "The remote file will be copied into this Session's local cache. Approve only if you trust the source and path.": "El archivo remoto se copiará en la caché local de esta sesión. Apruebe solo si confía en el origen y la ruta.",
     "This job will run as your account on the host and is not sandboxed. Review the command, resources, remote workdir, and timeout before approving.": "Este trabajo se ejecutará con su cuenta en el host y no estará aislado. Revise el comando, los recursos, el directorio de trabajo remoto y el tiempo de espera antes de aprobarlo.",
+    "Verified temporary resources created for this job may later be safely reclaimed by Open Science after ownership and lifecycle checks.": "Open Science podrá recuperar de forma segura más adelante los recursos temporales verificados creados para este trabajo, después de comprobar la propiedad y el ciclo de vida.",
     "Remote path": "Ruta remota",
     "{{count}} seconds_one": "{{count}} segundo",
     "{{count}} seconds_many": "{{count}} segundos",

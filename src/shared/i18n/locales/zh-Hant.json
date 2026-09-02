@@ -407,6 +407,7 @@
     "Allow remote job submission?": "允許提交遠端作業？",
     "The remote file will be copied into this Session's local cache. Approve only if you trust the source and path.": "遠端檔案將複製到此 Session 的本機快取中。只有信任檔案來源和路徑時才核准。",
     "This job will run as your account on the host and is not sandboxed. Review the command, resources, remote workdir, and timeout before approving.": "此作業將以你在該主機上的帳戶身分執行，且不在沙箱中。核准前請檢查指令、資源、遠端工作目錄和逾時設定。",
+    "Verified temporary resources created for this job may later be safely reclaimed by Open Science after ownership and lifecycle checks.": "此作業建立的已驗證臨時資源可在通過擁有權和生命週期檢查後由 Open Science 安全回收。",
     "Remote path": "遠端路徑",
     "{{count}} seconds_other": "{{count}} 秒",
     "remote file downloads from {{host}}": "從 {{host}} 下載遠端檔案",

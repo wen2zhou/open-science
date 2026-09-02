@@ -30,6 +30,7 @@ import type { ComputeJobRepository } from './job-repository'
 import type { ComputeHostRepository } from './repository'
 import {
   HARVEST_FREE_DISK_RESERVE_BYTES,
+  enumerateRemoteFiles,
   getJobHarvestDir,
   harvestJob,
   type HarvestDeps
@@ -213,6 +214,22 @@ const makeJobRepo = (
 const findOutput = (entries: { path: string; size_bytes: number }[]): string =>
   entries.map((e) => `${e.path}\t${e.size_bytes}`).join('\n')
 
+const identityFindOutput = (
+  entries: Array<{
+    path: string
+    size_bytes: number
+    device: string
+    inode: string
+    modifiedAtSeconds: string
+  }>
+): string =>
+  entries
+    .map(
+      (entry) =>
+        `${entry.path}\t${entry.device}\t${entry.inode}\t${entry.size_bytes}\t${entry.modifiedAtSeconds}`
+    )
+    .join('\n')
+
 // ---------------------------------------------------------------------------
 // Path helper: getJobHarvestDir
 // ---------------------------------------------------------------------------
@@ -237,6 +254,255 @@ describe('getJobHarvestDir', () => {
 // ---------------------------------------------------------------------------
 
 describe('harvestJob — clean harvest', () => {
+  it('uses no-follow enumeration with GNU and BSD stat fallbacks', async () => {
+    let command = ''
+    const run: ComputeConnectionLease['run'] = async (value) => {
+      command = value
+      return {
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      }
+    }
+    await enumerateRemoteFiles(
+      { run, upload: vi.fn(), download: vi.fn() },
+      '~/.openscience/jobs/job-1'
+    )
+
+    expect(command).toContain('find -P')
+    expect(command).toContain('stat -c')
+    expect(command).toContain('%d:%i:%s:%Y')
+    expect(command).toContain('stat -f')
+    expect(command).toContain('%d:%i:%z:%m')
+  })
+
+  it('persists output and log identity only after an unchanged download is published', async () => {
+    const storageRoot = await mkTmp()
+    const job = makeJob({
+      output_manifest: JSON.stringify(['*.result']),
+      input_manifest: JSON.stringify([
+        { kind: 'upload', dstFilename: 'input.csv' },
+        { kind: 'symlink', dstFilename: 'reference.fa', remotePath: '/shared/reference.fa' }
+      ]),
+      remote_object_evidence: [
+        {
+          path: 'command.sh',
+          role: 'control',
+          identity: {
+            kind: 'file',
+            device: '1',
+            inode: '2',
+            size_bytes: 3,
+            modified_at_ns: '4000000000'
+          }
+        },
+        {
+          path: 'launcher.sh',
+          role: 'control',
+          identity: {
+            kind: 'file',
+            device: '1',
+            inode: '3',
+            size_bytes: 4,
+            modified_at_ns: '5000000000'
+          }
+        },
+        {
+          path: 'job.pid',
+          role: 'control',
+          identity: {
+            kind: 'file',
+            device: '1',
+            inode: '4',
+            size_bytes: 5,
+            modified_at_ns: '6000000000'
+          }
+        },
+        {
+          path: 'input.csv',
+          role: 'input_upload',
+          identity: {
+            kind: 'file',
+            device: '1',
+            inode: '5',
+            size_bytes: 6,
+            modified_at_ns: '7000000000'
+          }
+        },
+        {
+          path: 'reference.fa',
+          role: 'input_symlink',
+          identity: {
+            kind: 'symlink',
+            device: '1',
+            inode: '6',
+            link_target: '/shared/reference.fa'
+          }
+        }
+      ]
+    })
+    const listing = identityFindOutput([
+      {
+        path: 'run.result',
+        size_bytes: 10,
+        device: '11',
+        inode: '12',
+        modifiedAtSeconds: '13'
+      },
+      {
+        path: 'stdout',
+        size_bytes: 10,
+        device: '21',
+        inode: '22',
+        modifiedAtSeconds: '23'
+      },
+      {
+        path: 'stderr',
+        size_bytes: 10,
+        device: '31',
+        inode: '32',
+        modifiedAtSeconds: '33'
+      },
+      {
+        path: 'exit_code',
+        size_bytes: 2,
+        device: '41',
+        inode: '42',
+        modifiedAtSeconds: '43'
+      },
+      {
+        path: 'exit_code.tmp',
+        size_bytes: 2,
+        device: '51',
+        inode: '52',
+        modifiedAtSeconds: '53'
+      }
+    ])
+    const runner = makeSshRunner(listing)
+    const { repo, updates } = makeJobRepo(job)
+
+    await harvestJob(job, {
+      connectionBroker: brokerFromRunners(runner, makeWritingScpRunner()),
+      hostRepository: makeHostRepo(sampleHost()),
+      jobRepository: repo,
+      storageRoot
+    })
+
+    expect(runner.run).toHaveBeenCalledTimes(2)
+    expect(updates[0]!.data).toMatchObject({
+      harvestError: null,
+      remoteObjectEvidence: [
+        expect.objectContaining({ path: 'command.sh', role: 'control' }),
+        expect.objectContaining({ path: 'launcher.sh', role: 'control' }),
+        expect.objectContaining({ path: 'job.pid', role: 'control' }),
+        expect.objectContaining({ path: 'input.csv', role: 'input_upload' }),
+        expect.objectContaining({ path: 'reference.fa', role: 'input_symlink' }),
+        expect.objectContaining({
+          path: 'exit_code',
+          role: 'control',
+          identity: expect.objectContaining({ device: '41', inode: '42' })
+        }),
+        expect.objectContaining({
+          path: 'run.result',
+          role: 'harvested_output',
+          identity: expect.objectContaining({
+            device: '11',
+            inode: '12',
+            modified_at_ns: '13000000000'
+          })
+        }),
+        expect.objectContaining({
+          path: 'stdout',
+          role: 'harvested_log',
+          identity: expect.objectContaining({ device: '21', inode: '22' })
+        }),
+        expect.objectContaining({
+          path: 'stderr',
+          role: 'harvested_log',
+          identity: expect.objectContaining({ device: '31', inode: '32' })
+        })
+      ]
+    })
+    expect(
+      (updates[0]!.data as { remoteObjectEvidence: Array<{ path: string }> }).remoteObjectEvidence
+    ).not.toEqual(expect.arrayContaining([expect.objectContaining({ path: 'exit_code.tmp' })]))
+    await expect(
+      readFile(
+        join(
+          getJobHarvestDir(storageRoot, job.project_id, job.session_id, job.job_id),
+          'featured',
+          'run.result'
+        ),
+        'utf8'
+      )
+    ).resolves.toBe('downloaded')
+  })
+
+  it('does not publish or persist attempt evidence when remote identity changes after download', async () => {
+    const storageRoot = await mkTmp()
+    const job = makeJob({ output_manifest: JSON.stringify(['*.result']) })
+    const before = identityFindOutput([
+      {
+        path: 'run.result',
+        size_bytes: 10,
+        device: '11',
+        inode: '12',
+        modifiedAtSeconds: '13'
+      }
+    ])
+    const after = identityFindOutput([
+      {
+        path: 'run.result',
+        size_bytes: 10,
+        device: '11',
+        inode: '99',
+        modifiedAtSeconds: '13'
+      }
+    ])
+    const runner: SshRunner = {
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: before,
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: after,
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+    }
+    const { repo, updates } = makeJobRepo(job)
+
+    await harvestJob(job, {
+      connectionBroker: brokerFromRunners(runner, makeWritingScpRunner()),
+      hostRepository: makeHostRepo(sampleHost()),
+      jobRepository: repo,
+      storageRoot
+    })
+
+    expect(updates[0]!.data).toMatchObject({
+      harvestError: expect.stringContaining('changed while it was being downloaded')
+    })
+    expect(updates[0]!.data).not.toHaveProperty('remoteObjectEvidence')
+    await expect(
+      readFile(
+        join(
+          getJobHarvestDir(storageRoot, job.project_id, job.session_id, job.job_id),
+          'featured',
+          'run.result'
+        )
+      )
+    ).rejects.toMatchObject({ code: 'ENOENT' })
+  })
+
   it('excludes staged inputs from both current and legacy input manifests', async () => {
     const storageRoot = await mkTmp()
     const job = makeJob({
@@ -458,7 +724,7 @@ describe('harvestJob — clean harvest', () => {
       signal
     })
     expect(vi.mocked(ssh.run).mock.calls[0]?.[1]).toContain(
-      "find ~/'.openscience/jobs/job-1' -type f"
+      "find -P ~/'.openscience/jobs/job-1' -type f"
     )
     // Four bounded copies: declared outputs first, then stdout and stderr with the remaining budget.
     expect(scp.calls.length).toBe(4)

@@ -421,6 +421,86 @@ describe('useJobAnalysisEffect persistence readiness', () => {
     vi.useRealTimers()
   })
 
+  it('rescans pending analysis at a low frequency after the initial scan succeeds', async () => {
+    vi.useFakeTimers()
+    jobsPendingNotification.mockResolvedValue([])
+
+    await act(async () => {
+      root.render(<Probe enabled />)
+      await Promise.resolve()
+    })
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(1)
+
+    await act(async () => vi.advanceTimersByTimeAsync(59_999))
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(1)
+
+    await act(async () => vi.advanceTimersByTimeAsync(1))
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(2)
+
+    await act(async () => vi.advanceTimersByTimeAsync(60_000))
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(3)
+  })
+
+  it('rescans on focus and when the document becomes visible after initial recovery', async () => {
+    jobsPendingNotification.mockResolvedValue([])
+    const visibility = vi.spyOn(document, 'visibilityState', 'get')
+
+    await act(async () => {
+      root.render(<Probe enabled />)
+      await Promise.resolve()
+    })
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      await Promise.resolve()
+    })
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(2)
+
+    visibility.mockReturnValue('hidden')
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await Promise.resolve()
+    })
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(2)
+
+    visibility.mockReturnValue('visible')
+    await act(async () => {
+      document.dispatchEvent(new Event('visibilitychange'))
+      await Promise.resolve()
+    })
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(3)
+    visibility.mockRestore()
+  })
+
+  it('does not overlap lifecycle rescans with an in-flight pending query', async () => {
+    let resolveInitial: ((jobs: JobSummary[]) => void) | undefined
+    jobsPendingNotification.mockImplementationOnce(
+      () =>
+        new Promise((resolve) => {
+          resolveInitial = resolve
+        })
+    )
+    jobsPendingNotification.mockResolvedValue([])
+
+    await act(async () => {
+      root.render(<Probe enabled />)
+      await Promise.resolve()
+    })
+    act(() => window.dispatchEvent(new Event('focus')))
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(1)
+
+    await act(async () => {
+      resolveInitial?.([])
+      await Promise.resolve()
+    })
+    await act(async () => {
+      window.dispatchEvent(new Event('focus'))
+      await Promise.resolve()
+    })
+    expect(jobsPendingNotification).toHaveBeenCalledTimes(2)
+  })
+
   it('projects successful consumption locally without waiting for a follow-up hydration', async () => {
     jobsPendingNotification.mockResolvedValueOnce([])
     jobsList.mockImplementationOnce(() => new Promise(() => undefined))

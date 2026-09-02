@@ -104,6 +104,7 @@ const makeJob = (overrides: Partial<ComputeJob> = {}): ComputeJob => ({
   timeout_seconds: 3600,
   remote_workdir: '~/.openscience/jobs/job-1',
   remote_handle: undefined,
+  owner_marker: 'owner-token-1234567890',
   exit_code: undefined,
   stdout_tail: undefined,
   stderr_tail: undefined,
@@ -117,7 +118,7 @@ const makeJob = (overrides: Partial<ComputeJob> = {}): ComputeJob => ({
 })
 
 type HostRepo = Pick<ComputeHostRepository, 'get'>
-type JobRepo = Pick<ComputeJobRepository, 'get' | 'updateIfStatus'>
+type JobRepo = Pick<ComputeJobRepository, 'get' | 'update' | 'updateIfStatus'>
 
 const makeHostRepo = (host: import('../../shared/compute').ComputeHost | null): HostRepo => ({
   get: vi.fn(() => Promise.resolve(host))
@@ -128,13 +129,22 @@ const makeJobRepo = (
 ): {
   repo: JobRepo
   transition: ReturnType<typeof vi.fn>
+  update: ReturnType<typeof vi.fn>
   get: ReturnType<typeof vi.fn>
 } => {
   const transition = vi.fn((_id: string, _expectedStatuses: unknown, updates: unknown) =>
     Promise.resolve({ ...job!, ...(updates as object), job_id: _id })
   )
   const get = vi.fn(() => Promise.resolve(job))
-  return { repo: { get, updateIfStatus: transition } as unknown as JobRepo, transition, get }
+  const update = vi.fn((_id: string, updates: unknown) =>
+    Promise.resolve({ ...job!, ...(updates as object), job_id: _id })
+  )
+  return {
+    repo: { get, update, updateIfStatus: transition } as unknown as JobRepo,
+    transition,
+    update,
+    get
+  }
 }
 
 const sampleHost = (): import('../../shared/compute').ComputeHost => ({
@@ -413,6 +423,13 @@ describe('dispatchJob', () => {
         .fn()
         .mockResolvedValueOnce({
           exitCode: 0,
+          stdout: '',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockResolvedValueOnce({
+          exitCode: 0,
           stdout: `not-a-pid ${secret}`,
           stderr: '',
           truncated: false,
@@ -469,7 +486,8 @@ describe('dispatchJob', () => {
     })
     const repo = {
       get: vi.fn(() => Promise.resolve(job)),
-      updateIfStatus
+      updateIfStatus,
+      update: vi.fn(async (_id: string, updates: object) => ({ ...job, ...updates }))
     } as unknown as ComputeJobRepository
 
     await dispatchJob(job.job_id, {
@@ -487,7 +505,18 @@ describe('dispatchJob', () => {
     const job = makeJob()
     const tracker = new DispatchTracker()
     // A runner that throws simulates an unexpected error mid-dispatch.
-    const runner: SshRunner = { run: vi.fn(() => Promise.reject(new Error('boom'))) }
+    const runner: SshRunner = {
+      run: vi
+        .fn()
+        .mockResolvedValueOnce({
+          exitCode: 0,
+          stdout: '',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        })
+        .mockRejectedValue(new Error('boom'))
+    }
     const { repo, transition } = makeJobRepo(job)
 
     await dispatchJob(job.job_id, {
@@ -525,9 +554,16 @@ describe('dispatchJob', () => {
       jobRepository: repo as unknown as ComputeJobRepository
     })
 
-    const dispatchCmd = (runner.run as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string
+    const commands = (runner.run as ReturnType<typeof vi.fn>).mock.calls.map((call) =>
+      String(call[1])
+    )
+    const ownerCmd = commands.find((command) => command.includes('.openscience-owner'))!
+    const dispatchCmd = commands.find((command) => command.includes('nohup setsid'))!
     // The tilde must remain unquoted so bash expands it to $HOME.
-    expect(dispatchCmd).toContain("mkdir -p ~/'.openscience/jobs/job-1'")
+    expect(ownerCmd).toContain('mkdir "$workdir"')
+    expect(ownerCmd).toContain('path_no_symlinks "$workdir"')
+    expect(ownerCmd).toContain('${workdir_input#??}')
+    expect(ownerCmd).not.toContain('#\\~/')
     expect(dispatchCmd).toContain("cd ~/'.openscience/jobs/job-1'")
     // Regression guard: never emit a double-quoted tilde.
     expect(dispatchCmd).not.toContain('"~/')
@@ -571,14 +607,19 @@ describe('dispatchJob', () => {
     const repository = {
       get: vi.fn(async () => current),
       updateIfStatus: vi.fn(
-        async (_id: string, _expectedStatuses: unknown, updates: Partial<ComputeJob>) => {
+        async (
+          _id: string,
+          _expectedStatuses: unknown,
+          updates: Partial<ComputeJob> & { fileEvidence?: string }
+        ) => {
+          if (updates.fileEvidence !== undefined) {
+            throw new Error('simulated database update failure')
+          }
           current = { ...current, ...updates }
           return current
         }
       ),
-      update: vi.fn(async () => {
-        throw new Error('simulated database update failure')
-      })
+      update: vi.fn()
     } as unknown as ComputeJobRepository
     const runner = makeSshRunner({
       exitCode: 255,
@@ -636,7 +677,8 @@ describe('dispatchJob', () => {
     await dispatchJob(job.job_id, {
       connectionBroker: brokerFromRunners(runner),
       hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
-      jobRepository: repo as unknown as ComputeJobRepository
+      jobRepository: repo as unknown as ComputeJobRepository,
+      storageRoot: '/'
     })
 
     expect(transition).toHaveBeenCalledWith(
@@ -664,7 +706,8 @@ describe('dispatchJob', () => {
     await dispatchJob(job.job_id, {
       connectionBroker: brokerFromRunners(runner),
       hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
-      jobRepository: repo as unknown as ComputeJobRepository
+      jobRepository: repo as unknown as ComputeJobRepository,
+      storageRoot: '/'
     })
 
     expect(transition).toHaveBeenCalledWith(
@@ -672,6 +715,146 @@ describe('dispatchJob', () => {
       ['submitted'],
       expect.objectContaining({ status: 'error', errorCode: 'dispatch_failed' })
     )
+  })
+
+  it('establishes the owner marker before any platform upload or launch', async () => {
+    const events: string[] = []
+    const job = makeJob({
+      input_manifest: JSON.stringify([
+        { kind: 'upload', localPath: '/local/a.csv', dstFilename: 'a.csv', label: 'a.csv' }
+      ])
+    })
+    const connection: ComputeConnectionLease = {
+      run: vi.fn(async (command) => {
+        events.push(command.includes('.openscience-owner') ? 'owner' : 'launch')
+        return {
+          exitCode: 0,
+          stdout: command.includes('nohup setsid') ? '12345\n' : '',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        }
+      }),
+      upload: vi.fn(async () => {
+        events.push('upload')
+      }),
+      download: vi.fn()
+    }
+    const { repo } = makeJobRepo(job)
+
+    await dispatchJob(job.job_id, {
+      connectionBroker: { acquire: vi.fn(async () => connection) },
+      hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository,
+      storageRoot: '/'
+    })
+
+    expect(events).toEqual(['owner', 'upload', 'launch'])
+    const ownerCommand = (connection.run as ReturnType<typeof vi.fn>).mock.calls[0]![0] as string
+    expect(ownerCommand).toContain('set -C')
+    expect(ownerCommand).toContain('[ ! -L')
+    expect(ownerCommand).toContain(job.owner_marker)
+  })
+
+  it('fails closed before staging or launch when the owner marker is anomalous', async () => {
+    const job = makeJob({
+      input_manifest: JSON.stringify([
+        { kind: 'upload', localPath: '/local/a.csv', dstFilename: 'a.csv', label: 'a.csv' }
+      ])
+    })
+    const connection: ComputeConnectionLease = {
+      run: vi.fn(async () => ({
+        exitCode: 73,
+        stdout: '',
+        stderr: '',
+        truncated: false,
+        timedOut: false
+      })),
+      upload: vi.fn(),
+      download: vi.fn()
+    }
+    const { repo, transition } = makeJobRepo(job)
+
+    await dispatchJob(job.job_id, {
+      connectionBroker: { acquire: vi.fn(async () => connection) },
+      hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository,
+      storageRoot: '/'
+    })
+
+    expect(connection.upload).not.toHaveBeenCalled()
+    expect(connection.run).toHaveBeenCalledOnce()
+    expect(transition).toHaveBeenCalledWith(
+      job.job_id,
+      ['submitted'],
+      expect.objectContaining({ status: 'error', errorCode: 'dispatch_failed' })
+    )
+  })
+
+  it('persists control, upload, and exact symlink identity evidence from dispatch', async () => {
+    const job = makeJob({
+      input_manifest: JSON.stringify([
+        { kind: 'upload', localPath: '/local/a.csv', dstFilename: 'a.csv', label: 'a.csv' },
+        {
+          kind: 'symlink',
+          remotePath: '/scratch/ref target.fa',
+          dstFilename: 'ref.fa',
+          label: 'ref.fa'
+        }
+      ])
+    })
+    const target = Buffer.from('/scratch/ref target.fa').toString('base64')
+    const protocol = [
+      'OPEN_SCIENCE_DISPATCH_V2',
+      'pid:12345',
+      'object:0:file:1:10:20:30',
+      'object:1:file:1:11:21:31',
+      'object:2:file:1:12:5:32',
+      'object:3:file:1:13:100:33',
+      `object:4:symlink:1:14:${target}`
+    ].join('\n')
+    let run = 0
+    const connection: ComputeConnectionLease = {
+      run: vi.fn(async (command) => {
+        run += 1
+        return {
+          exitCode: 0,
+          stdout: command.includes('nohup setsid') ? protocol : '',
+          stderr: '',
+          truncated: false,
+          timedOut: false
+        }
+      }),
+      upload: vi.fn(async () => undefined),
+      download: vi.fn()
+    }
+    const { repo, transition } = makeJobRepo(job)
+
+    await dispatchJob(job.job_id, {
+      connectionBroker: { acquire: vi.fn(async () => connection) },
+      hostRepository: makeHostRepo(sampleHost()) as unknown as ComputeHostRepository,
+      jobRepository: repo as unknown as ComputeJobRepository,
+      storageRoot: '/'
+    })
+
+    expect(run).toBeGreaterThanOrEqual(3)
+    expect(transition).toHaveBeenCalledWith(job.job_id, ['running'], {
+      remoteObjectEvidence: [
+        expect.objectContaining({ path: 'command.sh', role: 'control' }),
+        expect.objectContaining({ path: 'launcher.sh', role: 'control' }),
+        expect.objectContaining({ path: 'job.pid', role: 'control' }),
+        expect.objectContaining({
+          path: 'a.csv',
+          role: 'input_upload',
+          identity: expect.objectContaining({ modified_at_ns: '33000000000' })
+        }),
+        expect.objectContaining({
+          path: 'ref.fa',
+          role: 'input_symlink',
+          identity: expect.objectContaining({ link_target: '/scratch/ref target.fa' })
+        })
+      ]
+    })
   })
 
   it('transitions to error when job is not found', async () => {
@@ -757,6 +940,28 @@ describe('stageInputs', () => {
     expect(cmd).toContain('ln -s')
     expect(cmd).toContain('/scratch/ref.fa')
     expect(cmd).toContain('/remote/workdir/ref.fa')
+  })
+
+  it('expands a trusted managed ~/ target while keeping the destination quoted', async () => {
+    const runner = makeSshRunnerForStagingLn(0)
+    await stageInputs(
+      [
+        {
+          kind: 'symlink',
+          remotePath: '~/.openscience/jobs/producer/result.csv',
+          dstFilename: 'result.csv',
+          label: 'managed result',
+          managedUri: 'ssh://biowulf/~/.openscience/jobs/producer/result.csv'
+        }
+      ],
+      '~/.openscience/jobs/consumer',
+      leaseFromRunners(runner, makeScpRunner())
+    )
+
+    const command = (runner.run as ReturnType<typeof vi.fn>).mock.calls[0]![1] as string
+    expect(command).toContain("ln -s ~/'.openscience/jobs/producer/result.csv'")
+    expect(command).not.toContain("ln -s '~/.openscience/jobs/producer/result.csv'")
+    expect(command).toContain("~/'.openscience/jobs/consumer/result.csv'")
   })
 
   it('throws on scp failure (all-or-nothing)', async () => {

@@ -126,6 +126,14 @@ export function ComputeApprovalDialog({
                 className={cn(dialogDescriptionClassName, 'text-xs [text-wrap:pretty]')}
               >
                 {description}
+                {dialogRequest.operation === 'submit_job' ? (
+                  <>
+                    {' '}
+                    {t(
+                      'Verified temporary resources created for this job may later be safely reclaimed by Open Science after ownership and lifecycle checks.'
+                    )}
+                  </>
+                ) : null}
               </Dialog.Description>
             </div>
           </div>

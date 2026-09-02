@@ -2,6 +2,7 @@ import type {
   AgentComputeHostSummary,
   ComputeHost,
   ComputeHostDetails,
+  ComputeJobCleanupReceipt,
   DetailsAuthor,
   ExecResult,
   JobResult,
@@ -23,6 +24,12 @@ type AgentComputeContext = Readonly<{
   producerRunId?: string
 }>
 
+type AgentComputeCleanupScope = Readonly<{
+  sessionId: string
+  projectId: string
+  providerId: string
+}>
+
 type RawComputeService = Pick<
   ComputeService,
   | 'list'
@@ -37,7 +44,14 @@ type RawComputeService = Pick<
   | 'cancelJob'
   | 'setSessionConcurrencyLimit'
   | 'getSessionConcurrencyStatus'
->
+> & {
+  cleanupJob(
+    jobId: string,
+    scope: AgentComputeCleanupScope,
+    invocationId: string,
+    signal?: AbortSignal
+  ): Promise<ComputeJobCleanupReceipt>
+}
 
 // The only Compute facade exposed to Agent RPC. Global ComputeService remains unrestricted for
 // Settings and internal runtimes; every Agent provider operation passes through Session admission.
@@ -183,6 +197,16 @@ export class AgentComputeService {
   ): Promise<JobStatusResult> {
     await this.requireEnabled(context.sessionId, providerId)
     return this.compute.cancelJob(jobId, { ...context, providerId })
+  }
+
+  async cleanupJob(
+    jobId: string,
+    scope: AgentComputeCleanupScope,
+    invocationId: string,
+    signal?: AbortSignal
+  ): Promise<ComputeJobCleanupReceipt> {
+    await this.requireEnabled(scope.sessionId, scope.providerId)
+    return this.compute.cleanupJob(jobId, scope, invocationId, signal)
   }
 
   setSessionConcurrencyLimit(sessionId: string, limit: number): Promise<void> {
