@@ -951,11 +951,18 @@ class NotebookRuntimeService {
 
   // Compatibility facade for the control-plane REPL. Admission, capability lifetime, dispatch,
   // terminalization, and completion interception belong to NotebookExecutionOwner.
-  async executeControl(request: ExecuteNotebookControlRequest): Promise<NotebookControlResult> {
+  async executeControl(
+    request: ExecuteNotebookControlRequest,
+    signal?: AbortSignal
+  ): Promise<NotebookControlResult> {
     return this.sessionLifecycle.runProjectOperation(request, async (deletionSignal) => {
       assertNotebookCodeWithinLimit(request.code)
       const session = await this.sessionLifecycle.ensure(request)
-      return this.executionOwner.executeControl(session, request, deletionSignal)
+      return this.executionOwner.executeControl(
+        session,
+        request,
+        signal ? AbortSignal.any([signal, deletionSignal]) : deletionSignal
+      )
     })
   }
 

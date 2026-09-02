@@ -192,7 +192,7 @@ type NotebookLocalRpcCapability = {
   finishCodeCell(request: FinishNotebookCodeCellRequest): Promise<unknown>
   runCell(request: RunNotebookCellRequest, signal?: AbortSignal): Promise<unknown>
   execute(request: ExecuteNotebookCodeRequest, signal?: AbortSignal): Promise<unknown>
-  executeControl(request: ExecuteNotebookControlRequest): Promise<unknown>
+  executeControl(request: ExecuteNotebookControlRequest, signal?: AbortSignal): Promise<unknown>
   executeShell(request: ExecuteShellRequest): Promise<unknown>
   requestNetworkAccess(
     request: RequestNotebookNetworkAccessRequest,
@@ -296,8 +296,8 @@ const resolveNotebookLocalRpcHandler = (
         return capability.execute(toExecuteNotebookCodeRequest(parsed), signal)
       }
     case 'executeControl':
-      return (request) =>
-        capability.executeControl(parseNotebookLocalRpcRequest('executeControl', request))
+      return (request, signal) =>
+        capability.executeControl(parseNotebookLocalRpcRequest('executeControl', request), signal)
     case 'executeShell':
       return (request) =>
         capability.executeShell(parseNotebookLocalRpcRequest('executeShell', request))

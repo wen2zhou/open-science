@@ -592,10 +592,14 @@ class NotebookLocalRpcServer {
     string,
     Map<NotebookExecutionRpcMethod, NotebookExecutionAuthorization | 'ambiguous'>
   >()
-  // Retains only the claimed Python/R authorization for the active prompt so a lost HTTP response
-  // can retry the exact request with the same durable submission identity. A newly authorized tool
-  // call still takes precedence, and turn/session teardown clears this cache.
+  // Retains claimed durable foreground authorizations for the active prompt so a lost HTTP response
+  // can retry the exact request with the same submission identity. Data and REPL lifecycles remain
+  // separate owners; a newly authorized call takes precedence and turn/session teardown clears both.
   private readonly claimedDataExecutionAuthorizations = new Map<
+    string,
+    NotebookExecutionAuthorization
+  >()
+  private readonly claimedControlExecutionAuthorizations = new Map<
     string,
     NotebookExecutionAuthorization
   >()
@@ -765,6 +769,7 @@ class NotebookLocalRpcServer {
     this.skillImportRpcTokens.clear()
     this.executionAuthorizations.clear()
     this.claimedDataExecutionAuthorizations.clear()
+    this.claimedControlExecutionAuthorizations.clear()
     this.consumedExecutionToolCalls.clear()
     this.computeSubmissionInvocations.clear()
 
@@ -918,6 +923,7 @@ class NotebookLocalRpcServer {
       this.sessionSpecialists.delete(ownedSessionId)
       this.executionAuthorizations.delete(ownedSessionId)
       this.claimedDataExecutionAuthorizations.delete(ownedSessionId)
+      this.claimedControlExecutionAuthorizations.delete(ownedSessionId)
       this.consumedExecutionToolCalls.delete(ownedSessionId)
       this.computeSubmissionInvocations.delete(ownedSessionId)
     }
@@ -993,7 +999,11 @@ class NotebookLocalRpcServer {
     if (byMethod?.size === 0) this.executionAuthorizations.delete(sessionId)
     if (!authorization) {
       const claimed =
-        method === 'execute' ? this.claimedDataExecutionAuthorizations.get(sessionId) : undefined
+        method === 'execute'
+          ? this.claimedDataExecutionAuthorizations.get(sessionId)
+          : method === 'executeControl'
+            ? this.claimedControlExecutionAuthorizations.get(sessionId)
+            : undefined
       const activePrompt =
         this.activeArtifactTurnBindings.get(sessionId)?.provenanceContext.promptMessageId
       return claimed &&
@@ -1014,6 +1024,9 @@ class NotebookLocalRpcServer {
       return undefined
     }
     if (method === 'execute') this.claimedDataExecutionAuthorizations.set(sessionId, authorization)
+    if (method === 'executeControl') {
+      this.claimedControlExecutionAuthorizations.set(sessionId, authorization)
+    }
     return authorization.executionInvocationId
   }
 
@@ -1347,6 +1360,7 @@ class NotebookLocalRpcServer {
     ) {
       this.executionAuthorizations.delete(sessionId)
       this.claimedDataExecutionAuthorizations.delete(sessionId)
+      this.claimedControlExecutionAuthorizations.delete(sessionId)
       this.consumedExecutionToolCalls.delete(sessionId)
     }
     this.activeArtifactTurnBindings.set(sessionId, binding)
@@ -1373,6 +1387,7 @@ class NotebookLocalRpcServer {
     this.activeArtifactTurnBindings.delete(sessionId)
     this.executionAuthorizations.delete(sessionId)
     this.claimedDataExecutionAuthorizations.delete(sessionId)
+    this.claimedControlExecutionAuthorizations.delete(sessionId)
     this.consumedExecutionToolCalls.delete(sessionId)
   }
 

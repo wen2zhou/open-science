@@ -276,8 +276,7 @@ type NotebookToolContent =
 const notebookRpcSignal = (
   method: string,
   signal: AbortSignal | undefined
-): AbortSignal | undefined =>
-  method === 'executeControl' || method === 'executeShell' ? undefined : signal
+): AbortSignal | undefined => (method === 'executeShell' ? undefined : signal)
 
 // Creates the ACP MCP-server declaration that launches this app bundle in notebook stdio mode.
 const createNotebookMcpServerConfig = (request: NotebookMcpServerConfigRequest): McpServerStdio => {

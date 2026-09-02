@@ -453,10 +453,38 @@ export class NotebookSessionAggregate<
     await (this.executionQueues.get(processKey) ?? Promise.resolve()).catch(() => undefined)
   }
 
-  enqueueControl<T>(task: () => Promise<T>): Promise<T> {
-    const run = this.controlQueue.then(task)
+  enqueueControl<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
+    if (!signal) {
+      const run = this.controlQueue.then(task)
+      this.controlQueue = run.catch(() => undefined)
+      return run
+    }
+
+    signal.throwIfAborted()
+    let started = false
+    let resolveResult!: (result: T | PromiseLike<T>) => void
+    let rejectResult!: (reason?: unknown) => void
+    const result = new Promise<T>((resolve, reject) => {
+      resolveResult = resolve
+      rejectResult = reject
+    })
+    const onAbort = (): void => {
+      if (!started) rejectResult(signal.reason)
+    }
+    signal.addEventListener('abort', onAbort, { once: true })
+
+    const run = this.controlQueue.then(async () => {
+      if (signal.aborted) return
+      started = true
+      signal.removeEventListener('abort', onAbort)
+      try {
+        resolveResult(await task())
+      } catch (error) {
+        rejectResult(error)
+      }
+    })
     this.controlQueue = run.catch(() => undefined)
-    return run
+    return result
   }
 
   // Reserves the next execution turn behind an executor lifecycle projection without making the

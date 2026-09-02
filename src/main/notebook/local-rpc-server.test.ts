@@ -867,6 +867,29 @@ describe('notebook local RPC server', () => {
       expect(await replResponse.json()).toMatchObject({
         result: { executionInvocationId: replId }
       })
+      const replRetry = await fetchLocalRpc(
+        replConnection,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${replConnection.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method: 'executeControl',
+            params: {
+              sessionId: 'repl-default',
+              workspaceCwd: '/workspace',
+              code: 'return 1',
+              timeoutMs: 1_815_000
+            }
+          })
+        },
+        'Notebook execution RPC retry'
+      )
+      expect(await replRetry.json()).toMatchObject({
+        result: { executionInvocationId: replId }
+      })
 
       setTurn('shell-default')
       const shellId = server.authorizeExecution({
@@ -1202,52 +1225,53 @@ describe('notebook local RPC server', () => {
     }
   )
 
-  it.each(['tcp', 'pipe'] as const)(
-    'aborts notebook data execution when its client disconnects over %s',
-    async (transport) => {
-      const callStarted = createDeferred<AbortSignal>()
-      const pendingCall = createDeferred<unknown>()
-      const server = new NotebookLocalRpcServer(
-        {
-          execute: async (_request: unknown, signal?: AbortSignal) => {
-            if (!signal) throw new Error('Expected a notebook execution signal.')
-            callStarted.resolve(signal)
-            return pendingCall.promise
-          }
-        } as never,
-        { transport }
-      )
-      const connection = await server.ensureStarted()
-      const disconnect = new AbortController()
-
-      try {
-        const request = fetchLocalRpc(
-          connection,
-          {
-            method: 'POST',
-            headers: {
-              authorization: `Bearer ${connection.token}`,
-              'content-type': 'application/json'
-            },
-            body: JSON.stringify({
-              method: 'execute',
-              params: { sessionId: 'session-1', workspaceCwd: '/workspace', code: 'long()' }
-            }),
-            signal: disconnect.signal
-          },
-          'Notebook execution RPC'
-        )
-        const signal = await callStarted.promise
-        expect(signal.aborted).toBe(false)
-        disconnect.abort()
-        await expect(request).rejects.toMatchObject({ cause: expect.any(Error) })
-        await vi.waitFor(() => expect(signal.aborted).toBe(true))
-      } finally {
-        pendingCall.resolve(undefined)
-        await server.close()
-      }
+  it.each([
+    ['tcp', 'execute'],
+    ['pipe', 'execute'],
+    ['tcp', 'executeControl'],
+    ['pipe', 'executeControl']
+  ] as const)('aborts durable notebook execution over %s for %s', async (transport, method) => {
+    const callStarted = createDeferred<AbortSignal>()
+    const pendingCall = createDeferred<unknown>()
+    const execute = async (_request: unknown, signal?: AbortSignal): Promise<unknown> => {
+      if (!signal) throw new Error('Expected a notebook execution signal.')
+      callStarted.resolve(signal)
+      return pendingCall.promise
     }
-  )
+    const server = new NotebookLocalRpcServer(
+      (method === 'execute' ? { execute } : { executeControl: execute }) as never,
+      { transport }
+    )
+    const connection = await server.ensureStarted()
+    const disconnect = new AbortController()
+
+    try {
+      const request = fetchLocalRpc(
+        connection,
+        {
+          method: 'POST',
+          headers: {
+            authorization: `Bearer ${connection.token}`,
+            'content-type': 'application/json'
+          },
+          body: JSON.stringify({
+            method,
+            params: { sessionId: 'session-1', workspaceCwd: '/workspace', code: 'long()' }
+          }),
+          signal: disconnect.signal
+        },
+        'Notebook execution RPC'
+      )
+      const signal = await callStarted.promise
+      expect(signal.aborted).toBe(false)
+      disconnect.abort()
+      await expect(request).rejects.toMatchObject({ cause: expect.any(Error) })
+      await vi.waitFor(() => expect(signal.aborted).toBe(true))
+    } finally {
+      pendingCall.resolve(undefined)
+      await server.close()
+    }
+  })
 
   it('aborts an in-flight Plan call before promptly closing the server', async () => {
     const root = await createStorageRoot()

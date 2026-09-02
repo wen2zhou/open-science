@@ -749,7 +749,7 @@ describe('notebook_execute tool', () => {
 
   it.each([
     ['execute', true],
-    ['executeControl', false],
+    ['executeControl', true],
     ['executeShell', false],
     ['state', true]
   ] as const)(

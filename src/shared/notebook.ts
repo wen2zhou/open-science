@@ -444,7 +444,7 @@ export type NotebookRunRecord = {
   submissionFingerprint?: string
   admittedAt?: number
   frozenRuntimeTarget?: {
-    language: NotebookLanguage
+    language: NotebookKernelKind
     environment: string
     processKey: string
     runtimeId?: string
