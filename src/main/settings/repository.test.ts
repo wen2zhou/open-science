@@ -9,6 +9,7 @@ import { SettingsDocumentStore } from './document-store'
 import { SettingsRepository } from './repository'
 import type { StoredCustomMcpServer, StoredProvider } from './types'
 import { skillMutationOwnerFor } from '../skills/skill-mutation-owner'
+import { envDirectoryName } from '../notebook/runtime-paths'
 
 // Capture the warn calls the repository makes through createLogger. vi.hoisted runs before the
 // module's top-level code so the vi.mock factory can reference the same spy instance.
@@ -1125,6 +1126,67 @@ describe('settings repository', () => {
     // Windows), so compare against the platform-normalized form rather than the literal.
     const reloaded = await new SettingsRepository(root).getSettings()
     expect(reloaded.dataRoot).toBe(normalize('/mnt/data-b'))
+  })
+
+  it('relocates disabled managed runtime IDs atomically and idempotently with dataRoot', async () => {
+    const root = await createStorageRoot()
+    const repository = new SettingsRepository(root)
+    const previousDataRoot = join(root, 'data-a')
+    const dataRoot = join(root, 'data-b')
+    const runtimeId = (
+      targetDataRoot: string,
+      language: 'python' | 'r',
+      environment: string
+    ): string => {
+      const prefix = join(
+        targetDataRoot,
+        'runtime',
+        'envs',
+        envDirectoryName(environment, process.platform)
+      )
+      if (process.platform !== 'win32')
+        return join(prefix, 'bin', language === 'python' ? 'python' : 'R')
+      return language === 'python'
+        ? join(prefix, 'python.exe')
+        : join(prefix, 'Lib', 'R', 'bin', 'R.exe')
+    }
+    const externalPython = join(root, 'external', 'python')
+    const previousPython = runtimeId(previousDataRoot, 'python', 'default-python')
+    const relocatedPython = runtimeId(dataRoot, 'python', 'default-python')
+    const previousR = runtimeId(previousDataRoot, 'r', 'analysis')
+    const relocatedR = runtimeId(dataRoot, 'r', 'analysis')
+
+    await repository.setRuntimeEnablement('python', () => ({
+      enabled: { [previousPython]: false, [externalPython]: false },
+      installAuthorized: { [previousPython]: true, [externalPython]: false }
+    }))
+    await repository.setRuntimeEnablement('r', () => ({
+      enabled: { [previousR]: false },
+      installAuthorized: { [previousR]: true }
+    }))
+
+    const first = await repository.setDataRoot({ dataRoot, previousDataRoot })
+    expect(first.notebookRuntimeEnablement).toEqual({
+      python: {
+        enabled: {
+          [previousPython]: false,
+          [relocatedPython]: false,
+          [externalPython]: false
+        },
+        installAuthorized: { [previousPython]: true, [externalPython]: false }
+      },
+      r: {
+        enabled: { [previousR]: false, [relocatedR]: false },
+        installAuthorized: { [previousR]: true }
+      }
+    })
+
+    const retried = await repository.setDataRoot({ dataRoot, previousDataRoot })
+    expect(retried.notebookRuntimeEnablement).toEqual(first.notebookRuntimeEnablement)
+    await expect(new SettingsRepository(root).getSettings()).resolves.toMatchObject({
+      dataRoot: normalize(dataRoot),
+      notebookRuntimeEnablement: first.notebookRuntimeEnablement
+    })
   })
 
   it('sanitizeSettings drops a relative dataRoot and keeps only an absolute, normalized one', () => {

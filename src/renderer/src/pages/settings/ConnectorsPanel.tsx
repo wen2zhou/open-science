@@ -406,7 +406,7 @@ export function ConnectorsPanel({
 
         {expanded ? (
           rows.length > 0 ? (
-            <ul className="mt-2 flex flex-col divide-y divide-border">
+            <ul className="mt-2 flex flex-col">
               {rows.map(({ resource: connector, usages }) => {
                 return (
                   <li
@@ -519,7 +519,7 @@ export function ConnectorsPanel({
         description={t(
           'When allowed, shared with research data services that ask for a contact email (such as those run by NCBI, EBI, and OurResearch) on requests made on your behalf.'
         )}
-        className="mb-4 border-b border-border pb-4"
+        className="mb-4"
       >
         <div className="mt-3 flex items-center gap-2">
           <span className="min-w-0 flex-1 truncate text-sm text-foreground">
@@ -674,7 +674,7 @@ export function ConnectorsPanel({
 
             {customExpanded ? (
               visibleCustomServers.length > 0 ? (
-                <ul className="mt-2 flex flex-col divide-y divide-border">
+                <ul className="mt-2 flex flex-col">
                   {visibleCustomServers.map(({ resource: server, usages }) => {
                     return (
                       <li

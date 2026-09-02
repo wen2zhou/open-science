@@ -208,7 +208,7 @@ const SkillBulkManageView = (): React.JSX.Element => {
         )}
       </p>
 
-      <div className="sticky top-0 z-10 -mx-5 mt-4 border-y border-border bg-card px-5 py-3">
+      <div className="sticky top-0 z-10 -mx-5 mt-4 bg-card px-5 py-3">
         <div className="flex flex-wrap items-center gap-2">
           <Select
             value={sourceFilter}
@@ -369,7 +369,7 @@ const SkillBulkManageView = (): React.JSX.Element => {
       ) : null}
 
       {visible.length > 0 ? (
-        <ul className="mt-3 flex flex-col divide-y divide-border">
+        <ul className="mt-3 flex flex-col">
           {visible.map((skill) => (
             <li
               key={skill.id}
@@ -473,10 +473,7 @@ const SkillBulkManageView = (): React.JSX.Element => {
                 </section>
 
                 {protectedSkills.length > 0 ? (
-                  <section
-                    data-slot="skill-bulk-delete-protected-section"
-                    className="border-t border-border pt-5"
-                  >
+                  <section data-slot="skill-bulk-delete-protected-section">
                     <h3
                       data-slot="skill-bulk-delete-protected-summary"
                       className="text-base font-semibold leading-6 text-foreground"

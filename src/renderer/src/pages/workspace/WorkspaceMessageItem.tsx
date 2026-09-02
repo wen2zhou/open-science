@@ -73,6 +73,7 @@ import {
 import {
   ARTIFACT_PREVIEW_BYTES,
   getArtifactName,
+  isPendingArtifactPublication,
   shouldReadArtifactPreview
 } from './artifact-preview-utils'
 import {
@@ -915,6 +916,7 @@ const ArtifactCard = ({
   const artifactName = getArtifactName(artifact)
   const sizeLabel = formatByteSize(artifact.size) ?? ''
   const [setElement, isNearViewport] = useNearViewport<HTMLButtonElement>()
+  const publicationPending = isPendingArtifactPublication(artifact)
   const requestKey = JSON.stringify([
     artifact.id,
     artifact.artifactId ?? null,
@@ -925,7 +927,10 @@ const ArtifactCard = ({
     artifact.mtimeMs ?? null
   ])
   const missing = useUnavailablePreviewProbe({
-    enabled: isNearViewport && Boolean(artifact.resolvedProjectId && artifact.artifactId),
+    enabled:
+      isNearViewport &&
+      !publicationPending &&
+      Boolean(artifact.resolvedProjectId && artifact.artifactId),
     projectId: artifact.resolvedProjectId,
     sessionId: artifact.resolvedSessionId,
     managedFileId: artifact.artifactId,
@@ -940,6 +945,7 @@ const ArtifactCard = ({
       ref={setElement}
       type="button"
       className={cn('group flex min-w-0 flex-col', artifactCardClassName)}
+      disabled={publicationPending}
       onClick={() => {
         onPreviewArtifact(artifact)
       }}
@@ -949,7 +955,7 @@ const ArtifactCard = ({
       <div className={cn('relative', artifactPreviewClassName)}>
         <span className={cn('block size-full', missing && 'opacity-40')}>
           {/* Unmount the reader outside the overscan window so message history stays lightweight. */}
-          {isNearViewport ? (
+          {publicationPending ? null : isNearViewport ? (
             <VisibleArtifactPreview artifact={artifact} requestKey={requestKey} />
           ) : (
             <ArtifactPreview artifact={artifact} isVisible={false} />

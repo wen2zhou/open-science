@@ -150,8 +150,7 @@ const errorToExecutionResult = (error: unknown, cwd: string): NotebookSessionExe
   }
 }
 
-const CANCELLED_MESSAGE =
-  'Run cancelled: the runtime was disabled (stop running work) while this cell was executing.'
+const CANCELLED_MESSAGE = 'Run cancelled: the runtime was stopped while this cell was executing.'
 const cancelledExecutionResult = (cwd: string): NotebookSessionExecutionResult => ({
   ...errorToExecutionResult(new Error(CANCELLED_MESSAGE), cwd),
   status: 'cancelled'
@@ -626,7 +625,11 @@ class NotebookExecutionOwner {
     const admittedAt = Date.now()
     const executionCount = session.nextExecutionCount()
     const cwdBefore = session.cwd
-    const admission = await this.options.dataExecutionAdmission.admit(session, cell)
+    const admission = await this.options.dataExecutionAdmission.admit(
+      session,
+      cell,
+      (request.source ?? 'agent') === 'agent'
+    )
     const { environment, processKey } = admission.route
     const { binding, resolvedInterpreter } = admission
     const kernelWasTerminatedAtAdmission =
@@ -766,7 +769,7 @@ class NotebookExecutionOwner {
                     return errorToExecutionResult(error, cwdBefore)
                   }
                   reachedExecutor = true
-                  const executionResult = await session
+                  let executionResult = await session
                     .execute({
                       runId,
                       kernelEpochId,
@@ -801,6 +804,13 @@ class NotebookExecutionOwner {
                           : errorToExecutionResult(error, cwdBefore)
                       return { ...fallback, kernelDispatched: true }
                     })
+                  const forceStopped = session.consumeForceStopped(processKey)
+                  if (forceStopped && executionResult.status !== 'completed') {
+                    executionResult = {
+                      ...cancelledExecutionResult(cwdBefore),
+                      kernelDispatched: executionResult.kernelDispatched ?? true
+                    }
+                  }
                   this.options.helperModules.commitInitialized(
                     kernelEpoch,
                     executionResult.helperModulesInitialized ?? []

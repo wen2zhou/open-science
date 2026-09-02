@@ -651,7 +651,7 @@ const SpecialistMarketplace = ({ view, onNavigate }: Props): React.JSX.Element =
         ) : null}
         {release ? (
           <div className="mx-auto max-w-4xl">
-            <div className="flex flex-wrap items-start gap-4 border-b border-border pb-5">
+            <div className="flex flex-wrap items-start gap-4">
               <SpecialistIdentity
                 id={release.specialistId}
                 displayName={release.displayName}

@@ -63,7 +63,7 @@ const MarketplaceManagedSpecialistDetail = ({
           {t('Back')}
         </Button>
 
-        <div className="flex flex-wrap items-start gap-3 border-b border-border pb-5">
+        <div className="flex flex-wrap items-start gap-3">
           <SpecialistAppearancePicker
             name={specialist.displayName ?? specialist.name}
             iconKey={specialist.iconKey}
@@ -166,7 +166,7 @@ const MarketplaceManagedSpecialistDetail = ({
           </div>
         </section>
 
-        <div className="mt-8 flex flex-wrap items-center gap-2 border-t border-border pt-5">
+        <div className="mt-8 flex flex-wrap items-center gap-2">
           <Button type="button" variant="outline" disabled={disabled} onClick={onDuplicate}>
             <Copy data-icon="inline-start" aria-hidden="true" />
             {t('Create editable copy')}

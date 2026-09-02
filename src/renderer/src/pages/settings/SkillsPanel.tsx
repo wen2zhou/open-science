@@ -362,7 +362,7 @@ const SkillsPanel = ({
         title={t('Conversation imports')}
         description={t('Choose what conversations can import into Open Science.')}
         aria-label={t('Conversation imports')}
-        className="mb-4 border-b border-border pb-4"
+        className="mb-4"
         contentClassName="mt-1"
       >
         <SettingsRow
@@ -423,6 +423,7 @@ const SkillsPanel = ({
           </Select>
           <TagFilter resourceType="catalog.skill" value={tagFilter} onChange={setTagFilter} />
           <SettingsSearchInput
+            containerClassName="min-w-56"
             aria-label={t('Search skills')}
             placeholder={t('Search skills…')}
             value={query}
@@ -549,7 +550,7 @@ const SkillsPanel = ({
 
               {expanded ? (
                 rows.length > 0 ? (
-                  <ul className="mt-2 flex flex-col divide-y divide-border">
+                  <ul className="mt-2 flex flex-col">
                     {rows.map(({ skill, usages, owners }) => {
                       const deleteBlockedReason =
                         owners.length === 1

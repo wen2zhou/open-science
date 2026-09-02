@@ -365,6 +365,13 @@ import {
 } from './storage/migration-state'
 import { normalizeLegacyDataPaths } from './storage/normalize-legacy-paths'
 import { DataRootCleanupJournal } from './storage/data-root-cleanup'
+import {
+  markManagedProjectWorkspacesRetained,
+  markManagedWorkspaceRetained,
+  reconcileProvisionalManagedWorkspaces,
+  restoreManagedProjectWorkspacesActive,
+  restoreManagedWorkspaceActive
+} from './storage/managed-workspace-ownership'
 import { deleteSources } from './storage/data-migration'
 import { removeMicromambaCacheForRoot } from './notebook/micromamba-cache'
 import { removeNotebookWorkloadCache } from './notebook/notebook-workload-cache-paths'
@@ -963,6 +970,7 @@ const createApplicationModules = async (
     uploadRepository
   )
   const notebookInputRegistry = new NotebookInputRegistry({
+    storageRoot: resolveDataRoot(),
     inputAuthority: immutableInputAuthority,
     resolveArtifactVersionIdentity: async (projectId, versionId) => {
       const [artifact] = await projectFilesRepository.readHostArtifactCatalog({
@@ -1065,6 +1073,7 @@ const createApplicationModules = async (
       .filter((chat) => chat.running)
       .map((chat) => ({ projectId: chat.projectId, sessionId: chat.parentSessionId }))
 
+  const managedWorkspaceRecoveryCutoff = Date.now()
   const sessionPersistenceCoordinator = new SessionPersistenceCoordinator(
     sessionRepository,
     projectFilesRepository,
@@ -1100,6 +1109,14 @@ const createApplicationModules = async (
       if (session.delegationPolicy === 'allow') {
         delegatedWorkRef.current?.root.clearUnavailableReason?.(session.id)
       }
+    },
+    {
+      reconcileProvisional: (sessions) =>
+        reconcileProvisionalManagedWorkspaces(sessions, managedWorkspaceRecoveryCutoff),
+      markProjectRetained: markManagedProjectWorkspacesRetained,
+      restoreProjectActive: restoreManagedProjectWorkspacesActive,
+      markRetained: markManagedWorkspaceRetained,
+      restoreActive: restoreManagedWorkspaceActive
     }
   )
   const sessionPdfContextOwner = new SessionPdfContextOwner({
@@ -1421,7 +1438,10 @@ const createApplicationModules = async (
     home: dirname(dirname(provisioningRoot)),
     resourcesPath: process.resourcesPath
   })
-  const notebookRuntimeSettings: Pick<NotebookRuntimeSettings, 'getSnapshot'> = {
+  const notebookRuntimeSettings: Pick<
+    NotebookRuntimeSettings,
+    'getSnapshot' | 'setEnvironmentEnabled'
+  > = {
     getSnapshot: async (language) => {
       const [runtimeSelection, runtimeEnablement, manualInterpreters, packageMirror] =
         await Promise.all([
@@ -1437,7 +1457,9 @@ const createApplicationModules = async (
         manualInterpreters,
         packageMirror
       }
-    }
+    },
+    setEnvironmentEnabled: (language, envId, enabled) =>
+      settingsService.setEnvironmentEnabled(language, envId, enabled)
   }
   const notebookApplication = await modules.add(
     {
@@ -1446,6 +1468,8 @@ const createApplicationModules = async (
       projectId: DEFAULT_ARTIFACT_PROJECT_ID,
       repository: new NotebookRunRepository(resolveDataRoot()),
       getPackageMirror: () => settingsService.getPackageMirror(),
+      getAgentEnvironmentCreationEnabled: () =>
+        settingsService.getAgentEnvironmentCreationEnabled(),
       notebookRuntimeSettings,
       micromambaRunner,
       locale: app.getLocale(),
@@ -3707,13 +3731,18 @@ const createApplicationModules = async (
     projectProgress: broadcastNotebookEnvProgress,
     waitForRecovery,
     assertProvisionAllowed,
+    onRepairStarting: (language, target) => notebookService.prepareRuntimeRepair(language, target),
     onRepairCompleted: (language) => notebookService.completeRuntimeRepair(language)
   })
   // Always register the handlers (serialized is undefined when the provisioner could not be built).
   // Start maintenance only after all four Electron channels exist, preserving the previous startup
   // ordering while construction remains application-owned and single-instance.
   declareElectronAdapter('notebook-environment', () => {
-    installNotebookEnvironmentSurface(notebookEnvironmentLifecycle, registerNotebookEnvIpcHandlers)
+    const startup = installNotebookEnvironmentSurface(
+      notebookEnvironmentLifecycle,
+      registerNotebookEnvIpcHandlers
+    )
+    notebookService.setEnvironmentStartupBarrier(startup)
   })
   if (provisioner && serialized) {
     // Back the notebook service's manage_environments tool with the same provisioner that owns the env

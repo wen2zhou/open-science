@@ -10,6 +10,7 @@ import type {
   FinishNotebookCodeCellRequest,
   NotebookBackgroundRunLookupRequest,
   NotebookNamespaceRequest,
+  NotebookRestartRequest,
   NotebookSessionRequest,
   NotebookSessionStateRequest,
   RunNotebookCellRequest
@@ -78,7 +79,7 @@ const registerNotebookIpcHandlers = (handlers: NotebookCommandWorkflows): void =
   ipcMainHandle('notebook:export-ipynb-all', (_event, request: ExportNotebookAllRequest) =>
     handlers.exportIpynbAll(request)
   )
-  ipcMainHandle('notebook:restart', (_event, request: NotebookSessionRequest) =>
+  ipcMainHandle('notebook:restart', (_event, request: NotebookRestartRequest) =>
     handlers.restart(request)
   )
   ipcMainHandle('notebook:shutdown', (_event, request: NotebookSessionRequest) =>

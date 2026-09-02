@@ -39,7 +39,7 @@ import { isCurrentInFlight } from '../../../../shared/in-flight-promise'
 import { resolveProjectId } from '../../../../shared/project-scope'
 import { EnvProvisionOverlay } from './EnvProvisionOverlay'
 import { shouldProvisionR } from './lazy-r'
-import { notebookGated } from './provisioning-view'
+import { hasActiveRuntimeTarget, notebookGated } from './provisioning-view'
 import { NotebookCodeBlock } from './notebook-code'
 import { NotebookRunOutputs } from './NotebookRunOutputs'
 import { NotebookInputDataStrip } from './NotebookInputDataStrip'
@@ -532,7 +532,6 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   const provisionUi = useNotebookEnvStore((s) => s.ui)
   const retryProvision = useNotebookEnvStore((s) => s.retry)
   const provision = useNotebookEnvStore((s) => s.provision)
-  const gated = notebookGated(envStatus, provisionUi, item.notebook.sessionId)
   const isPreparingR =
     provisionUi.kind === 'preparing' &&
     provisionUi.scope === 'r' &&
@@ -542,7 +541,8 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
   // usable throughout (D6 — see lazy-r.ts). R-kernel execution routing is wired later in E5.
   const onSelectLanguage = (lang: NotebookLanguage): void => {
     setShowVariables(false)
-    if (shouldProvisionR(envStatus, lang)) void provision('r')
+    const binding = notebookState?.runtimeBindings?.[lang]
+    if (binding === undefined && shouldProvisionR(envStatus, lang)) void provision('r')
   }
 
   // Keeps state assignment isolated so load paths and event paths share the same update hook.
@@ -642,6 +642,8 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
     effectiveActiveKind === 'python' || effectiveActiveKind === 'r'
       ? notebookState?.runtimeBindings?.[effectiveActiveKind]
       : undefined
+  const activeRuntimeTargetReady = hasActiveRuntimeTarget(activeRuntimeBinding)
+  const gated = notebookGated(envStatus, provisionUi, item.notebook.sessionId, activeRuntimeBinding)
   const activeRuntimeDetails = activeRuntimeBinding
     ? [activeRuntimeBinding.label, activeRuntimeBinding.version].filter(Boolean).join(' · ')
     : undefined
@@ -782,6 +784,10 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
     activeKernelStatus === 'starting' ||
     activeKernelStatus === 'running' ||
     activeKernelStatus === 'restarting'
+  const explicitRuntimeTargetUnavailable =
+    activeDataLanguage !== undefined &&
+    activeRuntimeBinding !== undefined &&
+    !activeRuntimeTargetReady
   // The Session Aggregate owns one active write and run, so input stays globally locked even when a
   // different persistent data kernel is selected.
   const isTerminalLocked =
@@ -790,8 +796,11 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
     Boolean(notebookState?.activeWrite) ||
     Boolean(notebookState?.activeRunId) ||
     gated ||
+    explicitRuntimeTargetUnavailable ||
     isSelectedKernelRunning ||
-    (activeDataLanguage === 'r' && (!envStatus.rReady || isPreparingR))
+    (activeDataLanguage === 'r' &&
+      activeRuntimeBinding === undefined &&
+      (!envStatus.rReady || isPreparingR))
   const cellCount = notebookState?.runCount ?? runs.length
 
   const loadNamespace = async (): Promise<void> => {
@@ -981,8 +990,9 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
     }
   }
 
-  // Restarts the shared interpreter, replacing state with the fresh snapshot so the banner clears.
+  // Restarts only the selected R environment, then replaces state so its banner clears.
   const handleRestart = async (): Promise<void> => {
+    if (!activeEnvName) return
     setIsRestarting(true)
     setActionError(null)
     namespaceRequestId.current += 1
@@ -991,7 +1001,11 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
     setNamespaceSnapshot(undefined)
     setNamespaceStatus('unavailable')
     try {
-      const next = await window.api.notebook.restart(createNotebookRequest(item.notebook))
+      const next = await window.api.notebook.restart({
+        ...createNotebookRequest(item.notebook),
+        language: 'r',
+        environment: activeEnvName
+      })
       namespaceRefreshQueued.current = showVariables
       applyNotebookState(next)
     } catch (error) {

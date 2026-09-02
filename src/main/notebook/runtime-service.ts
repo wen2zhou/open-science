@@ -22,6 +22,7 @@ import type {
   NotebookNamespaceRequest,
   NotebookNamespaceSnapshot,
   NotebookRunRecord,
+  NotebookRestartRequest,
   NotebookRunSummary,
   RequestNotebookNetworkAccessRequest,
   RequestNotebookNetworkAccessResult,
@@ -36,7 +37,8 @@ import {
   isNotebookRunCursor,
   NOTEBOOK_STATE_HISTORY_FRAME_ID_LIMIT_BYTES,
   NOTEBOOK_STATE_HISTORY_PAGE_LIMIT,
-  NOTEBOOK_STATE_TARGET_RUN_LIMIT
+  NOTEBOOK_STATE_TARGET_RUN_LIMIT,
+  parseNotebookLanguage
 } from '../../shared/notebook'
 import type {
   ManageEnvironmentsRequest,
@@ -92,7 +94,7 @@ import type { NotebookRuntimeSettings } from '../settings/capabilities'
 import { NotebookRecoveryCoordinator } from './recovery-coordinator'
 import { KernelProcessLifecycleOwner } from './kernel-process-lifecycle'
 import { managedNotebookWorkingCache } from './windows-micromamba-working-cache'
-import { NotebookRuntimeRepairOwner } from './runtime-repair'
+import { NotebookRuntimeRepairOwner, type ExplicitRuntimeRepairTarget } from './runtime-repair'
 import { NotebookRuntimeRepairPolicy } from './runtime-repair-policy'
 import { NotebookEnvironmentOperations, type DefaultEnvProvisioner } from './environment-operations'
 import type { MicromambaRunner } from './windows-micromamba-runner'
@@ -145,11 +147,16 @@ import type {
   LocalRunAgentResultWaitingContext
 } from '../../shared/agent-result-delivery'
 import { notebookRunDeliveryContext } from '../agent-result-delivery/notebook-adapter'
+import {
+  deleteNotebookProjectPromptInputs,
+  deleteNotebookSessionPromptInputs
+} from './prompt-input-materialization'
 
 // The default stays outside CN mirror routing when no explicit locale is injected.
 const DEFAULT_LOCALE = 'en-US'
 
-const EMPTY_NOTEBOOK_RUNTIME_SETTINGS: Pick<NotebookRuntimeSettings, 'getSnapshot'> = {
+const EMPTY_NOTEBOOK_RUNTIME_SETTINGS: Pick<NotebookRuntimeSettings, 'getSnapshot'> &
+  Partial<Pick<NotebookRuntimeSettings, 'setEnvironmentEnabled'>> = {
   getSnapshot: async (language) => ({
     language,
     runtimeEnablement: { enabled: {}, installAuthorized: {} },
@@ -207,7 +214,11 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
   getPackageMirror?: () => PackageMirror | undefined | Promise<PackageMirror | undefined>
   // Stable, detached Settings capability used by runtime discovery and binding policy. Production
   // injects this named capability; isolated tests may omit it and receive a fail-safe empty policy.
-  notebookRuntimeSettings?: Pick<NotebookRuntimeSettings, 'getSnapshot'>
+  notebookRuntimeSettings?: Pick<NotebookRuntimeSettings, 'getSnapshot'> &
+    Partial<Pick<NotebookRuntimeSettings, 'setEnvironmentEnabled'>>
+  // Read fresh at every Agent-triggered creation boundary. Historical settings resolve to true;
+  // a failed production read rejects creation rather than silently bypassing the user's policy.
+  getAgentEnvironmentCreationEnabled?: () => Promise<boolean>
   // Discovers the interpreters available for a language (app-managed + user-own). Injectable so tests
   // don't spawn real interpreters; production defaults to environment-discovery over the runtime root.
   discoverRuntimes?: (language: NotebookLanguage) => Promise<DiscoveredInterpreter[]>
@@ -377,6 +388,7 @@ class NotebookRuntimeService {
     ((binding: McpRpcConnectionBinding) => Promise<McpRpcConnection>) | undefined
   private readonly runtimeEnablementResolver:
     ((language: NotebookLanguage) => Promise<RuntimeEnablement | undefined>) | undefined
+  private readonly agentEnvironmentCreationEnabled: () => Promise<boolean>
   private readonly runtimeBindingOwner: NotebookRuntimeBindingOwner
   private readonly recoveryCoordinator: NotebookRecoveryCoordinator
   private readonly kernelProcessLifecycle: KernelProcessLifecycleOwner
@@ -396,6 +408,7 @@ class NotebookRuntimeService {
     { controller: AbortController; completion: Promise<unknown> }
   >()
   private readonly backgroundExecutionEnabled: boolean
+  private environmentStartupBarrier: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: NotebookRuntimeServiceOptions) {
     this.backgroundExecutionEnabled =
@@ -431,12 +444,15 @@ class NotebookRuntimeService {
     const runtimeSettings = options.notebookRuntimeSettings ?? EMPTY_NOTEBOOK_RUNTIME_SETTINGS
     this.runtimeEnablementResolver = async (language) =>
       (await runtimeSettings.getSnapshot(language)).runtimeEnablement
+    this.agentEnvironmentCreationEnabled =
+      options.getAgentEnvironmentCreationEnabled ?? (() => Promise.resolve(true))
     this.runtimeBindingOwner = new NotebookRuntimeBindingOwner({
       dataRoot: options.dataRoot,
       repository: this.repository,
       runtimeSettings,
       repairPolicy: this.repairPolicy,
       discoverRuntimes: options.discoverRuntimes,
+      waitForEnvironmentStartup: () => this.environmentStartupBarrier,
       platform: options.platform
     })
     this.dependencyAnalyzer =
@@ -508,7 +524,9 @@ class NotebookRuntimeService {
       bindings: this.runtimeBindingOwner,
       environmentOperations: this.environmentOperations,
       sessions: () => this.sessions.values(),
-      findSession: (sessionId) => this.sessions.get(this.sessionLifecycle.rootLane(sessionId)),
+      isCurrentSession: (session) => this.sessions.get(session.lane) === session,
+      clearKernelTermination: (session, processKey) =>
+        this.sessionLifecycle.clearPersistedKernelTermination(session, processKey),
       notifyChanged: (session) => this.sessionLifecycle.notifyChanged(session)
     })
     this.environmentManagement = new NotebookEnvironmentManagementOwner({
@@ -518,7 +536,8 @@ class NotebookRuntimeService {
       ensureRecovered: () => this.ensureRecovered(),
       assertPrefixRecoverable: (prefix) => this.assertPrefixRecoverable(prefix),
       environmentOperations: this.environmentOperations,
-      runtimeRepair: this.runtimeRepair
+      runtimeRepair: this.runtimeRepair,
+      isAgentEnvironmentCreationEnabled: this.agentEnvironmentCreationEnabled
     })
     this.environmentStateTracker =
       options.environmentStateTracker ??
@@ -541,6 +560,7 @@ class NotebookRuntimeService {
       resolveRuntimeEnablement: (language) => this.resolveRuntimeEnablement(language),
       isDefaultEnvironmentDisabled: (language, candidateRuntimeRoot) =>
         this.isDefaultEnvDisabled(language, candidateRuntimeRoot),
+      isAgentEnvironmentCreationEnabled: this.agentEnvironmentCreationEnabled,
       repairPolicy: this.repairPolicy,
       runtimeRepair: this.runtimeRepair,
       environmentOperations: this.environmentOperations,
@@ -569,6 +589,7 @@ class NotebookRuntimeService {
       recovery: this.recoveryCoordinator,
       ensureRecovered: () => this.ensureRecovered(),
       resolveRuntimeEnablement: (language) => this.resolveRuntimeEnablement(language),
+      isAgentEnvironmentCreationEnabled: this.agentEnvironmentCreationEnabled,
       repairPolicy: this.repairPolicy,
       platform: options.platform
     })
@@ -660,6 +681,10 @@ class NotebookRuntimeService {
   // main/ipc.ts alongside the env gate, after this service exists), mirroring the resolver setters.
   setEnvironmentManager(manager: NotebookEnvironmentManager): void {
     this.environmentManagement.setManager(manager)
+  }
+
+  setEnvironmentStartupBarrier(barrier: Promise<void>): void {
+    this.environmentStartupBarrier = barrier
   }
 
   // Wires the (serialized) default-env provisioner used to build default-python/default-r on demand.
@@ -1623,15 +1648,89 @@ class NotebookRuntimeService {
     return saveIpynbAll(files, undefined, this.options.translate)
   }
 
-  // Replaces the interpreter process while preserving cells and durable run history. Prefers the
-  // executor's own in-place restart (keeps the same instance, e.g. NotebookKernelExecutor tears down
-  // and lazily respawns its loops) and only shuts down + recreates for executors that don't support it.
-  // Reports 'restarting' for the duration. A successful restart clears stale termination evidence and
-  // settles to 'idle'; a failed restart keeps that evidence and reports 'error' for kernels that were
-  // not already known to be terminated.
-  async restart(request: NotebookSessionRequest): Promise<NotebookSessionState> {
+  // Replaces one exact language/environment interpreter when a target is present. Omitting the target
+  // preserves the historical session-wide restart for callers that intentionally restart every loop.
+  // Both paths preserve cells and durable run history, report 'restarting' for affected kernels, and
+  // clear only the termination evidence covered by the restart.
+  async restart(request: NotebookRestartRequest): Promise<NotebookSessionState> {
     return this.sessionLifecycle.runProjectOperation(request, async () => {
+      const hasLanguage = request.language !== undefined
+      const hasEnvironment = request.environment !== undefined
+      if (hasLanguage !== hasEnvironment) {
+        throw new Error('Notebook restart language and environment must be provided together.')
+      }
+
+      let target: { language: NotebookLanguage; environment: string } | undefined
+      if (request.language !== undefined && request.environment !== undefined) {
+        const language = parseNotebookLanguage(request.language)
+        if (!request.environment.trim()) {
+          throw new Error('Notebook restart environment must not be empty.')
+        }
+        target = {
+          language,
+          environment: resolveEnvName(language, request.environment)
+        }
+      }
+
       const session = await this.sessionLifecycle.ensure(request)
+
+      if (target) {
+        const { language, environment } = target
+        const processKey = dataProcessKey(language, environment)
+        const isDefaultPython = processKey === dataProcessKey('python', DEFAULT_PY_ENV)
+        const restoredKernelStatus = session.restoredKernelStatus()
+        const statusBeforeRestart =
+          session.kernelStatus(processKey) ??
+          (isDefaultPython && restoredKernelStatus !== 'idle' ? restoredKernelStatus : undefined)
+        const wasDurablyTerminated = session.hasDurableKernelTermination(processKey)
+        const hasTargetState = statusBeforeRestart !== undefined || wasDurablyTerminated
+
+        if (hasTargetState) {
+          session.setKernelStatus(processKey, 'restarting')
+          this.sessionLifecycle.notifyChanged(session)
+        }
+
+        const restartTransition = (async (): Promise<void> => {
+          try {
+            await session.drainExecution(processKey)
+            await session.terminateExecutor(language, environment)
+            if (hasTargetState) {
+              await this.sessionLifecycle.persistKernelStatus(session, 'idle', processKey)
+            }
+            session.clearKernelTerminated(processKey)
+            this.environmentOperations.clearRestartRecommendations([processKey])
+          } catch (error) {
+            if (hasTargetState) {
+              const failureStatus =
+                statusBeforeRestart === 'terminated' || wasDurablyTerminated
+                  ? 'terminated'
+                  : 'error'
+              try {
+                if (failureStatus === 'terminated' || isDefaultPython) {
+                  await this.sessionLifecycle.persistKernelStatus(
+                    session,
+                    failureStatus,
+                    processKey
+                  )
+                } else {
+                  session.setKernelStatus(processKey, failureStatus)
+                }
+              } catch {
+                // Keep the original restart failure while retaining the best available live state.
+                session.setKernelStatus(processKey, failureStatus)
+              }
+            }
+            this.sessionLifecycle.notifyChanged(session)
+            throw error
+          }
+        })()
+        session.blockKernelExecutionUntil(processKey, restartTransition)
+        await restartTransition
+
+        this.sessionLifecycle.notifyChanged(session)
+        await this.runTerminalization.reconcilePending(session)
+        return this.sessionReadModel.state(session)
+      }
 
       // A restart respawns fresh loops, so any pending R-restart recommendation for this session's envs
       // is cleared. Snapshot the keys before teardown drops them from kernelStatuses.
@@ -1769,11 +1868,17 @@ class NotebookRuntimeService {
   }
 
   async deleteSessionInputs(projectId: string, sessionId: string): Promise<void> {
-    await deleteNotebookSessionInputs(this.options.dataRoot, projectId, sessionId)
+    await Promise.all([
+      deleteNotebookSessionInputs(this.options.dataRoot, projectId, sessionId),
+      deleteNotebookSessionPromptInputs(this.options.dataRoot, projectId, sessionId)
+    ])
   }
 
   async deleteProjectInputs(projectId: string): Promise<void> {
-    await deleteNotebookProjectInputs(this.options.dataRoot, projectId)
+    await Promise.all([
+      deleteNotebookProjectInputs(this.options.dataRoot, projectId),
+      deleteNotebookProjectPromptInputs(this.options.dataRoot, projectId)
+    ])
   }
 
   beginProjectDeletion(projectId: string): void {
@@ -1868,11 +1973,38 @@ class NotebookRuntimeService {
     this.recoveryCoordinator.clearRuntimeBlock(runtimeId)
   }
 
+  async prepareRuntimeRepair(
+    language: NotebookLanguage,
+    target: ExplicitRuntimeRepairTarget
+  ): Promise<void> {
+    const environment = this.defaultEnvNameFor(language)
+    let binding: InternalRuntimeBinding | undefined
+    if (target.kind === 'default-environment') {
+      if (target.environmentName !== environment) {
+        throw new Error(
+          `The selected runtime is no longer the app-managed ${language} default. Recheck runtimes and try again.`
+        )
+      }
+      if (
+        !this.isDefaultEnvRecoveryBlocked(language) &&
+        !this.repairPolicy.requirement(language, environment).required
+      ) {
+        throw new Error(
+          `The selected runtime is no longer the app-managed ${language} default. Recheck runtimes and try again.`
+        )
+      }
+    } else {
+      binding = await this.runtimeBindingOwner.requireManagedDefault(language, target.runtimeId)
+    }
+    await this.runtimeRepair.prepareExplicitRepair(language, binding)
+  }
+
   // Called only after the explicit UI Runtime Reset has rebuilt and verified the managed default env.
   // This is deliberately separate from managePackages(): an ordinary install may clear an
   // interrupted-install marker, but it must never release a protected-identity quarantine.
   async completeRuntimeRepair(language: NotebookLanguage): Promise<void> {
-    await this.runtimeRepair.completeExplicitRepair(language)
+    const replacement = await this.runtimeBindingOwner.requireManagedDefault(language)
+    await this.runtimeRepair.completeExplicitRepair(language, replacement)
   }
 
   // Releases ONE prefix from the global corrupt-journal write barrier. Called by a force Reset (via the

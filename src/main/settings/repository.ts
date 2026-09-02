@@ -55,10 +55,15 @@ import {
   buildSubagentModelMutation,
   buildVisionModelMutation
 } from './subagent-model-settings'
+import { relocateManagedRuntimeEnablement } from '../notebook/managed-runtime-relocation'
 
 type SkillMutationGuard = <T>(operation: () => Promise<T>) => Promise<T>
 type Write = Promise<StoredSettings>
-type DataRootUpdate = Readonly<{ dataRoot: string; onboardingCompletedAt?: number }>
+type DataRootUpdate = Readonly<{
+  dataRoot: string
+  onboardingCompletedAt?: number
+  previousDataRoot?: string
+}>
 
 // Stable mutation facade; the document store owns atomic IO, and secrets stay above this layer.
 class SettingsRepository {
@@ -559,9 +564,29 @@ class SettingsRepository {
     )
   }
 
-  // Persists the relocatable data root, optionally with the idempotent onboarding marker.
+  // Persists the relocatable data root, optional onboarding marker, and fail-closed managed-runtime
+  // disable overrides in one atomic document mutation. Old keys remain for safe retry/rollback;
+  // matching new-root keys are additive and idempotent.
   async setDataRoot(update: DataRootUpdate): Promise<StoredSettings> {
-    return this.mutate((settings) => ({ ...update, ...settings, dataRoot: update.dataRoot }))
+    return this.mutate((settings) => {
+      let notebookRuntimeEnablement = settings.notebookRuntimeEnablement
+      if (update.previousDataRoot) {
+        notebookRuntimeEnablement = relocateManagedRuntimeEnablement({
+          enablement: notebookRuntimeEnablement,
+          fromDataRoot: update.previousDataRoot,
+          toDataRoot: update.dataRoot,
+          platform: process.platform
+        })
+      }
+      return {
+        ...(update.onboardingCompletedAt === undefined
+          ? {}
+          : { onboardingCompletedAt: update.onboardingCompletedAt }),
+        ...settings,
+        ...(notebookRuntimeEnablement ? { notebookRuntimeEnablement } : {}),
+        dataRoot: update.dataRoot
+      }
+    })
   }
 
   // Sets (or clears, when `selection` is null) the persisted runtime choice for one language. The
@@ -621,6 +646,10 @@ class SettingsRepository {
           Object.keys(notebookRuntimeEnablement).length > 0 ? notebookRuntimeEnablement : undefined
       }
     })
+  }
+
+  async setAgentEnvironmentCreationEnabled(enabled: boolean): Promise<StoredSettings> {
+    return this.mutate((settings) => ({ ...settings, agentEnvironmentCreationEnabled: enabled }))
   }
 
   // Applies one catalog change to the latest persisted paths inside the write queue.

@@ -3337,6 +3337,43 @@ describe('SessionPersistenceCoordinator', () => {
     expect(fileIndex.reconcileActiveSessions).toHaveBeenCalledWith([session])
   })
 
+  it('reconciles provisional managed workspaces during the first authoritative hydration', async () => {
+    const session = createSession()
+    const repository = createSessionRepository({
+      loadAllWithDiagnostics: vi.fn().mockResolvedValue({
+        result: { sessions: [session], manifest: { version: 1 as const } },
+        isComplete: true
+      })
+    })
+    const reconcileProvisional = vi.fn().mockResolvedValue(undefined)
+    const coordinator = new SessionPersistenceCoordinator(
+      repository,
+      createFileIndex(),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      {
+        markProjectRetained: vi.fn().mockResolvedValue([]),
+        markRetained: vi.fn().mockResolvedValue(false),
+        restoreProjectActive: vi.fn().mockResolvedValue(undefined),
+        restoreActive: vi.fn().mockResolvedValue(undefined),
+        reconcileProvisional
+      }
+    )
+
+    await coordinator.loadAll()
+    await coordinator.loadAll()
+
+    expect(reconcileProvisional).toHaveBeenCalledOnce()
+    expect(reconcileProvisional).toHaveBeenCalledWith([session])
+  })
+
   it('keeps cleanup closed across scans after quarantining corrupt Session authority', async () => {
     const root = await mkdtemp(join(tmpdir(), 'open-science-corrupt-session-reconciliation-'))
     const projectDir = join(root, 'sessions', 'project-1')

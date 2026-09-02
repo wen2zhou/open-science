@@ -479,7 +479,7 @@ const InstalledSpecialistsPanel = ({
   if (view.kind === 'import' && templateSaved) {
     return (
       <div className="p-5">
-        <div className="mb-5 flex items-start justify-between gap-4 border-b border-border pb-4">
+        <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-primary">
               {t('Import ZIP')}
@@ -556,7 +556,7 @@ const InstalledSpecialistsPanel = ({
     }
     return (
       <div className="p-5">
-        <div className="mb-5 flex items-start justify-between gap-4 border-b border-border pb-4">
+        <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-primary">
               {t('Export ZIP')}
@@ -814,7 +814,7 @@ const InstalledSpecialistsPanel = ({
       : { error: [], warning: [], info: [] }
     return (
       <div className="p-5">
-        <div className="mb-5 flex items-start justify-between gap-4 border-b border-border pb-4">
+        <div className="mb-5 flex items-start justify-between gap-4">
           <div>
             <p className="text-xs font-semibold uppercase tracking-wide text-primary">
               {packagePreview ? t('Import ZIP · Preview') : t('Import ZIP')}

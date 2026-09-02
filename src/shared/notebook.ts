@@ -136,15 +136,19 @@ const languageAndOptionalOperationId = parsedArgs(
   z.union([z.tuple([notebookLanguageSchema]), z.tuple([notebookLanguageSchema, z.string()])])
 )
 
+const repairArgs = parsedArgs(
+  z.union([
+    z.tuple([notebookLanguageSchema, z.string().min(1)]),
+    z.tuple([notebookLanguageSchema, z.string().min(1), z.string()])
+  ])
+)
+
 export const notebookEnvironmentApplicationCommandContracts = Object.freeze({
   provision: defineApplicationCommandContract(
     languageAndOptionalOperationId,
     validationCodec(z.undefined())
   ),
-  repair: defineApplicationCommandContract(
-    languageAndOptionalOperationId,
-    validationCodec(z.undefined())
-  ),
+  repair: defineApplicationCommandContract(repairArgs, validationCodec(z.undefined())),
   cancel: defineApplicationCommandContract(
     parsedArgs(z.union([z.tuple([]), z.tuple([notebookLanguageSchema])])),
     validationCodec(z.undefined())
@@ -337,6 +341,15 @@ export type NotebookRunInputFile = {
 }
 
 export type NotebookInputFileSummary = Omit<NotebookRunInputFile, 'storageKey'>
+
+// Transient model-facing projection of one exact Notebook input Version. The relative path is
+// materialized under the current Notebook data directory and is never persisted in run history.
+export type NotebookPromptInput = Pick<
+  NotebookRunInputFile,
+  'sourceKind' | 'inputFileVersionId' | 'filename'
+> & {
+  notebookPath: string
+}
 
 export type NotebookInputPreviewIdentity = {
   projectId: string
@@ -776,6 +789,12 @@ export type NotebookSessionRequest = OptionalProjectIdScope & {
   // kernel returns it when resolving an immutable input so overlapping runs cannot claim access.
   inputRunLeaseId?: string
 }
+
+// Restarts either every kernel in the Session (target omitted, preserving the historical behavior)
+// or one exact data-kernel target. Runtime boundaries reject half-specified targets.
+export type NotebookRestartRequest =
+  | (NotebookSessionRequest & { language: NotebookLanguage; environment: string })
+  | (NotebookSessionRequest & { language?: never; environment?: never })
 
 // A normal state read returns the latest renderer window. Transcript hydration may additionally
 // request immutable historical Runs by id without changing or widening that default window.

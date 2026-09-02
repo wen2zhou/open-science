@@ -59,7 +59,8 @@ import {
 import {
   SessionPersistenceDeletionOwner,
   type ComputeJobDeletionParticipant,
-  type ProjectSessionDeletionResult
+  type ProjectSessionDeletionResult,
+  type SessionWorkspaceOwnership
 } from './deletion-owner'
 import {
   SessionPersistenceReconciliationOwner,
@@ -192,7 +193,8 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
     private readonly log: Logger = createLogger('session-persistence'),
     private readonly computeJobs?: ComputeJobDeletionParticipant,
     onDelegatedWorkSessionUpdated?: SessionUpdatePublisher,
-    onDelegationPolicyUpdated?: (session: PersistedChatSession) => void
+    onDelegationPolicyUpdated?: (session: PersistedChatSession) => void,
+    private readonly workspaceOwnership?: SessionWorkspaceOwnership
   ) {
     const publishSessionUpdate = safeSessionUpdates(onDelegatedWorkSessionUpdated, log)
     this.stateOwner = new SessionPersistenceStateOwner({
@@ -221,6 +223,7 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
       provenance,
       uploads,
       computeJobs,
+      workspaceOwnership,
       log,
       assertArchiveMutable: (projectId, sessionId) => {
         if (this.deletedProjects.has(projectId)) {
@@ -386,6 +389,20 @@ class SessionPersistenceCoordinator implements DelegatedWorkRecordCommands {
           warningCount: scan.warnings?.length ?? 0
         })
         return result
+      }
+
+      if (mayRunDestructiveStartupCleanup && this.workspaceOwnership) {
+        operation.phase('reconcile-provisional-managed-workspaces')
+        try {
+          await this.workspaceOwnership.reconcileProvisional(sessions)
+        } catch (error) {
+          emitRecoverableDiagnostic(this.log, 'managed workspace reconciliation failed', {
+            operation: 'session-hydration',
+            phase: 'reconcile-provisional-managed-workspaces',
+            outcome: 'degraded',
+            ...diagnosticErrorFields(error)
+          })
+        }
       }
 
       if (!this.delegatedStartupRecoveryComplete) {

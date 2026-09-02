@@ -29,6 +29,7 @@ export type SettingsPreferencesSnapshot = {
 
 export type SetDataRootOptions = Readonly<{
   completeOnboarding?: boolean
+  previousDataRoot?: string
 }>
 
 export interface SettingsPreferences {
@@ -78,6 +79,8 @@ export interface NotebookRuntimeSettings {
     envId: string,
     authorized: boolean
   ): Promise<RuntimeEnablement>
+  getAgentEnvironmentCreationEnabled(): Promise<boolean>
+  setAgentEnvironmentCreationEnabled(enabled: boolean): Promise<boolean>
   addManualInterpreter(language: NotebookLanguage, path: string): Promise<string[]>
   removeManualInterpreter(language: NotebookLanguage, path: string): Promise<string[]>
   setPackageMirror(request: SetPackageMirrorRequest): Promise<PackageMirror>
