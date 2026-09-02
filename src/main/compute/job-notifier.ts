@@ -44,6 +44,8 @@ export type JobNotifierDeps = {
   broadcast: (summary: JobSummary) => void
 }
 
+export type JobNotificationProjectionDeps = Pick<JobNotifierDeps, 'hostRepository' | 'storageRoot'>
+
 // The compute_done payload fields embedded into the JobSummary broadcast (spec §11.3).
 export type ComputeDonePayload = {
   featured_files: string[]
@@ -122,6 +124,53 @@ const readdirRecursive = async (dir: string): Promise<string[]> => {
   return results
 }
 
+/**
+ * Rebuilds the complete durable notification projection without claiming or broadcasting it.
+ * Release certification and recovery checks use this same production projector to prove that
+ * cleanup leaves every payload field readable, including the locally harvested featured files.
+ */
+export const buildJobNotificationSummary = async (
+  job: ComputeJob,
+  deps: JobNotificationProjectionDeps
+): Promise<JobSummary> => {
+  let displayName = job.provider_id
+  try {
+    const host = await deps.hostRepository.get(job.provider_id)
+    if (host) displayName = host.displayName
+  } catch {
+    // Transient lookup failure — fall back to provider_id so projection remains available.
+  }
+
+  const payload = await buildComputeDonePayload(job, deps.storageRoot)
+  return {
+    job_id: job.job_id,
+    provider_id: job.provider_id,
+    project_id: job.project_id,
+    display_name: displayName,
+    shape: job.shape,
+    session_id: job.session_id,
+    status: job.status,
+    cancellation_status: job.cancellation_status,
+    intent: job.intent,
+    created_at: job.created_at,
+    started_at: job.started_at,
+    finished_at: job.finished_at,
+    exit_code: job.exit_code,
+    error_code: job.error_code,
+    last_poll_error: job.last_poll_error,
+    remote_workdir: job.remote_workdir,
+    stdout_tail: job.stdout_tail,
+    stderr_tail: job.stderr_tail,
+    notified_at: job.notified_at,
+    notification_consumed_at: job.notification_consumed_at,
+    featured_files: payload.featured_files,
+    featured_file_count: payload.featured_file_count,
+    left_on_remote_count: payload.left_on_remote_count,
+    left_on_remote: payload.left_on_remote,
+    harvest_error: job.harvest_error
+  }
+}
+
 // ---------------------------------------------------------------------------
 // Main emitter
 // ---------------------------------------------------------------------------
@@ -154,48 +203,9 @@ export const emitJobNotification = async (
   const updatedJob = await jobRepository.claimNotification(job.job_id, notifiedAt)
   if (!updatedJob) return
 
-  // Look up the host to get its displayName (fix: was using raw provider_id causing card flip).
-  let displayName = updatedJob.provider_id
-  try {
-    const host = await hostRepository.get(updatedJob.provider_id)
-    if (host) displayName = host.displayName
-  } catch {
-    // Transient lookup failure — fall back to provider_id so the broadcast always happens.
-  }
-
-  // Build the payload (scan harvest dir + parse leftOnRemote column).
-  const payload = await buildComputeDonePayload(updatedJob, storageRoot)
-
-  // Broadcast the summary with notification payload fields embedded.
-  // Reuses COMPUTE_JOB_UPDATED_CHANNEL via the injected broadcast fn (no new IPC channel).
-  const summary: JobSummary = {
-    job_id: updatedJob.job_id,
-    provider_id: updatedJob.provider_id,
-    project_id: updatedJob.project_id,
-    display_name: displayName,
-    shape: updatedJob.shape,
-    session_id: updatedJob.session_id,
-    status: updatedJob.status,
-    cancellation_status: updatedJob.cancellation_status,
-    intent: updatedJob.intent,
-    created_at: updatedJob.created_at,
-    started_at: updatedJob.started_at,
-    finished_at: updatedJob.finished_at,
-    exit_code: updatedJob.exit_code,
-    error_code: updatedJob.error_code,
-    last_poll_error: updatedJob.last_poll_error,
-    remote_workdir: updatedJob.remote_workdir,
-    stdout_tail: updatedJob.stdout_tail,
-    stderr_tail: updatedJob.stderr_tail,
-    notified_at: updatedJob.notified_at,
-    notification_consumed_at: updatedJob.notification_consumed_at,
-    // Payload fields (spec §11.3).
-    featured_files: payload.featured_files,
-    featured_file_count: payload.featured_file_count,
-    left_on_remote_count: payload.left_on_remote_count,
-    left_on_remote: payload.left_on_remote,
-    harvest_error: updatedJob.harvest_error
-  }
+  // Broadcast the summary with notification payload fields embedded. Reuses
+  // COMPUTE_JOB_UPDATED_CHANNEL via the injected broadcast fn (no new IPC channel).
+  const summary = await buildJobNotificationSummary(updatedJob, { hostRepository, storageRoot })
 
   broadcast(summary)
 }

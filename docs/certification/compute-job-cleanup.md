@@ -107,8 +107,8 @@ commands containing research data, file contents, credentials, or raw stderr. Us
       "remote_workspace_after": "absent",
       "local_result_before_after": "readable_same_bytes",
       "artifact_before_after": "readable_same_repository_projection_and_bytes",
-      "notification_before_after": "same_durable_timestamps_no_second_emit",
-      "analysis_before_after": "same_succeeded_message_and_timestamp",
+      "notification_before_after": "same_complete_rebuilt_projection_no_second_emit",
+      "analysis_before_after": "same_durable_prompt_response_graph_and_succeeded_job_state",
       "sibling_job": "completed",
       "provider_reuse": "direct_command_and_followup_job_succeeded"
     },

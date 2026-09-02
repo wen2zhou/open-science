@@ -60,13 +60,38 @@ export const ensurePrismaClientSnapshot = async (root = resolve('.')): Promise<s
   const verify = (clientRoot: string): void =>
     checkPrismaClient({ schemaPath, clientSchemaPath: join(clientRoot, 'schema.prisma') })
 
-  try {
-    verify(destination)
-    return destination
-  } catch {
-    // An interrupted earlier copy is never reused.
-    await rm(destination, { recursive: true, force: true })
+  const destinationMatchesStableSource = async (
+    expectedSourceFingerprint?: string
+  ): Promise<boolean> => {
+    verify(source)
+    const sourceFingerprintBefore = await fingerprintGeneratedPrismaClient(source)
+    let destinationFingerprint: string | undefined
+    try {
+      verify(destination)
+      destinationFingerprint = await fingerprintGeneratedPrismaClient(destination)
+    } catch {
+      // A missing, partial, or schema-invalid destination is an invalid cache entry. Still perform
+      // the second source read below before deciding that the source is safe to republish.
+    }
+    verify(source)
+    const sourceFingerprintAfter = await fingerprintGeneratedPrismaClient(source)
+    if (
+      sourceFingerprintBefore !== sourceFingerprintAfter ||
+      (expectedSourceFingerprint !== undefined &&
+        sourceFingerprintAfter !== expectedSourceFingerprint)
+    ) {
+      throw new Error('Generated Prisma Client changed while its Vitest snapshot was validated.')
+    }
+    return destinationFingerprint === sourceFingerprintAfter
   }
+
+  try {
+    if (await destinationMatchesStableSource()) return destination
+  } catch {
+    // An interrupted earlier copy is never reused. Source validation is repeated below so a
+    // transient source mutation cannot authorize publishing a mixed replacement.
+  }
+  await rm(destination, { recursive: true, force: true })
 
   // Verify the shared install before copying. Worktrees intentionally symlink node_modules to the
   // main checkout, where another checkout can run prisma generate concurrently.
@@ -90,12 +115,19 @@ export const ensurePrismaClientSnapshot = async (root = resolve('.')): Promise<s
     ) {
       throw new Error('Generated Prisma Client changed while the Vitest snapshot was copied.')
     }
-    try {
-      await rename(temporary, destination)
-    } catch (error) {
-      const code = (error as NodeJS.ErrnoException).code
-      if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
-      verify(destination)
+    for (let attempt = 0; ; attempt += 1) {
+      try {
+        await rename(temporary, destination)
+        break
+      } catch (error) {
+        const code = (error as NodeJS.ErrnoException).code
+        if (code !== 'EEXIST' && code !== 'ENOTEMPTY') throw error
+        if (await destinationMatchesStableSource(sourceFingerprint)) break
+        if (attempt >= 2) {
+          throw new Error('A conflicting invalid Prisma Client snapshot could not be replaced.')
+        }
+        await rm(destination, { recursive: true, force: true })
+      }
     }
   } finally {
     await rm(temporary, { recursive: true, force: true })

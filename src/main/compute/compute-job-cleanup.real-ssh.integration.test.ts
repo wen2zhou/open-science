@@ -13,16 +13,19 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import type { ComputeJobStatus, JobSummary } from '../../shared/compute'
 import { computeProviderId } from '../../shared/compute'
+import { createLinearConversationGraph } from '../../shared/conversation-graph'
+import type { PersistedChatMessage, PersistedChatSession } from '../../shared/session-persistence'
 import { ArtifactRepository } from '../artifacts/repository'
 import { createProjectDbClient, migrateApplicationDatabase } from '../projects/prisma-client'
 import { getNotebookSessionRoot } from '../notebook/repository'
+import { SessionRepository } from '../session-persistence/repository'
 import { ComputeApprovalBroker } from './compute-approval-broker'
 import { ComputeService } from './compute-service'
 import { SshConfigComputeConnectionBroker } from './connection-broker'
 import { harvestJob } from './harvest-engine'
 import { ComputeJobOperationRepository } from './compute-job-operation-repository'
 import { ComputeJobRepository } from './job-repository'
-import { emitJobNotification } from './job-notifier'
+import { buildJobNotificationSummary, emitJobNotification } from './job-notifier'
 import { JobPoller } from './job-poller'
 import { quoteRemotePath, shellSingleQuote } from './remote-path-security'
 import { ComputeHostRepository } from './repository'
@@ -286,11 +289,70 @@ describeIf('Compute Job cleanup real SSH certification', () => {
       harvest_error: undefined
     })
     const analysisMessageId = `cleanup-cert-analysis-${suiteMarker}`
+    const analysisResponseId = `cleanup-cert-analysis-response-${suiteMarker}`
+    const analysisCreatedAt = Date.now()
+    const analysisPrompt: PersistedChatMessage = {
+      id: analysisMessageId,
+      role: 'user',
+      content: 'Analyze the completed cleanup certification Job.',
+      attribution: {
+        kind: 'application',
+        feature: 'compute',
+        purpose: 'job-completion-analysis',
+        deliveryKey: `compute_done:${sessionId}:${completed.job_id}`,
+        jobIds: [completed.job_id]
+      },
+      status: 'complete',
+      eventIds: [],
+      createdAt: analysisCreatedAt,
+      completedAt: analysisCreatedAt,
+      updatedAt: analysisCreatedAt
+    }
+    const sessionRepository = new SessionRepository(storageRoot)
+    const pendingAnalysisSession = (await sessionRepository.saveSession({
+      id: sessionId,
+      projectId,
+      title: 'Compute cleanup certification',
+      cwd: storageRoot,
+      status: 'idle',
+      messages: [analysisPrompt],
+      conversationGraph: createLinearConversationGraph({
+        sessionId,
+        messages: [analysisPrompt],
+        createdAt: analysisCreatedAt,
+        updatedAt: analysisCreatedAt
+      }),
+      createdAt: analysisCreatedAt,
+      updatedAt: analysisCreatedAt
+    })) satisfies PersistedChatSession
     await jobRepository.transitionAnalysis({
       sessionId,
       jobIds: [completed.job_id],
       messageId: analysisMessageId,
       state: 'dispatched'
+    })
+    const analysisResponse: PersistedChatMessage = {
+      id: analysisResponseId,
+      role: 'agent',
+      content: 'The completed Job produced one readable published result.',
+      responseToMessageId: analysisMessageId,
+      status: 'complete',
+      eventIds: [],
+      createdAt: analysisCreatedAt + 1,
+      completedAt: analysisCreatedAt + 1,
+      updatedAt: analysisCreatedAt + 1
+    }
+    const analysisMessages = [analysisPrompt, analysisResponse]
+    await sessionRepository.saveSession({
+      ...pendingAnalysisSession,
+      messages: analysisMessages,
+      conversationGraph: createLinearConversationGraph({
+        sessionId,
+        messages: analysisMessages,
+        createdAt: analysisCreatedAt,
+        updatedAt: analysisCreatedAt + 1
+      }),
+      updatedAt: analysisCreatedAt + 1
     })
     await jobRepository.transitionAnalysis({
       sessionId,
@@ -306,6 +368,19 @@ describeIf('Compute Job cleanup real SSH certification', () => {
       analysis_message_id: analysisMessageId,
       analysis_updated_at: expect.any(Number)
     })
+    const notificationBefore = await buildJobNotificationSummary(lifecycleBefore!, {
+      hostRepository,
+      storageRoot
+    })
+    expect(notificationBefore).toMatchObject({
+      job_id: completed.job_id,
+      featured_files: notificationProjection[0]!.featured_files,
+      featured_file_count: 1,
+      notification_consumed_at: lifecycleBefore!.notification_consumed_at
+    })
+    const analysisBefore = await sessionRepository.loadSession(projectId, sessionId)
+    expect(analysisBefore?.messages).toEqual(analysisMessages)
+    expect(analysisBefore?.conversationGraph?.messages).toHaveLength(2)
 
     const sibling = await submit("sleep 20; printf 'sibling survived\\n' > sibling.txt", {
       outputManifest: JSON.stringify(['sibling.txt']),
@@ -342,6 +417,12 @@ describeIf('Compute Job cleanup real SSH certification', () => {
       analysis_message_id: lifecycleBefore!.analysis_message_id,
       analysis_updated_at: lifecycleBefore!.analysis_updated_at
     })
+    await expect(
+      buildJobNotificationSummary(lifecycleAfter!, { hostRepository, storageRoot })
+    ).resolves.toEqual(notificationBefore)
+    await expect(sessionRepository.loadSession(projectId, sessionId)).resolves.toEqual(
+      analysisBefore
+    )
     const duplicateNotifications: JobSummary[] = []
     await emitJobNotification(lifecycleAfter!, {
       jobRepository,

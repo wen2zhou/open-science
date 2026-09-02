@@ -71,4 +71,37 @@ describe('Vitest Prisma Client isolation', () => {
       await fingerprintGeneratedPrismaClient(second)
     )
   })
+
+  it.each([
+    ['generated runtime', 'index.js', 'exports.version = "tampered"\n'],
+    ['native engine', 'libquery_engine-test.node', 'tampered-engine']
+  ])(
+    'rejects and restores an existing snapshot with a tampered %s',
+    async (_, filename, tamper) => {
+      const root = mkdtempSync(join(tmpdir(), 'prisma-client-existing-tamper-'))
+      fixtures.push(root)
+      const generated = join(root, 'node_modules', '.prisma', 'client')
+      await mkdir(join(root, 'prisma'), { recursive: true })
+      await mkdir(generated, { recursive: true })
+      const schema = 'model Example { id String @id }\n'
+      await writeFile(join(root, 'prisma', 'schema.prisma'), schema)
+      await writeFile(join(generated, 'schema.prisma'), schema)
+      await writeFile(join(generated, 'index.js'), 'exports.version = "trusted"\n')
+      await writeFile(join(generated, 'libquery_engine-test.node'), 'trusted-engine')
+
+      const snapshot = await ensurePrismaClientSnapshot(root)
+      await writeFile(join(snapshot, filename), tamper)
+      expect(await fingerprintGeneratedPrismaClient(snapshot)).not.toBe(
+        await fingerprintGeneratedPrismaClient(generated)
+      )
+
+      await expect(ensurePrismaClientSnapshot(root)).resolves.toBe(snapshot)
+      expect(await fingerprintGeneratedPrismaClient(snapshot)).toBe(
+        await fingerprintGeneratedPrismaClient(generated)
+      )
+      await expect(readFile(join(snapshot, filename), 'utf8')).resolves.toBe(
+        await readFile(join(generated, filename), 'utf8')
+      )
+    }
+  )
 })
