@@ -333,6 +333,7 @@ export const WEB_EVENT_CHANNELS = {
   'acp.onEvent': 'acp:event',
   'acp.onPermissionRequest': 'acp:permission-request',
   'acp.onState': 'acp:state',
+  'agentResultDelivery.onChanged': 'agent-result-delivery:changed',
   'compute.onApprovalRequest': 'compute:approval-request',
   'compute.onApprovalSettled': 'compute:approval-settled',
   'compute.onJobUpdated': 'compute:job-updated',

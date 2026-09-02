@@ -63,7 +63,9 @@ const SessionBackgroundActivity = ({
 
   useEffect(() => {
     let active = true
+    let requestVersion = 0
     const load = async (): Promise<void> => {
+      const version = ++requestVersion
       const [state, activity, jobs] = await Promise.all([
         window.api.notebook.state(notebook).catch(() => undefined),
         window.api.agentResultDelivery
@@ -71,7 +73,7 @@ const SessionBackgroundActivity = ({
           .catch(() => undefined),
         window.api.compute?.jobsList({ sessionId: notebook.sessionId }).catch(() => undefined)
       ])
-      if (!active || !state) return
+      if (!active || version !== requestVersion || !state) return
       setRuns(state.runs.filter((run) => run.executionMode === 'background'))
       if (activity) setDeliveries([...activity.awaitingAgent])
       if (jobs) setComputeJobs(jobs)
@@ -86,7 +88,10 @@ const SessionBackgroundActivity = ({
         return next
       })
     }
-    void load()
+    const stopDelivery =
+      window.api.agentResultDelivery.onChanged?.((event) => {
+        if (event.projectId === notebook.projectId) void load()
+      }) ?? (() => undefined)
     const stop = window.api.notebook.onChanged((event) => {
       if (event.sessionId === notebook.sessionId && event.projectId === notebook.projectId) {
         void load()
@@ -97,10 +102,14 @@ const SessionBackgroundActivity = ({
         void load()
       }
     })
+    void load()
+    const poll = window.setInterval(() => void load(), 30_000)
     return () => {
       active = false
+      stopDelivery()
       stop()
       stopCompute?.()
+      window.clearInterval(poll)
     }
   }, [notebook])
 
@@ -116,17 +125,6 @@ const SessionBackgroundActivity = ({
     const timer = window.setInterval(() => setNow(Date.now()), 1_000)
     return () => window.clearInterval(timer)
   }, [hasLiveRun])
-
-  useEffect(() => {
-    if (deliveries.length === 0) return
-    const timer = window.setInterval(() => {
-      void window.api.agentResultDelivery
-        .getSessionActivity({ sessionId: notebook.sessionId })
-        .then((activity) => setDeliveries([...activity.awaitingAgent]))
-        .catch(() => undefined)
-    }, 2_000)
-    return () => window.clearInterval(timer)
-  }, [deliveries.length, notebook.sessionId])
 
   const deliveryByRunId = useMemo(
     () =>

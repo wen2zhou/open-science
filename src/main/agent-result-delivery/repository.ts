@@ -139,6 +139,22 @@ class AgentResultDeliveryRepository {
     return rows.map(({ sourceId }) => sourceId)
   }
 
+  async listWaitingLocalRuns(): Promise<LocalRunAgentResultWaitingContext[]> {
+    const client = await this.getClient()
+    const rows = await client.agentResultDelivery.findMany({
+      where: { sourceKind: 'local-run', state: 'waiting-result' },
+      select: { contextJson: true },
+      orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
+    })
+    return rows
+      .map(({ contextJson }) => decodeContext(contextJson))
+      .flatMap((context) =>
+        context.sourceKind === 'local-run' && context.terminalStatus === 'waiting-result'
+          ? [context]
+          : []
+      )
+  }
+
   async recordTerminalOutcome(
     context: LocalRunAgentResultDeliveryContext
   ): Promise<AgentResultDelivery>

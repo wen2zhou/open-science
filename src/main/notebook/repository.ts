@@ -89,6 +89,12 @@ type NotebookRunLookupResult = Readonly<{
 type AppendOrGetNotebookRunResult = NotebookRunMutationResult & { admitted: boolean }
 type TransitionNotebookRunResult = NotebookRunMutationResult & { transitioned: boolean }
 
+type RecoveredBackgroundRun = Readonly<{
+  projectId: string
+  sessionId: string
+  run: NotebookRunRecord
+}>
+
 type NotebookRunTerminalFact = {
   version: 1
   projectId: string
@@ -860,13 +866,14 @@ class NotebookRunRepository {
   }
 
   // Reconcile every persisted lane before new admission, including Sessions no renderer opens.
-  async recoverAllRunLifecycles(): Promise<void> {
+  async recoverAllRunLifecycles(): Promise<RecoveredBackgroundRun[]> {
+    const recovered: RecoveredBackgroundRun[] = []
     const notebooksRoot = join(this.storageRoot, NOTEBOOKS_DIR)
     let projects
     try {
       projects = await readdir(notebooksRoot, { withFileTypes: true })
     } catch (error) {
-      if (isMissingFileError(error)) return
+      if (isMissingFileError(error)) return recovered
       throw error
     }
     for (const project of projects) {
@@ -877,10 +884,12 @@ class NotebookRunRepository {
         if (!session.isDirectory() || !SAFE_SEGMENT_PATTERN.test(session.name)) continue
         const sessionRoot = join(projectRoot, session.name)
         if (await this.pathExists(join(sessionRoot, NOTEBOOK_RUN_FILE))) {
-          await this.recoverLane(
-            project.name,
-            session.name,
-            createRootNotebookLane(project.name, session.name, `root-frame-${session.name}`)
+          recovered.push(
+            ...(await this.recoverLane(
+              project.name,
+              session.name,
+              createRootNotebookLane(project.name, session.name, `root-frame-${session.name}`)
+            ))
           )
         }
         const framesRoot = join(sessionRoot, 'frames')
@@ -894,14 +903,17 @@ class NotebookRunRepository {
         for (const frame of frames) {
           if (!frame.isDirectory() || !SAFE_SEGMENT_PATTERN.test(frame.name)) continue
           if (!(await this.pathExists(join(framesRoot, frame.name, NOTEBOOK_RUN_FILE)))) continue
-          await this.recoverLane(
-            project.name,
-            session.name,
-            createFrameNotebookLane(project.name, session.name, frame.name)
+          recovered.push(
+            ...(await this.recoverLane(
+              project.name,
+              session.name,
+              createFrameNotebookLane(project.name, session.name, frame.name)
+            ))
           )
         }
       }
     }
+    return recovered
   }
 
   // Replaces an existing execution record, used to turn the initial "running" entry final.
@@ -1317,7 +1329,8 @@ class NotebookRunRepository {
     projectId: string,
     sessionId: string,
     lane: NotebookLaneIdentity
-  ): Promise<void> {
+  ): Promise<RecoveredBackgroundRun[]> {
+    const recovered = new Map<string, NotebookRunRecord>()
     const outboxRoot = join(
       getNotebookSessionRoot(this.storageRoot, projectId, sessionId, lane),
       RUN_TERMINAL_OUTBOX_DIR
@@ -1348,12 +1361,27 @@ class NotebookRunRepository {
       if (!result.transitioned && result.run.status === 'running') {
         throw new Error(`Notebook terminal outcome recovery is blocked: ${fact.run.runId}`)
       }
+      if (result.run.executionMode === 'background') recovered.set(result.run.runId, result.run)
       await rm(factPath, { force: true })
     }
-    const document = await this.loadExisting(projectId, sessionId, lane)
+    let document = await this.loadExisting(projectId, sessionId, lane)
     if (document.runs.some((run) => run.status === 'queued' || run.status === 'running')) {
-      await this.reconcileInterruptedRuns(projectId, sessionId, lane)
+      document = await this.reconcileInterruptedRuns(projectId, sessionId, lane)
     }
+    // The persisted Run documents are the durable source of truth for terminal delivery. Replay
+    // their bounded current history on every startup so a transient delivery-store failure cannot
+    // permanently strand an outcome. The delivery repository de-duplicates pending and consumed
+    // records by source identity.
+    for (const run of document.runs) {
+      if (
+        run.executionMode === 'background' &&
+        run.status !== 'queued' &&
+        run.status !== 'running'
+      ) {
+        recovered.set(run.runId, run)
+      }
+    }
+    return [...recovered.values()].map((run) => ({ projectId, sessionId, run }))
   }
 
   private async pathExists(path: string): Promise<boolean> {
@@ -1480,6 +1508,7 @@ export {
   getNotebookSessionRoot,
   getRuntimeRoot
 }
+export type { RecoveredBackgroundRun }
 export type {
   AppendNotebookRunRequest,
   AppendOrGetNotebookRunResult,

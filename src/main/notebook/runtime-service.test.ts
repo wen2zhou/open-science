@@ -4747,6 +4747,76 @@ describe('notebook runtime service', () => {
     })
   })
 
+  it('replays a recovered background Run through durable Agent result delivery', async () => {
+    const root = await createStorageRoot()
+    const lane = createRootNotebookLane(
+      'default-project',
+      'crashed-background',
+      'root-frame-crashed-background'
+    )
+    const priorRepository = new NotebookRunRepository(root)
+    await priorRepository.loadOrCreate({
+      projectId: 'default-project',
+      sessionId: 'crashed-background',
+      workspaceCwd: root,
+      lane
+    })
+    const queuedRun = {
+      runId: 'background-run-1',
+      executionMode: 'background' as const,
+      submissionIdentity: 'background-submission-1',
+      submissionFingerprint: 'a'.repeat(64),
+      cellId: 'cell-1',
+      source: 'agent' as const,
+      kernelKind: 'python' as const,
+      script: 'long_running_analysis()',
+      status: 'queued' as const,
+      startedAt: 100,
+      text: { stdout: '', stderr: '', traceback: '', plain: [] },
+      outputs: [],
+      artifacts: [],
+      workingFiles: []
+    }
+    await priorRepository.appendOrGetRun({
+      projectId: 'default-project',
+      sessionId: 'crashed-background',
+      lane,
+      run: queuedRun
+    })
+    await priorRepository.transitionRun({
+      projectId: 'default-project',
+      sessionId: 'crashed-background',
+      lane,
+      expectedStatus: 'queued',
+      run: { ...queuedRun, status: 'running' }
+    })
+    const onBackgroundRunTerminal = vi.fn(async () => undefined)
+    const executorFactory = vi.fn()
+    const createService = (): NotebookRuntimeService =>
+      new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        executorFactory,
+        onBackgroundRunTerminal
+      })
+
+    await createService().recoverInterruptedOperations()
+    await createService().recoverInterruptedOperations()
+
+    expect(onBackgroundRunTerminal).toHaveBeenCalledTimes(2)
+    expect(onBackgroundRunTerminal).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'background-run-1',
+        terminalStatus: 'interrupted',
+        projectId: 'default-project',
+        sessionId: 'crashed-background'
+      })
+    )
+    expect(executorFactory).not.toHaveBeenCalled()
+  })
+
   it('recovers an admitted REPL run as interrupted without redispatching stale control work', async () => {
     const root = await createStorageRoot()
     const lane = createRootNotebookLane(
@@ -5613,6 +5683,190 @@ describe('notebook runtime service', () => {
     ).rejects.toMatchObject({
       detail: { code: 'BACKGROUND_EXECUTION_REQUIRES_BACKGROUND_API', retryable: false }
     })
+  })
+
+  it('scopes the Python/R background execution flag to notebook Runs', async () => {
+    vi.stubEnv('OPEN_SCIENCE_PYTHON_R_BACKGROUND_EXECUTION', '1')
+    vi.stubEnv('OPEN_SCIENCE_REPL_BACKGROUND_EXECUTION', '0')
+    vi.stubEnv('OPEN_SCIENCE_SHELL_BACKGROUND_EXECUTION', '0')
+    const root = await createStorageRoot()
+    const execute = vi.fn(
+      async (request: NotebookExecutionRequest): Promise<NotebookExecutionResult> => ({
+        status: 'completed',
+        stdout: 'done',
+        stderr: '',
+        traceback: '',
+        cwdAfter: request.cwd,
+        outputs: []
+      })
+    )
+    const shellExecute = vi.fn<NotebookShellProcess['execute']>()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute,
+        shutdown: async () => ({ reaped: true })
+      }),
+      shellProcess: { execute: shellExecute }
+    })
+
+    const receipt = await service.executeBackground({
+      sessionId: 'session-python-flag',
+      workspaceCwd: root,
+      code: 'print(1)',
+      background: true,
+      executionInvocationId: 'python-flag-submission'
+    })
+    expect(receipt).toMatchObject({ executionType: 'python-notebook-run' })
+    await expect(
+      service.executeControlBackground({
+        sessionId: 'session-repl-disabled-by-python-flag',
+        workspaceCwd: root,
+        code: '1 + 1',
+        background: true,
+        executionInvocationId: 'repl-disabled-by-python-flag'
+      })
+    ).rejects.toMatchObject({
+      detail: { code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED', stage: 'pre-admission' }
+    })
+    await expect(
+      service.executeShellBackground({
+        sessionId: 'session-shell-disabled-by-python-flag',
+        workspaceCwd: root,
+        command: 'echo hi',
+        background: true,
+        executionInvocationId: 'shell-disabled-by-python-flag'
+      })
+    ).rejects.toMatchObject({
+      detail: { code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED', stage: 'pre-admission' }
+    })
+    await service.waitForBackgroundRun(receipt.runId)
+    expect(execute).toHaveBeenCalledOnce()
+    expect(shellExecute).not.toHaveBeenCalled()
+  })
+
+  it('scopes the REPL background execution flag to JavaScript REPL Runs', async () => {
+    vi.stubEnv('OPEN_SCIENCE_PYTHON_R_BACKGROUND_EXECUTION', '0')
+    vi.stubEnv('OPEN_SCIENCE_REPL_BACKGROUND_EXECUTION', '1')
+    vi.stubEnv('OPEN_SCIENCE_SHELL_BACKGROUND_EXECUTION', '0')
+    const root = await createStorageRoot()
+    const execute = vi.fn(
+      async (request: NotebookExecutionRequest): Promise<NotebookExecutionResult> => ({
+        status: 'completed',
+        stdout: 'done',
+        stderr: '',
+        traceback: '',
+        cwdAfter: request.cwd,
+        outputs: []
+      })
+    )
+    const shellExecute = vi.fn<NotebookShellProcess['execute']>()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute,
+        shutdown: async () => ({ reaped: true })
+      }),
+      shellProcess: { execute: shellExecute }
+    })
+
+    const receipt = await service.executeControlBackground({
+      sessionId: 'session-repl-flag',
+      workspaceCwd: root,
+      code: '1 + 1',
+      background: true,
+      executionInvocationId: 'repl-flag-submission'
+    })
+    expect(receipt).toMatchObject({ executionType: 'javascript-repl' })
+    await expect(
+      service.executeBackground({
+        sessionId: 'session-python-disabled-by-repl-flag',
+        workspaceCwd: root,
+        code: 'print(1)',
+        background: true,
+        executionInvocationId: 'python-disabled-by-repl-flag'
+      })
+    ).rejects.toMatchObject({
+      detail: { code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED', stage: 'pre-admission' }
+    })
+    await expect(
+      service.executeShellBackground({
+        sessionId: 'session-shell-disabled-by-repl-flag',
+        workspaceCwd: root,
+        command: 'echo hi',
+        background: true,
+        executionInvocationId: 'shell-disabled-by-repl-flag'
+      })
+    ).rejects.toMatchObject({
+      detail: { code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED', stage: 'pre-admission' }
+    })
+    await service.waitForBackgroundRun(receipt.runId)
+    expect(execute).toHaveBeenCalledOnce()
+    expect(shellExecute).not.toHaveBeenCalled()
+  })
+
+  it('scopes the Shell background execution flag to Shell Runs', async () => {
+    vi.stubEnv('OPEN_SCIENCE_PYTHON_R_BACKGROUND_EXECUTION', '0')
+    vi.stubEnv('OPEN_SCIENCE_REPL_BACKGROUND_EXECUTION', '0')
+    vi.stubEnv('OPEN_SCIENCE_SHELL_BACKGROUND_EXECUTION', '1')
+    const root = await createStorageRoot()
+    const execute = vi.fn<NotebookSessionExecutor['execute']>()
+    const shellExecute = vi.fn<NotebookShellProcess['execute']>(async () => ({
+      stdout: 'done',
+      stderr: '',
+      exitCode: 0
+    }))
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute,
+        shutdown: async () => ({ reaped: true })
+      }),
+      shellProcess: { execute: shellExecute }
+    })
+
+    const receipt = await service.executeShellBackground({
+      sessionId: 'session-shell-flag',
+      workspaceCwd: root,
+      command: 'echo hi',
+      background: true,
+      executionInvocationId: 'shell-flag-submission'
+    })
+    expect(receipt).toMatchObject({ executionType: 'shell-command' })
+    await expect(
+      service.executeBackground({
+        sessionId: 'session-python-disabled-by-shell-flag',
+        workspaceCwd: root,
+        code: 'print(1)',
+        background: true,
+        executionInvocationId: 'python-disabled-by-shell-flag'
+      })
+    ).rejects.toMatchObject({
+      detail: { code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED', stage: 'pre-admission' }
+    })
+    await expect(
+      service.executeControlBackground({
+        sessionId: 'session-repl-disabled-by-shell-flag',
+        workspaceCwd: root,
+        code: '1 + 1',
+        background: true,
+        executionInvocationId: 'repl-disabled-by-shell-flag'
+      })
+    ).rejects.toMatchObject({
+      detail: { code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED', stage: 'pre-admission' }
+    })
+    await service.waitForBackgroundRun(receipt.runId)
+    expect(shellExecute).toHaveBeenCalledOnce()
+    expect(execute).not.toHaveBeenCalled()
   })
 
   it('recovers a lost background receipt without duplicate execution and cancels idempotently', async () => {

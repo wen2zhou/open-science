@@ -83,7 +83,10 @@ describe('Project Compute inbox', () => {
       'window',
       Object.assign(window, {
         api: {
-          agentResultDelivery: { getProjectActivity },
+          agentResultDelivery: {
+            getProjectActivity,
+            onChanged: vi.fn(() => () => undefined)
+          },
           notebook: { onChanged: vi.fn(() => () => undefined) },
           compute: { onJobUpdated: vi.fn(() => () => undefined) }
         }
@@ -108,5 +111,41 @@ describe('Project Compute inbox', () => {
       'Go to Session'
     ])
     expect(container.textContent).not.toMatch(/Cancel|Dismiss|Retry|Rerun|Open/u)
+  })
+
+  it('subscribes before hydrate and refreshes only for its Project delivery events', async () => {
+    const calls: string[] = []
+    let changed: ((event: { projectId: string; revision: number }) => void) | undefined
+    const getProjectActivity = vi.fn(async () => {
+      calls.push('query')
+      return { revision: 1, truncated: false, items: [] }
+    })
+    const onChanged = vi.fn((listener: typeof changed) => {
+      calls.push('subscribe')
+      changed = listener
+      return () => undefined
+    })
+    vi.stubGlobal(
+      'window',
+      Object.assign(window, {
+        api: {
+          agentResultDelivery: { getProjectActivity, onChanged },
+          notebook: { onChanged: vi.fn(() => () => undefined) },
+          compute: { onJobUpdated: vi.fn(() => () => undefined) }
+        }
+      })
+    )
+    const container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => root?.render(<ProjectComputeInbox />))
+    await vi.waitFor(() => expect(getProjectActivity).toHaveBeenCalledOnce())
+
+    expect(calls.slice(0, 2)).toEqual(['subscribe', 'query'])
+    act(() => changed?.({ projectId: 'project-2', revision: 2 }))
+    expect(getProjectActivity).toHaveBeenCalledOnce()
+    act(() => changed?.({ projectId: 'project-1', revision: 2 }))
+    await vi.waitFor(() => expect(getProjectActivity).toHaveBeenCalledTimes(2))
   })
 })

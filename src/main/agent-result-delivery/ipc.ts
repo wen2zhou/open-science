@@ -3,6 +3,7 @@ import type {
   AgentResultDeliveryProjectRequest,
   DismissAgentResultDeliveryRequest,
   ProjectBackgroundActivity,
+  ProjectBackgroundActivityChangedEvent,
   ProjectBackgroundActivityItem,
   SessionAgentResultActivity
 } from '../../shared/agent-result-delivery'
@@ -13,7 +14,7 @@ import type { AgentResultDeliveryRepository } from './repository'
 
 type AgentResultDeliveryIpcRepository = Pick<
   AgentResultDeliveryRepository,
-  'listAwaitingAgent' | 'dismiss' | 'listProjectVisible' | 'projectRevision'
+  'listAwaitingAgent' | 'dismiss' | 'find' | 'listProjectVisible' | 'projectRevision'
 >
 
 type AgentResultDeliveryIpcOptions = Readonly<{
@@ -24,12 +25,24 @@ type AgentResultDeliveryIpcOptions = Readonly<{
     agentFrameId?: string
   }) => Promise<NotebookBackgroundRunResult | undefined>
   listActiveComputeJobs?: () => Promise<readonly JobSummary[]>
+  onChanged?: (event: ProjectBackgroundActivityChangedEvent) => void
 }>
 
 const registerAgentResultDeliveryIpcHandlers = (
   repository: AgentResultDeliveryIpcRepository,
   options: AgentResultDeliveryIpcOptions = {}
 ): void => {
+  const publishChanged = async (deliveryId: string): Promise<void> => {
+    if (!options.onChanged) return
+    try {
+      const delivery = await repository.find(deliveryId)
+      if (!delivery) return
+      const projectId = delivery.context.projectId
+      options.onChanged({ projectId, revision: await repository.projectRevision(projectId) })
+    } catch {
+      // Hydrate and low-frequency polling repair missed best-effort events.
+    }
+  }
   ipcMainHandle(
     'agent-result-delivery:session-activity',
     async (
@@ -42,8 +55,11 @@ const registerAgentResultDeliveryIpcHandlers = (
   )
   ipcMainHandle(
     'agent-result-delivery:dismiss',
-    (_event, request: DismissAgentResultDeliveryRequest) =>
-      repository.dismiss(request.sessionId, request.deliveryId)
+    async (_event, request: DismissAgentResultDeliveryRequest) => {
+      const dismissed = await repository.dismiss(request.sessionId, request.deliveryId)
+      if (dismissed) await publishChanged(request.deliveryId)
+      return dismissed
+    }
   )
   ipcMainHandle(
     'agent-result-delivery:project-activity',

@@ -228,12 +228,13 @@ describe('notebook run repository', () => {
         lane,
         run: admittedRun({
           runId: `run-${sessionId}`,
-          submissionIdentity: `submission-${sessionId}`
+          submissionIdentity: `submission-${sessionId}`,
+          executionMode: 'background'
         })
       })
     }
 
-    await new NotebookRunRepository(root).recoverAllRunLifecycles()
+    const recoveredDeliveries = await new NotebookRunRepository(root).recoverAllRunLifecycles()
 
     const recoveredRoot = await new NotebookRunRepository(root).findExisting(
       'default-project',
@@ -251,6 +252,75 @@ describe('notebook run repository', () => {
       status: 'interrupted',
       interruptionReason: 'app-terminated'
     })
+    expect(recoveredDeliveries).toEqual([
+      {
+        projectId: 'default-project',
+        sessionId: 'frame-session',
+        run: expect.objectContaining({
+          runId: 'run-frame-session',
+          status: 'interrupted',
+          interruptionReason: 'app-terminated'
+        })
+      },
+      {
+        projectId: 'default-project',
+        sessionId: 'root-session',
+        run: expect.objectContaining({
+          runId: 'run-root-session',
+          status: 'interrupted',
+          interruptionReason: 'app-terminated'
+        })
+      }
+    ])
+  })
+
+  it('replays every durable terminal background Run even after its terminal fact is gone', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const lane = createRootNotebookLane(
+      'default-project',
+      'terminal-background',
+      'root-frame-terminal-background'
+    )
+    await repository.loadOrCreate({
+      projectId: 'default-project',
+      sessionId: 'terminal-background',
+      workspaceCwd: '/workspace',
+      lane
+    })
+    const queued = admittedRun({ executionMode: 'background' })
+    await repository.appendOrGetRun({
+      projectId: 'default-project',
+      sessionId: 'terminal-background',
+      lane,
+      run: queued
+    })
+    await repository.transitionRun({
+      projectId: 'default-project',
+      sessionId: 'terminal-background',
+      lane,
+      expectedStatus: 'queued',
+      run: { ...queued, status: 'running' }
+    })
+    await repository.commitTerminalRun({
+      projectId: 'default-project',
+      sessionId: 'terminal-background',
+      lane,
+      expectedStatus: 'running',
+      run: { ...queued, status: 'completed', endedAt: 2 }
+    })
+
+    const firstStartup = await new NotebookRunRepository(root).recoverAllRunLifecycles()
+    const secondStartup = await new NotebookRunRepository(root).recoverAllRunLifecycles()
+
+    expect(firstStartup).toEqual([
+      {
+        projectId: 'default-project',
+        sessionId: 'terminal-background',
+        run: expect.objectContaining({ runId: 'run-1', status: 'completed' })
+      }
+    ])
+    expect(secondStartup).toEqual(firstStartup)
   })
 
   it('recovers a valid historical run.json temp when the primary is missing', async () => {

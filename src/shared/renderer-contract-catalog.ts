@@ -184,6 +184,7 @@ import type {
   AgentResultDeliverySessionRequest,
   DismissAgentResultDeliveryRequest,
   ProjectBackgroundActivity,
+  ProjectBackgroundActivityChangedEvent,
   SessionAgentResultActivity
 } from './agent-result-delivery'
 import type {
@@ -730,6 +731,9 @@ export const RENDERER_API_CONTRACT = Object.freeze({
   'agentResultDelivery.getProjectActivity': callable<
     (request: AgentResultDeliveryProjectRequest) => Promise<ProjectBackgroundActivity>
   >()('agent-result-delivery', ['agent-result-delivery:project-activity', ELECTRON]),
+  'agentResultDelivery.onChanged': callable<
+    (listener: AcpListener<ProjectBackgroundActivityChangedEvent>) => RemoveListener
+  >()('agent-result-delivery', ['agent-result-delivery:changed', EVENT]),
   'acp.cancel': callable<(request: AcpCancelPromptRequest) => Promise<AcpStateCommandResponse>>()(
     'acp',
     ['acp:cancel']

@@ -282,6 +282,7 @@ describe('preload bridge — public surface inventory', () => {
       'agentResultDelivery.dismiss',
       'agentResultDelivery.getProjectActivity',
       'agentResultDelivery.getSessionActivity',
+      'agentResultDelivery.onChanged',
       'artifacts.finalizeRunArtifacts',
       'artifacts.generateCodeReconstruction',
       'artifacts.getCodeReconstruction',

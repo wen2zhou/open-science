@@ -59,9 +59,11 @@ const delivery = (overrides: Partial<AgentResultDelivery> = {}): AgentResultDeli
 const emptyDeliveryApi = (): {
   getSessionActivity: ReturnType<typeof vi.fn>
   dismiss: ReturnType<typeof vi.fn>
+  onChanged: ReturnType<typeof vi.fn>
 } => ({
   getSessionActivity: vi.fn().mockResolvedValue({ active: [], awaitingAgent: [] }),
-  dismiss: vi.fn().mockResolvedValue(true)
+  dismiss: vi.fn().mockResolvedValue(true),
+  onChanged: vi.fn(() => () => undefined)
 })
 
 describe('Session background activity ledger', () => {
@@ -341,5 +343,46 @@ describe('Session background activity ledger', () => {
     })
 
     await vi.waitFor(() => expect(container.textContent).toBe(''))
+  })
+
+  it('subscribes before hydrate and refreshes only for delivery events in its Project', async () => {
+    const calls: string[] = []
+    let changed: ((event: { projectId: string; revision: number }) => void) | undefined
+    const getSessionActivity = vi.fn(async () => {
+      calls.push('query')
+      return { active: [], awaitingAgent: [] }
+    })
+    const onChanged = vi.fn((listener: typeof changed) => {
+      calls.push('subscribe')
+      changed = listener
+      return () => undefined
+    })
+    vi.stubGlobal('window', {
+      ...window,
+      setInterval: window.setInterval.bind(window),
+      clearInterval: window.clearInterval.bind(window),
+      api: {
+        agentResultDelivery: { getSessionActivity, onChanged, dismiss: vi.fn() },
+        notebook: {
+          state: vi.fn().mockResolvedValue({ runs: [] }),
+          onChanged: vi.fn(() => () => undefined),
+          cancelBackgroundRun: vi.fn()
+        }
+      }
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(<SessionBackgroundActivity notebook={notebook} onOpenNotebook={vi.fn()} />)
+    })
+    await vi.waitFor(() => expect(getSessionActivity).toHaveBeenCalledOnce())
+
+    expect(calls.slice(0, 2)).toEqual(['subscribe', 'query'])
+    act(() => changed?.({ projectId: 'project-2', revision: 2 }))
+    expect(getSessionActivity).toHaveBeenCalledOnce()
+    act(() => changed?.({ projectId: 'project-1', revision: 2 }))
+    await vi.waitFor(() => expect(getSessionActivity).toHaveBeenCalledTimes(2))
   })
 })

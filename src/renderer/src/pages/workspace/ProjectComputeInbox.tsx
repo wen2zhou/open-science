@@ -68,16 +68,20 @@ const ProjectComputeInbox = (): React.JSX.Element => {
         .catch(() => undefined)
       if (alive && version === requestVersion && next) hydrate(projectId, next)
     }
-    void load()
+    const stopDelivery = window.api.agentResultDelivery.onChanged((event) => {
+      if (event.projectId === projectId) void load()
+    })
     const stopNotebook = window.api.notebook.onChanged((event) => {
       if (event.projectId === projectId) void load()
     })
     const stopCompute = window.api.compute?.onJobUpdated((job) => {
       if (job.project_id === projectId) void load()
     })
-    const poll = window.setInterval(() => void load(), 2_000)
+    void load()
+    const poll = window.setInterval(() => void load(), 30_000)
     return () => {
       alive = false
+      stopDelivery()
       stopNotebook()
       stopCompute?.()
       window.clearInterval(poll)

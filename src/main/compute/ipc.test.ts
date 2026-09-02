@@ -894,7 +894,7 @@ describe('compute handlers — jobsList', () => {
     expect(hasDeliveryPath).toHaveBeenCalledWith('job-1')
   })
 
-  it('fails closed when Agent Result Delivery ownership cannot be determined', async () => {
+  it('keeps the Compute Job feed available when Agent Result Delivery ownership cannot be determined', async () => {
     const handlers = createComputeHandlers(
       mockRepository({ list: vi.fn().mockResolvedValue([]) }),
       undefined,
@@ -914,9 +914,10 @@ describe('compute handlers — jobsList', () => {
       { hasDeliveryPath: vi.fn().mockRejectedValue(new Error('delivery database unavailable')) }
     )
 
-    await expect(handlers.jobsList({ sessionId: 'sess-1' })).rejects.toThrow(
-      'delivery database unavailable'
-    )
+    const result = await handlers.jobsList({ sessionId: 'sess-1' })
+
+    expect(result).toEqual([expect.objectContaining({ job_id: 'job-1', status: 'running' })])
+    expect(result[0]).not.toHaveProperty('result_delivery_path')
   })
 
   it('retains a safe needs-attention projection in the renderer jobs list', async () => {
@@ -1909,6 +1910,34 @@ describe('createJobUpdatedBroadcaster', () => {
       channel: COMPUTE_JOB_UPDATED_CHANNEL,
       payload: expect.objectContaining({ status: 'success', finished_at: 2, exit_code: 0 })
     })
+  })
+
+  it('broadcasts the canonical Compute Job update when Agent Result Delivery observation fails', async () => {
+    const current = sampleJob({ status: 'success', finished_at: 2, exit_code: 0 })
+    const resultDelivery = {
+      observeJob: vi.fn(async () => {
+        throw new Error('delivery database unavailable')
+      }),
+      hasDeliveryPath: vi.fn(async () => true)
+    }
+    const broadcaster = createJobUpdatedBroadcaster(
+      mockRepository({ get: vi.fn(async () => sampleHost()) }),
+      storageRoot,
+      { get: vi.fn(async () => current) },
+      resultDelivery
+    )
+
+    const captured = captureNextBroadcast()
+    broadcaster(current)
+
+    const result = await captured
+
+    expect(result).toMatchObject({
+      channel: COMPUTE_JOB_UPDATED_CHANNEL,
+      payload: expect.objectContaining({ job_id: 'job-bcast', status: 'success' })
+    })
+    expect(result.payload).not.toHaveProperty('result_delivery_path')
+    expect(resultDelivery.observeJob).toHaveBeenCalledOnce()
   })
 
   it('does not broadcast an unverified snapshot when the current-row lookup fails', async () => {

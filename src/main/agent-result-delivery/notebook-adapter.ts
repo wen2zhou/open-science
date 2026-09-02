@@ -1,4 +1,8 @@
-import type { LocalRunAgentResultDeliveryContext } from '../../shared/agent-result-delivery'
+import type {
+  LocalRunAgentResultDeliveryContext,
+  LocalRunAgentResultWaitingContext,
+  TerminalAgentResultDeliveryContext
+} from '../../shared/agent-result-delivery'
 import type { NotebookRunRecord } from '../../shared/notebook'
 
 const SUMMARY_LIMIT = 8_000
@@ -70,4 +74,42 @@ const notebookRunDeliveryContext = (
   }
 }
 
-export { notebookRunDeliveryContext }
+type NotebookRunResultDeliveryAdapterDeps = Readonly<{
+  repository: Readonly<{
+    listWaitingLocalRuns(): Promise<LocalRunAgentResultWaitingContext[]>
+  }>
+  enqueue(context: TerminalAgentResultDeliveryContext): Promise<unknown>
+}>
+
+type WaitingLocalRunRequest = Readonly<{
+  projectId: string
+  sessionId: string
+  runId: string
+  agentFrameId?: string
+}>
+
+class NotebookRunResultDeliveryAdapter {
+  constructor(private readonly deps: NotebookRunResultDeliveryAdapterDeps) {}
+
+  async recoverWaiting(
+    loadRun: (request: WaitingLocalRunRequest) => Promise<NotebookRunRecord | undefined>
+  ): Promise<void> {
+    const waiting = await this.deps.repository.listWaitingLocalRuns()
+    await Promise.all(
+      waiting.map(async (registration) => {
+        const run = await loadRun({
+          projectId: registration.projectId,
+          sessionId: registration.sessionId,
+          runId: registration.runId,
+          ...(registration.agentFrameId ? { agentFrameId: registration.agentFrameId } : {})
+        })
+        if (!run) return
+        const context = notebookRunDeliveryContext(registration, run)
+        if (context) await this.deps.enqueue(context)
+      })
+    )
+  }
+}
+
+export { NotebookRunResultDeliveryAdapter, notebookRunDeliveryContext }
+export type { NotebookRunResultDeliveryAdapterDeps, WaitingLocalRunRequest }

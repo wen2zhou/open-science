@@ -37,8 +37,10 @@ import { MemoryService } from './memory/service'
 import { AgentResultDeliveryRepository } from './agent-result-delivery/repository'
 import { AgentResultDeliveryOwner } from './agent-result-delivery/owner'
 import { ComputeJobResultDeliveryAdapter } from './agent-result-delivery/compute-adapter'
+import { NotebookRunResultDeliveryAdapter } from './agent-result-delivery/notebook-adapter'
 import { registerAgentResultDeliveryIpcHandlers } from './agent-result-delivery/ipc'
 import { hasSavedAgentResultContinuation } from './agent-result-delivery/continuation'
+import type { ProjectBackgroundActivityChangedEvent } from '../shared/agent-result-delivery'
 import {
   LIFECYCLE_CHANNELS,
   MAIN_DELEGATED_WORK_LIFECYCLE_CLIENT_ID,
@@ -732,6 +734,19 @@ const createApplicationModules = async (
   const agentResultDeliveryRepository = new AgentResultDeliveryRepository(() =>
     getProjectDbClient(resolveStorageRoot())
   )
+  const publishAgentResultDeliveryChanged = async (projectId: string): Promise<void> => {
+    try {
+      applicationEvents.publish('agent-result-delivery:changed', {
+        projectId,
+        revision: await agentResultDeliveryRepository.projectRevision(projectId)
+      })
+    } catch (error) {
+      createLogger('agent-result-delivery').warn(
+        'Agent result delivery change publication failed',
+        diagnosticErrorFields(error)
+      )
+    }
+  }
   const agentResultDelivery = await modules.add(
     {
       repository: agentResultDeliveryRepository,
@@ -779,7 +794,9 @@ const createApplicationModules = async (
       canStartSessionTurn: (sessionId: string) => {
         const runtime = runtimeRef.current
         return runtime ? !runtime.getState().promptInFlightSessionIds.includes(sessionId) : false
-      }
+      },
+      onChanged: (event: ProjectBackgroundActivityChangedEvent) =>
+        applicationEvents.publish('agent-result-delivery:changed', event)
     },
     (options) => {
       const owner = new AgentResultDeliveryOwner(options)
@@ -791,6 +808,19 @@ const createApplicationModules = async (
     }
   )
   const computeJobResultDelivery = new ComputeJobResultDeliveryAdapter({
+    repository: {
+      registerComputeJob: async (registration) => {
+        const delivery = await agentResultDeliveryRepository.registerComputeJob(registration)
+        await publishAgentResultDeliveryChanged(registration.projectId)
+        return delivery
+      },
+      hasComputeJobDeliveryPath: (jobId) =>
+        agentResultDeliveryRepository.hasComputeJobDeliveryPath(jobId),
+      listWaitingComputeJobIds: () => agentResultDeliveryRepository.listWaitingComputeJobIds()
+    },
+    enqueue: (context) => agentResultDelivery.enqueue(context)
+  })
+  const notebookRunResultDelivery = new NotebookRunResultDeliveryAdapter({
     repository: agentResultDeliveryRepository,
     enqueue: (context) => agentResultDelivery.enqueue(context)
   })
@@ -1480,7 +1510,9 @@ const createApplicationModules = async (
       onBackgroundRunTerminal: (context) =>
         agentResultDelivery.enqueue(context).then(() => undefined),
       onBackgroundRunAdmitted: (context) =>
-        agentResultDeliveryRepository.registerLocalRun(context).then(() => undefined),
+        agentResultDeliveryRepository
+          .registerLocalRun(context)
+          .then(() => publishAgentResultDeliveryChanged(context.projectId)),
       events: applicationEvents,
       disposeTimeoutMs: QUIT_SHUTDOWN_BUDGET_MS,
       isBackendTeardownOwned: () => backendTeardownOwnedByCoordinator
@@ -2015,7 +2047,6 @@ const createApplicationModules = async (
                 'Compute Job result delivery observation failed',
                 diagnosticErrorFields(error)
               )
-              return
             }
             broadcastJobUpdated(
               owned ? { ...summary, result_delivery_path: 'agent-result-delivery' } : summary
@@ -3397,7 +3428,8 @@ const createApplicationModules = async (
     registerAgentResultDeliveryIpcHandlers(agentResultDeliveryRepository, {
       resolveLocalRun: (request) =>
         notebookCommands.getBackgroundRun({ ...request, workspaceCwd: '' }).catch(() => undefined),
-      listActiveComputeJobs: () => computeIpcModule.handlers.jobsList({ nonTerminal: true })
+      listActiveComputeJobs: () => computeIpcModule.handlers.jobsList({ nonTerminal: true }),
+      onChanged: (event) => applicationEvents.publish('agent-result-delivery:changed', event)
     })
   )
   // Wire session deletion to the binding store so stale in-memory bindings do not accumulate.
@@ -3712,6 +3744,17 @@ const createApplicationModules = async (
   // actually orders the prefix work.
   void notebookService
     .recoverInterruptedOperations()
+    .then(() =>
+      notebookRunResultDelivery.recoverWaiting(async (request) => {
+        const state = await notebookCommands.state({
+          projectId: request.projectId,
+          sessionId: request.sessionId,
+          workspaceCwd: '',
+          runIds: [request.runId]
+        })
+        return state.runs.find((run) => run.runId === request.runId)
+      })
+    )
     .catch((error) => notebookStartupLog.error('operation recovery failed', errorLogFields(error)))
   const waitForRecovery = (): Promise<void> => notebookService.ensureRecovered()
   // Lets UI provision/repair refuse when recovery left the default env's prefix blocked (an

@@ -1,7 +1,7 @@
-import { describe, expect, it } from 'vitest'
+import { describe, expect, it, vi } from 'vitest'
 
 import type { NotebookRunRecord } from '../../shared/notebook'
-import { notebookRunDeliveryContext } from './notebook-adapter'
+import { NotebookRunResultDeliveryAdapter, notebookRunDeliveryContext } from './notebook-adapter'
 
 const run = (overrides: Partial<NotebookRunRecord> = {}): NotebookRunRecord => ({
   runId: 'run-1',
@@ -64,5 +64,46 @@ describe('notebookRunDeliveryContext', () => {
         run({ status: 'running' })
       )
     ).toBeUndefined()
+  })
+})
+
+describe('NotebookRunResultDeliveryAdapter', () => {
+  it('delivers a waiting background Run after startup recovery terminalizes it', async () => {
+    const repository = {
+      listWaitingLocalRuns: vi.fn(async () => [
+        {
+          sourceKind: 'local-run' as const,
+          runId: 'run-1',
+          executionType: 'python' as const,
+          terminalStatus: 'waiting-result' as const,
+          projectId: 'project-1',
+          sessionId: 'session-1',
+          agentFrameId: 'frame-1',
+          title: 'print(42)',
+          lane: 'Python',
+          acceptedAt: 1
+        }
+      ])
+    }
+    const enqueue = vi.fn(async () => undefined)
+    const adapter = new NotebookRunResultDeliveryAdapter({ repository, enqueue })
+
+    await adapter.recoverWaiting(async (request) =>
+      run({
+        runId: request.runId,
+        status: 'interrupted',
+        interruptionReason: 'app-terminated'
+      })
+    )
+
+    expect(enqueue).toHaveBeenCalledOnce()
+    expect(enqueue).toHaveBeenCalledWith(
+      expect.objectContaining({
+        runId: 'run-1',
+        terminalStatus: 'interrupted',
+        projectId: 'project-1',
+        sessionId: 'session-1'
+      })
+    )
   })
 })

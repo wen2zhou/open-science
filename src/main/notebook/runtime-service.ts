@@ -196,7 +196,12 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
   configRoot: string
   // Data root: where notebook workspaces, data, and the runtime install live (user-relocatable).
   dataRoot: string
+  // Legacy all-local-execution override retained for tests and existing embedders. Dedicated
+  // overrides take precedence so each public background API can be rolled out independently.
   backgroundExecutionEnabled?: boolean
+  pythonRBackgroundExecutionEnabled?: boolean
+  replBackgroundExecutionEnabled?: boolean
+  shellBackgroundExecutionEnabled?: boolean
   repository?: NotebookRunRepository
   executorFactory?: (
     sessionId: string,
@@ -408,14 +413,24 @@ class NotebookRuntimeService {
     string,
     { controller: AbortController; completion: Promise<unknown> }
   >()
-  private readonly backgroundExecutionEnabled: boolean
+  private readonly pythonRBackgroundExecutionEnabled: boolean
+  private readonly replBackgroundExecutionEnabled: boolean
+  private readonly shellBackgroundExecutionEnabled: boolean
   private environmentStartupBarrier: Promise<void> = Promise.resolve()
 
   constructor(private readonly options: NotebookRuntimeServiceOptions) {
-    this.backgroundExecutionEnabled =
+    this.pythonRBackgroundExecutionEnabled =
+      options.pythonRBackgroundExecutionEnabled ??
       options.backgroundExecutionEnabled ??
-      (process.env.OPEN_SCIENCE_PYTHON_R_BACKGROUND_EXECUTION === '1' ||
-        process.env.OPEN_SCIENCE_SHELL_BACKGROUND_EXECUTION === '1')
+      process.env.OPEN_SCIENCE_PYTHON_R_BACKGROUND_EXECUTION === '1'
+    this.replBackgroundExecutionEnabled =
+      options.replBackgroundExecutionEnabled ??
+      options.backgroundExecutionEnabled ??
+      process.env.OPEN_SCIENCE_REPL_BACKGROUND_EXECUTION === '1'
+    this.shellBackgroundExecutionEnabled =
+      options.shellBackgroundExecutionEnabled ??
+      options.backgroundExecutionEnabled ??
+      process.env.OPEN_SCIENCE_SHELL_BACKGROUND_EXECUTION === '1'
     const defaultProjectId = resolveProjectId(options)
     this.repository = options.repository ?? new NotebookRunRepository(options.dataRoot)
     this.exportReader = new NotebookExportReader({
@@ -1043,7 +1058,7 @@ class NotebookRuntimeService {
     request: ExecuteNotebookCodeRequest,
     signal?: AbortSignal
   ): Promise<NotebookBackgroundRunReceipt> {
-    if (!this.backgroundExecutionEnabled) {
+    if (!this.pythonRBackgroundExecutionEnabled) {
       throw new NotebookBackgroundRunError(
         {
           code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED',
@@ -1353,7 +1368,7 @@ class NotebookRuntimeService {
     request: ExecuteNotebookControlRequest,
     transportSignal?: AbortSignal
   ): Promise<NotebookBackgroundRunReceipt> {
-    if (!this.backgroundExecutionEnabled) {
+    if (!this.replBackgroundExecutionEnabled) {
       throw new NotebookBackgroundRunError(
         {
           code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED',
@@ -1460,7 +1475,7 @@ class NotebookRuntimeService {
     request: ExecuteShellRequest,
     transportSignal?: AbortSignal
   ): Promise<NotebookBackgroundRunReceipt> {
-    if (!this.backgroundExecutionEnabled) {
+    if (!this.shellBackgroundExecutionEnabled) {
       throw new NotebookBackgroundRunError(
         {
           code: 'NOTEBOOK_BACKGROUND_EXECUTION_DISABLED',
@@ -1905,7 +1920,28 @@ class NotebookRuntimeService {
       const runRecovery = this.repository.recoverAllRunLifecycles()
       const kernelRecovery = this.kernelProcessLifecycle.recover()
       const operationRecovery = this.recoveryCoordinator.recover()
-      await Promise.all([shellRecovery, runRecovery, kernelRecovery, operationRecovery])
+      const [, recoveredRuns] = await Promise.all([
+        shellRecovery,
+        runRecovery,
+        kernelRecovery,
+        operationRecovery
+      ])
+      if (this.options.onBackgroundRunTerminal) {
+        await Promise.all(
+          recoveredRuns.map(async ({ projectId, sessionId, run }) => {
+            const context = notebookRunDeliveryContext({ projectId, sessionId }, run)
+            if (!context) return
+            await this.options.onBackgroundRunTerminal!(context).catch((error) => {
+              this.runtimeLogger.error('Recovered background Run delivery fact settlement failed', {
+                ...errorLogFields(error),
+                runId: run.runId,
+                projectId,
+                sessionId
+              })
+            })
+          })
+        )
+      }
     })()
     await this.runLifecycleRecovery
   }

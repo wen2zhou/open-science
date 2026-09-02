@@ -380,10 +380,16 @@ const createComputeHandlers = (
       return new Map()
     }
   }
-  const projectDeliveryPath = async (summary: JobSummary): Promise<JobSummary> =>
-    resultDelivery && (await resultDelivery.hasDeliveryPath(summary.job_id))
-      ? { ...summary, result_delivery_path: 'agent-result-delivery' }
-      : summary
+  const projectDeliveryPath = async (summary: JobSummary): Promise<JobSummary> => {
+    try {
+      return resultDelivery && (await resultDelivery.hasDeliveryPath(summary.job_id))
+        ? { ...summary, result_delivery_path: 'agent-result-delivery' }
+        : summary
+    } catch (error) {
+      log.warn('agent result delivery projection failed', errorLogFields(error))
+      return summary
+    }
+  }
 
   const createHostWithLifecycle = <Request extends { sshAlias: string }>(
     request: Request,
@@ -618,7 +624,9 @@ export const createJobUpdatedBroadcaster =
           notified_at: job.notified_at,
           notification_consumed_at: job.notification_consumed_at
         })
-        .catch(() => undefined)
+        .catch((error) =>
+          log.warn('agent result delivery observation failed', errorLogFields(error))
+        )
     }
     void (async () => {
       let displayName = job.provider_id
@@ -646,9 +654,13 @@ export const createJobUpdatedBroadcaster =
       ) {
         summary = await toJobSummary(verified, displayName, storageRoot)
       }
-      await resultDelivery?.observeJob(summary)
-      if (resultDelivery && (await resultDelivery.hasDeliveryPath(summary.job_id))) {
-        summary = { ...summary, result_delivery_path: 'agent-result-delivery' }
+      try {
+        await resultDelivery?.observeJob(summary)
+        if (resultDelivery && (await resultDelivery.hasDeliveryPath(summary.job_id))) {
+          summary = { ...summary, result_delivery_path: 'agent-result-delivery' }
+        }
+      } catch (error) {
+        log.warn('agent result delivery projection failed', errorLogFields(error))
       }
       broadcastJobUpdated(summary)
     })().catch(() => undefined)

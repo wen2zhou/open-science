@@ -40,6 +40,19 @@ describe('AgentResultDeliveryRepository', () => {
 
     expect(replay).toEqual(first)
     await expect(repository.listAwaitingAgent('session-1')).resolves.toEqual([first])
+
+    const [claimed] = await repository.claimPending('session-1', {
+      token: 'claim-1',
+      expiresAt: 5_000,
+      limit: 1,
+      now: 1_000
+    })
+    await repository.markConsumed([claimed.id], 'claim-1', 'continuation-1', 2_000)
+
+    const replayAfterConsumption = await repository.recordTerminalOutcome(outcome)
+
+    expect(replayAfterConsumption).toMatchObject({ id: first.id, state: 'consumed' })
+    await expect(repository.listAwaitingAgent('session-1')).resolves.toEqual([])
   })
 
   it('keeps a bounded Project projection without scanning consumed or other-Project history', async () => {
@@ -88,17 +101,20 @@ describe('AgentResultDeliveryRepository', () => {
   })
 
   it('moves an admitted local Run monotonically from waiting-result to pending', async () => {
-    await repository.registerLocalRun({
+    const waiting = {
       sourceKind: 'local-run',
       runId: 'run-1',
-      executionType: 'repl',
-      terminalStatus: 'waiting-result',
+      executionType: 'repl' as const,
+      terminalStatus: 'waiting-result' as const,
       projectId: 'project-1',
       sessionId: 'session-1',
       title: 'await host.llm()',
       lane: 'REPL · project-control',
       acceptedAt: 100
-    })
+    } as const
+    await repository.registerLocalRun(waiting)
+
+    await expect(repository.listWaitingLocalRuns()).resolves.toEqual([waiting])
 
     await expect(
       repository.recordTerminalOutcome({
@@ -113,6 +129,7 @@ describe('AgentResultDeliveryRepository', () => {
     await expect(repository.listProjectVisible('project-1')).resolves.toEqual([
       expect.objectContaining({ state: 'pending' })
     ])
+    await expect(repository.listWaitingLocalRuns()).resolves.toEqual([])
   })
 
   it('claims a Session batch once and recovers an expired lease without consuming it', async () => {
