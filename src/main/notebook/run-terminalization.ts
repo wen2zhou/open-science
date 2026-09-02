@@ -32,6 +32,7 @@ type NotebookRunTerminalResult = {
   cwdAfter?: string
   outputs: NotebookOutput[]
   truncated?: boolean
+  exitCode?: number | null
   workingFiles?: NotebookWorkingFile[]
   fileEvidence?: ExecutionFileEvidenceSummary
   environmentManifest?: NotebookEnvironmentManifest
@@ -68,6 +69,7 @@ type NotebookRunTerminalizationOwnerOptions = {
     | 'commitTerminalRun'
     | 'appendRun'
     | 'updateRun'
+    | 'requestRunCancellation'
   >
   notifyChanged: (session: NotebookRunTerminalizationSession) => void
   afterCommit?: (
@@ -253,6 +255,23 @@ class NotebookRunTerminalizationOwner {
     return result.run
   }
 
+  async requestCancellation(
+    session: NotebookRunTerminalizationSession,
+    run: NotebookRunRecord,
+    reason: unknown
+  ): Promise<NotebookRunRecord> {
+    const requested = await this.options.repository.requestRunCancellation({
+      projectId: session.projectId,
+      sessionId: session.sessionId,
+      lane: session.lane,
+      run,
+      requestedAt: this.now(),
+      reason: errorMessage(reason)
+    })
+    this.options.notifyChanged(session)
+    return requested
+  }
+
   async run<Result extends NotebookRunTerminalResult>(
     request: TerminalizeNotebookRunRequest<Result>
   ): Promise<{ run: NotebookRunRecord; result: Result }> {
@@ -372,6 +391,7 @@ class NotebookRunTerminalizationOwner {
       workingFiles: limitedResult.workingFiles ?? [],
       fileEvidence: limitedResult.fileEvidence ?? unavailableFileEvidence(runningRun.runId),
       ...(limitedResult.truncated ? { truncated: true } : {}),
+      ...(limitedResult.exitCode !== undefined ? { exitCode: limitedResult.exitCode } : {}),
       environmentCapture,
       ...(limitedResult.kernelDispatched !== undefined
         ? { kernelDispatched: limitedResult.kernelDispatched }

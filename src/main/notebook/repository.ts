@@ -169,6 +169,22 @@ const notebookRunCandidate = (value: unknown): boolean => {
     (value.submissionIdentity === undefined) !== (value.submissionFingerprint === undefined) ||
     (value.admittedAt !== undefined &&
       (typeof value.admittedAt !== 'number' || !Number.isFinite(value.admittedAt))) ||
+    (value.frozenShellContext !== undefined &&
+      (!isRecord(value.frozenShellContext) ||
+        typeof value.frozenShellContext.cwd !== 'string' ||
+        typeof value.frozenShellContext.handoffDir !== 'string' ||
+        typeof value.frozenShellContext.runtimeRoot !== 'string' ||
+        typeof value.frozenShellContext.notebookSessionRoot !== 'string' ||
+        typeof value.frozenShellContext.inputRoot !== 'string' ||
+        !Array.isArray(value.frozenShellContext.protectedDirs) ||
+        !value.frozenShellContext.protectedDirs.every((entry) => typeof entry === 'string') ||
+        !isRecord(value.frozenShellContext.environment) ||
+        !Object.values(value.frozenShellContext.environment).every(
+          (entry) => typeof entry === 'string'
+        ) ||
+        typeof value.frozenShellContext.timeoutMs !== 'number' ||
+        !Number.isFinite(value.frozenShellContext.timeoutMs) ||
+        typeof value.frozenShellContext.platform !== 'string')) ||
     typeof value.cellId !== 'string' ||
     (value.source !== 'agent' && value.source !== 'user') ||
     typeof value.script !== 'string' ||
@@ -177,6 +193,13 @@ const notebookRunCandidate = (value: unknown): boolean => {
     ) ||
     typeof value.startedAt !== 'number' ||
     !Number.isFinite(value.startedAt) ||
+    (value.cancellationRequestedAt !== undefined &&
+      (typeof value.cancellationRequestedAt !== 'number' ||
+        !Number.isFinite(value.cancellationRequestedAt))) ||
+    (value.cancellationReason !== undefined && typeof value.cancellationReason !== 'string') ||
+    (value.exitCode !== undefined &&
+      value.exitCode !== null &&
+      (!Number.isSafeInteger(value.exitCode) || Number(value.exitCode) < 0)) ||
     (value.kernelEpochId !== undefined &&
       (typeof value.kernelEpochId !== 'string' || value.kernelEpochId.length === 0)) ||
     (value.kernelDispatched !== undefined && typeof value.kernelDispatched !== 'boolean') ||
@@ -720,7 +743,17 @@ class NotebookRunRepository {
           )
         }
         const runs = [...current.runs]
-        canonicalRun = normalizeRun(current.notebookSessionRoot, requestedRun)
+        canonicalRun = normalizeRun(current.notebookSessionRoot, {
+          ...requestedRun,
+          ...(existing.cancellationRequestedAt !== undefined
+            ? {
+                cancellationRequestedAt: existing.cancellationRequestedAt,
+                ...(existing.cancellationReason !== undefined
+                  ? { cancellationReason: existing.cancellationReason }
+                  : {})
+              }
+            : {})
+        })
         runs[index] = canonicalRun
         transitioned = true
         return { ...current, runs, updatedAt: Date.now() }
@@ -728,6 +761,36 @@ class NotebookRunRepository {
     )
     if (!canonicalRun) throw new Error(`Notebook run not found: ${requestedRun.runId}`)
     return { document, run: canonicalRun, transitioned }
+  }
+
+  // Cancellation is orthogonal intent, not a primary-state transition. Persist it while a Run is
+  // queued/running so a crash between Stop and terminal CAS retains what the caller requested.
+  async requestRunCancellation(
+    request: AppendNotebookRunRequest & { requestedAt: number; reason: string }
+  ): Promise<NotebookRunRecord> {
+    let canonicalRun: NotebookRunRecord | undefined
+    await this.mutate(request.projectId, request.sessionId, request.lane, (current) => {
+      const index = current.runs.findIndex((candidate) => candidate.runId === request.run.runId)
+      if (index === -1) throw new Error(`Notebook run not found: ${request.run.runId}`)
+      const existing = current.runs[index]
+      canonicalRun = existing
+      if (
+        (existing.status !== 'queued' && existing.status !== 'running') ||
+        existing.cancellationRequestedAt !== undefined
+      ) {
+        return current
+      }
+      const runs = [...current.runs]
+      canonicalRun = normalizeRun(current.notebookSessionRoot, {
+        ...existing,
+        cancellationRequestedAt: request.requestedAt,
+        cancellationReason: request.reason
+      })
+      runs[index] = canonicalRun
+      return { ...current, runs, updatedAt: Date.now() }
+    })
+    if (!canonicalRun) throw new Error(`Notebook run not found: ${request.run.runId}`)
+    return canonicalRun
   }
 
   // Write a recovery fact before the canonical terminal CAS. If that second write fails, startup

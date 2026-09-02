@@ -750,7 +750,7 @@ describe('notebook_execute tool', () => {
   it.each([
     ['execute', true],
     ['executeControl', false],
-    ['executeShell', false],
+    ['executeShell', true],
     ['state', true]
   ] as const)(
     'forwards MCP cancellation for %s only when the RPC consumes it',

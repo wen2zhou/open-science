@@ -107,6 +107,7 @@ import { resolveProjectId, type ProjectIdScope } from '../../shared/project-scop
 import { NotebookRunTerminalizationOwner } from './run-terminalization'
 import type { NotebookShellProcess, NotebookShellResult } from './shell-process'
 import { NotebookShellProcessAdapter } from './shell-process'
+import { ShellProcessOwnershipRegistry } from './shell-process-ownership'
 import type { NotebookProcessSandbox } from './process-sandbox'
 import { sandboxedPackageSpawn } from './package-process-sandbox'
 import {
@@ -204,6 +205,7 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
   // Stateless shell child-process port. The production adapter owns platform invocation, encoding,
   // environment projection, and timeout teardown; tests inject a fake without crossing IPC/shared.
   shellProcess?: NotebookShellProcess
+  shellConcurrencyLimit?: number
   processSandbox?: NotebookProcessSandbox
   // Latency-probe deps for the fastest-mirror auto-selection, injectable so tests stay hermetic (the
   // real probe does live HEAD requests). Undefined in production → effectiveMirrorAsync's real probe.
@@ -341,6 +343,7 @@ class NotebookRuntimeService {
   private readonly exportReader: NotebookExportReader
   private readonly runTerminalization: NotebookRunTerminalizationOwner
   private readonly executionOwner: NotebookExecutionOwner
+  private readonly shellProcessOwnership: ShellProcessOwnershipRegistry
   private readonly helperModules: NotebookHelperModuleHost
   private readonly dependencyAnalyzer: Pick<NotebookDependencyAnalyzer, 'project'>
   private readonly dataExecutionAdmission: NotebookDataExecutionAdmissionOwner
@@ -564,6 +567,7 @@ class NotebookRuntimeService {
         })
       }
     })
+    this.shellProcessOwnership = new ShellProcessOwnershipRegistry(options.dataRoot)
     this.helperModules = new NotebookHelperModuleHost(options.helperModuleCatalog)
     this.executionOwner = new NotebookExecutionOwner({
       configRoot: options.configRoot,
@@ -590,7 +594,12 @@ class NotebookRuntimeService {
       platform: options.platform,
       shellProcess:
         options.shellProcess ??
-        new NotebookShellProcessAdapter(options.platform, options.processSandbox)
+        new NotebookShellProcessAdapter(
+          options.platform,
+          options.processSandbox,
+          this.shellProcessOwnership
+        ),
+      shellConcurrencyLimit: options.shellConcurrencyLimit
     })
   }
 
@@ -953,11 +962,18 @@ class NotebookRuntimeService {
 
   // Compatibility facade for stateless shell execution. The owner deliberately admits calls without
   // a per-Session queue while the repository continues to serialize durable run writes.
-  async executeShell(request: ExecuteShellRequest): Promise<NotebookShellResult> {
+  async executeShell(
+    request: ExecuteShellRequest,
+    signal?: AbortSignal
+  ): Promise<NotebookShellResult> {
     return this.sessionLifecycle.runProjectOperation(request, async (deletionSignal) => {
       assertNotebookCodeWithinLimit(request.command)
       const session = await this.sessionLifecycle.ensure(request)
-      return this.executionOwner.executeShell(session, request, deletionSignal)
+      return this.executionOwner.executeShell(
+        session,
+        request,
+        signal ? AbortSignal.any([signal, deletionSignal]) : deletionSignal
+      )
     })
   }
 
@@ -1157,15 +1173,44 @@ class NotebookRuntimeService {
   async shutdown(
     request: NotebookSessionRequest
   ): Promise<{ sessionId: string; status: 'shutdown' }> {
-    return this.sessionLifecycle.shutdown(request)
+    const laneKey = notebookLaneKey(this.sessionLifecycle.laneForRequest(request))
+    const releaseFence = this.executionOwner.fenceShellRuns({ laneKey })
+    try {
+      await this.executionOwner.cancelShellRuns(
+        { laneKey },
+        new Error('Notebook Session is shutting down.')
+      )
+      return await this.sessionLifecycle.shutdown(request)
+    } finally {
+      releaseFence()
+    }
   }
 
   async shutdownSession(sessionId: string): Promise<{ sessionId: string; status: 'shutdown' }> {
-    return this.sessionLifecycle.shutdownSession(sessionId)
+    const releaseFence = this.executionOwner.fenceShellRuns({ sessionId })
+    try {
+      await this.executionOwner.cancelShellRuns(
+        { sessionId },
+        new Error('Notebook Session is shutting down.')
+      )
+      return await this.sessionLifecycle.shutdownSession(sessionId)
+    } finally {
+      releaseFence()
+    }
   }
 
   async shutdownProject(projectId: string): Promise<void> {
-    return this.sessionLifecycle.shutdownProject(projectId)
+    this.sessionLifecycle.beginProjectDeletion(projectId)
+    const releaseFence = this.executionOwner.fenceShellRuns({ projectId })
+    try {
+      await this.executionOwner.cancelShellRuns(
+        { projectId },
+        new Error('Notebook Project is shutting down.')
+      )
+      return await this.sessionLifecycle.shutdownProject(projectId)
+    } finally {
+      releaseFence()
+    }
   }
 
   async deleteProjectFileEvidence(projectId: string): Promise<void> {
@@ -1197,6 +1242,7 @@ class NotebookRuntimeService {
   // repair-required) paths all populate the journal, so each reconcile action below is wired to a real effect.
   async recoverInterruptedOperations(): Promise<void> {
     this.runLifecycleRecovery ??= (async () => {
+      await this.shellProcessOwnership.recover()
       await this.repository.recoverAllRunLifecycles()
       await this.recoveryCoordinator.recover()
     })()
@@ -1313,8 +1359,26 @@ class NotebookRuntimeService {
   // Shuts down every live interpreter, used by app-level cleanup paths. Returns { reaped }: true only
   // when every kernel tree was cleanly reaped, so the update-install gate can refuse to trigger the
   // NSIS uninstall while a kernel may still hold file handles under the install dir.
-  shutdownAll(): Promise<{ reaped: boolean }> {
-    return this.sessionLifecycle.shutdownAll()
+  async shutdownAll(): Promise<{ reaped: boolean }> {
+    const releaseFence = this.executionOwner.fenceShellRuns({ global: true })
+    try {
+      const shell = await this.executionOwner.cancelShellRuns(
+        {},
+        new Error('Notebook runtime is shutting down.')
+      )
+      const shellRecoveryReaped =
+        shell.reaped && !this.shellProcessOwnership.hasReceipts()
+          ? true
+          : await this.shellProcessOwnership
+              .recover()
+              .then(() => true)
+              .catch(() => false)
+      const sessions = await this.sessionLifecycle.shutdownAll()
+      return { reaped: shellRecoveryReaped && sessions.reaped }
+    } finally {
+      // shutdownAll is reusable when an update/migration is cancelled.
+      releaseFence()
+    }
   }
 
   // Permanently closes process-owned recovery work before the final kernel teardown. Unlike
@@ -1327,11 +1391,24 @@ class NotebookRuntimeService {
     // are released and queued acquisitions reject, so no package/environment operation can begin after
     // application disposal has crossed this point.
     this.environmentOperations.dispose()
+    this.executionOwner.fenceShellRuns({ global: true })
     // Mark recovery disposed first, but do not let slow startup filesystem reconciliation consume the
     // quit budget before kernel teardown even starts. Await both so non-quit module disposal still leaves
     // no recovery work behind once this terminal operation resolves.
     const recoveryDisposal = this.recoveryCoordinator.dispose()
-    const shutdown = this.sessionLifecycle.dispose()
+    const shutdown = this.executionOwner
+      .cancelShellRuns({}, new Error('Notebook runtime is shutting down.'))
+      .then(async (shell) => {
+        const shellRecoveryReaped =
+          shell.reaped && !this.shellProcessOwnership.hasReceipts()
+            ? true
+            : await this.shellProcessOwnership
+                .recover()
+                .then(() => true)
+                .catch(() => false)
+        const sessions = await this.sessionLifecycle.dispose()
+        return { reaped: shellRecoveryReaped && sessions.reaped }
+      })
     const disposal = Promise.allSettled([shutdown, recoveryDisposal]).then(
       ([shutdownResult, recoveryResult]) => {
         const failures = [shutdownResult, recoveryResult]

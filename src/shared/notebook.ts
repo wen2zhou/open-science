@@ -443,6 +443,10 @@ export type NotebookRunRecord = {
   submissionIdentity?: string
   submissionFingerprint?: string
   admittedAt?: number
+  // Orthogonal durable intent. The primary status remains queued/running until the executor wins
+  // the cancellation race and commits a confirmed terminal outcome.
+  cancellationRequestedAt?: number
+  cancellationReason?: string
   frozenRuntimeTarget?: {
     language: NotebookLanguage
     environment: string
@@ -456,6 +460,20 @@ export type NotebookRunRecord = {
   }
   frozenPermissionScope?: {
     allowedHelperSkillIds: string[]
+  }
+  // Exact stateless-shell launch context captured before durable admission. Optional keeps legacy
+  // records readable; new bash Runs never re-read mutable Session paths or host environment at
+  // dispatch time.
+  frozenShellContext?: {
+    cwd: string
+    handoffDir: string
+    runtimeRoot: string
+    notebookSessionRoot: string
+    inputRoot: string
+    protectedDirs: string[]
+    environment: Record<string, string>
+    timeoutMs: number
+    platform: NodeJS.Platform
   }
   // App-owned one-shot identity joining an authorized ACP tool call to the execution admitted by
   // the authenticated Notebook RPC bridge. Optional keeps existing run.json documents readable.
@@ -497,6 +515,8 @@ export type NotebookRunRecord = {
   // documents readable; repository normalization supplies an empty array for old records.
   inputFiles?: NotebookRunInputFile[]
   truncated?: boolean
+  // Exact stateless-shell outcome. Optional keeps non-shell and historical records compatible.
+  exitCode?: number | null
   // Named env that produced this run (python/r only; omitted for repl/bash).
   environment?: string
   // Immutable completed-run environment evidence. The cache that helped build it is never referenced.
