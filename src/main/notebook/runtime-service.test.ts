@@ -3753,6 +3753,7 @@ describe('notebook runtime service', () => {
     let active = 0
     let maxConcurrent = 0
     const releases: Array<() => void> = []
+    const executedCodes: string[] = []
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
@@ -3760,6 +3761,7 @@ describe('notebook runtime service', () => {
       repository: new NotebookRunRepository(root),
       executorFactory: () => ({
         execute: async (request): Promise<NotebookExecutionResult> => {
+          executedCodes.push(request.code)
           active += 1
           maxConcurrent = Math.max(maxConcurrent, active)
 
@@ -3815,6 +3817,27 @@ describe('notebook runtime service', () => {
     expect(queuedState.runs).toEqual(
       expect.arrayContaining([expect.objectContaining({ script: "print('b')", status: 'queued' })])
     )
+    const queuedCell = queuedState.cells.find((cell) => cell.code === "print('b')")
+    expect(queuedCell).toBeDefined()
+    const rewrite = await service.beginCodeCell({
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      cellId: queuedCell!.id,
+      language: 'python'
+    })
+    await service.appendCodeCell({
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      cellId: queuedCell!.id,
+      writeId: rewrite.writeId,
+      delta: "print('mutated')"
+    })
+    await service.finishCodeCell({
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      cellId: queuedCell!.id,
+      writeId: rewrite.writeId
+    })
 
     // Drain the first run; the second should then take the freed slot and run on its own.
     releases[0]()
@@ -3826,6 +3849,7 @@ describe('notebook runtime service', () => {
     }>
 
     expect(maxConcurrent).toBe(1)
+    expect(executedCodes).toEqual(["print('a')", "print('b')"])
     expect(firstSummary.status).toBe('completed')
     expect(secondSummary.status).toBe('completed')
 
@@ -3943,6 +3967,10 @@ describe('notebook runtime service', () => {
     }
 
     const first = await service.execute(request)
+    const admission = Reflect.get(service, 'dataExecutionAdmission') as {
+      admit: () => Promise<never>
+    }
+    vi.spyOn(admission, 'admit').mockRejectedValue(new Error('admission changed after completion'))
     const repeated = await service.execute(request)
 
     expect(executions).toBe(1)
@@ -4033,6 +4061,44 @@ describe('notebook runtime service', () => {
 
     await expect(service.execute({ ...base, code: 'x = 2' })).rejects.toMatchObject({
       code: 'NOTEBOOK_RUN_SUBMISSION_CONFLICT'
+    })
+  })
+
+  it('rejects a submission identity reused with a different helper permission scope', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const base = {
+      projectId: 'default-project',
+      sessionId: 'session-permission-conflict',
+      workspaceCwd: root,
+      code: 'x = 1',
+      executionInvocationId: 'submission-permission-conflict'
+    }
+    await service.execute({ ...base, registeredHelperSkillIds: ['skill-a'] })
+
+    await expect(
+      service.execute({ ...base, registeredHelperSkillIds: ['skill-b'] })
+    ).rejects.toMatchObject({ code: 'NOTEBOOK_RUN_SUBMISSION_CONFLICT' })
+    const document = await repository.findExisting('default-project', 'session-permission-conflict')
+    expect(document?.runs[0].frozenPermissionScope).toEqual({
+      allowedHelperSkillIds: ['skill-a']
     })
   })
 

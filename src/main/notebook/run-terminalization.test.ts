@@ -105,6 +105,8 @@ const createHarness = (
     appendFailure?: Error
     updateFailure?: Error
     updateFailureCount?: number
+    terminalFailure?: Error
+    terminalFailureCount?: number
     omitUpdatedRun?: boolean
   } = {}
 ): {
@@ -115,6 +117,7 @@ const createHarness = (
   const events: string[] = []
   let document = documentWith([])
   let updateFailuresRemaining = options.updateFailureCount ?? Number.POSITIVE_INFINITY
+  let terminalFailuresRemaining = options.terminalFailureCount ?? Number.POSITIVE_INFINITY
   const owner = new NotebookRunTerminalizationOwner({
     repository: {
       appendOrGetRun: async ({ run }) => {
@@ -126,6 +129,8 @@ const createHarness = (
         document = documentWith([...document.runs, run])
         return { document, run, admitted: true }
       },
+      findRunBySubmission: async (_projectId, _sessionId, _lane, submissionIdentity) =>
+        document.runs.find((run) => run.submissionIdentity === submissionIdentity),
       transitionRun: async ({ run, expectedStatus }) => {
         events.push(`transition:${expectedStatus}->${run.status}`)
         const existing = document.runs.find((candidate) => candidate.runId === run.runId)
@@ -140,6 +145,10 @@ const createHarness = (
       },
       commitTerminalRun: async ({ run, expectedStatus }) => {
         events.push(`terminal:${expectedStatus}->${run.status}`)
+        if (options.terminalFailure && terminalFailuresRemaining > 0) {
+          terminalFailuresRemaining -= 1
+          throw options.terminalFailure
+        }
         const existing = document.runs.find((candidate) => candidate.runId === run.runId)
         if (!existing) throw new Error(`Notebook run not found: ${run.runId}`)
         if (existing.status !== expectedStatus) {
@@ -179,6 +188,9 @@ describe('NotebookRunTerminalizationOwner', () => {
     const owner = new NotebookRunTerminalizationOwner({
       repository: {
         appendOrGetRun: async () => {
+          throw new Error('not used')
+        },
+        findRunBySubmission: async () => {
           throw new Error('not used')
         },
         transitionRun: async () => {
@@ -296,6 +308,33 @@ describe('NotebookRunTerminalizationOwner', () => {
 
     expect(repeated).toMatchObject({ admitted: false, run: { runId: 'run-1' } })
     expect(harness.events).toEqual(['admit:queued', 'notify:queued', 'admit:queued'])
+  })
+
+  it('does not expose a durable terminal result until its persistence retry succeeds', async () => {
+    const harness = createHarness({
+      terminalFailure: new Error('terminal persistence failed'),
+      terminalFailureCount: 1
+    })
+    const admission = await harness.owner.admit({
+      session,
+      queuedRun: queuedRun('run-terminal-retry')
+    })
+
+    await expect(
+      harness.owner.runAdmitted({
+        session,
+        queuedRun: admission.run,
+        invoke: async () => completedResult(),
+        settleLive: (result) => harness.events.push(`settle-live:${result.status}`)
+      })
+    ).rejects.toThrow('terminal persistence failed')
+    expect(harness.document().runs[0]).toMatchObject({ status: 'running' })
+    expect(harness.events).not.toContain('settle-live:completed')
+
+    await harness.owner.reconcilePending(session)
+
+    expect(harness.document().runs[0]).toMatchObject({ status: 'completed' })
+    expect(harness.events).toContain('settle-live:completed')
   })
 
   it('persists the observer evidence summary on the terminal Run', async () => {

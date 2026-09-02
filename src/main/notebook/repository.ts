@@ -209,6 +209,16 @@ const notebookRunCandidate = (value: unknown): boolean => {
       return false
     }
   }
+  if (value.frozenPermissionScope !== undefined) {
+    const scope = isRecord(value.frozenPermissionScope) ? value.frozenPermissionScope : undefined
+    if (
+      !scope ||
+      !Array.isArray(scope.allowedHelperSkillIds) ||
+      scope.allowedHelperSkillIds.some((skillId) => typeof skillId !== 'string')
+    ) {
+      return false
+    }
+  }
   if (
     value.workingFiles !== undefined &&
     (!Array.isArray(value.workingFiles) ||
@@ -669,6 +679,17 @@ class NotebookRunRepository {
     )
     if (!canonicalRun) throw new Error('Notebook Run admission did not resolve a canonical Run.')
     return { document, run: canonicalRun, admitted }
+  }
+
+  async findRunBySubmission(
+    projectId: string,
+    sessionId: string,
+    lane: NotebookLaneIdentity,
+    submissionIdentity: string
+  ): Promise<NotebookRunRecord | undefined> {
+    await this.saveQueue
+    const document = await this.loadExisting(projectId, sessionId, lane)
+    return document.runs.find((run) => run.submissionIdentity === submissionIdentity)
   }
 
   // Compare-and-set transition used by the lifecycle owner. A racing terminal winner is returned

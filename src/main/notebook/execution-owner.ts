@@ -181,6 +181,7 @@ const dataRunFingerprint = (
         source: request.source ?? 'agent',
         inputKind: request.inputKind ?? 'cell',
         provenanceContext: request.provenanceContext ?? null,
+        allowedHelperSkillIds: [...(request.registeredHelperSkillIds ?? [])].sort(),
         inputFiles: (request.registeredInputFiles ?? [])
           .map((input) => ({
             inputFileVersionId: input.inputFileVersionId,
@@ -255,9 +256,11 @@ class NotebookExecutionOwner {
     if (session.isCellReceiving(cell.id)) {
       throw new Error(`Notebook cell is still receiving code: ${cell.id}`)
     }
-    const { runId } = this.options.runTerminalization.allocateRunIdentity()
-    const submissionIdentity = request.executionInvocationId ?? runId
     const submissionFingerprint = dataRunFingerprint(session, cell, request, helperModuleIds)
+    let runId: string | undefined
+    const submissionIdentity =
+      request.executionInvocationId ??
+      (runId = this.options.runTerminalization.allocateRunIdentity().runId)
     const submissionKey = `${notebookLaneKey(session.lane)}:${submissionIdentity}`
     const active = this.activeDataSubmissions.get(submissionKey)
     if (active) {
@@ -266,16 +269,34 @@ class NotebookExecutionOwner {
       }
       return active.promise
     }
-    const promise = this.executeDataCellDurable(
-      session,
-      cell,
-      request,
-      runId,
-      submissionIdentity,
-      submissionFingerprint,
-      signal,
-      helperModuleIds
-    )
+    const promise = (async () => {
+      if (request.executionInvocationId) {
+        const existing = await this.options.runTerminalization.findSubmission(
+          session,
+          submissionIdentity
+        )
+        if (existing) {
+          if (existing.submissionFingerprint !== submissionFingerprint) {
+            throw new NotebookRunSubmissionConflictError(submissionIdentity)
+          }
+          const dependencyProjection = await this.options
+            .projectDependencies(session, existing)
+            .catch(() => unavailableNotebookDependencyProjection([existing]))
+          return { run: existing, dependencyProjection }
+        }
+      }
+      runId ??= this.options.runTerminalization.allocateRunIdentity().runId
+      return this.executeDataCellDurable(
+        session,
+        cell,
+        request,
+        runId,
+        submissionIdentity,
+        submissionFingerprint,
+        signal,
+        helperModuleIds
+      )
+    })()
     const entry = { fingerprint: submissionFingerprint, promise }
     this.activeDataSubmissions.set(submissionKey, entry)
     try {
@@ -355,6 +376,9 @@ class NotebookExecutionOwner {
       workingFiles: [],
       inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
     }
+    queuedRun.frozenPermissionScope = {
+      allowedHelperSkillIds: [...(request.registeredHelperSkillIds ?? [])].sort()
+    }
     queuedRun.frozenRuntimeTarget = {
       language: cell.language,
       environment,
@@ -432,7 +456,7 @@ class NotebookExecutionOwner {
                   const executionResult = await session
                     .execute({
                       runId,
-                      code: cell.code,
+                      code: durableAdmission.run.script,
                       ...(helperPlan.injections.length
                         ? { helperModules: helperPlan.injections }
                         : {}),

@@ -454,6 +454,9 @@ export type NotebookRunRecord = {
     args?: string[]
     condaPrefix?: string
   }
+  frozenPermissionScope?: {
+    allowedHelperSkillIds: string[]
+  }
   // App-owned one-shot identity joining an authorized ACP tool call to the execution admitted by
   // the authenticated Notebook RPC bridge. Optional keeps existing run.json documents readable.
   executionInvocationId?: string
@@ -673,6 +676,7 @@ export type NotebookRunSummary = Omit<
   | 'submissionFingerprint'
   | 'admittedAt'
   | 'frozenRuntimeTarget'
+  | 'frozenPermissionScope'
 > & {
   inputFiles: NotebookInputFileSummary[]
   notebookSessionRoot: string
