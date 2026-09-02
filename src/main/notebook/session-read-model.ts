@@ -338,6 +338,10 @@ class NotebookSessionReadModel<Session extends NotebookSessionReadSource> {
     delete publicRun.kernelDispatched
     delete publicRun.runtimeId
     delete publicRun.helperModules
+    delete publicRun.submissionIdentity
+    delete publicRun.submissionFingerprint
+    delete publicRun.admittedAt
+    delete publicRun.frozenRuntimeTarget
     const inputFiles = (run.inputFiles ?? []).map((input) => {
       const publicInput = { ...input } as Partial<typeof input>
       delete publicInput.storageKey

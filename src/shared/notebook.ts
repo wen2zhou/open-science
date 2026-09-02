@@ -437,6 +437,23 @@ export type NotebookHelperEvidenceStatus =
 // Stores one durable notebook execution, including code, output, and generated-file references.
 export type NotebookRunRecord = {
   runId: string
+  // Stable, lane-scoped identity for durable admission. Reusing it with the same fingerprint
+  // returns this canonical Run; reusing it for different submitted work is a conflict. Optional
+  // keeps historical run.json documents readable.
+  submissionIdentity?: string
+  submissionFingerprint?: string
+  admittedAt?: number
+  frozenRuntimeTarget?: {
+    language: NotebookLanguage
+    environment: string
+    processKey: string
+    runtimeId?: string
+    source?: 'managed' | 'external'
+    interpreterPath?: string
+    command?: string
+    args?: string[]
+    condaPrefix?: string
+  }
   // App-owned one-shot identity joining an authorized ACP tool call to the execution admitted by
   // the authenticated Notebook RPC bridge. Optional keeps existing run.json documents readable.
   executionInvocationId?: string
@@ -649,7 +666,14 @@ export type NotebookAvailableEvent = NotebookSessionReference
 export type NotebookChangedEvent = NotebookSessionReference
 
 // Extends a run record with workspace roots so the agent can decide what to do next.
-export type NotebookRunSummary = Omit<NotebookRunRecord, 'inputFiles'> & {
+export type NotebookRunSummary = Omit<
+  NotebookRunRecord,
+  | 'inputFiles'
+  | 'submissionIdentity'
+  | 'submissionFingerprint'
+  | 'admittedAt'
+  | 'frozenRuntimeTarget'
+> & {
   inputFiles: NotebookInputFileSummary[]
   notebookSessionRoot: string
   dataRoot: string

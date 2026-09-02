@@ -44,7 +44,8 @@ import {
   type NotebookEnvironmentPackageChange,
   type NotebookEnvironmentManifest,
   type NotebookEnvironmentStatus,
-  type NotebookLanguage
+  type NotebookLanguage,
+  type NotebookRunInputFile
 } from '../../shared/notebook'
 import type {
   DiscoveredInterpreter,
@@ -1518,7 +1519,7 @@ describe('notebook runtime service', () => {
   it('repairs a transient terminal write failure on the next same-process state read', async () => {
     const root = await createStorageRoot()
     const repository = new NotebookRunRepository(root)
-    vi.spyOn(repository, 'updateRun').mockRejectedValueOnce(
+    vi.spyOn(repository, 'commitTerminalRun').mockRejectedValueOnce(
       new Error('transient terminal write failure')
     )
     const service = new NotebookRuntimeService({
@@ -1566,7 +1567,7 @@ describe('notebook runtime service', () => {
     const root = await createStorageRoot()
     const repository = new NotebookRunRepository(root)
     const appendError = new Error('could not append running run')
-    vi.spyOn(repository, 'appendRun').mockRejectedValue(appendError)
+    vi.spyOn(repository, 'appendOrGetRun').mockRejectedValue(appendError)
     const execute = vi.fn(async (request: NotebookExecutionRequest) => ({
       status: 'completed' as const,
       stdout: '',
@@ -1614,7 +1615,7 @@ describe('notebook runtime service', () => {
     const root = await createStorageRoot()
     const repository = new NotebookRunRepository(root)
     const updateError = new Error('could not persist terminal run')
-    vi.spyOn(repository, 'updateRun').mockRejectedValue(updateError)
+    vi.spyOn(repository, 'commitTerminalRun').mockRejectedValue(updateError)
     const execute = vi.fn(async (request: NotebookExecutionRequest) => ({
       status: 'completed' as const,
       stdout: 'done\n',
@@ -1963,6 +1964,7 @@ describe('notebook runtime service', () => {
     expect(notifications).toEqual([
       'changed:user-session',
       'available:agent-session',
+      'changed:agent-session',
       'changed:agent-session',
       'changed:agent-session',
       'changed:agent-session',
@@ -3591,13 +3593,24 @@ describe('notebook runtime service', () => {
       }
     })
 
-    // A fresh service loading the session reconciles the stale run (no live kernel exists for it).
+    // Startup recovery reconciles the stale run before any renderer or caller opens the Session.
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
       projectId: 'default-project',
       repository: new NotebookRunRepository(root)
     })
+    await service.recoverInterruptedOperations()
+    const recoveredBeforeSessionOpen = await new NotebookRunRepository(root).findExisting(
+      'default-project',
+      'crashed'
+    )
+    expect(recoveredBeforeSessionOpen?.runs[0]).toMatchObject({
+      runId: 'run-1',
+      status: 'interrupted',
+      interruptionReason: 'app-terminated'
+    })
+
     const state = await service.state({ sessionId: 'crashed', workspaceCwd: '/workspace' })
     expect(state.runs[0]).toMatchObject({
       runId: 'run-1',
@@ -3794,6 +3807,14 @@ describe('notebook runtime service', () => {
 
     // With serialization the second run is still queued, so only the first has entered the executor.
     expect(releases).toHaveLength(1)
+    const queuedState = await service.state({
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace'
+    })
+    expect(queuedState.runs).toEqual(
+      expect.arrayContaining([expect.objectContaining({ script: "print('b')", status: 'queued' })])
+    )
 
     // Drain the first run; the second should then take the freed slot and run on its own.
     releases[0]()
@@ -3867,16 +3888,184 @@ describe('notebook runtime service', () => {
     })
     cancellation.abort()
 
-    await expect(queued).rejects.toBe(cancellation.signal.reason)
+    await expect(queued).resolves.toMatchObject({ status: 'cancelled' })
     const queuedState = await service.state({ sessionId: 'session-1', workspaceCwd: root })
-    expect(queuedState.runs).toHaveLength(1)
+    expect(queuedState.runs).toHaveLength(2)
+    expect(queuedState.runs).toContainEqual(
+      expect.objectContaining({ script: 'should_not_run()', status: 'cancelled' })
+    )
     expect(queuedState.cells[1]).toMatchObject({
       code: 'should_not_run()',
-      status: 'idle'
+      status: 'cancelled'
+    })
+    const persisted = await new NotebookRunRepository(root).findExisting(
+      'default-project',
+      'session-1'
+    )
+    expect(persisted?.runs.find((run) => run.script === 'should_not_run()')).toMatchObject({
+      status: 'cancelled',
+      kernelDispatched: false
     })
 
     releaseExecution.resolve()
     await expect(first).resolves.toMatchObject({ status: 'completed' })
+  })
+
+  it('executes a repeated submission identity only once and returns the canonical Run', async () => {
+    const root = await createStorageRoot()
+    let executions = 0
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          executions += 1
+          return {
+            status: 'completed',
+            stdout: 'one\n',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const request = {
+      projectId: 'default-project',
+      sessionId: 'session-idempotent',
+      workspaceCwd: root,
+      code: 'counter += 1',
+      executionInvocationId: 'submission-idempotent'
+    }
+
+    const first = await service.execute(request)
+    const repeated = await service.execute(request)
+
+    expect(executions).toBe(1)
+    expect(repeated.runId).toBe(first.runId)
+    const state = await service.state(request)
+    expect(state.runs).toHaveLength(1)
+    expect(state.cells).toHaveLength(1)
+  })
+
+  it('keeps a submission fingerprint stable when input association advances during execution', async () => {
+    const root = await createStorageRoot()
+    let executions = 0
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          executions += 1
+          return {
+            status: 'completed',
+            stdout: 'one\n',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const input: NotebookRunInputFile = {
+      inputFileVersionId: 'upload-version-1',
+      sourceKind: 'upload-version',
+      sourceFileId: 'upload-1',
+      sourceProjectId: 'default-project',
+      sourceSessionId: 'session-idempotent-input',
+      filename: 'sample.csv',
+      sizeBytes: 10,
+      checksum: 'sha256:upload',
+      storageKey: 'upload-key',
+      association: 'turn-attached'
+    }
+    const request = {
+      projectId: 'default-project',
+      sessionId: 'session-idempotent-input',
+      workspaceCwd: root,
+      code: 'read_input()',
+      executionInvocationId: 'submission-idempotent-input',
+      registeredInputFiles: [input]
+    }
+
+    const first = await service.execute(request)
+    request.registeredInputFiles![0].association = 'resolver-accessed'
+    const repeated = await service.execute(request)
+
+    expect(executions).toBe(1)
+    expect(repeated.runId).toBe(first.runId)
+  })
+
+  it('rejects a submission identity reused for different Python code', async () => {
+    const root = await createStorageRoot()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => ({
+          status: 'completed',
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const base = {
+      projectId: 'default-project',
+      sessionId: 'session-conflict',
+      workspaceCwd: root,
+      executionInvocationId: 'submission-conflict'
+    }
+    await service.execute({ ...base, code: 'x = 1' })
+
+    await expect(service.execute({ ...base, code: 'x = 2' })).rejects.toMatchObject({
+      code: 'NOTEBOOK_RUN_SUBMISSION_CONFLICT'
+    })
+  })
+
+  it('does not dispatch a kernel when durable queued admission fails', async () => {
+    const root = await createStorageRoot()
+    const repository = new NotebookRunRepository(root)
+    repository.appendOrGetRun = async () => {
+      throw new Error('injected admission failure')
+    }
+    let executions = 0
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      executorFactory: () => ({
+        execute: async (): Promise<NotebookExecutionResult> => {
+          executions += 1
+          throw new Error('must not dispatch')
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+
+    await expect(
+      service.execute({
+        sessionId: 'session-admission-failure',
+        workspaceCwd: root,
+        code: 'print(1)',
+        executionInvocationId: 'submission-admission-failure'
+      })
+    ).rejects.toThrow('injected admission failure')
+    expect(executions).toBe(0)
   })
 
   it('runs different sessions in parallel instead of serializing across sessions', async () => {

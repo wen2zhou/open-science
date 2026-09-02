@@ -592,6 +592,13 @@ class NotebookLocalRpcServer {
     string,
     Map<NotebookExecutionRpcMethod, NotebookExecutionAuthorization | 'ambiguous'>
   >()
+  // Retains only the claimed Python/R authorization for the active prompt so a lost HTTP response
+  // can retry the exact request with the same durable submission identity. A newly authorized tool
+  // call still takes precedence, and turn/session teardown clears this cache.
+  private readonly claimedDataExecutionAuthorizations = new Map<
+    string,
+    NotebookExecutionAuthorization
+  >()
   private readonly consumedExecutionToolCalls = new Map<string, Set<string>>()
   private readonly computeSubmissionInvocations = new Map<
     string,
@@ -757,6 +764,7 @@ class NotebookLocalRpcServer {
     this.sessionRpcTokens.clear()
     this.skillImportRpcTokens.clear()
     this.executionAuthorizations.clear()
+    this.claimedDataExecutionAuthorizations.clear()
     this.consumedExecutionToolCalls.clear()
     this.computeSubmissionInvocations.clear()
 
@@ -909,6 +917,7 @@ class NotebookLocalRpcServer {
     for (const ownedSessionId of ownedSessionIds) {
       this.sessionSpecialists.delete(ownedSessionId)
       this.executionAuthorizations.delete(ownedSessionId)
+      this.claimedDataExecutionAuthorizations.delete(ownedSessionId)
       this.consumedExecutionToolCalls.delete(ownedSessionId)
       this.computeSubmissionInvocations.delete(ownedSessionId)
     }
@@ -982,7 +991,18 @@ class NotebookLocalRpcServer {
     const authorization = byMethod?.get(method)
     byMethod?.delete(method)
     if (byMethod?.size === 0) this.executionAuthorizations.delete(sessionId)
-    if (!authorization || authorization === 'ambiguous') return undefined
+    if (!authorization) {
+      const claimed =
+        method === 'execute' ? this.claimedDataExecutionAuthorizations.get(sessionId) : undefined
+      const activePrompt =
+        this.activeArtifactTurnBindings.get(sessionId)?.provenanceContext.promptMessageId
+      return claimed &&
+        claimed.promptMessageId === activePrompt &&
+        notebookExecutionInputFingerprint(method, params) === claimed.inputFingerprint
+        ? claimed.executionInvocationId
+        : undefined
+    }
+    if (authorization === 'ambiguous') return undefined
     const consumed = this.consumedExecutionToolCalls.get(sessionId) ?? new Set<string>()
     consumed.add(authorization.toolCallId)
     this.consumedExecutionToolCalls.set(sessionId, consumed)
@@ -993,6 +1013,7 @@ class NotebookLocalRpcServer {
     ) {
       return undefined
     }
+    if (method === 'execute') this.claimedDataExecutionAuthorizations.set(sessionId, authorization)
     return authorization.executionInvocationId
   }
 
@@ -1325,6 +1346,7 @@ class NotebookLocalRpcServer {
         previous.provenanceContext.promptMessageId !== binding.provenanceContext.promptMessageId)
     ) {
       this.executionAuthorizations.delete(sessionId)
+      this.claimedDataExecutionAuthorizations.delete(sessionId)
       this.consumedExecutionToolCalls.delete(sessionId)
     }
     this.activeArtifactTurnBindings.set(sessionId, binding)
@@ -1350,6 +1372,7 @@ class NotebookLocalRpcServer {
       return
     this.activeArtifactTurnBindings.delete(sessionId)
     this.executionAuthorizations.delete(sessionId)
+    this.claimedDataExecutionAuthorizations.delete(sessionId)
     this.consumedExecutionToolCalls.delete(sessionId)
   }
 

@@ -749,6 +749,7 @@ describe('notebook local RPC server', () => {
       const fresh = await dispatch('fresh')
       expect(fresh).toMatchObject({ executionInvocationId: freshId })
       expect(fresh).not.toHaveProperty('registeredHelperSkillIds')
+      await expect(dispatch('fresh')).resolves.toMatchObject({ executionInvocationId: freshId })
 
       setTurn('missing')
       expect(await dispatch('missing')).not.toHaveProperty('executionInvocationId')

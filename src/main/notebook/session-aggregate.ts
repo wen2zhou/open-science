@@ -359,6 +359,12 @@ export class NotebookSessionAggregate<
     return this.activeWriteValue?.cellId === cellId
   }
 
+  discardUnusedCell(cellId: string): boolean {
+    const cell = this.cells.get(cellId)
+    if (!cell || cell.status !== 'idle' || cell.latestRunId || cell.writeId) return false
+    return this.cells.delete(cellId)
+  }
+
   nextExecutionCount(): number {
     this.executionCountValue += 1
     return this.executionCountValue

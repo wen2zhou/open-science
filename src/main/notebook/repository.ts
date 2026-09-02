@@ -1,5 +1,6 @@
-import { mkdir, readdir, stat } from 'node:fs/promises'
-import { isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { mkdir, readdir, rm, stat } from 'node:fs/promises'
+import type { Dirent } from 'node:fs'
+import { dirname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 
 import type {
   NotebookKernelMetadata,
@@ -8,6 +9,7 @@ import type {
   NotebookRunHistorySummary,
   NotebookRunCursor,
   NotebookRunRecord,
+  NotebookRunStatus,
   NotebookWorkingFile
 } from '../../shared/notebook'
 import { parseOwnedExecutionFileEvidenceSummary } from '../../shared/execution-file-evidence'
@@ -23,6 +25,7 @@ import { decodeVersionedJson } from '../storage/versioned-json-decoder'
 import { decodeRunDocumentDataPaths, encodeRunDocumentDataPaths } from './run-document-data-paths'
 import {
   createFrameNotebookLane,
+  createRootNotebookLane,
   notebookLaneScope,
   type NotebookLaneIdentity
 } from './lane-identity'
@@ -31,6 +34,7 @@ import { ensureNotebookInputRoot } from './input-staging'
 
 const SAFE_SEGMENT_PATTERN = /^[A-Za-z0-9][A-Za-z0-9._-]*$/
 const EXECUTION_FILE_EVIDENCE_DIR = 'execution-file-evidence'
+const RUN_TERMINAL_OUTBOX_DIR = '.run-terminal-outbox'
 const MAX_DOCUMENT_CACHE_ENTRIES = 8
 const MAX_DOCUMENT_CACHE_BYTES = 32 * 1024 * 1024
 const MAX_DOCUMENT_READ_ATTEMPTS = 2
@@ -67,6 +71,26 @@ type AppendNotebookRunRequest = {
 }
 
 type UpdateNotebookRunRequest = AppendNotebookRunRequest
+
+type TransitionNotebookRunRequest = AppendNotebookRunRequest & {
+  expectedStatus: NotebookRunStatus
+}
+
+type NotebookRunMutationResult = {
+  document: NotebookRunDocument
+  run: NotebookRunRecord
+}
+
+type AppendOrGetNotebookRunResult = NotebookRunMutationResult & { admitted: boolean }
+type TransitionNotebookRunResult = NotebookRunMutationResult & { transitioned: boolean }
+
+type NotebookRunTerminalFact = {
+  version: 1
+  projectId: string
+  sessionId: string
+  expectedStatus: 'running'
+  run: NotebookRunRecord
+}
 
 type UpdateKernelStatusRequest = {
   projectId: string
@@ -122,10 +146,29 @@ class CorruptNotebookDocumentError extends Error {
   }
 }
 
+class NotebookRunSubmissionConflictError extends Error {
+  readonly code = 'NOTEBOOK_RUN_SUBMISSION_CONFLICT'
+
+  constructor(readonly submissionIdentity: string) {
+    super(
+      `NOTEBOOK_RUN_SUBMISSION_CONFLICT: submission identity ${submissionIdentity} was reused with different work.`
+    )
+    this.name = 'NotebookRunSubmissionConflictError'
+  }
+}
+
 const notebookRunCandidate = (value: unknown): boolean => {
   if (!isRecord(value)) return false
   if (
     typeof value.runId !== 'string' ||
+    (value.submissionIdentity !== undefined &&
+      (typeof value.submissionIdentity !== 'string' || value.submissionIdentity.length === 0)) ||
+    (value.submissionFingerprint !== undefined &&
+      (typeof value.submissionFingerprint !== 'string' ||
+        !/^[a-f0-9]{64}$/u.test(value.submissionFingerprint))) ||
+    (value.submissionIdentity === undefined) !== (value.submissionFingerprint === undefined) ||
+    (value.admittedAt !== undefined &&
+      (typeof value.admittedAt !== 'number' || !Number.isFinite(value.admittedAt))) ||
     typeof value.cellId !== 'string' ||
     (value.source !== 'agent' && value.source !== 'user') ||
     typeof value.script !== 'string' ||
@@ -145,6 +188,26 @@ const notebookRunCandidate = (value: unknown): boolean => {
       value.kernelKind !== 'bash')
   ) {
     return false
+  }
+  if (value.frozenRuntimeTarget !== undefined) {
+    const target = isRecord(value.frozenRuntimeTarget) ? value.frozenRuntimeTarget : undefined
+    if (
+      !target ||
+      (target.language !== 'python' && target.language !== 'r') ||
+      typeof target.environment !== 'string' ||
+      typeof target.processKey !== 'string' ||
+      (target.runtimeId !== undefined && typeof target.runtimeId !== 'string') ||
+      (target.source !== undefined &&
+        target.source !== 'managed' &&
+        target.source !== 'external') ||
+      (target.interpreterPath !== undefined && typeof target.interpreterPath !== 'string') ||
+      (target.command !== undefined && typeof target.command !== 'string') ||
+      (target.args !== undefined &&
+        (!Array.isArray(target.args) || target.args.some((arg) => typeof arg !== 'string'))) ||
+      (target.condaPrefix !== undefined && typeof target.condaPrefix !== 'string')
+    ) {
+      return false
+    }
   }
   if (
     value.workingFiles !== undefined &&
@@ -309,6 +372,37 @@ const getNotebookFileEvidenceLocation = (
     root: join(storageRoot, ...segments),
     storageKeyPrefix: segments.join('/')
   }
+}
+
+const getNotebookTerminalFactPath = (
+  storageRoot: string,
+  projectId: string,
+  sessionId: string,
+  lane: NotebookLaneIdentity,
+  runId: string
+): string =>
+  join(
+    getNotebookSessionRoot(storageRoot, projectId, sessionId, lane),
+    RUN_TERMINAL_OUTBOX_DIR,
+    `${assertSafeNotebookPathSegment(runId)}.json`
+  )
+
+const parseNotebookRunTerminalFact = (contents: string): NotebookRunTerminalFact => {
+  const value: unknown = JSON.parse(contents)
+  if (
+    !isRecord(value) ||
+    value.version !== 1 ||
+    typeof value.projectId !== 'string' ||
+    typeof value.sessionId !== 'string' ||
+    value.expectedStatus !== 'running' ||
+    !isRecord(value.run) ||
+    !notebookRunCandidate(value.run) ||
+    value.run.status === 'queued' ||
+    value.run.status === 'running'
+  ) {
+    throw new Error('Notebook terminal outcome recovery fact is corrupt.')
+  }
+  return value as NotebookRunTerminalFact
 }
 
 // Creates the empty text projection used before an execution has produced output.
@@ -536,6 +630,160 @@ class NotebookRunRepository {
       runs: [...document.runs, normalizeRun(document.notebookSessionRoot, run)],
       updatedAt: Date.now()
     }))
+  }
+
+  // Durable admission's linearization point. The read, identity comparison, and append share the
+  // repository mutation queue, so concurrent retries cannot create two canonical Runs.
+  async appendOrGetRun(request: AppendNotebookRunRequest): Promise<AppendOrGetNotebookRunResult> {
+    if (
+      request.run.status !== 'queued' ||
+      !request.run.submissionIdentity ||
+      !request.run.submissionFingerprint
+    ) {
+      throw new Error(
+        'Durable notebook Run admission requires queued status and submission identity.'
+      )
+    }
+    const run = ownRun(request.lane, request.run)
+    let admitted = false
+    let canonicalRun: NotebookRunRecord | undefined
+    const document = await this.mutate(
+      request.projectId,
+      request.sessionId,
+      request.lane,
+      (current) => {
+        const existing = current.runs.find(
+          (candidate) => candidate.submissionIdentity === run.submissionIdentity
+        )
+        if (existing) {
+          if (existing.submissionFingerprint !== run.submissionFingerprint) {
+            throw new NotebookRunSubmissionConflictError(run.submissionIdentity!)
+          }
+          canonicalRun = existing
+          return current
+        }
+        admitted = true
+        canonicalRun = normalizeRun(current.notebookSessionRoot, run)
+        return { ...current, runs: [...current.runs, canonicalRun], updatedAt: Date.now() }
+      }
+    )
+    if (!canonicalRun) throw new Error('Notebook Run admission did not resolve a canonical Run.')
+    return { document, run: canonicalRun, admitted }
+  }
+
+  // Compare-and-set transition used by the lifecycle owner. A racing terminal winner is returned
+  // unchanged to every loser; terminal records can therefore never regress or be overwritten.
+  async transitionRun(request: TransitionNotebookRunRequest): Promise<TransitionNotebookRunResult> {
+    const requestedRun = ownRun(request.lane, request.run)
+    let transitioned = false
+    let canonicalRun: NotebookRunRecord | undefined
+    const document = await this.mutate(
+      request.projectId,
+      request.sessionId,
+      request.lane,
+      (current) => {
+        const index = current.runs.findIndex((candidate) => candidate.runId === requestedRun.runId)
+        if (index === -1) throw new Error(`Notebook run not found: ${requestedRun.runId}`)
+        const existing = current.runs[index]
+        canonicalRun = existing
+        if (existing.status !== request.expectedStatus) return current
+        const allowed =
+          (existing.status === 'queued' &&
+            (requestedRun.status === 'running' || requestedRun.status === 'cancelled')) ||
+          (existing.status === 'running' &&
+            requestedRun.status !== 'queued' &&
+            requestedRun.status !== 'running')
+        if (!allowed) {
+          throw new Error(
+            `Invalid notebook Run transition: ${existing.status} -> ${requestedRun.status}`
+          )
+        }
+        const runs = [...current.runs]
+        canonicalRun = normalizeRun(current.notebookSessionRoot, requestedRun)
+        runs[index] = canonicalRun
+        transitioned = true
+        return { ...current, runs, updatedAt: Date.now() }
+      }
+    )
+    if (!canonicalRun) throw new Error(`Notebook run not found: ${requestedRun.runId}`)
+    return { document, run: canonicalRun, transitioned }
+  }
+
+  // Write a recovery fact before the canonical terminal CAS. If that second write fails, startup
+  // can still repair the exact outcome instead of guessing from an in-memory result.
+  async commitTerminalRun(
+    request: TransitionNotebookRunRequest & { expectedStatus: 'running' }
+  ): Promise<TransitionNotebookRunResult> {
+    if (request.run.status === 'queued' || request.run.status === 'running') {
+      throw new Error('Notebook terminal outcome must have a terminal status.')
+    }
+    const factPath = getNotebookTerminalFactPath(
+      this.storageRoot,
+      request.projectId,
+      request.sessionId,
+      request.lane,
+      request.run.runId
+    )
+    const fact: NotebookRunTerminalFact = {
+      version: 1,
+      projectId: request.projectId,
+      sessionId: request.sessionId,
+      expectedStatus: 'running',
+      run: ownRun(request.lane, request.run)
+    }
+    await mkdir(dirname(factPath), { recursive: true })
+    await writeDurableJsonFile(factPath, `${JSON.stringify(fact, null, 2)}\n`)
+    const result = await this.transitionRun(request)
+    if (!result.transitioned && result.run.status === 'running') {
+      throw new Error(`Notebook terminal outcome could not claim running Run: ${request.run.runId}`)
+    }
+    await rm(factPath, { force: true })
+    return result
+  }
+
+  // Reconcile every persisted lane before new admission, including Sessions no renderer opens.
+  async recoverAllRunLifecycles(): Promise<void> {
+    const notebooksRoot = join(this.storageRoot, NOTEBOOKS_DIR)
+    let projects
+    try {
+      projects = await readdir(notebooksRoot, { withFileTypes: true })
+    } catch (error) {
+      if (isMissingFileError(error)) return
+      throw error
+    }
+    for (const project of projects) {
+      if (!project.isDirectory() || !SAFE_SEGMENT_PATTERN.test(project.name)) continue
+      const projectRoot = join(notebooksRoot, project.name)
+      const sessions = await readdir(projectRoot, { withFileTypes: true })
+      for (const session of sessions) {
+        if (!session.isDirectory() || !SAFE_SEGMENT_PATTERN.test(session.name)) continue
+        const sessionRoot = join(projectRoot, session.name)
+        if (await this.pathExists(join(sessionRoot, NOTEBOOK_RUN_FILE))) {
+          await this.recoverLane(
+            project.name,
+            session.name,
+            createRootNotebookLane(project.name, session.name, `root-frame-${session.name}`)
+          )
+        }
+        const framesRoot = join(sessionRoot, 'frames')
+        let frames
+        try {
+          frames = await readdir(framesRoot, { withFileTypes: true })
+        } catch (error) {
+          if (isMissingFileError(error)) continue
+          throw error
+        }
+        for (const frame of frames) {
+          if (!frame.isDirectory() || !SAFE_SEGMENT_PATTERN.test(frame.name)) continue
+          if (!(await this.pathExists(join(framesRoot, frame.name, NOTEBOOK_RUN_FILE)))) continue
+          await this.recoverLane(
+            project.name,
+            session.name,
+            createFrameNotebookLane(project.name, session.name, frame.name)
+          )
+        }
+      }
+    }
   }
 
   // Replaces an existing execution record, used to turn the initial "running" entry final.
@@ -947,6 +1195,59 @@ class NotebookRunRepository {
     throw new Error(`Failed to read notebook document: ${filePath}`)
   }
 
+  private async recoverLane(
+    projectId: string,
+    sessionId: string,
+    lane: NotebookLaneIdentity
+  ): Promise<void> {
+    const outboxRoot = join(
+      getNotebookSessionRoot(this.storageRoot, projectId, sessionId, lane),
+      RUN_TERMINAL_OUTBOX_DIR
+    )
+    let facts: Dirent[]
+    try {
+      facts = await readdir(outboxRoot, { withFileTypes: true })
+    } catch (error) {
+      if (!isMissingFileError(error)) throw error
+      facts = []
+    }
+    for (const entry of facts.sort((left, right) => left.name.localeCompare(right.name))) {
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+      const factPath = join(outboxRoot, entry.name)
+      const read = await readDurableJsonFile(factPath, parseNotebookRunTerminalFact)
+      if (read.status === 'missing') continue
+      const fact = read.value
+      if (fact.projectId !== projectId || fact.sessionId !== sessionId) {
+        throw new Error('Notebook terminal outcome recovery fact ownership mismatch.')
+      }
+      const result = await this.transitionRun({
+        projectId,
+        sessionId,
+        lane,
+        expectedStatus: fact.expectedStatus,
+        run: fact.run
+      })
+      if (!result.transitioned && result.run.status === 'running') {
+        throw new Error(`Notebook terminal outcome recovery is blocked: ${fact.run.runId}`)
+      }
+      await rm(factPath, { force: true })
+    }
+    const document = await this.loadExisting(projectId, sessionId, lane)
+    if (document.runs.some((run) => run.status === 'queued' || run.status === 'running')) {
+      await this.reconcileInterruptedRuns(projectId, sessionId, lane)
+    }
+  }
+
+  private async pathExists(path: string): Promise<boolean> {
+    try {
+      await stat(path)
+      return true
+    } catch (error) {
+      if (isMissingFileError(error)) return false
+      throw error
+    }
+  }
+
   // Reads the current document, applies `transform`, and writes back the result -- the read and write
   // happen inside the same queued turn (not just the write, as writeDocument alone would give), so
   // overlapping callers touching the same session's run.json (e.g. two overlapping bash_execute calls,
@@ -962,7 +1263,7 @@ class NotebookRunRepository {
       const document = await this.loadExisting(projectId, sessionId, lane)
       const nextDocument = transform(document)
 
-      await this.persist(nextDocument)
+      if (nextDocument !== document) await this.persist(nextDocument)
 
       return nextDocument
     })
@@ -1054,6 +1355,7 @@ class NotebookRunRepository {
 
 export {
   NotebookRunRepository,
+  NotebookRunSubmissionConflictError,
   getNotebookDataRoot,
   getNotebookFileEvidenceLocation,
   getNotebookRunJsonPath,
@@ -1062,7 +1364,10 @@ export {
 }
 export type {
   AppendNotebookRunRequest,
+  AppendOrGetNotebookRunResult,
   LoadNotebookRunDocumentRequest,
+  TransitionNotebookRunRequest,
+  TransitionNotebookRunResult,
   UpdateKernelStatusRequest,
   UpdateNotebookRunRequest
 }

@@ -371,6 +371,7 @@ class NotebookRuntimeService {
     | 'refreshAfterPackageMutation'
   >
   private disposalPromise: Promise<{ reaped: boolean }> | undefined
+  private runLifecycleRecovery: Promise<void> | undefined
 
   constructor(private readonly options: NotebookRuntimeServiceOptions) {
     const defaultProjectId = resolveProjectId(options)
@@ -921,7 +922,7 @@ class NotebookRuntimeService {
       cellId: begin.cellId
     })
 
-    return this.runCell(
+    const result = await this.runCell(
       {
         ...request,
         cellId: begin.cellId
@@ -929,6 +930,15 @@ class NotebookRuntimeService {
       signal,
       request.helperModules
     )
+    if (result.cellId !== begin.cellId) {
+      await this.sessionLifecycle
+        .runProjectOperation(request, async () => {
+          const session = await this.sessionLifecycle.ensure(request)
+          if (session.discardUnusedCell(begin.cellId)) this.sessionLifecycle.notifyChanged(session)
+        })
+        .catch(() => undefined)
+    }
+    return result
   }
 
   // Compatibility facade for the control-plane REPL. Admission, capability lifetime, dispatch,
@@ -1186,7 +1196,11 @@ class NotebookRuntimeService {
   // download (staging cleanup), materialize (verify/rebuild the env prefix), and install (flag
   // repair-required) paths all populate the journal, so each reconcile action below is wired to a real effect.
   async recoverInterruptedOperations(): Promise<void> {
-    await this.recoveryCoordinator.recover()
+    this.runLifecycleRecovery ??= (async () => {
+      await this.repository.recoverAllRunLifecycles()
+      await this.recoveryCoordinator.recover()
+    })()
+    await this.runLifecycleRecovery
   }
 
   // Awaited by materialize/install before they touch a prefix, so startup recovery has finished
@@ -1195,6 +1209,7 @@ class NotebookRuntimeService {
   // startup env gate and UI provision/repair handlers can share the SAME barrier (they touch prefixes
   // too, not just materialize/install).
   async ensureRecovered(): Promise<void> {
+    await this.runLifecycleRecovery
     await this.recoveryCoordinator.ensureReady()
   }
 

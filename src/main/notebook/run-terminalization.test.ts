@@ -40,6 +40,13 @@ const runningRun = (
     inputFiles: []
   }) satisfies NotebookRunRecord
 
+const queuedRun = (runId: string): NotebookRunRecord => ({
+  ...runningRun(runId),
+  submissionIdentity: `submission-${runId}`,
+  submissionFingerprint: 'a'.repeat(64),
+  status: 'queued'
+})
+
 const documentWith = (runs: NotebookRunRecord[]): NotebookRunDocument => ({
   version: 1,
   projectId: session.projectId,
@@ -110,6 +117,39 @@ const createHarness = (
   let updateFailuresRemaining = options.updateFailureCount ?? Number.POSITIVE_INFINITY
   const owner = new NotebookRunTerminalizationOwner({
     repository: {
+      appendOrGetRun: async ({ run }) => {
+        events.push(`admit:${run.status}`)
+        const existing = document.runs.find(
+          (candidate) => candidate.submissionIdentity === run.submissionIdentity
+        )
+        if (existing) return { document, run: existing, admitted: false }
+        document = documentWith([...document.runs, run])
+        return { document, run, admitted: true }
+      },
+      transitionRun: async ({ run, expectedStatus }) => {
+        events.push(`transition:${expectedStatus}->${run.status}`)
+        const existing = document.runs.find((candidate) => candidate.runId === run.runId)
+        if (!existing) throw new Error(`Notebook run not found: ${run.runId}`)
+        if (existing.status !== expectedStatus) {
+          return { document, run: existing, transitioned: false }
+        }
+        document = documentWith(
+          document.runs.map((candidate) => (candidate.runId === run.runId ? run : candidate))
+        )
+        return { document, run, transitioned: true }
+      },
+      commitTerminalRun: async ({ run, expectedStatus }) => {
+        events.push(`terminal:${expectedStatus}->${run.status}`)
+        const existing = document.runs.find((candidate) => candidate.runId === run.runId)
+        if (!existing) throw new Error(`Notebook run not found: ${run.runId}`)
+        if (existing.status !== expectedStatus) {
+          return { document, run: existing, transitioned: false }
+        }
+        document = documentWith(
+          document.runs.map((candidate) => (candidate.runId === run.runId ? run : candidate))
+        )
+        return { document, run, transitioned: true }
+      },
       appendRun: async ({ run }) => {
         events.push(`append:${run.status}`)
         if (options.appendFailure) throw options.appendFailure
@@ -138,6 +178,15 @@ describe('NotebookRunTerminalizationOwner', () => {
   it('allocates distinct run identities while preserving the shared sequence value', () => {
     const owner = new NotebookRunTerminalizationOwner({
       repository: {
+        appendOrGetRun: async () => {
+          throw new Error('not used')
+        },
+        transitionRun: async () => {
+          throw new Error('not used')
+        },
+        commitTerminalRun: async () => {
+          throw new Error('not used')
+        },
         appendRun: async () => {
           throw new Error('not used')
         },
@@ -205,6 +254,48 @@ describe('NotebookRunTerminalizationOwner', () => {
     })
     expect(terminalized.run).toEqual(document.runs[0])
     expect(terminalized.result.status).toBe('completed')
+  })
+
+  it('admits queued durably, claims running at dispatch, then commits one terminal winner', async () => {
+    const harness = createHarness()
+    const queued = queuedRun('run-durable')
+
+    const admission = await harness.owner.admit({ session, queuedRun: queued })
+    const terminalized = await harness.owner.runAdmitted({
+      session,
+      queuedRun: admission.run,
+      invoke: async () => {
+        harness.events.push('invoke')
+        return completedResult()
+      }
+    })
+
+    expect(admission.admitted).toBe(true)
+    expect(terminalized).toMatchObject({ dispatched: true, run: { status: 'completed' } })
+    expect(harness.events).toEqual([
+      'admit:queued',
+      'notify:queued',
+      'transition:queued->running',
+      'notify:running',
+      'invoke',
+      'terminal:running->completed',
+      'notify:completed'
+    ])
+  })
+
+  it('returns the same canonical Run when durable admission is repeated', async () => {
+    const harness = createHarness()
+    const first = await harness.owner.admit({ session, queuedRun: queuedRun('run-1') })
+    const repeated = await harness.owner.admit({
+      session,
+      queuedRun: {
+        ...queuedRun('run-2'),
+        submissionIdentity: first.run.submissionIdentity
+      }
+    })
+
+    expect(repeated).toMatchObject({ admitted: false, run: { runId: 'run-1' } })
+    expect(harness.events).toEqual(['admit:queued', 'notify:queued', 'admit:queued'])
   })
 
   it('persists the observer evidence summary on the terminal Run', async () => {

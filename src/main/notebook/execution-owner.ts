@@ -1,3 +1,4 @@
+import { createHash } from 'node:crypto'
 import { existsSync } from 'node:fs'
 import { join } from 'node:path'
 
@@ -25,7 +26,8 @@ import {
 } from './environment-state-tracker'
 import { detectManagedRuntimeMutation } from './managed-runtime-guard'
 import { NotebookRunTerminalizationOwner } from './run-terminalization'
-import { notebookLaneScope } from './lane-identity'
+import { notebookLaneKey, notebookLaneScope } from './lane-identity'
+import { NotebookRunSubmissionConflictError } from './repository'
 import type {
   NotebookSessionAggregate,
   NotebookSessionExecutionResult,
@@ -162,9 +164,55 @@ const runAgentFrameId = (
   provenanceContext: NotebookRunProvenanceContext | undefined
 ): string => provenanceContext?.agentFrameId ?? notebookLaneScope(session.lane).agentFrameId
 
+const dataRunFingerprint = (
+  session: NotebookSessionAggregate,
+  cell: Readonly<NotebookCell>,
+  request: RunNotebookCellRequest,
+  helperModuleIds: readonly string[] | undefined
+): string =>
+  createHash('sha256')
+    .update(
+      JSON.stringify({
+        version: 1,
+        lane: notebookLaneKey(session.lane),
+        code: cell.code,
+        language: cell.language,
+        timeoutMs: request.timeoutMs ?? null,
+        source: request.source ?? 'agent',
+        inputKind: request.inputKind ?? 'cell',
+        provenanceContext: request.provenanceContext ?? null,
+        inputFiles: (request.registeredInputFiles ?? [])
+          .map((input) => ({
+            inputFileVersionId: input.inputFileVersionId,
+            sourceKind: input.sourceKind,
+            sourceFileId: input.sourceFileId,
+            sourceVersionNumber: input.sourceVersionNumber ?? null,
+            sourceProjectId: input.sourceProjectId,
+            sourceSessionId: input.sourceSessionId,
+            filename: input.filename,
+            contentType: input.contentType ?? null,
+            sizeBytes: input.sizeBytes,
+            checksum: input.checksum
+          }))
+          .sort((left, right) => left.inputFileVersionId.localeCompare(right.inputFileVersionId)),
+        helperModuleIds: helperModuleIds ?? []
+      })
+    )
+    .digest('hex')
+
 class NotebookExecutionOwner {
   private readonly shellProcess: NotebookShellProcess
   private controlCompletionInterceptor: NotebookControlCompletionInterceptor | undefined
+  private readonly activeDataSubmissions = new Map<
+    string,
+    {
+      fingerprint: string
+      promise: Promise<{
+        run: NotebookRunRecord
+        dependencyProjection: NotebookDependencyProjection
+      }>
+    }
+  >()
 
   constructor(private readonly options: NotebookExecutionOwnerOptions) {
     this.shellProcess = options.shellProcess ?? new NotebookShellProcessAdapter(options.platform)
@@ -207,35 +255,61 @@ class NotebookExecutionOwner {
     if (session.isCellReceiving(cell.id)) {
       throw new Error(`Notebook cell is still receiving code: ${cell.id}`)
     }
-    const route = this.options.dataExecutionAdmission.route(session, cell.language)
-    return session.enqueueExecution(
-      route.processKey,
-      () => this.executeDataCellExclusive(session, cell, request, signal, helperModuleIds),
-      signal
+    const { runId } = this.options.runTerminalization.allocateRunIdentity()
+    const submissionIdentity = request.executionInvocationId ?? runId
+    const submissionFingerprint = dataRunFingerprint(session, cell, request, helperModuleIds)
+    const submissionKey = `${notebookLaneKey(session.lane)}:${submissionIdentity}`
+    const active = this.activeDataSubmissions.get(submissionKey)
+    if (active) {
+      if (active.fingerprint !== submissionFingerprint) {
+        throw new NotebookRunSubmissionConflictError(submissionIdentity)
+      }
+      return active.promise
+    }
+    const promise = this.executeDataCellDurable(
+      session,
+      cell,
+      request,
+      runId,
+      submissionIdentity,
+      submissionFingerprint,
+      signal,
+      helperModuleIds
     )
+    const entry = { fingerprint: submissionFingerprint, promise }
+    this.activeDataSubmissions.set(submissionKey, entry)
+    try {
+      return await promise
+    } finally {
+      if (this.activeDataSubmissions.get(submissionKey) === entry) {
+        this.activeDataSubmissions.delete(submissionKey)
+      }
+    }
   }
-  private async executeDataCellExclusive(
+
+  private async executeDataCellDurable(
     session: NotebookSessionAggregate,
     cell: Readonly<NotebookCell>,
     request: RunNotebookCellRequest,
+    runId: string,
+    submissionIdentity: string,
+    submissionFingerprint: string,
     signal?: AbortSignal,
     helperModuleIds?: readonly string[]
   ): Promise<{ run: NotebookRunRecord; dependencyProjection: NotebookDependencyProjection }> {
-    this.options.notifyAvailable(session, request.source ?? 'agent')
-    const { runId } = this.options.runTerminalization.allocateRunIdentity()
-    const startedAt = Date.now()
+    const admittedAt = Date.now()
     const executionCount = session.nextExecutionCount()
     const cwdBefore = session.cwd
     const admission = await this.options.dataExecutionAdmission.admit(session, cell)
     const { environment, processKey } = admission.route
     const { binding, resolvedInterpreter } = admission
-    const kernelWasTerminated =
+    const kernelWasTerminatedAtAdmission =
       session.isKernelTerminated(processKey) ||
       session.kernelStatus(processKey) === 'terminated' ||
       session.hasDurableKernelTermination(processKey)
     const kernelEpoch = session.kernelEpoch(
       processKey,
-      kernelWasTerminated,
+      kernelWasTerminatedAtAdmission,
       notebookInterpreterIdentity(resolvedInterpreter)
     )
     const kernelEpochId = kernelEpoch.id
@@ -253,9 +327,11 @@ class NotebookExecutionOwner {
       helperModuleScope
     )
     const helperPlan = await this.options.helperModules.plan(kernelEpoch, helperRequest)
-    session.markCellRunning(cell.id, runId, executionCount)
-    const runningRun: NotebookRunRecord = {
+    const queuedRun: NotebookRunRecord = {
       runId,
+      submissionIdentity,
+      submissionFingerprint,
+      admittedAt,
       kernelEpochId,
       ...(request.executionInvocationId
         ? { executionInvocationId: request.executionInvocationId }
@@ -265,8 +341,8 @@ class NotebookExecutionOwner {
       inputKind: request.inputKind ?? 'cell',
       kernelKind: cell.language,
       script: cell.code,
-      status: 'running',
-      startedAt,
+      status: 'queued',
+      startedAt: admittedAt,
       cwdBefore,
       executionCount,
       environment,
@@ -279,134 +355,198 @@ class NotebookExecutionOwner {
       workingFiles: [],
       inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
     }
+    queuedRun.frozenRuntimeTarget = {
+      language: cell.language,
+      environment,
+      processKey,
+      ...(binding?.runtimeId ? { runtimeId: binding.runtimeId } : {}),
+      ...(binding?.source ? { source: binding.source } : {}),
+      ...(binding?.interpreterPath ? { interpreterPath: binding.interpreterPath } : {}),
+      ...(resolvedInterpreter?.command ? { command: resolvedInterpreter.command } : {}),
+      ...(resolvedInterpreter?.args ? { args: [...resolvedInterpreter.args] } : {}),
+      ...(resolvedInterpreter?.condaPrefix ? { condaPrefix: resolvedInterpreter.condaPrefix } : {})
+    }
     if (!existsSync(cwdBefore)) {
       this.options.logger.error('session working directory is missing before execution', {
         sessionId: session.sessionId
       })
     }
-    const kernelMarkedRunning = admission.rejection === undefined
-    if (kernelMarkedRunning) {
-      session.clearKernelTerminated(processKey)
-      this.options.setKernelStatus(session, 'running', processKey)
+    const durableAdmission = await this.options.runTerminalization.admit({ session, queuedRun })
+    if (!durableAdmission.admitted) {
+      const dependencyProjection = await this.options
+        .projectDependencies(session, durableAdmission.run, resolvedInterpreter)
+        .catch(() => unavailableNotebookDependencyProjection([durableAdmission.run]))
+      return { run: durableAdmission.run, dependencyProjection }
     }
-    let executedOnLiveKernel = true
-    let reachedExecutor = false
-    const { run } = await this.options.runTerminalization.run({
-      session,
-      runningRun,
-      invoke: () =>
-        this.options.dataExecutionAdmission.runShared(session, admission, async (rejection) => {
-          if (rejection !== undefined) {
-            executedOnLiveKernel = false
-            return errorToExecutionResult(rejection, cwdBefore)
-          }
-          const target = this.options.createEnvironmentCaptureTarget(
-            cell.language,
-            environment,
-            binding,
-            resolvedInterpreter,
-            session.runtimeRoot
-          )
-          let environmentRunStart
-          try {
-            environmentRunStart = await this.options.environmentStateTracker.prepareRun(target)
-          } catch (error) {
-            executedOnLiveKernel = false
-            return errorToExecutionResult(error, cwdBefore)
-          }
-          reachedExecutor = true
-          const executionResult = await session
-            .execute({
-              runId,
-              code: cell.code,
-              ...(helperPlan.injections.length ? { helperModules: helperPlan.injections } : {}),
-              cwd: cwdBefore,
-              language: cell.language,
-              environment,
-              notebookSessionRoot: session.notebookSessionRoot,
-              inputRoot: this.inputRoot(session),
-              dataRoot: session.dataRoot,
-              ...this.fileEvidenceLocation(session),
-              runtimeRoot: session.runtimeRoot,
-              protectedDirs: [
-                getAppClaudeConfigDir(this.options.configRoot),
-                ...helperPlan.protectedGenerationRoots
-              ],
-              timeoutMs: request.timeoutMs,
-              signal,
-              resolvedInterpreter,
-              sessionId: session.sessionId,
-              projectId: session.projectId,
-              inputRunLeaseId: request.inputRunLeaseId
-            })
-            .catch((error: unknown) => {
-              executedOnLiveKernel = false
-              const fallback = session.consumeForceStopped(processKey)
-                ? cancelledExecutionResult(cwdBefore)
-                : errorToExecutionResult(error, cwdBefore)
-              return { ...fallback, kernelDispatched: true }
-            })
-          this.options.helperModules.commitInitialized(
-            kernelEpoch,
-            executionResult.helperModulesInitialized ?? []
-          )
-          const resultWithEvidence = {
-            ...executionResult,
-            ...this.options.helperModules.loadedEvidence(kernelEpoch)
-          }
-          const result =
-            resultWithEvidence.kernelDispatched === undefined
-              ? { ...resultWithEvidence, kernelDispatched: true }
-              : resultWithEvidence
-          if (result.status !== 'completed') return result
-          try {
-            const capture = await this.options.environmentStateTracker.captureCompletedRun(
-              target,
-              result.environmentOverlay,
-              environmentRunStart
-            )
-            return {
-              ...result,
-              environmentCapture: {
-                state: capture.manifest.captureStatus === 'complete' ? 'available' : 'partial',
-                manifestChecksum: capture.checksum,
-                ...(capture.manifest.warnings?.length
-                  ? { warnings: [...capture.manifest.warnings] }
-                  : {})
-              },
-              environmentManifest: capture.manifest,
-              environmentManifestChecksum: capture.checksum
-            }
-          } catch (error) {
-            return {
-              ...result,
-              environmentCapture: {
-                state: 'unavailable',
-                reason:
-                  error instanceof EnvironmentManifestPublicationError
-                    ? 'environment-manifest-publication-failed'
-                    : 'environment-capture-failed'
+    this.options.notifyAvailable(session, request.source ?? 'agent')
+
+    try {
+      return await session.enqueueExecution(
+        processKey,
+        async () => {
+          const kernelWasTerminated =
+            kernelWasTerminatedAtAdmission ||
+            session.isKernelTerminated(processKey) ||
+            session.kernelStatus(processKey) === 'terminated' ||
+            session.hasDurableKernelTermination(processKey)
+          const kernelMarkedRunning = admission.rejection === undefined
+          let executedOnLiveKernel = true
+          let reachedExecutor = false
+          const terminalized = await this.options.runTerminalization.runAdmitted({
+            session,
+            // Admission freezes the exact Version identities. The request-owned copies retain only
+            // the monotonic access association gathered while that frozen Version is resolved.
+            queuedRun: { ...durableAdmission.run, inputFiles: queuedRun.inputFiles },
+            startLive: () => {
+              session.markCellRunning(cell.id, runId, executionCount)
+              if (kernelMarkedRunning) {
+                session.clearKernelTerminated(processKey)
+                this.options.setKernelStatus(session, 'running', processKey)
               }
+            },
+            invoke: () =>
+              this.options.dataExecutionAdmission.runShared(
+                session,
+                admission,
+                async (rejection) => {
+                  if (rejection !== undefined) {
+                    executedOnLiveKernel = false
+                    return errorToExecutionResult(rejection, cwdBefore)
+                  }
+                  const target = this.options.createEnvironmentCaptureTarget(
+                    cell.language,
+                    environment,
+                    binding,
+                    resolvedInterpreter,
+                    session.runtimeRoot
+                  )
+                  let environmentRunStart
+                  try {
+                    environmentRunStart =
+                      await this.options.environmentStateTracker.prepareRun(target)
+                  } catch (error) {
+                    executedOnLiveKernel = false
+                    return errorToExecutionResult(error, cwdBefore)
+                  }
+                  reachedExecutor = true
+                  const executionResult = await session
+                    .execute({
+                      runId,
+                      code: cell.code,
+                      ...(helperPlan.injections.length
+                        ? { helperModules: helperPlan.injections }
+                        : {}),
+                      cwd: cwdBefore,
+                      language: cell.language,
+                      environment,
+                      notebookSessionRoot: session.notebookSessionRoot,
+                      inputRoot: this.inputRoot(session),
+                      dataRoot: session.dataRoot,
+                      ...this.fileEvidenceLocation(session),
+                      runtimeRoot: session.runtimeRoot,
+                      protectedDirs: [
+                        getAppClaudeConfigDir(this.options.configRoot),
+                        ...helperPlan.protectedGenerationRoots
+                      ],
+                      timeoutMs: request.timeoutMs,
+                      signal,
+                      resolvedInterpreter,
+                      sessionId: session.sessionId,
+                      projectId: session.projectId,
+                      inputRunLeaseId: request.inputRunLeaseId
+                    })
+                    .catch((error: unknown) => {
+                      executedOnLiveKernel = false
+                      const fallback = session.consumeForceStopped(processKey)
+                        ? cancelledExecutionResult(cwdBefore)
+                        : errorToExecutionResult(error, cwdBefore)
+                      return { ...fallback, kernelDispatched: true }
+                    })
+                  this.options.helperModules.commitInitialized(
+                    kernelEpoch,
+                    executionResult.helperModulesInitialized ?? []
+                  )
+                  const resultWithEvidence = {
+                    ...executionResult,
+                    ...this.options.helperModules.loadedEvidence(kernelEpoch)
+                  }
+                  const result =
+                    resultWithEvidence.kernelDispatched === undefined
+                      ? { ...resultWithEvidence, kernelDispatched: true }
+                      : resultWithEvidence
+                  if (result.status !== 'completed') return result
+                  try {
+                    const capture = await this.options.environmentStateTracker.captureCompletedRun(
+                      target,
+                      result.environmentOverlay,
+                      environmentRunStart
+                    )
+                    return {
+                      ...result,
+                      environmentCapture: {
+                        state:
+                          capture.manifest.captureStatus === 'complete' ? 'available' : 'partial',
+                        manifestChecksum: capture.checksum,
+                        ...(capture.manifest.warnings?.length
+                          ? { warnings: [...capture.manifest.warnings] }
+                          : {})
+                      },
+                      environmentManifest: capture.manifest,
+                      environmentManifestChecksum: capture.checksum
+                    }
+                  } catch (error) {
+                    return {
+                      ...result,
+                      environmentCapture: {
+                        state: 'unavailable',
+                        reason:
+                          error instanceof EnvironmentManifestPublicationError
+                            ? 'environment-manifest-publication-failed'
+                            : 'environment-capture-failed'
+                      }
+                    }
+                  }
+                }
+              ),
+            settleLive: (result) => {
+              session.completeCellRun(cell.id, result.status, result.cwdAfter ?? cwdBefore)
+            }
+          })
+          const run = terminalized.run
+          if (
+            terminalized.dispatched &&
+            !session.isKernelTerminated(processKey) &&
+            (executedOnLiveKernel || (kernelMarkedRunning && !reachedExecutor))
+          ) {
+            this.options.setKernelStatus(session, 'idle', processKey)
+            if (kernelWasTerminated) {
+              await this.options.persistRecoveredKernelIdle(session, processKey)
             }
           }
-        }),
-      settleLive: (result) => {
-        session.completeCellRun(cell.id, result.status, result.cwdAfter ?? cwdBefore)
+          const dependencyProjection = await this.options
+            .projectDependencies(session, run, resolvedInterpreter)
+            .catch(() => unavailableNotebookDependencyProjection([run]))
+          return { run, dependencyProjection }
+        },
+        signal
+      )
+    } catch (error) {
+      if (!signal?.aborted) throw error
+      const run = await this.options.runTerminalization.cancelQueued(
+        session,
+        durableAdmission.run,
+        signal.reason
+      )
+      if (run.status === 'queued' || run.status === 'running') {
+        throw new Error(`Notebook queued cancellation lost its terminal race: ${run.runId}`)
       }
-    })
-    if (
-      !session.isKernelTerminated(processKey) &&
-      (executedOnLiveKernel || (kernelMarkedRunning && !reachedExecutor))
-    ) {
-      this.options.setKernelStatus(session, 'idle', processKey)
-      if (kernelWasTerminated) {
-        await this.options.persistRecoveredKernelIdle(session, processKey)
-      }
+      session.markCellRunning(cell.id, runId, executionCount)
+      session.completeCellRun(cell.id, run.status, run.cwdAfter ?? cwdBefore)
+      const dependencyProjection = await this.options
+        .projectDependencies(session, run, resolvedInterpreter)
+        .catch(() => unavailableNotebookDependencyProjection([run]))
+      return { run, dependencyProjection }
     }
-    const dependencyProjection = await this.options
-      .projectDependencies(session, run, resolvedInterpreter)
-      .catch(() => unavailableNotebookDependencyProjection([run]))
-    return { run, dependencyProjection }
   }
   async executeControl(
     session: NotebookSessionAggregate,
