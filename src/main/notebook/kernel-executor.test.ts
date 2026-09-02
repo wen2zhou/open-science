@@ -3282,6 +3282,99 @@ const delayedSandboxCleanup = (
 }
 
 describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
+  it('registers POSIX kernel ownership before reporting an incomplete post-exit reap', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-repl-owned-cleanup-'))
+    let releaseReaping: (() => void) | undefined
+    const gate = new Promise<void>((resolve) => {
+      releaseReaping = resolve
+    })
+    const registerOwnedProcessGroup = vi.fn()
+    const terminateTree = vi.fn(async () => {
+      await gate
+      return { reaped: false }
+    })
+    const sandbox = delayedSandboxCleanup()
+    const executor = new NotebookKernelExecutor({
+      replLoopPath: REPL_LOOP,
+      platform: 'linux',
+      processSandbox: sandbox.processSandbox,
+      registerOwnedProcessGroup,
+      terminateTree
+    })
+    let completed = false
+
+    try {
+      const execution = executor
+        .execute({
+          ...baseRequest(cwdDir),
+          code: 'process.exit(7)',
+          kind: 'repl',
+          sessionId: 'session-1',
+          projectId: 'project-1'
+        })
+        .then((result) => {
+          completed = true
+          return result
+        })
+
+      await vi.waitFor(() => expect(registerOwnedProcessGroup).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(terminateTree).toHaveBeenCalledOnce())
+      expect(completed).toBe(false)
+      releaseReaping?.()
+      await vi.waitFor(() =>
+        expect(sandbox.cleanup).toHaveBeenCalledWith('exit', { processesTerminated: false })
+      )
+      expect(completed).toBe(false)
+      sandbox.release()
+      await expect(execution).resolves.toMatchObject({ status: 'failed' })
+    } finally {
+      releaseReaping?.()
+      sandbox.release()
+      await executor.shutdown()
+    }
+  })
+
+  it.runIf(process.platform !== 'win32')(
+    'reaps a kernel helper after its leader exits',
+    async () => {
+      cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-repl-orphan-'))
+      const pidFile = join(cwdDir, 'helper.pid')
+      const executor = new NotebookKernelExecutor({ replLoopPath: REPL_LOOP, platform: 'linux' })
+      let helperPid: number | undefined
+
+      try {
+        await executor.execute({
+          ...baseRequest(cwdDir),
+          code: [
+            "const { spawn } = require('node:child_process')",
+            "const fs = require('node:fs')",
+            `const helper = spawn(process.execPath, ['-e', ${JSON.stringify("process.on('SIGTERM',()=>{});setInterval(()=>{},1000)")}], { stdio: 'ignore' })`,
+            `fs.writeFileSync(${JSON.stringify(pidFile)}, String(helper.pid))`,
+            'setTimeout(() => process.exit(0), 25)',
+            "return 'scheduled'"
+          ].join(';'),
+          kind: 'repl'
+        })
+        await vi.waitFor(() => expect(existsSync(pidFile)).toBe(true))
+        helperPid = Number(await readFile(pidFile, 'utf8'))
+        await vi.waitFor(() => expect(procFor(executor, 'repl')).toBeUndefined())
+
+        await expect(executor.shutdown()).resolves.toEqual({ reaped: true })
+        await vi.waitFor(() => expect(() => process.kill(helperPid as number, 0)).toThrow())
+      } finally {
+        await executor.shutdown()
+        if (helperPid) {
+          try {
+            process.kill(helperPid, 'SIGKILL')
+          } catch {
+            // Expected once the owned kernel group has been reaped.
+          }
+        }
+      }
+    },
+    15_000
+  )
+
   it('waits for sandbox cleanup before an unexpected exit completes its caller', async () => {
     cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-repl-exit-cleanup-'))
     const sandbox = delayedSandboxCleanup()

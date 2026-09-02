@@ -82,6 +82,116 @@ describe('sandboxedPackageSpawn', () => {
     )
     expect(endExecution).toHaveBeenCalledOnce()
     expect(cleanup).toHaveBeenCalledOnce()
-    expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated: true })
+    expect(cleanup).toHaveBeenCalledWith('exit', {
+      processesTerminated: process.platform !== 'win32'
+    })
   })
+
+  it.each([
+    {
+      event: 'close',
+      executable: process.execPath,
+      args: ['-e', 'process.exit(0)'],
+      code: 0
+    },
+    {
+      event: 'spawn error',
+      executable: join(process.cwd(), 'missing-installer-executable'),
+      args: [],
+      code: 1
+    }
+  ])(
+    'waits for bounded installer-tree observation after $event',
+    async ({ executable, args, code }) => {
+      let releaseReaping: (() => void) | undefined
+      const gate = new Promise<void>((resolve) => {
+        releaseReaping = resolve
+      })
+      const terminateTree = vi.fn(async () => {
+        await gate
+        return { reaped: false }
+      })
+      const cleanup = vi.fn().mockResolvedValue({
+        processesTerminated: false,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn(async (invocation) => ({
+          executable: invocation.executable,
+          args: invocation.args,
+          env: invocation.env,
+          annotateStderr: (stderr: string) => stderr,
+          cleanup
+        }))
+      }
+      const spawn = sandboxedPackageSpawn({
+        processSandbox,
+        request: { language: 'python', packages: ['example'] },
+        runtimeRoot: join(process.cwd(), '.open-science-test-runtime'),
+        storageRoot: process.cwd(),
+        platform: 'linux',
+        terminateTree
+      })
+      let completed = false
+
+      const completion = spawn(executable, args).then((result) => {
+        completed = true
+        return result
+      })
+
+      await vi.waitFor(() => expect(terminateTree).toHaveBeenCalledOnce())
+      expect(completed).toBe(false)
+      expect(cleanup).not.toHaveBeenCalled()
+      releaseReaping?.()
+      await expect(completion).resolves.toMatchObject({ code })
+      expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated: false })
+    }
+  )
+
+  it.runIf(process.platform !== 'win32')(
+    'reaps an installer helper that outlives its leader',
+    async () => {
+      const cleanup = vi.fn().mockResolvedValue({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn(async (invocation) => ({
+          executable: invocation.executable,
+          args: invocation.args,
+          env: invocation.env,
+          annotateStderr: (stderr: string) => stderr,
+          cleanup
+        }))
+      }
+      const spawn = sandboxedPackageSpawn({
+        processSandbox,
+        request: { language: 'python', packages: ['example'] },
+        runtimeRoot: join(process.cwd(), '.open-science-test-runtime'),
+        storageRoot: process.cwd()
+      })
+      let helperPid: number | undefined
+
+      try {
+        const result = await spawn(process.execPath, [
+          '-e',
+          "const {spawn}=require('node:child_process'); const helper=spawn(process.execPath,['-e',\"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"],{stdio:'ignore'}); process.stdout.write(String(helper.pid));"
+        ])
+        helperPid = Number(result.stdout)
+        expect(result.code).toBe(0)
+        await vi.waitFor(() => expect(() => process.kill(helperPid as number, 0)).toThrow())
+        expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated: true })
+      } finally {
+        if (helperPid) {
+          try {
+            process.kill(helperPid, 'SIGKILL')
+          } catch {
+            // Expected once the owned installer group has been reaped.
+          }
+        }
+      }
+    }
+  )
 })

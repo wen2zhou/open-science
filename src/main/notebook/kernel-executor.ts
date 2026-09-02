@@ -7,7 +7,11 @@ import { delimiter, join, posix, win32 } from 'node:path'
 import { createInterface, type Interface } from 'node:readline'
 import { Transform, type TransformCallback } from 'node:stream'
 
-import { terminateProcessTree, type ProcessTreeKillResult } from '../process-tree'
+import {
+  registerOwnedPosixProcessGroup,
+  terminateProcessTree,
+  type ProcessTreeKillResult
+} from '../process-tree'
 import {
   KERNEL_FIGURES_DIR_ENV,
   frameRNamespaceRequest,
@@ -213,6 +217,9 @@ export type NotebookKernelExecutorOptions = {
   platform?: NodeJS.Platform
   // Shared application-owned network sandbox. Omitted only by isolated executor tests.
   processSandbox?: NotebookProcessSandbox
+  // Process-ownership boundary injections keep post-exit identity/reaping tests deterministic.
+  registerOwnedProcessGroup?: typeof registerOwnedPosixProcessGroup
+  terminateTree?: typeof terminateProcessTree
 }
 
 // One in-flight request awaiting a matching loop response line.
@@ -433,6 +440,8 @@ class NotebookKernelExecutor implements NotebookExecutor {
   private readonly namespaceInspectionTimeoutMs: number
   private readonly platform: NodeJS.Platform
   private readonly processSandbox?: NotebookProcessSandbox
+  private readonly registerOwnedProcessGroup: typeof registerOwnedPosixProcessGroup
+  private readonly terminateTree: typeof terminateProcessTree
 
   constructor(options: NotebookKernelExecutorOptions = {}) {
     this.pythonLoopPath = options.pythonLoopPath ?? defaultPythonLoopPath()
@@ -448,6 +457,9 @@ class NotebookKernelExecutor implements NotebookExecutor {
       options.namespaceInspectionTimeoutMs ?? DEFAULT_NAMESPACE_INSPECTION_TIMEOUT_MS
     this.platform = options.platform ?? process.platform
     this.processSandbox = options.processSandbox
+    this.registerOwnedProcessGroup =
+      options.registerOwnedProcessGroup ?? registerOwnedPosixProcessGroup
+    this.terminateTree = options.terminateTree ?? terminateProcessTree
   }
 
   // Sends one cell to the kind's loop and resolves with the mapped execution result.
@@ -958,9 +970,11 @@ class NotebookKernelExecutor implements NotebookExecutor {
       {
         cwd: spawnCwd,
         env: sandboxed?.env ?? spawnEnv,
+        detached: this.platform !== 'win32',
         ...(rpcTokenFileDescriptor ? { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] } : {})
       }
     )
+    if (this.platform !== 'win32') this.registerOwnedProcessGroup(child)
     if (rpcTokenFileDescriptor) {
       const tokenPipe = child.stdio[rpcTokenFileDescriptor]
       if (!tokenPipe || !('end' in tokenPipe)) {
@@ -1416,7 +1430,7 @@ class NotebookKernelExecutor implements NotebookExecutor {
   // handles released) from a degraded one — the update-install gate refuses the NSIS uninstall unless
   // every kernel tree was cleanly reaped. terminateProcessTree never rejects.
   private async killChild(child: ChildProcessWithoutNullStreams): Promise<ProcessTreeKillResult> {
-    const result = await terminateProcessTree(child)
+    const result = await this.terminateTree(child)
     child.removeAllListeners('exit')
     child.removeAllListeners('close')
     return result

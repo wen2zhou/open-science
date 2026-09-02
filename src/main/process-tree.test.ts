@@ -172,6 +172,28 @@ describe('terminateProcessTree (win32)', () => {
 })
 
 describe('terminateProcessTree (posix)', () => {
+  it('retains an owned group identity after its leader exits', async () => {
+    setPlatform('linux')
+    const ps = new FakePs()
+    spawnMock.mockReturnValueOnce(ps)
+    let groupAlive = true
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      expect(pid).toBe(-1000)
+      if (signal === 0 && !groupAlive) throw esrch()
+      if (signal === 'SIGTERM') groupAlive = false
+      return true
+    })
+    const child = new FakeChild(1000)
+    child.exitCode = 0
+    registerOwnedPosixProcessGroup(child as never)
+
+    const pending = terminateProcessTree(child as never)
+    ps.emit('close', 0)
+
+    await expect(pending).resolves.toEqual({ reaped: true })
+    expect(killSpy).toHaveBeenCalledWith(-1000, 'SIGTERM')
+  })
+
   it('escalates an explicitly owned process group after snapshotting its descendants', async () => {
     vi.useFakeTimers()
     setPlatform('linux')

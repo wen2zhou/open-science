@@ -6,7 +6,7 @@ import {
   readFileSync,
   rmSync
 } from 'node:fs'
-import { spawn as nodeSpawn } from 'node:child_process'
+import { spawn as nodeSpawn, type ChildProcess } from 'node:child_process'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Transform, type TransformCallback } from 'node:stream'
@@ -48,6 +48,11 @@ import { recoverWindowsMaxPathPackage } from './micromamba-cache-recovery'
 import { notebookWorkloadCacheEnv } from './notebook-workload-cache-paths'
 import { withExclusiveCacheLocks, withSharedCacheLocks } from './pkgs-cache-lock'
 import { CHILD_UNCONFIRMED, killAndConfirmExit } from './provisioner-runtime'
+import {
+  registerOwnedPosixProcessGroup,
+  terminateProcessTree,
+  type ProcessTreeKillResult
+} from '../process-tree'
 import {
   DEFAULT_PY_ENV,
   DEFAULT_R_ENV,
@@ -134,6 +139,8 @@ export type SpawnResult = {
   // Bounded recovery-only evidence reduced from the complete capture. It is never merged into the
   // user-facing log or persisted activity result.
   maxPathRecoveryEvidence?: string
+  // Observation from the bounded process-tree teardown performed before this result settles.
+  processesTerminated?: boolean
 }
 export type InstallSpawn = (
   command: string,
@@ -960,17 +967,19 @@ const discardCondaJsonCapture = async (capture: CondaJsonCapture | undefined): P
   await finalizeCondaJsonCapture(capture, false)
 }
 
-// Real spawn wrapper collecting stdout/stderr and the exit code; replaced by an injected spawn in tests.
+// Real spawn wrapper collecting stdout/stderr and the exit code, then boundedly reaping its owned tree.
 // Exported so its fail-closed spawn-intent / kill-on-record-failure branches are directly testable.
-export const defaultSpawn: InstallSpawn = (
-  command,
-  args,
-  env,
-  onChild,
-  onBeforeSpawn,
-  captureCondaJson,
-  cwd
-) => {
+export const defaultSpawn = (
+  command: string,
+  args: string[],
+  env?: NodeJS.ProcessEnv,
+  onChild?: (pid: number) => void,
+  onBeforeSpawn?: () => void,
+  captureCondaJson?: boolean,
+  cwd?: string,
+  terminateTree: (child: ChildProcess) => Promise<ProcessTreeKillResult> = terminateProcessTree,
+  platform: NodeJS.Platform = process.platform
+): Promise<SpawnResult> => {
   let condaJsonCapture: CondaJsonCapture | undefined
   try {
     if (captureCondaJson ?? args.includes('--json')) condaJsonCapture = createCondaJsonCapture()
@@ -997,7 +1006,12 @@ export const defaultSpawn: InstallSpawn = (
     }
     let child: ReturnType<typeof nodeSpawn>
     try {
-      child = nodeSpawn(command, args, { stdio: ['ignore', 'pipe', 'pipe'], env, cwd })
+      child = nodeSpawn(command, args, {
+        stdio: ['ignore', 'pipe', 'pipe'],
+        env,
+        cwd,
+        detached: platform !== 'win32'
+      })
     } catch (error) {
       void discardCondaJsonCapture(condaJsonCapture)
       resolve({
@@ -1007,6 +1021,7 @@ export const defaultSpawn: InstallSpawn = (
       })
       return
     }
+    if (platform !== 'win32') registerOwnedPosixProcessGroup(child)
     if (child.pid !== undefined) {
       try {
         onChild?.(child.pid)
@@ -1048,7 +1063,10 @@ export const defaultSpawn: InstallSpawn = (
       else condaJsonCapture.stderrLimiter.end()
     }
     let settled = false
-    const result = async (code: number): Promise<SpawnResult> => {
+    const result = async (
+      code: number,
+      processOutcome: ProcessTreeKillResult
+    ): Promise<SpawnResult> => {
       const stdoutSnapshot = stdout.snapshot()
       const stderrSnapshot = stderr.snapshot()
       const condaJsonSummary = await finalizeCondaJsonCapture(
@@ -1057,6 +1075,7 @@ export const defaultSpawn: InstallSpawn = (
       )
       return {
         code,
+        processesTerminated: processOutcome.reaped,
         stdout: stdoutSnapshot.text,
         stderr: stderrSnapshot.text,
         ...(stdoutSnapshot.droppedBytes > 0
@@ -1071,7 +1090,10 @@ export const defaultSpawn: InstallSpawn = (
     const settle = (code: number): void => {
       if (settled) return
       settled = true
-      void result(code).then(resolve)
+      void terminateTree(child)
+        .catch(() => ({ reaped: false }))
+        .then((processOutcome) => result(code, processOutcome))
+        .then(resolve)
     }
     child.on('error', (error) => {
       stderr.push(String(error))

@@ -2,6 +2,7 @@ import { existsSync } from 'node:fs'
 import { delimiter, dirname, isAbsolute, win32 } from 'node:path'
 
 import { defaultSpawn, type InstallRequest, type InstallSpawn } from './package-manager'
+import { terminateProcessTree } from '../process-tree'
 import { buildNotebookKernelEnvironment } from './process-environment'
 import type { NotebookProcessSandbox } from './process-sandbox'
 
@@ -12,6 +13,7 @@ type PackageProcessSandboxOptions = Readonly<{
   storageRoot: string
   interpreter?: Readonly<{ command: string; condaPrefix?: string }>
   platform?: NodeJS.Platform
+  terminateTree?: typeof terminateProcessTree
 }>
 
 const PACKAGE_ENV_KEYS = [
@@ -110,6 +112,7 @@ export const sandboxedPackageSpawn =
     })
     const endExecution = sandboxed.beginExecution?.()
     let ended = false
+    let processesTerminated = false
     try {
       const result = await defaultSpawn(
         sandboxed.executable,
@@ -118,13 +121,16 @@ export const sandboxedPackageSpawn =
         onChild,
         onBeforeSpawn,
         args.includes('--json'),
-        cwd
+        cwd,
+        options.terminateTree,
+        platform
       )
       endExecution?.()
       ended = true
+      processesTerminated = result.processesTerminated ?? true
       return { ...result, stderr: sandboxed.annotateStderr(result.stderr) }
     } finally {
       if (!ended) endExecution?.()
-      await sandboxed.cleanup(ended ? 'exit' : 'spawn-failed', { processesTerminated: true })
+      await sandboxed.cleanup(ended ? 'exit' : 'spawn-failed', { processesTerminated })
     }
   }
