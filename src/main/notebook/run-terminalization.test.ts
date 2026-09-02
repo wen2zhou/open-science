@@ -143,6 +143,19 @@ const createHarness = (
         )
         return { document, run, transitioned: true }
       },
+      requestRunCancellation: async ({ run, requestedAt, reason }) => {
+        const requested = {
+          ...run,
+          cancellationRequestedAt: requestedAt,
+          cancellationReason: reason
+        }
+        document = documentWith(
+          document.runs.map((candidate) =>
+            candidate.runId === requested.runId ? requested : candidate
+          )
+        )
+        return requested
+      },
       commitTerminalRun: async ({ run, expectedStatus }) => {
         events.push(`terminal:${expectedStatus}->${run.status}`)
         if (options.terminalFailure && terminalFailuresRemaining > 0) {
@@ -194,6 +207,9 @@ describe('NotebookRunTerminalizationOwner', () => {
           throw new Error('not used')
         },
         transitionRun: async () => {
+          throw new Error('not used')
+        },
+        requestRunCancellation: async () => {
           throw new Error('not used')
         },
         commitTerminalRun: async () => {

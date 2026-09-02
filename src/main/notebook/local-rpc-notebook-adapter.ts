@@ -211,7 +211,7 @@ type NotebookLocalRpcCapability = {
   cancelBackgroundRun(request: NotebookBackgroundRunLookupRequest): Promise<unknown>
   waitForBackgroundRun(runId: string): Promise<void>
   executeControl(request: ExecuteNotebookControlRequest, signal?: AbortSignal): Promise<unknown>
-  executeShell(request: ExecuteShellRequest): Promise<unknown>
+  executeShell(request: ExecuteShellRequest, signal?: AbortSignal): Promise<unknown>
   requestNetworkAccess(
     request: RequestNotebookNetworkAccessRequest,
     signal?: AbortSignal
@@ -328,8 +328,8 @@ const resolveNotebookLocalRpcHandler = (
       return (request) =>
         capability.cancelBackgroundRun(parseNotebookLocalRpcRequest('cancelBackgroundRun', request))
     case 'executeShell':
-      return (request) =>
-        capability.executeShell(parseNotebookLocalRpcRequest('executeShell', request))
+      return (request, signal) =>
+        capability.executeShell(parseNotebookLocalRpcRequest('executeShell', request), signal)
     case 'requestNetworkAccess':
       return (request, signal) =>
         capability.requestNetworkAccess(

@@ -39,9 +39,11 @@ import type {
 import { notebookInterpreterIdentity } from './session-aggregate'
 import {
   NotebookShellProcessAdapter,
+  buildShellEnv,
   type NotebookShellProcess,
   type NotebookShellResult
 } from './shell-process'
+import { prepareNotebookWorkloadCache } from './notebook-workload-cache-paths'
 import { startWorkingFileObservation } from './working-file-observer'
 import type { TransientViewImage } from './host-view-image-service'
 import {
@@ -131,6 +133,7 @@ type NotebookExecutionOwnerOptions = {
   logger: Pick<Logger, 'error'>
   platform?: NodeJS.Platform
   shellProcess?: NotebookShellProcess
+  shellConcurrencyLimit?: number
 }
 
 const errorToExecutionResult = (error: unknown, cwd: string): NotebookSessionExecutionResult => {
@@ -236,6 +239,24 @@ const controlRunFingerprint = (
     )
     .digest('hex')
 
+const shellRunFingerprint = (
+  session: NotebookSessionAggregate,
+  request: ExecuteShellRequest,
+  frozenShellContext: NonNullable<NotebookRunRecord['frozenShellContext']>
+): string =>
+  createHash('sha256')
+    .update(
+      JSON.stringify({
+        version: 1,
+        lane: notebookLaneKey(session.lane),
+        command: request.command,
+        provenanceContext: request.provenanceContext ?? null,
+        inputFiles: request.registeredInputFiles ?? [],
+        frozenShellContext
+      })
+    )
+    .digest('hex')
+
 const controlResultFromRun = (run: NotebookRunRecord): NotebookControlResult => {
   if (run.status === 'queued' || run.status === 'running') {
     throw new Error(`REPL Run ${run.runId} has no terminal foreground result.`)
@@ -252,8 +273,78 @@ const controlResultFromRun = (run: NotebookRunRecord): NotebookControlResult => 
   }
 }
 
+const publicShellResult = (
+  run: Pick<NotebookRunRecord, 'text' | 'exitCode' | 'truncated'>
+): NotebookShellResult => ({
+  stdout: run.text.stdout,
+  stderr: run.text.stderr,
+  exitCode: run.exitCode ?? null,
+  ...(run.truncated ? { truncated: true } : {})
+})
+
+type ShellQueueWaiter = {
+  signal?: AbortSignal
+  resolve: (release: () => void) => void
+  reject: (reason?: unknown) => void
+  abort?: () => void
+}
+
+class BoundedShellAdmission {
+  private readonly activeByProject = new Map<string, number>()
+  private readonly queuedByProject = new Map<string, ShellQueueWaiter[]>()
+
+  constructor(private readonly limit: number) {
+    if (!Number.isSafeInteger(limit) || limit < 1) {
+      throw new Error('Shell concurrency limit must be a positive integer.')
+    }
+  }
+
+  acquire(projectId: string, signal?: AbortSignal): Promise<() => void> {
+    if (signal?.aborted) return Promise.reject(signal.reason)
+    if ((this.activeByProject.get(projectId) ?? 0) < this.limit) {
+      this.activeByProject.set(projectId, (this.activeByProject.get(projectId) ?? 0) + 1)
+      return Promise.resolve(this.releaseOnce(projectId))
+    }
+    return new Promise<() => void>((resolve, reject) => {
+      const waiter: ShellQueueWaiter = { signal, resolve, reject }
+      waiter.abort = () => {
+        const queue = this.queuedByProject.get(projectId)
+        const index = queue?.indexOf(waiter) ?? -1
+        if (index >= 0) queue?.splice(index, 1)
+        if (queue?.length === 0) this.queuedByProject.delete(projectId)
+        reject(signal?.reason)
+      }
+      signal?.addEventListener('abort', waiter.abort, { once: true })
+      const queue = this.queuedByProject.get(projectId) ?? []
+      queue.push(waiter)
+      this.queuedByProject.set(projectId, queue)
+    })
+  }
+
+  private releaseOnce(projectId: string): () => void {
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const queue = this.queuedByProject.get(projectId)
+      while (queue && queue.length > 0) {
+        const waiter = queue.shift()!
+        waiter.signal?.removeEventListener('abort', waiter.abort!)
+        if (waiter.signal?.aborted) continue
+        if (queue.length === 0) this.queuedByProject.delete(projectId)
+        waiter.resolve(this.releaseOnce(projectId))
+        return
+      }
+      const remaining = (this.activeByProject.get(projectId) ?? 1) - 1
+      if (remaining === 0) this.activeByProject.delete(projectId)
+      else this.activeByProject.set(projectId, remaining)
+    }
+  }
+}
+
 class NotebookExecutionOwner {
   private readonly shellProcess: NotebookShellProcess
+  private readonly shellAdmission: BoundedShellAdmission
   private controlCompletionInterceptor: NotebookControlCompletionInterceptor | undefined
   private readonly activeDataSubmissions = new Map<
     string,
@@ -281,9 +372,29 @@ class NotebookExecutionOwner {
       result: NotebookControlResult
     }
   >()
+  private readonly activeShellSubmissions = new Map<
+    string,
+    { fingerprint: string; promise: Promise<NotebookShellResult> }
+  >()
+  private readonly liveShellRuns = new Map<
+    string,
+    {
+      projectId: string
+      sessionId: string
+      laneKey: string
+      controller: AbortController
+      settled: Promise<boolean>
+      requestCancellation: (reason: unknown) => Promise<void>
+    }
+  >()
+  private shellAdmissionGlobalFences = 0
+  private readonly shellAdmissionProjectFences = new Map<string, number>()
+  private readonly shellAdmissionSessionFences = new Map<string, number>()
+  private readonly shellAdmissionLaneFences = new Map<string, number>()
 
   constructor(private readonly options: NotebookExecutionOwnerOptions) {
     this.shellProcess = options.shellProcess ?? new NotebookShellProcessAdapter(options.platform)
+    this.shellAdmission = new BoundedShellAdmission(options.shellConcurrencyLimit ?? 4)
   }
 
   private inputRoot(session: NotebookSessionAggregate): string {
@@ -305,6 +416,78 @@ class NotebookExecutionOwner {
       fileEvidenceStorageRoot: this.options.storageRoot,
       fileEvidenceRoot: location.root,
       fileEvidenceStoragePrefix: location.storageKeyPrefix
+    }
+  }
+
+  fenceShellRuns(scope: {
+    projectId?: string
+    sessionId?: string
+    laneKey?: string
+    global?: boolean
+  }): () => void {
+    if (scope.global) {
+      this.shellAdmissionGlobalFences += 1
+      let released = false
+      return () => {
+        if (released) return
+        released = true
+        this.shellAdmissionGlobalFences -= 1
+      }
+    }
+    const entry = scope.laneKey
+      ? ([this.shellAdmissionLaneFences, scope.laneKey] as const)
+      : scope.sessionId
+        ? ([this.shellAdmissionSessionFences, scope.sessionId] as const)
+        : scope.projectId
+          ? ([this.shellAdmissionProjectFences, scope.projectId] as const)
+          : undefined
+    if (!entry) throw new Error('Shell admission fence requires a scope.')
+    const [fences, key] = entry
+    fences.set(key, (fences.get(key) ?? 0) + 1)
+    let released = false
+    return () => {
+      if (released) return
+      released = true
+      const remaining = (fences.get(key) ?? 1) - 1
+      if (remaining === 0) fences.delete(key)
+      else fences.set(key, remaining)
+    }
+  }
+
+  private assertShellAdmissionAvailable(session: NotebookSessionAggregate): void {
+    if (
+      this.shellAdmissionGlobalFences > 0 ||
+      this.shellAdmissionProjectFences.has(session.projectId) ||
+      this.shellAdmissionSessionFences.has(session.sessionId) ||
+      this.shellAdmissionLaneFences.has(notebookLaneKey(session.lane))
+    ) {
+      throw new Error('Notebook Shell admission is closed for teardown.')
+    }
+  }
+
+  async cancelShellRuns(
+    scope: { projectId?: string; sessionId?: string; laneKey?: string },
+    reason: unknown
+  ): Promise<{ reaped: boolean }> {
+    const runs = Array.from(this.liveShellRuns.values()).filter(
+      (run) =>
+        (scope.projectId === undefined || run.projectId === scope.projectId) &&
+        (scope.sessionId === undefined || run.sessionId === scope.sessionId) &&
+        (scope.laneKey === undefined || run.laneKey === scope.laneKey)
+    )
+    const cancellationWrites = await Promise.allSettled(
+      runs.map((run) => run.requestCancellation(reason))
+    )
+    for (const run of runs) run.controller.abort(reason)
+    const settlements = await Promise.allSettled(runs.map((run) => run.settled))
+    const failures = cancellationWrites.flatMap((result) =>
+      result.status === 'rejected' ? [result.reason] : []
+    )
+    if (failures.length > 0) {
+      throw new AggregateError(failures, 'Shell cancellation intent could not be persisted.')
+    }
+    return {
+      reaped: settlements.every((result) => result.status === 'fulfilled' && result.value)
     }
   }
 
@@ -986,120 +1169,283 @@ class NotebookExecutionOwner {
     request: ExecuteShellRequest,
     signal?: AbortSignal
   ): Promise<NotebookShellResult> {
-    const { runId } = this.options.runTerminalization.allocateRunIdentity()
-    const runningRun: NotebookRunRecord = {
-      runId,
-      ...(request.executionInvocationId
-        ? { executionInvocationId: request.executionInvocationId }
-        : {}),
-      cellId: `bash-${runId}`,
-      source: 'agent',
-      inputKind: 'cell',
-      kernelKind: 'bash',
-      script: request.command,
-      status: 'running',
-      startedAt: Date.now(),
-      cwdBefore: session.cwd,
-      ...request.provenanceContext,
-      agentFrameId: runAgentFrameId(session, request.provenanceContext),
-      text: { stdout: '', stderr: '', traceback: '', plain: [] },
-      outputs: [],
-      artifacts: [],
-      workingFiles: [],
-      inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
+    this.assertShellAdmissionAvailable(session)
+    const platform = this.options.platform ?? process.platform
+    const runtimeRoot = session.runtimeRoot
+    const handoffDir = join(session.notebookSessionRoot, 'handoff')
+    const inputRoot = this.inputRoot(session)
+    const protectedDirs = [getAppClaudeConfigDir(this.options.configRoot)]
+    const environment = buildShellEnv(
+      handoffDir,
+      platform,
+      process.env,
+      runtimeRoot,
+      prepareNotebookWorkloadCache(runtimeRoot)
+    )
+    const frozenShellContext: NonNullable<NotebookRunRecord['frozenShellContext']> = {
+      cwd: session.cwd,
+      handoffDir,
+      runtimeRoot,
+      notebookSessionRoot: session.notebookSessionRoot,
+      inputRoot,
+      protectedDirs,
+      environment: Object.fromEntries(
+        Object.entries(environment).filter(
+          (entry): entry is [string, string] => entry[1] !== undefined
+        )
+      ),
+      timeoutMs: request.timeoutMs ?? 120_000,
+      platform
     }
-
-    // No per-Session queue; the repository serializes only the durable run writes.
-    const { result } = await this.options.runTerminalization.run({
-      session,
-      runningRun,
-      invoke: async () => {
-        const workingFileObservation = await startWorkingFileObservation({
-          dataRoot: session.dataRoot,
-          notebookSessionRoot: session.notebookSessionRoot,
-          ...this.fileEvidenceLocation(session),
-          runId,
-          signal
-        })
-        let workingFiles: NotebookWorkingFile[] = []
-        let fileEvidence: ExecutionFileEvidenceSummary | undefined
-        const blockedMutation = detectManagedRuntimeMutation({
-          source: request.command,
-          surface: this.options.platform === 'win32' ? 'powershell' : 'bash',
-          runtimeRoot: session.runtimeRoot,
-          cwd: session.cwd,
-          platform: this.options.platform
-        })
-        let shellResult: NotebookShellResult | undefined
-        try {
-          shellResult = await (blockedMutation
-            ? Promise.resolve<NotebookShellResult>({
-                stdout: '',
-                stderr: `MANAGED_RUNTIME_MUTATION_BLOCKED: ${blockedMutation.message}`,
-                exitCode: 1
-              })
-            : this.shellProcess.execute({
-                command: request.command,
-                cwd: session.cwd,
-                handoffDir: join(session.notebookSessionRoot, 'handoff'),
-                runtimeRoot: session.runtimeRoot,
-                notebookSessionRoot: session.notebookSessionRoot,
-                inputRoot: this.inputRoot(session),
-                protectedDirs: [getAppClaudeConfigDir(this.options.configRoot)],
-                sessionId: session.sessionId,
-                projectId: session.projectId,
-                timeoutMs: request.timeoutMs,
-                signal
-              }))
-        } finally {
-          const observation = await workingFileObservation.finish(
-            shellResult === undefined ||
-              signal?.aborted ||
-              shellResult.cancelled ||
-              shellResult.exitCode === null
-              ? AbortSignal.abort()
-              : signal
-          )
-          workingFiles = observation.workingFiles
-          fileEvidence = observation.fileEvidence
-        }
-        if (!shellResult) throw new Error('Notebook shell execution completed without a result.')
-        const status: NotebookRunStatus = shellResult.cancelled
-          ? 'cancelled'
-          : shellResult.exitCode === 0
-            ? 'completed'
-            : shellResult.exitCode === null
-              ? 'timeout'
-              : 'failed'
-        const outputs: NotebookOutput[] = [
-          ...(shellResult.stdout
-            ? [{ type: 'stream' as const, name: 'stdout' as const, text: shellResult.stdout }]
-            : []),
-          ...(shellResult.stderr
-            ? [{ type: 'stream' as const, name: 'stderr' as const, text: shellResult.stderr }]
-            : [])
-        ]
-
-        return {
-          status,
-          stdout: shellResult.stdout,
-          stderr: shellResult.stderr,
-          traceback: '',
-          cwdAfter: session.cwd,
-          outputs,
-          truncated: shellResult.truncated,
-          workingFiles,
-          fileEvidence,
-          exitCode: shellResult.exitCode
+    const submissionFingerprint = shellRunFingerprint(session, request, frozenShellContext)
+    let runId: string | undefined
+    const submissionIdentity =
+      request.executionInvocationId ??
+      (runId = this.options.runTerminalization.allocateRunIdentity().runId)
+    const submissionKey = `${notebookLaneKey(session.lane)}:${submissionIdentity}`
+    const active = this.activeShellSubmissions.get(submissionKey)
+    if (active) {
+      if (active.fingerprint !== submissionFingerprint) {
+        throw new NotebookRunSubmissionConflictError(submissionIdentity)
+      }
+      return active.promise
+    }
+    const promise = (async (): Promise<NotebookShellResult> => {
+      if (request.executionInvocationId) {
+        const existing = await this.options.runTerminalization.findSubmission(
+          session,
+          submissionIdentity
+        )
+        if (existing) {
+          if (existing.submissionFingerprint !== submissionFingerprint) {
+            throw new NotebookRunSubmissionConflictError(submissionIdentity)
+          }
+          return publicShellResult(existing)
         }
       }
-    })
+      // A teardown may have fenced this scope while an idempotency lookup was awaiting storage.
+      this.assertShellAdmissionAvailable(session)
+      runId ??= this.options.runTerminalization.allocateRunIdentity().runId
+      const admittedAt = Date.now()
+      const queuedRun: NotebookRunRecord = {
+        runId,
+        submissionIdentity,
+        submissionFingerprint,
+        admittedAt,
+        frozenShellContext,
+        ...(request.executionInvocationId
+          ? { executionInvocationId: request.executionInvocationId }
+          : {}),
+        cellId: `bash-${runId}`,
+        source: 'agent',
+        inputKind: 'cell',
+        kernelKind: 'bash',
+        script: request.command,
+        status: 'queued',
+        startedAt: admittedAt,
+        cwdBefore: frozenShellContext.cwd,
+        ...request.provenanceContext,
+        agentFrameId: runAgentFrameId(session, request.provenanceContext),
+        text: { stdout: '', stderr: '', traceback: '', plain: [] },
+        outputs: [],
+        artifacts: [],
+        workingFiles: [],
+        inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
+      }
+      const lifecycleController = new AbortController()
+      const lifecycleSignal = signal
+        ? AbortSignal.any([signal, lifecycleController.signal])
+        : lifecycleController.signal
+      let settleLifecycle!: (reaped: boolean) => void
+      const lifecycleSettled = new Promise<boolean>((resolve) => {
+        settleLifecycle = resolve
+      })
+      let ownedTreeReaped = true
+      let lifecycleFinished = false
+      const finishLifecycle = (): void => {
+        if (lifecycleFinished) return
+        lifecycleFinished = true
+        this.liveShellRuns.delete(runId!)
+        settleLifecycle(ownedTreeReaped)
+      }
+      const liveRun = {
+        projectId: session.projectId,
+        sessionId: session.sessionId,
+        laneKey: notebookLaneKey(session.lane),
+        controller: lifecycleController,
+        settled: lifecycleSettled,
+        requestCancellation: async (reason: unknown): Promise<void> => {
+          void reason
+        }
+      }
+      this.liveShellRuns.set(runId, liveRun)
+      const shellProcessRequest = {
+        runId,
+        command: request.command,
+        cwd: frozenShellContext.cwd,
+        handoffDir: frozenShellContext.handoffDir,
+        runtimeRoot: frozenShellContext.runtimeRoot,
+        notebookSessionRoot: frozenShellContext.notebookSessionRoot,
+        inputRoot: frozenShellContext.inputRoot,
+        protectedDirs: frozenShellContext.protectedDirs,
+        environment: frozenShellContext.environment,
+        sessionId: session.sessionId,
+        projectId: session.projectId,
+        timeoutMs: frozenShellContext.timeoutMs
+      }
+      let preparedShell:
+        Awaited<ReturnType<NonNullable<NotebookShellProcess['prepare']>>> | undefined
+      let durableAdmission: Awaited<ReturnType<NotebookRunTerminalizationOwner['admit']>>
+      try {
+        if (lifecycleSignal.aborted) throw lifecycleSignal.reason
+        // Production freezes sandbox roots, trust material, network decision state, and one-shot
+        // grants before durable admission. Injected test adapters may keep the legacy execute port.
+        preparedShell = await this.shellProcess.prepare?.(shellProcessRequest)
+        durableAdmission = await this.options.runTerminalization.admit({ session, queuedRun })
+      } catch (error) {
+        preparedShell?.dispose()
+        finishLifecycle()
+        throw error
+      }
+      if (!durableAdmission.admitted) {
+        preparedShell?.dispose()
+        finishLifecycle()
+        return publicShellResult(durableAdmission.run)
+      }
+      liveRun.requestCancellation = async (reason: unknown) => {
+        await this.options.runTerminalization.requestCancellation(
+          session,
+          durableAdmission.run,
+          reason
+        )
+      }
+      if (lifecycleSignal.aborted) {
+        await liveRun.requestCancellation(lifecycleSignal.reason)
+      }
+      this.options.notifyAvailable(session, 'agent')
+      let release: (() => void) | undefined
+      try {
+        release = await this.shellAdmission.acquire(session.projectId, lifecycleSignal)
+      } catch (error) {
+        preparedShell?.dispose()
+        const cancelled = await this.options.runTerminalization.cancelQueued(
+          session,
+          durableAdmission.run,
+          error
+        )
+        const result = {
+          stdout: cancelled.text.stdout,
+          stderr: cancelled.text.stderr,
+          exitCode: null,
+          ...(cancelled.truncated ? { truncated: true } : {})
+        }
+        finishLifecycle()
+        return result
+      }
+      try {
+        const terminalized = await this.options.runTerminalization.runAdmitted({
+          session,
+          queuedRun: { ...durableAdmission.run, inputFiles: queuedRun.inputFiles },
+          invoke: async () => {
+            const workingFileObservation = await startWorkingFileObservation({
+              dataRoot: session.dataRoot,
+              notebookSessionRoot: frozenShellContext.notebookSessionRoot,
+              ...this.fileEvidenceLocation(session),
+              runId: runId!,
+              signal: lifecycleSignal
+            })
+            let workingFiles: NotebookWorkingFile[] = []
+            let fileEvidence: ExecutionFileEvidenceSummary | undefined
+            const blockedMutation = detectManagedRuntimeMutation({
+              source: request.command,
+              surface: platform === 'win32' ? 'powershell' : 'bash',
+              runtimeRoot: frozenShellContext.runtimeRoot,
+              cwd: frozenShellContext.cwd,
+              platform
+            })
+            let shellResult: NotebookShellResult | undefined
+            try {
+              shellResult = await (blockedMutation
+                ? Promise.resolve<NotebookShellResult>({
+                    stdout: '',
+                    stderr: `MANAGED_RUNTIME_MUTATION_BLOCKED: ${blockedMutation.message}`,
+                    exitCode: 1
+                  })
+                : preparedShell
+                  ? preparedShell.execute(lifecycleSignal)
+                  : this.shellProcess.execute({
+                      ...shellProcessRequest,
+                      signal: lifecycleSignal
+                    }))
+            } finally {
+              const observation = await workingFileObservation.finish(
+                shellResult === undefined ||
+                  signal?.aborted ||
+                  shellResult.cancelled ||
+                  shellResult.exitCode === null
+                  ? AbortSignal.abort()
+                  : signal
+              )
+              workingFiles = observation.workingFiles
+              fileEvidence = observation.fileEvidence
+            }
+            if (!shellResult)
+              throw new Error('Notebook shell execution completed without a result.')
+            ownedTreeReaped = shellResult.ownedTreeReaped !== false
+            const status: NotebookRunStatus = shellResult.cancelled
+              ? 'cancelled'
+              : shellResult.exitCode === 0
+                ? 'completed'
+                : shellResult.exitCode === null
+                  ? 'timeout'
+                  : 'failed'
+            const outputs: NotebookOutput[] = [
+              ...(shellResult.stdout
+                ? [{ type: 'stream' as const, name: 'stdout' as const, text: shellResult.stdout }]
+                : []),
+              ...(shellResult.stderr
+                ? [{ type: 'stream' as const, name: 'stderr' as const, text: shellResult.stderr }]
+                : [])
+            ]
 
-    return {
-      stdout: result.stdout,
-      stderr: result.stderr,
-      exitCode: result.exitCode,
-      ...(result.truncated ? { truncated: true } : {})
+            return {
+              status,
+              stdout: shellResult.stdout,
+              stderr: shellResult.stderr,
+              traceback: '',
+              cwdAfter: frozenShellContext.cwd,
+              outputs,
+              truncated: shellResult.truncated,
+              workingFiles,
+              fileEvidence,
+              exitCode: shellResult.exitCode
+            }
+          }
+        })
+        const result = terminalized.result
+        if (!result) {
+          return publicShellResult(terminalized.run)
+        }
+        return {
+          stdout: result.stdout,
+          stderr: result.stderr,
+          exitCode: result.exitCode,
+          ...(result.truncated ? { truncated: true } : {})
+        }
+      } finally {
+        preparedShell?.dispose()
+        release()
+        finishLifecycle()
+      }
+    })()
+    const entry = { fingerprint: submissionFingerprint, promise }
+    this.activeShellSubmissions.set(submissionKey, entry)
+    try {
+      return await promise
+    } finally {
+      if (this.activeShellSubmissions.get(submissionKey) === entry) {
+        this.activeShellSubmissions.delete(submissionKey)
+      }
     }
   }
 

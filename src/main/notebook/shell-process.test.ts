@@ -1,8 +1,11 @@
 import type { ChildProcess } from 'node:child_process'
 import { EventEmitter } from 'node:events'
 import { join } from 'node:path'
+import { tmpdir } from 'node:os'
+import { mkdtemp, readFile, rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
 
-import { afterEach, describe, expect, it, vi } from 'vitest'
+import { afterAll, afterEach, describe, expect, it, vi } from 'vitest'
 
 import {
   buildShellEnv,
@@ -16,6 +19,9 @@ import type { NotebookProcessSandbox } from './process-sandbox'
 import { normalizeFilesystemLayout } from '../../../packages/notebook-network-sandbox/runtime/src/platform/filesystem-layout.js'
 
 afterEach(() => vi.unstubAllEnvs())
+
+const shellTestRuntimeRoot = join(tmpdir(), `open-science-shell-runtime-${randomUUID()}`)
+afterAll(() => rm(shellTestRuntimeRoot, { recursive: true, force: true }))
 
 describe('notebook shell process behavior', () => {
   describe('invocation', () => {
@@ -229,7 +235,7 @@ describe('notebook shell process behavior', () => {
         command,
         cwd: process.cwd(),
         handoffDir: process.cwd(),
-        runtimeRoot: join(process.cwd(), '.open-science-test-runtime'),
+        runtimeRoot: shellTestRuntimeRoot,
         sessionId: 'session-1',
         projectId: 'project-1',
         platform: 'linux',
@@ -246,7 +252,7 @@ describe('notebook shell process behavior', () => {
     })
 
     it('wraps Notebook Bash with the shared process sandbox', async () => {
-      const runtimeRoot = join(process.cwd(), '.open-science-test-runtime')
+      const runtimeRoot = shellTestRuntimeRoot
       const inputRoot = join(process.cwd(), '.open-science-test-inputs')
       const cleanup = vi.fn()
       const endExecution = vi.fn()
@@ -325,6 +331,43 @@ describe('notebook shell process behavior', () => {
         exitCode: null,
         cancelled: true
       })
+    })
+
+    it('does not settle cancellation until the complete POSIX process group is gone', async () => {
+      const root = await mkdtemp(join(tmpdir(), 'shell-cancel-tree-'))
+      const marker = randomUUID()
+      const pidPath = join(root, `.shell-cancel-${marker}.pid`)
+      const controller = new AbortController()
+      const quote = (value: string): string => `'${value.replaceAll("'", `'\\''`)}'`
+      try {
+        const execution = runShellCommand({
+          command: `${quote(process.execPath)} -e ${quote('setTimeout(() => {}, 30_000)')} & child=$!; printf '%s' "$child" > ${quote(pidPath)}; wait "$child"`,
+          cwd: root,
+          handoffDir: root,
+          runtimeRoot: join(root, 'runtime'),
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          platform: 'linux',
+          timeoutMs: 30_000,
+          signal: controller.signal
+        })
+        let descendantPid: number | undefined
+        await vi.waitFor(
+          async () => {
+            descendantPid = Number((await readFile(pidPath, 'utf8')).trim())
+            expect(descendantPid).toBeGreaterThan(0)
+          },
+          { timeout: 5_000 }
+        )
+
+        controller.abort()
+        await expect(execution).resolves.toMatchObject({ cancelled: true, exitCode: null })
+        expect(() => process.kill(descendantPid!, 0)).toThrow(
+          expect.objectContaining({ code: 'ESRCH' })
+        )
+      } finally {
+        await rm(root, { recursive: true, force: true })
+      }
     })
   })
 })

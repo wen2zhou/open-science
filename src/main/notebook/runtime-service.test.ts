@@ -3366,7 +3366,7 @@ describe('notebook runtime service', () => {
       expect(state.runs[0].text.stdout).toContain('hi')
     })
 
-    it('routes one unqueued call through the shell process port and preserves its public result', async () => {
+    it('routes one admitted call through the shell process port and preserves its public result', async () => {
       const root = await createStorageRoot()
       const execute = vi.fn<NotebookShellProcess['execute']>().mockResolvedValue({
         stdout: 'partial output',
@@ -3374,11 +3374,12 @@ describe('notebook runtime service', () => {
         exitCode: 9,
         truncated: true
       })
+      const repository = new NotebookRunRepository(root)
       const service = new NotebookRuntimeService({
         configRoot: root,
         dataRoot: root,
         projectId: 'default-project',
-        repository: new NotebookRunRepository(root),
+        repository,
         shellProcess: { execute }
       })
 
@@ -3391,12 +3392,14 @@ describe('notebook runtime service', () => {
 
       expect(execute).toHaveBeenCalledWith({
         command: 'opaque command',
+        runId: expect.any(String),
         cwd: join(root, 'notebooks', 'default-project', 'session-1', 'data'),
         handoffDir: join(root, 'notebooks', 'default-project', 'session-1', 'handoff'),
         notebookSessionRoot: join(root, 'notebooks', 'default-project', 'session-1'),
         inputRoot: getNotebookInputRoot(root, 'default-project', 'session-1'),
         projectId: 'default-project',
         protectedDirs: [join(root, 'claude')],
+        environment: expect.any(Object),
         runtimeRoot: getRuntimeRoot(root),
         sessionId: 'session-1',
         timeoutMs: 321,
@@ -3415,7 +3418,7 @@ describe('notebook runtime service', () => {
       })
     })
 
-    it('admits overlapping shell calls without a per-session execution queue', async () => {
+    it('durably queues shell calls when the bounded project capacity is occupied', async () => {
       const root = await createStorageRoot()
       const entered: string[] = []
       const releases = new Map<string, () => void>()
@@ -3426,12 +3429,14 @@ describe('notebook runtime service', () => {
             releases.set(command, () => resolve({ stdout: command, stderr: '', exitCode: 0 }))
           })
       )
+      const repository = new NotebookRunRepository(root)
       const service = new NotebookRuntimeService({
         configRoot: root,
         dataRoot: root,
         projectId: 'default-project',
-        repository: new NotebookRunRepository(root),
-        shellProcess: { execute }
+        repository,
+        shellProcess: { execute },
+        shellConcurrencyLimit: 1
       })
 
       const first = service.executeShell({
@@ -3445,15 +3450,27 @@ describe('notebook runtime service', () => {
         command: 'second'
       })
 
-      await vi.waitFor(
-        () => {
-          expect(entered).toHaveLength(2)
-          expect(entered).toEqual(expect.arrayContaining(['first', 'second']))
-        },
-        { timeout: 5_000 }
-      )
-      releases.get('second')?.()
+      await vi.waitFor(() => expect(entered).toEqual(['first']))
+      await vi.waitFor(async () => {
+        const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
+        expect(state.runs).toHaveLength(2)
+        expect(state.runs.map((run) => run.status).sort()).toEqual(['queued', 'running'])
+        expect(state.runs.find((run) => run.script === 'first')?.status).toBe('running')
+        expect(state.runs.find((run) => run.script === 'second')?.status).toBe('queued')
+        const durable = await repository.loadOrCreate({
+          projectId: 'default-project',
+          sessionId: 'session-1',
+          workspaceCwd: root,
+          lane: createRootNotebookLane('default-project', 'session-1', 'root-frame-session-1')
+        })
+        expect(durable.runs.every((run) => run.submissionIdentity)).toBe(true)
+        expect(durable.runs.every((run) => run.submissionFingerprint)).toBe(true)
+        expect(durable.runs.every((run) => run.admittedAt !== undefined)).toBe(true)
+      })
       releases.get('first')?.()
+
+      await vi.waitFor(() => expect(entered).toEqual(['first', 'second']))
+      releases.get('second')?.()
 
       await expect(Promise.all([first, second])).resolves.toEqual([
         { stdout: 'first', stderr: '', exitCode: 0 },
@@ -3462,6 +3479,334 @@ describe('notebook runtime service', () => {
       const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
       expect(state.runs).toHaveLength(2)
       expect(state.runs.every((run) => run.status === 'completed')).toBe(true)
+    })
+
+    it('cancels and drains the running and queued Shell Runs before Session teardown', async () => {
+      const root = await createStorageRoot()
+      const execute = vi.fn<NotebookShellProcess['execute']>(
+        (request) =>
+          new Promise((resolve) => {
+            const cancel = (): void =>
+              resolve({
+                stdout: '',
+                stderr: 'Shell command was cancelled.',
+                exitCode: null,
+                cancelled: true
+              })
+            if (request.signal?.aborted) cancel()
+            else request.signal?.addEventListener('abort', cancel, { once: true })
+          })
+      )
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        shellProcess: { execute },
+        shellConcurrencyLimit: 1
+      })
+      const scope = { sessionId: 'session-1', workspaceCwd: root }
+      const running = service.executeShell({ ...scope, command: 'running' })
+      const queued = service.executeShell({ ...scope, command: 'queued' })
+
+      await vi.waitFor(async () => {
+        const state = await service.state(scope)
+        expect(state.runs.map((run) => run.status).sort()).toEqual(['queued', 'running'])
+      })
+      const shutdown = service.shutdown(scope)
+
+      await expect(Promise.all([running, queued])).resolves.toEqual([
+        { stdout: '', stderr: 'Shell command was cancelled.', exitCode: null },
+        expect.objectContaining({ exitCode: null })
+      ])
+      await expect(shutdown).resolves.toEqual({ sessionId: 'session-1', status: 'shutdown' })
+      expect(execute).toHaveBeenCalledOnce()
+
+      const state = await service.state(scope)
+      expect(state.runs.every((run) => run.status === 'cancelled')).toBe(true)
+    })
+
+    it('cancels and drains a Shell Run before application disposal completes', async () => {
+      const root = await createStorageRoot()
+      let executionSignal: AbortSignal | undefined
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        shellProcess: {
+          execute: (request) =>
+            new Promise((resolve) => {
+              executionSignal = request.signal
+              request.signal?.addEventListener(
+                'abort',
+                () =>
+                  resolve({
+                    stdout: '',
+                    stderr: 'Shell command was cancelled.',
+                    exitCode: null,
+                    cancelled: true
+                  }),
+                { once: true }
+              )
+            })
+        }
+      })
+      const execution = service.executeShell({
+        sessionId: 'session-1',
+        workspaceCwd: root,
+        command: 'long-running'
+      })
+      await vi.waitFor(() => expect(executionSignal).toBeInstanceOf(AbortSignal))
+
+      const disposal = service.dispose()
+      await vi.waitFor(() => expect(executionSignal?.aborted).toBe(true))
+      await expect(execution).resolves.toEqual({
+        stdout: '',
+        stderr: 'Shell command was cancelled.',
+        exitCode: null
+      })
+      await expect(disposal).resolves.toEqual({ reaped: true })
+    })
+
+    it('replays the canonical Shell result for one submission identity without executing twice', async () => {
+      const root = await createStorageRoot()
+      const execute = vi.fn<NotebookShellProcess['execute']>().mockResolvedValue({
+        stdout: 'once',
+        stderr: 'non-zero',
+        exitCode: 7
+      })
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        shellProcess: { execute }
+      })
+      const request = {
+        sessionId: 'session-1',
+        workspaceCwd: root,
+        command: 'same-command',
+        executionInvocationId: 'shell-submission-1'
+      }
+
+      await expect(
+        Promise.all([service.executeShell(request), service.executeShell(request)])
+      ).resolves.toEqual([
+        { stdout: 'once', stderr: 'non-zero', exitCode: 7 },
+        { stdout: 'once', stderr: 'non-zero', exitCode: 7 }
+      ])
+      await expect(service.executeShell(request)).resolves.toEqual({
+        stdout: 'once',
+        stderr: 'non-zero',
+        exitCode: 7
+      })
+      expect(execute).toHaveBeenCalledOnce()
+
+      await expect(
+        service.executeShell({ ...request, command: 'different-command' })
+      ).rejects.toMatchObject({
+        code: 'NOTEBOOK_RUN_SUBMISSION_CONFLICT'
+      })
+      expect(execute).toHaveBeenCalledOnce()
+    })
+
+    it('does not spawn a Shell process when durable admission fails', async () => {
+      const root = await createStorageRoot()
+      const repository = new NotebookRunRepository(root)
+      const execute = vi.fn<NotebookShellProcess['execute']>()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository,
+        shellProcess: { execute }
+      })
+      await service.state({ sessionId: 'session-1', workspaceCwd: root })
+      const admission = vi
+        .spyOn(repository, 'appendOrGetRun')
+        .mockRejectedValueOnce(new Error('durable admission unavailable'))
+
+      await expect(
+        service.executeShell({
+          sessionId: 'session-1',
+          workspaceCwd: root,
+          command: 'must-not-run'
+        })
+      ).rejects.toThrow('durable admission unavailable')
+      expect(execute).not.toHaveBeenCalled()
+      admission.mockRestore()
+      const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
+      expect(state.runs).toEqual([])
+    })
+
+    it('dispatches a queued Shell Run with the environment frozen at admission', async () => {
+      const root = await createStorageRoot()
+      const originalPath = process.env.PATH ?? ''
+      let releaseFirst!: () => void
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+      const observedPaths: string[] = []
+      const execute = vi.fn<NotebookShellProcess['execute']>(async (request) => {
+        observedPaths.push(request.environment?.PATH ?? '')
+        if (request.command === 'first') await firstGate
+        return { stdout: '', stderr: '', exitCode: 0 }
+      })
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        shellProcess: { execute },
+        shellConcurrencyLimit: 1
+      })
+      const scope = { sessionId: 'session-1', workspaceCwd: root }
+      const first = service.executeShell({ ...scope, command: 'first' })
+      const second = service.executeShell({ ...scope, command: 'second' })
+      await vi.waitFor(async () => {
+        const state = await service.state(scope)
+        expect(state.runs.find((run) => run.script === 'second')?.status).toBe('queued')
+      })
+      process.env.PATH = '/mutated-after-admission'
+      try {
+        releaseFirst()
+        await Promise.all([first, second])
+      } finally {
+        process.env.PATH = originalPath
+      }
+
+      expect(observedPaths).toEqual([originalPath, originalPath])
+    })
+
+    it('prepares queued Shell sandbox permissions before durable admission', async () => {
+      const root = await createStorageRoot()
+      let permissionEpoch = 'admission-v1'
+      let releaseFirst!: () => void
+      const firstGate = new Promise<void>((resolve) => {
+        releaseFirst = resolve
+      })
+      const observedEpochs: string[] = []
+      const prepare = vi.fn<NonNullable<NotebookShellProcess['prepare']>>(async (request) => {
+        const frozenEpoch = permissionEpoch
+        return {
+          execute: async () => {
+            observedEpochs.push(frozenEpoch)
+            if (request.command === 'first') await firstGate
+            return { stdout: '', stderr: '', exitCode: 0 }
+          },
+          dispose: vi.fn()
+        }
+      })
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        shellProcess: { execute: vi.fn(), prepare },
+        shellConcurrencyLimit: 1
+      })
+      const scope = { sessionId: 'session-1', workspaceCwd: root }
+      const first = service.executeShell({ ...scope, command: 'first' })
+      const second = service.executeShell({ ...scope, command: 'second' })
+
+      await vi.waitFor(() => expect(prepare).toHaveBeenCalledTimes(2))
+      permissionEpoch = 'mutated-after-admission'
+      releaseFirst()
+      await Promise.all([first, second])
+
+      expect(observedEpochs).toEqual(['admission-v1', 'admission-v1'])
+    })
+
+    it('fences Shell admission before Session teardown drains its snapshot', async () => {
+      const root = await createStorageRoot()
+      const repository = new NotebookRunRepository(root)
+      const execute = vi.fn<NotebookShellProcess['execute']>()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository,
+        shellProcess: { execute }
+      })
+      const scope = { sessionId: 'session-1', workspaceCwd: root }
+      await service.state(scope)
+      let releaseLookup!: () => void
+      const lookupGate = new Promise<void>((resolve) => {
+        releaseLookup = resolve
+      })
+      vi.spyOn(repository, 'findRunBySubmission').mockImplementationOnce(async () => {
+        await lookupGate
+        return undefined
+      })
+      const pendingAdmission = service.executeShell({
+        ...scope,
+        command: 'must-stay-fenced',
+        executionInvocationId: 'fenced-submission-1'
+      })
+      await Promise.resolve()
+      const shutdown = service.shutdownSession(scope.sessionId)
+      releaseLookup()
+
+      await expect(pendingAdmission).rejects.toThrow('Shell admission is closed for teardown')
+      await expect(shutdown).resolves.toEqual({ sessionId: scope.sessionId, status: 'shutdown' })
+      expect(execute).not.toHaveBeenCalled()
+    })
+
+    it('persists running Shell cancellation intent before Stop reaches the process', async () => {
+      const root = await createStorageRoot()
+      const repository = new NotebookRunRepository(root)
+      let observedAbort = false
+      let finishCancellation!: () => void
+      const cancellationGate = new Promise<void>((resolve) => {
+        finishCancellation = resolve
+      })
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository,
+        shellProcess: {
+          execute: (request) =>
+            new Promise((resolve) => {
+              const cancel = async (): Promise<void> => {
+                observedAbort = true
+                await cancellationGate
+                resolve({
+                  stdout: '',
+                  stderr: 'Shell command was cancelled.',
+                  exitCode: null,
+                  cancelled: true
+                })
+              }
+              if (request.signal?.aborted) void cancel()
+              else request.signal?.addEventListener('abort', () => void cancel(), { once: true })
+            })
+        }
+      })
+      const scope = { sessionId: 'session-1', workspaceCwd: root }
+      const cancellationWrite = vi.spyOn(repository, 'requestRunCancellation')
+      const execution = service.executeShell({ ...scope, command: 'long-running' })
+      await vi.waitFor(async () => {
+        expect((await service.state(scope)).runs[0]?.status).toBe('running')
+      })
+      const shutdown = service.shutdown(scope)
+      await vi.waitFor(() => expect(cancellationWrite).toHaveBeenCalledOnce())
+      await vi.waitFor(() => expect(observedAbort).toBe(true), { timeout: 5_000 })
+      const durable = await repository.loadOrCreate({
+        projectId: 'default-project',
+        sessionId: scope.sessionId,
+        workspaceCwd: root,
+        lane: createRootNotebookLane('default-project', scope.sessionId, 'root-frame-session-1')
+      })
+      expect(durable.runs[0]).toMatchObject({
+        status: 'running',
+        cancellationRequestedAt: expect.any(Number),
+        cancellationReason: 'Notebook Session is shutting down.'
+      })
+      finishCancellation()
+      await execution
+      await shutdown
     })
 
     it('rejects a direct micromamba install before spawning the shell command', async () => {
