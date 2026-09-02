@@ -300,12 +300,12 @@ const saveIpynbWithDialog = async (
 // orchestration (directory picker, conflict check, partial-write cleanup) lives in save-ipynb-all
 // so tests can exercise the real path with a mocked electron instead of bypassing via the seam.
 
-// Resolves the on-disk locations of the Python/R exec-loop scripts without depending on Electron
+// Resolves the on-disk locations of executable Notebook resources without depending on Electron
 // (mirrors micromamba.ts's electron-free resolution). resources/** ships via electron-builder's
-// asarUnpack, so a packaged build's loop scripts land beside app.asar under app.asar.unpacked rather
+// asarUnpack, so a packaged build's scripts land beside app.asar under app.asar.unpacked rather
 // than directly under process.resourcesPath. Existence-checked so a resolution mistake fails fast at
 // startup instead of surfacing as an opaque spawn ENOENT.
-const resolveLoopScript = (envOverride: string | undefined, fileName: string): string => {
+const resolveNotebookResource = (envOverride: string | undefined, fileName: string): string => {
   if (envOverride) return envOverride
 
   const candidates = [
@@ -325,7 +325,7 @@ const resolveLoopScript = (envOverride: string | undefined, fileName: string): s
   if (!resolved) {
     // Surface the miss instead of silently handing the executor a path that only fails once the loop
     // actually tries to spawn.
-    createLogger('notebook:runtime').error('could not resolve loop script', {
+    createLogger('notebook:runtime').error('could not resolve notebook resource', {
       fileName,
       candidateCount: candidates.length
     })
@@ -343,15 +343,15 @@ const resolveLoopScriptPaths = (): {
   rLoopPath: string
   replLoopPath: string
 } => ({
-  pythonLoopPath: resolveLoopScript(process.env.OPEN_SCIENCE_PYTHON_LOOP, 'python_loop.py'),
-  rLoopPath: resolveLoopScript(process.env.OPEN_SCIENCE_R_LOOP, 'r_loop.R'),
-  replLoopPath: resolveLoopScript(process.env.OPEN_SCIENCE_REPL_LOOP, 'repl_loop.js')
+  pythonLoopPath: resolveNotebookResource(process.env.OPEN_SCIENCE_PYTHON_LOOP, 'python_loop.py'),
+  rLoopPath: resolveNotebookResource(process.env.OPEN_SCIENCE_R_LOOP, 'r_loop.R'),
+  replLoopPath: resolveNotebookResource(process.env.OPEN_SCIENCE_REPL_LOOP, 'repl_loop.js')
 })
 
 // Builds the default (non-test) executor's options from the storage root (D-B4). The executor now
 // derives each interpreter prefix per request (from request.runtimeRoot + the resolved env name), so
-// this no longer pins a single pythonBin/rEnvPrefix — it returns only the loop-script paths. Kept as a
-// pure function separate from `new NotebookKernelExecutor(...)` so tests can assert the resolved paths
+// this no longer pins a single pythonBin/rEnvPrefix. Kept as a pure function separate from
+// `new NotebookKernelExecutor(...)` so tests can assert every resolved executable-resource path
 // without spawning a real loop process.
 const resolveDefaultExecutorOptions = (): NotebookKernelExecutorOptions => {
   const { pythonLoopPath, rLoopPath, replLoopPath } = resolveLoopScriptPaths()
@@ -359,7 +359,8 @@ const resolveDefaultExecutorOptions = (): NotebookKernelExecutorOptions => {
   return {
     pythonLoopPath,
     rLoopPath,
-    replLoopPath
+    replLoopPath,
+    processHostPath: resolveNotebookResource(undefined, 'kernel_process_host.js')
   }
 }
 

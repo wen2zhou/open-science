@@ -8879,7 +8879,7 @@ describe('notebook runtime service', () => {
       delete process.env.OPEN_SCIENCE_REPL_LOOP
     })
 
-    it('returns only the three exec-loop script paths (de-pinned: no single pythonBin/rEnvPrefix)', async () => {
+    it('returns every executable notebook resource path (de-pinned: no single pythonBin/rEnvPrefix)', async () => {
       await createStorageRoot()
       const options = resolveDefaultExecutorOptions()
 
@@ -8891,9 +8891,32 @@ describe('notebook runtime service', () => {
       expect(options.pythonLoopPath).toMatch(/python_loop\.py$/)
       expect(options.rLoopPath).toMatch(/r_loop\.R$/)
       expect(options.replLoopPath).toMatch(/repl_loop\.js$/)
+      expect(options.processHostPath).toMatch(/kernel_process_host\.js$/)
       expect(existsSync(options.pythonLoopPath as string)).toBe(true)
       expect(existsSync(options.rLoopPath as string)).toBe(true)
       expect(existsSync(options.replLoopPath as string)).toBe(true)
+      expect(existsSync(options.processHostPath as string)).toBe(true)
+    })
+
+    it("resolves the crash-safe process host from Electron's unpacked resources layout", async () => {
+      const root = await createStorageRoot()
+      const resourcesPath = join(root, 'Resources')
+      const unpackedNotebook = join(resourcesPath, 'app.asar.unpacked', 'resources', 'notebook')
+      const processHostPath = join(unpackedNotebook, 'kernel_process_host.js')
+      await mkdir(unpackedNotebook, { recursive: true })
+      await writeFile(processHostPath, '// fixture', 'utf8')
+
+      const previous = Object.getOwnPropertyDescriptor(process, 'resourcesPath')
+      Object.defineProperty(process, 'resourcesPath', {
+        configurable: true,
+        value: resourcesPath
+      })
+      try {
+        expect(resolveDefaultExecutorOptions().processHostPath).toBe(processHostPath)
+      } finally {
+        if (previous) Object.defineProperty(process, 'resourcesPath', previous)
+        else Reflect.deleteProperty(process, 'resourcesPath')
+      }
     })
 
     it('honors OPEN_SCIENCE_PYTHON_LOOP / OPEN_SCIENCE_R_LOOP / OPEN_SCIENCE_REPL_LOOP overrides', () => {
