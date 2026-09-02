@@ -8,6 +8,7 @@ import type {
   NotebookCell,
   NotebookLanguage,
   NotebookOutput,
+  NotebookRunInputFile,
   NotebookRunRecord,
   NotebookRunProvenanceContext,
   NotebookRunSource,
@@ -160,6 +161,39 @@ const runAgentFrameId = (
   provenanceContext: NotebookRunProvenanceContext | undefined
 ): string => provenanceContext?.agentFrameId ?? notebookLaneScope(session.lane).agentFrameId
 
+type ImmutableInputIdentity = Pick<
+  NotebookRunInputFile,
+  | 'inputFileVersionId'
+  | 'sourceKind'
+  | 'sourceFileId'
+  | 'sourceProjectId'
+  | 'sourceSessionId'
+  | 'filename'
+  | 'sizeBytes'
+  | 'checksum'
+> & {
+  sourceVersionNumber: number | null
+  contentType: string | null
+}
+
+const immutableInputIdentities = (
+  inputs: readonly NotebookRunInputFile[] | undefined
+): ImmutableInputIdentity[] =>
+  (inputs ?? [])
+    .map((input) => ({
+      inputFileVersionId: input.inputFileVersionId,
+      sourceKind: input.sourceKind,
+      sourceFileId: input.sourceFileId,
+      sourceVersionNumber: input.sourceVersionNumber ?? null,
+      sourceProjectId: input.sourceProjectId,
+      sourceSessionId: input.sourceSessionId,
+      filename: input.filename,
+      contentType: input.contentType ?? null,
+      sizeBytes: input.sizeBytes,
+      checksum: input.checksum
+    }))
+    .sort((left, right) => left.inputFileVersionId.localeCompare(right.inputFileVersionId))
+
 const dataRunFingerprint = (
   session: NotebookSessionAggregate,
   cell: Readonly<NotebookCell>,
@@ -178,20 +212,7 @@ const dataRunFingerprint = (
         inputKind: request.inputKind ?? 'cell',
         provenanceContext: request.provenanceContext ?? null,
         allowedHelperSkillIds: [...(request.registeredHelperSkillIds ?? [])].sort(),
-        inputFiles: (request.registeredInputFiles ?? [])
-          .map((input) => ({
-            inputFileVersionId: input.inputFileVersionId,
-            sourceKind: input.sourceKind,
-            sourceFileId: input.sourceFileId,
-            sourceVersionNumber: input.sourceVersionNumber ?? null,
-            sourceProjectId: input.sourceProjectId,
-            sourceSessionId: input.sourceSessionId,
-            filename: input.filename,
-            contentType: input.contentType ?? null,
-            sizeBytes: input.sizeBytes,
-            checksum: input.checksum
-          }))
-          .sort((left, right) => left.inputFileVersionId.localeCompare(right.inputFileVersionId)),
+        inputFiles: immutableInputIdentities(request.registeredInputFiles),
         helperModuleIds: helperModuleIds ?? []
       })
     )
@@ -209,20 +230,7 @@ const controlRunFingerprint = (
         code: request.code,
         timeoutMs: request.timeoutMs ?? null,
         provenanceContext: request.provenanceContext ?? null,
-        inputFiles: (request.registeredInputFiles ?? [])
-          .map((input) => ({
-            inputFileVersionId: input.inputFileVersionId,
-            sourceKind: input.sourceKind,
-            sourceFileId: input.sourceFileId,
-            sourceVersionNumber: input.sourceVersionNumber ?? null,
-            sourceProjectId: input.sourceProjectId,
-            sourceSessionId: input.sourceSessionId,
-            filename: input.filename,
-            contentType: input.contentType ?? null,
-            sizeBytes: input.sizeBytes,
-            checksum: input.checksum
-          }))
-          .sort((left, right) => left.inputFileVersionId.localeCompare(right.inputFileVersionId))
+        inputFiles: immutableInputIdentities(request.registeredInputFiles)
       })
     )
     .digest('hex')
@@ -259,6 +267,17 @@ class NotebookExecutionOwner {
   private readonly activeControlSubmissions = new Map<
     string,
     { fingerprint: string; promise: Promise<NotebookControlResult> }
+  >()
+  // Keeps only the latest terminal foreground result per REPL lane. Durable Run history remains the
+  // canonical result; this bounded transient copy preserves view-image blocks when a lost local-RPC
+  // response retries the same authorized submission during the active app lifetime.
+  private readonly completedControlSubmissions = new Map<
+    string,
+    {
+      submissionIdentity: string
+      fingerprint: string
+      result: NotebookControlResult
+    }
   >()
 
   constructor(private readonly options: NotebookExecutionOwnerOptions) {
@@ -629,13 +648,21 @@ class NotebookExecutionOwner {
       ? undefined
       : this.options.runTerminalization.allocateRunIdentity()
     const submissionIdentity = request.executionInvocationId ?? initialIdentity!.runId
-    const submissionKey = `${notebookLaneKey(session.lane)}:${submissionIdentity}`
+    const laneKey = notebookLaneKey(session.lane)
+    const submissionKey = `${laneKey}:${submissionIdentity}`
     const active = this.activeControlSubmissions.get(submissionKey)
     if (active) {
       if (active.fingerprint !== submissionFingerprint) {
         throw new NotebookRunSubmissionConflictError(submissionIdentity)
       }
       return active.promise
+    }
+    const completed = this.completedControlSubmissions.get(laneKey)
+    if (request.executionInvocationId && completed?.submissionIdentity === submissionIdentity) {
+      if (completed.fingerprint !== submissionFingerprint) {
+        throw new NotebookRunSubmissionConflictError(submissionIdentity)
+      }
+      return completed.result
     }
 
     const promise = (async () => {
@@ -665,7 +692,15 @@ class NotebookExecutionOwner {
     const entry = { fingerprint: submissionFingerprint, promise }
     this.activeControlSubmissions.set(submissionKey, entry)
     try {
-      return await promise
+      const result = await promise
+      if (request.executionInvocationId) {
+        this.completedControlSubmissions.set(laneKey, {
+          submissionIdentity,
+          fingerprint: submissionFingerprint,
+          result
+        })
+      }
+      return result
     } finally {
       if (this.activeControlSubmissions.get(submissionKey) === entry) {
         this.activeControlSubmissions.delete(submissionKey)

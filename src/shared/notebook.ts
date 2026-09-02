@@ -109,6 +109,7 @@ export const notebookEnvironmentApplicationCommandContracts = Object.freeze({
 // Identifies which kernel produced a run: python/r are analysis cells, repl/bash are
 // control-plane/shell.
 export type NotebookKernelKind = 'python' | 'r' | 'repl' | 'bash'
+export type NotebookPersistentKernelKind = Exclude<NotebookKernelKind, 'bash'>
 
 export type NotebookPackageSource =
   | {
@@ -444,7 +445,7 @@ export type NotebookRunRecord = {
   submissionFingerprint?: string
   admittedAt?: number
   frozenRuntimeTarget?: {
-    language: NotebookKernelKind
+    language: NotebookPersistentKernelKind
     environment: string
     processKey: string
     runtimeId?: string

@@ -38,6 +38,42 @@ export const notebookInterpreterIdentity = (
     ? [interpreter.command, ...(interpreter.args ?? []), interpreter.condaPrefix ?? ''].join('\n')
     : ''
 
+const enqueueSerialTask = <T>(
+  previous: Promise<unknown>,
+  task: () => Promise<T>,
+  signal?: AbortSignal
+): { result: Promise<T>; tail: Promise<unknown> } => {
+  if (!signal) {
+    const result = previous.then(task)
+    return { result, tail: result.catch(() => undefined) }
+  }
+
+  signal.throwIfAborted()
+  let started = false
+  let resolveResult!: (result: T | PromiseLike<T>) => void
+  let rejectResult!: (reason?: unknown) => void
+  const result = new Promise<T>((resolve, reject) => {
+    resolveResult = resolve
+    rejectResult = reject
+  })
+  const onAbort = (): void => {
+    if (!started) rejectResult(signal.reason)
+  }
+  signal.addEventListener('abort', onAbort, { once: true })
+
+  const run = previous.then(async () => {
+    if (signal.aborted) return
+    started = true
+    signal.removeEventListener('abort', onAbort)
+    try {
+      resolveResult(await task())
+    } catch (error) {
+      rejectResult(error)
+    }
+  })
+  return { result, tail: run.catch(() => undefined) }
+}
+
 export type NotebookSessionRuntimeBinding = NotebookRuntimeBinding & {
   resolvedInterpreter?: NotebookSessionResolvedInterpreter
   envName?: string
@@ -410,43 +446,9 @@ export class NotebookSessionAggregate<
     signal?: AbortSignal
   ): Promise<T> {
     const previous = this.executionQueues.get(processKey) ?? Promise.resolve()
-    if (!signal) {
-      const run = previous.then(task)
-      this.executionQueues.set(
-        processKey,
-        run.catch(() => undefined)
-      )
-      return run
-    }
-
-    signal.throwIfAborted()
-    let started = false
-    let resolveResult!: (result: T | PromiseLike<T>) => void
-    let rejectResult!: (reason?: unknown) => void
-    const result = new Promise<T>((resolve, reject) => {
-      resolveResult = resolve
-      rejectResult = reject
-    })
-    const onAbort = (): void => {
-      if (!started) rejectResult(signal.reason)
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-
-    const run = previous.then(async () => {
-      if (signal.aborted) return
-      started = true
-      signal.removeEventListener('abort', onAbort)
-      try {
-        resolveResult(await task())
-      } catch (error) {
-        rejectResult(error)
-      }
-    })
-    this.executionQueues.set(
-      processKey,
-      run.catch(() => undefined)
-    )
-    return result
+    const queued = enqueueSerialTask(previous, task, signal)
+    this.executionQueues.set(processKey, queued.tail)
+    return queued.result
   }
 
   async drainExecution(processKey: string): Promise<void> {
@@ -454,37 +456,9 @@ export class NotebookSessionAggregate<
   }
 
   enqueueControl<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {
-    if (!signal) {
-      const run = this.controlQueue.then(task)
-      this.controlQueue = run.catch(() => undefined)
-      return run
-    }
-
-    signal.throwIfAborted()
-    let started = false
-    let resolveResult!: (result: T | PromiseLike<T>) => void
-    let rejectResult!: (reason?: unknown) => void
-    const result = new Promise<T>((resolve, reject) => {
-      resolveResult = resolve
-      rejectResult = reject
-    })
-    const onAbort = (): void => {
-      if (!started) rejectResult(signal.reason)
-    }
-    signal.addEventListener('abort', onAbort, { once: true })
-
-    const run = this.controlQueue.then(async () => {
-      if (signal.aborted) return
-      started = true
-      signal.removeEventListener('abort', onAbort)
-      try {
-        resolveResult(await task())
-      } catch (error) {
-        rejectResult(error)
-      }
-    })
-    this.controlQueue = run.catch(() => undefined)
-    return result
+    const queued = enqueueSerialTask(this.controlQueue, task, signal)
+    this.controlQueue = queued.tail
+    return queued.result
   }
 
   // Reserves the next execution turn behind an executor lifecycle projection without making the

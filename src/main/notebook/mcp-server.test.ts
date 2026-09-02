@@ -1,3 +1,7 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import { Client as ModelContextProtocolClient } from '@modelcontextprotocol/sdk/client/index.js'
 import { InMemoryTransport } from '@modelcontextprotocol/sdk/inMemory.js'
 import { describe, expect, it, vi } from 'vitest'
@@ -56,6 +60,13 @@ import {
   resolveNotebookRpcFetch,
   serializeNotebookToolResult
 } from './mcp-server'
+import { NotebookLocalRpcServer } from './local-rpc-server'
+import { NotebookRunRepository } from './repository'
+import {
+  NotebookRuntimeService,
+  type NotebookExecutionRequest,
+  type NotebookExecutionResult
+} from './runtime-service'
 
 const tokenizer = new Tiktoken(cl100kBase)
 
@@ -1008,6 +1019,187 @@ describe('repl_execute tool', () => {
       expect(body.params.code).toBe('return 2')
     } finally {
       globalThis.fetch = originalFetch
+    }
+  })
+
+  it('preserves durable admission, retry, and Stop through the real Agent-facing MCP tool', async () => {
+    const root = await mkdtemp(join(tmpdir(), 'open-science-repl-mcp-durable-'))
+    const repository = new NotebookRunRepository(root)
+    let announceDispatch!: () => void
+    const dispatched = new Promise<void>((resolve) => {
+      announceDispatch = resolve
+    })
+    let finishExecution!: (result: NotebookExecutionResult) => void
+    const execution = new Promise<NotebookExecutionResult>((resolve) => {
+      finishExecution = resolve
+    })
+    let announceStopDispatch!: () => void
+    const stopDispatched = new Promise<void>((resolve) => {
+      announceStopDispatch = resolve
+    })
+    const execute = vi.fn(async (request: NotebookExecutionRequest) => {
+      if (request.code === 'await never()') {
+        announceStopDispatch()
+        return new Promise<NotebookExecutionResult>((resolve) => {
+          request.signal?.addEventListener(
+            'abort',
+            () =>
+              resolve({
+                status: 'cancelled',
+                kernelDispatched: true,
+                stdout: '',
+                stderr: 'REPL stopped; the persistent namespace was terminated.',
+                traceback: '',
+                cwdAfter: root,
+                outputs: []
+              }),
+            { once: true }
+          )
+        })
+      }
+      announceDispatch()
+      return execution
+    })
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository,
+      executorFactory: () => ({
+        execute,
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const rpcServer = new NotebookLocalRpcServer(service)
+    const completeControlInvocation = vi.fn(async () => [
+      { data: Buffer.from('stable image').toString('base64'), mimeType: 'image/png' as const }
+    ])
+    service.setMcpRpcConnectionResolver(async () => ({
+      endpoint: 'http://127.0.0.1:1/x',
+      token: 'control-token',
+      completeControlInvocation,
+      discardControlInvocation: vi.fn()
+    }))
+    const setTurn = (promptMessageId: string): void =>
+      rpcServer.setArtifactTurnBinding('session-1', {
+        ownerExecutionId: `execution-${promptMessageId}`,
+        projectId: 'default-project',
+        provenanceContext: {
+          rootFrameId: 'root-frame-session-1',
+          agentFrameId: 'root-frame-session-1',
+          messageBranchId: 'branch-1',
+          runtimeSegmentId: 'runtime-1',
+          promptMessageId
+        }
+      })
+    setTurn('prompt-1')
+    rpcServer.authorizeExecution({
+      sessionId: 'session-1',
+      toolCallId: 'tool-repl-1',
+      promptMessageId: 'prompt-1',
+      method: 'executeControl',
+      rawInput: { code: 'return globalThis.answer' }
+    })
+    const connection = await rpcServer.issueSessionConnection(
+      'session-1',
+      'default-project',
+      'root-frame-session-1'
+    )
+    const mcpServer = createNotebookMcpServer({
+      endpoint: connection.endpoint,
+      socketPath: connection.socketPath,
+      token: connection.token,
+      projectId: 'default-project',
+      sessionId: 'session-1',
+      workspaceCwd: root
+    })
+    const client = new ModelContextProtocolClient({
+      name: 'repl-durability-test',
+      version: '1.0.0'
+    })
+    const [clientTransport, serverTransport] = InMemoryTransport.createLinkedPair()
+    await mcpServer.connect(serverTransport)
+    await client.connect(clientTransport)
+
+    try {
+      const call = client.callTool({
+        name: 'repl_execute',
+        arguments: { code: 'return globalThis.answer' }
+      })
+      await dispatched
+      await expect(repository.findExisting('default-project', 'session-1')).resolves.toMatchObject({
+        runs: [expect.objectContaining({ kernelKind: 'repl', status: 'running' })]
+      })
+
+      finishExecution({
+        status: 'completed',
+        stdout: '42',
+        stderr: '',
+        traceback: '',
+        cwdAfter: root,
+        outputs: []
+      })
+      const firstResult = await call
+      expect(firstResult).toMatchObject({
+        content: expect.arrayContaining([
+          expect.objectContaining({ type: 'text', text: expect.stringContaining('42') })
+        ])
+      })
+      expect(firstResult.content).toContainEqual({
+        type: 'image',
+        data: Buffer.from('stable image').toString('base64'),
+        mimeType: 'image/png'
+      })
+      const retryResult = await client.callTool({
+        name: 'repl_execute',
+        arguments: { code: 'return globalThis.answer' }
+      })
+      expect(retryResult.content).toEqual(firstResult.content)
+      expect(execute).toHaveBeenCalledOnce()
+      expect(completeControlInvocation).toHaveBeenCalledOnce()
+      await expect(repository.findExisting('default-project', 'session-1')).resolves.toMatchObject({
+        runs: [expect.objectContaining({ kernelKind: 'repl', status: 'completed' })]
+      })
+
+      setTurn('prompt-2')
+      rpcServer.authorizeExecution({
+        sessionId: 'session-1',
+        toolCallId: 'tool-repl-stop',
+        promptMessageId: 'prompt-2',
+        method: 'executeControl',
+        rawInput: { code: 'await never()' }
+      })
+      const stop = new AbortController()
+      const stoppedCall = client.callTool(
+        { name: 'repl_execute', arguments: { code: 'await never()' } },
+        undefined,
+        { signal: stop.signal }
+      )
+      await stopDispatched
+      stop.abort(new Error('Stop requested'))
+      await expect(stoppedCall).rejects.toThrow()
+      await vi.waitFor(async () => {
+        const document = await repository.findExisting('default-project', 'session-1')
+        expect(document?.runs.at(-1)).toMatchObject({
+          kernelKind: 'repl',
+          status: 'cancelled',
+          kernelDispatched: true
+        })
+      })
+    } finally {
+      finishExecution({
+        status: 'cancelled',
+        stdout: '',
+        stderr: '',
+        traceback: '',
+        cwdAfter: root,
+        outputs: []
+      })
+      await client.close()
+      await mcpServer.close()
+      await service.shutdownAll()
+      await rpcServer.close()
+      await rm(root, { recursive: true, force: true })
     }
   })
 })

@@ -595,13 +595,9 @@ class NotebookLocalRpcServer {
   // Retains claimed durable foreground authorizations for the active prompt so a lost HTTP response
   // can retry the exact request with the same submission identity. Data and REPL lifecycles remain
   // separate owners; a newly authorized call takes precedence and turn/session teardown clears both.
-  private readonly claimedDataExecutionAuthorizations = new Map<
+  private readonly claimedDurableExecutionAuthorizations = new Map<
     string,
-    NotebookExecutionAuthorization
-  >()
-  private readonly claimedControlExecutionAuthorizations = new Map<
-    string,
-    NotebookExecutionAuthorization
+    Map<'execute' | 'executeControl', NotebookExecutionAuthorization>
   >()
   private readonly consumedExecutionToolCalls = new Map<string, Set<string>>()
   private readonly computeSubmissionInvocations = new Map<
@@ -768,8 +764,7 @@ class NotebookLocalRpcServer {
     this.sessionRpcTokens.clear()
     this.skillImportRpcTokens.clear()
     this.executionAuthorizations.clear()
-    this.claimedDataExecutionAuthorizations.clear()
-    this.claimedControlExecutionAuthorizations.clear()
+    this.claimedDurableExecutionAuthorizations.clear()
     this.consumedExecutionToolCalls.clear()
     this.computeSubmissionInvocations.clear()
 
@@ -922,8 +917,7 @@ class NotebookLocalRpcServer {
     for (const ownedSessionId of ownedSessionIds) {
       this.sessionSpecialists.delete(ownedSessionId)
       this.executionAuthorizations.delete(ownedSessionId)
-      this.claimedDataExecutionAuthorizations.delete(ownedSessionId)
-      this.claimedControlExecutionAuthorizations.delete(ownedSessionId)
+      this.claimedDurableExecutionAuthorizations.delete(ownedSessionId)
       this.consumedExecutionToolCalls.delete(ownedSessionId)
       this.computeSubmissionInvocations.delete(ownedSessionId)
     }
@@ -999,11 +993,9 @@ class NotebookLocalRpcServer {
     if (byMethod?.size === 0) this.executionAuthorizations.delete(sessionId)
     if (!authorization) {
       const claimed =
-        method === 'execute'
-          ? this.claimedDataExecutionAuthorizations.get(sessionId)
-          : method === 'executeControl'
-            ? this.claimedControlExecutionAuthorizations.get(sessionId)
-            : undefined
+        method === 'execute' || method === 'executeControl'
+          ? this.claimedDurableExecutionAuthorizations.get(sessionId)?.get(method)
+          : undefined
       const activePrompt =
         this.activeArtifactTurnBindings.get(sessionId)?.provenanceContext.promptMessageId
       return claimed &&
@@ -1023,9 +1015,12 @@ class NotebookLocalRpcServer {
     ) {
       return undefined
     }
-    if (method === 'execute') this.claimedDataExecutionAuthorizations.set(sessionId, authorization)
-    if (method === 'executeControl') {
-      this.claimedControlExecutionAuthorizations.set(sessionId, authorization)
+    if (method === 'execute' || method === 'executeControl') {
+      const claimed =
+        this.claimedDurableExecutionAuthorizations.get(sessionId) ??
+        new Map<'execute' | 'executeControl', NotebookExecutionAuthorization>()
+      claimed.set(method, authorization)
+      this.claimedDurableExecutionAuthorizations.set(sessionId, claimed)
     }
     return authorization.executionInvocationId
   }
@@ -1359,8 +1354,7 @@ class NotebookLocalRpcServer {
         previous.provenanceContext.promptMessageId !== binding.provenanceContext.promptMessageId)
     ) {
       this.executionAuthorizations.delete(sessionId)
-      this.claimedDataExecutionAuthorizations.delete(sessionId)
-      this.claimedControlExecutionAuthorizations.delete(sessionId)
+      this.claimedDurableExecutionAuthorizations.delete(sessionId)
       this.consumedExecutionToolCalls.delete(sessionId)
     }
     this.activeArtifactTurnBindings.set(sessionId, binding)
@@ -1386,8 +1380,7 @@ class NotebookLocalRpcServer {
       return
     this.activeArtifactTurnBindings.delete(sessionId)
     this.executionAuthorizations.delete(sessionId)
-    this.claimedDataExecutionAuthorizations.delete(sessionId)
-    this.claimedControlExecutionAuthorizations.delete(sessionId)
+    this.claimedDurableExecutionAuthorizations.delete(sessionId)
     this.consumedExecutionToolCalls.delete(sessionId)
   }
 

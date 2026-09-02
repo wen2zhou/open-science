@@ -2547,6 +2547,15 @@ describe('notebook runtime service', () => {
         shutdown: async () => ({ reaped: true })
       })
     })
+    const completeControlInvocation = vi.fn(async () => [
+      { data: Buffer.from('stable image').toString('base64'), mimeType: 'image/png' as const }
+    ])
+    service.setMcpRpcConnectionResolver(async () => ({
+      endpoint: 'http://127.0.0.1:1/x',
+      token: 'session-token',
+      completeControlInvocation,
+      discardControlInvocation: vi.fn()
+    }))
     const request = {
       sessionId: 'session-1',
       workspaceCwd: root,
@@ -2557,9 +2566,15 @@ describe('notebook runtime service', () => {
     const first = await service.executeControl(request)
     const retry = await service.executeControl(request)
 
-    expect(first).toMatchObject({ status: 'completed', stdout: 'stable result' })
-    expect(retry).toMatchObject({ status: 'completed', stdout: 'stable result' })
+    const expected = {
+      status: 'completed',
+      stdout: 'stable result',
+      viewImages: [{ data: Buffer.from('stable image').toString('base64'), mimeType: 'image/png' }]
+    }
+    expect(first).toMatchObject(expected)
+    expect(retry).toMatchObject(expected)
     expect(execute).toHaveBeenCalledOnce()
+    expect(completeControlInvocation).toHaveBeenCalledOnce()
     await expect(service.state(request)).resolves.toMatchObject({
       runs: [expect.objectContaining({ kernelKind: 'repl', status: 'completed' })]
     })
