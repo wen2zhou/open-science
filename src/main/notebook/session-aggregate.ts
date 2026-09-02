@@ -47,6 +47,9 @@ export type NotebookSessionExecutionRequest = {
   // App-owned identity used to seal per-run file evidence. Optional keeps injected executors and
   // direct tests source-compatible; production execution always supplies it.
   runId?: string
+  // Immutable persistent-kernel generation selected before dispatch. The process lifecycle sidecar
+  // binds this domain epoch to the OS process owner so startup recovery never adopts a stale writer.
+  kernelEpochId?: string
   code: string
   helperModules?: readonly NotebookHelperModuleInjection[]
   cwd: string

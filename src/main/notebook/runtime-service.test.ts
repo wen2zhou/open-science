@@ -741,6 +741,152 @@ describe('notebook runtime service', () => {
     await service.shutdown(request)
   })
 
+  it('fences a Session and shuts down its root and every Agent Frame lane', async () => {
+    const root = await createStorageRoot()
+    const shutdowns: Array<ReturnType<typeof vi.fn>> = []
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      environmentStateTracker: verifiedPackageMutationTracker(),
+      executorFactory: () => {
+        const shutdown = vi.fn(async () => ({ reaped: true }))
+        shutdowns.push(shutdown)
+        return {
+          execute: async (request) => ({
+            status: 'completed' as const,
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }),
+          shutdown
+        }
+      }
+    })
+    const rootContext = {
+      rootFrameId: 'root-frame-session-1',
+      agentFrameId: 'root-frame-session-1',
+      messageBranchId: 'branch-root',
+      runtimeSegmentId: 'runtime-root',
+      promptMessageId: 'message-root'
+    }
+    const childContext = {
+      ...rootContext,
+      agentFrameId: 'child-frame-1',
+      messageBranchId: 'branch-child',
+      runtimeSegmentId: 'runtime-child',
+      promptMessageId: 'message-child'
+    }
+    await service.execute({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      code: 'root_value = 1',
+      provenanceContext: rootContext
+    })
+    await service.execute({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      workspaceCwd: root,
+      code: 'child_value = 2',
+      provenanceContext: childContext
+    })
+
+    await service.shutdownSession('session-1')
+
+    expect(shutdowns).toHaveLength(2)
+    expect(shutdowns.every((shutdown) => shutdown.mock.calls.length === 1)).toBe(true)
+    await expect(
+      service.state({ projectId: 'project-1', sessionId: 'session-1', workspaceCwd: root })
+    ).rejects.toThrow('Session is being deleted.')
+  })
+
+  it('keeps Session deletion fenced when a persistent process tree cannot be proven reaped', async () => {
+    const root = await createStorageRoot()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      environmentStateTracker: verifiedPackageMutationTracker(),
+      executorFactory: () => ({
+        execute: async (request) => ({
+          status: 'completed' as const,
+          stdout: '',
+          stderr: '',
+          traceback: '',
+          cwdAfter: request.cwd,
+          outputs: []
+        }),
+        shutdown: async () => ({ reaped: false })
+      })
+    })
+    const request = {
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      workspaceCwd: root
+    }
+    await service.execute({ ...request, code: '1' })
+
+    const cleanupError = await service.shutdownSession('session-1').catch((error: unknown) => error)
+    expect(cleanupError).toBeInstanceOf(AggregateError)
+    expect((cleanupError as AggregateError).errors).toEqual([
+      expect.objectContaining({
+        message: expect.stringContaining('persistent process tree was not reaped')
+      })
+    ])
+    await expect(service.state(request)).rejects.toThrow('Session is being deleted.')
+  })
+
+  it('closes global admission, cancels and drains an active Run before terminal teardown', async () => {
+    const root = await createStorageRoot()
+    const events: string[] = []
+    let executionStarted!: () => void
+    const started = new Promise<void>((resolve) => {
+      executionStarted = resolve
+    })
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      environmentStateTracker: verifiedPackageMutationTracker(),
+      executorFactory: () => ({
+        execute: async (request) => {
+          executionStarted()
+          await new Promise<void>((resolve) => {
+            request.signal?.addEventListener('abort', () => resolve(), { once: true })
+          })
+          events.push('execution-cancelled')
+          return {
+            status: 'cancelled' as const,
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => {
+          events.push('shutdown')
+          return { reaped: true }
+        }
+      })
+    })
+    const request = { sessionId: 'session-1', workspaceCwd: root, code: 'long-running' }
+    const execution = service.execute(request)
+    await started
+
+    const disposal = service.dispose()
+    await expect(service.state(request)).rejects.toThrow('disposed')
+    await expect(execution).resolves.toMatchObject({ status: 'cancelled' })
+    await expect(disposal).resolves.toEqual({ reaped: true })
+    expect(events).toEqual(['execution-cancelled', 'shutdown'])
+  })
+
   it('drains an admitted restart before shutting down the Project lane', async () => {
     const root = await createStorageRoot()
     const restartGate = createDeferred<void>()
