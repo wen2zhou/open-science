@@ -16,10 +16,33 @@ type OwnedPosixProcessGroup = Readonly<{
   id: number
 }>
 
+type PosixProcessIdentity = Readonly<{
+  pid: number
+  ppid: number
+  pgid: number
+  sid: number
+  start: string
+}>
+
+type PosixProcessTable = Readonly<{
+  processes: Map<number, PosixProcessIdentity>
+  complete: boolean
+}>
+
+type PosixProcessTracker = {
+  leaderPid: number
+  identities: Map<number, PosixProcessIdentity>
+  complete: boolean
+}
+
 // A detached POSIX child is the leader of a private process group whose stable id is its spawn pid.
 // Keep that ownership receipt on the child handle so teardown can still address the group after the
 // leader exits and its descendants are reparented. Unregistered children retain PPID-tree teardown.
 const ownedPosixProcessGroups = new WeakMap<ChildProcess, OwnedPosixProcessGroup>()
+const trackedPosixProcessTrees = new WeakMap<ChildProcess, PosixProcessTracker>()
+const activePosixProcessTrackers = new Set<PosixProcessTracker>()
+let ownershipSampleTimer: NodeJS.Timeout | undefined
+let ownershipSampling: Promise<PosixProcessTable> | undefined
 
 export const registerOwnedPosixProcessGroup = (child: ChildProcess): void => {
   const groupId = child.pid
@@ -36,6 +59,7 @@ const TERMINATE_GRACE_MS = 3_000
 // kernel-level unkillable (uninterruptible sleep) we cannot do anything about — don't wait the full grace.
 const SIGKILL_GRACE_MS = 1_000
 const PROCESS_GROUP_POLL_MS = 25
+const PROCESS_OWNERSHIP_SAMPLE_MS = 250
 
 // Signals the direct child, tolerating an already-exited process or a handle with no pid. Skips a child
 // already signaled so a first, graceful pass is a no-op on retry; escalation uses forceKillChild instead.
@@ -153,6 +177,148 @@ const waitForExit = (child: ChildProcess, ms: number): Promise<boolean> =>
   })
 
 type DescendantSnapshot = { pids: number[]; complete: boolean }
+
+const collectPosixProcessTable = (): Promise<PosixProcessTable> =>
+  new Promise<PosixProcessTable>((resolve) => {
+    let ps: ChildProcess
+    try {
+      ps = spawn('ps', ['-A', '-o', 'pid=,ppid=,pgid=,sid=,lstart='], { windowsHide: true })
+    } catch {
+      resolve({ processes: new Map(), complete: false })
+      return
+    }
+
+    let out = ''
+    let settled = false
+    const finish = (table: PosixProcessTable): void => {
+      if (settled) return
+      settled = true
+      resolve(table)
+    }
+    const timer = setTimeout(() => {
+      try {
+        ps.kill()
+      } catch {
+        // The sampler may already have exited.
+      }
+      finish({ processes: new Map(), complete: false })
+    }, TERMINATE_GRACE_MS)
+    timer.unref?.()
+
+    ps.stdout?.on('data', (chunk: Buffer) => {
+      out += chunk.toString()
+    })
+    ps.on('error', () => {
+      clearTimeout(timer)
+      finish({ processes: new Map(), complete: false })
+    })
+    ps.on('close', (code) => {
+      clearTimeout(timer)
+      if (code !== 0) {
+        finish({ processes: new Map(), complete: false })
+        return
+      }
+      const processes = new Map<number, PosixProcessIdentity>()
+      for (const line of out.split('\n')) {
+        const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/u)
+        if (!match) continue
+        const [, pidText, ppidText, pgidText, sidText, start] = match
+        const pid = Number(pidText)
+        const ppid = Number(ppidText)
+        const pgid = Number(pgidText)
+        const sid = Number(sidText)
+        if (![pid, ppid, pgid, sid].every(Number.isSafeInteger) || pid <= 0) continue
+        processes.set(pid, { pid, ppid, pgid, sid, start })
+      }
+      finish({ processes, complete: processes.size > 0 })
+    })
+  })
+
+const samePosixIdentity = (
+  expected: PosixProcessIdentity,
+  actual: PosixProcessIdentity | undefined
+): boolean => actual !== undefined && actual.pid === expected.pid && actual.start === expected.start
+
+const captureTrackedDescendants = (
+  tracker: PosixProcessTracker,
+  table: PosixProcessTable
+): void => {
+  tracker.complete &&= table.complete
+  if (!table.complete) return
+  const children = new Map<number, PosixProcessIdentity[]>()
+  for (const process of table.processes.values()) {
+    const siblings = children.get(process.ppid) ?? []
+    siblings.push(process)
+    children.set(process.ppid, siblings)
+  }
+  const roots = new Set<number>([tracker.leaderPid])
+  for (const identity of tracker.identities.values()) {
+    if (samePosixIdentity(identity, table.processes.get(identity.pid))) roots.add(identity.pid)
+  }
+  const stack = [...roots]
+  const visited = new Set<number>()
+  while (stack.length > 0) {
+    const pid = stack.pop() as number
+    if (visited.has(pid)) continue
+    visited.add(pid)
+    const identity = table.processes.get(pid)
+    if (identity) tracker.identities.set(pid, identity)
+    for (const child of children.get(pid) ?? []) {
+      tracker.identities.set(child.pid, child)
+      stack.push(child.pid)
+    }
+  }
+}
+
+const sampleActiveProcessTrees = async (): Promise<PosixProcessTable> => {
+  if (ownershipSampling) return ownershipSampling
+  const sampling = collectPosixProcessTable().then((table) => {
+    for (const tracker of activePosixProcessTrackers) captureTrackedDescendants(tracker, table)
+    return table
+  })
+  ownershipSampling = sampling
+  try {
+    return await sampling
+  } finally {
+    if (ownershipSampling === sampling) ownershipSampling = undefined
+  }
+}
+
+const scheduleTrackedProcessSample = (): void => {
+  if (activePosixProcessTrackers.size === 0 || ownershipSampleTimer) return
+  ownershipSampleTimer = setTimeout(() => {
+    ownershipSampleTimer = undefined
+    void sampleActiveProcessTrees().finally(scheduleTrackedProcessSample)
+  }, PROCESS_OWNERSHIP_SAMPLE_MS)
+  ownershipSampleTimer.unref?.()
+}
+
+export const trackOwnedPosixProcessTree = (child: ChildProcess): void => {
+  if (trackedPosixProcessTrees.has(child)) return
+  registerOwnedPosixProcessGroup(child)
+  const leaderPid = child.pid
+  if (leaderPid === undefined || !Number.isSafeInteger(leaderPid) || leaderPid <= 0) return
+  const tracker: PosixProcessTracker = {
+    leaderPid,
+    identities: new Map(),
+    complete: true
+  }
+  trackedPosixProcessTrees.set(child, tracker)
+  activePosixProcessTrackers.add(tracker)
+  void sampleActiveProcessTrees().finally(scheduleTrackedProcessSample)
+}
+
+const stopTrackedProcessTree = async (tracker: PosixProcessTracker): Promise<PosixProcessTable> => {
+  if (ownershipSampling) await ownershipSampling
+  activePosixProcessTrackers.delete(tracker)
+  if (activePosixProcessTrackers.size === 0 && ownershipSampleTimer) {
+    clearTimeout(ownershipSampleTimer)
+    ownershipSampleTimer = undefined
+  }
+  const finalSample = await collectPosixProcessTable()
+  captureTrackedDescendants(tracker, finalSample)
+  return finalSample
+}
 
 // Descendant discovery on POSIX. Node's child.kill() signals only the immediate child, so a
 // grandchild (conda, the claude CLI, a package manager) would otherwise be orphaned exactly as it would
@@ -378,6 +544,60 @@ const terminateOwnedPosixProcessGroup = async (
   return { reaped: snapshot.complete && forcedExit.every(Boolean) }
 }
 
+const terminateTrackedPosixProcessTree = async (
+  tracker: PosixProcessTracker,
+  signal: NodeJS.Signals | undefined,
+  log: ProcessTreeLogger | undefined
+): Promise<ProcessTreeKillResult> => {
+  const gracefulSignal = signal ?? 'SIGTERM'
+  const finalSample = await stopTrackedProcessTree(tracker)
+  const live = [...tracker.identities.values()].filter((identity) =>
+    samePosixIdentity(identity, finalSample.processes.get(identity.pid))
+  )
+  const ownedGroups = (identities: readonly PosixProcessIdentity[]): Set<number> =>
+    new Set(
+      identities
+        .filter(({ pid, pgid, sid }) => pgid === tracker.leaderPid || (pid === pgid && pid === sid))
+        .map(({ pgid }) => pgid)
+    )
+  for (const pgid of ownedGroups(live)) {
+    signalProcessGroup(pgid, gracefulSignal)
+  }
+  signalPids(
+    live.map(({ pid }) => pid),
+    gracefulSignal
+  )
+  const gracefulExit = await waitForPidsExit(
+    live.map(({ pid }) => pid),
+    TERMINATE_GRACE_MS
+  )
+  if (gracefulExit) return { reaped: tracker.complete && finalSample.complete }
+
+  const beforeForce = await collectPosixProcessTable()
+  const survivors = live.filter((identity) =>
+    samePosixIdentity(identity, beforeForce.processes.get(identity.pid))
+  )
+  if (survivors.length > 0) {
+    log?.error(
+      `owned process tree left ${survivors.length} exact descendant(s) alive after ${gracefulSignal}; escalating to SIGKILL`
+    )
+    for (const pgid of ownedGroups(survivors)) {
+      signalProcessGroup(pgid, 'SIGKILL')
+    }
+    signalPids(
+      survivors.map(({ pid }) => pid),
+      'SIGKILL'
+    )
+  }
+  const forcedExit = await waitForPidsExit(
+    survivors.map(({ pid }) => pid),
+    SIGKILL_GRACE_MS
+  )
+  return {
+    reaped: tracker.complete && finalSample.complete && beforeForce.complete && forcedExit
+  }
+}
+
 // Terminates a child process and every descendant it spawned, then waits for the direct child to actually
 // exit — escalating to SIGKILL anything still alive. On Windows the tree is reaped with taskkill /T /F
 // (with a direct-kill fallback); on POSIX descendants are found via `ps`, signaled, and SIGKILL-escalated.
@@ -393,6 +613,8 @@ export const terminateProcessTree = async (
     return terminateWindowsTree(child, signal, log)
   }
   const ownedGroup = ownedPosixProcessGroups.get(child)
+  const trackedTree = trackedPosixProcessTrees.get(child)
+  if (trackedTree) return terminateTrackedPosixProcessTree(trackedTree, signal, log)
   if (ownedGroup) return terminateOwnedPosixProcessGroup(ownedGroup, signal, log)
   return terminatePosixTree(child, signal, log)
 }

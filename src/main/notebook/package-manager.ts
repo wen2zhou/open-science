@@ -49,7 +49,7 @@ import { notebookWorkloadCacheEnv } from './notebook-workload-cache-paths'
 import { withExclusiveCacheLocks, withSharedCacheLocks } from './pkgs-cache-lock'
 import { CHILD_UNCONFIRMED, killAndConfirmExit } from './provisioner-runtime'
 import {
-  registerOwnedPosixProcessGroup,
+  trackOwnedPosixProcessTree,
   terminateProcessTree,
   type ProcessTreeKillResult
 } from '../process-tree'
@@ -1021,7 +1021,7 @@ export const defaultSpawn = (
       })
       return
     }
-    if (platform !== 'win32') registerOwnedPosixProcessGroup(child)
+    if (platform !== 'win32' && process.platform !== 'win32') trackOwnedPosixProcessTree(child)
     if (child.pid !== undefined) {
       try {
         onChild?.(child.pid)

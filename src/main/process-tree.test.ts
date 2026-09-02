@@ -9,7 +9,8 @@ const { spawnMock } = vi.hoisted(() => ({
 
 vi.mock('node:child_process', () => ({ spawn: spawnMock }))
 
-const { registerOwnedPosixProcessGroup, terminateProcessTree } = await import('./process-tree')
+const { registerOwnedPosixProcessGroup, trackOwnedPosixProcessTree, terminateProcessTree } =
+  await import('./process-tree')
 
 // Minimal ChildProcess stand-in: an EventEmitter (so waitForExit's once('exit') resolves) exposing the
 // pid/kill/killed/exitCode surface the code under test touches. kill() flips killed like Node does.
@@ -172,6 +173,72 @@ describe('terminateProcessTree (win32)', () => {
 })
 
 describe('terminateProcessTree (posix)', () => {
+  it('reaps a reparented setsid descendant by its captured start identity', async () => {
+    setPlatform('linux')
+    const initial = new FakePs()
+    const final = new FakePs()
+    spawnMock.mockReturnValueOnce(initial).mockReturnValueOnce(final)
+    let helperAlive = true
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === -1000) throw esrch()
+      if (pid === -1001) {
+        if (signal === 'SIGTERM') helperAlive = false
+        return true
+      }
+      expect(pid).toBe(1001)
+      if (signal === 0 && !helperAlive) throw esrch()
+      if (signal === 'SIGTERM') helperAlive = false
+      return true
+    })
+    const child = new FakeChild(1000)
+    trackOwnedPosixProcessTree(child as never)
+    initial.stdout.emit(
+      'data',
+      Buffer.from(
+        '1000 1 1000 1000 Mon Sep 02 10:00:00 2026\n' +
+          '1001 1000 1000 1000 Mon Sep 02 10:00:01 2026\n'
+      )
+    )
+    initial.emit('close', 0)
+    await Promise.resolve()
+    child.exitCode = 0
+
+    const pending = terminateProcessTree(child as never)
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2))
+    final.stdout.emit('data', Buffer.from('1001 1 1001 1001 Mon Sep 02 10:00:01 2026\n'))
+    final.emit('close', 0)
+
+    await expect(pending).resolves.toEqual({ reaped: true })
+    expect(killSpy).toHaveBeenCalledWith(1001, 'SIGTERM')
+    expect(killSpy).toHaveBeenCalledWith(-1001, 'SIGTERM')
+  })
+
+  it('reports tracked teardown incomplete instead of signaling without final identity validation', async () => {
+    setPlatform('linux')
+    const initial = new FakePs()
+    const final = new FakePs()
+    spawnMock.mockReturnValueOnce(initial).mockReturnValueOnce(final)
+    const killSpy = vi.spyOn(process, 'kill')
+    const child = new FakeChild(1000)
+    trackOwnedPosixProcessTree(child as never)
+    initial.stdout.emit(
+      'data',
+      Buffer.from(
+        '1000 1 1000 1000 Mon Sep 02 10:00:00 2026\n' +
+          '1001 1000 1001 1001 Mon Sep 02 10:00:01 2026\n'
+      )
+    )
+    initial.emit('close', 0)
+    child.exitCode = 0
+
+    const pending = terminateProcessTree(child as never)
+    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2))
+    final.emit('error', new Error('ps unavailable'))
+
+    await expect(pending).resolves.toEqual({ reaped: false })
+    expect(killSpy).not.toHaveBeenCalledWith(1001, expect.anything())
+  })
+
   it('retains an owned group identity after its leader exits', async () => {
     setPlatform('linux')
     const ps = new FakePs()

@@ -253,6 +253,34 @@ describe('notebook shell process behavior', () => {
       })
     })
 
+    it('reaps a setsid helper that outlives the shell leader', async () => {
+      const helperScript = "process.on('SIGTERM',()=>{});setInterval(()=>{},1000)"
+      const parentScript = [
+        "const {spawn}=require('node:child_process')",
+        `const helper=spawn(process.execPath,['-e',${JSON.stringify(helperScript)}],{stdio:'ignore',detached:true})`,
+        'helper.unref()',
+        'process.stdout.write(String(helper.pid))'
+      ].join(';')
+      let helperPid: number | undefined
+
+      try {
+        const result = await execute(
+          `${JSON.stringify(process.execPath)} -e ${JSON.stringify(parentScript)}`
+        )
+        helperPid = Number(result.stdout)
+        expect(result.exitCode).toBe(0)
+        await vi.waitFor(() => expect(() => process.kill(helperPid as number, 0)).toThrow())
+      } finally {
+        if (helperPid) {
+          try {
+            process.kill(helperPid, 'SIGKILL')
+          } catch {
+            // Expected once the tracked setsid helper has been reaped.
+          }
+        }
+      }
+    }, 15_000)
+
     it('wraps Notebook Bash with the shared process sandbox', async () => {
       const inputRoot = join(process.cwd(), '.open-science-test-inputs')
       const cleanup = vi.fn().mockResolvedValue({

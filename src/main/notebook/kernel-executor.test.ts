@@ -3348,7 +3348,7 @@ describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
           code: [
             "const { spawn } = require('node:child_process')",
             "const fs = require('node:fs')",
-            `const helper = spawn(process.execPath, ['-e', ${JSON.stringify("process.on('SIGTERM',()=>{});setInterval(()=>{},1000)")}], { stdio: 'ignore' })`,
+            `const helper = spawn(process.execPath, ['-e', ${JSON.stringify("process.on('SIGTERM',()=>{});setInterval(()=>{},1000)")}], { stdio: 'ignore', detached: true })`,
             `fs.writeFileSync(${JSON.stringify(pidFile)}, String(helper.pid))`,
             'setTimeout(() => process.exit(0), 25)',
             "return 'scheduled'"

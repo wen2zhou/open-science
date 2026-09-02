@@ -8,7 +8,7 @@ import { createInterface, type Interface } from 'node:readline'
 import { Transform, type TransformCallback } from 'node:stream'
 
 import {
-  registerOwnedPosixProcessGroup,
+  trackOwnedPosixProcessTree,
   terminateProcessTree,
   type ProcessTreeKillResult
 } from '../process-tree'
@@ -218,7 +218,7 @@ export type NotebookKernelExecutorOptions = {
   // Shared application-owned network sandbox. Omitted only by isolated executor tests.
   processSandbox?: NotebookProcessSandbox
   // Process-ownership boundary injections keep post-exit identity/reaping tests deterministic.
-  registerOwnedProcessGroup?: typeof registerOwnedPosixProcessGroup
+  registerOwnedProcessGroup?: typeof trackOwnedPosixProcessTree
   terminateTree?: typeof terminateProcessTree
 }
 
@@ -440,7 +440,8 @@ class NotebookKernelExecutor implements NotebookExecutor {
   private readonly namespaceInspectionTimeoutMs: number
   private readonly platform: NodeJS.Platform
   private readonly processSandbox?: NotebookProcessSandbox
-  private readonly registerOwnedProcessGroup: typeof registerOwnedPosixProcessGroup
+  private readonly registerOwnedProcessGroup: typeof trackOwnedPosixProcessTree
+  private readonly canTrackPosixProcesses: boolean
   private readonly terminateTree: typeof terminateProcessTree
 
   constructor(options: NotebookKernelExecutorOptions = {}) {
@@ -457,8 +458,9 @@ class NotebookKernelExecutor implements NotebookExecutor {
       options.namespaceInspectionTimeoutMs ?? DEFAULT_NAMESPACE_INSPECTION_TIMEOUT_MS
     this.platform = options.platform ?? process.platform
     this.processSandbox = options.processSandbox
-    this.registerOwnedProcessGroup =
-      options.registerOwnedProcessGroup ?? registerOwnedPosixProcessGroup
+    this.registerOwnedProcessGroup = options.registerOwnedProcessGroup ?? trackOwnedPosixProcessTree
+    this.canTrackPosixProcesses =
+      process.platform !== 'win32' || options.registerOwnedProcessGroup !== undefined
     this.terminateTree = options.terminateTree ?? terminateProcessTree
   }
 
@@ -974,7 +976,8 @@ class NotebookKernelExecutor implements NotebookExecutor {
         ...(rpcTokenFileDescriptor ? { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] } : {})
       }
     )
-    if (this.platform !== 'win32') this.registerOwnedProcessGroup(child)
+    if (this.platform !== 'win32' && this.canTrackPosixProcesses)
+      this.registerOwnedProcessGroup(child)
     if (rpcTokenFileDescriptor) {
       const tokenPipe = child.stdio[rpcTokenFileDescriptor]
       if (!tokenPipe || !('end' in tokenPipe)) {

@@ -8,7 +8,7 @@ import type {
   NotebookSandboxProcessOutcome
 } from './process-sandbox'
 import {
-  registerOwnedPosixProcessGroup,
+  trackOwnedPosixProcessTree,
   terminateProcessTree,
   type ProcessTreeKillResult
 } from '../process-tree'
@@ -285,7 +285,7 @@ const runShellCommand = (
           detached: platform !== 'win32'
         }
       )
-      if (platform !== 'win32') registerOwnedPosixProcessGroup(child)
+      if (platform !== 'win32' && process.platform !== 'win32') trackOwnedPosixProcessTree(child)
 
       let stdout = ''
       let stderr = ''

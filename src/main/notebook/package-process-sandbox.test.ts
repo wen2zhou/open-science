@@ -177,7 +177,7 @@ describe('sandboxedPackageSpawn', () => {
       try {
         const result = await spawn(process.execPath, [
           '-e',
-          "const {spawn}=require('node:child_process'); const helper=spawn(process.execPath,['-e',\"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"],{stdio:'ignore'}); process.stdout.write(String(helper.pid));"
+          "const {spawn}=require('node:child_process'); const helper=spawn(process.execPath,['-e',\"process.on('SIGTERM',()=>{});setInterval(()=>{},1000)\"],{stdio:'ignore',detached:true}); helper.unref(); process.stdout.write(String(helper.pid));"
         ])
         helperPid = Number(result.stdout)
         expect(result.code).toBe(0)
