@@ -238,6 +238,24 @@ const PROJECT_OWNED_DATA_CATALOG: readonly ProjectOwnedDataCatalogEntry[] = [
     }
   },
   {
+    id: 'agent-result-delivery-history',
+    medium: 'sqlite',
+    resources: ['AgentResultDelivery'],
+    prismaModels: [
+      {
+        name: 'AgentResultDelivery',
+        ownerFields: [requiredOwner('projectId'), requiredOwner('sessionId')]
+      }
+    ],
+    policy: {
+      kind: 'retained-history',
+      effect: 'retain',
+      retention: 'Retained as the durable delivery ledger after Project soft deletion.',
+      reason:
+        'Consumed and dismissed facts remain idempotency tombstones; pending facts preserve explicit needs-attention state.'
+    }
+  },
+  {
     id: 'notification-inbox-history',
     medium: 'sqlite',
     resources: ['NotificationInboxItem'],

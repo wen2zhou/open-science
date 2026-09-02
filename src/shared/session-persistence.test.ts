@@ -677,6 +677,21 @@ describe('message attribution persistence', () => {
     ).toBeUndefined()
   })
 
+  it('keeps strict durable Agent result delivery attribution', () => {
+    const attribution = {
+      kind: 'application' as const,
+      feature: 'background-results' as const,
+      purpose: 'agent-result-delivery' as const,
+      deliveryKey: 'agent-result-delivery:continuation-1',
+      deliveryIds: ['local-run:run-1']
+    }
+
+    expect(sanitizeMessageAttribution(attribution)).toEqual(attribution)
+    expect(
+      sanitizeMessageAttribution({ ...attribution, deliveryIds: [], rendererClaim: true })
+    ).toBeUndefined()
+  })
+
   it('drops malformed or extended attribution without dropping the Message', () => {
     expect(
       sanitizeMessageAttribution({

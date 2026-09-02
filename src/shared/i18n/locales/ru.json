@@ -323,6 +323,7 @@
     "Remote Compute Job": "Удалённое вычислительное задание",
     "Local Run": "Локальный запуск",
     "Go to Session": "Перейти к сессии",
+    "Hide this item. The original execution result is kept.": "Скрыть этот элемент. Исходный результат выполнения будет сохранён.",
     "Showing the 200 most recently updated visible tasks.": "Показаны 200 последних обновлённых видимых задач.",
     "Active_inUse": "Активно",
     "Main model": "Основная модель",

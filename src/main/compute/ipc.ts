@@ -381,7 +381,7 @@ const createComputeHandlers = (
     }
   }
   const projectDeliveryPath = async (summary: JobSummary): Promise<JobSummary> =>
-    resultDelivery && (await resultDelivery.hasDeliveryPath(summary.job_id).catch(() => false))
+    resultDelivery && (await resultDelivery.hasDeliveryPath(summary.job_id))
       ? { ...summary, result_delivery_path: 'agent-result-delivery' }
       : summary
 
@@ -646,11 +646,8 @@ export const createJobUpdatedBroadcaster =
       ) {
         summary = await toJobSummary(verified, displayName, storageRoot)
       }
-      await resultDelivery?.observeJob(summary).catch(() => undefined)
-      if (
-        resultDelivery &&
-        (await resultDelivery.hasDeliveryPath(summary.job_id).catch(() => false))
-      ) {
+      await resultDelivery?.observeJob(summary)
+      if (resultDelivery && (await resultDelivery.hasDeliveryPath(summary.job_id))) {
         summary = { ...summary, result_delivery_path: 'agent-result-delivery' }
       }
       broadcastJobUpdated(summary)

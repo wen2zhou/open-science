@@ -2,7 +2,7 @@ import type { NotebookRunStatus } from './notebook'
 import type { ComputeJobStatus } from './compute'
 
 export type AgentResultDeliveryState =
-  'waiting-result' | 'pending' | 'claimed' | 'consumed' | 'needs-attention' | 'dismissed'
+  'waiting-result' | 'pending' | 'claimed' | 'consumed' | 'needs-attention'
 
 export type AgentResultExecutionType = 'python' | 'r' | 'repl' | 'shell' | 'compute-job'
 

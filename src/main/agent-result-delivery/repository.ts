@@ -212,6 +212,7 @@ class AgentResultDeliveryRepository {
     const rows = await client.agentResultDelivery.findMany({
       where: {
         projectId,
+        dismissedAt: null,
         state: { in: ['waiting-result', 'pending', 'claimed', 'needs-attention'] }
       },
       orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
@@ -235,6 +236,7 @@ class AgentResultDeliveryRepository {
     const rows = await client.agentResultDelivery.findMany({
       where: {
         sessionId,
+        dismissedAt: null,
         state: { in: ['pending', 'claimed', 'needs-attention'] }
       },
       orderBy: [{ createdAt: 'asc' }, { id: 'asc' }]
@@ -285,7 +287,10 @@ class AgentResultDeliveryRepository {
         take: Math.max(1, options.limit)
       })
       if (candidates.length === 0) return []
-      const ids = candidates.map(({ id }) => id)
+      const correlation = candidates[0]?.continuationMessageId
+      const ids = candidates
+        .filter(({ continuationMessageId }) => continuationMessageId === correlation)
+        .map(({ id }) => id)
       await tx.agentResultDelivery.updateMany({
         where: { id: { in: ids }, state: 'pending' },
         data: {
@@ -310,16 +315,32 @@ class AgentResultDeliveryRepository {
       where: {
         id,
         sessionId,
-        state: { in: ['pending', 'needs-attention'] }
+        state: 'needs-attention',
+        dismissedAt: null
       },
       data: {
-        state: 'dismissed',
-        dismissedAt: new Date(dismissedAt),
-        claimToken: null,
-        claimExpiresAt: null
+        dismissedAt: new Date(dismissedAt)
       }
     })
     return updated.count === 1
+  }
+
+  async prepareContinuation(
+    ids: readonly string[],
+    claimToken: string,
+    continuationMessageId: string
+  ): Promise<number> {
+    const client = await this.getClient()
+    const updated = await client.agentResultDelivery.updateMany({
+      where: {
+        id: { in: [...ids] },
+        state: 'claimed',
+        claimToken,
+        OR: [{ continuationMessageId: null }, { continuationMessageId }]
+      },
+      data: { continuationMessageId }
+    })
+    return updated.count
   }
 
   async releaseClaim(

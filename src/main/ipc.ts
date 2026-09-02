@@ -38,6 +38,7 @@ import { AgentResultDeliveryRepository } from './agent-result-delivery/repositor
 import { AgentResultDeliveryOwner } from './agent-result-delivery/owner'
 import { ComputeJobResultDeliveryAdapter } from './agent-result-delivery/compute-adapter'
 import { registerAgentResultDeliveryIpcHandlers } from './agent-result-delivery/ipc'
+import { hasSavedAgentResultContinuation } from './agent-result-delivery/continuation'
 import {
   LIFECYCLE_CHANNELS,
   MAIN_DELEGATED_WORK_LIFECYCLE_CLIENT_ID,
@@ -731,21 +732,33 @@ const createApplicationModules = async (
         sessionId: string
         text: string
         deliveryIds: readonly string[]
+        continuationMessageId: string
       }) => {
         const runtime = runtimeRef.current
         if (!runtime) throw new Error('Agent runtime is unavailable for result delivery.')
-        const continuationMessageId = `agent-result-delivery-${randomUUID()}`
-        const response = await runtime.sendAppContinuation({
-          sessionId: request.sessionId,
-          text: request.text,
-          suppressUserMessage: true,
-          provenanceContext: { promptMessageId: continuationMessageId }
-        })
-        return { stopReason: response.stopReason, continuationMessageId }
+        const response = await runtime.sendApplicationPrompt(
+          {
+            sessionId: request.sessionId,
+            text: request.text,
+            provenanceContext: { promptMessageId: request.continuationMessageId }
+          },
+          {
+            kind: 'application',
+            feature: 'background-results',
+            purpose: 'agent-result-delivery',
+            deliveryKey: `agent-result-delivery:${request.continuationMessageId}`,
+            deliveryIds: [...request.deliveryIds]
+          }
+        )
+        return {
+          stopReason: response.stopReason,
+          continuationMessageId: request.continuationMessageId
+        }
       },
       isContinuationSaved: async (request: {
         sessionId: string
         continuationMessageId: string
+        deliveryIds: readonly string[]
       }) => {
         const projectId = await sessionPersistenceCoordinator.sessionProjectId(request.sessionId)
         if (!projectId) return false
@@ -754,12 +767,7 @@ const createApplicationModules = async (
           request.sessionId
         )
         const messages = [...(saved.conversationGraph?.messages ?? []), ...saved.messages]
-        return messages.some(
-          (message) =>
-            message.role === 'agent' &&
-            message.responseToMessageId === request.continuationMessageId &&
-            message.status === 'complete'
-        )
+        return hasSavedAgentResultContinuation(messages, request)
       },
       canStartSessionTurn: (sessionId: string) => {
         const runtime = runtimeRef.current
@@ -1983,6 +1991,7 @@ const createApplicationModules = async (
                 'Compute Job result delivery observation failed',
                 diagnosticErrorFields(error)
               )
+              return
             }
             broadcastJobUpdated(
               owned ? { ...summary, result_delivery_path: 'agent-result-delivery' } : summary

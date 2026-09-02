@@ -186,6 +186,10 @@ vi.mock('./WorkspaceMessageScroller', () => ({
   )
 }))
 
+vi.mock('./SessionBackgroundActivity', () => ({
+  SessionBackgroundActivity: (): React.JSX.Element | null => null
+}))
+
 vi.mock('./PermissionApprovalControls', () => ({
   PermissionApprovalControls: ({ requests }: { requests: unknown[] }): React.JSX.Element | null =>
     requests.length > 0 ? <span data-testid="permission-approval-controls" /> : null

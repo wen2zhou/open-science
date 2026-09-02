@@ -632,6 +632,25 @@ describe('WorkspaceMessageItem user message actions', () => {
     expectComputeCompletionEvent()
   })
 
+  it('presents durable background result context without exposing its control payload', async () => {
+    await renderItem(
+      createMessage({
+        content: 'Background execution outcomes are now available.\n\n{"runId":"run-1"}',
+        attribution: {
+          kind: 'application',
+          feature: 'background-results',
+          purpose: 'agent-result-delivery',
+          deliveryKey: 'agent-result-delivery:continuation-1',
+          deliveryIds: ['local-run:run-1']
+        }
+      })
+    )
+
+    expect(container.querySelector('[data-testid="agent-result-delivery-event"]')).not.toBeNull()
+    expect(container.textContent).toContain('Session activity')
+    expect(container.textContent).not.toContain('run-1')
+  })
+
   it('keeps a reloaded Compute completion presentation out of the user bubble', async () => {
     await renderItem(
       createMessage({

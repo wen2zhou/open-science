@@ -36,6 +36,7 @@ const harness = (
     recoverExpiredClaims: vi.fn(async () => 0),
     listPendingSessionIds: vi.fn(async () => []),
     claimPending: vi.fn(async () => [delivery('run-1'), delivery('run-2')]),
+    prepareContinuation: vi.fn(async () => 2),
     markConsumed: vi.fn(async () => 2),
     releaseClaim: vi.fn(async () => 2),
     ...((repositoryOverrides as object | undefined) ?? {})
@@ -67,14 +68,54 @@ describe('AgentResultDeliveryOwner', () => {
 
     expect(sendContinuation).toHaveBeenCalledOnce()
     expect(sendContinuation).toHaveBeenCalledWith(
-      expect.objectContaining({ text: expect.stringMatching(/run-1[\s\S]*run-2/u) })
+      expect.objectContaining({
+        text: expect.stringMatching(/run-1[\s\S]*run-2/u),
+        continuationMessageId: 'claim-1'
+      })
     )
     expect(repository.markConsumed).toHaveBeenCalledWith(
       ['local-run:run-1', 'local-run:run-2'],
       'claim-1',
-      'continuation-1',
+      'claim-1',
       1_000
     )
+  })
+
+  it('reconciles a previously saved correlated Turn without dispatching it twice', async () => {
+    const correlated = (runId: string): AgentResultDelivery => ({
+      ...delivery(runId),
+      continuationMessageId: 'continuation-stable'
+    })
+    const { owner, repository, sendContinuation } = harness({
+      repository: { claimPending: vi.fn(async () => [correlated('run-1')]) },
+      isContinuationSaved: async () => true
+    })
+    repository.markConsumed.mockResolvedValueOnce(1)
+
+    await expect(owner.drainSession('session-1')).resolves.toBe('consumed')
+
+    expect(sendContinuation).not.toHaveBeenCalled()
+    expect(repository.markConsumed).toHaveBeenCalledWith(
+      ['local-run:run-1'],
+      'claim-1',
+      'continuation-stable',
+      1_000
+    )
+    owner.dispose()
+  })
+
+  it('periodically recovers claims that expire after startup', async () => {
+    vi.useFakeTimers()
+    const recoverExpiredClaims = vi.fn(async () => 0)
+    const { owner } = harness({
+      repository: { recoverExpiredClaims },
+      claimRecoveryIntervalMs: 50
+    })
+
+    await vi.advanceTimersByTimeAsync(50)
+
+    expect(recoverExpiredClaims).toHaveBeenCalled()
+    owner.dispose()
   })
 
   it('does not consume when the Agent Turn merely starts or ends without a saved result', async () => {

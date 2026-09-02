@@ -358,6 +358,7 @@
     "Remote Compute Job": "遠端運算作業",
     "Local Run": "本機執行",
     "Go to Session": "前往會話",
+    "Hide this item. The original execution result is kept.": "隱藏此項目。原始執行結果將保留。",
     "Showing the 200 most recently updated visible tasks.": "正在顯示最近更新的 200 個可見任務。",
     "Active_inUse": "使用中",
     "Main model": "主模型",

@@ -296,6 +296,7 @@
     "Remote Compute Job": "Entfernter Rechenauftrag",
     "Local Run": "Lokale Ausführung",
     "Go to Session": "Zur Sitzung",
+    "Hide this item. The original execution result is kept.": "Dieses Element ausblenden. Das ursprüngliche Ausführungsergebnis bleibt erhalten.",
     "Showing the 200 most recently updated visible tasks.": "Die 200 zuletzt aktualisierten sichtbaren Aufgaben werden angezeigt.",
     "Active_inUse": "Aktiv",
     "Main model": "Hauptmodell",

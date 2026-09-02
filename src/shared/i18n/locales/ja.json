@@ -304,6 +304,7 @@
     "Remote Compute Job": "リモートコンピュートジョブ",
     "Local Run": "ローカル実行",
     "Go to Session": "セッションへ移動",
+    "Hide this item. The original execution result is kept.": "この項目を非表示にします。元の実行結果は保持されます。",
     "Showing the 200 most recently updated visible tasks.": "最近更新された表示対象タスクを最大 200 件表示しています。",
     "Active_inUse": "アクティブ",
     "Main model": "メインモデル",

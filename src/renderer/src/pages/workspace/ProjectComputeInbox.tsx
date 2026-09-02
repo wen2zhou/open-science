@@ -9,6 +9,16 @@ import type {
 import { useNavigationStore } from '@/stores/navigation-store'
 import { useProjectBackgroundActivityStore } from '@/stores/project-background-activity-store'
 import { useSessionStore } from '@/stores/session-store'
+import { Button } from '@/components/ui/button'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
+import { backgroundActivityStatusLabel } from './background-activity-presentation'
 
 type TypeFilter = 'all' | AgentResultExecutionType
 
@@ -120,33 +130,6 @@ const ProjectComputeInbox = (): React.JSX.Element => {
       })
   }, [currentSessionId, visible])
 
-  const statusLabel = (item: ProjectBackgroundActivityItem): string => {
-    const outcome = item.outcomeStatus
-      ? item.outcomeStatus === 'completed' || item.outcomeStatus === 'success'
-        ? t('Completed')
-        : item.outcomeStatus === 'timeout'
-          ? t('Timed out')
-          : item.outcomeStatus === 'interrupted'
-            ? t('Interrupted')
-            : item.outcomeStatus === 'cancelled'
-              ? t('Cancelled')
-              : t('Failed')
-      : undefined
-    if (item.status === 'needs-attention')
-      return outcome ? `${outcome} · ${t('Needs Agent')}` : t('Needs Agent')
-    if (item.status === 'result-unavailable') return t('Result unavailable')
-    if (item.status === 'pending-delivery')
-      return outcome ? `${outcome} · ${t('Pending delivery')}` : t('Pending delivery')
-    if (item.status === 'queued' || item.status === 'submitted') return t('Queued')
-    if (item.status === 'running') return t('Running')
-    if (item.status === 'cancelling') return t('Cancelling')
-    if (item.status === 'completed' || item.status === 'success') return t('Completed')
-    if (item.status === 'timeout') return t('Timed out')
-    if (item.status === 'interrupted') return t('Interrupted')
-    if (item.status === 'cancelled') return t('Cancelled')
-    return t('Failed')
-  }
-
   useEffect(() => {
     const signature = groups
       .flatMap((group) =>
@@ -177,159 +160,166 @@ const ProjectComputeInbox = (): React.JSX.Element => {
             )}
           </p>
         </div>
-        <label className="flex items-center gap-2 text-xs text-text-100">
-          <span>{t('Type')}</span>
-          <select
-            className="rounded-md border border-border-200 bg-bg-000 px-2 py-1.5 text-text-000"
-            value={typeFilter}
-            onChange={(event) => setTypeFilter(event.target.value as TypeFilter)}
-          >
-            <option value="all">{t('All types')}</option>
-            <option value="python">{t('Python Notebook Run')}</option>
-            <option value="r">{t('R Notebook Run')}</option>
-            <option value="repl">{t('JavaScript REPL')}</option>
-            <option value="shell">{t('Shell Command')}</option>
-            <option value="compute-job">{t('Compute Job')}</option>
-          </select>
-        </label>
-        <button
-          type="button"
+        <div className="flex items-center gap-2 text-xs text-text-100">
+          <span id="project-compute-type-label">{t('Type')}</span>
+          <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)}>
+            <SelectTrigger aria-labelledby="project-compute-type-label" className="w-52">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t('All types')}</SelectItem>
+              <SelectItem value="python">{t('Python Notebook Run')}</SelectItem>
+              <SelectItem value="r">{t('R Notebook Run')}</SelectItem>
+              <SelectItem value="repl">{t('JavaScript REPL')}</SelectItem>
+              <SelectItem value="shell">{t('Shell Command')}</SelectItem>
+              <SelectItem value="compute-job">{t('Compute Job')}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
           aria-pressed={attentionOnly}
-          className="rounded-md border border-border-200 bg-bg-000 px-2.5 py-1.5 text-xs hover:bg-bg-200"
           onClick={() => setAttentionOnly((value) => !value)}
         >
           {t('Needs attention')}
-        </button>
+        </Button>
       </header>
 
-      <div className="min-h-0 flex-1 overflow-auto px-6 py-4">
-        <aside className="mb-4 rounded-lg border border-status-info-border bg-status-info-surface p-3 text-xs leading-5 text-status-info-foreground dark:text-status-info-dark-foreground">
-          <p>
-            {t('Local Runs execute in this app. Compute Jobs execute on a remote Compute Host.')}
-          </p>
-          <p>
-            {t(
-              'Active means queued, running, or cancelling. Awaiting Agent means the execution ended but its outcome has not been successfully delivered.'
-            )}
-          </p>
-          <p>
-            {t(
-              "Viewing this page does not consume a result. Consumed means the result was saved into the original Session's Agent context and that Agent Turn completed and was saved."
-            )}
-          </p>
-          <p>{t("Lifecycle management is available only in the task's Session.")}</p>
-        </aside>
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="px-6 py-4">
+          <aside className="mb-4 rounded-lg border border-status-info-border bg-status-info-surface p-3 text-xs leading-5 text-status-info-foreground dark:text-status-info-dark-foreground">
+            <p>
+              {t('Local Runs execute in this app. Compute Jobs execute on a remote Compute Host.')}
+            </p>
+            <p>
+              {t(
+                'Active means queued, running, or cancelling. Awaiting Agent means the execution ended but its outcome has not been successfully delivered.'
+              )}
+            </p>
+            <p>
+              {t(
+                "Viewing this page does not consume a result. Consumed means the result was saved into the original Session's Agent context and that Agent Turn completed and was saved."
+              )}
+            </p>
+            <p>{t("Lifecycle management is available only in the task's Session.")}</p>
+          </aside>
 
-        {groups.length === 0 ? (
-          <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-border-200 text-sm text-text-100">
-            {t('No visible compute activity')}
-          </div>
-        ) : (
-          <div className="space-y-4" data-testid="project-compute-groups">
-            {groups.map((group) => {
-              const session = sessionById.get(group.sessionId)
-              const active = group.items.filter((item) => item.active)
-              const awaiting = group.items.filter((item) => !item.active)
-              return (
-                <section
-                  key={group.sessionId}
-                  className="overflow-hidden rounded-lg border border-border-200 bg-bg-000"
-                >
-                  <header className="flex items-center gap-2 bg-bg-200 px-3 py-2 text-sm font-semibold">
-                    {group.needsAttention ? (
-                      <AlertTriangle
-                        className="size-4 text-status-warning-foreground"
-                        aria-hidden="true"
-                      />
-                    ) : (
-                      <Cpu className="size-4 text-text-100" aria-hidden="true" />
-                    )}
-                    <span>{session?.title ?? t('Deleted Session')}</span>
-                    {group.sessionId === currentSessionId ? (
-                      <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] text-accent-foreground">
-                        {t('Current Session')}
-                      </span>
-                    ) : null}
-                    {session?.archivedAt !== undefined ? (
-                      <span className="text-[10px] font-normal text-text-100">
-                        {t('Archived Session')}
-                      </span>
-                    ) : null}
-                  </header>
-                  {[
-                    { label: t('Active'), items: active },
-                    { label: t('Awaiting Agent'), items: awaiting }
-                  ].map((section) =>
-                    section.items.length ? (
-                      <div key={section.label}>
-                        <div className="border-t border-border-200 bg-bg-100 px-3 py-1 text-[10px] font-semibold tracking-wide text-text-300 uppercase">
-                          {section.label}
-                        </div>
-                        {section.items.map((item) => {
-                          const StatusIcon = statusIcon(item)
-                          return (
-                            <div
-                              key={item.id}
-                              className="grid min-w-[720px] grid-cols-[minmax(240px,1.5fr)_minmax(150px,1fr)_140px_130px] items-center gap-3 border-t border-border-200 px-3 py-2 text-xs"
-                            >
-                              <div className="flex min-w-0 items-center gap-2">
-                                {item.sourceKind === 'compute-job' ? (
-                                  <RadioTower className="size-4 shrink-0" aria-hidden="true" />
-                                ) : (
-                                  <Cpu className="size-4 shrink-0" aria-hidden="true" />
-                                )}
-                                <div className="min-w-0">
-                                  <div className="truncate font-medium" title={item.title}>
-                                    {item.title}
-                                  </div>
-                                  <div className="text-[10px] text-text-100">
-                                    {item.sourceKind === 'compute-job'
-                                      ? t('Remote Compute Job')
-                                      : `${t('Local Run')} · ${localExecutionLabel(item.executionType, t)}`}
+          {groups.length === 0 ? (
+            <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-border-200 text-sm text-text-100">
+              {t('No visible compute activity')}
+            </div>
+          ) : (
+            <div className="space-y-4" data-testid="project-compute-groups">
+              {groups.map((group) => {
+                const session = sessionById.get(group.sessionId)
+                const active = group.items.filter((item) => item.active)
+                const awaiting = group.items.filter((item) => !item.active)
+                return (
+                  <section
+                    key={group.sessionId}
+                    className="overflow-hidden rounded-lg border border-border-200 bg-bg-000"
+                  >
+                    <header className="flex items-center gap-2 bg-bg-200 px-3 py-2 text-sm font-semibold">
+                      {group.needsAttention ? (
+                        <AlertTriangle
+                          className="size-4 text-status-warning-foreground"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Cpu className="size-4 text-text-100" aria-hidden="true" />
+                      )}
+                      <span>{session?.title ?? t('Deleted Session')}</span>
+                      {group.sessionId === currentSessionId ? (
+                        <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] text-accent-foreground">
+                          {t('Current Session')}
+                        </span>
+                      ) : null}
+                      {session?.archivedAt !== undefined ? (
+                        <span className="text-[10px] font-normal text-text-100">
+                          {t('Archived Session')}
+                        </span>
+                      ) : null}
+                    </header>
+                    {[
+                      { label: t('Active'), items: active },
+                      { label: t('Awaiting Agent'), items: awaiting }
+                    ].map((section) =>
+                      section.items.length ? (
+                        <div key={section.label}>
+                          <div className="border-t border-border-200 bg-bg-100 px-3 py-1 text-[10px] font-semibold tracking-wide text-text-300 uppercase">
+                            {section.label}
+                          </div>
+                          {section.items.map((item) => {
+                            const StatusIcon = statusIcon(item)
+                            return (
+                              <div
+                                key={item.id}
+                                className="grid min-w-[720px] grid-cols-[minmax(240px,1.5fr)_minmax(150px,1fr)_140px_130px] items-center gap-3 border-t border-border-200 px-3 py-2 text-xs"
+                              >
+                                <div className="flex min-w-0 items-center gap-2">
+                                  {item.sourceKind === 'compute-job' ? (
+                                    <RadioTower className="size-4 shrink-0" aria-hidden="true" />
+                                  ) : (
+                                    <Cpu className="size-4 shrink-0" aria-hidden="true" />
+                                  )}
+                                  <div className="min-w-0">
+                                    <div className="truncate font-medium" title={item.title}>
+                                      {item.title}
+                                    </div>
+                                    <div className="text-[10px] text-text-100">
+                                      {item.sourceKind === 'compute-job'
+                                        ? t('Remote Compute Job')
+                                        : `${t('Local Run')} · ${localExecutionLabel(item.executionType, t)}`}
+                                    </div>
                                   </div>
                                 </div>
-                              </div>
-                              <span className="truncate text-text-100" title={item.lane}>
-                                {item.lane ?? '—'}
-                              </span>
-                              <span className="flex items-center gap-1.5 text-text-100">
-                                <StatusIcon
-                                  className={
-                                    item.status === 'cancelling'
-                                      ? 'size-3.5 animate-spin motion-reduce:animate-none'
-                                      : 'size-3.5'
+                                <span className="truncate text-text-100" title={item.lane}>
+                                  {item.lane ?? '—'}
+                                </span>
+                                <span className="flex items-center gap-1.5 text-text-100">
+                                  <StatusIcon
+                                    className={
+                                      item.status === 'cancelling'
+                                        ? 'size-3.5 animate-spin motion-reduce:animate-none'
+                                        : 'size-3.5'
+                                    }
+                                    aria-hidden="true"
+                                  />
+                                  {backgroundActivityStatusLabel(
+                                    item.status,
+                                    item.outcomeStatus,
+                                    t
+                                  )}
+                                </span>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  disabled={!session}
+                                  onClick={() =>
+                                    projectId && openSession(projectId, item.sessionId, 'user')
                                   }
-                                  aria-hidden="true"
-                                />
-                                {statusLabel(item)}
-                              </span>
-                              <button
-                                type="button"
-                                disabled={!session}
-                                className="rounded-md border border-border-200 px-2 py-1 hover:bg-bg-200 disabled:cursor-not-allowed disabled:opacity-50"
-                                onClick={() =>
-                                  projectId && openSession(projectId, item.sessionId, 'user')
-                                }
-                              >
-                                {t('Go to Session')}
-                              </button>
-                            </div>
-                          )
-                        })}
-                      </div>
-                    ) : null
-                  )}
-                </section>
-              )
-            })}
-          </div>
-        )}
-        {snapshot.truncated ? (
-          <p className="mt-3 text-xs text-text-100">
-            {t('Showing the 200 most recently updated visible tasks.')}
-          </p>
-        ) : null}
-      </div>
+                                >
+                                  {t('Go to Session')}
+                                </Button>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : null
+                    )}
+                  </section>
+                )
+              })}
+            </div>
+          )}
+          {snapshot.truncated ? (
+            <p className="mt-3 text-xs text-text-100">
+              {t('Showing the 200 most recently updated visible tasks.')}
+            </p>
+          ) : null}
+        </div>
+      </ScrollArea>
       <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
         <span key={announcementRevision}>
           {announcementRevision > 0 ? t('Compute activity updated.') : null}

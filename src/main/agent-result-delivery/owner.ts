@@ -15,6 +15,11 @@ type DeliveryRepository = {
     sessionId: string,
     options: { token: string; expiresAt: number; limit: number; now?: number }
   ): Promise<AgentResultDelivery[]>
+  prepareContinuation(
+    ids: readonly string[],
+    claimToken: string,
+    continuationMessageId: string
+  ): Promise<number>
   markConsumed(
     ids: readonly string[],
     claimToken: string,
@@ -39,10 +44,12 @@ type AgentResultDeliveryOwnerOptions = Readonly<{
     sessionId: string
     text: string
     deliveryIds: readonly string[]
+    continuationMessageId: string
   }): Promise<ContinuationResult>
   isContinuationSaved(request: {
     sessionId: string
     continuationMessageId: string
+    deliveryIds: readonly string[]
   }): Promise<boolean>
   canStartSessionTurn(sessionId: string): boolean | Promise<boolean>
   createId?: () => string
@@ -50,6 +57,7 @@ type AgentResultDeliveryOwnerOptions = Readonly<{
   claimLeaseMs?: number
   batchLimit?: number
   batchDelayMs?: number
+  claimRecoveryIntervalMs?: number
 }>
 
 const buildDeliveryPrompt = (deliveries: readonly AgentResultDelivery[]): string => {
@@ -102,10 +110,16 @@ class AgentResultDeliveryOwner {
   private readonly createId: () => string
   private readonly now: () => number
   private readonly scheduled = new Map<string, ReturnType<typeof setTimeout>>()
+  private readonly claimRecoveryTimer: ReturnType<typeof setInterval>
 
   constructor(private readonly options: AgentResultDeliveryOwnerOptions) {
     this.createId = options.createId ?? randomUUID
     this.now = options.now ?? Date.now
+    this.claimRecoveryTimer = setInterval(
+      () => void this.recover(),
+      options.claimRecoveryIntervalMs ?? 30_000
+    )
+    this.claimRecoveryTimer.unref?.()
   }
 
   private schedule(sessionId: string): void {
@@ -131,6 +145,7 @@ class AgentResultDeliveryOwner {
   dispose(): void {
     for (const timer of this.scheduled.values()) clearTimeout(timer)
     this.scheduled.clear()
+    clearInterval(this.claimRecoveryTimer)
   }
 
   async recover(): Promise<void> {
@@ -159,16 +174,50 @@ class AgentResultDeliveryOwner {
 
     const ids = deliveries.map(({ id }) => id)
     try {
+      const priorCorrelation = deliveries[0]?.continuationMessageId
+      if (
+        priorCorrelation &&
+        deliveries.every(
+          ({ continuationMessageId }) => continuationMessageId === priorCorrelation
+        ) &&
+        (await this.options.isContinuationSaved({
+          sessionId,
+          continuationMessageId: priorCorrelation,
+          deliveryIds: ids
+        }))
+      ) {
+        const consumed = await this.options.repository.markConsumed(
+          ids,
+          claimToken,
+          priorCorrelation,
+          this.now()
+        )
+        if (consumed === ids.length) return 'consumed'
+        await this.options.repository.releaseClaim(ids, claimToken, 'needs-attention')
+        return 'needs-attention'
+      }
+      const continuationMessageId = priorCorrelation ?? this.createId()
+      const prepared = await this.options.repository.prepareContinuation(
+        ids,
+        claimToken,
+        continuationMessageId
+      )
+      if (prepared !== ids.length) {
+        await this.options.repository.releaseClaim(ids, claimToken, 'needs-attention')
+        return 'needs-attention'
+      }
       const result = await this.options.sendContinuation({
         sessionId,
         text: buildDeliveryPrompt(deliveries),
-        deliveryIds: ids
+        deliveryIds: ids,
+        continuationMessageId
       })
       const saved =
         result.stopReason === 'end_turn' &&
         (await this.options.isContinuationSaved({
           sessionId,
-          continuationMessageId: result.continuationMessageId
+          continuationMessageId,
+          deliveryIds: ids
         }))
       if (!saved) {
         await this.options.repository.releaseClaim(ids, claimToken, 'needs-attention')
@@ -177,7 +226,7 @@ class AgentResultDeliveryOwner {
       const consumed = await this.options.repository.markConsumed(
         ids,
         claimToken,
-        result.continuationMessageId,
+        continuationMessageId,
         this.now()
       )
       if (consumed !== ids.length) {

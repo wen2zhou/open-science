@@ -157,7 +157,7 @@ describe('AgentResultDeliveryRepository', () => {
     ])
   })
 
-  it('keeps dismiss separate from consumption and preserves the durable outcome', async () => {
+  it('hides needs-attention without changing delivery state or consuming the outcome', async () => {
     const delivery = await repository.recordTerminalOutcome({
       runId: 'run-1',
       executionType: 'repl',
@@ -167,14 +167,36 @@ describe('AgentResultDeliveryRepository', () => {
       sessionId: 'session-1'
     })
 
-    await repository.dismiss('session-1', delivery.id, 4_000)
+    const [claimed] = await repository.claimPending('session-1', {
+      token: 'claim-1',
+      expiresAt: 2_000,
+      limit: 1,
+      now: 1_000
+    })
+    await repository.releaseClaim([claimed.id], 'claim-1', 'needs-attention')
+
+    await expect(repository.dismiss('session-1', delivery.id, 4_000)).resolves.toBe(true)
 
     await expect(repository.listAwaitingAgent('session-1')).resolves.toEqual([])
     await expect(repository.find(delivery.id)).resolves.toMatchObject({
-      state: 'dismissed',
+      state: 'needs-attention',
       dismissedAt: 4_000,
       context: { runId: 'run-1', terminalStatus: 'cancelled' }
     })
+  })
+
+  it('does not let dismiss hide a delivery before an Agent attempt fails', async () => {
+    const delivery = await repository.recordTerminalOutcome({
+      runId: 'run-pending',
+      executionType: 'repl',
+      terminalStatus: 'completed',
+      resultSummary: 'done',
+      projectId: 'project-1',
+      sessionId: 'session-1'
+    })
+
+    await expect(repository.dismiss('session-1', delivery.id, 4_000)).resolves.toBe(false)
+    await expect(repository.listAwaitingAgent('session-1')).resolves.toHaveLength(1)
   })
 
   it('registers a nonterminal Compute Job without backfilling an unregistered terminal Job', async () => {

@@ -692,15 +692,13 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
 
   useEffect(() => {
     if (!focusedRun?.agentFrameId) return
-    setFrameFilter(`frame:${focusedRun.agentFrameId}`)
-    setActiveKind(resolveRunKernelKind(focusedRun))
-    setActiveEnv(resolveRunEnvironment(focusedRun))
-  }, [
-    focusedRun?.agentFrameId,
-    focusedRun?.environment,
-    focusedRun?.kernelKind,
-    item.notebookRunFocusRequest
-  ])
+    const timer = window.setTimeout(() => {
+      setFrameFilter(`frame:${focusedRun.agentFrameId}`)
+      setActiveKind(resolveRunKernelKind(focusedRun))
+      setActiveEnv(resolveRunEnvironment(focusedRun))
+    }, 0)
+    return () => window.clearTimeout(timer)
+  }, [focusedRun, item.notebookRunFocusRequest])
 
   useEffect(() => {
     if (!item.notebookRunId || !visibleRuns.some((run) => run.runId === item.notebookRunId)) return

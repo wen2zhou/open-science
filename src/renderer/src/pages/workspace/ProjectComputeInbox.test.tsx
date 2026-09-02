@@ -79,18 +79,16 @@ describe('Project Compute inbox', () => {
         }
       ]
     })
-    vi.stubGlobal('window', {
-      ...window,
-      setInterval: window.setInterval.bind(window),
-      clearInterval: window.clearInterval.bind(window),
-      setTimeout: window.setTimeout.bind(window),
-      clearTimeout: window.clearTimeout.bind(window),
-      api: {
-        agentResultDelivery: { getProjectActivity },
-        notebook: { onChanged: vi.fn(() => () => undefined) },
-        compute: { onJobUpdated: vi.fn(() => () => undefined) }
-      }
-    })
+    vi.stubGlobal(
+      'window',
+      Object.assign(window, {
+        api: {
+          agentResultDelivery: { getProjectActivity },
+          notebook: { onChanged: vi.fn(() => () => undefined) },
+          compute: { onJobUpdated: vi.fn(() => () => undefined) }
+        }
+      })
+    )
     const container = document.createElement('div')
     document.body.append(container)
     root = createRoot(container)
@@ -104,6 +102,7 @@ describe('Project Compute inbox', () => {
     expect(container.textContent).toContain('Local Run')
     expect(container.textContent).toContain('Remote Compute Job')
     expect([...container.querySelectorAll('button')].map((button) => button.textContent)).toEqual([
+      'All types',
       'Needs attention',
       'Go to Session',
       'Go to Session'

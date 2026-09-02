@@ -279,6 +279,7 @@
     "Remote Compute Job": "Trabajo de cálculo remoto",
     "Local Run": "Ejecución local",
     "Go to Session": "Ir a la sesión",
+    "Hide this item. The original execution result is kept.": "Ocultar este elemento. Se conserva el resultado de ejecución original.",
     "Showing the 200 most recently updated visible tasks.": "Se muestran las 200 tareas visibles actualizadas más recientemente.",
     "Active_inUse": "Activo",
     "Main model": "Modelo principal",

@@ -303,6 +303,7 @@
     "Remote Compute Job": "원격 컴퓨팅 작업",
     "Local Run": "로컬 실행",
     "Go to Session": "세션으로 이동",
+    "Hide this item. The original execution result is kept.": "이 항목을 숨깁니다. 원본 실행 결과는 유지됩니다.",
     "Showing the 200 most recently updated visible tasks.": "최근 업데이트된 표시 대상 작업 200개를 보여 줍니다.",
     "Active_inUse": "활성",
     "Main model": "메인 모델",

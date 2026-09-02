@@ -894,6 +894,31 @@ describe('compute handlers — jobsList', () => {
     expect(hasDeliveryPath).toHaveBeenCalledWith('job-1')
   })
 
+  it('fails closed when Agent Result Delivery ownership cannot be determined', async () => {
+    const handlers = createComputeHandlers(
+      mockRepository({ list: vi.fn().mockResolvedValue([]) }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockJobRepository({ findBySession: vi.fn().mockResolvedValue([makeJob()]) }),
+      undefined,
+      undefined,
+      '/tmp/test-storage',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { hasDeliveryPath: vi.fn().mockRejectedValue(new Error('delivery database unavailable')) }
+    )
+
+    await expect(handlers.jobsList({ sessionId: 'sess-1' })).rejects.toThrow(
+      'delivery database unavailable'
+    )
+  })
+
   it('retains a safe needs-attention projection in the renderer jobs list', async () => {
     const findBySession = vi.fn().mockResolvedValue([
       makeJob({

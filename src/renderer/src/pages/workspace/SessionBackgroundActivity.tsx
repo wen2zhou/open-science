@@ -5,6 +5,8 @@ import { Circle, CircleCheck, CircleX, Clock3, Loader2 } from 'lucide-react'
 import type { NotebookRunRecord, NotebookSessionReference } from '../../../../shared/notebook'
 import type { AgentResultDelivery } from '../../../../shared/agent-result-delivery'
 import type { JobSummary } from '../../../../shared/compute'
+import { Button } from '@/components/ui/button'
+import { backgroundActivityStatusLabel } from './background-activity-presentation'
 
 type Props = {
   notebook: NotebookSessionReference
@@ -191,26 +193,15 @@ const SessionBackgroundActivity = ({
   if (ordered.length === 0 && orderedComputeJobs.length === 0) return null
 
   const statusLabel = (run: NotebookRunRecord): string => {
-    if (cancelling.has(run.runId)) return t('Cancelling')
     const delivery = deliveryByRunId.get(run.runId)
-    if (delivery?.state === 'needs-attention') return t('Needs Agent')
-    if (delivery) return t('Pending delivery')
-    switch (run.status) {
-      case 'queued':
-        return t('Queued')
-      case 'running':
-        return t('Running')
-      case 'completed':
-        return t('Completed')
-      case 'failed':
-        return t('Failed')
-      case 'timeout':
-        return t('Timed out')
-      case 'interrupted':
-        return t('Interrupted')
-      case 'cancelled':
-        return t('Cancelled')
-    }
+    const status = cancelling.has(run.runId)
+      ? 'cancelling'
+      : delivery?.state === 'needs-attention'
+        ? 'needs-attention'
+        : delivery
+          ? 'pending-delivery'
+          : run.status
+    return backgroundActivityStatusLabel(status, undefined, t)
   }
 
   return (
@@ -281,18 +272,18 @@ const SessionBackgroundActivity = ({
               </span>
               <span className="tabular-nums text-text-100">{elapsed(run, now)}</span>
               <span className="flex justify-end gap-1">
-                <button
-                  type="button"
-                  className="rounded-md border border-border-200 px-2 py-1 hover:bg-bg-200"
+                <Button
+                  variant="outline"
+                  size="xs"
                   onClick={() => onOpenNotebook(notebook, run.runId)}
                 >
                   {t('Open')}
-                </button>
+                </Button>
                 {isActive ? (
-                  <button
-                    type="button"
+                  <Button
+                    variant="destructive"
+                    size="xs"
                     disabled={isCancelling}
-                    className="rounded-md border border-border-200 px-2 py-1 text-status-failure-foreground hover:bg-status-failure-surface disabled:opacity-50 dark:text-status-failure-dark-foreground"
                     onClick={() => {
                       setCancelling((current) => new Set(current).add(run.runId))
                       void window.api.notebook
@@ -311,11 +302,12 @@ const SessionBackgroundActivity = ({
                     }}
                   >
                     {t('Cancel')}
-                  </button>
-                ) : delivery ? (
-                  <button
-                    type="button"
-                    className="rounded-md border border-border-200 px-2 py-1 hover:bg-bg-200"
+                  </Button>
+                ) : delivery?.state === 'needs-attention' ? (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    title={t('Hide this item. The original execution result is kept.')}
                     onClick={() => {
                       void window.api.agentResultDelivery
                         .dismiss({ sessionId: notebook.sessionId, deliveryId: delivery.id })
@@ -329,7 +321,7 @@ const SessionBackgroundActivity = ({
                     }}
                   >
                     {t('Dismiss')}
-                  </button>
+                  </Button>
                 ) : null}
               </span>
             </div>
@@ -350,23 +342,16 @@ const SessionBackgroundActivity = ({
         const showGroup = index === 0 || previousActive !== isActive
         const isCancelling = cancelling.has(job.job_id) || job.cancellation_status === 'cancelling'
         const delivery = deliveryByJobId.get(job.job_id)
-        const status = isCancelling
-          ? t('Cancelling')
+        const effectiveStatus = isCancelling
+          ? 'cancelling'
           : delivery?.state === 'needs-attention'
-            ? t('Needs Agent')
+            ? 'needs-attention'
             : delivery
-              ? t('Pending delivery')
+              ? 'pending-delivery'
               : job.cancellation_status === 'cancelled'
-                ? t('Cancelled')
-                : job.status === 'queued' || job.status === 'submitted'
-                  ? t('Queued')
-                  : job.status === 'running'
-                    ? t('Running')
-                    : job.status === 'success'
-                      ? t('Completed')
-                      : job.status === 'timeout'
-                        ? t('Timed out')
-                        : t('Failed')
+                ? 'cancelled'
+                : job.status
+        const status = backgroundActivityStatusLabel(effectiveStatus, undefined, t)
         const StatusIcon = isCancelling
           ? Loader2
           : job.status === 'success'
@@ -408,18 +393,14 @@ const SessionBackgroundActivity = ({
               </span>
               <span className="tabular-nums text-text-100">{duration}</span>
               <span className="flex justify-end gap-1">
-                <button
-                  type="button"
-                  className="rounded-md border border-border-200 px-2 py-1 hover:bg-bg-200"
-                  onClick={() => onOpenComputeJob?.(job)}
-                >
+                <Button variant="outline" size="xs" onClick={() => onOpenComputeJob?.(job)}>
                   {t('Open')}
-                </button>
+                </Button>
                 {isActive ? (
-                  <button
-                    type="button"
+                  <Button
+                    variant="destructive"
+                    size="xs"
                     disabled={isCancelling}
-                    className="rounded-md border border-border-200 px-2 py-1 text-status-failure-foreground hover:bg-status-failure-surface disabled:opacity-50 dark:text-status-failure-dark-foreground"
                     onClick={() => {
                       setCancelling((current) => new Set(current).add(job.job_id))
                       void window.api.compute
@@ -439,11 +420,12 @@ const SessionBackgroundActivity = ({
                     }}
                   >
                     {t('Cancel')}
-                  </button>
-                ) : delivery ? (
-                  <button
-                    type="button"
-                    className="rounded-md border border-border-200 px-2 py-1 hover:bg-bg-200"
+                  </Button>
+                ) : delivery?.state === 'needs-attention' ? (
+                  <Button
+                    variant="outline"
+                    size="xs"
+                    title={t('Hide this item. The original execution result is kept.')}
                     onClick={() => {
                       void window.api.agentResultDelivery
                         .dismiss({ sessionId: notebook.sessionId, deliveryId: delivery.id })
@@ -457,7 +439,7 @@ const SessionBackgroundActivity = ({
                     }}
                   >
                     {t('Dismiss')}
-                  </button>
+                  </Button>
                 ) : null}
               </span>
             </div>
