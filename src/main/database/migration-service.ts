@@ -50,6 +50,7 @@ import {
   managedFileVersionFoundationCurrentSchemaAdoptionStatements,
   managedFileVersionFoundationMigration
 } from './migrations/0025-managed-file-version-foundation'
+import { agentResultDeliveryMigration } from './migrations/0026-agent-result-delivery'
 import {
   applySqliteMigrationOperations,
   type SqliteMigrationOperation
@@ -255,6 +256,12 @@ const MANAGED_FILE_VERSION_FOUNDATION_CHECKSUM = checksumMigrationPayload(
   managedFileVersionFoundationMigration.id,
   managedFileVersionFoundationMigration.statements,
   managedFileVersionFoundationMigration.verifiers
+)
+const AGENT_RESULT_DELIVERY_CHECKSUM = checksumMigrationPayload(
+  agentResultDeliveryMigration.id,
+  agentResultDeliveryMigration.statements,
+  agentResultDeliveryMigration.verifiers,
+  agentResultDeliveryMigration.operations
 )
 const VISION_EVIDENCE_CHECKSUM = checksumMigrationPayload(
   visionEvidenceMigration.id,
@@ -597,6 +604,12 @@ const MIGRATION_MANIFEST = [
     backupOnApply: 'required',
     backupRetention: 'retain',
     foreignKeysDuringApply: 'disabled'
+  },
+  {
+    ...agentResultDeliveryMigration,
+    checksum: AGENT_RESULT_DELIVERY_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
   }
 ] as const satisfies readonly MigrationManifestEntry[]
 // schema-locality: begin frozen-0001-repairs
@@ -1824,6 +1837,7 @@ export {
   AGENT_MEMORY_PROJECT_SCOPE_CHECKSUM,
   COMPUTE_JOB_ANALYSIS_CONSTRAINTS_CHECKSUM,
   MEMORY_GLOBAL_CONTENT_UNIQUE_CHECKSUM,
+  AGENT_RESULT_DELIVERY_CHECKSUM,
   DatabaseMigrationError,
   checksumMigrationPayload,
   classifyDatabaseFailure,

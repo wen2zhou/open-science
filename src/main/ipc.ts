@@ -34,6 +34,9 @@ import { TagResourceCatalog } from './tags/resource-catalog'
 import { TagService } from './tags/service'
 import { MemoryRepository } from './memory/repository'
 import { MemoryService } from './memory/service'
+import { AgentResultDeliveryRepository } from './agent-result-delivery/repository'
+import { AgentResultDeliveryOwner } from './agent-result-delivery/owner'
+import { registerAgentResultDeliveryIpcHandlers } from './agent-result-delivery/ipc'
 import {
   LIFECYCLE_CHANNELS,
   MAIN_DELEGATED_WORK_LIFECYCLE_CLIENT_ID,
@@ -717,6 +720,58 @@ const createApplicationModules = async (
   const runtimeRef: { current: ReturnType<typeof createAcpRuntime> | undefined } = {
     current: undefined
   }
+  const agentResultDeliveryRepository = new AgentResultDeliveryRepository(() =>
+    getProjectDbClient(resolveStorageRoot())
+  )
+  const agentResultDelivery = await modules.add(
+    {
+      repository: agentResultDeliveryRepository,
+      sendContinuation: async (request: {
+        sessionId: string
+        text: string
+        deliveryIds: readonly string[]
+      }) => {
+        const runtime = runtimeRef.current
+        if (!runtime) throw new Error('Agent runtime is unavailable for result delivery.')
+        const continuationMessageId = `agent-result-delivery-${randomUUID()}`
+        const response = await runtime.sendAppContinuation({
+          sessionId: request.sessionId,
+          text: request.text,
+          suppressUserMessage: true,
+          provenanceContext: { promptMessageId: continuationMessageId }
+        })
+        return { stopReason: response.stopReason, continuationMessageId }
+      },
+      isContinuationSaved: async (request: {
+        sessionId: string
+        continuationMessageId: string
+      }) => {
+        const projectId = await sessionPersistenceCoordinator.sessionProjectId(request.sessionId)
+        if (!projectId) return false
+        const saved = await sessionPersistenceCoordinator.loadSessionForContinuation(
+          projectId,
+          request.sessionId
+        )
+        const messages = [...(saved.conversationGraph?.messages ?? []), ...saved.messages]
+        return messages.some(
+          (message) =>
+            message.role === 'agent' &&
+            message.responseToMessageId === request.continuationMessageId &&
+            message.status === 'complete'
+        )
+      },
+      canStartSessionTurn: (sessionId: string) =>
+        !(runtimeRef.current?.getState().promptInFlightSessionIds ?? []).includes(sessionId)
+    },
+    (options) => {
+      const owner = new AgentResultDeliveryOwner(options)
+      return {
+        name: 'agent-result-delivery',
+        capability: owner,
+        dispose: () => owner.dispose()
+      }
+    }
+  )
   const userSkillCatalogObserverRef: { current: UserSkillCatalogObserver | undefined } = {
     current: undefined
   }
@@ -1383,6 +1438,8 @@ const createApplicationModules = async (
       translate,
       helperModuleCatalog: settingsService.registeredHelperCatalog(),
       processSandbox: notebookNetworkSandbox,
+      onBackgroundRunTerminal: (context) =>
+        agentResultDelivery.enqueue(context).then(() => undefined),
       events: applicationEvents,
       disposeTimeoutMs: QUIT_SHUTDOWN_BUDGET_MS,
       isBackendTeardownOwned: () => backendTeardownOwnedByCoordinator
@@ -2702,6 +2759,14 @@ const createApplicationModules = async (
   )
   surfaceAdapters = afterAcpAdapters
   runtimeRef.current = runtime
+  void agentResultDelivery
+    .recover()
+    .catch((error) =>
+      createLogger('agent-result-delivery').warn(
+        'Agent result delivery recovery failed',
+        diagnosticErrorFields(error)
+      )
+    )
   composition.phase('acp-runtime')
   runtime.setSessionResumeObserver(async (request) => {
     if (request.specialistBindingPending !== true) return
@@ -3251,6 +3316,9 @@ const createApplicationModules = async (
     })
   )
   declareElectronAdapter('notebook', () => registerNotebookIpcHandlers(notebookCommands))
+  declareElectronAdapter('agent-result-delivery', () =>
+    registerAgentResultDeliveryIpcHandlers(agentResultDeliveryRepository)
+  )
   // Wire session deletion to the binding store so stale in-memory bindings do not accumulate.
   // The renderer calls sessions:delete-session (via sessionPersistenceBackend) and acp:delete-session
   // separately; both paths should clear the binding. Override the backend deleteSession callback here

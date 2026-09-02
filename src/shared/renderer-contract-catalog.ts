@@ -179,6 +179,11 @@ import type {
 } from './notebook'
 import type { ProvisionProgress, ProvisionStatus } from './notebook-env'
 import type {
+  AgentResultDeliverySessionRequest,
+  DismissAgentResultDeliveryRequest,
+  SessionAgentResultActivity
+} from './agent-result-delivery'
+import type {
   DiscoveredInterpreter,
   EnvPackage,
   RuntimeEnablement,
@@ -713,6 +718,12 @@ export type RendererApiFromContract<
 }
 
 export const RENDERER_API_CONTRACT = Object.freeze({
+  'agentResultDelivery.dismiss': callable<
+    (request: DismissAgentResultDeliveryRequest) => Promise<boolean>
+  >()('agent-result-delivery', ['agent-result-delivery:dismiss', ELECTRON]),
+  'agentResultDelivery.getSessionActivity': callable<
+    (request: AgentResultDeliverySessionRequest) => Promise<SessionAgentResultActivity>
+  >()('agent-result-delivery', ['agent-result-delivery:session-activity', ELECTRON]),
   'acp.cancel': callable<(request: AcpCancelPromptRequest) => Promise<AcpStateCommandResponse>>()(
     'acp',
     ['acp:cancel']

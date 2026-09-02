@@ -3,6 +3,7 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
+import type { AgentResultDelivery } from '../../../../shared/agent-result-delivery'
 import type { NotebookRunRecord, NotebookSessionReference } from '../../../../shared/notebook'
 import { SessionBackgroundActivity } from './SessionBackgroundActivity'
 
@@ -37,6 +38,32 @@ const run = (overrides: Partial<NotebookRunRecord> = {}): NotebookRunRecord => (
   ...overrides
 })
 
+const delivery = (overrides: Partial<AgentResultDelivery> = {}): AgentResultDelivery => ({
+  id: 'delivery-1',
+  state: 'pending',
+  attemptCount: 0,
+  createdAt: Date.now() - 1_000,
+  updatedAt: Date.now() - 1_000,
+  context: {
+    runId: 'run-1',
+    executionType: 'python',
+    terminalStatus: 'completed',
+    resultSummary: 'QC completed',
+    projectId: 'project-1',
+    sessionId: 'session-1',
+    agentFrameId: 'frame-1'
+  },
+  ...overrides
+})
+
+const emptyDeliveryApi = (): {
+  getSessionActivity: ReturnType<typeof vi.fn>
+  dismiss: ReturnType<typeof vi.fn>
+} => ({
+  getSessionActivity: vi.fn().mockResolvedValue({ active: [], awaitingAgent: [] }),
+  dismiss: vi.fn().mockResolvedValue(true)
+})
+
 describe('Session background activity ledger', () => {
   let root: Root | undefined
 
@@ -54,6 +81,7 @@ describe('Session background activity ledger', () => {
       setInterval: window.setInterval.bind(window),
       clearInterval: window.clearInterval.bind(window),
       api: {
+        agentResultDelivery: emptyDeliveryApi(),
         notebook: {
           state: vi.fn().mockResolvedValue({
             runs: [run(), run({ runId: 'foreground', executionMode: 'foreground' })]
@@ -93,6 +121,7 @@ describe('Session background activity ledger', () => {
       setInterval: window.setInterval.bind(window),
       clearInterval: window.clearInterval.bind(window),
       api: {
+        agentResultDelivery: emptyDeliveryApi(),
         notebook: {
           state: vi.fn().mockResolvedValue({
             runs: [
@@ -133,6 +162,7 @@ describe('Session background activity ledger', () => {
       setInterval: window.setInterval.bind(window),
       clearInterval: window.clearInterval.bind(window),
       api: {
+        agentResultDelivery: emptyDeliveryApi(),
         notebook: {
           state: vi.fn().mockResolvedValue({
             runs: [
@@ -169,5 +199,75 @@ describe('Session background activity ledger', () => {
     expect(container.textContent).toContain('Shell slot 1 of 2')
     expect(container.textContent).toContain('Waiting for shell slot')
     expect(container.textContent).not.toContain('Compute Job')
+  })
+
+  it('groups terminal results awaiting Agent delivery and dismisses only the ledger row', async () => {
+    const dismiss = vi.fn().mockResolvedValue(true)
+    vi.stubGlobal('window', {
+      ...window,
+      setInterval: window.setInterval.bind(window),
+      clearInterval: window.clearInterval.bind(window),
+      api: {
+        agentResultDelivery: {
+          getSessionActivity: vi.fn().mockResolvedValue({
+            active: [],
+            awaitingAgent: [delivery({ state: 'needs-attention' })]
+          }),
+          dismiss
+        },
+        notebook: {
+          state: vi.fn().mockResolvedValue({
+            runs: [run({ status: 'completed', endedAt: Date.now() })]
+          }),
+          onChanged: vi.fn(() => () => undefined),
+          cancelBackgroundRun: vi.fn().mockResolvedValue(undefined)
+        }
+      }
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(<SessionBackgroundActivity notebook={notebook} onOpenNotebook={vi.fn()} />)
+    })
+    await vi.waitFor(() => expect(container.textContent).toContain('Awaiting Agent'))
+
+    expect(container.textContent).toContain('Needs Agent')
+    expect(container.textContent).not.toContain('Retry')
+    const dismissButton = [...container.querySelectorAll('button')].find(
+      (button) => button.textContent === 'Dismiss'
+    )
+    await act(async () => dismissButton?.click())
+
+    expect(dismiss).toHaveBeenCalledWith({ sessionId: 'session-1', deliveryId: 'delivery-1' })
+    expect(container.textContent).not.toContain('donor_level_qc()')
+  })
+
+  it('omits terminal Runs once no delivery remains awaiting the Agent', async () => {
+    vi.stubGlobal('window', {
+      ...window,
+      setInterval: window.setInterval.bind(window),
+      clearInterval: window.clearInterval.bind(window),
+      api: {
+        agentResultDelivery: emptyDeliveryApi(),
+        notebook: {
+          state: vi.fn().mockResolvedValue({
+            runs: [run({ status: 'completed', endedAt: Date.now() })]
+          }),
+          onChanged: vi.fn(() => () => undefined),
+          cancelBackgroundRun: vi.fn().mockResolvedValue(undefined)
+        }
+      }
+    })
+    const container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => {
+      root?.render(<SessionBackgroundActivity notebook={notebook} onOpenNotebook={vi.fn()} />)
+    })
+
+    await vi.waitFor(() => expect(container.textContent).toBe(''))
   })
 })

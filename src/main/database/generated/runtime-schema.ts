@@ -727,6 +727,26 @@ const RUNTIME_SCHEMA_TABLE_DDLS = [
     CONSTRAINT "MemoryEntry_scope_check" CHECK ("categoryId" IS NOT NULL OR "projectId" IS NOT NULL),
     CONSTRAINT "MemoryEntry_source_check" CHECK (("origin" = 'user' AND "sourceSessionId" IS NULL AND "sourceAgentId" IS NULL) OR ("origin" = 'agent' AND "sourceSessionId" IS NOT NULL AND "projectId" IS NOT NULL)),
     CONSTRAINT "MemoryEntry_revision_check" CHECK ("revision" >= 1)
+);`,
+  `CREATE TABLE IF NOT EXISTS "AgentResultDelivery" (
+    "id" TEXT NOT NULL PRIMARY KEY,
+    "sourceKind" TEXT NOT NULL,
+    "sourceId" TEXT NOT NULL,
+    "projectId" TEXT NOT NULL,
+    "sessionId" TEXT NOT NULL,
+    "agentFrameId" TEXT,
+    "executionType" TEXT NOT NULL,
+    "terminalStatus" TEXT NOT NULL,
+    "contextJson" TEXT NOT NULL,
+    "state" TEXT NOT NULL,
+    "attemptCount" INTEGER NOT NULL DEFAULT 0,
+    "claimToken" TEXT,
+    "claimExpiresAt" DATETIME,
+    "continuationMessageId" TEXT,
+    "createdAt" DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
+    "updatedAt" DATETIME NOT NULL,
+    "consumedAt" DATETIME,
+    "dismissedAt" DATETIME
 );`
 ] as const
 
@@ -820,6 +840,9 @@ const RUNTIME_SCHEMA_INDEX_DDLS = [
   `CREATE INDEX IF NOT EXISTS "MemoryEntry_categoryId_updatedAt_idx" ON "MemoryEntry"("categoryId", "updatedAt");`,
   `CREATE INDEX IF NOT EXISTS "MemoryEntry_projectId_updatedAt_idx" ON "MemoryEntry"("projectId", "updatedAt");`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "MemoryEntry_projectId_contentKey_key" ON "MemoryEntry"("projectId", "contentKey");`,
+  `CREATE INDEX IF NOT EXISTS "AgentResultDelivery_sessionId_state_createdAt_idx" ON "AgentResultDelivery"("sessionId", "state", "createdAt");`,
+  `CREATE INDEX IF NOT EXISTS "AgentResultDelivery_state_claimExpiresAt_idx" ON "AgentResultDelivery"("state", "claimExpiresAt");`,
+  `CREATE UNIQUE INDEX IF NOT EXISTS "AgentResultDelivery_sourceKind_sourceId_key" ON "AgentResultDelivery"("sourceKind", "sourceId");`,
   `CREATE UNIQUE INDEX IF NOT EXISTS "MemoryEntry_global_contentKey_key" ON "MemoryEntry"("contentKey") WHERE "projectId" IS NULL`
 ] as const
 
@@ -870,7 +893,8 @@ const RUNTIME_SCHEMA_TABLES = [
   'TagAssignment',
   'MemorySettings',
   'MemoryCategory',
-  'MemoryEntry'
+  'MemoryEntry',
+  'AgentResultDelivery'
 ] as const
 
 export {

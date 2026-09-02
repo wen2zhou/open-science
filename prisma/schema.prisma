@@ -868,3 +868,30 @@ model MemoryEntry {
   @@index([categoryId, updatedAt])
   @@index([projectId, updatedAt])
 }
+
+// Main-owned delivery facts for terminal background outcomes. This table records only delivery
+// workflow state; Notebook Run and Compute Job records remain the execution authorities.
+model AgentResultDelivery {
+  id                    String   @id
+  sourceKind            String
+  sourceId              String
+  projectId             String
+  sessionId             String
+  agentFrameId          String?
+  executionType         String
+  terminalStatus        String
+  contextJson           String
+  state                 String
+  attemptCount          Int      @default(0)
+  claimToken            String?
+  claimExpiresAt        DateTime?
+  continuationMessageId String?
+  createdAt             DateTime @default(now())
+  updatedAt             DateTime @updatedAt
+  consumedAt            DateTime?
+  dismissedAt           DateTime?
+
+  @@unique([sourceKind, sourceId])
+  @@index([sessionId, state, createdAt])
+  @@index([state, claimExpiresAt])
+}
