@@ -20,6 +20,7 @@ type NotebookApplicationDeps = Pick<
   | 'helperModuleCatalog'
   | 'processSandbox'
   | 'onBackgroundRunTerminal'
+  | 'onBackgroundRunAdmitted'
 > &
   ProjectIdScope & {
     events: ApplicationEventPublisher

@@ -16,7 +16,9 @@ import { useProjectStore } from '@/stores/project-store'
 import { useSettingsStore } from '@/stores/settings-store'
 import {
   createNotebookPreviewItem,
+  createProjectComputePreviewItem,
   createProjectFilesPreviewItem,
+  PROJECT_COMPUTE_PREVIEW_ID,
   PROJECT_FILES_PREVIEW_ID,
   usePreviewWorkbenchStore
 } from '@/stores/preview-workbench-store'
@@ -1082,6 +1084,11 @@ const WorkspacePage = ({
     usePreviewWorkbenchStore.getState().upsertAndActivateItem(createProjectFilesPreviewItem())
   }
 
+  const openComputePreview = (): void => {
+    if (!isSessionPersistenceReady) return
+    usePreviewWorkbenchStore.getState().upsertAndActivateItem(createProjectComputePreviewItem())
+  }
+
   return (
     <main className="h-[100dvh] overflow-hidden bg-bg-10 text-[13px] leading-normal text-text-000 md:h-screen md:p-[10px]">
       <WorkspacePanelLayout
@@ -1116,6 +1123,8 @@ const WorkspacePage = ({
             onNewConversation={openNewConversation}
             isFilesOpen={activePreviewItemId === PROJECT_FILES_PREVIEW_ID}
             onOpenFiles={openFilesPreview}
+            isComputeOpen={activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID}
+            onOpenCompute={openComputePreview}
             onOpenSession={openSessionWithoutExportError}
             onRenameSession={sessionController.actions.openEdit}
             onRenameSessionTitle={sessionController.actions.renameTitle}
@@ -1169,6 +1178,11 @@ const WorkspacePage = ({
             onOpenFiles={() => {
               close()
               openFilesPreview()
+            }}
+            isComputeOpen={activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID}
+            onOpenCompute={() => {
+              close()
+              openComputePreview()
             }}
             onOpenSession={(sessionId) => {
               close()

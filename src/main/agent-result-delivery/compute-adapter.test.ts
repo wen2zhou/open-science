@@ -25,7 +25,15 @@ const job = (overrides: Partial<JobSummary> = {}): JobSummary => ({
   ...overrides
 })
 
-const harness = () => {
+const harness = (): {
+  adapter: ComputeJobResultDeliveryAdapter
+  repository: {
+    registerComputeJob: ReturnType<typeof vi.fn>
+    hasComputeJobDeliveryPath: ReturnType<typeof vi.fn>
+    listWaitingComputeJobIds: ReturnType<typeof vi.fn<() => Promise<string[]>>>
+  }
+  enqueue: ReturnType<typeof vi.fn>
+} => {
   const repository = {
     registerComputeJob: vi.fn(async () => ({ id: 'compute-job:job-1' })),
     hasComputeJobDeliveryPath: vi.fn(async () => true),
@@ -51,7 +59,9 @@ describe('ComputeJobResultDeliveryAdapter', () => {
       projectId: 'project-1',
       sessionId: 'session-1',
       providerId: 'host-1',
-      displayName: 'Cluster One'
+      displayName: 'Cluster One',
+      title: 'Fit the model',
+      acceptedAt: 1
     })
   })
 

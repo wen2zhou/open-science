@@ -57,6 +57,8 @@ const computeJobDeliveryContext = (job: JobSummary): ComputeJobAgentResultDelive
   projectId: job.project_id ?? '',
   sessionId: job.session_id,
   computeHost: { providerId: job.provider_id, displayName: job.display_name },
+  title: job.intent,
+  acceptedAt: job.created_at,
   ...(job.remote_workdir ? { remoteWorkdir: job.remote_workdir } : {}),
   featuredFiles: job.featured_files ?? [],
   leftOnRemote: job.left_on_remote ?? [],
@@ -95,7 +97,9 @@ class ComputeJobResultDeliveryAdapter {
       projectId: job.project_id,
       sessionId: job.session_id,
       providerId: job.provider_id,
-      displayName: job.display_name
+      displayName: job.display_name,
+      title: job.intent,
+      acceptedAt: job.created_at
     }
   }
 

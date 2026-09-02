@@ -42,6 +42,79 @@ describe('AgentResultDeliveryRepository', () => {
     await expect(repository.listAwaitingAgent('session-1')).resolves.toEqual([first])
   })
 
+  it('keeps a bounded Project projection without scanning consumed or other-Project history', async () => {
+    await repository.registerLocalRun({
+      sourceKind: 'local-run',
+      runId: 'run-active',
+      executionType: 'python',
+      terminalStatus: 'waiting-result',
+      projectId: 'project-1',
+      sessionId: 'session-current',
+      title: 'donor_level_qc()',
+      lane: 'Kernel · Python 3.12',
+      acceptedAt: 100
+    })
+    const consumed = await repository.recordTerminalOutcome({
+      runId: 'run-consumed',
+      executionType: 'shell',
+      terminalStatus: 'completed',
+      resultSummary: 'done',
+      projectId: 'project-1',
+      sessionId: 'session-old'
+    })
+    const [claimed] = await repository.claimPending('session-old', {
+      token: 'claim',
+      expiresAt: 5_000,
+      limit: 1,
+      now: 1_000
+    })
+    await repository.markConsumed([consumed.id], 'claim', 'continuation-1', 2_000)
+    expect(claimed?.id).toBe(consumed.id)
+    await repository.registerComputeJob({
+      jobId: 'other-project-job',
+      projectId: 'project-2',
+      sessionId: 'session-2',
+      providerId: 'host-2',
+      displayName: 'Other Cluster'
+    })
+
+    await expect(repository.listProjectVisible('project-1', 1)).resolves.toEqual([
+      expect.objectContaining({
+        id: 'local-run:run-active',
+        state: 'waiting-result',
+        context: expect.objectContaining({ title: 'donor_level_qc()' })
+      })
+    ])
+  })
+
+  it('moves an admitted local Run monotonically from waiting-result to pending', async () => {
+    await repository.registerLocalRun({
+      sourceKind: 'local-run',
+      runId: 'run-1',
+      executionType: 'repl',
+      terminalStatus: 'waiting-result',
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      title: 'await host.llm()',
+      lane: 'REPL · project-control',
+      acceptedAt: 100
+    })
+
+    await expect(
+      repository.recordTerminalOutcome({
+        runId: 'run-1',
+        executionType: 'repl',
+        terminalStatus: 'failed',
+        resultSummary: 'failed',
+        projectId: 'project-1',
+        sessionId: 'session-1'
+      })
+    ).resolves.toMatchObject({ state: 'pending', context: { terminalStatus: 'failed' } })
+    await expect(repository.listProjectVisible('project-1')).resolves.toEqual([
+      expect.objectContaining({ state: 'pending' })
+    ])
+  })
+
   it('claims a Session batch once and recovers an expired lease without consuming it', async () => {
     await repository.recordTerminalOutcome({
       runId: 'run-1',

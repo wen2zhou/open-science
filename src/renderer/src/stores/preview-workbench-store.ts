@@ -41,6 +41,7 @@ export type PreviewFileFormat =
 // their path is an absolute filesystem path read via window.api.localFs.
 export type PreviewFileSource = 'artifact' | 'upload' | 'notebook-input' | 'local'
 export const PROJECT_FILES_PREVIEW_ID = 'tool:project:files'
+export const PROJECT_COMPUTE_PREVIEW_ID = 'tool:project:compute'
 
 type PreviewItemBase = {
   id: string
@@ -68,7 +69,7 @@ export type PreviewFileItem = PreviewItemBase & {
 // Tool previews share the workbench chrome with files, but keep their own render path.
 export type PreviewToolItem = PreviewItemBase & {
   type: 'tool'
-  toolKind?: 'notebook' | 'files' | 'reviewer' | 'plan' | 'subagents'
+  toolKind?: 'notebook' | 'files' | 'compute' | 'reviewer' | 'plan' | 'subagents'
   notebook?: NotebookSessionReference
   notebookRunId?: string
   notebookRunFocusRequest?: number
@@ -371,6 +372,14 @@ const createProjectFilesPreviewItem = (): PreviewToolItem => ({
   type: 'tool',
   toolKind: 'files',
   title: 'Files'
+})
+
+const createProjectComputePreviewItem = (): PreviewToolItem => ({
+  id: PROJECT_COMPUTE_PREVIEW_ID,
+  sessionId: '__project_compute__',
+  type: 'tool',
+  toolKind: 'compute',
+  title: 'Compute'
 })
 
 // Input for opening the Session reviewer panel; findingId/locator determine scroll position.
@@ -807,6 +816,7 @@ export const usePreviewWorkbenchStore = create<PreviewWorkbenchStore>((set, get)
 export {
   createNotebookPreviewItem,
   createProjectFilesPreviewItem,
+  createProjectComputePreviewItem,
   createSessionPlanPreviewItem,
   createSessionSubagentsPreviewItem,
   createSessionReviewerPreviewItem

@@ -140,7 +140,10 @@ import {
 } from './content-limits'
 import { NotebookHelperModuleHost, type NotebookHelperModuleCatalog } from './helper-module-host'
 import { deleteNotebookProjectInputs, deleteNotebookSessionInputs } from './input-staging'
-import type { LocalRunAgentResultDeliveryContext } from '../../shared/agent-result-delivery'
+import type {
+  LocalRunAgentResultDeliveryContext,
+  LocalRunAgentResultWaitingContext
+} from '../../shared/agent-result-delivery'
 import { notebookRunDeliveryContext } from '../agent-result-delivery/notebook-adapter'
 
 // The default stays outside CN mirror routing when no explicit locale is injected.
@@ -194,6 +197,7 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
   ) => NotebookExecutor
   callbacks?: NotebookRuntimeServiceCallbacks
   onBackgroundRunTerminal?: (context: LocalRunAgentResultDeliveryContext) => Promise<void>
+  onBackgroundRunAdmitted?: (context: LocalRunAgentResultWaitingContext) => Promise<void>
   // Resolves the connector RPC connection to inject into the kernel spawn env. Usually set after
   // construction via setMcpRpcConnectionResolver, since the RPC server is constructed with this
   // service as a dependency (constructing them in the other order would cycle).
@@ -1080,6 +1084,7 @@ class NotebookRuntimeService {
           helperModules,
           (admitted) => {
             admittedRunId = admitted.runId
+            this.observeBackgroundAdmission(projectId, request.sessionId, admitted)
             transportSignal?.removeEventListener('abort', cancelBeforeReceipt)
             const receipt = this.backgroundReceipt(projectId, request.sessionId, admitted)
             if (!this.backgroundRuns.has(admitted.runId)) {
@@ -1153,6 +1158,52 @@ class NotebookRuntimeService {
       submissionIdentity: run.submissionIdentity,
       ...(run.shellConcurrency ? { shellConcurrency: run.shellConcurrency } : {})
     }
+  }
+
+  private observeBackgroundAdmission(
+    projectId: string,
+    sessionId: string,
+    run: NotebookRunRecord
+  ): void {
+    const observe = this.options.onBackgroundRunAdmitted
+    if (!observe) return
+    const firstLine = run.script
+      .split(/\r?\n/u)
+      .find((line) => line.trim())
+      ?.trim()
+    const executionType: LocalRunAgentResultWaitingContext['executionType'] =
+      run.kernelKind === 'repl'
+        ? 'repl'
+        : run.kernelKind === 'bash'
+          ? 'shell'
+          : run.kernelKind === 'r'
+            ? 'r'
+            : 'python'
+    const lane =
+      run.kernelKind === 'repl'
+        ? 'project-control'
+        : run.kernelKind === 'bash'
+          ? run.shellConcurrency?.slot
+            ? `${run.shellConcurrency.slot}/${run.shellConcurrency.limit}`
+            : 'shell'
+          : (run.environment ?? (run.kernelKind === 'r' ? 'R' : 'Python'))
+    void observe({
+      sourceKind: 'local-run',
+      runId: run.runId,
+      executionType,
+      terminalStatus: 'waiting-result',
+      projectId,
+      sessionId,
+      ...(run.agentFrameId ? { agentFrameId: run.agentFrameId } : {}),
+      title: firstLine?.slice(0, 80) || run.runId,
+      lane,
+      acceptedAt: run.admittedAt ?? run.startedAt
+    }).catch((error) => {
+      this.runtimeLogger.error('Background Run activity projection failed', {
+        ...errorLogFields(error),
+        runId: run.runId
+      })
+    })
   }
 
   async waitForBackgroundRun(runId: string): Promise<void> {
@@ -1309,6 +1360,7 @@ class NotebookRuntimeService {
           AbortSignal.any([controller.signal, deletionSignal]),
           (admitted) => {
             admittedRunId = admitted.runId
+            this.observeBackgroundAdmission(projectId, request.sessionId, admitted)
             transportSignal?.removeEventListener('abort', cancelBeforeReceipt)
             if (!this.backgroundRuns.has(admitted.runId)) {
               this.backgroundRuns.set(admitted.runId, { controller, completion })
@@ -1417,6 +1469,7 @@ class NotebookRuntimeService {
           AbortSignal.any([controller.signal, deletionSignal]),
           (admitted) => {
             admittedRunId = admitted.runId
+            this.observeBackgroundAdmission(projectId, backgroundRequest.sessionId, admitted)
             transportSignal?.removeEventListener('abort', cancelBeforeReceipt)
             if (!this.backgroundRuns.has(admitted.runId)) {
               this.backgroundRuns.set(admitted.runId, { controller, completion })

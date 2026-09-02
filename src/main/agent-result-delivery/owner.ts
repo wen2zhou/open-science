@@ -80,11 +80,15 @@ const buildDeliveryPrompt = (deliveries: readonly AgentResultDelivery[]): string
           runId: context.runId,
           executionType: context.executionType,
           terminalStatus: context.terminalStatus,
-          resultSummary: context.resultSummary,
-          ...(context.errorGuidance ? { errorGuidance: context.errorGuidance } : {}),
+          ...('resultSummary' in context ? { resultSummary: context.resultSummary } : {}),
+          ...('errorGuidance' in context && context.errorGuidance
+            ? { errorGuidance: context.errorGuidance }
+            : {}),
           sessionId: context.sessionId,
           ...(context.agentFrameId ? { agentFrameId: context.agentFrameId } : {}),
-          ...(context.provenance ? { provenance: context.provenance } : {})
+          ...('provenance' in context && context.provenance
+            ? { provenance: context.provenance }
+            : {})
         }
   )
   return [

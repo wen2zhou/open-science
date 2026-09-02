@@ -1447,6 +1447,8 @@ const createApplicationModules = async (
       processSandbox: notebookNetworkSandbox,
       onBackgroundRunTerminal: (context) =>
         agentResultDelivery.enqueue(context).then(() => undefined),
+      onBackgroundRunAdmitted: (context) =>
+        agentResultDeliveryRepository.registerLocalRun(context).then(() => undefined),
       events: applicationEvents,
       disposeTimeoutMs: QUIT_SHUTDOWN_BUDGET_MS,
       isBackendTeardownOwned: () => backendTeardownOwnedByCoordinator
@@ -3359,7 +3361,11 @@ const createApplicationModules = async (
   )
   declareElectronAdapter('notebook', () => registerNotebookIpcHandlers(notebookCommands))
   declareElectronAdapter('agent-result-delivery', () =>
-    registerAgentResultDeliveryIpcHandlers(agentResultDeliveryRepository)
+    registerAgentResultDeliveryIpcHandlers(agentResultDeliveryRepository, {
+      resolveLocalRun: (request) =>
+        notebookCommands.getBackgroundRun({ ...request, workspaceCwd: '' }).catch(() => undefined),
+      listActiveComputeJobs: () => computeIpcModule.handlers.jobsList({ nonTerminal: true })
+    })
   )
   // Wire session deletion to the binding store so stale in-memory bindings do not accumulate.
   // The renderer calls sessions:delete-session (via sessionPersistenceBackend) and acp:delete-session

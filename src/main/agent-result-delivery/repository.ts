@@ -5,6 +5,7 @@ import type {
   AgentResultDeliveryContext,
   AgentResultDeliveryState,
   ComputeJobAgentResultDeliveryContext,
+  LocalRunAgentResultWaitingContext,
   LocalRunAgentResultDeliveryContext,
   TerminalAgentResultDeliveryContext
 } from '../../shared/agent-result-delivery'
@@ -17,6 +18,8 @@ type ComputeJobDeliveryRegistration = Readonly<{
   sessionId: string
   providerId: string
   displayName: string
+  title?: string
+  acceptedAt?: number
 }>
 
 const dateMs = (value: Date | null): number | undefined => value?.getTime()
@@ -62,7 +65,9 @@ class AgentResultDeliveryRepository {
       computeHost: {
         providerId: registration.providerId,
         displayName: registration.displayName
-      }
+      },
+      ...(registration.title ? { title: registration.title } : {}),
+      ...(registration.acceptedAt === undefined ? {} : { acceptedAt: registration.acceptedAt })
     }
     const row = await client.agentResultDelivery.upsert({
       where: {
@@ -87,6 +92,30 @@ class AgentResultDeliveryRepository {
       row.executionType !== 'compute-job'
     ) {
       throw new Error(`Conflicting delivery registration for Compute Job ${registration.jobId}.`)
+    }
+    return toDelivery(row)
+  }
+
+  async registerLocalRun(context: LocalRunAgentResultWaitingContext): Promise<AgentResultDelivery> {
+    const client = await this.getClient()
+    const row = await client.agentResultDelivery.upsert({
+      where: { sourceKind_sourceId: { sourceKind: 'local-run', sourceId: context.runId } },
+      create: {
+        id: `local-run:${context.runId}`,
+        sourceKind: 'local-run',
+        sourceId: context.runId,
+        projectId: context.projectId,
+        sessionId: context.sessionId,
+        agentFrameId: context.agentFrameId,
+        executionType: context.executionType,
+        terminalStatus: 'waiting-result',
+        contextJson: JSON.stringify(context),
+        state: 'waiting-result'
+      },
+      update: {}
+    })
+    if (row.projectId !== context.projectId || row.sessionId !== context.sessionId) {
+      throw new Error(`Conflicting delivery registration for background Run ${context.runId}.`)
     }
     return toDelivery(row)
   }
@@ -144,9 +173,25 @@ class AgentResultDeliveryRepository {
       return toDelivery(row)
     }
     const id = `local-run:${context.runId}`
-    const row = await client.agentResultDelivery.upsert({
-      where: { sourceKind_sourceId: { sourceKind: 'local-run', sourceId: context.runId } },
-      create: {
+    const updated = await client.agentResultDelivery.updateMany({
+      where: { sourceKind: 'local-run', sourceId: context.runId, state: 'waiting-result' },
+      data: {
+        terminalStatus: context.terminalStatus,
+        contextJson,
+        state: 'pending'
+      }
+    })
+    const existing = await client.agentResultDelivery.findUnique({
+      where: { sourceKind_sourceId: { sourceKind: 'local-run', sourceId: context.runId } }
+    })
+    if (existing) {
+      if (updated.count === 0 && existing.contextJson !== contextJson) {
+        throw new Error(`Conflicting terminal outcome for background Run ${context.runId}.`)
+      }
+      return toDelivery(existing)
+    }
+    const row = await client.agentResultDelivery.create({
+      data: {
         id,
         sourceKind: 'local-run',
         sourceId: context.runId,
@@ -157,13 +202,32 @@ class AgentResultDeliveryRepository {
         terminalStatus: context.terminalStatus,
         contextJson,
         state: 'pending'
-      },
-      update: {}
+      }
     })
-    if (row.contextJson !== contextJson) {
-      throw new Error(`Conflicting terminal outcome for background Run ${context.runId}.`)
-    }
     return toDelivery(row)
+  }
+
+  async listProjectVisible(projectId: string, limit = 200): Promise<AgentResultDelivery[]> {
+    const client = await this.getClient()
+    const rows = await client.agentResultDelivery.findMany({
+      where: {
+        projectId,
+        state: { in: ['waiting-result', 'pending', 'claimed', 'needs-attention'] }
+      },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      take: Math.max(1, Math.min(limit, 201))
+    })
+    return rows.map(toDelivery)
+  }
+
+  async projectRevision(projectId: string): Promise<number> {
+    const client = await this.getClient()
+    const row = await client.agentResultDelivery.findFirst({
+      where: { projectId },
+      orderBy: [{ updatedAt: 'desc' }, { id: 'asc' }],
+      select: { updatedAt: true }
+    })
+    return row?.updatedAt.getTime() ?? 0
   }
 
   async listAwaitingAgent(sessionId: string): Promise<AgentResultDelivery[]> {

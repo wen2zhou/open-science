@@ -5090,12 +5090,14 @@ describe('notebook runtime service', () => {
     const root = await createStorageRoot()
     const executionStarted = createDeferred<void>()
     const releaseExecution = createDeferred<void>()
+    const onBackgroundRunAdmitted = vi.fn(async () => undefined)
     const service = new NotebookRuntimeService({
       configRoot: root,
       dataRoot: root,
       projectId: 'default-project',
       repository: new NotebookRunRepository(root),
       backgroundExecutionEnabled: true,
+      onBackgroundRunAdmitted,
       executorFactory: () => ({
         execute: async (request): Promise<NotebookExecutionResult> => {
           executionStarted.resolve()
@@ -5132,6 +5134,18 @@ describe('notebook runtime service', () => {
       submissionIdentity: 'submission-background-1'
     })
     expect(receipt).toHaveProperty('runId')
+    expect(onBackgroundRunAdmitted).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sourceKind: 'local-run',
+        runId: receipt.runId,
+        executionType: 'python',
+        terminalStatus: 'waiting-result',
+        projectId: 'default-project',
+        sessionId: 'session-background',
+        title: 'long_running_analysis()',
+        lane: 'default-python'
+      })
+    )
     await executionStarted.promise
     await expect(
       service.getBackgroundRun({

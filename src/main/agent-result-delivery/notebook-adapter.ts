@@ -40,6 +40,20 @@ const notebookRunDeliveryContext = (
     ...(run.promptMessageId ? { promptMessageId: run.promptMessageId } : {}),
     ...(run.executionInvocationId ? { executionInvocationId: run.executionInvocationId } : {})
   }
+  const title =
+    run.script
+      .split(/\r?\n/u)
+      .find((line) => line.trim())
+      ?.trim()
+      .slice(0, 80) || run.runId
+  const lane =
+    run.kernelKind === 'repl'
+      ? 'project-control'
+      : run.kernelKind === 'bash'
+        ? run.shellConcurrency?.slot
+          ? `${run.shellConcurrency.slot}/${run.shellConcurrency.limit}`
+          : 'shell'
+        : (run.environment ?? (run.kernelKind === 'r' ? 'R' : 'Python'))
   return {
     runId: run.runId,
     executionType,
@@ -48,6 +62,9 @@ const notebookRunDeliveryContext = (
     ...(errorGuidance(run) ? { errorGuidance: errorGuidance(run) } : {}),
     projectId: session.projectId,
     sessionId: session.sessionId,
+    title,
+    lane,
+    acceptedAt: run.admittedAt ?? run.startedAt,
     ...(run.agentFrameId ? { agentFrameId: run.agentFrameId } : {}),
     ...(Object.keys(provenance).length > 0 ? { provenance } : {})
   }

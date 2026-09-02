@@ -3,7 +3,7 @@
 import { renderToStaticMarkup } from 'react-dom/server'
 import { createRoot } from 'react-dom/client'
 import { act, Children, isValidElement, type ReactElement, type ReactNode } from 'react'
-import { Toolbox } from 'lucide-react'
+import { Cpu, Toolbox } from 'lucide-react'
 import type { ChatSession } from '@/stores/session-store'
 import { useUpdateStore } from '@/stores/update-store'
 import { beforeEach, describe, expect, it, vi } from 'vitest'
@@ -2008,10 +2008,11 @@ describe('WorkspaceSidebar accessible render', () => {
     expect(onDeleteSession).toHaveBeenCalledWith(sessions[0])
   })
 
-  it('renders Customize between New and Files and wires both entries', async () => {
+  it('renders Compute directly below Files and wires the read-only Project entry', async () => {
     const { WorkspaceSidebarView } = await import('./WorkspaceSidebar')
     const onOpenFiles = vi.fn()
     const onOpenSettings = vi.fn()
+    const onOpenCompute = vi.fn()
     const tree = WorkspaceSidebarView({
       now: Date.now(),
       projectName: 'Example project',
@@ -2024,6 +2025,8 @@ describe('WorkspaceSidebar accessible render', () => {
       onNewConversation: vi.fn(),
       isFilesOpen: true,
       onOpenFiles,
+      isComputeOpen: false,
+      onOpenCompute,
       onOpenSession: vi.fn(),
       onRenameSession: vi.fn(),
       canDownloadArtifacts: true,
@@ -2042,13 +2045,17 @@ describe('WorkspaceSidebar accessible render', () => {
     const newButtonIndex = buttons.findIndex((button) => getTextContent(button).trim() === 'New')
     const customizeButton = buttons.find((button) => getTextContent(button).trim() === 'Customize')
     const filesButton = buttons.find((button) => getTextContent(button).trim() === 'Files')
+    const computeButton = buttons.find((button) => getTextContent(button).trim() === 'Compute')
 
     expect(newButtonIndex).toBeGreaterThanOrEqual(0)
     expect(buttons[newButtonIndex + 1]).toBe(customizeButton)
     expect(buttons[newButtonIndex + 2]).toBe(filesButton)
+    expect(buttons[newButtonIndex + 3]).toBe(computeButton)
     expect(collectElements(customizeButton).some((element) => element.type === Toolbox)).toBe(true)
     expect(filesButton?.props['aria-controls']).toBe('right-panel')
     expect(filesButton?.props['aria-pressed']).toBe(true)
+    expect(collectElements(computeButton).some((element) => element.type === Cpu)).toBe(true)
+    expect(computeButton?.props['aria-pressed']).toBe(false)
 
     expect(customizeButton?.props.onClick).toBeTypeOf('function')
     ;(customizeButton?.props.onClick as () => void)()
@@ -2057,6 +2064,8 @@ describe('WorkspaceSidebar accessible render', () => {
     expect(filesButton?.props.onClick).toBeTypeOf('function')
     ;(filesButton?.props.onClick as () => void)()
     expect(onOpenFiles).toHaveBeenCalledTimes(1)
+    ;(computeButton?.props.onClick as () => void)()
+    expect(onOpenCompute).toHaveBeenCalledTimes(1)
   })
 
   it('wires the View notebook menu item to the matching session', async () => {
