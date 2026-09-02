@@ -115,10 +115,12 @@ describe('Web RPC contract', () => {
     expect(invokePaths.filter((path) => path.startsWith('notebook.'))).toEqual([
       'notebook.appendCodeCell',
       'notebook.beginCodeCell',
+      'notebook.cancelBackgroundRun',
       'notebook.execute',
       'notebook.exportIpynb',
       'notebook.exportIpynbAll',
       'notebook.finishCodeCell',
+      'notebook.getBackgroundRun',
       'notebook.getReference',
       'notebook.inspectNamespace',
       'notebook.readInputPreview',

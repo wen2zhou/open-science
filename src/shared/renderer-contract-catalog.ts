@@ -168,6 +168,8 @@ import type {
   NotebookLanguage,
   NotebookNamespaceRequest,
   NotebookNamespaceSnapshot,
+  NotebookBackgroundRunLookupRequest,
+  NotebookBackgroundRunResult,
   NotebookRunSummary,
   NotebookSessionReference,
   NotebookSessionRequest,
@@ -1132,6 +1134,12 @@ export const RENDERER_API_CONTRACT = Object.freeze({
   'notebook.execute': callable<
     (request: ExecuteNotebookCodeRequest) => Promise<NotebookRunSummary>
   >()('notebook', ['notebook:execute']),
+  'notebook.getBackgroundRun': callable<
+    (request: NotebookBackgroundRunLookupRequest) => Promise<NotebookBackgroundRunResult>
+  >()('notebook', ['notebook:background-run']),
+  'notebook.cancelBackgroundRun': callable<
+    (request: NotebookBackgroundRunLookupRequest) => Promise<NotebookBackgroundRunResult>
+  >()('notebook', ['notebook:cancel-background-run']),
   'notebook.exportIpynb': callable<
     (request: ExportNotebookKernelRequest) => Promise<ExportNotebookResult>
   >()('notebook', ['notebook:export-ipynb', LOCAL]),

@@ -159,7 +159,9 @@ describe('notebook IPC handlers', () => {
       'notebook:export-ipynb',
       'notebook:export-ipynb-all',
       'notebook:restart',
-      'notebook:shutdown'
+      'notebook:shutdown',
+      'notebook:background-run',
+      'notebook:cancel-background-run'
     ])
 
     const session = { sessionId: 'session-1', workspaceCwd: '/workspace' }

@@ -3008,8 +3008,10 @@ describe('startWebHttpServer', () => {
     ).toEqual([
       'notebook:append-code-cell',
       'notebook:begin-code-cell',
+      'notebook:cancel-background-run',
       'notebook:execute',
       'notebook:finish-code-cell',
+      'notebook:background-run',
       'notebook:reference',
       'notebook:inspect-namespace',
       'notebook:read-input-preview',

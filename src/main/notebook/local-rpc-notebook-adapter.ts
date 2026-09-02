@@ -8,6 +8,7 @@ import {
   type ExecuteNotebookControlRequest,
   type ExecuteShellRequest,
   type FinishNotebookCodeCellRequest,
+  type NotebookBackgroundRunLookupRequest,
   type NotebookLanguage,
   type NotebookSessionRequest,
   type RequestNotebookNetworkAccessRequest,
@@ -92,6 +93,7 @@ const notebookLocalRpcRequestSchemas = {
   }),
   execute: notebookSessionRequestSchema.extend({
     code: z.string(),
+    background: z.boolean().optional(),
     kernelSkillIds: z.array(z.string().min(1).max(128)).optional(),
     artifactVersionInputs: z.array(z.string().min(1).max(256)).max(64).optional(),
     timeoutMs: positiveTimeoutSchema.optional(),
@@ -100,6 +102,16 @@ const notebookLocalRpcRequestSchemas = {
     inputKind: runInputKindSchema.optional(),
     language: notebookLanguageSchema.optional(),
     environment: z.string().optional()
+  }),
+  getBackgroundRun: notebookSessionRequestSchema.extend({
+    runId: z.string().min(1).optional(),
+    submissionIdentity: z.string().min(1).optional(),
+    action: z.enum(['query', 'cancel']).optional()
+  }),
+  cancelBackgroundRun: notebookSessionRequestSchema.extend({
+    runId: z.string().min(1).optional(),
+    submissionIdentity: z.string().min(1).optional(),
+    action: z.enum(['query', 'cancel']).optional()
   }),
   executeControl: notebookSessionRequestSchema.extend({
     code: z.string(),
@@ -192,6 +204,10 @@ type NotebookLocalRpcCapability = {
   finishCodeCell(request: FinishNotebookCodeCellRequest): Promise<unknown>
   runCell(request: RunNotebookCellRequest, signal?: AbortSignal): Promise<unknown>
   execute(request: ExecuteNotebookCodeRequest, signal?: AbortSignal): Promise<unknown>
+  executeBackground(request: ExecuteNotebookCodeRequest, signal?: AbortSignal): Promise<unknown>
+  getBackgroundRun(request: NotebookBackgroundRunLookupRequest): Promise<unknown>
+  cancelBackgroundRun(request: NotebookBackgroundRunLookupRequest): Promise<unknown>
+  waitForBackgroundRun(runId: string): Promise<void>
   executeControl(request: ExecuteNotebookControlRequest): Promise<unknown>
   executeShell(request: ExecuteShellRequest): Promise<unknown>
   requestNetworkAccess(
@@ -215,6 +231,8 @@ const NOTEBOOK_LOCAL_RPC_METHODS = [
   'finishCodeCell',
   'runCell',
   'execute',
+  'getBackgroundRun',
+  'cancelBackgroundRun',
   'executeControl',
   'executeShell',
   'requestNetworkAccess',
@@ -293,11 +311,20 @@ const resolveNotebookLocalRpcHandler = (
     case 'execute':
       return (request, signal) => {
         const parsed = parseNotebookLocalRpcRequest('execute', request)
-        return capability.execute(toExecuteNotebookCodeRequest(parsed), signal)
+        const runtimeRequest = toExecuteNotebookCodeRequest(parsed)
+        return runtimeRequest.background
+          ? capability.executeBackground(runtimeRequest, signal)
+          : capability.execute(runtimeRequest, signal)
       }
     case 'executeControl':
       return (request) =>
         capability.executeControl(parseNotebookLocalRpcRequest('executeControl', request))
+    case 'getBackgroundRun':
+      return (request) =>
+        capability.getBackgroundRun(parseNotebookLocalRpcRequest('getBackgroundRun', request))
+    case 'cancelBackgroundRun':
+      return (request) =>
+        capability.cancelBackgroundRun(parseNotebookLocalRpcRequest('cancelBackgroundRun', request))
     case 'executeShell':
       return (request) =>
         capability.executeShell(parseNotebookLocalRpcRequest('executeShell', request))

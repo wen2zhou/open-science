@@ -8,6 +8,8 @@ import type {
   ExportNotebookResult,
   FinishNotebookCodeCellRequest,
   NotebookCell,
+  NotebookBackgroundRunLookupRequest,
+  NotebookBackgroundRunResult,
   NotebookNamespaceRequest,
   NotebookNamespaceSnapshot,
   NotebookRunSummary,
@@ -55,6 +57,12 @@ type NotebookCommandRuntime = {
   exportIpynbAll(request: ExportNotebookAllRequest): Promise<ExportNotebookAllResult>
   restart(request: NotebookSessionRequest): Promise<NotebookSessionState>
   shutdown(request: NotebookSessionRequest): Promise<NotebookShutdownResult>
+  getBackgroundRun(
+    request: NotebookBackgroundRunLookupRequest
+  ): Promise<NotebookBackgroundRunResult>
+  cancelBackgroundRun(
+    request: NotebookBackgroundRunLookupRequest
+  ): Promise<NotebookBackgroundRunResult>
 }
 
 type NotebookCommandWorkflows = {
@@ -70,6 +78,12 @@ type NotebookCommandWorkflows = {
   exportIpynbAll(request: ExportNotebookAllRequest): Promise<ExportNotebookAllResult>
   restart(request: NotebookSessionRequest): Promise<NotebookSessionState>
   shutdown(request: NotebookSessionRequest): Promise<NotebookShutdownResult>
+  getBackgroundRun(
+    request: NotebookBackgroundRunLookupRequest
+  ): Promise<NotebookBackgroundRunResult>
+  cancelBackgroundRun(
+    request: NotebookBackgroundRunLookupRequest
+  ): Promise<NotebookBackgroundRunResult>
 }
 
 const withoutTrustedTurnContext = <
@@ -109,7 +123,9 @@ const createNotebookCommandWorkflows = (
   exportIpynb: (request) => runtime.exportIpynb(request),
   exportIpynbAll: (request) => runtime.exportIpynbAll(request),
   restart: (request) => withDataRootWrite(() => runtime.restart(request)),
-  shutdown: (request) => withDataRootWrite(() => runtime.shutdown(request))
+  shutdown: (request) => withDataRootWrite(() => runtime.shutdown(request)),
+  getBackgroundRun: (request) => runtime.getBackgroundRun(request),
+  cancelBackgroundRun: (request) => withDataRootWrite(() => runtime.cancelBackgroundRun(request))
 })
 
 export { createNotebookCommandWorkflows }

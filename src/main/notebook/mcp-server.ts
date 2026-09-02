@@ -38,18 +38,17 @@ const HOST_SDK_DISCOVERY_GUIDANCE =
 const NOTEBOOK_SYSTEM_PROMPT_APPEND = [
   '<open_science_notebook_instructions>',
   'Guidance only applies when using open-science-notebook tools.',
-  'For materially different interpretations, app-owned `ask_user_question` must be the first tool call; do not inspect or use other tools first. Put all 1-3 known questions in one call with 2-4 options. Infer reversible details; omit Other (UI adds custom, agent-decide, Skip). Finish continues; pending ends the turn.',
-  'Notebook preview is for code/results; keep explanations and diagnosis in chat.',
-  'Use one `notebook_execute` per persistent Python/R cell; reuse `cellId`. For skill functions, repeat kernelSkillIds per dependent cell; call directly in code, never import. Data kernels cannot call connectors; use `repl_execute` only for Host SDK operations reported by `host.capabilities()` and `host.help()`. Move large cross-kernel data through `process.env.OPEN_SCIENCE_HANDOFF_DIR`.',
+  'For materially different interpretations, app-owned `ask_user_question` must be the first tool call; do not inspect or use other tools first. Put all 1-3 known questions in one call.',
+  'Use one `notebook_execute` per Python/R cell; reuse `cellId`. For skill functions, repeat kernelSkillIds per dependent cell; call directly in code, never import. Data kernels cannot call connectors; use `repl_execute` for Host SDK operations in `host.capabilities()`/`host.help()`.',
   HOST_SDK_DISCOVERY_GUIDANCE,
-  '`manage_environments` creates separate runtimes and returns `created.runtimeId`; bind/switch them and move data with files.',
-  'Use plain relative paths in the writable session workspace. Resolve connector handoff from `OPEN_SCIENCE_HANDOFF_DIR`; never overwrite a saved path or original user files.',
-  'Use `inspect_packages` for versions and `manage_packages` for installs. Never install in cells/shells or outside `$OPEN_SCIENCE_RUNTIME_DIR`.',
-  'MCP replies are bounded; full output stays in preview. Check errors and workingFiles. The notebook runtime does not classify files for you.',
+  '`manage_environments` makes separate runtimes; bind `created.runtimeId`; move data via `process.env.OPEN_SCIENCE_HANDOFF_DIR`.',
+  'Use plain relative paths in the writable session workspace; resolve `OPEN_SCIENCE_HANDOFF_DIR`; never overwrite originals.',
+  'Use `inspect_packages`/`manage_packages`; never install in cells/shells or outside `$OPEN_SCIENCE_RUNTIME_DIR`.',
+  'Check errors and workingFiles. The notebook runtime does not classify files for you.',
   'Retry once at most; repeated kernel-process failures mean stop Notebook tools and report the failure.',
-  'After OPEN_SCIENCE_NETWORK_DOMAIN_BLOCKED, call `request_network_access` with the exact hostname, runtime, reason, and failed bash command when applicable. Never call speculatively; retry only after an allowed result.',
-  'Dependency status is not an execution verdict: `clear` means unchanged; `stale` means a tracked dependency changed after that run; `unknown` means incomplete tracking. `stale` does not mean the run failed or its captured output is incorrect; rerun only for current state.',
-  'For final files, call `write_artifact_file` from `open-science-artifacts` first with `source: { "kind": "localPath", "path": "plot.png" }`, the SAME relative filename you saved with, and `producerRunId` set to the exact `runId` returned by the execution. Inline only small text.',
+  'After OPEN_SCIENCE_NETWORK_DOMAIN_BLOCKED, call `request_network_access` with hostname, runtime, reason, and failed bash command; retry only if allowed.',
+  'Dependency status is not an execution verdict: `stale` means a tracked dependency changed after that run but does not mean the run failed or its captured output is incorrect; rerun only for current state.',
+  'For final files, call `write_artifact_file` from `open-science-artifacts` with source kind `"kind": "localPath"`, the SAME relative filename you saved with, and `producerRunId` set to the exact `runId` returned by the execution.',
   '</open_science_notebook_instructions>'
 ].join('\n')
 
@@ -75,6 +74,10 @@ type NotebookMcpServerConfigRequest = Omit<NotebookMcpEnvironment, 'memoryTools'
 
 const executeToolSchema = {
   code: z.string(),
+  background: z
+    .boolean()
+    .optional()
+    .describe('Return after durable admission; keep this Python/R Run active in the Session.'),
   cellId: z.string().min(1).optional(),
   language: z.enum(['python', 'r']).optional(),
   kernelSkillIds: z
@@ -96,6 +99,12 @@ const replExecuteToolSchema = {
 const bashExecuteToolSchema = {
   command: z.string(),
   timeoutMs: z.number().int().positive().optional()
+}
+
+const backgroundRunToolSchema = {
+  action: z.enum(['query', 'cancel']),
+  runId: z.string().min(1).optional(),
+  submissionIdentity: z.string().min(1).optional()
 }
 
 const requestNetworkAccessToolSchema = {
@@ -260,6 +269,7 @@ type NotebookRpcToolDefinition = {
   title: string
   description: string
   method: string
+  resolveMethod?: (input: unknown) => string
   inputSchema: NotebookToolSchema
   outputSchema?: z.ZodTypeAny
   // Optional projection of the raw RPC result before it is serialized for the agent. Used to keep
@@ -1013,11 +1023,12 @@ const registerNotebookRpcTool = (
       heartbeat?.unref()
 
       try {
+        const rpcMethod = definition.resolveMethod?.(input) ?? definition.method
         const raw = await callNotebookRpc(
           environment,
-          definition.method,
+          rpcMethod,
           rpcInput,
-          resolveNotebookRpcFetch(definition.method),
+          resolveNotebookRpcFetch(rpcMethod),
           extra.signal
         )
         const rejected =
@@ -1300,7 +1311,7 @@ const NOTEBOOK_RPC_TOOLS: NotebookRpcToolDefinition[] = [
     name: 'ask_user_question',
     title: 'Ask the user to choose',
     description:
-      'Collect 1-3 decisions when a request has materially different interpretations. Use this app-owned tool as the first tool call, before inspecting the workspace or using other tools, and include every known question in one call. Never print a textual choice list. Give each question 2-4 unique options with descriptions and omit Other; the app adds custom, agent-decide, and Skip. Questions appear one at a time. A pending result ends the turn normally; the app continues after Finish.',
+      'For materially different interpretations, use this app-owned tool as the first tool call and include every known question in one call. A pending result ends the turn.',
     method: 'requestUserInput',
     inputSchema: requestUserInputToolSchema,
     mapResult: compactUserChoiceResult,
@@ -1309,13 +1320,29 @@ const NOTEBOOK_RPC_TOOLS: NotebookRpcToolDefinition[] = [
   {
     name: 'notebook_execute',
     title: 'Execute notebook code',
-    description:
+    description: [
       "artifactVersionInputs: this Run's provenance inputs (Version IDs). Use runId as producerRunId.",
+      'Use foreground when reasoning needs the result now; use background:true for longer independent work.',
+      'Save the returned runId. Do not poll frequently; Session activity tracks completion.',
+      'Turn end or MCP disconnect does not stop an accepted background Run; explicitly cancel with background_run.'
+    ].join(' '),
     method: 'execute',
     inputSchema: executeToolSchema,
     mapResult: compactNotebookExecutionResult,
     resultLimitChars: NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT,
     progressMessage: 'Notebook execution is still running.'
+  },
+  {
+    name: 'background_run',
+    title: 'Query or cancel a local background Run',
+    description:
+      'Query by runId/submissionIdentity for the receipt or compact result. Cancel is idempotent and only for queued/running local Runs; no retry action.',
+    method: 'getBackgroundRun',
+    resolveMethod: (input) =>
+      asRecord(input)?.action === 'cancel' ? 'cancelBackgroundRun' : 'getBackgroundRun',
+    inputSchema: backgroundRunToolSchema,
+    mapResult: (raw) => raw,
+    resultLimitChars: NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT
   },
   {
     name: 'repl_execute',

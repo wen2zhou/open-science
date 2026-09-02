@@ -8,6 +8,7 @@ import type {
   ExportNotebookAllRequest,
   ExportNotebookKernelRequest,
   FinishNotebookCodeCellRequest,
+  NotebookBackgroundRunLookupRequest,
   NotebookNamespaceRequest,
   NotebookSessionRequest,
   NotebookSessionStateRequest,
@@ -82,6 +83,13 @@ const registerNotebookIpcHandlers = (handlers: NotebookCommandWorkflows): void =
   )
   ipcMainHandle('notebook:shutdown', (_event, request: NotebookSessionRequest) =>
     handlers.shutdown(request)
+  )
+  ipcMainHandle('notebook:background-run', (_event, request: NotebookBackgroundRunLookupRequest) =>
+    handlers.getBackgroundRun(request)
+  )
+  ipcMainHandle(
+    'notebook:cancel-background-run',
+    (_event, request: NotebookBackgroundRunLookupRequest) => handlers.cancelBackgroundRun(request)
   )
 }
 

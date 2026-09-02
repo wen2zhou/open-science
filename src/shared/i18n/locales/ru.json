@@ -4385,6 +4385,11 @@
     "Auto (recommended)": "Автоматически (рекомендуется)",
     "HTTPS": "HTTPS",
     "WebSocket": "WebSocket",
+    "Session activity": "Активность сеанса",
+    "Lane": "Очередь выполнения",
+    "Elapsed": "Прошло",
+    "Manage in Session": "Управлять в сеансе",
+    "Timed out": "Время истекло",
     "Auto uses WebSocket when available and falls back to HTTPS. Use HTTPS for compatibility or WebSocket for lower latency.": "Автоматический режим использует WebSocket, когда он доступен, и переключается на HTTPS. Используйте HTTPS для совместимости или WebSocket для снижения задержки."
   }
 }

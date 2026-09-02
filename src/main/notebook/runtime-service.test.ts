@@ -4081,6 +4081,122 @@ describe('notebook runtime service', () => {
     await expect(first).resolves.toMatchObject({ status: 'completed' })
   })
 
+  it('returns a durable background receipt before Python execution completes and exposes its result', async () => {
+    const root = await createStorageRoot()
+    const executionStarted = createDeferred<void>()
+    const releaseExecution = createDeferred<void>()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      backgroundExecutionEnabled: true,
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          executionStarted.resolve()
+          await releaseExecution.promise
+          return {
+            status: 'completed',
+            stdout: 'finished\n',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+
+    const receipt = await service.executeBackground({
+      projectId: 'default-project',
+      sessionId: 'session-background',
+      workspaceCwd: root,
+      code: 'long_running_analysis()',
+      language: 'python',
+      background: true,
+      executionInvocationId: 'submission-background-1'
+    })
+
+    expect(receipt).toMatchObject({
+      executionType: 'python-notebook-run',
+      projectId: 'default-project',
+      sessionId: 'session-background',
+      status: expect.stringMatching(/queued|running/),
+      lifecycleScope: 'app-process',
+      submissionIdentity: 'submission-background-1'
+    })
+    expect(receipt).toHaveProperty('runId')
+    await executionStarted.promise
+    await expect(
+      service.getBackgroundRun({
+        projectId: 'default-project',
+        sessionId: 'session-background',
+        workspaceCwd: root,
+        runId: receipt.runId
+      })
+    ).resolves.toMatchObject({ receipt: { runId: receipt.runId }, run: { status: 'running' } })
+
+    releaseExecution.resolve()
+    await service.waitForBackgroundRun(receipt.runId)
+    await expect(
+      service.getBackgroundRun({
+        projectId: 'default-project',
+        sessionId: 'session-background',
+        workspaceCwd: root,
+        submissionIdentity: 'submission-background-1'
+      })
+    ).resolves.toMatchObject({
+      receipt: { runId: receipt.runId },
+      run: { status: 'completed', text: { stdout: 'finished\n' } }
+    })
+  })
+
+  it('recovers a lost background receipt without duplicate execution and cancels idempotently', async () => {
+    const root = await createStorageRoot()
+    let executions = 0
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      backgroundExecutionEnabled: true,
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          executions += 1
+          await new Promise<void>((_resolve, reject) => {
+            request.signal?.addEventListener('abort', () => reject(request.signal?.reason), {
+              once: true
+            })
+          })
+          throw new Error('unreachable')
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const request = {
+      projectId: 'default-project',
+      sessionId: 'session-background-retry',
+      workspaceCwd: root,
+      code: 'long_running_analysis()',
+      language: 'python' as const,
+      background: true,
+      executionInvocationId: 'submission-background-retry'
+    }
+
+    const first = await service.executeBackground(request)
+    const recovered = await service.executeBackground(request)
+    expect(recovered.runId).toBe(first.runId)
+    await vi.waitFor(() => expect(executions).toBe(1))
+
+    const cancelled = await service.cancelBackgroundRun({ ...request, runId: first.runId })
+    expect(cancelled.run.status).toBe('cancelled')
+    await expect(
+      service.cancelBackgroundRun({ ...request, runId: first.runId })
+    ).resolves.toMatchObject({ run: { status: 'cancelled' } })
+    expect(executions).toBe(1)
+  })
+
   it('executes a repeated submission identity only once and returns the canonical Run', async () => {
     const root = await createStorageRoot()
     let executions = 0

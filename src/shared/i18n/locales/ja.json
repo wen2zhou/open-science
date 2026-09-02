@@ -3945,6 +3945,11 @@
     "Auto (recommended)": "自動（推奨）",
     "HTTPS": "HTTPS",
     "WebSocket": "WebSocket",
+    "Session activity": "セッションアクティビティ",
+    "Lane": "実行レーン",
+    "Elapsed": "経過時間",
+    "Manage in Session": "セッションで管理",
+    "Timed out": "タイムアウト",
     "Auto uses WebSocket when available and falls back to HTTPS. Use HTTPS for compatibility or WebSocket for lower latency.": "自動では、利用可能な場合は WebSocket を使用し、HTTPS にフォールバックします。互換性を重視する場合は HTTPS、低遅延を重視する場合は WebSocket を使用してください。"
   }
 }

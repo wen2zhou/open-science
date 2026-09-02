@@ -3945,6 +3945,11 @@
     "Auto (recommended)": "自動（建議）",
     "HTTPS": "HTTPS",
     "WebSocket": "WebSocket",
+    "Session activity": "工作階段活動",
+    "Lane": "執行通道",
+    "Elapsed": "經過時間",
+    "Manage in Session": "在工作階段中管理",
+    "Timed out": "已逾時",
     "Auto uses WebSocket when available and falls back to HTTPS. Use HTTPS for compatibility or WebSocket for lower latency.": "自動模式會在可用時使用 WebSocket，並在不可用時回退到 HTTPS。使用 HTTPS 可提高相容性，使用 WebSocket 可降低延遲。"
   }
 }

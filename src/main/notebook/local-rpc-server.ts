@@ -2904,8 +2904,15 @@ class NotebookLocalRpcServer {
       leases.add(lease)
       this.inputRunLeaseIds.set(lease, inputRunLeaseId)
       this.activeInputRunLeases.set(sessionId, leases)
+      let retainedForBackgroundRun = false
+      const closeLease = async (): Promise<void> => {
+        await lease.close()
+        leases.delete(lease)
+        this.inputRunLeaseIds.delete(lease)
+        if (leases.size === 0) this.activeInputRunLeases.delete(sessionId)
+      }
       try {
-        return await handler(
+        const result = await handler(
           {
             ...trustedParams,
             registeredInputFiles: lease.getRunInputFiles(),
@@ -2913,11 +2920,17 @@ class NotebookLocalRpcServer {
           },
           signal
         )
+        const backgroundRunId =
+          method === 'execute' && params.background === true && isRecord(result)
+            ? result.runId
+            : undefined
+        if (typeof backgroundRunId === 'string') {
+          retainedForBackgroundRun = true
+          void this.service.waitForBackgroundRun(backgroundRunId).then(closeLease, closeLease)
+        }
+        return result
       } finally {
-        await lease.close()
-        leases.delete(lease)
-        this.inputRunLeaseIds.delete(lease)
-        if (leases.size === 0) this.activeInputRunLeases.delete(sessionId)
+        if (!retainedForBackgroundRun) await closeLease()
       }
     }
 

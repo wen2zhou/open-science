@@ -4255,6 +4255,11 @@
     "Auto (recommended)": "Automático (recomendado)",
     "HTTPS": "HTTPS",
     "WebSocket": "WebSocket",
+    "Session activity": "Actividad de la sesión",
+    "Lane": "Canal de ejecución",
+    "Elapsed": "Tiempo transcurrido",
+    "Manage in Session": "Gestionar en la sesión",
+    "Timed out": "Tiempo agotado",
     "Auto uses WebSocket when available and falls back to HTTPS. Use HTTPS for compatibility or WebSocket for lower latency.": "El modo automático usa WebSocket cuando está disponible y recurre a HTTPS. Use HTTPS para mayor compatibilidad o WebSocket para reducir la latencia."
   }
 }

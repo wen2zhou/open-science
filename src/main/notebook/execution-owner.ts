@@ -177,6 +177,7 @@ const dataRunFingerprint = (
         lane: notebookLaneKey(session.lane),
         code: cell.code,
         language: cell.language,
+        executionMode: request.background ? 'background' : 'foreground',
         timeoutMs: request.timeoutMs ?? null,
         source: request.source ?? 'agent',
         inputKind: request.inputKind ?? 'cell',
@@ -208,6 +209,7 @@ class NotebookExecutionOwner {
     string,
     {
       fingerprint: string
+      admitted: Promise<NotebookRunRecord>
       promise: Promise<{
         run: NotebookRunRecord
         dependencyProjection: NotebookDependencyProjection
@@ -250,7 +252,8 @@ class NotebookExecutionOwner {
     session: NotebookSessionAggregate,
     request: RunNotebookCellRequest,
     signal?: AbortSignal,
-    helperModuleIds?: readonly string[]
+    helperModuleIds?: readonly string[],
+    onAdmitted?: (run: NotebookRunRecord) => void
   ): Promise<{ run: NotebookRunRecord; dependencyProjection: NotebookDependencyProjection }> {
     const cell = session.cellView(request.cellId)
     if (session.isCellReceiving(cell.id)) {
@@ -267,8 +270,16 @@ class NotebookExecutionOwner {
       if (active.fingerprint !== submissionFingerprint) {
         throw new NotebookRunSubmissionConflictError(submissionIdentity)
       }
+      if (onAdmitted) void active.admitted.then(onAdmitted)
       return active.promise
     }
+    let resolveAdmitted!: (run: NotebookRunRecord) => void
+    let rejectAdmitted!: (error: unknown) => void
+    const admitted = new Promise<NotebookRunRecord>((resolve, reject) => {
+      resolveAdmitted = resolve
+      rejectAdmitted = reject
+    })
+    void admitted.catch(() => undefined)
     const promise = (async () => {
       if (request.executionInvocationId) {
         const existing = await this.options.runTerminalization.findSubmission(
@@ -279,6 +290,8 @@ class NotebookExecutionOwner {
           if (existing.submissionFingerprint !== submissionFingerprint) {
             throw new NotebookRunSubmissionConflictError(submissionIdentity)
           }
+          resolveAdmitted(existing)
+          onAdmitted?.(existing)
           const dependencyProjection = await this.options
             .projectDependencies(session, existing)
             .catch(() => unavailableNotebookDependencyProjection([existing]))
@@ -294,10 +307,17 @@ class NotebookExecutionOwner {
         submissionIdentity,
         submissionFingerprint,
         signal,
-        helperModuleIds
+        helperModuleIds,
+        (run) => {
+          resolveAdmitted(run)
+          onAdmitted?.(run)
+        }
       )
-    })()
-    const entry = { fingerprint: submissionFingerprint, promise }
+    })().catch((error) => {
+      rejectAdmitted(error)
+      throw error
+    })
+    const entry = { fingerprint: submissionFingerprint, admitted, promise }
     this.activeDataSubmissions.set(submissionKey, entry)
     try {
       return await promise
@@ -316,7 +336,8 @@ class NotebookExecutionOwner {
     submissionIdentity: string,
     submissionFingerprint: string,
     signal?: AbortSignal,
-    helperModuleIds?: readonly string[]
+    helperModuleIds?: readonly string[],
+    onAdmitted?: (run: NotebookRunRecord) => void
   ): Promise<{ run: NotebookRunRecord; dependencyProjection: NotebookDependencyProjection }> {
     const admittedAt = Date.now()
     const executionCount = session.nextExecutionCount()
@@ -350,6 +371,7 @@ class NotebookExecutionOwner {
     const helperPlan = await this.options.helperModules.plan(kernelEpoch, helperRequest)
     const queuedRun: NotebookRunRecord = {
       runId,
+      executionMode: request.background ? 'background' : 'foreground',
       submissionIdentity,
       submissionFingerprint,
       admittedAt,
@@ -397,11 +419,13 @@ class NotebookExecutionOwner {
     }
     const durableAdmission = await this.options.runTerminalization.admit({ session, queuedRun })
     if (!durableAdmission.admitted) {
+      onAdmitted?.(durableAdmission.run)
       const dependencyProjection = await this.options
         .projectDependencies(session, durableAdmission.run, resolvedInterpreter)
         .catch(() => unavailableNotebookDependencyProjection([durableAdmission.run]))
       return { run: durableAdmission.run, dependencyProjection }
     }
+    onAdmitted?.(durableAdmission.run)
     this.options.notifyAvailable(session, request.source ?? 'agent')
 
     try {
@@ -482,9 +506,10 @@ class NotebookExecutionOwner {
                     })
                     .catch((error: unknown) => {
                       executedOnLiveKernel = false
-                      const fallback = session.consumeForceStopped(processKey)
-                        ? cancelledExecutionResult(cwdBefore)
-                        : errorToExecutionResult(error, cwdBefore)
+                      const fallback =
+                        session.consumeForceStopped(processKey) || signal?.aborted
+                          ? cancelledExecutionResult(cwdBefore)
+                          : errorToExecutionResult(error, cwdBefore)
                       return { ...fallback, kernelDispatched: true }
                     })
                   this.options.helperModules.commitInitialized(

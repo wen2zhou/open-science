@@ -3507,6 +3507,80 @@ describe('notebook local RPC server', () => {
     }
   })
 
+  it('retains the input-run lease until an admitted background Run reaches terminal state', async () => {
+    const completion = createDeferred()
+    const close = vi.fn()
+    const executeBackground = vi.fn().mockResolvedValue({ runId: 'run-background-1' })
+    const waitForBackgroundRun = vi.fn(() => completion.promise)
+    const server = new NotebookLocalRpcServer(
+      { executeBackground, waitForBackgroundRun } as never,
+      {
+        transport: 'tcp',
+        token: 'secret-token',
+        inputRegistry: {
+          registerTurn: vi.fn().mockResolvedValue(undefined),
+          getTurnInputs: () => [registeredInput],
+          openRun: vi.fn().mockResolvedValue({
+            getRunInputFiles: () => [registeredInput],
+            resolve: vi.fn().mockResolvedValue('/managed/groups.csv'),
+            close
+          }),
+          clearSession: vi.fn()
+        }
+      }
+    )
+    const connection = await server.ensureStarted()
+    server.setArtifactTurnBinding('session-1', {
+      ownerExecutionId: 'execution-1',
+      projectId: 'default-project',
+      provenanceContext: {
+        rootFrameId: 'root-frame-1',
+        agentFrameId: 'root-frame-1',
+        messageBranchId: 'branch-1',
+        runtimeSegmentId: 'runtime-1',
+        promptMessageId: 'message-user-1'
+      }
+    })
+    await server.registerNotebookTurnInputs({
+      projectId: 'default-project',
+      appSessionId: 'session-1',
+      promptMessageId: 'message-user-1',
+      uploads: [],
+      references: []
+    })
+
+    try {
+      const response = await fetch(connection.endpoint, {
+        method: 'POST',
+        headers: {
+          authorization: 'Bearer secret-token',
+          'content-type': 'application/json'
+        },
+        body: JSON.stringify({
+          method: 'execute',
+          params: {
+            sessionId: 'session-1',
+            workspaceCwd: '/workspace',
+            code: 'print("later")',
+            background: true
+          }
+        })
+      })
+
+      expect(response.status).toBe(200)
+      await expect(response.json()).resolves.toEqual({ result: { runId: 'run-background-1' } })
+      expect(executeBackground).toHaveBeenCalledOnce()
+      expect(waitForBackgroundRun).toHaveBeenCalledWith('run-background-1')
+      expect(close).not.toHaveBeenCalled()
+
+      completion.resolve()
+      await vi.waitFor(() => expect(close).toHaveBeenCalledOnce())
+    } finally {
+      completion.resolve()
+      await server.close()
+    }
+  })
+
   it('resolves an immutable input only for the calling run while leases overlap', async () => {
     const root = await createStorageRoot()
     const server = new NotebookLocalRpcServer(

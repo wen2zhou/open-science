@@ -101,6 +101,7 @@ import { ComposerAgentControlsMenu } from './ComposerAgentControlsMenu'
 import { ComposerComputeTargetIndicator } from './ComposerComputeTargetIndicator'
 import { NotificationBell } from '@/components/NotificationBell'
 import { ComposerContextUsage } from './ComposerContextUsage'
+import { SessionBackgroundActivity } from './SessionBackgroundActivity'
 import { ComposerMessageQueueContent, ComposerMessageQueueTrigger } from './ComposerMessageQueue'
 import { ContextWindowDialog } from './ContextWindowDialog'
 import { ComposerModelPicker } from './ComposerModelPicker'
@@ -1268,6 +1269,13 @@ const ConversationPanel = ({
                       onExpandedChange={setMessageQueueExpanded}
                     />
                   </div>
+                ) : null}
+
+                {notebookReference ? (
+                  <SessionBackgroundActivity
+                    notebook={notebookReference}
+                    onOpenNotebook={onOpenNotebook}
+                  />
                 ) : null}
 
                 <div className="relative">

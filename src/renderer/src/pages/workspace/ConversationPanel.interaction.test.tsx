@@ -792,6 +792,13 @@ const hasDropOverlay = (): boolean =>
   container.textContent?.includes('Drop files to attach') ?? false
 
 beforeEach(() => {
+  window.api = {
+    notebook: {
+      state: vi.fn().mockResolvedValue({ runs: [] }),
+      onChanged: vi.fn(() => vi.fn()),
+      cancelBackgroundRun: vi.fn()
+    }
+  } as unknown as Window['api']
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)

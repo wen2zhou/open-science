@@ -16,7 +16,8 @@ const createCapability = (): NotebookLocalRpcCapability =>
         method,
         vi.fn(async (request: unknown) => ({ method, request }))
       ])
-    )
+    ),
+    executeBackground: vi.fn(async (request: unknown) => ({ method: 'executeBackground', request }))
   }) as unknown as NotebookLocalRpcCapability
 
 const request = {
@@ -55,8 +56,11 @@ const requestByMethod = {
     ...request,
     code: 'print(1)',
     language: 'python',
-    kernelSkillIds: ['figure-style']
+    kernelSkillIds: ['figure-style'],
+    background: true
   },
+  getBackgroundRun: { ...request, action: 'query', runId: 'run-1' },
+  cancelBackgroundRun: { ...request, action: 'cancel', runId: 'run-1' },
   executeControl: { ...request, code: 'return 1' },
   executeShell: { ...request, command: 'echo hi' },
   requestNetworkAccess: {
@@ -83,6 +87,8 @@ describe('notebook local RPC adapter', () => {
       'finishCodeCell',
       'runCell',
       'execute',
+      'getBackgroundRun',
+      'cancelBackgroundRun',
       'executeControl',
       'executeShell',
       'requestNetworkAccess',
@@ -96,7 +102,7 @@ describe('notebook local RPC adapter', () => {
       'bindRuntime',
       'switchRuntime'
     ])
-    expect(new Set(NOTEBOOK_LOCAL_RPC_METHODS).size).toBe(17)
+    expect(new Set(NOTEBOOK_LOCAL_RPC_METHODS).size).toBe(19)
 
     for (const method of [
       'listPackages',
@@ -157,13 +163,15 @@ describe('notebook local RPC adapter', () => {
 
     await handler(methodRequest)
 
-    const runtimeRequest = vi.mocked(capability.execute).mock.calls[0]?.[0]
+    const runtimeRequest = vi.mocked(capability.executeBackground).mock.calls[0]?.[0]
     expect(runtimeRequest).toMatchObject({
       code: 'print(1)',
       language: 'python',
+      background: true,
       helperModules: ['figure-style']
     })
     expect(runtimeRequest).not.toHaveProperty('kernelSkillIds')
+    expect(capability.execute).not.toHaveBeenCalled()
   })
 
   it.each(['bindRuntime', 'switchRuntime'] as const)(
@@ -201,11 +209,11 @@ describe('notebook local RPC adapter', () => {
       )(methodRequest, cancellation.signal)
 
       if (method === 'execute') {
-        expect(capability.execute).toHaveBeenCalledWith(
+        expect(capability.executeBackground).toHaveBeenCalledWith(
           expect.objectContaining({ helperModules: ['figure-style'] }),
           cancellation.signal
         )
-        expect(vi.mocked(capability.execute).mock.calls[0]?.[0]).not.toHaveProperty(
+        expect(vi.mocked(capability.executeBackground).mock.calls[0]?.[0]).not.toHaveProperty(
           'kernelSkillIds'
         )
       } else {

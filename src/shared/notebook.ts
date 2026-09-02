@@ -44,6 +44,27 @@ export type NotebookRunInputKind = 'cell' | 'terminal'
 export type NotebookRunStatus =
   'queued' | 'running' | 'completed' | 'failed' | 'timeout' | 'interrupted' | 'cancelled'
 
+export type NotebookBackgroundRunReceipt = Readonly<{
+  runId: string
+  executionType: 'python-notebook-run' | 'r-notebook-run'
+  projectId: string
+  sessionId: string
+  status: NotebookRunStatus
+  acceptedAt: number
+  lifecycleScope: 'app-process'
+  submissionIdentity: string
+}>
+
+export type NotebookBackgroundRunResult = Readonly<{
+  receipt: NotebookBackgroundRunReceipt
+  run: NotebookRunSummary
+}>
+
+export type NotebookBackgroundRunLookupRequest = NotebookSessionRequest & {
+  runId?: string
+  submissionIdentity?: string
+}
+
 export type NotebookRunProvenanceContext = {
   rootFrameId: string
   agentFrameId: string
@@ -437,6 +458,7 @@ export type NotebookHelperEvidenceStatus =
 // Stores one durable notebook execution, including code, output, and generated-file references.
 export type NotebookRunRecord = {
   runId: string
+  executionMode?: 'foreground' | 'background'
   // Stable, lane-scoped identity for durable admission. Reusing it with the same fingerprint
   // returns this canonical Run; reusing it for different submitted work is a conflict. Optional
   // keeps historical run.json documents readable.
@@ -838,6 +860,7 @@ export type FinishNotebookCodeCellRequest = NotebookSessionRequest & {
 // Runs an existing cell in the shared interpreter.
 export type RunNotebookCellRequest = NotebookSessionRequest & {
   cellId: string
+  background?: boolean
   timeoutMs?: number
   source?: NotebookRunSource
   inputKind?: NotebookRunInputKind
@@ -848,6 +871,7 @@ export type RunNotebookCellRequest = NotebookSessionRequest & {
 // Convenience request that writes a cell and runs it in one command.
 export type ExecuteNotebookCodeRequest = NotebookSessionRequest & {
   code: string
+  background?: boolean
   // Stable IDs resolved by the host-owned registered Skill catalog. Callers cannot provide helper
   // implementation paths, source, or digests.
   helperModules?: string[]

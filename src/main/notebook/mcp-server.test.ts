@@ -313,6 +313,7 @@ describe('notebook MCP server config', () => {
     expect(NOTEBOOK_RPC_TOOLS.map((tool) => tool.name)).toEqual([
       'ask_user_question',
       'notebook_execute',
+      'background_run',
       'repl_execute',
       'bash_execute',
       'request_network_access',
@@ -624,6 +625,22 @@ describe('ask_user_question tool', () => {
 describe('notebook_execute tool', () => {
   const tool = NOTEBOOK_RPC_TOOLS.find((entry) => entry.name === 'notebook_execute')
 
+  it('accepts an explicit background mode and documents its durable receipt lifecycle', () => {
+    const schema = z.object(tool?.inputSchema ?? {})
+
+    expect(schema.parse({ code: 'long_running()', background: true })).toEqual({
+      code: 'long_running()',
+      background: true
+    })
+    expect(schema.parse({ code: 'foreground()', background: false })).toEqual({
+      code: 'foreground()',
+      background: false
+    })
+    expect(tool?.description).toContain('Save the returned runId')
+    expect(tool?.description).toContain('Do not poll frequently')
+    expect(tool?.description).toContain('explicitly cancel')
+  })
+
   it('accepts an optional language enum defaulting to python when omitted', () => {
     expect(tool).toBeDefined()
     const schema = z.object(tool?.inputSchema ?? {})
@@ -851,6 +868,24 @@ describe('notebook_execute tool', () => {
       await client.close()
       await server.close()
     }
+  })
+})
+
+describe('background_run tool', () => {
+  const tool = NOTEBOOK_RPC_TOOLS.find((entry) => entry.name === 'background_run')
+
+  it('queries ambiguous submissions and idempotently cancels by Run identity', () => {
+    expect(tool?.method).toBe('getBackgroundRun')
+    const schema = z.object(tool?.inputSchema ?? {})
+    expect(schema.parse({ action: 'query', submissionIdentity: 'submission-1' })).toEqual({
+      action: 'query',
+      submissionIdentity: 'submission-1'
+    })
+    expect(schema.parse({ action: 'cancel', runId: 'run-1' })).toEqual({
+      action: 'cancel',
+      runId: 'run-1'
+    })
+    expect(() => schema.parse({ action: 'retry', runId: 'run-1' })).toThrow()
   })
 })
 

@@ -3945,6 +3945,11 @@
     "Auto (recommended)": "自动（推荐）",
     "HTTPS": "HTTPS",
     "WebSocket": "WebSocket",
+    "Session activity": "会话活动",
+    "Lane": "执行通道",
+    "Elapsed": "已用时间",
+    "Manage in Session": "在会话中管理",
+    "Timed out": "已超时",
     "Auto uses WebSocket when available and falls back to HTTPS. Use HTTPS for compatibility or WebSocket for lower latency.": "自动模式会在可用时使用 WebSocket，并在不可用时回退到 HTTPS。使用 HTTPS 可提高兼容性，使用 WebSocket 可降低延迟。"
   }
 }
