@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
+import { readFile, readdir } from 'node:fs/promises'
 
 // Optional sink for kill-path diagnostics; callers with a logger pass one, tests and the notebook path
 // omit it. Kept minimal so process-tree stays free of the Electron logger's import graph.
@@ -21,7 +22,7 @@ type PosixProcessIdentity = Readonly<{
   ppid: number
   pgid: number
   sid: number
-  start: string
+  birthToken: string | undefined
 }>
 
 type PosixProcessTable = Readonly<{
@@ -178,11 +179,68 @@ const waitForExit = (child: ChildProcess, ms: number): Promise<boolean> =>
 
 type DescendantSnapshot = { pids: number[]; complete: boolean }
 
-const collectPosixProcessTable = (): Promise<PosixProcessTable> =>
+const parseLinuxProcStat = (stat: string): PosixProcessIdentity | undefined => {
+  const commandEnd = stat.lastIndexOf(')')
+  if (commandEnd < 0) return undefined
+  const pid = Number(stat.slice(0, stat.indexOf(' ')))
+  const fields = stat
+    .slice(commandEnd + 1)
+    .trim()
+    .split(/\s+/u)
+  const ppid = Number(fields[1])
+  const pgid = Number(fields[2])
+  const sid = Number(fields[3])
+  const starttime = fields[19]
+  if (
+    ![pid, ppid, pgid, sid].every(Number.isSafeInteger) ||
+    pid <= 0 ||
+    starttime === undefined ||
+    !/^\d+$/u.test(starttime)
+  ) {
+    return undefined
+  }
+  return { pid, ppid, pgid, sid, birthToken: `linux-proc-starttime:${starttime}` }
+}
+
+// Linux exposes a kernel-maintained process birth token in /proc/<pid>/stat field 22. Unlike ps
+// lstart, starttime is measured in clock ticks since boot, so two process epochs that reuse one pid
+// within the same wall-clock second remain distinguishable.
+const collectLinuxProcessTable = async (): Promise<PosixProcessTable> => {
+  let entries: string[]
+  try {
+    entries = await readdir('/proc')
+  } catch {
+    return { processes: new Map(), complete: false }
+  }
+
+  let complete = true
+  const processes = new Map<number, PosixProcessIdentity>()
+  await Promise.all(
+    entries
+      .filter((entry) => /^\d+$/u.test(entry))
+      .map(async (entry) => {
+        try {
+          const identity = parseLinuxProcStat(await readFile(`/proc/${entry}/stat`, 'utf8'))
+          if (identity) processes.set(identity.pid, identity)
+          else complete = false
+        } catch (error) {
+          // A process disappearing between readdir and readFile is normal churn and cannot survive
+          // teardown. Any other read failure makes the ownership snapshot incomplete.
+          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') complete = false
+        }
+      })
+  )
+  return { processes, complete: complete && processes.size > 0 }
+}
+
+// Other POSIX platforms provide topology through ps, but not a collision-resistant process birth
+// token. Keep the topology available for diagnostics while marking the table incomplete so tracked
+// teardown fails closed instead of signaling a pid based on a second-resolution timestamp.
+const collectPortablePosixProcessTable = (): Promise<PosixProcessTable> =>
   new Promise<PosixProcessTable>((resolve) => {
     let ps: ChildProcess
     try {
-      ps = spawn('ps', ['-A', '-o', 'pid=,ppid=,pgid=,sid=,lstart='], { windowsHide: true })
+      ps = spawn('ps', ['-A', '-o', 'pid=,ppid=,pgid=,sid='], { windowsHide: true })
     } catch {
       resolve({ processes: new Map(), complete: false })
       return
@@ -220,24 +278,32 @@ const collectPosixProcessTable = (): Promise<PosixProcessTable> =>
       }
       const processes = new Map<number, PosixProcessIdentity>()
       for (const line of out.split('\n')) {
-        const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s+(.+?)\s*$/u)
+        const match = line.match(/^\s*(\d+)\s+(\d+)\s+(\d+)\s+(\d+)\s*$/u)
         if (!match) continue
-        const [, pidText, ppidText, pgidText, sidText, start] = match
+        const [, pidText, ppidText, pgidText, sidText] = match
         const pid = Number(pidText)
         const ppid = Number(ppidText)
         const pgid = Number(pgidText)
         const sid = Number(sidText)
         if (![pid, ppid, pgid, sid].every(Number.isSafeInteger) || pid <= 0) continue
-        processes.set(pid, { pid, ppid, pgid, sid, start })
+        processes.set(pid, { pid, ppid, pgid, sid, birthToken: undefined })
       }
-      finish({ processes, complete: processes.size > 0 })
+      finish({ processes, complete: false })
     })
   })
+
+const collectPosixProcessTable = (): Promise<PosixProcessTable> =>
+  process.platform === 'linux' ? collectLinuxProcessTable() : collectPortablePosixProcessTable()
 
 const samePosixIdentity = (
   expected: PosixProcessIdentity,
   actual: PosixProcessIdentity | undefined
-): boolean => actual !== undefined && actual.pid === expected.pid && actual.start === expected.start
+): boolean =>
+  actual !== undefined &&
+  expected.birthToken !== undefined &&
+  actual.birthToken !== undefined &&
+  actual.pid === expected.pid &&
+  actual.birthToken === expected.birthToken
 
 const captureTrackedDescendants = (
   tracker: PosixProcessTracker,
@@ -545,12 +611,26 @@ const terminateOwnedPosixProcessGroup = async (
 }
 
 const terminateTrackedPosixProcessTree = async (
+  child: ChildProcess,
   tracker: PosixProcessTracker,
   signal: NodeJS.Signals | undefined,
   log: ProcessTreeLogger | undefined
 ): Promise<ProcessTreeKillResult> => {
   const gracefulSignal = signal ?? 'SIGTERM'
   const finalSample = await stopTrackedProcessTree(tracker)
+  if (process.platform !== 'linux') {
+    // The child handle is the only trustworthy identity on portable POSIX. Kill it directly, but do
+    // not signal numeric descendant pids or the recorded group after an unverifiable process epoch.
+    killDirectChild(child, gracefulSignal)
+    if (!(await waitForExit(child, TERMINATE_GRACE_MS))) {
+      log?.error(
+        `process ${child.pid ?? '(no pid)'} did not exit after ${gracefulSignal}; escalating to SIGKILL`
+      )
+      forceKillChild(child)
+      await waitForExit(child, SIGKILL_GRACE_MS)
+    }
+    return { reaped: false }
+  }
   const live = [...tracker.identities.values()].filter((identity) =>
     samePosixIdentity(identity, finalSample.processes.get(identity.pid))
   )
@@ -614,7 +694,7 @@ export const terminateProcessTree = async (
   }
   const ownedGroup = ownedPosixProcessGroups.get(child)
   const trackedTree = trackedPosixProcessTrees.get(child)
-  if (trackedTree) return terminateTrackedPosixProcessTree(trackedTree, signal, log)
+  if (trackedTree) return terminateTrackedPosixProcessTree(child, trackedTree, signal, log)
   if (ownedGroup) return terminateOwnedPosixProcessGroup(ownedGroup, signal, log)
   return terminatePosixTree(child, signal, log)
 }

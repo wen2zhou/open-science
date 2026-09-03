@@ -3,11 +3,14 @@ import { afterEach, describe, expect, it, vi } from 'vitest'
 
 // Hoisted spawn double: process-tree spawns `taskkill` (win32) or `ps` (posix); each test wires the
 // return value to a controllable EventEmitter so it can drive exit/close/error and ps output.
-const { spawnMock } = vi.hoisted(() => ({
+const { readFileMock, readdirMock, spawnMock } = vi.hoisted(() => ({
+  readFileMock: vi.fn(),
+  readdirMock: vi.fn(),
   spawnMock: vi.fn()
 }))
 
 vi.mock('node:child_process', () => ({ spawn: spawnMock }))
+vi.mock('node:fs/promises', () => ({ readFile: readFileMock, readdir: readdirMock }))
 
 const { registerOwnedPosixProcessGroup, trackOwnedPosixProcessTree, terminateProcessTree } =
   await import('./process-tree')
@@ -34,6 +37,15 @@ class FakePs extends EventEmitter {
 }
 
 const esrch = (): NodeJS.ErrnoException => Object.assign(new Error('ESRCH'), { code: 'ESRCH' })
+
+const linuxStat = (
+  pid: number,
+  ppid: number,
+  pgid: number,
+  sid: number,
+  starttime: number
+): string =>
+  `${pid} (test process) S ${ppid} ${pgid} ${sid} ${[...Array(15).fill('0'), starttime, 0, 0].join(' ')}`
 
 const originalPlatform = process.platform
 const setPlatform = (value: string): void => {
@@ -175,9 +187,11 @@ describe('terminateProcessTree (win32)', () => {
 describe('terminateProcessTree (posix)', () => {
   it('reaps a reparented setsid descendant by its captured start identity', async () => {
     setPlatform('linux')
-    const initial = new FakePs()
-    const final = new FakePs()
-    spawnMock.mockReturnValueOnce(initial).mockReturnValueOnce(final)
+    readdirMock.mockResolvedValueOnce(['1000', '1001']).mockResolvedValueOnce(['1001'])
+    readFileMock
+      .mockResolvedValueOnce(linuxStat(1000, 1, 1000, 1000, 100))
+      .mockResolvedValueOnce(linuxStat(1001, 1000, 1000, 1000, 101))
+      .mockResolvedValueOnce(linuxStat(1001, 1, 1001, 1001, 101))
     let helperAlive = true
     const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
       if (pid === -1000) throw esrch()
@@ -192,21 +206,10 @@ describe('terminateProcessTree (posix)', () => {
     })
     const child = new FakeChild(1000)
     trackOwnedPosixProcessTree(child as never)
-    initial.stdout.emit(
-      'data',
-      Buffer.from(
-        '1000 1 1000 1000 Mon Sep 02 10:00:00 2026\n' +
-          '1001 1000 1000 1000 Mon Sep 02 10:00:01 2026\n'
-      )
-    )
-    initial.emit('close', 0)
-    await Promise.resolve()
+    await vi.waitFor(() => expect(readFileMock).toHaveBeenCalledTimes(2))
     child.exitCode = 0
 
     const pending = terminateProcessTree(child as never)
-    await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2))
-    final.stdout.emit('data', Buffer.from('1001 1 1001 1001 Mon Sep 02 10:00:01 2026\n'))
-    final.emit('close', 0)
 
     await expect(pending).resolves.toEqual({ reaped: true })
     expect(killSpy).toHaveBeenCalledWith(1001, 'SIGTERM')
@@ -215,26 +218,62 @@ describe('terminateProcessTree (posix)', () => {
 
   it('reports tracked teardown incomplete instead of signaling without final identity validation', async () => {
     setPlatform('linux')
+    readdirMock
+      .mockResolvedValueOnce(['1000', '1001'])
+      .mockRejectedValueOnce(new Error('unavailable'))
+    readFileMock
+      .mockResolvedValueOnce(linuxStat(1000, 1, 1000, 1000, 100))
+      .mockResolvedValueOnce(linuxStat(1001, 1000, 1001, 1001, 101))
+    const killSpy = vi.spyOn(process, 'kill')
+    const child = new FakeChild(1000)
+    trackOwnedPosixProcessTree(child as never)
+    await vi.waitFor(() => expect(readFileMock).toHaveBeenCalledTimes(2))
+    child.exitCode = 0
+
+    const pending = terminateProcessTree(child as never)
+
+    await expect(pending).resolves.toEqual({ reaped: false })
+    expect(killSpy).not.toHaveBeenCalledWith(1001, expect.anything())
+  })
+
+  it('does not signal a replacement that reused a tracked pid within the same second', async () => {
+    setPlatform('linux')
+    readdirMock.mockResolvedValueOnce(['1000', '1001']).mockResolvedValueOnce(['1001'])
+    readFileMock
+      .mockResolvedValueOnce(linuxStat(1000, 1, 1000, 1000, 100))
+      .mockResolvedValueOnce(linuxStat(1001, 1000, 1001, 1001, 101))
+      .mockResolvedValueOnce(linuxStat(1001, 1, 1001, 1001, 102))
+    const killSpy = vi.spyOn(process, 'kill')
+    const child = new FakeChild(1000)
+
+    trackOwnedPosixProcessTree(child as never)
+    await vi.waitFor(() => expect(readFileMock).toHaveBeenCalledTimes(2))
+    child.exitCode = 0
+
+    await expect(terminateProcessTree(child as never)).resolves.toEqual({ reaped: true })
+    expect(killSpy).not.toHaveBeenCalledWith(1001, expect.anything())
+  })
+
+  it('kills only the direct child when portable POSIX cannot validate process birth identities', async () => {
+    setPlatform('darwin')
     const initial = new FakePs()
     const final = new FakePs()
     spawnMock.mockReturnValueOnce(initial).mockReturnValueOnce(final)
     const killSpy = vi.spyOn(process, 'kill')
     const child = new FakeChild(1000)
+
     trackOwnedPosixProcessTree(child as never)
-    initial.stdout.emit(
-      'data',
-      Buffer.from(
-        '1000 1 1000 1000 Mon Sep 02 10:00:00 2026\n' +
-          '1001 1000 1001 1001 Mon Sep 02 10:00:01 2026\n'
-      )
-    )
+    initial.stdout.emit('data', Buffer.from('1000 1 1000 1000\n1001 1000 1001 1001\n'))
     initial.emit('close', 0)
-    child.exitCode = 0
+    await Promise.resolve()
 
     const pending = terminateProcessTree(child as never)
     await vi.waitFor(() => expect(spawnMock).toHaveBeenCalledTimes(2))
-    final.emit('error', new Error('ps unavailable'))
+    final.stdout.emit('data', Buffer.from('1000 1 1000 1000\n1001 1000 1001 1001\n'))
+    final.emit('close', 0)
 
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGTERM'))
+    child.emit('exit', 0, null)
     await expect(pending).resolves.toEqual({ reaped: false })
     expect(killSpy).not.toHaveBeenCalledWith(1001, expect.anything())
   })
