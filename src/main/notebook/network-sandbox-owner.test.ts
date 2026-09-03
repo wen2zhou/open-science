@@ -166,6 +166,51 @@ describe('NotebookNetworkSandboxOwner', () => {
     await owner.dispose()
   })
 
+  it('does not reconcile a live temp root during an overlapping same-profile WSL wrap', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'os-network-overlapping-wsl-'))
+    fixtureDirectories.push(fixtureRoot)
+    const owner = new NotebookNetworkSandboxOwner({
+      resourceRoot: fixtureRoot,
+      temporaryRoot: join(fixtureRoot, 'managed-command-temp'),
+      getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      persistAlwaysAllow: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      requestDecision: async () => 'deny'
+    })
+    const invocation = {
+      target: {
+        kind: 'wsl2' as const,
+        profileId: 'profile-1',
+        distro: 'Ubuntu-22.04',
+        user: 'open-science-spike'
+      },
+      executable: '/bin/bash',
+      args: ['-c', 'sleep 30'],
+      env: {},
+      cwd: 'C:\\workspace',
+      commandText: 'sleep 30',
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      runtime: 'bash' as const,
+      filesystem: {
+        readOnlyRoots: [] as string[],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [] as string[],
+        deniedWriteRoots: [] as string[]
+      }
+    }
+
+    const first = await owner.wrap(invocation)
+    const firstRoot = backend.wrap.mock.calls.at(-1)?.[0].env.TMPDIR as string
+    const second = await owner.wrap({ ...invocation, commandText: 'sleep 31' })
+
+    expect(existsSync(firstRoot)).toBe(true)
+    expect(existsSync(`${firstRoot}.receipt`)).toBe(true)
+    await first.cleanup('cancel', { processesTerminated: true })
+    expect(existsSync(firstRoot)).toBe(false)
+    await second.cleanup('cancel', { processesTerminated: true })
+    await owner.dispose()
+  })
+
   it('removes durable command temp ownership after verified preparation cleanup', async () => {
     const fixtureRoot = await mkdtemp(join(tmpdir(), 'os-network-preparation-cleanup-'))
     fixtureDirectories.push(fixtureRoot)

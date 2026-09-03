@@ -273,7 +273,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       if (target.kind === 'wsl2') {
         // Returning from the runtime certifies guest-receipt reconciliation for this exact profile.
         // Host temp recovery must stay behind that stop-before-remove boundary.
-        await this.reconcileCommandTemporaryRoots(target, commandTempRoot)
+        await this.reconcileCommandTemporaryRoots(target)
       }
       this.log.info('sandbox process prepared', {
         executionReference: invocation.executionReference,
@@ -721,8 +721,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
   }
 
   private async reconcileCommandTemporaryRoots(
-    target: Extract<NonNullable<NotebookSandboxInvocation['target']>, { kind: 'wsl2' }>,
-    currentRoot: string
+    target: Extract<NonNullable<NotebookSandboxInvocation['target']>, { kind: 'wsl2' }>
   ): Promise<void> {
     const ownerRoot = this.commandTemporaryRoot()
     await mkdir(ownerRoot, { recursive: true, mode: 0o700 })
@@ -775,7 +774,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       const root = join(ownerRoot, `command-${id}`)
       // Native children can outlive the Electron parent, so a restart does not prove they stopped.
       // Their roots stay retained; only same-process verified cleanup may remove them.
-      if (!ownership.matchesTarget || root === currentRoot) continue
+      if (!ownership.matchesTarget || this.pendingTemporaryRoots.has(root)) continue
       await this.removeCommandTemporaryRoot(root, ownership.receipt)
     }
   }
