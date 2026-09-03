@@ -88,7 +88,9 @@ type NetworkWrapRequest = Readonly<{
 type RuntimeContext = {
   filesystem: FilesystemLayout
   gateway?: CommandGateway
-  releasePlatform?: (reason: SandboxCleanupReason) => Promise<boolean | void>
+  releasePlatform?: (
+    reason: SandboxCleanupReason
+  ) => Promise<boolean | void | SandboxCleanupResult>
   platformOwnsProcesses?: boolean
 }
 
@@ -204,28 +206,42 @@ const wrap = async (
       ? { privateRoot: homedir() }
       : {})
   })
+  const credentials = {
+    username: `notebook-${request.commandId}`,
+    password: randomBytes(32).toString('base64url')
+  }
   if (target.kind === 'wsl2') {
     if (process.platform !== 'win32') {
       throw new Error('Notebook WSL2 sandbox target requires a Windows host.')
     }
-    const launch = await wsl2Launch({
-      target,
-      command: request.command,
-      cwd: request.cwd,
-      env: request.env,
-      ...(request.pathEnvironment ? { pathEnvironment: request.pathEnvironment } : {}),
-      filesystem
+    const gateway = await CommandGateway.open({
+      decide: (host, port) => decide(request.commandId, host, port),
+      credentials,
+      ...(request.localRpcSocketPath ? { localRpcSocketPath: request.localRpcSocketPath } : {}),
+      parentProxy: parentSettings(config)
     })
-    commandContexts.set(request.commandId, {
-      filesystem,
-      releasePlatform: launch.release,
-      platformOwnsProcesses: true
-    })
-    return { argv: launch.argv, env: launch.env }
-  }
-  const credentials = {
-    username: `notebook-${request.commandId}`,
-    password: randomBytes(32).toString('base64url')
+    try {
+      const launch = await wsl2Launch({
+        target,
+        command: request.command,
+        cwd: request.cwd,
+        env: request.env,
+        ...(request.pathEnvironment ? { pathEnvironment: request.pathEnvironment } : {}),
+        filesystem,
+        gatewayPort: gateway.port,
+        gatewayCredentials: credentials
+      })
+      commandContexts.set(request.commandId, {
+        filesystem,
+        gateway,
+        releasePlatform: launch.release,
+        platformOwnsProcesses: true
+      })
+      return { argv: launch.argv, env: launch.env }
+    } catch (error) {
+      await gateway.close()
+      throw error
+    }
   }
   const windowsGatewayPort = windowsProtectedGatewayPort
   const gateway = await CommandGateway.open({
@@ -311,14 +327,23 @@ const closeContext = async (
     context.releasePlatform?.(reason)
   ])
   violations.forget(commandId)
+  const platformResult = temporaryResources.status === 'fulfilled' ? temporaryResources.value : false
   const platformProcessesTerminated =
-    temporaryResources.status === 'fulfilled' && temporaryResources.value !== false
+    typeof platformResult === 'object'
+      ? platformResult.processesTerminated
+      : platformResult !== false
+  const platformNetworkClosed =
+    typeof platformResult === 'object' ? platformResult.networkClosed : platformResult !== false
+  const platformTemporaryResourcesRemoved =
+    typeof platformResult === 'object'
+      ? platformResult.temporaryResourcesRemoved
+      : platformResult !== false
   return {
     processesTerminated:
       platformProcessesTerminated &&
       (context.platformOwnsProcesses || processOutcome.processesTerminated),
-    networkClosed: network.status === 'fulfilled',
-    temporaryResourcesRemoved: platformProcessesTerminated
+    networkClosed: network.status === 'fulfilled' && platformNetworkClosed,
+    temporaryResourcesRemoved: platformTemporaryResourcesRemoved
   }
 }
 

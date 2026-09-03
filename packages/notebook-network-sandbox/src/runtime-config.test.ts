@@ -116,7 +116,7 @@ describe('Notebook runtime configuration updates', () => {
     expect(wsl2Launch).not.toHaveBeenCalled()
   })
 
-  it('routes an explicit WSL2 target through its adapter without opening a host gateway', async () => {
+  it('routes an explicit WSL2 target through its command-scoped host gateway', async () => {
     vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
     const target = {
@@ -148,10 +148,15 @@ describe('Notebook runtime configuration updates', () => {
         target,
         command: 'echo sandboxed',
         cwd: 'C:\\workspace',
-        pathEnvironment: { UV_CACHE_DIR: 'C:\\workspace\\cache\\uv' }
+        pathEnvironment: { UV_CACHE_DIR: 'C:\\workspace\\cache\\uv' },
+        gatewayPort: 4312,
+        gatewayCredentials: expect.objectContaining({
+          username: 'notebook-wsl2-command',
+          password: expect.any(String)
+        })
       })
     )
-    expect(CommandGateway.open).toHaveBeenCalledOnce()
+    expect(CommandGateway.open).toHaveBeenCalledTimes(2)
     await expect(
       NotebookNetworkRuntime.cleanupAfterCommand('wsl2-command', 'cancel', {
         processesTerminated: false
@@ -167,7 +172,11 @@ describe('Notebook runtime configuration updates', () => {
   it('fails the process and temporary-resource cleanup stages when exact WSL cleanup is incomplete', async () => {
     vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
-    wslRelease.mockResolvedValueOnce(false)
+    wslRelease.mockResolvedValueOnce({
+      processesTerminated: false,
+      networkClosed: true,
+      temporaryResourcesRemoved: false
+    })
     await NotebookNetworkRuntime.wrap({
       target: {
         kind: 'wsl2',
@@ -217,6 +226,73 @@ describe('Notebook runtime configuration updates', () => {
       networkClosed: false,
       temporaryResourcesRemoved: true
     })
+  })
+
+  it('reports an incomplete WSL bridge cleanup independently from gateway cleanup', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    wslRelease.mockResolvedValueOnce({
+      processesTerminated: true,
+      networkClosed: false,
+      temporaryResourcesRemoved: false
+    })
+
+    await NotebookNetworkRuntime.wrap({
+      target: {
+        kind: 'wsl2',
+        profileId: 'profile-1',
+        distro: 'Ubuntu',
+        user: 'researcher'
+      },
+      command: 'echo sandboxed',
+      commandId: 'wsl2-cleanup-command',
+      cwd: 'C:\\workspace',
+      env: {},
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    })
+
+    await expect(
+      NotebookNetworkRuntime.cleanupAfterCommand('wsl2-cleanup-command', 'exit', {
+        processesTerminated: true
+      })
+    ).resolves.toEqual({
+      processesTerminated: true,
+      networkClosed: false,
+      temporaryResourcesRemoved: false
+    })
+  })
+
+  it('closes the command gateway when WSL bridge preparation fails', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    vi.mocked(wsl2Launch).mockRejectedValueOnce(new Error('private WSL detail'))
+
+    await expect(
+      NotebookNetworkRuntime.wrap({
+        target: {
+          kind: 'wsl2',
+          profileId: 'profile-1',
+          distro: 'Ubuntu',
+          user: 'researcher'
+        },
+        command: 'echo sandboxed',
+        commandId: 'wsl2-failed-command',
+        cwd: 'C:\\workspace',
+        env: {},
+        filesystem: {
+          readOnlyRoots: [],
+          readWriteRoots: ['C:\\workspace'],
+          deniedReadRoots: [],
+          deniedWriteRoots: []
+        }
+      })
+    ).rejects.toThrow('private WSL detail')
+    expect(gateway.close).toHaveBeenCalledOnce()
   })
 
   it('reports the observed process teardown outcome instead of assuming termination', async () => {

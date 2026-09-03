@@ -41,7 +41,7 @@ describe('WSL2 sandbox adapter', () => {
     expect(mapPath).not.toHaveBeenCalled()
   })
 
-  it('compiles Windows filesystem policy into a networkless bwrap Bash launch', async () => {
+  it('compiles Windows policy into a gateway-only bwrap Bash launch', async () => {
     const runtimeRoot = 'C:\\Open Science\\runtime 路径'
     const cacheEnvironment = notebookWorkloadCacheEnv(runtimeRoot)
     const cacheRoot = cacheEnvironment.OPEN_SCIENCE_NOTEBOOK_CACHE_DIR!
@@ -50,6 +50,11 @@ describe('WSL2 sandbox adapter', () => {
       if (known) return known
       if (/^C:\\/u.test(path)) return `/mnt/c/${path.slice(3).replaceAll('\\', '/')}`
       return path
+    })
+    const closeBridge = vi.fn().mockResolvedValue(undefined)
+    const openBridge = vi.fn().mockResolvedValue({
+      socketPath: '/tmp/open-science-network-command/gateway.sock',
+      close: closeBridge
     })
 
     const launch = await wsl2Launch({
@@ -65,6 +70,8 @@ describe('WSL2 sandbox adapter', () => {
         PATH: 'C:\\Windows\\System32',
         AWS_SECRET_ACCESS_KEY: 'must-not-leak'
       },
+      gatewayPort: 4312,
+      gatewayCredentials: { username: 'command-user', password: 'command-secret' },
       pathEnvironment: {
         OPEN_SCIENCE_HANDOFF_DIR: 'C:\\Open Science\\handoff',
         ...cacheEnvironment
@@ -80,7 +87,8 @@ describe('WSL2 sandbox adapter', () => {
         deniedReadRoots: ['C:\\private'],
         deniedWriteRoots: []
       },
-      mapPath
+      mapPath,
+      openBridge
     })
 
     expect(launch.argv[0]).toMatch(/wsl\.exe$/i)
@@ -104,14 +112,20 @@ describe('WSL2 sandbox adapter', () => {
         '--tmpfs',
         '/mnt',
         '--bind',
+        '/tmp/open-science-network-command/gateway.sock',
+        '/run/open-science-notebook/gateway.sock',
+        '--bind',
         '/mnt/c/Open Science/Workspace 路径',
         '/mnt/c/Open Science/Workspace 路径',
         '--chdir',
         '/mnt/c/Open Science/Workspace 路径',
-        '/bin/bash',
-        '--noprofile',
-        '--norc',
+        '/usr/bin/python3',
         '-c',
+        expect.stringMatching(/^import base64,zlib;exec\(zlib\.decompress/u),
+        '/run/open-science-notebook/gateway.sock',
+        '3128',
+        'command-user',
+        'command-secret',
         `printf '你好 world'`
       ])
     )
@@ -129,6 +143,12 @@ describe('WSL2 sandbox adapter', () => {
         '/mnt/c/Open Science/runtime 路径/cache/notebook'
       ])
     )
+    expect(openBridge).toHaveBeenCalledWith(
+      expect.objectContaining({
+        target: expect.objectContaining({ profileId: 'profile-1' }),
+        gatewayPort: 4312
+      })
+    )
     for (const [key, value] of Object.entries(cacheEnvironment)) {
       const keyIndex = launch.argv.indexOf(key)
       expect(keyIndex).toBeGreaterThan(0)
@@ -138,6 +158,8 @@ describe('WSL2 sandbox adapter', () => {
     expect(launch.env.PATH).toBeUndefined()
     expect(launch.env.AWS_SECRET_ACCESS_KEY).toBeUndefined()
     expect(mapPath).toHaveBeenCalledWith('C:\\Open Science\\Workspace 路径')
+    await launch.release()
+    expect(closeBridge).toHaveBeenCalledOnce()
   })
 
   it('releases one exact guest execution once and reports incomplete cleanup', async () => {
