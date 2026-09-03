@@ -486,6 +486,50 @@ describe('notebook shell process behavior', () => {
     await rm(runtimeRoot, { recursive: true, force: true })
   })
 
+  it('returns a stable failure instead of trusting an exit when sandbox cleanup is incomplete', async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'os-shell-incomplete-cleanup-'))
+    const cleanup = vi.fn(async () => ({
+      processesTerminated: false,
+      networkClosed: true,
+      temporaryResourcesRemoved: false
+    }))
+    const processSandbox: NotebookProcessSandbox = {
+      wrap: vi.fn(async (invocation) => ({
+        executable: process.execPath,
+        args: ['-e', 'process.stdout.write("finished")'],
+        env: invocation.env,
+        annotateStderr: (stderr: string) => stderr,
+        cleanup
+      }))
+    }
+
+    try {
+      await expect(
+        runShellCommand({
+          command: 'echo finished',
+          cwd: process.cwd(),
+          handoffDir: process.cwd(),
+          runtimeRoot,
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          platform: process.platform,
+          processSandbox,
+          terminateTree: async () => ({ reaped: true })
+        })
+      ).resolves.toEqual({
+        stdout: 'finished',
+        stderr:
+          'SHELL_CLEANUP_INCOMPLETE: Shell execution cleanup did not complete; the result is not trusted.',
+        exitCode: null,
+        errorCode: 'shell-cleanup-incomplete'
+      })
+      expect(cleanup).toHaveBeenCalledOnce()
+      expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated: true })
+    } finally {
+      await rm(runtimeRoot, { recursive: true, force: true })
+    }
+  })
+
   describe.runIf(process.platform !== 'win32')('process results', () => {
     let runtimeRoot: string
     beforeEach(async () => {

@@ -144,7 +144,9 @@ class NotebookNetworkSandbox {
         }
       })
     } catch (error) {
-      await this.#backend.cleanupAfterCommand(commandId, { processesTerminated: true })
+      await this.#backend.cleanupAfterCommand(commandId, 'spawn-failed', {
+        processesTerminated: true
+      })
       throw error
     }
     const controller = new AbortController()
@@ -164,8 +166,8 @@ class NotebookNetworkSandbox {
       env: wrapped.env,
       annotateStderr: (stderr) => this.#backend.annotateStderr(commandId, stderr),
       resetNetworkConnections: () => this.#backend.resetCommandConnections(commandId),
-      cleanup: (_reason, processOutcome) =>
-        (cleanupPromise ??= this.#releaseCommand(commandId, true, processOutcome))
+      cleanup: (reason, processOutcome) =>
+        (cleanupPromise ??= this.#releaseCommand(commandId, true, processOutcome, reason))
     }
   }
 
@@ -249,7 +251,8 @@ class NotebookNetworkSandbox {
   #releaseCommand(
     commandId: string,
     cleanupBackend: boolean,
-    processOutcome: NotebookSandboxProcessOutcome
+    processOutcome: NotebookSandboxProcessOutcome,
+    reason: 'exit' | 'cancel' | 'timeout' | 'spawn-failed' = 'cancel'
   ): Promise<NotebookSandboxCleanupResult> {
     const command = this.#activeCommands.get(commandId)
     if (!command) {
@@ -262,7 +265,7 @@ class NotebookNetworkSandbox {
     this.#activeCommands.delete(commandId)
     command.detachSignal?.()
     command.controller.abort(new Error('Notebook process ended.'))
-    if (cleanupBackend) return this.#backend.cleanupAfterCommand(commandId, processOutcome)
+    if (cleanupBackend) return this.#backend.cleanupAfterCommand(commandId, reason, processOutcome)
     return Promise.resolve({
       processesTerminated: processOutcome.processesTerminated,
       networkClosed: true,

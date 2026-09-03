@@ -687,6 +687,7 @@ describe('NotebookNetworkSandboxOwner', () => {
       pathEnvironment: { UV_CACHE_DIR: 'C:\\workspace\\cache\\uv' },
       cwd: 'C:\\workspace',
       commandText: 'python script.py',
+      executionReference: 'execution-safe-reference',
       sessionId: 'session-1',
       projectId: 'project-1',
       runtime: 'python' as const,
@@ -729,6 +730,8 @@ describe('NotebookNetworkSandboxOwner', () => {
     })
     const diagnosticText = JSON.stringify(records)
     expect(diagnosticText).toContain('sandbox cleanup completed')
+    expect(diagnosticText).toContain('sandbox process prepared')
+    expect(diagnosticText).toContain('execution-safe-reference')
     expect(diagnosticText).toContain('"phase":"sandbox-cleanup"')
     expect(diagnosticText).toContain('"result":"incomplete"')
     expect(diagnosticText).toContain('"incompleteStageCount":3')

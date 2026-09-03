@@ -152,9 +152,50 @@ describe('Notebook runtime configuration updates', () => {
       })
     )
     expect(CommandGateway.open).toHaveBeenCalledOnce()
-    await NotebookNetworkRuntime.cleanupAfterCommand('wsl2-command', { processesTerminated: true })
-    await NotebookNetworkRuntime.cleanupAfterCommand('wsl2-command', { processesTerminated: true })
+    await expect(
+      NotebookNetworkRuntime.cleanupAfterCommand('wsl2-command', 'cancel', {
+        processesTerminated: false
+      })
+    ).resolves.toMatchObject({ processesTerminated: true })
+    await NotebookNetworkRuntime.cleanupAfterCommand('wsl2-command', 'timeout', {
+      processesTerminated: true
+    })
     expect(wslRelease).toHaveBeenCalledOnce()
+    expect(wslRelease).toHaveBeenCalledWith('cancel')
+  })
+
+  it('fails the process and temporary-resource cleanup stages when exact WSL cleanup is incomplete', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    wslRelease.mockResolvedValueOnce(false)
+    await NotebookNetworkRuntime.wrap({
+      target: {
+        kind: 'wsl2',
+        profileId: 'profile-1',
+        distro: 'Ubuntu',
+        user: 'researcher'
+      },
+      command: 'sleep 30',
+      commandId: 'incomplete-wsl2-command',
+      cwd: 'C:\\workspace',
+      env: {},
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    })
+
+    await expect(
+      NotebookNetworkRuntime.cleanupAfterCommand('incomplete-wsl2-command', 'timeout', {
+        processesTerminated: true
+      })
+    ).resolves.toEqual({
+      processesTerminated: false,
+      networkClosed: true,
+      temporaryResourcesRemoved: false
+    })
   })
 
   it('disconnects existing tunnels before they can outlive a policy change', () => {
@@ -168,7 +209,9 @@ describe('Notebook runtime configuration updates', () => {
     gateway.close.mockRejectedValueOnce(new Error('private gateway detail'))
 
     await expect(
-      NotebookNetworkRuntime.cleanupAfterCommand('command-1', { processesTerminated: true })
+      NotebookNetworkRuntime.cleanupAfterCommand('command-1', 'exit', {
+        processesTerminated: true
+      })
     ).resolves.toEqual({
       processesTerminated: true,
       networkClosed: false,
@@ -178,7 +221,7 @@ describe('Notebook runtime configuration updates', () => {
 
   it('reports the observed process teardown outcome instead of assuming termination', async () => {
     await expect(
-      NotebookNetworkRuntime.cleanupAfterCommand('command-1', {
+      NotebookNetworkRuntime.cleanupAfterCommand('command-1', 'timeout', {
         processesTerminated: false
       })
     ).resolves.toEqual({
@@ -198,7 +241,9 @@ describe('Notebook runtime configuration updates', () => {
     )
 
     try {
-      void NotebookNetworkRuntime.cleanupAfterCommand('command-1', { processesTerminated: true })
+      void NotebookNetworkRuntime.cleanupAfterCommand('command-1', 'exit', {
+        processesTerminated: true
+      })
       const wrapping = NotebookNetworkRuntime.wrap({
         command: 'curl https://example.com',
         commandId: 'command-2',

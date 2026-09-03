@@ -54,6 +54,7 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
       handoffDir: handoff,
       runtimeRoot,
       notebookSessionRoot: root,
+      executionReference: 'real-wsl-execution',
       sessionId: 'session-1',
       projectId: 'project-1',
       platform: 'win32',
@@ -79,5 +80,47 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
     expect(diagnosticText).not.toContain(distro)
     expect(diagnosticText).not.toContain(user)
     expect(diagnosticText).not.toContain('你好 stdout')
+    expect(diagnosticText).toContain('real-wsl-execution')
   })
+
+  it.each([
+    { reason: 'timeout' as const, timeoutMs: 200 },
+    { reason: 'cancel' as const, timeoutMs: 5_000 }
+  ])(
+    'propagates $reason to exact guest cleanup within a bounded time',
+    async ({ reason, timeoutMs }) => {
+      const controller = new AbortController()
+      if (reason === 'cancel') setTimeout(() => controller.abort(), 200)
+      const startedAt = Date.now()
+
+      const result = await runShellCommand({
+        command: `trap '' TERM; while :; do sleep 1; done`,
+        cwd: workspace,
+        handoffDir: handoff,
+        runtimeRoot,
+        notebookSessionRoot: root,
+        executionReference: `real-wsl-${reason}`,
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        platform: 'win32',
+        timeoutMs,
+        signal: controller.signal,
+        runtimeBinding: {
+          kind: 'wsl2-bash',
+          profileId: 'real-profile',
+          distro: distro!,
+          user: user!
+        },
+        processSandbox: sandbox,
+        terminateTree: async () => ({ reaped: true })
+      })
+
+      expect(Date.now() - startedAt).toBeLessThan(8_000)
+      expect(result.exitCode).toBeNull()
+      expect(result.errorCode).toBeUndefined()
+      expect(result.cancelled).toBe(reason === 'cancel' ? true : undefined)
+      expect(result.stderr).toContain(reason === 'cancel' ? 'cancelled' : 'timed out')
+    },
+    15_000
+  )
 })

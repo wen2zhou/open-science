@@ -68,6 +68,8 @@ type SandboxProcessOutcome = Readonly<{
   processesTerminated: boolean
 }>
 
+type SandboxCleanupReason = 'exit' | 'cancel' | 'timeout' | 'spawn-failed'
+
 type NetworkWrapRequest = Readonly<{
   target?: NotebookSandboxTarget
   command: string
@@ -86,7 +88,8 @@ type NetworkWrapRequest = Readonly<{
 type RuntimeContext = {
   filesystem: FilesystemLayout
   gateway?: CommandGateway
-  releasePlatform?: () => Promise<void>
+  releasePlatform?: (reason: SandboxCleanupReason) => Promise<boolean | void>
+  platformOwnsProcesses?: boolean
 }
 
 let runtimeConfig: NetworkRuntimeConfig | undefined
@@ -215,7 +218,8 @@ const wrap = async (
     })
     commandContexts.set(request.commandId, {
       filesystem,
-      releasePlatform: launch.release
+      releasePlatform: launch.release,
+      platformOwnsProcesses: true
     })
     return { argv: launch.argv, env: launch.env }
   }
@@ -299,22 +303,28 @@ const wrap = async (
 const closeContext = async (
   commandId: string,
   context: RuntimeContext,
+  reason: SandboxCleanupReason,
   processOutcome: SandboxProcessOutcome
 ): Promise<SandboxCleanupResult> => {
   const [network, temporaryResources] = await Promise.allSettled([
     context.gateway?.close(),
-    context.releasePlatform?.()
+    context.releasePlatform?.(reason)
   ])
   violations.forget(commandId)
+  const platformProcessesTerminated =
+    temporaryResources.status === 'fulfilled' && temporaryResources.value !== false
   return {
-    processesTerminated: processOutcome.processesTerminated,
+    processesTerminated:
+      platformProcessesTerminated &&
+      (context.platformOwnsProcesses || processOutcome.processesTerminated),
     networkClosed: network.status === 'fulfilled',
-    temporaryResourcesRemoved: temporaryResources.status === 'fulfilled'
+    temporaryResourcesRemoved: platformProcessesTerminated
   }
 }
 
 const cleanupAfterCommand = async (
   commandId: string,
+  reason: SandboxCleanupReason,
   processOutcome: SandboxProcessOutcome
 ): Promise<SandboxCleanupResult> => {
   const context = commandContexts.get(commandId)
@@ -326,7 +336,7 @@ const cleanupAfterCommand = async (
     }
   }
   commandContexts.delete(commandId)
-  const task = closeContext(commandId, context, processOutcome).finally(() =>
+  const task = closeContext(commandId, context, reason, processOutcome).finally(() =>
     finishing.delete(task)
   )
   finishing.add(task)
@@ -353,7 +363,9 @@ const reset = async (): Promise<void> => {
   commandContexts.clear()
   await Promise.all([
     ...finishing,
-    ...active.map(([id, context]) => closeContext(id, context, { processesTerminated: false }))
+    ...active.map(([id, context]) =>
+      closeContext(id, context, 'cancel', { processesTerminated: false })
+    )
   ])
   finishing.clear()
   violations.clear()

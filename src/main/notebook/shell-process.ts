@@ -35,6 +35,8 @@ import {
 } from './shell-runtime'
 
 const SHELL_TIMEOUT_MESSAGE_RESERVE_BYTES = 256
+const SHELL_CLEANUP_INCOMPLETE_MESSAGE =
+  'SHELL_CLEANUP_INCOMPLETE: Shell execution cleanup did not complete; the result is not trusted.'
 
 // Result of one stateless bash_execute run. No status/traceback classification: the shell is
 // expected to fail non-zero sometimes, so the caller inspects exitCode directly instead of a
@@ -46,7 +48,7 @@ type NotebookShellResult = {
   truncated?: boolean
   cancelled?: boolean
   runtimeStatus?: 'unavailable'
-  errorCode?: 'shell-runtime-unavailable'
+  errorCode?: 'shell-runtime-unavailable' | 'shell-cleanup-incomplete'
 }
 
 type NotebookShellProcessRequest = {
@@ -57,6 +59,7 @@ type NotebookShellProcessRequest = {
   notebookSessionRoot?: string
   inputRoot?: string
   protectedDirs?: readonly string[]
+  executionReference?: string
   sessionId: string
   projectId: string
   timeoutMs?: number
@@ -305,6 +308,9 @@ const runShellCommand = (
             },
             cwd: options.cwd,
             commandText: options.command,
+            ...(options.executionReference
+              ? { executionReference: options.executionReference }
+              : {}),
             sessionId: options.sessionId,
             projectId: options.projectId,
             runtime: 'bash',
@@ -353,6 +359,16 @@ const runShellCommand = (
           networkClosed: true,
           temporaryResourcesRemoved: true
         }))
+    const cleanupCompleted = (result: NotebookSandboxCleanupResult): boolean =>
+      result.processesTerminated && result.networkClosed && result.temporaryResourcesRemoved
+    const withIncompleteCleanup = (result: NotebookShellResult): NotebookShellResult => ({
+      ...result,
+      stderr:
+        result.stderr +
+        `${result.stderr && !result.stderr.endsWith('\n') ? '\n' : ''}${SHELL_CLEANUP_INCOMPLETE_MESSAGE}`,
+      exitCode: null,
+      errorCode: 'shell-cleanup-incomplete'
+    })
     const endSandboxExecution = sandboxed?.beginExecution?.()
 
     let child: ChildProcessWithoutNullStreams
@@ -370,16 +386,20 @@ const runShellCommand = (
       )
     } catch (error) {
       endSandboxExecution?.()
+      let complete = false
       try {
-        await cleanupSandbox('spawn-failed', { processesTerminated: false })
+        complete = cleanupCompleted(
+          await cleanupSandbox('spawn-failed', { processesTerminated: false })
+        )
       } catch {
-        // Preserve the shell executor's never-reject contract and original spawn diagnostic.
+        // The stable cleanup failure below preserves the executor's never-reject contract.
       }
-      return {
+      const result: NotebookShellResult = {
         stdout: '',
         stderr: error instanceof Error ? error.message : String(error),
         exitCode: null
       }
+      return complete ? result : withIncompleteCleanup(result)
     }
     if (platform !== 'win32' && process.platform !== 'win32') trackOwnedPosixProcessTree(child)
 
@@ -411,8 +431,14 @@ const runShellCommand = (
             ? normalizePowerShellStderr(result.stderr, runtimePlatform)
             : result.stderr
         const stderr = sandboxed ? sandboxed.annotateStderr(normalized) : normalized
-        await cleanupSandbox(cleanupReason, processOutcome)
-        resolve({ ...result, stderr })
+        let complete = false
+        try {
+          complete = cleanupCompleted(await cleanupSandbox(cleanupReason, processOutcome))
+        } catch {
+          complete = false
+        }
+        const normalizedResult = { ...result, stderr }
+        resolve(complete ? normalizedResult : withIncompleteCleanup(normalizedResult))
       }
 
       const terminateAndFinish = (

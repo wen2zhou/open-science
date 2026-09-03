@@ -27,6 +27,7 @@ export type NotebookSandboxInvocation = Readonly<{
   pathEnvironment?: NodeJS.ProcessEnv
   cwd: string
   commandText: string
+  executionReference?: string
   sessionId: string
   projectId: string
   runtime: 'python' | 'r' | 'repl' | 'bash'

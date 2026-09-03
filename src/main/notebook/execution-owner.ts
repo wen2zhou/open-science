@@ -961,6 +961,7 @@ class NotebookExecutionOwner {
                     notebookSessionRoot: session.notebookSessionRoot,
                     inputRoot: this.inputRoot(session),
                     protectedDirs: [getAppClaudeConfigDir(this.options.configRoot)],
+                    executionReference: runId,
                     sessionId: session.sessionId,
                     projectId: session.projectId,
                     runtimeBinding,
@@ -981,15 +982,18 @@ class NotebookExecutionOwner {
             }
             if (!shellResult)
               throw new Error('Notebook shell execution completed without a result.')
-            const status: NotebookRunStatus = shellResult.cancelled
-              ? 'cancelled'
-              : shellResult.runtimeStatus === 'unavailable'
+            const status: NotebookRunStatus =
+              shellResult.errorCode === 'shell-cleanup-incomplete'
                 ? 'failed'
-                : shellResult.exitCode === 0
-                  ? 'completed'
-                  : shellResult.exitCode === null
-                    ? 'timeout'
-                    : 'failed'
+                : shellResult.cancelled
+                  ? 'cancelled'
+                  : shellResult.runtimeStatus === 'unavailable'
+                    ? 'failed'
+                    : shellResult.exitCode === 0
+                      ? 'completed'
+                      : shellResult.exitCode === null
+                        ? 'timeout'
+                        : 'failed'
             this.options.logger.info?.('shell execution completed', {
               executionId: runId,
               runtime: runtimeBinding.kind,
@@ -998,6 +1002,16 @@ class NotebookExecutionOwner {
                 : {}),
               stage: shellResult.runtimeStatus === 'unavailable' ? 'sandbox-prepare' : 'execution',
               status,
+              terminationReason:
+                shellResult.errorCode === 'shell-cleanup-incomplete'
+                  ? 'cleanup-incomplete'
+                  : shellResult.cancelled
+                    ? 'cancel'
+                    : shellResult.exitCode === null
+                      ? 'timeout'
+                      : 'exit',
+              cleanupState:
+                shellResult.errorCode === 'shell-cleanup-incomplete' ? 'incomplete' : 'complete',
               exitCode: shellResult.exitCode,
               stdoutByteCount: Buffer.byteLength(shellResult.stdout, 'utf8'),
               stderrByteCount: Buffer.byteLength(shellResult.stderr, 'utf8'),

@@ -91,6 +91,14 @@ describe('WSL2 sandbox adapter', () => {
         '--user',
         'open-science-spike',
         '--exec',
+        '/bin/bash',
+        '--noprofile',
+        '--norc',
+        '-c',
+        expect.stringContaining('export OPEN_SCIENCE_WSL_EXECUTION_TOKEN="$token"'),
+        'open-science-wsl-execution',
+        expect.stringMatching(/^\/tmp\/\.open-science-execution-[0-9a-f-]{36}\.receipt$/u),
+        expect.stringMatching(/^open-science-execution-[0-9a-f-]{36}$/u),
         '/usr/bin/bwrap',
         '--unshare-all',
         '--tmpfs',
@@ -130,6 +138,45 @@ describe('WSL2 sandbox adapter', () => {
     expect(launch.env.PATH).toBeUndefined()
     expect(launch.env.AWS_SECRET_ACCESS_KEY).toBeUndefined()
     expect(mapPath).toHaveBeenCalledWith('C:\\Open Science\\Workspace 路径')
+  })
+
+  it('releases one exact guest execution once and reports incomplete cleanup', async () => {
+    const cleanupGuest = vi.fn(async () => false)
+    const launch = await wsl2Launch({
+      target: {
+        kind: 'wsl2',
+        profileId: 'profile-1',
+        distro: 'Ubuntu-22.04',
+        user: 'open-science-spike'
+      },
+      command: 'sleep 30',
+      cwd: 'C:\\workspace',
+      env: {},
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      },
+      mapPath: async () => '/mnt/c/workspace',
+      cleanupGuest
+    })
+
+    const first = launch.release('cancel')
+    const second = launch.release('timeout')
+
+    await expect(first).resolves.toBe(false)
+    expect(second).toBe(first)
+    expect(cleanupGuest).toHaveBeenCalledOnce()
+    expect(cleanupGuest).toHaveBeenCalledWith(
+      expect.objectContaining({
+        distro: 'Ubuntu-22.04',
+        user: 'open-science-spike',
+        reason: 'cancel',
+        receipt: expect.stringMatching(/^\/tmp\/\.open-science-execution-/u),
+        token: expect.stringMatching(/^open-science-execution-/u)
+      })
+    )
   })
 
   it('fails closed when an authorized Windows path cannot be mapped', async () => {

@@ -247,6 +247,14 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
             request
           )
       })
+      this.log.info('sandbox process prepared', {
+        executionReference: invocation.executionReference,
+        phase: 'sandbox-prepare',
+        result: 'complete',
+        platform: this.platform,
+        target: invocation.target?.kind ?? 'native',
+        runtime: invocation.runtime
+      })
     } catch (error) {
       await rm(commandTempRoot, { recursive: true, force: true }).catch(() => undefined)
       this.log.error('sandbox process preparation failed', {
@@ -279,6 +287,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
             temporaryCleanup.status === 'fulfilled'
         }
         this.log.info('sandbox cleanup completed', {
+          executionReference: invocation.executionReference,
           phase: 'sandbox-cleanup',
           result: Object.values(result).every(Boolean) ? 'complete' : 'incomplete',
           platform: this.platform,
