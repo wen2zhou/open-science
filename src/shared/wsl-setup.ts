@@ -19,6 +19,14 @@ export type WslSelection = Readonly<{
   user: string
 }>
 
+export type LocalShellRuntimePreference = 'powershell' | 'wsl2-bash'
+
+export type SwitchToPowerShellResult = Readonly<{
+  runtimeBinding: Readonly<{ kind: 'powershell'; version: '5.1' }>
+  appliesTo: 'subsequent-executions'
+  wslProfilePreserved: boolean
+}>
+
 export type WslReadiness = Readonly<{
   wsl2?: boolean
   home?: boolean

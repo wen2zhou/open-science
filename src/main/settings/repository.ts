@@ -33,7 +33,7 @@ import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement } from '../../shared/notebook-runtime'
 import type { CloseActionPreference } from '../../shared/window-controls'
 import type { LanguagePreference } from '../../shared/locale'
-import type { WslSelection } from '../../shared/wsl-setup'
+import type { LocalShellRuntimePreference, WslSelection } from '../../shared/wsl-setup'
 import {
   type StoredComputeGrant,
   type StoredConnectors,
@@ -454,6 +454,10 @@ class SettingsRepository {
     const user = selection.user.trim()
     if (!distro || !user) throw new Error('Invalid WSL profile selection.')
     return this.mutate((settings) => ({ ...settings, wslSelection: { distro, user } }))
+  }
+
+  async setLocalShellRuntime(runtime: LocalShellRuntimePreference): Promise<StoredSettings> {
+    return this.mutate((settings) => ({ ...settings, localShellRuntime: runtime }))
   }
 
   async setAgentFramework(id: AgentFrameworkId): Promise<StoredSettings> {

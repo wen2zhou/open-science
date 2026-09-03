@@ -319,6 +319,28 @@ afterEach(async () => {
   await rm(storageRoot, { recursive: true, force: true })
 })
 
+describe('SettingsService: Local Shell runtime', () => {
+  it('returns an immutable PowerShell binding and preserves the selected WSL profile', async () => {
+    const service = createService()
+    await repository.setWslSelection({ distro: 'Ubuntu-22.04', user: 'scientist' })
+    await repository.setLocalShellRuntime('wsl2-bash')
+
+    const result = await service.switchLocalShellToPowerShell()
+
+    expect(result).toEqual({
+      runtimeBinding: { kind: 'powershell', version: '5.1' },
+      appliesTo: 'subsequent-executions',
+      wslProfilePreserved: true
+    })
+    expect(Object.isFrozen(result)).toBe(true)
+    expect(Object.isFrozen(result.runtimeBinding)).toBe(true)
+    await expect(repository.getSettings()).resolves.toMatchObject({
+      localShellRuntime: 'powershell',
+      wslSelection: { distro: 'Ubuntu-22.04', user: 'scientist' }
+    })
+  })
+})
+
 describe('SettingsService: load diagnostics', () => {
   it('records the renderer-safe settings load phases and duration', async () => {
     const log = {

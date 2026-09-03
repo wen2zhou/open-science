@@ -17,6 +17,7 @@ let install: ReturnType<typeof vi.fn>
 let installRecommended: ReturnType<typeof vi.fn>
 let openTerminal: ReturnType<typeof vi.fn>
 let createSupportHandoff: ReturnType<typeof vi.fn>
+let switchToPowerShell: ReturnType<typeof vi.fn>
 
 const project = (id: string, updatedAt: number): Project => ({
   id,
@@ -79,6 +80,11 @@ beforeEach(() => {
     versions: { wsl: '2', distribution: '2' },
     target: 'restore-wsl2-bash'
   })
+  switchToPowerShell = vi.fn().mockResolvedValue({
+    runtimeBinding: { kind: 'powershell', version: '5.1' },
+    appliesTo: 'subsequent-executions',
+    wslProfilePreserved: true
+  })
   ;(window as unknown as { api: unknown }).api = {
     settings: {
       probeWslSetup: probe,
@@ -86,7 +92,8 @@ beforeEach(() => {
       installWslPlatform: install,
       installRecommendedWslDistro: installRecommended,
       openWslTerminal: openTerminal,
-      createWslSupportHandoff: createSupportHandoff
+      createWslSupportHandoff: createSupportHandoff,
+      switchLocalShellToPowerShell: switchToPowerShell
     }
   }
   useProjectStore.setState({
@@ -110,6 +117,56 @@ afterEach(() => {
 })
 
 describe('WslLocalShellSection', () => {
+  it('explicitly switches only future Shell commands to PowerShell and never retries failed work', async () => {
+    probe.mockResolvedValue({
+      state: 'failed',
+      distros: [{ name: 'Ubuntu-22.04', version: 2, isDefault: true }],
+      selection: { distro: 'Ubuntu-22.04', user: 'scientist' },
+      errorCode: 'wsl_namespace_unavailable',
+      operationReference: 'a1b2c3d4'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    expect(switchToPowerShell).not.toHaveBeenCalled()
+    const button = [...container.querySelectorAll('button')].find((candidate) =>
+      candidate.textContent?.includes('Switch to PowerShell')
+    )
+    await act(async () => button?.click())
+    await flush()
+
+    expect(switchToPowerShell).toHaveBeenCalledOnce()
+    expect(probe).toHaveBeenCalledOnce()
+    expect(select).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('Future Shell commands will use PowerShell')
+    expect(container.textContent).toContain('Running and failed commands were not rerun')
+    expect(container.textContent).toContain('saved WSL2 profile is still available')
+  })
+
+  it('shows retry guidance without claiming a switch when persistence fails', async () => {
+    probe.mockResolvedValue({
+      state: 'failed',
+      distros: [],
+      errorCode: 'wsl_namespace_unavailable',
+      operationReference: 'failed01'
+    })
+    switchToPowerShell.mockRejectedValueOnce(new Error('disk full'))
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    const button = [...container.querySelectorAll('button')].find((candidate) =>
+      candidate.textContent?.includes('Switch to PowerShell')
+    )
+    await act(async () => button?.click())
+    await flush()
+
+    expect(container.textContent).toContain('could not switch to PowerShell')
+    expect(container.textContent).toContain('Shell preference was not changed')
+    expect(container.textContent).toContain('Try switching again')
+    expect(container.textContent).not.toContain('Future Shell commands will use PowerShell')
+    expect(probe).toHaveBeenCalledOnce()
+  })
+
   it('requires a user click to install and never replays after UAC cancellation', async () => {
     probe.mockResolvedValue({
       state: 'not-installed',

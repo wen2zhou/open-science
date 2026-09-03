@@ -272,6 +272,7 @@ import { LocalFsService } from './local-fs/service'
 import { SettingsService } from './settings/service'
 import { SettingsRepository } from './settings/repository'
 import { WslSetupOwner } from './wsl/wsl-setup-owner'
+import { resolveConfiguredShellRuntimeBinding } from './notebook/configured-shell-runtime'
 import { probeWindowsVolume } from './wsl/windows-volume-probe'
 import { SettingsSnapshotCommitOwner } from './settings/settings-snapshot-commit-owner'
 import type { SettingsDocumentStore } from './settings/document-store'
@@ -2085,7 +2086,9 @@ const createApplicationModules = async (
       settingsService,
       permissionGrantRegistry,
       specialistService,
-      sessionPersistenceCoordinator
+      sessionPersistenceCoordinator,
+      getShellRuntimeBinding: async () =>
+        resolveConfiguredShellRuntimeBinding(await settingsRepository.getSettings())
     },
     notebookRpcServer: requireNotebookRpcServer,
     readSession: ({ projectId, sessionId }) => sessionRepository.loadSession(projectId, sessionId),
@@ -2694,6 +2697,8 @@ const createApplicationModules = async (
       managedFileVersions: managedFileVersionService,
       uploadRepository,
       notebookRpcServer,
+      getShellRuntimeBinding: async () =>
+        resolveConfiguredShellRuntimeBinding(await settingsRepository.getSettings()),
       peekNotebookHandoffContext: (sessionId) => notebookService.peekHandoffContext(sessionId),
       authorizeSkillImportReferencedUploads: (projectId, sessionId, paths) =>
         conversationSkillImporter.authorizeReferencedUploads(projectId, sessionId, paths),
@@ -3304,6 +3309,9 @@ const createApplicationModules = async (
         void runtime.requestAgentFrameworkSwitch(frameworkId)
         void sideChatRuntime.requestProviderReconnect()
       }
+    },
+    localShell: {
+      requestShellRuntimeRefresh: () => void runtime.requestProviderReconnect()
     },
     skills: {
       requestSkillsReload: () => void runtime.requestSkillsReload(),
@@ -4054,6 +4062,7 @@ const createApplicationModules = async (
     settingsCore: {
       service: settingsService,
       appearance: settingsWorkflows.appearance,
+      localShell: settingsWorkflows.localShell,
       snapshotCommits: settingsSnapshotCommits,
       emitInstallEvent: (event) => broadcastToRenderers(SETTINGS_INSTALL_LOG_CHANNEL, event),
       listAppIconPreviews

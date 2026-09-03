@@ -31,7 +31,7 @@ import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement } from '../../shared/notebook-runtime'
 import type { CloseActionPreference } from '../../shared/window-controls'
 import type { LanguagePreference } from '../../shared/locale'
-import type { WslSelection } from '../../shared/wsl-setup'
+import type { LocalShellRuntimePreference, WslSelection } from '../../shared/wsl-setup'
 import type { AgentFrameworkId } from '../agent-framework'
 import type {
   OAuthClientInformationMixed,
@@ -277,6 +277,8 @@ export type StoredSettings = {
   notebookNetwork?: NotebookNetworkSettings
   // A candidate profile only. Selection is not an execution enablement signal.
   wslSelection?: WslSelection
+  // Explicit local Shell backend preference. Absence preserves the platform default.
+  localShellRuntime?: LocalShellRuntimePreference
   // Absolute path of the relocatable data root (artifacts/notebooks/runtime/uploads). Absent means
   // "use the config root" (default). Only written after a successful migration; a change needs a restart.
   dataRoot?: string

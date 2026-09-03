@@ -84,6 +84,7 @@ describe('settings document codec', () => {
       computeGrants: [{ projectId: 'p1', operation: 'download', providerId: 'c1' }],
       notebookRuntimes: { python: { source: 'managed' } },
       agentEnvironmentCreationEnabled: false,
+      localShellRuntime: 'powershell',
       wslSelection: { distro: ' Ubuntu-24.04 ', user: ' scientist ' },
       defaultPermissionProfile: 'ask',
       dataRoot,
@@ -101,6 +102,7 @@ describe('settings document codec', () => {
       },
       computeGrants: [{ projectId: 'p1', operation: 'download', providerId: 'c1' }],
       agentEnvironmentCreationEnabled: false,
+      localShellRuntime: 'powershell',
       wslSelection: { distro: 'Ubuntu-24.04', user: 'scientist' },
       defaultPermissionProfile: 'ask',
       dataRoot
@@ -122,6 +124,12 @@ describe('settings document codec', () => {
     expect(
       sanitizeSettings({ providers: [], agentEnvironmentCreationEnabled: 'false' })
     ).not.toHaveProperty('agentEnvironmentCreationEnabled')
+  })
+
+  it('drops an unknown Local Shell runtime instead of silently selecting a backend', () => {
+    expect(sanitizeSettings({ providers: [], localShellRuntime: 'cmd' })).not.toHaveProperty(
+      'localShellRuntime'
+    )
   })
 })
 

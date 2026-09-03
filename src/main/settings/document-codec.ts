@@ -303,6 +303,9 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
   if (value.notebookNetwork !== undefined) {
     settings.notebookNetwork = normalizeNotebookNetworkSettings(value.notebookNetwork)
   }
+  if (value.localShellRuntime === 'powershell' || value.localShellRuntime === 'wsl2-bash') {
+    settings.localShellRuntime = value.localShellRuntime
+  }
   if (isRecord(value.wslSelection)) {
     const distro = asString(value.wslSelection.distro)?.trim()
     const user = asString(value.wslSelection.user)?.trim()

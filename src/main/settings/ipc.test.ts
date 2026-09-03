@@ -88,6 +88,7 @@ type FakeSettingsService = Record<
   | 'logoutXaiOAuth'
   | 'refreshProviderModels'
   | 'markOnboardingComplete'
+  | 'switchLocalShellToPowerShell'
   | 'getPackageMirror'
   | 'setPackageMirror'
   | 'setNetworkProxy'
@@ -216,6 +217,11 @@ const createFakeService = (): FakeSettingsService => ({
   logoutXaiOAuth: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
   refreshProviderModels: vi.fn().mockResolvedValue({ ok: true, models: [] }),
   markOnboardingComplete: vi.fn().mockResolvedValue({ claude: {}, providers: [] }),
+  switchLocalShellToPowerShell: vi.fn().mockResolvedValue({
+    runtimeBinding: { kind: 'powershell', version: '5.1' },
+    appliesTo: 'subsequent-executions',
+    wslProfilePreserved: true
+  }),
   getPackageMirror: vi.fn().mockResolvedValue({}),
   setPackageMirror: vi.fn().mockResolvedValue({}),
   setNetworkProxy: vi.fn().mockResolvedValue({ mode: 'system' }),
@@ -293,6 +299,7 @@ const asService = (fake: FakeSettingsService): SettingsService => fake as unknow
 type TestSettingsIpcOptions = {
   service: SettingsService
   onActiveProviderChanged?: () => void
+  onShellRuntimeRefresh?: () => void
   onAgentFrameworkChanged?: SettingsWorkflowEffects['runtime']['requestAgentFrameworkSwitch']
   onSkillsChanged?: () => void
   onConnectorsChanged?: () => void
@@ -308,6 +315,7 @@ type TestSettingsIpcOptions = {
 const registerTestSettingsIpcHandlers = ({
   service,
   onActiveProviderChanged,
+  onShellRuntimeRefresh,
   onAgentFrameworkChanged,
   onSkillsChanged,
   onConnectorsChanged,
@@ -328,6 +336,7 @@ const registerTestSettingsIpcHandlers = ({
         requestProviderReconnect: onActiveProviderChanged ?? (() => undefined),
         requestAgentFrameworkSwitch: onAgentFrameworkChanged ?? (() => undefined)
       },
+      localShell: { requestShellRuntimeRefresh: onShellRuntimeRefresh ?? (() => undefined) },
       skills: {
         requestSkillsReload: onSkillsChanged ?? (() => undefined),
         notifySkillCatalogChanged: onSkillsChanged ?? (() => undefined),
@@ -603,6 +612,24 @@ describe('settings IPC handlers', () => {
     await invoke('settings:mark-onboarding-complete')
 
     expect(service.markOnboardingComplete).toHaveBeenCalledTimes(1)
+  })
+
+  it('persists a PowerShell switch before refreshing subsequent Shell sessions', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    const onShellRuntimeRefresh = vi.fn()
+    registerTestSettingsIpcHandlers({
+      service: asService(service),
+      onShellRuntimeRefresh
+    })
+
+    await invoke('settings:switch-local-shell-to-powershell')
+
+    expect(service.switchLocalShellToPowerShell).toHaveBeenCalledOnce()
+    expect(onShellRuntimeRefresh).toHaveBeenCalledOnce()
+    expect(service.switchLocalShellToPowerShell.mock.invocationCallOrder[0]).toBeLessThan(
+      onShellRuntimeRefresh.mock.invocationCallOrder[0]
+    )
   })
 
   it('fires onConnectorsChanged after a connector is toggled', async () => {

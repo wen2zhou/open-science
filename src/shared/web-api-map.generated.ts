@@ -282,6 +282,7 @@ export const WEB_INVOKE_CHANNELS = {
   'settings.setSubagentModel': 'settings:set-subagent-model',
   'settings.setToolPermission': 'settings:set-tool-permission',
   'settings.setVisionModel': 'settings:set-vision-model',
+  'settings.switchLocalShellToPowerShell': 'settings:switch-local-shell-to-powershell',
   'settings.uninstallClaude': 'settings:uninstall-claude',
   'settings.uninstallCodeBuddy': 'settings:uninstall-codebuddy',
   'settings.uninstallCodex': 'settings:uninstall-codex',

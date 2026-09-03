@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
+import type { ShellRuntimeBinding } from '../../shared/notebook'
 import { claudeCodeFramework, codexFramework, opencodeFramework } from '../agent-framework'
 import type { AgentMcpHttpHost } from './mcp-http-host'
 import {
@@ -650,6 +651,62 @@ describe('ACP session capability owner', () => {
       user: 'researcher'
     })
     expect(Object.isFrozen(owner.shellRuntimeBindingFor('app-session'))).toBe(true)
+  })
+
+  it('captures PowerShell only when the next Session capabilities are provisioned', async () => {
+    let selected: ShellRuntimeBinding = {
+      kind: 'wsl2-bash' as const,
+      profileId: 'profile-1',
+      distro: 'Ubuntu-22.04',
+      user: 'researcher'
+    }
+    const owner = createOwner({
+      artifacts: undefined,
+      skillImport: undefined,
+      notebook: {
+        projectId: 'project',
+        mcpEntryPath: '/app/main.js',
+        getShellRuntimeBinding: () => selected,
+        getRpcConnection: async () => ({
+          endpoint: 'http://127.0.0.1:1',
+          token: 'notebook'
+        })
+      }
+    })
+    const request = {
+      stableAppSessionId: 'provider-session',
+      framework: opencodeFramework,
+      nativeMcpEnabled: true,
+      bridgeMcpAliasesEnabled: false,
+      policy: CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY,
+      sessionCwd: '/workspace',
+      projectId: 'project'
+    }
+
+    const current = await owner.provision(request)
+    current.commit('app-session')
+    selected = { kind: 'powershell', version: '5.1' }
+
+    expect(owner.shellRuntimeBindingFor('app-session')).toMatchObject({ kind: 'wsl2-bash' })
+
+    owner.revokeSession('app-session')
+    const refreshed = await owner.provision(request)
+    refreshed.commit('app-session')
+
+    expect(owner.shellRuntimeBindingFor('app-session')).toEqual({
+      kind: 'powershell',
+      version: '5.1'
+    })
+    expect(
+      refreshed.mcpServers.find((server) => server.name === 'open_science_notebook')
+    ).toMatchObject({
+      env: expect.arrayContaining([
+        {
+          name: 'OPEN_SCIENCE_NOTEBOOK_SHELL_RUNTIME',
+          value: '{"kind":"powershell","version":"5.1"}'
+        }
+      ])
+    })
   })
 
   it('releases acquired local RPC leases when a later provision step fails', async () => {

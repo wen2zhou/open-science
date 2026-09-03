@@ -50,6 +50,7 @@ import {
   readVisionModel
 } from './transport-validation'
 import type { AppearanceSettingsWorkflows } from './workflows/appearance'
+import type { LocalShellSettingsWorkflows } from './workflows/local-shell'
 
 type CoreSettingsCommandStore = Pick<
   SettingsService,
@@ -108,6 +109,9 @@ type StoreResult<Method extends keyof CoreSettingsCommandStore> =
     ? Awaited<Result>
     : never
 type AppearanceResult = Awaited<ReturnType<AppearanceSettingsWorkflows['setAppIconVariant']>>
+type SwitchToPowerShellResult = Awaited<
+  ReturnType<LocalShellSettingsWorkflows['switchToPowerShell']>
+>
 
 const settingsCoreApplicationCommands = Object.freeze({
   cancelClaudeLogin: defineApplicationCommand<
@@ -338,6 +342,11 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [request: SelectWslProfileRequest],
     StoreResult<'selectWslProfile'>
   >('settings:select-wsl-profile'),
+  switchLocalShellToPowerShell: defineApplicationCommand<
+    'settings:switch-local-shell-to-powershell',
+    readonly [],
+    SwitchToPowerShellResult
+  >('settings:switch-local-shell-to-powershell'),
   setSessionDetailsModel: defineApplicationCommand<
     'settings:set-session-details-model',
     readonly [request: SetSessionDetailsModelRequest],
@@ -407,6 +416,7 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
   settingsCoreApplicationCommands.setProjectFilesFilter,
   settingsCoreApplicationCommands.setReviewerModel,
   settingsCoreApplicationCommands.selectWslProfile,
+  settingsCoreApplicationCommands.switchLocalShellToPowerShell,
   settingsCoreApplicationCommands.setSessionDetailsModel,
   settingsCoreApplicationCommands.setSubagentModel,
   settingsCoreApplicationCommands.setVisionModel,
@@ -416,6 +426,7 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
 type CoreSettingsApplicationCommandDependencies = Readonly<{
   service: CoreSettingsCommandStore
   appearance: Pick<AppearanceSettingsWorkflows, 'setAppIconVariant'>
+  localShell: Pick<LocalShellSettingsWorkflows, 'switchToPowerShell'>
   snapshotCommits: SettingsSnapshotCommitOwner
   emitInstallEvent: (event: ClaudeInstallEvent) => void
   listAppIconPreviews?: () => AppIconPreview[]
@@ -592,6 +603,10 @@ const registerCoreSettingsApplicationCommands = (
       'settings:select-wsl-profile': ({ args, callerContext }) => {
         requireLocalCaller(callerContext, 'settings:select-wsl-profile')
         return dependencies.service.selectWslProfile(args[0])
+      },
+      'settings:switch-local-shell-to-powershell': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:switch-local-shell-to-powershell')
+        return dependencies.localShell.switchToPowerShell()
       },
       'settings:set-session-details-model': ({ args }) =>
         dependencies.snapshotCommits.currentSnapshotAfter(

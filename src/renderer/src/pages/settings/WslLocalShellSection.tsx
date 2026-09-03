@@ -29,6 +29,7 @@ import {
 } from '@/components/ui/select'
 import {
   RECOMMENDED_WSL_DISTRO,
+  type SwitchToPowerShellResult,
   type WslPlatformInstallResult,
   type WslReadiness,
   type WslSetupSnapshot
@@ -100,6 +101,8 @@ export const WslLocalShellSection = (): React.JSX.Element => {
   const [busy, setBusy] = useState(true)
   const [installResult, setInstallResult] = useState<WslPlatformInstallResult>()
   const [copied, setCopied] = useState(false)
+  const [shellSwitchResult, setShellSwitchResult] = useState<SwitchToPowerShellResult>()
+  const [shellSwitchFailed, setShellSwitchFailed] = useState(false)
   const projects = useProjectStore((state) => state.projects)
   const chatProjectId = useMemo(
     () => resolveCustomizeProjectId(projects.filter((project) => project.archivedAt === undefined)),
@@ -253,6 +256,19 @@ export const WslLocalShellSection = (): React.JSX.Element => {
       const doc = buildWslSupportPrefillDoc(handoff, t)
       const opened = useNavigationStore.getState().startWslSupportConversation(chatProjectId, doc)
       if (opened) useSettingsStore.getState().closeSettings()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const switchToPowerShell = async (): Promise<void> => {
+    setBusy(true)
+    setShellSwitchFailed(false)
+    try {
+      setShellSwitchResult(await window.api.settings.switchLocalShellToPowerShell())
+    } catch {
+      setShellSwitchResult(undefined)
+      setShellSwitchFailed(true)
     } finally {
       setBusy(false)
     }
@@ -497,11 +513,51 @@ export const WslLocalShellSection = (): React.JSX.Element => {
         ) : null}
 
         {!busy && snapshot.state !== 'ready' ? (
-          <p className="mt-4 text-xs text-muted-foreground">
-            {t(
-              'You can keep using PowerShell while WSL2 is unavailable; these setup choices are preserved.'
-            )}
-          </p>
+          <div className="mt-4 flex flex-col items-start gap-2">
+            <p className="text-xs text-muted-foreground">
+              {t(
+                'You can keep using PowerShell while WSL2 is unavailable; these setup choices are preserved.'
+              )}
+            </p>
+            <Button type="button" variant="outline" onClick={() => void switchToPowerShell()}>
+              <SquareTerminal aria-hidden="true" />
+              {t('Switch to PowerShell')}
+            </Button>
+          </div>
+        ) : null}
+
+        {!busy && shellSwitchResult ? (
+          <div
+            className="mt-4 rounded-md border border-status-success-accent/30 bg-status-success-surface p-3 text-sm text-status-success-foreground dark:bg-status-success-dark-surface dark:text-status-success-dark-foreground"
+            role="status"
+          >
+            <p>{t('Future Shell commands will use PowerShell.')}</p>
+            <p className="mt-1 text-xs">
+              {t('Running and failed commands were not rerun or moved to another Shell.')}
+            </p>
+            {shellSwitchResult.wslProfilePreserved ? (
+              <p className="mt-1 text-xs">
+                {t('Your saved WSL2 profile is still available when you are ready to switch back.')}
+              </p>
+            ) : null}
+          </div>
+        ) : null}
+
+        {!busy && shellSwitchFailed ? (
+          <div className="mt-4 flex justify-center">
+            <ErrorNotice
+              icon={CircleX}
+              tone="red"
+              title={t('Open Science could not switch to PowerShell.')}
+              description={t(
+                'The Shell preference was not changed. Check the app logs, then try again.'
+              )}
+              primaryButton={{
+                label: t('Try switching again'),
+                onClick: () => void switchToPowerShell()
+              }}
+            />
+          </div>
         ) : null}
 
         {supportAvailable ? (

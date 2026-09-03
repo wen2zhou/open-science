@@ -1662,3 +1662,18 @@ describe('settings repository: unknown provider type on load (claude-default rem
     expect(settings.providers.find((p) => p.id === 'p-removed')).toBeUndefined()
   })
 })
+
+describe('settings repository: Local Shell runtime', () => {
+  it('switches the future runtime to PowerShell without deleting the saved WSL profile', async () => {
+    const repository = new SettingsRepository(await createStorageRoot())
+    await repository.setWslSelection({ distro: 'Ubuntu-22.04', user: 'scientist' })
+    await repository.setLocalShellRuntime('wsl2-bash')
+
+    await repository.setLocalShellRuntime('powershell')
+
+    await expect(repository.getSettings()).resolves.toMatchObject({
+      localShellRuntime: 'powershell',
+      wslSelection: { distro: 'Ubuntu-22.04', user: 'scientist' }
+    })
+  })
+})

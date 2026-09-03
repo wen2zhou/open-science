@@ -4,6 +4,7 @@ import type { ChildProcessWithoutNullStreams } from 'node:child_process'
 import { app } from 'electron'
 
 import type { AcpPermissionRequest, AcpRuntimeEvent, AcpStateUpdate } from '../../shared/acp'
+import type { ShellRuntimeBinding } from '../../shared/notebook'
 import { DEFAULT_ARTIFACT_PROJECT_ID } from '../../shared/artifacts'
 import { resolveActiveConversationMessages } from '../../shared/conversation-graph'
 import { CODEX_SUBSCRIPTION_PROVIDER_ID } from '../../shared/settings'
@@ -110,6 +111,7 @@ type AcpRuntimeCompositionOptions = AcpRuntimeArtifacts & {
   mcpEntryPath: string
   uploadRepository: UploadRepository
   notebookRpcServer: NotebookLocalRpcServer
+  getShellRuntimeBinding?: () => ShellRuntimeBinding | Promise<ShellRuntimeBinding>
   peekNotebookHandoffContext?: (sessionId: string) => NotebookHandoffContext | undefined
   authorizeSkillImportReferencedUploads: (
     projectId: string,
@@ -173,6 +175,7 @@ const createAcpRuntime = ({
   managedFileVersions,
   uploadRepository,
   notebookRpcServer,
+  getShellRuntimeBinding,
   peekNotebookHandoffContext,
   authorizeSkillImportReferencedUploads,
   settingsService,
@@ -380,6 +383,8 @@ const createAcpRuntime = ({
           projectId: DEFAULT_ARTIFACT_PROJECT_ID,
           mcpEntryPath,
           memoryTools: !delegatedNotebookConnection,
+          isMemoryEnabled: () => memory?.isEnabled?.() ?? Promise.resolve(false),
+          getShellRuntimeBinding,
           getRpcConnection: ({ sessionId, projectId, memoryTools }) =>
             delegatedNotebookConnection
               ? Promise.resolve(delegatedNotebookConnection)

@@ -87,6 +87,7 @@ import type { NotebookNetworkSettings, NotebookNetworkStatus } from '../../share
 import type {
   OpenWslTerminalRequest,
   SelectWslProfileRequest,
+  SwitchToPowerShellResult,
   WslPlatformInstallResult,
   WslSetupSnapshot,
   WslSupportHandoff
@@ -528,6 +529,15 @@ class SettingsService {
   createWslSupportHandoff(): Promise<WslSupportHandoff> {
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.createSupportHandoff()
+  }
+
+  async switchLocalShellToPowerShell(): Promise<SwitchToPowerShellResult> {
+    const settings = await this.repository.setLocalShellRuntime('powershell')
+    return Object.freeze({
+      runtimeBinding: Object.freeze({ kind: 'powershell', version: '5.1' }),
+      appliesTo: 'subsequent-executions',
+      wslProfilePreserved: settings.wslSelection !== undefined
+    })
   }
 
   private async migrateLegacyKeyRefs(settings: StoredSettings): Promise<StoredSettings> {
