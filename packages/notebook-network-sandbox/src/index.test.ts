@@ -30,7 +30,7 @@ beforeEach(() => {
   for (const mock of Object.values(backend)) mock.mockReset()
   backend.initialize.mockResolvedValue(undefined)
   backend.refreshWindowsProtection.mockResolvedValue({ warnings: [], errors: [] })
-  backend.cleanupAfterCommand.mockImplementation(async (_commandId, processOutcome) => ({
+  backend.cleanupAfterCommand.mockImplementation(async (_commandId, _reason, processOutcome) => ({
     processesTerminated: processOutcome.processesTerminated,
     networkClosed: true,
     temporaryResourcesRemoved: true
@@ -242,7 +242,7 @@ describe('NotebookNetworkSandbox', () => {
     })
     expect(firstCleanup).toBe(secondCleanup)
     expect(backend.cleanupAfterCommand).toHaveBeenCalledOnce()
-    expect(backend.cleanupAfterCommand).toHaveBeenCalledWith(expect.any(String), {
+    expect(backend.cleanupAfterCommand).toHaveBeenCalledWith(expect.any(String), 'timeout', {
       processesTerminated: false
     })
     await sandbox.dispose()
