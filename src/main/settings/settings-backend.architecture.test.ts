@@ -666,6 +666,7 @@ describe('Settings backend ownership architecture', () => {
 
   it('locks the durable Settings shape and secret-free explicit target seam', () => {
     expect(typePropertyNames(settingsPaths.types, 'StoredSettings')).toEqual([
+      'activatedWslSelection',
       'activeModel',
       'activeProviderId',
       'agentEnvironmentCreationEnabled',

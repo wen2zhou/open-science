@@ -277,6 +277,9 @@ export type StoredSettings = {
   notebookNetwork?: NotebookNetworkSettings
   // A candidate profile only. Selection is not an execution enablement signal.
   wslSelection?: WslSelection
+  // The profile explicitly admitted for execution. Historical documents omit it and therefore
+  // cannot run WSL2 Bash until the user activates a freshly verified candidate.
+  activatedWslSelection?: WslSelection
   // Explicit local Shell backend preference. Absence preserves the platform default.
   localShellRuntime?: LocalShellRuntimePreference
   // Absolute path of the relocatable data root (artifacts/notebooks/runtime/uploads). Absent means

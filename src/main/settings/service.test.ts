@@ -325,8 +325,9 @@ afterEach(async () => {
 describe('SettingsService: Local Shell runtime', () => {
   it('returns an immutable PowerShell binding and preserves the selected WSL profile', async () => {
     const service = createService()
-    await repository.setWslSelection({ distro: 'Ubuntu-22.04', user: 'scientist' })
-    await repository.setLocalShellRuntime('wsl2-bash')
+    const profile = { distro: 'Ubuntu-22.04', user: 'scientist' }
+    await repository.setWslSelection(profile)
+    await repository.setLocalShellRuntime('wsl2-bash', profile)
 
     const write = await service.switchLocalShellToPowerShell()
 
@@ -347,6 +348,7 @@ describe('SettingsService: Local Shell runtime', () => {
   it('uses only the latest service-validated ready WSL2 profile', async () => {
     vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
     const selection = { distro: 'Ubuntu-22.04', user: 'scientist' }
+    const priorActive = { distro: 'Ubuntu-20.04', user: 'active-user' }
     const service = createService(undefined, {
       wslSetup: {
         probe: vi.fn(),
@@ -358,7 +360,14 @@ describe('SettingsService: Local Shell runtime', () => {
         requireLatestReadySelection: vi.fn(async () => selection)
       }
     })
+    await repository.setLocalShellRuntime('wsl2-bash', priorActive)
     await repository.setLocalShellRuntime('powershell')
+    await repository.setWslSelection(selection)
+    await expect(repository.getSettings()).resolves.toMatchObject({
+      localShellRuntime: 'powershell',
+      activatedWslSelection: priorActive,
+      wslSelection: selection
+    })
 
     await expect(service.useWsl2Bash()).resolves.toMatchObject({
       result: {
@@ -368,7 +377,8 @@ describe('SettingsService: Local Shell runtime', () => {
       }
     })
     await expect(repository.getSettings()).resolves.toMatchObject({
-      localShellRuntime: 'wsl2-bash'
+      localShellRuntime: 'wsl2-bash',
+      activatedWslSelection: selection
     })
   })
 

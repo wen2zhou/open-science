@@ -499,6 +499,11 @@ class AcpPermissionContext {
           ? shellRuntimeDialect(notebookShellRuntime)
           : permissionFramework.commandShellDialect,
         ...(notebookShellRuntime ? { notebookShellRuntime: notebookShellRuntime.kind } : {}),
+        ...(notebookShellRuntime?.kind === 'wsl2-bash'
+          ? {
+              notebookShellRuntimeQualifier: `${notebookShellRuntime.kind}@${notebookShellRuntime.profileId}`
+            }
+          : {}),
         autoReviewStrategy: profileState?.autoReviewStrategy,
         cwd: aggregateSnapshot?.cwd,
         mcpServerNames,

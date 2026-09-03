@@ -253,4 +253,41 @@ describe('LocalShellSettingsWorkflows', () => {
       errors: [initialFailure, rollbackRefreshFailure]
     })
   })
+
+  it('restores the previously activated WSL profile when activating a ready candidate fails', async () => {
+    const activeA = { distro: 'Ubuntu-A', user: 'active' }
+    const candidateB = { distro: 'Ubuntu-B', user: 'candidate' }
+    let activeProfile = activeA
+    const receipt: LocalShellRuntimeMutation = {
+      revision: 6,
+      runtime: 'wsl2-bash',
+      previous: 'wsl2-bash',
+      previousActivatedWslSelection: activeA
+    }
+    const settings = {
+      switchLocalShellToPowerShell: vi.fn(),
+      useWsl2Bash: vi.fn(async () => {
+        activeProfile = candidateB
+        return {
+          result: { ...wslResult, selection: candidateB },
+          mutation: receipt
+        }
+      }),
+      restoreLocalShellRuntimePreference: vi.fn(async (mutationToRestore) => {
+        activeProfile = mutationToRestore.previousActivatedWslSelection ?? activeProfile
+        return true
+      })
+    }
+    const workflows = new LocalShellSettingsWorkflows(settings, {
+      requestShellRuntimeRefresh: vi
+        .fn()
+        .mockRejectedValueOnce(new Error('refresh failed'))
+        .mockResolvedValueOnce(undefined)
+    })
+
+    await expect(workflows.useWsl2Bash()).rejects.toThrow('refresh failed')
+
+    expect(activeProfile).toEqual(activeA)
+    expect(settings.restoreLocalShellRuntimePreference).toHaveBeenCalledWith(receipt)
+  })
 })

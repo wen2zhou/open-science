@@ -464,17 +464,32 @@ class SettingsRepository {
   }
 
   async setLocalShellRuntime(
-    runtime: LocalShellRuntimePreference
+    runtime: LocalShellRuntimePreference,
+    activatedWslSelection?: WslSelection
   ): Promise<LocalShellRuntimeWrite> {
+    if (runtime === 'wsl2-bash' && !activatedWslSelection) {
+      throw new Error('A verified WSL2 Shell profile is required for activation.')
+    }
     let mutation: LocalShellRuntimeMutation | undefined
     const settings = await this.mutate((current) => {
       mutation = Object.freeze({
         revision: ++this.localShellRuntimeRevision,
         runtime,
-        previous: current.localShellRuntime
+        previous: current.localShellRuntime,
+        ...(current.activatedWslSelection
+          ? { previousActivatedWslSelection: { ...current.activatedWslSelection } }
+          : {})
       })
       this.currentLocalShellRuntimeRevision = mutation.revision
-      return { ...current, localShellRuntime: runtime }
+      if (runtime !== 'wsl2-bash') return { ...current, localShellRuntime: runtime }
+      if (!activatedWslSelection) {
+        throw new Error('A verified WSL2 Shell profile is required for activation.')
+      }
+      return {
+        ...current,
+        localShellRuntime: runtime,
+        activatedWslSelection: { ...activatedWslSelection }
+      }
     })
     if (!mutation) throw new Error('Local Shell runtime mutation was not recorded.')
     return Object.freeze({ settings, mutation })
@@ -486,10 +501,15 @@ class SettingsRepository {
       if (this.currentLocalShellRuntimeRevision !== mutation.revision) return settings
       restored = true
       this.currentLocalShellRuntimeRevision = ++this.localShellRuntimeRevision
-      if (mutation.previous) return { ...settings, localShellRuntime: mutation.previous }
-      const withoutPreference = { ...settings }
-      delete withoutPreference.localShellRuntime
-      return withoutPreference
+      const restoredSettings = { ...settings }
+      if (mutation.previous) restoredSettings.localShellRuntime = mutation.previous
+      else delete restoredSettings.localShellRuntime
+      if (mutation.previousActivatedWslSelection) {
+        restoredSettings.activatedWslSelection = { ...mutation.previousActivatedWslSelection }
+      } else {
+        delete restoredSettings.activatedWslSelection
+      }
+      return restoredSettings
     })
     return restored
   }

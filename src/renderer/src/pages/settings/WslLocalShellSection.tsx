@@ -165,6 +165,8 @@ export const WslLocalShellSection = (): React.JSX.Element => {
 
   const saveAndCheck = async (): Promise<void> => {
     setBusy(true)
+    setShellSwitchResult(undefined)
+    setShellSwitchFailed(undefined)
     try {
       apply(await window.api.settings.selectWslProfile({ distro, user }))
     } catch {
@@ -269,10 +271,12 @@ export const WslLocalShellSection = (): React.JSX.Element => {
     setBusy(true)
     setShellSwitchFailed(undefined)
     try {
+      const result = await window.api.settings.switchLocalShellToPowerShell()
       setShellSwitchResult({
         runtime: 'powershell',
-        result: await window.api.settings.switchLocalShellToPowerShell()
+        result
       })
+      setSnapshot((current) => ({ ...current, activeRuntime: 'powershell' }))
     } catch {
       setShellSwitchResult(undefined)
       setShellSwitchFailed('powershell')
@@ -285,10 +289,16 @@ export const WslLocalShellSection = (): React.JSX.Element => {
     setBusy(true)
     setShellSwitchFailed(undefined)
     try {
+      const result = await window.api.settings.useWsl2Bash()
       setShellSwitchResult({
         runtime: 'wsl2-bash',
-        result: await window.api.settings.useWsl2Bash()
+        result
       })
+      setSnapshot((current) => ({
+        ...current,
+        activeRuntime: 'wsl2-bash',
+        activatedSelection: result.selection
+      }))
     } catch {
       setShellSwitchResult(undefined)
       setShellSwitchFailed('wsl2-bash')
@@ -298,6 +308,11 @@ export const WslLocalShellSection = (): React.JSX.Element => {
   }
 
   const supportAvailable = !busy && snapshot.state !== 'checking' && snapshot.state !== 'ready'
+  const candidateIsActive =
+    snapshot.activeRuntime === 'wsl2-bash' &&
+    snapshot.selection !== undefined &&
+    snapshot.activatedSelection?.distro === snapshot.selection.distro &&
+    snapshot.activatedSelection.user === snapshot.selection.user
 
   return (
     <SettingsSection
@@ -549,12 +564,19 @@ export const WslLocalShellSection = (): React.JSX.Element => {
           </div>
         ) : null}
 
-        {!busy && snapshot.state === 'ready' && shellSwitchResult?.runtime !== 'wsl2-bash' ? (
-          <div className="mt-4">
-            <Button type="button" onClick={() => void activateWsl2Bash()}>
-              <SquareTerminal aria-hidden="true" />
-              {t('Use WSL2 Bash')}
-            </Button>
+        {!busy && snapshot.state === 'ready' ? (
+          <div className="mt-4 flex flex-col items-start gap-2">
+            <p className="text-xs text-muted-foreground" role="status">
+              {candidateIsActive
+                ? t('This ready profile is active for future Shell commands.')
+                : t('This ready profile is only a candidate until you choose Use WSL2 Bash.')}
+            </p>
+            {!candidateIsActive ? (
+              <Button type="button" onClick={() => void activateWsl2Bash()}>
+                <SquareTerminal aria-hidden="true" />
+                {t('Use WSL2 Bash')}
+              </Button>
+            ) : null}
           </div>
         ) : null}
 

@@ -169,6 +169,7 @@ describe('WslLocalShellSection', () => {
     await flush()
 
     expect(useWsl2Bash).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('This ready profile is only a candidate')
     const button = [...container.querySelectorAll('button')].find((candidate) =>
       candidate.textContent?.includes('Use WSL2 Bash')
     )
@@ -177,7 +178,89 @@ describe('WslLocalShellSection', () => {
 
     expect(useWsl2Bash).toHaveBeenCalledOnce()
     expect(container.textContent).toContain('Future Shell commands will use WSL2 Bash')
+    expect(container.textContent).toContain('This ready profile is active')
     expect(container.textContent).toContain('Running and failed commands were not rerun')
+  })
+
+  it('treats a newly saved ready profile as a candidate and clears the old activation success', async () => {
+    const ready = {
+      state: 'ready' as const,
+      distros: [
+        { name: 'Ubuntu-22.04', version: 2 as const, isDefault: true },
+        { name: 'Ubuntu-24.04', version: 2 as const, isDefault: false }
+      ],
+      selection: { distro: 'Ubuntu-22.04', user: 'scientist' },
+      readiness: {
+        wsl2: true,
+        home: true,
+        bash: true,
+        bwrap: true,
+        namespaces: true,
+        localWorkspace: true
+      },
+      operationReference: 'ready-a'
+    }
+    probe.mockResolvedValue(ready)
+    select.mockResolvedValue({
+      ...ready,
+      selection: { distro: 'Ubuntu-22.04', user: 'candidate' },
+      operationReference: 'ready-b'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    const useButton = [...container.querySelectorAll('button')].find((candidate) =>
+      candidate.textContent?.includes('Use WSL2 Bash')
+    )
+    await act(async () => useButton?.click())
+    await flush()
+    expect(container.textContent).toContain('Future Shell commands will use WSL2 Bash')
+
+    const userInput = container.querySelector('input')
+    await act(async () => {
+      if (userInput) {
+        const setter = Object.getOwnPropertyDescriptor(HTMLInputElement.prototype, 'value')?.set
+        setter?.call(userInput, 'candidate')
+        userInput.dispatchEvent(new Event('input', { bubbles: true }))
+      }
+    })
+    const saveButton = [...container.querySelectorAll('button')].find((candidate) =>
+      candidate.textContent?.includes('Save and check')
+    )
+    await act(async () => saveButton?.click())
+    await flush()
+
+    expect(select).toHaveBeenCalledWith({ distro: 'Ubuntu-22.04', user: 'candidate' })
+    expect(container.textContent).not.toContain('Future Shell commands will use WSL2 Bash')
+    expect(container.textContent).toContain('Use WSL2 Bash')
+    expect(container.textContent).toContain('This ready profile is only a candidate')
+  })
+
+  it('shows a persisted active profile separately from a ready candidate after reload', async () => {
+    const selection = { distro: 'Ubuntu-24.04', user: 'scientist' }
+    probe.mockResolvedValue({
+      state: 'ready',
+      distros: [{ name: selection.distro, version: 2, isDefault: true }],
+      selection,
+      activeRuntime: 'wsl2-bash',
+      activatedSelection: selection,
+      readiness: {
+        wsl2: true,
+        home: true,
+        bash: true,
+        bwrap: true,
+        namespaces: true,
+        localWorkspace: true
+      },
+      operationReference: 'active01'
+    })
+
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    expect(container.textContent).toContain('This ready profile is active')
+    expect(container.textContent).not.toContain('Use WSL2 Bash')
+    expect(useWsl2Bash).not.toHaveBeenCalled()
   })
 
   it('shows retry guidance without claiming a switch when persistence fails', async () => {

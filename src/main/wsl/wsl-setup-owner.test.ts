@@ -682,6 +682,37 @@ describe('WslSetupOwner', () => {
     )
   })
 
+  it('reports the active profile separately from a newly verified candidate', async () => {
+    let candidate = { distro: 'Ubuntu-24.04', user: 'candidate' }
+    const active = { distro: 'Ubuntu-22.04', user: 'active' }
+    const owner = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu-24.04'),
+        result('* Ubuntu-24.04 Running 2'),
+        result('1000\ncandidate\nhome-ok'),
+        result('/usr/bin/bash\n/usr/bin/bwrap'),
+        result('ok'),
+        result('/mnt/c/science\nok')
+      ),
+      workspacePath: 'C:\\science',
+      readSelection: async () => candidate,
+      readActivation: async () => ({ runtime: 'wsl2-bash', selection: active }),
+      writeSelection: async (next) => {
+        candidate = next
+      }
+    })
+
+    const snapshot = await owner.select(candidate)
+
+    expect(snapshot).toMatchObject({
+      state: 'ready',
+      selection: candidate,
+      activeRuntime: 'wsl2-bash',
+      activatedSelection: active
+    })
+  })
+
   it('keeps exact distro names when verbose states contain localized words', async () => {
     const writeSelection = vi.fn()
     const nulSeparated = (value: string): string => [...value].join('\0')

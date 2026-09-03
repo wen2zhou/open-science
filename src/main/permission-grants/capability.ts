@@ -12,17 +12,14 @@ const NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS = Object.freeze({
   'native-posix': 'bash',
   'wsl2-bash': 'wsl2-bash'
 } as const)
-type NotebookPermissionRuntimeQualifier =
-  (typeof NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS)[keyof typeof NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS]
-
-const notebookPermissionRuntimeQualifier = (
-  runtime: string | undefined
-): NotebookPermissionRuntimeQualifier | undefined =>
-  runtime && Object.hasOwn(NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS, runtime)
+const notebookPermissionRuntimeQualifier = (runtime: string | undefined): string | undefined => {
+  if (runtime && /^wsl2-bash@wsl2-[a-f0-9]{24}$/u.test(runtime)) return runtime
+  return runtime && Object.hasOwn(NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS, runtime)
     ? NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS[
         runtime as keyof typeof NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS
       ]
     : undefined
+}
 const FILE_OPERATION_KEYS: Readonly<Record<string, string>> = {
   Read: 'read',
   Write: 'write',

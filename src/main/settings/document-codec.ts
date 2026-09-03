@@ -311,6 +311,11 @@ const sanitizeSettings = (value: unknown): StoredSettings => {
     const user = asString(value.wslSelection.user)?.trim()
     if (distro && user) settings.wslSelection = { distro, user }
   }
+  if (isRecord(value.activatedWslSelection)) {
+    const distro = asString(value.activatedWslSelection.distro)?.trim()
+    const user = asString(value.activatedWslSelection.user)?.trim()
+    if (distro && user) settings.activatedWslSelection = { distro, user }
+  }
 
   const pathsNormalizedAt = asNumber(value.pathsNormalizedAt)
   if (pathsNormalizedAt !== undefined) settings.pathsNormalizedAt = pathsNormalizedAt

@@ -4061,6 +4061,8 @@
     "Open the distribution once and finish creating its Linux user.": "ディストリビューションを一度開き、Linux ユーザーの作成を完了してください。",
     "The selected distribution needs the missing Linux dependencies shown below.": "選択したディストリビューションには、以下に示す不足中の Linux 依存関係が必要です。",
     "This profile is ready for sandboxed WSL2 Bash.": "このプロファイルはサンドボックス化された WSL2 Bash を使用できます。",
+    "This ready profile is active for future Shell commands.": "この準備済みプロファイルは、今後のシェルコマンドで有効です。",
+    "This ready profile is only a candidate until you choose Use WSL2 Bash.": "この準備済みプロファイルは、「WSL2 Bash を使用」を選択するまで候補のままです。",
     "This profile is not ready. Use the code below to identify the next action.": "このプロファイルは準備できていません。以下のコードで次の対応を確認してください。",
     "WSL2 distribution": "WSL2 ディストリビューション",
     "(WSL1 — unsupported)": "(WSL1 — 非対応)",

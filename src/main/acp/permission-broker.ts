@@ -487,7 +487,7 @@ const resolveNotebookRuntime = (tool: string, rawInput: unknown): string | undef
 const resolveNotebookPermissionRuntime = (
   tool: string,
   rawInput: unknown,
-  shellRuntime?: 'powershell' | 'native-posix' | 'wsl2-bash'
+  shellRuntime?: string
 ): string | undefined =>
   tool === 'bash_execute'
     ? notebookPermissionRuntimeQualifier(shellRuntime ?? 'bash')
@@ -497,7 +497,7 @@ const resolveNotebookPermissionContext = (
   name: string | null | undefined,
   rawInput: unknown,
   mcpServerNames: readonly string[],
-  shellRuntime?: 'powershell' | 'native-posix' | 'wsl2-bash'
+  shellRuntime?: string
 ): { runtime?: string } | undefined => {
   const identity = resolveMcpToolIdentity(name, mcpServerNames)
   if (!identity) return undefined
@@ -508,7 +508,7 @@ const resolveNotebookPermissionContext = (
 const resolveNotebookPermissionContextForIdentity = (
   identity: string,
   rawInput: unknown,
-  shellRuntime?: 'powershell' | 'native-posix' | 'wsl2-bash'
+  shellRuntime?: string
 ): { runtime?: string } | undefined => {
   const tool = resolveNotebookExecutionTool(identity)
   if (!tool) return undefined
@@ -576,7 +576,7 @@ const resolveCategoryKey = (
   params: RequestPermissionRequest,
   mcpServerNames: readonly string[] = [],
   allowLegacyReportedMcp = false,
-  shellRuntime?: 'powershell' | 'native-posix' | 'wsl2-bash'
+  shellRuntime?: string
 ): string | undefined => {
   const { toolCall } = params
   const providerToolName = extractProviderToolName(toolCall)
@@ -676,7 +676,7 @@ const describeGrant = (categoryKey: string): AcpPermissionGrant => {
           ? 'R'
           : runtime === 'javascript'
             ? 'JavaScript'
-            : runtime === 'bash' || runtime === 'wsl2-bash'
+            : runtime === 'bash' || runtime === 'wsl2-bash' || runtime?.startsWith('wsl2-bash@')
               ? 'Bash'
               : undefined
     const [server, tool] = identity.split('/')
@@ -977,7 +977,7 @@ class AcpPermissionBroker {
             params,
             mcpServerNames,
             !this.permissionGrantRegistry,
-            policyContext?.notebookShellRuntime
+            policyContext?.notebookShellRuntimeQualifier ?? policyContext?.notebookShellRuntime
           ))
     const capability = categoryKey ? capabilityFromLegacyCategory(categoryKey) : undefined
     const mcpIdentity = isMcp

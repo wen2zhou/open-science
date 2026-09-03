@@ -547,7 +547,9 @@ class SettingsService {
       result: Object.freeze({
         runtimeBinding: Object.freeze({ kind: 'powershell', version: '5.1' }),
         appliesTo: 'subsequent-executions',
-        wslProfilePreserved: write.settings.wslSelection !== undefined
+        wslProfilePreserved:
+          write.settings.wslSelection !== undefined ||
+          write.settings.activatedWslSelection !== undefined
       }),
       mutation: write.mutation
     })
@@ -560,7 +562,7 @@ class SettingsService {
     assertWsl2BashDevelopmentEnabled()
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     const selection = await this.wslSetup.requireLatestReadySelection()
-    const write = await this.repository.setLocalShellRuntime('wsl2-bash')
+    const write = await this.repository.setLocalShellRuntime('wsl2-bash', selection)
     return Object.freeze({
       result: Object.freeze({
         runtime: 'wsl2-bash',

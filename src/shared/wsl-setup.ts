@@ -45,6 +45,8 @@ export type WslReadiness = Readonly<{
 export type WslSetupSnapshot = Readonly<{
   state: WslSetupState
   distros: readonly WslDistro[]
+  activeRuntime?: LocalShellRuntimePreference
+  activatedSelection?: WslSelection
   selection?: WslSelection
   readiness?: WslReadiness
   errorCode?: string

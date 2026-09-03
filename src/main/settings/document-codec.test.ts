@@ -86,6 +86,7 @@ describe('settings document codec', () => {
       agentEnvironmentCreationEnabled: false,
       localShellRuntime: 'powershell',
       wslSelection: { distro: ' Ubuntu-24.04 ', user: ' scientist ' },
+      activatedWslSelection: { distro: ' Ubuntu-22.04 ', user: ' active-user ' },
       defaultPermissionProfile: 'ask',
       dataRoot,
       unknown: true
@@ -104,6 +105,7 @@ describe('settings document codec', () => {
       agentEnvironmentCreationEnabled: false,
       localShellRuntime: 'powershell',
       wslSelection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+      activatedWslSelection: { distro: 'Ubuntu-22.04', user: 'active-user' },
       defaultPermissionProfile: 'ask',
       dataRoot
     })
@@ -130,6 +132,20 @@ describe('settings document codec', () => {
     expect(sanitizeSettings({ providers: [], localShellRuntime: 'cmd' })).not.toHaveProperty(
       'localShellRuntime'
     )
+  })
+
+  it('does not promote a legacy WSL candidate into an activated execution profile', () => {
+    const settings = sanitizeSettings({
+      providers: [],
+      localShellRuntime: 'wsl2-bash',
+      wslSelection: { distro: 'Ubuntu-22.04', user: 'scientist' }
+    })
+
+    expect(settings).toMatchObject({
+      localShellRuntime: 'wsl2-bash',
+      wslSelection: { distro: 'Ubuntu-22.04', user: 'scientist' }
+    })
+    expect(settings).not.toHaveProperty('activatedWslSelection')
   })
 })
 

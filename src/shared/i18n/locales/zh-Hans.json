@@ -4061,6 +4061,8 @@
     "Open the distribution once and finish creating its Linux user.": "打开一次该发行版并完成创建 Linux 用户。",
     "The selected distribution needs the missing Linux dependencies shown below.": "所选发行版需要安装以下缺失的 Linux 依赖项。",
     "This profile is ready for sandboxed WSL2 Bash.": "此配置已可用于沙盒化 WSL2 Bash。",
+    "This ready profile is active for future Shell commands.": "此就绪配置已用于后续命令行命令。",
+    "This ready profile is only a candidate until you choose Use WSL2 Bash.": "此就绪配置仍是候选项，选择“使用 WSL2 Bash”后才会启用。",
     "This profile is not ready. Use the code below to identify the next action.": "此配置尚未就绪。请使用以下代码确定下一步操作。",
     "WSL2 distribution": "WSL2 发行版",
     "(WSL1 — unsupported)": "（WSL1 — 不受支持）",

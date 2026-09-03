@@ -4371,6 +4371,8 @@
     "Open the distribution once and finish creating its Linux user.": "Abra la distribución una vez y termine de crear su usuario de Linux.",
     "The selected distribution needs the missing Linux dependencies shown below.": "La distribución seleccionada necesita las dependencias de Linux que faltan y se muestran abajo.",
     "This profile is ready for sandboxed WSL2 Bash.": "Este perfil está preparado para Bash de WSL2 en entorno aislado.",
+    "This ready profile is active for future Shell commands.": "Este perfil preparado está activo para futuros comandos de la línea de comandos.",
+    "This ready profile is only a candidate until you choose Use WSL2 Bash.": "Este perfil preparado es solo un candidato hasta que seleccione Usar Bash de WSL2.",
     "This profile is not ready. Use the code below to identify the next action.": "Este perfil no está preparado. Use el código siguiente para identificar la próxima acción.",
     "WSL2 distribution": "Distribución WSL2",
     "(WSL1 — unsupported)": "(WSL1 — no compatible)",

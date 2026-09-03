@@ -48,6 +48,12 @@ type WslSetupOwnerOptions = Readonly<{
   workspacePath: string | (() => string)
   volumeProbe(path: string): Promise<WindowsVolumeProbeResult>
   readSelection(): Promise<WslSelection | undefined>
+  readActivation?(): Promise<
+    Readonly<{
+      runtime: 'powershell' | 'wsl2-bash' | undefined
+      selection: WslSelection | undefined
+    }>
+  >
   writeSelection(selection: WslSelection): Promise<unknown>
   operationReference?: () => string
   log?: Pick<ReturnType<typeof createLogger>, 'info' | 'warn'>
@@ -285,6 +291,7 @@ export class WslSetupOwner {
     }
     if (outcome === 'completed') this.log.info('wsl install completed', fields)
     else this.log.warn('wsl install completed', fields)
+    snapshot = await this.withActivation(snapshot)
     this.latestSnapshot = snapshot
     return {
       outcome,
@@ -428,6 +435,7 @@ export class WslSetupOwner {
     }
     if (snapshot.state === 'ready') this.log.info('wsl probe completed', fields)
     else this.log.warn('wsl probe completed', fields)
+    snapshot = await this.withActivation(snapshot)
     this.latestSnapshot = snapshot
     return snapshot
   }
@@ -717,6 +725,18 @@ export class WslSetupOwner {
   private remember(snapshot: WslSetupSnapshot): WslSetupSnapshot {
     this.latestSnapshot = snapshot
     return snapshot
+  }
+
+  private async withActivation(snapshot: WslSetupSnapshot): Promise<WslSetupSnapshot> {
+    const activation = await this.options.readActivation?.()
+    if (!activation) return snapshot
+    return Object.freeze({
+      ...snapshot,
+      ...(activation.runtime ? { activeRuntime: activation.runtime } : {}),
+      ...(activation.selection
+        ? { activatedSelection: Object.freeze({ ...activation.selection }) }
+        : {})
+    })
   }
 
   private reference(): string {

@@ -28,6 +28,7 @@ type PermissionPolicyContext = {
   frameworkId?: AgentFrameworkId
   shellDialect?: CommandShellDialect
   notebookShellRuntime?: ShellRuntimeBinding['kind']
+  notebookShellRuntimeQualifier?: string
   autoReviewStrategy?: PermissionAutoReviewStrategy
   cwd?: string
   // Canonical MCP server names, so framework-visible tools can resolve to stable policy identities.

@@ -534,6 +534,13 @@ const createApplicationModules = async (
     workspacePath: resolveDataRoot,
     volumeProbe: probeWindowsVolume,
     readSelection: async () => (await settingsRepository.getSettings()).wslSelection,
+    readActivation: async () => {
+      const settings = await settingsRepository.getSettings()
+      return {
+        runtime: settings.localShellRuntime,
+        selection: settings.activatedWslSelection
+      }
+    },
     writeSelection: (selection) => settingsRepository.setWslSelection(selection)
   })
   const networkProxyRuntime = new NetworkProxyRuntime({

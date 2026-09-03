@@ -424,6 +424,48 @@ describe('ACP permission broker', () => {
     await expect(afterSwitch).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
+  it('does not consume a restored WSL2 allow-once after the activated profile changes', async () => {
+    const emitted: EmittedPermissionRequest[] = []
+    const broker = new AcpPermissionBroker((request) => emitted.push(request))
+    const request = createNotebookPermissionRequest(
+      'session-1',
+      'mcp__open-science-notebook__bash_execute',
+      { command: 'pwd' }
+    )
+    const profileA = 'wsl2-bash@wsl2-aaaaaaaaaaaaaaaaaaaaaaaa'
+    const profileB = 'wsl2-bash@wsl2-bbbbbbbbbbbbbbbbbbbbbbbb'
+    const originalResponse = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'wsl2-bash',
+      notebookShellRuntimeQualifier: profileA
+    })
+    const original = emitted[0]
+    broker.cancelAllPending()
+    await expect(originalResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await broker.prepareRestoredDecision(
+      {
+        state: 'pending',
+        request: original,
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: permissionRequestFingerprint(original)!,
+        categoryKey: resolveCategoryKey(request, [], true, profileA),
+        createdAt: 1
+      },
+      original.options.find((option) => option.scope === 'once'),
+      'project-1'
+    )
+
+    const afterSwitch = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'wsl2-bash',
+      notebookShellRuntimeQualifier: profileB
+    })
+
+    expect(emitted).toHaveLength(2)
+    await broker.respond({ requestId: emitted[1].requestId, cancelled: true })
+    await expect(afterSwitch).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+  })
+
   it('projects legacy command-group grants as readable shell grants', () => {
     const store = new ConversationPermissionGrantStore()
     const categoryKey = `shell-group:argv-prefix:sha256:v1:${'a'.repeat(64)}`
