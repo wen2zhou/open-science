@@ -32,6 +32,7 @@ type PosixProcessTable = Readonly<{
 
 type PosixProcessTracker = {
   leaderPid: number
+  leaderIdentity: PosixProcessIdentity | undefined
   identities: Map<number, PosixProcessIdentity>
   complete: boolean
 }
@@ -317,8 +318,19 @@ const captureTrackedDescendants = (
     siblings.push(process)
     children.set(process.ppid, siblings)
   }
-  const roots = new Set<number>([tracker.leaderPid])
+  const observedLeader = table.processes.get(tracker.leaderPid)
+  if (tracker.leaderIdentity === undefined) {
+    if (observedLeader === undefined) {
+      tracker.complete = false
+      return
+    }
+    tracker.leaderIdentity = observedLeader
+    tracker.identities.set(tracker.leaderPid, observedLeader)
+  }
+  const roots = new Set<number>()
+  if (samePosixIdentity(tracker.leaderIdentity, observedLeader)) roots.add(tracker.leaderPid)
   for (const identity of tracker.identities.values()) {
+    if (identity.pid === tracker.leaderPid) continue
     if (samePosixIdentity(identity, table.processes.get(identity.pid))) roots.add(identity.pid)
   }
   const stack = [...roots]
@@ -328,8 +340,12 @@ const captureTrackedDescendants = (
     if (visited.has(pid)) continue
     visited.add(pid)
     const identity = table.processes.get(pid)
-    if (identity) tracker.identities.set(pid, identity)
+    if (pid === tracker.leaderPid && !samePosixIdentity(tracker.leaderIdentity, identity)) continue
+    if (identity && pid !== tracker.leaderPid) tracker.identities.set(pid, identity)
     for (const child of children.get(pid) ?? []) {
+      if (child.pid === tracker.leaderPid && !samePosixIdentity(tracker.leaderIdentity, child)) {
+        continue
+      }
       tracker.identities.set(child.pid, child)
       stack.push(child.pid)
     }
@@ -366,6 +382,7 @@ export const trackOwnedPosixProcessTree = (child: ChildProcess): void => {
   if (leaderPid === undefined || !Number.isSafeInteger(leaderPid) || leaderPid <= 0) return
   const tracker: PosixProcessTracker = {
     leaderPid,
+    leaderIdentity: undefined,
     identities: new Map(),
     complete: true
   }
@@ -618,9 +635,9 @@ const terminateTrackedPosixProcessTree = async (
 ): Promise<ProcessTreeKillResult> => {
   const gracefulSignal = signal ?? 'SIGTERM'
   const finalSample = await stopTrackedProcessTree(tracker)
-  if (process.platform !== 'linux') {
-    // The child handle is the only trustworthy identity on portable POSIX. Kill it directly, but do
-    // not signal numeric descendant pids or the recorded group after an unverifiable process epoch.
+  if (process.platform !== 'linux' || !finalSample.complete) {
+    // The child handle is the only trustworthy identity on portable POSIX or after an incomplete
+    // Linux snapshot. Kill it directly, but do not signal numeric descendant pids or groups.
     killDirectChild(child, gracefulSignal)
     if (!(await waitForExit(child, TERMINATE_GRACE_MS))) {
       log?.error(

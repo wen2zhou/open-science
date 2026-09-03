@@ -228,12 +228,37 @@ describe('terminateProcessTree (posix)', () => {
     const child = new FakeChild(1000)
     trackOwnedPosixProcessTree(child as never)
     await vi.waitFor(() => expect(readFileMock).toHaveBeenCalledTimes(2))
-    child.exitCode = 0
 
     const pending = terminateProcessTree(child as never)
 
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGTERM'))
+    child.emit('exit', 0, null)
     await expect(pending).resolves.toEqual({ reaped: false })
     expect(killSpy).not.toHaveBeenCalledWith(1001, expect.anything())
+  })
+
+  it('does not adopt or signal a same-second replacement of the tracked leader pid', async () => {
+    setPlatform('linux')
+    readdirMock.mockResolvedValueOnce(['1000', '1001']).mockResolvedValueOnce(['1000'])
+    readFileMock
+      .mockResolvedValueOnce(linuxStat(1000, 1, 1000, 1000, 100))
+      .mockResolvedValueOnce(linuxStat(1001, 1000, 1000, 1000, 101))
+      .mockResolvedValueOnce(linuxStat(1000, 1, 1000, 1000, 200))
+    let replacementAlive = true
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === 1000 && signal === 0 && !replacementAlive) throw esrch()
+      if (pid === 1000 && signal === 'SIGTERM') replacementAlive = false
+      return true
+    })
+    const child = new FakeChild(1000)
+
+    trackOwnedPosixProcessTree(child as never)
+    await vi.waitFor(() => expect(readFileMock).toHaveBeenCalledTimes(2))
+    child.exitCode = 0
+
+    await expect(terminateProcessTree(child as never)).resolves.toEqual({ reaped: true })
+    expect(killSpy).not.toHaveBeenCalledWith(1000, 'SIGTERM')
+    expect(killSpy).not.toHaveBeenCalledWith(-1000, 'SIGTERM')
   })
 
   it('does not signal a replacement that reused a tracked pid within the same second', async () => {
