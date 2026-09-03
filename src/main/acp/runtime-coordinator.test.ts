@@ -715,6 +715,48 @@ describe('AcpRuntimeCoordinator', () => {
     expect(created[1].requestRetirement).toHaveBeenCalledOnce()
   })
 
+  it('refreshes Shell capabilities across default and explicit targets before the next prompt', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const coordinator = new AcpRuntimeCoordinator((callbacks, _permissionGrants, target) => {
+      const fake = createFakeRuntime({
+        frameworkId: target?.frameworkId ?? 'claude-code',
+        sessionIds: [`session-${created.length}`],
+        callbacks
+      })
+      created.push(fake)
+      return fake.runtime
+    })
+    const explicitTarget: AcpSessionAgentTarget = {
+      frameworkId: 'opencode',
+      providerId: 'provider-explicit',
+      model: 'model-explicit',
+      reasoningEffort: 'high'
+    }
+    const defaultSession = await coordinator.createSession()
+    const explicitSession = await coordinator.createSession({ agentTarget: explicitTarget })
+
+    await coordinator.requestShellCapabilityRefresh()
+
+    expect(created[0].requestRetirement).toHaveBeenCalledOnce()
+    expect(created[1].requestRetirement).toHaveBeenCalledOnce()
+    await coordinator.resumeSession({
+      sessionId: defaultSession.sessionId,
+      cwd: '/workspace'
+    })
+    await coordinator.resumeSession({
+      sessionId: explicitSession.sessionId,
+      cwd: '/workspace',
+      agentTarget: explicitTarget
+    })
+    await coordinator.sendPrompt({ sessionId: defaultSession.sessionId, text: 'next default turn' })
+    await coordinator.sendPrompt({ sessionId: explicitSession.sessionId, text: 'next pinned turn' })
+
+    expect(created[0].sendPrompt).not.toHaveBeenCalled()
+    expect(created[1].sendPrompt).not.toHaveBeenCalled()
+    expect(created[2].sendPrompt).toHaveBeenCalledOnce()
+    expect(created[3].sendPrompt).toHaveBeenCalledOnce()
+  })
+
   it('reloads framework Skills only for matching targeted generations', async () => {
     const created: ReturnType<typeof createFakeRuntime>[] = []
     const coordinator = new AcpRuntimeCoordinator((callbacks, _permissionGrants, target) => {

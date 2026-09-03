@@ -38,6 +38,7 @@ import type {
   OpenWslTerminalRequest,
   SelectWslProfileRequest,
   SwitchToPowerShellResult,
+  UseWsl2BashResult,
   WslPlatformInstallResult,
   WslSetupSnapshot,
   WslSupportHandoff
@@ -1964,6 +1965,10 @@ export const RENDERER_API_CONTRACT = Object.freeze({
     'settings',
     ['settings:switch-local-shell-to-powershell', LOCAL]
   ),
+  'settings.useWsl2Bash': callable<() => Promise<UseWsl2BashResult>>()('settings', [
+    'settings:use-wsl2-bash',
+    LOCAL
+  ]),
   'settings.installRecommendedWslDistro': callable<() => Promise<WslSetupSnapshot>>()('settings', [
     'settings:install-recommended-wsl-distro',
     LOCAL

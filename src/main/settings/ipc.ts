@@ -353,6 +353,7 @@ const registerSettingsIpcHandlers = ({
   ipcMainHandle('settings:switch-local-shell-to-powershell', () =>
     workflows.localShell.switchToPowerShell()
   )
+  ipcMainHandle('settings:use-wsl2-bash', () => workflows.localShell.useWsl2Bash())
   ipcMainHandle('settings:install-recommended-wsl-distro', () =>
     service.installRecommendedWslDistro()
   )

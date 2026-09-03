@@ -88,6 +88,9 @@ import type {
   OpenWslTerminalRequest,
   SelectWslProfileRequest,
   SwitchToPowerShellResult,
+  LocalShellRuntimePreference,
+  UseWsl2BashResult,
+  WslSelection,
   WslPlatformInstallResult,
   WslSetupSnapshot,
   WslSupportHandoff
@@ -224,6 +227,7 @@ export type SettingsServiceOptions = {
     installRecommendedDistro(): Promise<WslSetupSnapshot>
     openTerminal(request: OpenWslTerminalRequest): Promise<WslSetupSnapshot>
     createSupportHandoff(): Promise<WslSupportHandoff>
+    requireLatestReadySelection(): Promise<WslSelection>
   }
   // Encrypted-token controller for claude-isolated; default-constructed against this.configRoot
   // when omitted. Storage is delegated to the host's SettingsRepository + encrypt/tryDecryptKey
@@ -538,6 +542,28 @@ class SettingsService {
       appliesTo: 'subsequent-executions',
       wslProfilePreserved: settings.wslSelection !== undefined
     })
+  }
+
+  async useWsl2Bash(): Promise<UseWsl2BashResult> {
+    if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
+    const selection = await this.wslSetup.requireLatestReadySelection()
+    await this.repository.setLocalShellRuntime('wsl2-bash')
+    return Object.freeze({
+      runtime: 'wsl2-bash',
+      selection: Object.freeze({ ...selection }),
+      appliesTo: 'subsequent-executions'
+    })
+  }
+
+  async getLocalShellRuntimePreference(): Promise<LocalShellRuntimePreference | undefined> {
+    return (await this.repository.getSettings()).localShellRuntime
+  }
+
+  restoreLocalShellRuntimePreference(
+    expected: LocalShellRuntimePreference,
+    previous: LocalShellRuntimePreference | undefined
+  ): Promise<boolean> {
+    return this.repository.restoreLocalShellRuntime(expected, previous)
   }
 
   private async migrateLegacyKeyRefs(settings: StoredSettings): Promise<StoredSettings> {

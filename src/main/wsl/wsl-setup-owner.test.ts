@@ -651,6 +651,37 @@ describe('WslSetupOwner', () => {
     expect(logged).not.toContain('C:\\\\science')
   })
 
+  it('admits WSL2 Bash only for the latest ready snapshot and unchanged saved profile', async () => {
+    let selection = { distro: 'Ubuntu-24.04', user: 'scientist' }
+    const owner = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu-24.04'),
+        result('* Ubuntu-24.04 Running 2'),
+        result('1000\nscientist\nhome-ok'),
+        result('/usr/bin/bash\n/usr/bin/bwrap'),
+        result('ok'),
+        result('/mnt/c/science\nok')
+      ),
+      workspacePath: 'C:\\science',
+      readSelection: async () => selection,
+      writeSelection: async (next) => {
+        selection = next
+      }
+    })
+
+    await expect(owner.requireLatestReadySelection()).rejects.toThrow(
+      'The selected WSL2 Shell profile is not ready.'
+    )
+    await expect(owner.probe()).resolves.toMatchObject({ state: 'ready' })
+    await expect(owner.requireLatestReadySelection()).resolves.toEqual(selection)
+
+    selection = { distro: 'Ubuntu-24.04', user: 'someone-else' }
+    await expect(owner.requireLatestReadySelection()).rejects.toThrow(
+      'The selected WSL2 Shell profile is not ready.'
+    )
+  })
+
   it('keeps exact distro names when verbose states contain localized words', async () => {
     const writeSelection = vi.fn()
     const nulSeparated = (value: string): string => [...value].join('\0')

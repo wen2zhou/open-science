@@ -291,6 +291,7 @@ export const WEB_INVOKE_CHANNELS = {
   'settings.updateDeviceCredential': 'settings:update-device-credential',
   'settings.updateSkill': 'settings:update-skill',
   'settings.upsertProvider': 'settings:upsert-provider',
+  'settings.useWsl2Bash': 'settings:use-wsl2-bash',
   'settings.validateOpenAlexCredential': 'settings:validate-openalex-credential',
   'settings.validateProvider': 'settings:validate-provider',
   'settings.waitXaiOAuthLogin': 'settings:wait-xai-oauth-login',

@@ -3311,7 +3311,7 @@ const createApplicationModules = async (
       }
     },
     localShell: {
-      requestShellRuntimeRefresh: () => void runtime.requestProviderReconnect()
+      requestShellRuntimeRefresh: () => runtime.requestShellCapabilityRefresh()
     },
     skills: {
       requestSkillsReload: () => void runtime.requestSkillsReload(),

@@ -11,6 +11,7 @@ import {
   AcpPermissionBroker,
   ConversationPermissionGrantStore,
   permissionRequestFingerprint,
+  resolveCategoryKey,
   type DurablePermissionWaitCandidate
 } from './permission-broker'
 import { withTrustedMcpToolIdentity, withTrustedNativeToolIdentity } from './permission-policy'
@@ -329,15 +330,16 @@ describe('ACP permission broker', () => {
   it('releases a restored allow-once only for the exact parked tool fingerprint', async () => {
     const emitted: EmittedPermissionRequest[] = []
     const broker = new AcpPermissionBroker((request) => emitted.push(request))
-    const originalProviderResponse = broker.requestPermission(
-      createToolPermissionRequest({
-        title: 'python verify.py',
-        providerToolName: 'Bash',
-        kind: 'execute',
-        rawInput: { command: 'python verify.py' }
-      }),
-      { profile: 'ask', cwd: '/workspace' }
-    )
+    const originalRequest = createToolPermissionRequest({
+      title: 'python verify.py',
+      providerToolName: 'Bash',
+      kind: 'execute',
+      rawInput: { command: 'python verify.py' }
+    })
+    const originalProviderResponse = broker.requestPermission(originalRequest, {
+      profile: 'ask',
+      cwd: '/workspace'
+    })
     const original = emitted[0]
     const fingerprint = permissionRequestFingerprint(original)
     expect(fingerprint).toMatch(/^[a-f0-9]{64}$/)
@@ -349,6 +351,7 @@ describe('ACP permission broker', () => {
         request: original,
         originatingPromptMessageId: 'prompt-1',
         fingerprint: fingerprint!,
+        categoryKey: resolveCategoryKey(originalRequest, [], true),
         createdAt: 1
       },
       original.options.find((option) => option.scope === 'once'),
@@ -381,6 +384,44 @@ describe('ACP permission broker', () => {
       outcome: { outcome: 'selected', optionId: 'allow-once' }
     })
     expect(emitted).toHaveLength(2)
+  })
+
+  it('does not consume a restored WSL2 allow-once after the Shell backend changes', async () => {
+    const emitted: EmittedPermissionRequest[] = []
+    const broker = new AcpPermissionBroker((request) => emitted.push(request))
+    const request = createNotebookPermissionRequest(
+      'session-1',
+      'mcp__open-science-notebook__bash_execute',
+      { command: 'pwd' }
+    )
+    const originalResponse = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'wsl2-bash'
+    })
+    const original = emitted[0]
+    broker.cancelAllPending()
+    await expect(originalResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await broker.prepareRestoredDecision(
+      {
+        state: 'pending',
+        request: original,
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: permissionRequestFingerprint(original)!,
+        categoryKey: resolveCategoryKey(request, [], true, 'wsl2-bash'),
+        createdAt: 1
+      },
+      original.options.find((option) => option.scope === 'once'),
+      'project-1'
+    )
+
+    const afterSwitch = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'powershell'
+    })
+
+    expect(emitted).toHaveLength(2)
+    await broker.respond({ requestId: emitted[1].requestId, cancelled: true })
+    await expect(afterSwitch).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
   it('projects legacy command-group grants as readable shell grants', () => {
@@ -1655,7 +1696,7 @@ describe('ACP permission broker', () => {
     expect(emitted).toHaveLength(2)
   })
 
-  it('does not reuse a native Shell grant for a WSL2-bound capability', async () => {
+  it('does not carry Shell grant authority between WSL2 Bash and PowerShell', async () => {
     const emitted: EmittedPermissionRequest[] = []
     const broker = new AcpPermissionBroker((request) => emitted.push(request))
     const request = createNotebookPermissionRequest(
@@ -1664,17 +1705,20 @@ describe('ACP permission broker', () => {
       { command: 'pwd' }
     )
 
-    const native = broker.requestPermission(request, { profile: 'ask' })
-    broker.respond({ requestId: emitted[0].requestId, optionId: getSessionOptionId(emitted[0]) })
-    await native
-
     const wsl = broker.requestPermission(request, {
       profile: 'ask',
       notebookShellRuntime: 'wsl2-bash'
     })
+    broker.respond({ requestId: emitted[0].requestId, optionId: getSessionOptionId(emitted[0]) })
+    await wsl
+
+    const powershell = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'powershell'
+    })
     expect(emitted).toHaveLength(2)
     broker.respond({ requestId: emitted[1].requestId, optionId: getSessionOptionId(emitted[1]) })
-    await wsl
+    await powershell
 
     expect(broker.listGrants('session-1')).toEqual(
       expect.arrayContaining([

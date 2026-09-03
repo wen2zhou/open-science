@@ -18,6 +18,7 @@ let installRecommended: ReturnType<typeof vi.fn>
 let openTerminal: ReturnType<typeof vi.fn>
 let createSupportHandoff: ReturnType<typeof vi.fn>
 let switchToPowerShell: ReturnType<typeof vi.fn>
+let useWsl2Bash: ReturnType<typeof vi.fn>
 
 const project = (id: string, updatedAt: number): Project => ({
   id,
@@ -85,6 +86,11 @@ beforeEach(() => {
     appliesTo: 'subsequent-executions',
     wslProfilePreserved: true
   })
+  useWsl2Bash = vi.fn().mockResolvedValue({
+    runtime: 'wsl2-bash',
+    selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+    appliesTo: 'subsequent-executions'
+  })
   ;(window as unknown as { api: unknown }).api = {
     settings: {
       probeWslSetup: probe,
@@ -93,7 +99,8 @@ beforeEach(() => {
       installRecommendedWslDistro: installRecommended,
       openWslTerminal: openTerminal,
       createWslSupportHandoff: createSupportHandoff,
-      switchLocalShellToPowerShell: switchToPowerShell
+      switchLocalShellToPowerShell: switchToPowerShell,
+      useWsl2Bash
     }
   }
   useProjectStore.setState({
@@ -143,6 +150,36 @@ describe('WslLocalShellSection', () => {
     expect(container.textContent).toContain('saved WSL2 profile is still available')
   })
 
+  it('enables WSL2 Bash only through the explicit action on the latest ready profile', async () => {
+    probe.mockResolvedValue({
+      state: 'ready',
+      distros: [{ name: 'Ubuntu-24.04', version: 2, isDefault: true }],
+      selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+      readiness: {
+        wsl2: true,
+        home: true,
+        bash: true,
+        bwrap: true,
+        namespaces: true,
+        localWorkspace: true
+      },
+      operationReference: 'ready001'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    expect(useWsl2Bash).not.toHaveBeenCalled()
+    const button = [...container.querySelectorAll('button')].find((candidate) =>
+      candidate.textContent?.includes('Use WSL2 Bash')
+    )
+    await act(async () => button?.click())
+    await flush()
+
+    expect(useWsl2Bash).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('Future Shell commands will use WSL2 Bash')
+    expect(container.textContent).toContain('Running and failed commands were not rerun')
+  })
+
   it('shows retry guidance without claiming a switch when persistence fails', async () => {
     probe.mockResolvedValue({
       state: 'failed',
@@ -160,8 +197,8 @@ describe('WslLocalShellSection', () => {
     await act(async () => button?.click())
     await flush()
 
-    expect(container.textContent).toContain('could not switch to PowerShell')
-    expect(container.textContent).toContain('Shell preference was not changed')
+    expect(container.textContent).toContain('could not finish changing the Shell runtime')
+    expect(container.textContent).toContain('Restart Open Science')
     expect(container.textContent).toContain('Try switching again')
     expect(container.textContent).not.toContain('Future Shell commands will use PowerShell')
     expect(probe).toHaveBeenCalledOnce()

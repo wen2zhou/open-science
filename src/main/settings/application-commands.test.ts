@@ -78,6 +78,7 @@ const expectedChannels = [
   'settings:set-reviewer-model',
   'settings:select-wsl-profile',
   'settings:switch-local-shell-to-powershell',
+  'settings:use-wsl2-bash',
   'settings:set-session-details-model',
   'settings:set-subagent-model',
   'settings:set-vision-model',
@@ -110,6 +111,7 @@ const createDependencies = (
 ): Readonly<{
   appearance: ReturnType<typeof vi.fn>
   switchToPowerShell: ReturnType<typeof vi.fn>
+  useWsl2Bash: ReturnType<typeof vi.fn>
   dependencies: CoreSettingsApplicationCommandDependencies
   emitInstallEvent: ReturnType<typeof vi.fn>
   serviceMethod: (
@@ -132,15 +134,17 @@ const createDependencies = (
   ) as CoreSettingsApplicationCommandDependencies['service']
   const appearance = vi.fn()
   const switchToPowerShell = vi.fn()
+  const useWsl2Bash = vi.fn()
   const emitInstallEvent = vi.fn()
 
   return {
     appearance,
     switchToPowerShell,
+    useWsl2Bash,
     dependencies: {
       service,
       appearance: { setAppIconVariant: appearance },
-      localShell: { switchToPowerShell },
+      localShell: { switchToPowerShell, useWsl2Bash },
       snapshotCommits,
       emitInstallEvent,
       listAppIconPreviews: vi.fn(() => [])
@@ -228,7 +232,7 @@ describe('Settings core application commands', () => {
   })
 
   it('routes local WSL setup commands through the Settings owner', async () => {
-    const { dependencies, serviceMethod, switchToPowerShell } = createDependencies()
+    const { dependencies, serviceMethod, switchToPowerShell, useWsl2Bash } = createDependencies()
     const snapshot = { state: 'ready', distros: [], operationReference: 'wsl-setup-1' }
     serviceMethod('probeWslSetup').mockResolvedValue(snapshot)
     serviceMethod('selectWslProfile').mockResolvedValue(snapshot)
@@ -247,12 +251,21 @@ describe('Settings core application commands', () => {
       wslProfilePreserved: true
     }
     switchToPowerShell.mockResolvedValue(switched)
+    const wslEnabled = {
+      runtime: 'wsl2-bash' as const,
+      selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+      appliesTo: 'subsequent-executions' as const
+    }
+    useWsl2Bash.mockResolvedValue(wslEnabled)
     await expect(
       router.dispatcher.invoke(
         settingsCoreApplicationCommands.switchLocalShellToPowerShell,
         invocation([] as const)
       )
     ).resolves.toBe(switched)
+    await expect(
+      router.dispatcher.invoke(settingsCoreApplicationCommands.useWsl2Bash, invocation([] as const))
+    ).resolves.toBe(wslEnabled)
     await expect(
       router.dispatcher.invoke(
         settingsCoreApplicationCommands.selectWslProfile,
@@ -265,6 +278,7 @@ describe('Settings core application commands', () => {
       user: 'scientist'
     })
     expect(switchToPowerShell).toHaveBeenCalledOnce()
+    expect(useWsl2Bash).toHaveBeenCalledOnce()
   })
 
   it('installs the exact command inventory and dispatches a remote-safe preflight query', async () => {

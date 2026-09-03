@@ -432,6 +432,27 @@ export class WslSetupOwner {
     return snapshot
   }
 
+  async requireLatestReadySelection(): Promise<WslSelection> {
+    const snapshot = this.latestSnapshot
+    const saved = await this.options.readSelection()
+    const selectedDistro = saved
+      ? snapshot?.distros.find((distro) => distro.name === saved.distro && distro.version === 2)
+      : undefined
+    if (
+      snapshot?.state !== 'ready' ||
+      !saved ||
+      !snapshot.selection ||
+      snapshot.selection.distro !== saved.distro ||
+      snapshot.selection.user !== saved.user ||
+      !selectedDistro ||
+      !this.validName(saved.distro, 256) ||
+      !this.validName(saved.user, 128)
+    ) {
+      throw new Error('The selected WSL2 Shell profile is not ready.')
+    }
+    return Object.freeze({ distro: saved.distro, user: saved.user })
+  }
+
   async createSupportHandoff(): Promise<WslSupportHandoff> {
     const snapshot = this.latestSnapshot
     if (!snapshot) {

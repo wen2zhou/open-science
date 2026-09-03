@@ -30,6 +30,7 @@ import {
 import {
   RECOMMENDED_WSL_DISTRO,
   type SwitchToPowerShellResult,
+  type UseWsl2BashResult,
   type WslPlatformInstallResult,
   type WslReadiness,
   type WslSetupSnapshot
@@ -101,8 +102,11 @@ export const WslLocalShellSection = (): React.JSX.Element => {
   const [busy, setBusy] = useState(true)
   const [installResult, setInstallResult] = useState<WslPlatformInstallResult>()
   const [copied, setCopied] = useState(false)
-  const [shellSwitchResult, setShellSwitchResult] = useState<SwitchToPowerShellResult>()
-  const [shellSwitchFailed, setShellSwitchFailed] = useState(false)
+  const [shellSwitchResult, setShellSwitchResult] = useState<
+    | { runtime: 'powershell'; result: SwitchToPowerShellResult }
+    | { runtime: 'wsl2-bash'; result: UseWsl2BashResult }
+  >()
+  const [shellSwitchFailed, setShellSwitchFailed] = useState<'powershell' | 'wsl2-bash'>()
   const projects = useProjectStore((state) => state.projects)
   const chatProjectId = useMemo(
     () => resolveCustomizeProjectId(projects.filter((project) => project.archivedAt === undefined)),
@@ -263,12 +267,31 @@ export const WslLocalShellSection = (): React.JSX.Element => {
 
   const switchToPowerShell = async (): Promise<void> => {
     setBusy(true)
-    setShellSwitchFailed(false)
+    setShellSwitchFailed(undefined)
     try {
-      setShellSwitchResult(await window.api.settings.switchLocalShellToPowerShell())
+      setShellSwitchResult({
+        runtime: 'powershell',
+        result: await window.api.settings.switchLocalShellToPowerShell()
+      })
     } catch {
       setShellSwitchResult(undefined)
-      setShellSwitchFailed(true)
+      setShellSwitchFailed('powershell')
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const activateWsl2Bash = async (): Promise<void> => {
+    setBusy(true)
+    setShellSwitchFailed(undefined)
+    try {
+      setShellSwitchResult({
+        runtime: 'wsl2-bash',
+        result: await window.api.settings.useWsl2Bash()
+      })
+    } catch {
+      setShellSwitchResult(undefined)
+      setShellSwitchFailed('wsl2-bash')
     } finally {
       setBusy(false)
     }
@@ -512,7 +535,7 @@ export const WslLocalShellSection = (): React.JSX.Element => {
           </p>
         ) : null}
 
-        {!busy && snapshot.state !== 'ready' ? (
+        {!busy && snapshot.state !== 'ready' && shellSwitchResult?.runtime !== 'powershell' ? (
           <div className="mt-4 flex flex-col items-start gap-2">
             <p className="text-xs text-muted-foreground">
               {t(
@@ -526,16 +549,30 @@ export const WslLocalShellSection = (): React.JSX.Element => {
           </div>
         ) : null}
 
+        {!busy && snapshot.state === 'ready' && shellSwitchResult?.runtime !== 'wsl2-bash' ? (
+          <div className="mt-4">
+            <Button type="button" onClick={() => void activateWsl2Bash()}>
+              <SquareTerminal aria-hidden="true" />
+              {t('Use WSL2 Bash')}
+            </Button>
+          </div>
+        ) : null}
+
         {!busy && shellSwitchResult ? (
           <div
             className="mt-4 rounded-md border border-status-success-accent/30 bg-status-success-surface p-3 text-sm text-status-success-foreground dark:bg-status-success-dark-surface dark:text-status-success-dark-foreground"
             role="status"
           >
-            <p>{t('Future Shell commands will use PowerShell.')}</p>
+            <p>
+              {shellSwitchResult.runtime === 'powershell'
+                ? t('Future Shell commands will use PowerShell.')
+                : t('Future Shell commands will use WSL2 Bash.')}
+            </p>
             <p className="mt-1 text-xs">
               {t('Running and failed commands were not rerun or moved to another Shell.')}
             </p>
-            {shellSwitchResult.wslProfilePreserved ? (
+            {shellSwitchResult.runtime === 'powershell' &&
+            shellSwitchResult.result.wslProfilePreserved ? (
               <p className="mt-1 text-xs">
                 {t('Your saved WSL2 profile is still available when you are ready to switch back.')}
               </p>
@@ -548,13 +585,16 @@ export const WslLocalShellSection = (): React.JSX.Element => {
             <ErrorNotice
               icon={CircleX}
               tone="red"
-              title={t('Open Science could not switch to PowerShell.')}
+              title={t('Open Science could not finish changing the Shell runtime.')}
               description={t(
-                'The Shell preference was not changed. Check the app logs, then try again.'
+                'Restart Open Science before running another Shell command, then try the switch again.'
               )}
               primaryButton={{
                 label: t('Try switching again'),
-                onClick: () => void switchToPowerShell()
+                onClick: () =>
+                  void (shellSwitchFailed === 'wsl2-bash'
+                    ? activateWsl2Bash()
+                    : switchToPowerShell())
               }}
             />
           </div>

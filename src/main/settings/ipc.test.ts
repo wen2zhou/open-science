@@ -89,6 +89,9 @@ type FakeSettingsService = Record<
   | 'refreshProviderModels'
   | 'markOnboardingComplete'
   | 'switchLocalShellToPowerShell'
+  | 'useWsl2Bash'
+  | 'getLocalShellRuntimePreference'
+  | 'restoreLocalShellRuntimePreference'
   | 'getPackageMirror'
   | 'setPackageMirror'
   | 'setNetworkProxy'
@@ -222,6 +225,13 @@ const createFakeService = (): FakeSettingsService => ({
     appliesTo: 'subsequent-executions',
     wslProfilePreserved: true
   }),
+  useWsl2Bash: vi.fn().mockResolvedValue({
+    runtime: 'wsl2-bash',
+    selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+    appliesTo: 'subsequent-executions'
+  }),
+  getLocalShellRuntimePreference: vi.fn().mockResolvedValue(undefined),
+  restoreLocalShellRuntimePreference: vi.fn().mockResolvedValue(true),
   getPackageMirror: vi.fn().mockResolvedValue({}),
   setPackageMirror: vi.fn().mockResolvedValue({}),
   setNetworkProxy: vi.fn().mockResolvedValue({ mode: 'system' }),
@@ -336,7 +346,9 @@ const registerTestSettingsIpcHandlers = ({
         requestProviderReconnect: onActiveProviderChanged ?? (() => undefined),
         requestAgentFrameworkSwitch: onAgentFrameworkChanged ?? (() => undefined)
       },
-      localShell: { requestShellRuntimeRefresh: onShellRuntimeRefresh ?? (() => undefined) },
+      localShell: {
+        requestShellRuntimeRefresh: async () => onShellRuntimeRefresh?.()
+      },
       skills: {
         requestSkillsReload: onSkillsChanged ?? (() => undefined),
         notifySkillCatalogChanged: onSkillsChanged ?? (() => undefined),
@@ -630,6 +642,21 @@ describe('settings IPC handlers', () => {
     expect(service.switchLocalShellToPowerShell.mock.invocationCallOrder[0]).toBeLessThan(
       onShellRuntimeRefresh.mock.invocationCallOrder[0]
     )
+  })
+
+  it('routes explicit WSL2 Bash enablement through the same awaited capability refresh', async () => {
+    handlers.clear()
+    const service = createFakeService()
+    const onShellRuntimeRefresh = vi.fn()
+    registerTestSettingsIpcHandlers({
+      service: asService(service),
+      onShellRuntimeRefresh
+    })
+
+    await invoke('settings:use-wsl2-bash')
+
+    expect(service.useWsl2Bash).toHaveBeenCalledOnce()
+    expect(onShellRuntimeRefresh).toHaveBeenCalledOnce()
   })
 
   it('fires onConnectorsChanged after a connector is toggled', async () => {

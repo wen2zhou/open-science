@@ -112,6 +112,7 @@ type AppearanceResult = Awaited<ReturnType<AppearanceSettingsWorkflows['setAppIc
 type SwitchToPowerShellResult = Awaited<
   ReturnType<LocalShellSettingsWorkflows['switchToPowerShell']>
 >
+type UseWsl2BashResult = Awaited<ReturnType<LocalShellSettingsWorkflows['useWsl2Bash']>>
 
 const settingsCoreApplicationCommands = Object.freeze({
   cancelClaudeLogin: defineApplicationCommand<
@@ -347,6 +348,9 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [],
     SwitchToPowerShellResult
   >('settings:switch-local-shell-to-powershell'),
+  useWsl2Bash: defineApplicationCommand<'settings:use-wsl2-bash', readonly [], UseWsl2BashResult>(
+    'settings:use-wsl2-bash'
+  ),
   setSessionDetailsModel: defineApplicationCommand<
     'settings:set-session-details-model',
     readonly [request: SetSessionDetailsModelRequest],
@@ -417,6 +421,7 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
   settingsCoreApplicationCommands.setReviewerModel,
   settingsCoreApplicationCommands.selectWslProfile,
   settingsCoreApplicationCommands.switchLocalShellToPowerShell,
+  settingsCoreApplicationCommands.useWsl2Bash,
   settingsCoreApplicationCommands.setSessionDetailsModel,
   settingsCoreApplicationCommands.setSubagentModel,
   settingsCoreApplicationCommands.setVisionModel,
@@ -426,7 +431,7 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
 type CoreSettingsApplicationCommandDependencies = Readonly<{
   service: CoreSettingsCommandStore
   appearance: Pick<AppearanceSettingsWorkflows, 'setAppIconVariant'>
-  localShell: Pick<LocalShellSettingsWorkflows, 'switchToPowerShell'>
+  localShell: Pick<LocalShellSettingsWorkflows, 'switchToPowerShell' | 'useWsl2Bash'>
   snapshotCommits: SettingsSnapshotCommitOwner
   emitInstallEvent: (event: ClaudeInstallEvent) => void
   listAppIconPreviews?: () => AppIconPreview[]
@@ -607,6 +612,10 @@ const registerCoreSettingsApplicationCommands = (
       'settings:switch-local-shell-to-powershell': ({ callerContext }) => {
         requireLocalCaller(callerContext, 'settings:switch-local-shell-to-powershell')
         return dependencies.localShell.switchToPowerShell()
+      },
+      'settings:use-wsl2-bash': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:use-wsl2-bash')
+        return dependencies.localShell.useWsl2Bash()
       },
       'settings:set-session-details-model': ({ args }) =>
         dependencies.snapshotCommits.currentSnapshotAfter(

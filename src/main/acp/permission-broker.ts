@@ -760,7 +760,10 @@ const projectRegistrySessionGrants = (
 // Tracks permission requests until the renderer chooses an outcome.
 class AcpPermissionBroker {
   private pendingRequests = new Map<string, PendingPermission>()
-  private readonly restoredAllowOnceBySession = new Map<string, string>()
+  private readonly restoredAllowOnceBySession = new Map<
+    string,
+    Readonly<{ fingerprint: string; categoryKey?: string }>
+  >()
   private readonly durableRequestQueues = new Map<string, string[]>()
   private readonly activeDurableRequestBySession = new Map<string, string>()
   private cancellationGeneration = 0
@@ -1062,9 +1065,11 @@ class AcpPermissionBroker {
         }
       : undefined
 
+    const restoredAllowOnce = this.restoredAllowOnceBySession.get(request.sessionId)
     if (
       durableCandidate &&
-      this.restoredAllowOnceBySession.get(request.sessionId) === durableCandidate.fingerprint
+      restoredAllowOnce?.fingerprint === durableCandidate.fingerprint &&
+      restoredAllowOnce.categoryKey === categoryKey
     ) {
       this.restoredAllowOnceBySession.delete(request.sessionId)
       return Promise.resolve({
@@ -1480,7 +1485,10 @@ class AcpPermissionBroker {
     }
 
     if (option.scope === 'once' || option.kind.toLowerCase() === ALLOW_ONCE_OPTION_KIND) {
-      this.restoredAllowOnceBySession.set(permission.request.sessionId, permission.fingerprint)
+      this.restoredAllowOnceBySession.set(permission.request.sessionId, {
+        fingerprint: permission.fingerprint,
+        ...(permission.categoryKey ? { categoryKey: permission.categoryKey } : {})
+      })
       return
     }
 

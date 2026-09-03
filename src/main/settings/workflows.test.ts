@@ -29,7 +29,7 @@ const testEffects = (effects: TestSettingsWorkflowEffects = {}): SettingsWorkflo
     requestAgentFrameworkSwitch: effects.requestAgentFrameworkSwitch ?? (() => undefined)
   },
   localShell: {
-    requestShellRuntimeRefresh: effects.requestShellRuntimeRefresh ?? (() => undefined)
+    requestShellRuntimeRefresh: effects.requestShellRuntimeRefresh ?? (async () => undefined)
   },
   skills: {
     requestSkillsReload: effects.requestSkillsReload ?? (() => undefined),
@@ -100,6 +100,13 @@ const fakeStore = () => {
       runtimeBinding: { kind: 'powershell', version: '5.1' },
       appliesTo: 'subsequent-executions',
       wslProfilePreserved: true
+    }),
+    getLocalShellRuntimePreference: vi.fn().mockResolvedValue(undefined),
+    restoreLocalShellRuntimePreference: vi.fn().mockResolvedValue(true),
+    useWsl2Bash: vi.fn().mockResolvedValue({
+      runtime: 'wsl2-bash',
+      selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+      appliesTo: 'subsequent-executions'
     }),
     setSkillEnabled: vi.fn().mockResolvedValue([]),
     setSkillsEnabled: vi.fn().mockResolvedValue([]),

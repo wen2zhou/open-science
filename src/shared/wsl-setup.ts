@@ -27,6 +27,12 @@ export type SwitchToPowerShellResult = Readonly<{
   wslProfilePreserved: boolean
 }>
 
+export type UseWsl2BashResult = Readonly<{
+  runtime: 'wsl2-bash'
+  selection: WslSelection
+  appliesTo: 'subsequent-executions'
+}>
+
 export type WslReadiness = Readonly<{
   wsl2?: boolean
   home?: boolean

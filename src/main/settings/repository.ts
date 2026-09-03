@@ -460,6 +460,22 @@ class SettingsRepository {
     return this.mutate((settings) => ({ ...settings, localShellRuntime: runtime }))
   }
 
+  async restoreLocalShellRuntime(
+    expected: LocalShellRuntimePreference,
+    previous: LocalShellRuntimePreference | undefined
+  ): Promise<boolean> {
+    let restored = false
+    await this.mutate((settings) => {
+      if (settings.localShellRuntime !== expected) return settings
+      restored = true
+      if (previous) return { ...settings, localShellRuntime: previous }
+      const withoutPreference = { ...settings }
+      delete withoutPreference.localShellRuntime
+      return withoutPreference
+    })
+    return restored
+  }
+
   async setAgentFramework(id: AgentFrameworkId): Promise<StoredSettings> {
     return this.mutate((settings) => ({ ...settings, agentFrameworkId: id }))
   }

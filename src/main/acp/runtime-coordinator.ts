@@ -1390,6 +1390,13 @@ class AcpRuntimeCoordinator {
     await this.retireRuntimeGenerations(this.runtimes)
   }
 
+  async requestShellCapabilityRefresh(): Promise<void> {
+    // Shell binding, tool documentation, RPC routing and permission qualifiers are captured by every
+    // generation, including explicit provider/model targets. Retire them as one global capability
+    // epoch so a prompt admitted immediately after this Promise settles cannot use the old backend.
+    await this.retireRuntimeGenerations(this.runtimes)
+  }
+
   async requestProjectAgentContextReload(): Promise<void> {
     // Project Agent Context is captured during Session setup. Retire every generation so its idle
     // Sessions resume with the current Project value before their next prompt.
