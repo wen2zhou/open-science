@@ -41,8 +41,13 @@ export type WslSetupSnapshot = Readonly<{
 export type WslPlatformInstallOutcome =
   'uac-cancelled' | 'spawn-failed' | 'restart-required' | 'completed' | 'unknown'
 
+export const WSL_PLATFORM_OWNERSHIP = 'user-and-os-managed' as const
+
+export type WslExternalComponentOwnership = typeof WSL_PLATFORM_OWNERSHIP
+
 export type WslPlatformInstallResult = Readonly<{
   outcome: WslPlatformInstallOutcome
+  ownership: WslExternalComponentOwnership
   operationReference: string
   snapshot: WslSetupSnapshot
 }>

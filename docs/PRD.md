@@ -118,6 +118,13 @@ Current external effects use feature-local ownership evidence rather than a gene
 inventory records both guarded paths and known legacy exceptions; it is not a claim that every
 existing cleanup path already satisfies the contract:
 
+- WSL setup is an explicit user-to-Windows ownership handoff, not an app-owned durable component.
+  Open Science may ask Windows to install the shared WSL platform only after the user chooses the
+  Settings action; the resulting platform and any distribution remain user- and OS-managed. The app
+  records no ownership receipt, never stops, unregisters, removes, or uninstalls them, and its own
+  uninstall leaves them untouched. After interruption, restart, or an uncertain command result,
+  reconciliation performs a fresh read-only OS probe and never replays the installation command or
+  adopts a discovered platform as app-owned.
 - The command-line launcher verifies its exact target and managed content marker before replacement
   or removal.
 - One Windows managed-runtime cache cleanup path validates a provenance marker and trusted

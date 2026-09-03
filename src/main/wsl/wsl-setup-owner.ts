@@ -1,17 +1,18 @@
 import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
-import { RECOMMENDED_WSL_DISTRO } from '../../shared/wsl-setup'
-import type {
-  OpenWslTerminalRequest,
-  SelectWslProfileRequest,
-  WslDistro,
-  WslReadiness,
-  WslSelection,
-  WslPlatformInstallResult,
-  WslSetupSnapshot,
-  WslSetupState,
-  WslSupportHandoff
+import {
+  RECOMMENDED_WSL_DISTRO,
+  WSL_PLATFORM_OWNERSHIP,
+  type OpenWslTerminalRequest,
+  type SelectWslProfileRequest,
+  type WslDistro,
+  type WslReadiness,
+  type WslSelection,
+  type WslPlatformInstallResult,
+  type WslSetupSnapshot,
+  type WslSetupState,
+  type WslSupportHandoff
 } from '../../shared/wsl-setup'
 import { createLogger } from '../logger'
 import { resolveWindowsPowerShellExecutable } from '../windows-powershell'
@@ -220,7 +221,10 @@ export class WslSetupOwner {
   async installPlatform(): Promise<WslPlatformInstallResult> {
     const startedAt = Date.now()
     const operationReference = this.reference()
-    this.log.info('wsl install started', { operationReference })
+    this.log.info('wsl install started', {
+      operationReference,
+      ownership: WSL_PLATFORM_OWNERSHIP
+    })
     let execution: WslPlatformInstallExecution
     try {
       execution = await this.installer.install()
@@ -264,6 +268,7 @@ export class WslSetupOwner {
 
     const fields = {
       operationReference,
+      ownership: WSL_PLATFORM_OWNERSHIP,
       outcome,
       state: snapshot.state,
       errorCode: snapshot.errorCode,
@@ -272,7 +277,12 @@ export class WslSetupOwner {
     if (outcome === 'completed') this.log.info('wsl install completed', fields)
     else this.log.warn('wsl install completed', fields)
     this.latestSnapshot = snapshot
-    return { outcome, operationReference, snapshot }
+    return {
+      outcome,
+      ownership: WSL_PLATFORM_OWNERSHIP,
+      operationReference,
+      snapshot
+    }
   }
 
   async installRecommendedDistro(): Promise<WslSetupSnapshot> {

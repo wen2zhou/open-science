@@ -101,6 +101,7 @@ describe('WslSetupOwner', () => {
 
     await expect(owner.installPlatform()).resolves.toEqual({
       outcome: 'completed',
+      ownership: 'user-and-os-managed',
       operationReference: 'install1',
       snapshot: {
         state: 'distro-required',
@@ -114,6 +115,10 @@ describe('WslSetupOwner', () => {
     expect(JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls])).not.toContain(
       'private-host-output'
     )
+    expect(log.info).toHaveBeenCalledWith('wsl install started', {
+      operationReference: 'install1',
+      ownership: 'user-and-os-managed'
+    })
   })
 
   it.each([
@@ -145,6 +150,7 @@ describe('WslSetupOwner', () => {
 
       await expect(owner.installPlatform()).resolves.toMatchObject({
         outcome,
+        ownership: 'user-and-os-managed',
         operationReference: 'install2',
         snapshot: { state: 'not-installed', errorCode: code, operationReference: 'install2' }
       })
@@ -156,6 +162,39 @@ describe('WslSetupOwner', () => {
       expect(runner.run).not.toHaveBeenCalled()
     }
   )
+
+  it('hands the platform to the user and OS and only performs a fresh probe after owner restart', async () => {
+    const installer: WslPlatformInstaller = {
+      install: vi.fn(async () => ({ kind: 'exited' as const, exitCode: 0 }))
+    }
+    const shared = {
+      installer,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn()
+    }
+    const installingOwner = makeOwner({
+      ...shared,
+      runner: makeRunner(result('Default Version: 2'), result('')),
+      operationReference: () => 'install1'
+    })
+
+    await expect(installingOwner.installPlatform()).resolves.toMatchObject({
+      ownership: 'user-and-os-managed',
+      outcome: 'completed'
+    })
+
+    const restartedOwner = makeOwner({
+      ...shared,
+      runner: makeRunner(result('Default Version: 2'), result('')),
+      operationReference: () => 'restart1'
+    })
+    await expect(restartedOwner.probe()).resolves.toMatchObject({
+      state: 'distro-required',
+      operationReference: 'restart1'
+    })
+    expect(installer.install).toHaveBeenCalledOnce()
+  })
 
   it('reports an unknown result when the post-install OS probe itself fails', async () => {
     const installer: WslPlatformInstaller = {
@@ -173,6 +212,7 @@ describe('WslSetupOwner', () => {
 
     await expect(owner.installPlatform()).resolves.toMatchObject({
       outcome: 'unknown',
+      ownership: 'user-and-os-managed',
       operationReference: 'install5',
       snapshot: {
         state: 'failed',
@@ -214,6 +254,7 @@ describe('WslSetupOwner', () => {
 
       await expect(owner.installPlatform()).resolves.toMatchObject({
         outcome,
+        ownership: 'user-and-os-managed',
         operationReference: 'install3',
         snapshot: { state, operationReference: 'install3' }
       })
