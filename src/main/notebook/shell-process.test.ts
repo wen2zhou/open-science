@@ -516,12 +516,16 @@ describe('notebook shell process behavior', () => {
     })
     const endExecution = vi.fn()
     const beginExecution = vi.fn(() => endExecution)
+    const spawnStarted = vi.fn()
+    const spawnNotStarted = vi.fn()
+    const beginSpawn = vi.fn(() => ({ started: spawnStarted, notStarted: spawnNotStarted }))
     const processSandbox: NotebookProcessSandbox = {
       wrap: vi.fn(async (invocation) => ({
         executable: invocation.executable,
         args: ['\0'],
         env: invocation.env,
         beginExecution,
+        beginSpawn,
         annotateStderr: (stderr: string) => stderr,
         cleanup
       }))
@@ -548,6 +552,9 @@ describe('notebook shell process behavior', () => {
     expect(completed).toBe(false)
     expect(beginExecution).toHaveBeenCalledOnce()
     expect(endExecution).toHaveBeenCalledOnce()
+    expect(beginSpawn).toHaveBeenCalledOnce()
+    expect(spawnNotStarted).toHaveBeenCalledOnce()
+    expect(spawnStarted).not.toHaveBeenCalled()
     releaseCleanup?.()
 
     const result = await completion
@@ -556,6 +563,52 @@ describe('notebook shell process behavior', () => {
     expect(cleanup).toHaveBeenCalledOnce()
     expect(endExecution).toHaveBeenCalledOnce()
     await rm(runtimeRoot, { recursive: true, force: true })
+  })
+
+  it('does not admit a WSL spawn when cancellation wins after preparation', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
+    const controller = new AbortController()
+    const beginSpawn = vi.fn()
+    const cleanup = vi.fn(async () => ({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    }))
+    const processSandbox: NotebookProcessSandbox = {
+      wrap: vi.fn(async (invocation) => {
+        controller.abort()
+        return {
+          executable: process.execPath,
+          args: ['-e', 'process.exit(0)'],
+          env: invocation.env,
+          beginSpawn,
+          annotateStderr: (stderr: string) => stderr,
+          cleanup
+        }
+      })
+    }
+
+    await expect(
+      runShellCommand({
+        command: 'echo never-spawned',
+        cwd: 'C:\\workspace',
+        handoffDir: 'C:\\handoff',
+        runtimeRoot: 'C:\\runtime',
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        platform: 'win32',
+        signal: controller.signal,
+        runtimeBinding: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        },
+        processSandbox
+      })
+    ).resolves.toMatchObject({ cancelled: true, exitCode: null })
+    expect(beginSpawn).not.toHaveBeenCalled()
+    expect(cleanup).toHaveBeenCalledWith('cancel', { processesTerminated: false })
   })
 
   it('returns a stable failure instead of trusting an exit when sandbox cleanup is incomplete', async () => {

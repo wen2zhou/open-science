@@ -113,8 +113,16 @@ describe('NotebookNetworkSandboxOwner', () => {
     const commandId = '01234567-89ab-4cde-8fab-0123456789ab'
     const commandRoot = join(managedRoot, `command-${commandId}`)
     const receipt = join(managedRoot, `command-${commandId}.receipt`)
+    const nativeId = '11234567-89ab-4cde-8fab-0123456789ab'
+    const nativeRoot = join(managedRoot, `command-${nativeId}`)
+    const nativeReceipt = `${nativeRoot}.receipt`
     await mkdir(commandRoot, { recursive: true })
-    await writeFile(receipt, `v1 command-${commandId}\n`)
+    await mkdir(nativeRoot, { recursive: true })
+    await writeFile(
+      receipt,
+      `v1 command-${commandId} wsl2 profile-1 Ubuntu-22.04 open-science-spike\n`
+    )
+    await writeFile(nativeReceipt, `v1 command-${nativeId} native\n`)
     await writeFile(join(commandRoot, 'left-by-crash.txt'), 'temporary')
     const owner = new NotebookNetworkSandboxOwner({
       resourceRoot: fixtureRoot,
@@ -126,8 +134,79 @@ describe('NotebookNetworkSandboxOwner', () => {
 
     await owner.initialize()
 
+    expect(existsSync(commandRoot)).toBe(true)
+    const wrapped = await owner.wrap({
+      target: {
+        kind: 'wsl2',
+        profileId: 'profile-1',
+        distro: 'Ubuntu-22.04',
+        user: 'open-science-spike'
+      },
+      executable: '/bin/bash',
+      args: ['-c', 'true'],
+      env: {},
+      cwd: 'C:\\workspace',
+      commandText: 'true',
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      runtime: 'bash',
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    })
+
     expect(existsSync(commandRoot)).toBe(false)
     expect(existsSync(receipt)).toBe(false)
+    expect(existsSync(nativeRoot)).toBe(true)
+    expect(existsSync(nativeReceipt)).toBe(true)
+    await wrapped.cleanup('exit', { processesTerminated: true })
+    await owner.dispose()
+  })
+
+  it('removes durable command temp ownership after verified preparation cleanup', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'os-network-preparation-cleanup-'))
+    fixtureDirectories.push(fixtureRoot)
+    const managedRoot = join(fixtureRoot, 'managed-command-temp')
+    let commandTempRoot = ''
+    backend.wrap.mockImplementationOnce(async (command: { env: NodeJS.ProcessEnv }) => {
+      commandTempRoot = command.env.TMPDIR!
+      const cause = new Error('runtime unavailable')
+      throw Object.assign(new Error(cause.message, { cause }), {
+        name: 'NotebookSandboxPreparationError',
+        cleanupComplete: true as const
+      })
+    })
+    const owner = new NotebookNetworkSandboxOwner({
+      resourceRoot: fixtureRoot,
+      temporaryRoot: managedRoot,
+      getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      persistAlwaysAllow: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      requestDecision: async () => 'deny'
+    })
+
+    await expect(
+      owner.wrap({
+        executable: '/bin/sh',
+        args: ['-c', 'true'],
+        env: {},
+        cwd: '/workspace',
+        commandText: 'true',
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        runtime: 'bash',
+        filesystem: {
+          readOnlyRoots: [],
+          readWriteRoots: ['/workspace'],
+          deniedReadRoots: [],
+          deniedWriteRoots: []
+        }
+      })
+    ).rejects.toThrow('runtime unavailable')
+    expect(existsSync(commandTempRoot)).toBe(false)
+    expect(existsSync(`${commandTempRoot}.receipt`)).toBe(false)
     await owner.dispose()
   })
 

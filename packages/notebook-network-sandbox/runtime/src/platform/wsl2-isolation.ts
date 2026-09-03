@@ -58,6 +58,7 @@ type Wsl2ReleaseResult = Readonly<{
 type Wsl2Launch = Readonly<{
   argv: string[]
   env: NodeJS.ProcessEnv
+  beginSpawn: () => Readonly<{ started: () => void; notStarted: () => void }>
   release: (reason?: Wsl2CleanupReason) => Promise<Wsl2ReleaseResult>
 }>
 
@@ -680,7 +681,7 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
     throw new Error('WSL2 network gateway is unavailable.')
   }
   let bridge: Wsl2GatewayBridge | undefined
-  let launchPublished = false
+  let spawnState: 'not-started' | 'uncertain' | 'started' = 'not-started'
   let releasePromise: Promise<Wsl2ReleaseResult> | undefined
   let releaseReason: Wsl2CleanupReason | undefined
   let processesTerminated = false
@@ -690,7 +691,7 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
     releaseReason ??= reason
     if (releasePromise) return releasePromise
     const attempt = Promise.allSettled([
-      processesTerminated || !launchPublished
+      processesTerminated || spawnState === 'not-started'
         ? Promise.resolve(true)
         : (request.cleanupGuest ?? defaultCleanupGuest)({
             distro: request.target.distro,
@@ -821,7 +822,6 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
     request.command
   )
 
-  launchPublished = true
   return {
     argv: [
       wslExecutable(),
@@ -841,6 +841,18 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
       ...bwrap
     ],
     env: sanitizedHostEnvironment(),
+    beginSpawn: () => {
+      if (spawnState !== 'not-started') throw new Error('WSL2 spawn was already admitted.')
+      spawnState = 'uncertain'
+      return {
+        started: () => {
+          if (spawnState === 'uncertain') spawnState = 'started'
+        },
+        notStarted: () => {
+          if (spawnState === 'uncertain') spawnState = 'not-started'
+        }
+      }
+    },
     release
   }
 }

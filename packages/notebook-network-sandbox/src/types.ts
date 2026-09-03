@@ -85,6 +85,7 @@ export type NotebookSandboxCommand = Readonly<{
 export type NotebookSandboxedProcess = Readonly<{
   argv: readonly string[]
   env: NodeJS.ProcessEnv
+  beginSpawn?: () => Readonly<{ started: () => void; notStarted: () => void }>
   annotateStderr: (stderr: string) => string
   resetNetworkConnections: () => void
   cleanup: (

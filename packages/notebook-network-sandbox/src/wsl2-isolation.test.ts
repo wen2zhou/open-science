@@ -166,6 +166,7 @@ describe('WSL2 sandbox adapter', () => {
     expect(launch.env.PATH).toBeUndefined()
     expect(launch.env.AWS_SECRET_ACCESS_KEY).toBeUndefined()
     expect(mapPath).toHaveBeenCalledWith('C:\\Open Science\\Workspace 路径', undefined)
+    launch.beginSpawn().started()
     await expect(launch.release()).resolves.toEqual({
       processesTerminated: true,
       networkClosed: true,
@@ -208,6 +209,8 @@ describe('WSL2 sandbox adapter', () => {
       })
     })
 
+    launch.beginSpawn().started()
+
     const first = launch.release('cancel')
     const concurrent = launch.release('timeout')
 
@@ -236,6 +239,49 @@ describe('WSL2 sandbox adapter', () => {
     })
     expect(cleanupGuest).toHaveBeenCalledTimes(2)
     expect(cleanupGuest.mock.calls[1]?.[0]).toEqual(cleanupGuest.mock.calls[0]?.[0])
+  })
+
+  it('skips guest receipt cleanup only when spawn admission proves no process began', async () => {
+    const cleanupGuest = vi.fn(async () => true)
+    const close = vi.fn(async () => ({
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    }))
+    const launch = await wsl2Launch({
+      target: {
+        kind: 'wsl2',
+        profileId: 'never-spawned-profile',
+        distro: 'Ubuntu-22.04',
+        user: 'open-science-spike'
+      },
+      command: 'echo never-spawned',
+      cwd: 'C:\\workspace',
+      env: {},
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      },
+      reconcileGuest: reconciled,
+      gatewayPort: 4312,
+      gatewayCredentials: { username: 'command-user', password: 'command-secret' },
+      mapPath: async () => '/mnt/c/workspace',
+      cleanupGuest,
+      openBridge: async () => ({
+        socketPath: '/tmp/open-science-network-command/gateway.sock',
+        close
+      })
+    })
+
+    const admission = launch.beginSpawn()
+    admission.notStarted()
+    await expect(launch.release('spawn-failed')).resolves.toEqual({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+    expect(cleanupGuest).not.toHaveBeenCalled()
   })
 
   it('stops preparation when cancellation arrives during path mapping', async () => {

@@ -178,7 +178,10 @@ mkdir -p "$MPLCONFIGDIR" "$UV_CACHE_DIR" "$HF_DATASETS_CACHE" "$HF_XET_CACHE" "$
 [ -z "$(find /run/WSL -name '*_interop' -print -quit 2>/dev/null || true)" ]
 [ ! -r /proc/net/route ] || ! grep -q '^.*[[:space:]]00000000[[:space:]]' /proc/net/route
 `)
-    await expect(execute(prepared.argv, prepared.env, workspace)).resolves.toEqual({
+    const admission = prepared.beginSpawn()
+    const execution = execute(prepared.argv, prepared.env, workspace)
+    admission.started()
+    await expect(execution).resolves.toEqual({
       exitCode: 0,
       stdout: '你好 stdout\n',
       stderr: 'guest stderr\n'
@@ -188,7 +191,10 @@ mkdir -p "$MPLCONFIGDIR" "$UV_CACHE_DIR" "$HF_DATASETS_CACHE" "$HF_XET_CACHE" "$
 
   it('preserves a real non-zero Bash exit code', async () => {
     const prepared = await launch(`printf 'failed' >&2; exit 23`)
-    await expect(execute(prepared.argv, prepared.env, workspace)).resolves.toEqual({
+    const admission = prepared.beginSpawn()
+    const execution = execute(prepared.argv, prepared.env, workspace)
+    admission.started()
+    await expect(execution).resolves.toEqual({
       exitCode: 23,
       stdout: '',
       stderr: 'failed'
@@ -198,11 +204,13 @@ mkdir -p "$MPLCONFIGDIR" "$UV_CACHE_DIR" "$HF_DATASETS_CACHE" "$HF_XET_CACHE" "$
 
   it('cleans an execution when cancellation races receipt publication', async () => {
     const prepared = await launch('sleep 30')
+    const admission = prepared.beginSpawn()
     const child = spawn(prepared.argv[0]!, prepared.argv.slice(1), {
       cwd: workspace,
       env: prepared.env,
       windowsHide: true
     })
+    admission.started()
     const startedAt = Date.now()
 
     const firstCleanup = await prepared.release('cancel')
@@ -237,14 +245,18 @@ env -u OPEN_SCIENCE_WSL_EXECUTION_TOKEN setsid /bin/bash --noprofile --norc -c '
 ' &
 printf ready
 while :; do sleep 1; done
-`)
+    `)
     const concurrent = await launch(`sleep 4; printf concurrent-ok`)
+    const victimAdmission = victim.beginSpawn()
     const victimChild = spawn(victim.argv[0]!, victim.argv.slice(1), {
       cwd: workspace,
       env: victim.env,
       windowsHide: true
     })
+    victimAdmission.started()
+    const concurrentAdmission = concurrent.beginSpawn()
     const concurrentCompletion = execute(concurrent.argv, concurrent.env, workspace)
+    concurrentAdmission.started()
 
     await waitForStdout(victimChild, 'ready')
     const startedAt = Date.now()

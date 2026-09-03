@@ -436,6 +436,7 @@ const runShellCommand = (
         : withIncompleteCleanup(cancelled)
     }
 
+    const spawnAdmission = sandboxed?.beginSpawn?.()
     let child: ChildProcessWithoutNullStreams
     try {
       child = spawn(
@@ -450,6 +451,7 @@ const runShellCommand = (
         }
       )
     } catch (error) {
+      spawnAdmission?.notStarted()
       endSandboxExecution?.()
       let complete = false
       try {
@@ -466,6 +468,7 @@ const runShellCommand = (
       }
       return complete ? result : withIncompleteCleanup(result)
     }
+    spawnAdmission?.started()
     if (platform !== 'win32' && process.platform !== 'win32') trackOwnedPosixProcessTree(child)
 
     return new Promise((resolve) => {

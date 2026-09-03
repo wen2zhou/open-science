@@ -16,7 +16,7 @@ vi.mock('../runtime/src/index.js', async (importOriginal) => ({
   NotebookNetworkRuntime: backend
 }))
 
-import { NotebookNetworkSandbox } from './index.js'
+import { NotebookNetworkSandbox, NotebookSandboxPreparationError } from './index.js'
 import type { NotebookNetworkSandboxOptions } from './types.js'
 
 const options = (): NotebookNetworkSandboxOptions => ({
@@ -67,13 +67,17 @@ describe('NotebookNetworkSandbox', () => {
     backend.wrap.mockRejectedValue(new Error('preparation failed'))
 
     await sandbox.initialize()
-    await expect(
-      sandbox.wrap({
-        command: 'python notebook.py',
-        cwd: '/workspace',
-        onNetworkAccessRequest: denyNetwork
-      })
-    ).rejects.toThrow('preparation failed')
+    const failure = sandbox.wrap({
+      command: 'python notebook.py',
+      cwd: '/workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+    await expect(failure).rejects.toBeInstanceOf(NotebookSandboxPreparationError)
+    await expect(failure).rejects.toMatchObject({
+      message: 'preparation failed',
+      cleanupComplete: true,
+      cause: expect.objectContaining({ message: 'preparation failed' })
+    })
     expect(backend.cleanupAfterCommand).toHaveBeenCalledOnce()
     await sandbox.dispose()
   })
@@ -105,14 +109,43 @@ describe('NotebookNetworkSandbox', () => {
     })
   })
 
+  it('surfaces incomplete preparation cleanup before the backend failure classification', async () => {
+    const sandbox = new NotebookNetworkSandbox(options())
+    vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    backend.wrap.mockRejectedValue(new Error('runtime unavailable'))
+    backend.cleanupAfterCommand
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: false,
+        temporaryResourcesRemoved: false
+      })
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+
+    await sandbox.initialize()
+    await expect(
+      sandbox.wrap({
+        command: 'python notebook.py',
+        cwd: '/workspace',
+        onNetworkAccessRequest: denyNetwork
+      })
+    ).rejects.toThrow('SHELL_CLEANUP_INCOMPLETE')
+    await expect(sandbox.dispose()).resolves.toBeUndefined()
+  })
+
   it('owns one process sandbox, wraps commands, and releases ownership', async () => {
     const first = new NotebookNetworkSandbox(options())
     const second = new NotebookNetworkSandbox(options())
     vi.spyOn(first, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
     vi.spyOn(second, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    const beginSpawn = vi.fn()
     backend.wrap.mockResolvedValue({
       argv: ['/bin/sh', '-c', 'sandboxed'],
-      env: { HTTPS_PROXY: 'http://127.0.0.1:4123' }
+      env: { HTTPS_PROXY: 'http://127.0.0.1:4123' },
+      beginSpawn
     })
 
     await first.initialize()
@@ -131,6 +164,7 @@ describe('NotebookNetworkSandbox', () => {
     expect(wrapped.annotateStderr).toBeTypeOf('function')
     expect(wrapped.resetNetworkConnections).toBeTypeOf('function')
     expect(wrapped.cleanup).toBeTypeOf('function')
+    expect(wrapped.beginSpawn).toBe(beginSpawn)
 
     first.updatePolicy({ allowedDomains: ['api.crossref.org'], deniedDomains: [] })
     expect(backend.updateConfig).toHaveBeenCalledWith(

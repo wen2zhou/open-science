@@ -7,6 +7,7 @@ const gateway = vi.hoisted(() => ({
   close: vi.fn().mockResolvedValue(undefined)
 }))
 const wslRelease = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
+const wslBeginSpawn = vi.hoisted(() => vi.fn())
 
 vi.mock('../runtime/src/gateway/command-gateway.js', () => ({
   CommandGateway: { open: vi.fn().mockResolvedValue(gateway) }
@@ -29,6 +30,7 @@ vi.mock('../runtime/src/platform/wsl2-isolation.js', () => ({
   wsl2Launch: vi.fn(async ({ env }) => ({
     argv: ['C:\\Windows\\System32\\wsl.exe', '--exec', '/usr/bin/bwrap'],
     env,
+    beginSpawn: wslBeginSpawn,
     release: wslRelease
   }))
 }))
@@ -141,7 +143,8 @@ describe('Notebook runtime configuration updates', () => {
     })
     expect(wrapped).toEqual({
       argv: ['C:\\Windows\\System32\\wsl.exe', '--exec', '/usr/bin/bwrap'],
-      env: {}
+      env: {},
+      beginSpawn: wslBeginSpawn
     })
     expect(wsl2Launch).toHaveBeenCalledWith(
       expect.objectContaining({

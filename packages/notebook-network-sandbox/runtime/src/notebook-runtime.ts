@@ -194,7 +194,11 @@ const initialize = async (config: NetworkRuntimeConfig, ask: NetworkAskCallback)
 
 const wrap = async (
   request: NetworkWrapRequest
-): Promise<{ argv: string[]; env: NodeJS.ProcessEnv }> => {
+): Promise<{
+  argv: string[]
+  env: NodeJS.ProcessEnv
+  beginSpawn?: () => Readonly<{ started: () => void; notStarted: () => void }>
+}> => {
   if (finishing.size > 0) await Promise.allSettled([...finishing])
   const config = runtimeConfig
   if (!config) throw new Error('Notebook process runtime is not initialized.')
@@ -247,7 +251,7 @@ const wrap = async (
         releasePlatform: launch.release,
         platformOwnsProcesses: true
       })
-      return { argv: launch.argv, env: launch.env }
+      return { argv: launch.argv, env: launch.env, beginSpawn: launch.beginSpawn }
     } catch (error) {
       if (commandContexts.has(request.commandId)) {
         const cleanup = await cleanupAfterCommand(request.commandId, 'spawn-failed', {

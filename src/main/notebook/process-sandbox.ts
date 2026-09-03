@@ -46,6 +46,7 @@ export type NotebookSandboxedSpawn = Readonly<{
   executable: string
   args: readonly string[]
   env: NodeJS.ProcessEnv
+  beginSpawn?: () => Readonly<{ started: () => void; notStarted: () => void }>
   beginExecution?: () => () => void
   annotateStderr: (stderr: string) => string
   cleanup: (

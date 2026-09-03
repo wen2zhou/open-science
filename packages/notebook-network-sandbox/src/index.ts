@@ -23,6 +23,15 @@ import type {
 
 let activeOwnerToken: symbol | undefined
 
+class NotebookSandboxPreparationError extends Error {
+  readonly cleanupComplete = true
+
+  constructor(cause: unknown) {
+    super(cause instanceof Error ? cause.message : String(cause), { cause })
+    this.name = 'NotebookSandboxPreparationError'
+  }
+}
+
 type ActiveCommand = {
   onNetworkAccessRequest: NotebookSandboxCommand['onNetworkAccessRequest']
   controller: AbortController
@@ -168,8 +177,18 @@ class NotebookNetworkSandbox {
       })
       activeCommand.prepared = true
     } catch (error) {
-      await this.#releaseCommand(commandId, { processesTerminated: true }, 'spawn-failed')
-      throw error
+      const cleanup = await this.#releaseCommand(
+        commandId,
+        { processesTerminated: true },
+        'spawn-failed'
+      ).catch(() => undefined)
+      if (!cleanup || !Object.values(cleanup).every(Boolean)) {
+        throw new Error(
+          'SHELL_CLEANUP_INCOMPLETE: Shell preparation cleanup could not be verified.',
+          { cause: error }
+        )
+      }
+      throw new NotebookSandboxPreparationError(error)
     } finally {
       finishPreparation()
     }
@@ -177,6 +196,7 @@ class NotebookNetworkSandbox {
     return {
       argv: wrapped.argv,
       env: wrapped.env,
+      ...(wrapped.beginSpawn ? { beginSpawn: wrapped.beginSpawn } : {}),
       annotateStderr: (stderr) => this.#backend.annotateStderr(commandId, stderr),
       resetNetworkConnections: () => this.#backend.resetCommandConnections(commandId),
       cleanup: (reason, processOutcome) => {
@@ -340,7 +360,7 @@ class NotebookNetworkSandbox {
   }
 }
 
-export { NotebookNetworkSandbox }
+export { NotebookNetworkSandbox, NotebookSandboxPreparationError }
 export {
   WSL2_BASH_DEVELOPMENT_FLAG,
   WSL2_BASH_UNAVAILABLE_MESSAGE,

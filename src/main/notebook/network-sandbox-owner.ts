@@ -78,6 +78,18 @@ type NotebookNetworkSandboxOwnerOptions = Readonly<{
 
 const COMMAND_TEMP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
 
+const completedPreparationCleanupCause = (error: unknown): unknown | undefined => {
+  if (
+    !(error instanceof Error) ||
+    error.name !== 'NotebookSandboxPreparationError' ||
+    !('cleanupComplete' in error) ||
+    error.cleanupComplete !== true
+  ) {
+    return undefined
+  }
+  return error.cause
+}
+
 const quotePosix = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
 const quotePowerShell = (value: string): string => `'${value.replaceAll("'", "''")}'`
 
@@ -192,7 +204,8 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     await this.reconcilePendingCommandCleanups()
     await this.updateTrustBundle()
     const grantedRoots = (await this.options.getGrantedLocalRoots?.()) ?? []
-    const { commandTempRoot, receipt } = await this.createCommandTemporaryRoot()
+    const target = invocation.target ?? { kind: 'native' as const }
+    const { commandTempRoot, receipt } = await this.createCommandTemporaryRoot(target)
     this.pendingTemporaryRoots.set(commandTempRoot, receipt)
     const env = {
       ...invocation.env,
@@ -203,10 +216,10 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     }
     let activeExecutionGrants: ReadonlySet<string> = new Set()
     let executionActive = false
-    let wrapped: Awaited<ReturnType<NotebookNetworkSandbox['wrap']>>
+    let wrapped: Awaited<ReturnType<NotebookNetworkSandbox['wrap']>> | undefined
     try {
       wrapped = await this.sandbox!.wrap({
-        target: invocation.target ?? { kind: 'native' },
+        target,
         command: commandLine(
           invocation,
           invocation.target?.kind === 'wsl2' ? 'linux' : this.platform
@@ -257,6 +270,11 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
             request
           )
       })
+      if (target.kind === 'wsl2') {
+        // Returning from the runtime certifies guest-receipt reconciliation for this exact profile.
+        // Host temp recovery must stay behind that stop-before-remove boundary.
+        await this.reconcileCommandTemporaryRoots(target, commandTempRoot)
+      }
       this.log.info('sandbox process prepared', {
         executionReference: invocation.executionReference,
         phase: 'sandbox-prepare',
@@ -266,13 +284,46 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
         runtime: invocation.runtime
       })
     } catch (error) {
+      if (wrapped) {
+        const cleanup = await wrapped
+          .cleanup('spawn-failed', { processesTerminated: true })
+          .catch(() => undefined)
+        if (!cleanup || !Object.values(cleanup).every(Boolean)) {
+          throw new Error(
+            'SHELL_CLEANUP_INCOMPLETE: Shell preparation cleanup could not be verified.',
+            { cause: error }
+          )
+        }
+        try {
+          await this.removeCommandTemporaryRoot(commandTempRoot, receipt)
+          this.pendingTemporaryRoots.delete(commandTempRoot)
+        } catch (cleanupError) {
+          throw new Error(
+            'SHELL_CLEANUP_INCOMPLETE: Command temporary cleanup could not be verified.',
+            { cause: cleanupError }
+          )
+        }
+      }
+      const preparationCause = completedPreparationCleanupCause(error)
+      if (preparationCause !== undefined) {
+        try {
+          await this.removeCommandTemporaryRoot(commandTempRoot, receipt)
+          this.pendingTemporaryRoots.delete(commandTempRoot)
+        } catch (cleanupError) {
+          throw new Error(
+            'SHELL_CLEANUP_INCOMPLETE: Command temporary cleanup could not be verified.',
+            { cause: cleanupError }
+          )
+        }
+      }
       this.log.error('sandbox process preparation failed', {
         platform: this.platform,
         runtime: invocation.runtime,
         ...diagnosticErrorFields(error)
       })
-      throw error
+      throw preparationCause ?? error
     }
+    if (!wrapped) throw new Error('Notebook network sandbox did not return a process.')
     let cleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
     let cleanupReason: NotebookSandboxCleanupReason | undefined
     let cleanupOutcome: NotebookSandboxProcessOutcome | undefined
@@ -352,6 +403,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       executable,
       args,
       env: wrapped.env,
+      ...(wrapped.beginSpawn ? { beginSpawn: wrapped.beginSpawn } : {}),
       beginExecution: () => {
         if (cleanupPromise) throw new Error('Notebook sandbox process is already closed.')
         if (executionActive) throw new Error('Notebook sandbox execution is already active.')
@@ -583,7 +635,6 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       this.settings = normalizeNotebookNetworkSettings(
         this.settings ?? (await this.options.getSettings())
       )
-      await this.reconcileCommandTemporaryRoots()
       const parentProxy = await this.options.getParentProxy?.()
       this.trustBundle = await resolveNotebookTrustBundle(await this.options.getCaBundlePath?.())
       this.sandbox = this.createSandbox(this.settings, parentProxy)
@@ -639,7 +690,9 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     return this.options.temporaryRoot ?? join(tmpdir(), 'open-science-notebook')
   }
 
-  private async createCommandTemporaryRoot(): Promise<{
+  private async createCommandTemporaryRoot(
+    target: NonNullable<NotebookSandboxInvocation['target']>
+  ): Promise<{
     commandTempRoot: string
     receipt: string
   }> {
@@ -648,7 +701,11 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     const commandTempRoot = join(ownerRoot, `command-${id}`)
     const receipt = join(ownerRoot, `command-${id}.receipt`)
     await mkdir(ownerRoot, { recursive: true, mode: 0o700 })
-    await writeFile(receipt, `v1 command-${id}\n`, { flag: 'wx', mode: 0o600 })
+    const ownership =
+      target.kind === 'wsl2'
+        ? `wsl2 ${encodeURIComponent(target.profileId)} ${encodeURIComponent(target.distro)} ${encodeURIComponent(target.user)}`
+        : 'native'
+    await writeFile(receipt, `v1 command-${id} ${ownership}\n`, { flag: 'wx', mode: 0o600 })
     try {
       await mkdir(commandTempRoot, { mode: 0o700 })
     } catch (error) {
@@ -663,11 +720,14 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     await rm(receipt, { force: true })
   }
 
-  private async reconcileCommandTemporaryRoots(): Promise<void> {
+  private async reconcileCommandTemporaryRoots(
+    target: Extract<NonNullable<NotebookSandboxInvocation['target']>, { kind: 'wsl2' }>,
+    currentRoot: string
+  ): Promise<void> {
     const ownerRoot = this.commandTemporaryRoot()
     await mkdir(ownerRoot, { recursive: true, mode: 0o700 })
     const entries = await readdir(ownerRoot, { withFileTypes: true })
-    const receipts = new Map<string, string>()
+    const receipts = new Map<string, { receipt: string; matchesTarget: boolean }>()
     for (const entry of entries) {
       const match = /^command-(.+)\.receipt$/u.exec(entry.name)
       if (!match) continue
@@ -676,10 +736,32 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
         throw new Error('SHELL_CLEANUP_INCOMPLETE: Command temporary receipt is invalid.')
       }
       const receipt = join(ownerRoot, entry.name)
-      if ((await readFile(receipt, 'utf8')) !== `v1 command-${id}\n`) {
+      const fields = (await readFile(receipt, 'utf8')).match(
+        /^v1 command-([0-9a-f-]{36}) (native|wsl2 ([^ ]+) ([^ ]+) ([^ \r\n]+))\n$/u
+      )
+      if (!fields || fields[1] !== id) {
         throw new Error('SHELL_CLEANUP_INCOMPLETE: Command temporary receipt is invalid.')
       }
-      receipts.set(id, receipt)
+      let matchesTarget = false
+      if (fields[2] !== 'native') {
+        try {
+          const profileId = decodeURIComponent(fields[3]!)
+          const distro = decodeURIComponent(fields[4]!)
+          const user = decodeURIComponent(fields[5]!)
+          if (
+            encodeURIComponent(profileId) !== fields[3] ||
+            encodeURIComponent(distro) !== fields[4] ||
+            encodeURIComponent(user) !== fields[5]
+          ) {
+            throw new Error('non-canonical ownership')
+          }
+          matchesTarget =
+            profileId === target.profileId && distro === target.distro && user === target.user
+        } catch {
+          throw new Error('SHELL_CLEANUP_INCOMPLETE: Command temporary receipt is invalid.')
+        }
+      }
+      receipts.set(id, { receipt, matchesTarget })
     }
     for (const entry of entries) {
       const match = /^command-(.+)$/u.exec(entry.name)
@@ -689,8 +771,12 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
         throw new Error('SHELL_CLEANUP_INCOMPLETE: Command temporary ownership is incomplete.')
       }
     }
-    for (const [id, receipt] of receipts) {
-      await this.removeCommandTemporaryRoot(join(ownerRoot, `command-${id}`), receipt)
+    for (const [id, ownership] of receipts) {
+      const root = join(ownerRoot, `command-${id}`)
+      // Native children can outlive the Electron parent, so a restart does not prove they stopped.
+      // Their roots stay retained; only same-process verified cleanup may remove them.
+      if (!ownership.matchesTarget || root === currentRoot) continue
+      await this.removeCommandTemporaryRoot(root, ownership.receipt)
     }
   }
 
