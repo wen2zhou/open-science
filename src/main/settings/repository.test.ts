@@ -1677,19 +1677,32 @@ describe('settings repository: Local Shell runtime', () => {
     })
   })
 
-  it('restores a failed Shell switch only while its persisted preference is still current', async () => {
+  it('restores a failed Shell switch only while its exact mutation revision is still current', async () => {
     const repository = new SettingsRepository(await createStorageRoot())
     await repository.setLocalShellRuntime('wsl2-bash')
-    await repository.setLocalShellRuntime('powershell')
+    const failedWrite = await repository.setLocalShellRuntime('powershell')
 
-    await expect(repository.restoreLocalShellRuntime('powershell', 'wsl2-bash')).resolves.toBe(true)
+    await expect(repository.restoreLocalShellRuntime(failedWrite.mutation)).resolves.toBe(true)
     await expect(repository.getSettings()).resolves.toMatchObject({
       localShellRuntime: 'wsl2-bash'
     })
 
-    await expect(repository.restoreLocalShellRuntime('powershell', undefined)).resolves.toBe(false)
+    await expect(repository.restoreLocalShellRuntime(failedWrite.mutation)).resolves.toBe(false)
     await expect(repository.getSettings()).resolves.toMatchObject({
       localShellRuntime: 'wsl2-bash'
+    })
+  })
+
+  it('does not roll back a newer same-value Shell mutation (ABA)', async () => {
+    const repository = new SettingsRepository(await createStorageRoot())
+    await repository.setLocalShellRuntime('wsl2-bash')
+    const older = await repository.setLocalShellRuntime('powershell')
+    await repository.setLocalShellRuntime('wsl2-bash')
+    await repository.setLocalShellRuntime('powershell')
+
+    await expect(repository.restoreLocalShellRuntime(older.mutation)).resolves.toBe(false)
+    await expect(repository.getSettings()).resolves.toMatchObject({
+      localShellRuntime: 'powershell'
     })
   })
 })

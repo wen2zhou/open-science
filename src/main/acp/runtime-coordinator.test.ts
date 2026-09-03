@@ -757,6 +757,45 @@ describe('AcpRuntimeCoordinator', () => {
     expect(created[3].sendPrompt).toHaveBeenCalledOnce()
   })
 
+  it('retires a generation admitted while an earlier Shell refresh is still rejecting', async () => {
+    const created: ReturnType<typeof createFakeRuntime>[] = []
+    const retirement = createDeferred<void>()
+    const refreshFailure = new Error('retirement failed')
+    const coordinator = new AcpRuntimeCoordinator((callbacks) => {
+      const fake = createFakeRuntime({
+        frameworkId: 'claude-code',
+        sessionIds: [`session-${created.length}`],
+        callbacks
+      })
+      if (created.length === 0) {
+        fake.requestRetirement.mockImplementationOnce(async () => {
+          await retirement.promise
+          throw refreshFailure
+        })
+      }
+      created.push(fake)
+      return fake.runtime
+    })
+
+    await coordinator.createSession()
+    const failedRefresh = coordinator.requestShellCapabilityRefresh()
+    await vi.waitFor(() => expect(created[0].requestRetirement).toHaveBeenCalledOnce())
+    const lazySession = await coordinator.createSession()
+
+    retirement.resolve()
+    await expect(failedRefresh).rejects.toBe(refreshFailure)
+    await coordinator.requestShellCapabilityRefresh()
+    await coordinator.resumeSession({ sessionId: lazySession.sessionId, cwd: '/workspace' })
+    await coordinator.sendPrompt({
+      sessionId: lazySession.sessionId,
+      text: 'first prompt after rollback'
+    })
+
+    expect(created[1].requestRetirement).toHaveBeenCalledOnce()
+    expect(created[1].sendPrompt).not.toHaveBeenCalled()
+    expect(created[2].sendPrompt).toHaveBeenCalledOnce()
+  })
+
   it('reloads framework Skills only for matching targeted generations', async () => {
     const created: ReturnType<typeof createFakeRuntime>[] = []
     const coordinator = new AcpRuntimeCoordinator((callbacks, _permissionGrants, target) => {

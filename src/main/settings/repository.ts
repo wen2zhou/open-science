@@ -59,6 +59,7 @@ import {
   buildVisionModelMutation
 } from './subagent-model-settings'
 import { relocateManagedRuntimeEnablement } from '../notebook/managed-runtime-relocation'
+import type { LocalShellRuntimeMutation } from './local-shell-runtime-mutation'
 
 type SkillMutationGuard = <T>(operation: () => Promise<T>) => Promise<T>
 type Write = Promise<StoredSettings>
@@ -67,10 +68,16 @@ type DataRootUpdate = Readonly<{
   onboardingCompletedAt?: number
   previousDataRoot?: string
 }>
+type LocalShellRuntimeWrite = Readonly<{
+  settings: StoredSettings
+  mutation: LocalShellRuntimeMutation
+}>
 
 // Stable mutation facade; the document store owns atomic IO, and secrets stay above this layer.
 class SettingsRepository {
   private readonly store: SettingsDocumentStore
+  private localShellRuntimeRevision = 0
+  private currentLocalShellRuntimeRevision: number | undefined
 
   constructor(
     storage: string | SettingsDocumentStore,
@@ -456,19 +463,30 @@ class SettingsRepository {
     return this.mutate((settings) => ({ ...settings, wslSelection: { distro, user } }))
   }
 
-  async setLocalShellRuntime(runtime: LocalShellRuntimePreference): Promise<StoredSettings> {
-    return this.mutate((settings) => ({ ...settings, localShellRuntime: runtime }))
+  async setLocalShellRuntime(
+    runtime: LocalShellRuntimePreference
+  ): Promise<LocalShellRuntimeWrite> {
+    let mutation: LocalShellRuntimeMutation | undefined
+    const settings = await this.mutate((current) => {
+      mutation = Object.freeze({
+        revision: ++this.localShellRuntimeRevision,
+        runtime,
+        previous: current.localShellRuntime
+      })
+      this.currentLocalShellRuntimeRevision = mutation.revision
+      return { ...current, localShellRuntime: runtime }
+    })
+    if (!mutation) throw new Error('Local Shell runtime mutation was not recorded.')
+    return Object.freeze({ settings, mutation })
   }
 
-  async restoreLocalShellRuntime(
-    expected: LocalShellRuntimePreference,
-    previous: LocalShellRuntimePreference | undefined
-  ): Promise<boolean> {
+  async restoreLocalShellRuntime(mutation: LocalShellRuntimeMutation): Promise<boolean> {
     let restored = false
     await this.mutate((settings) => {
-      if (settings.localShellRuntime !== expected) return settings
+      if (this.currentLocalShellRuntimeRevision !== mutation.revision) return settings
       restored = true
-      if (previous) return { ...settings, localShellRuntime: previous }
+      this.currentLocalShellRuntimeRevision = ++this.localShellRuntimeRevision
+      if (mutation.previous) return { ...settings, localShellRuntime: mutation.previous }
       const withoutPreference = { ...settings }
       delete withoutPreference.localShellRuntime
       return withoutPreference

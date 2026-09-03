@@ -2,6 +2,8 @@ import { homedir } from 'node:os'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
+import { assertWsl2BashDevelopmentEnabled } from '@aipoch/notebook-network-sandbox'
+
 import type { CloseActionPreference } from '../../shared/window-controls'
 import type {
   ClaudeDetectResult,
@@ -117,6 +119,7 @@ import type { InstallManagedClaudeOptions, ManagedInstallOutcome } from './manag
 import { isEncryptionAvailable } from './crypto'
 import { getUserClaudeConfigDir } from './provider-env'
 import { SettingsRepository } from './repository'
+import type { LocalShellRuntimeMutation } from './local-shell-runtime-mutation'
 import { SettingsPreferencesModule, type SetDataRootOptions } from './preferences'
 import { buildSettingsSnapshot } from './settings-view'
 import { NotebookRuntimeSettingsModule } from './notebook-runtime-settings'
@@ -535,23 +538,36 @@ class SettingsService {
     return this.wslSetup.createSupportHandoff()
   }
 
-  async switchLocalShellToPowerShell(): Promise<SwitchToPowerShellResult> {
-    const settings = await this.repository.setLocalShellRuntime('powershell')
+  async switchLocalShellToPowerShell(): Promise<{
+    result: SwitchToPowerShellResult
+    mutation: LocalShellRuntimeMutation
+  }> {
+    const write = await this.repository.setLocalShellRuntime('powershell')
     return Object.freeze({
-      runtimeBinding: Object.freeze({ kind: 'powershell', version: '5.1' }),
-      appliesTo: 'subsequent-executions',
-      wslProfilePreserved: settings.wslSelection !== undefined
+      result: Object.freeze({
+        runtimeBinding: Object.freeze({ kind: 'powershell', version: '5.1' }),
+        appliesTo: 'subsequent-executions',
+        wslProfilePreserved: write.settings.wslSelection !== undefined
+      }),
+      mutation: write.mutation
     })
   }
 
-  async useWsl2Bash(): Promise<UseWsl2BashResult> {
+  async useWsl2Bash(): Promise<{
+    result: UseWsl2BashResult
+    mutation: LocalShellRuntimeMutation
+  }> {
+    assertWsl2BashDevelopmentEnabled()
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     const selection = await this.wslSetup.requireLatestReadySelection()
-    await this.repository.setLocalShellRuntime('wsl2-bash')
+    const write = await this.repository.setLocalShellRuntime('wsl2-bash')
     return Object.freeze({
-      runtime: 'wsl2-bash',
-      selection: Object.freeze({ ...selection }),
-      appliesTo: 'subsequent-executions'
+      result: Object.freeze({
+        runtime: 'wsl2-bash',
+        selection: Object.freeze({ ...selection }),
+        appliesTo: 'subsequent-executions'
+      }),
+      mutation: write.mutation
     })
   }
 
@@ -559,11 +575,8 @@ class SettingsService {
     return (await this.repository.getSettings()).localShellRuntime
   }
 
-  restoreLocalShellRuntimePreference(
-    expected: LocalShellRuntimePreference,
-    previous: LocalShellRuntimePreference | undefined
-  ): Promise<boolean> {
-    return this.repository.restoreLocalShellRuntime(expected, previous)
+  restoreLocalShellRuntimePreference(mutation: LocalShellRuntimeMutation): Promise<boolean> {
+    return this.repository.restoreLocalShellRuntime(mutation)
   }
 
   private async migrateLegacyKeyRefs(settings: StoredSettings): Promise<StoredSettings> {

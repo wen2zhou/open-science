@@ -1,17 +1,15 @@
-import type {
-  LocalShellRuntimePreference,
-  SwitchToPowerShellResult,
-  UseWsl2BashResult
-} from '../../../shared/wsl-setup'
+import type { SwitchToPowerShellResult, UseWsl2BashResult } from '../../../shared/wsl-setup'
+import type { LocalShellRuntimeMutation } from '../local-shell-runtime-mutation'
+
+type LocalShellRuntimeWorkflowWrite<Result> = Readonly<{
+  result: Result
+  mutation: LocalShellRuntimeMutation
+}>
 
 type LocalShellSettingsWorkflowStore = {
-  getLocalShellRuntimePreference(): Promise<LocalShellRuntimePreference | undefined>
-  switchLocalShellToPowerShell(): Promise<SwitchToPowerShellResult>
-  useWsl2Bash(): Promise<UseWsl2BashResult>
-  restoreLocalShellRuntimePreference(
-    expected: LocalShellRuntimePreference,
-    previous: LocalShellRuntimePreference | undefined
-  ): Promise<boolean>
+  switchLocalShellToPowerShell(): Promise<LocalShellRuntimeWorkflowWrite<SwitchToPowerShellResult>>
+  useWsl2Bash(): Promise<LocalShellRuntimeWorkflowWrite<UseWsl2BashResult>>
+  restoreLocalShellRuntimePreference(mutation: LocalShellRuntimeMutation): Promise<boolean>
 }
 
 type LocalShellSettingsWorkflowEffects = {
@@ -22,39 +20,66 @@ type LocalShellSettingsWorkflowEffects = {
 // invalidation stops new work from observing the old binding while existing admitted work drains;
 // a failed invalidation conditionally restores the preference that was current before this action.
 class LocalShellSettingsWorkflows {
+  private mutationTail: Promise<void> = Promise.resolve()
+
   constructor(
     private readonly settings: LocalShellSettingsWorkflowStore,
     private readonly effects: LocalShellSettingsWorkflowEffects
   ) {}
 
   async switchToPowerShell(): Promise<SwitchToPowerShellResult> {
-    return this.switchRuntime('powershell', () => this.settings.switchLocalShellToPowerShell())
+    return this.enqueueSwitch(() =>
+      this.switchRuntime(() => this.settings.switchLocalShellToPowerShell())
+    )
   }
 
   async useWsl2Bash(): Promise<UseWsl2BashResult> {
-    return this.switchRuntime('wsl2-bash', () => this.settings.useWsl2Bash())
+    return this.enqueueSwitch(() => this.switchRuntime(() => this.settings.useWsl2Bash()))
   }
 
   private async switchRuntime<Result>(
-    runtime: LocalShellRuntimePreference,
-    persist: () => Promise<Result>
+    persist: () => Promise<LocalShellRuntimeWorkflowWrite<Result>>
   ): Promise<Result> {
-    const previous = await this.settings.getLocalShellRuntimePreference()
-    const result = await persist()
+    const write = await persist()
     try {
       await this.effects.requestShellRuntimeRefresh()
-      return result
+      return write.result
     } catch (error) {
+      const recoveryErrors: unknown[] = [error]
       try {
-        await this.settings.restoreLocalShellRuntimePreference(runtime, previous)
+        const restored = await this.settings.restoreLocalShellRuntimePreference(write.mutation)
+        if (!restored) {
+          recoveryErrors.push(
+            new Error(
+              'The saved Shell preference changed before rollback could claim its mutation.'
+            )
+          )
+        }
       } catch (rollbackError) {
+        recoveryErrors.push(rollbackError)
+      }
+      try {
+        await this.effects.requestShellRuntimeRefresh()
+      } catch (rollbackRefreshError) {
+        recoveryErrors.push(rollbackRefreshError)
+      }
+      if (recoveryErrors.length > 1) {
         throw new AggregateError(
-          [error, rollbackError],
-          'Shell capability refresh failed and the saved preference could not be restored.'
+          recoveryErrors,
+          'Shell capability refresh failed while restoring the saved preference.'
         )
       }
       throw error
     }
+  }
+
+  private enqueueSwitch<Result>(operation: () => Promise<Result>): Promise<Result> {
+    const result = this.mutationTail.then(operation, operation)
+    this.mutationTail = result.then(
+      () => undefined,
+      () => undefined
+    )
+    return result
   }
 }
 

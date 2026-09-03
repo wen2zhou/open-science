@@ -97,16 +97,22 @@ const fakeStore = () => {
     waitXaiOAuthLogin: vi.fn().mockResolvedValue({ ok: true }),
     logoutXaiOAuth: vi.fn().mockResolvedValue(snapshot()),
     switchLocalShellToPowerShell: vi.fn().mockResolvedValue({
-      runtimeBinding: { kind: 'powershell', version: '5.1' },
-      appliesTo: 'subsequent-executions',
-      wslProfilePreserved: true
+      result: {
+        runtimeBinding: { kind: 'powershell', version: '5.1' },
+        appliesTo: 'subsequent-executions',
+        wslProfilePreserved: true
+      },
+      mutation: { revision: 1, runtime: 'powershell', previous: undefined }
     }),
     getLocalShellRuntimePreference: vi.fn().mockResolvedValue(undefined),
     restoreLocalShellRuntimePreference: vi.fn().mockResolvedValue(true),
     useWsl2Bash: vi.fn().mockResolvedValue({
-      runtime: 'wsl2-bash',
-      selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
-      appliesTo: 'subsequent-executions'
+      result: {
+        runtime: 'wsl2-bash',
+        selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+        appliesTo: 'subsequent-executions'
+      },
+      mutation: { revision: 2, runtime: 'wsl2-bash', previous: 'powershell' }
     }),
     setSkillEnabled: vi.fn().mockResolvedValue([]),
     setSkillsEnabled: vi.fn().mockResolvedValue([]),
