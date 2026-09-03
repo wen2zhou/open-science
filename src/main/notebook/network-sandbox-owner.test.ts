@@ -106,6 +106,31 @@ afterEach(async () => {
 })
 
 describe('NotebookNetworkSandboxOwner', () => {
+  it('reconciles exact durable command temp receipts left by a prior host process', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'os-network-temp-recovery-'))
+    fixtureDirectories.push(fixtureRoot)
+    const managedRoot = join(fixtureRoot, 'managed-command-temp')
+    const commandId = '01234567-89ab-4cde-8fab-0123456789ab'
+    const commandRoot = join(managedRoot, `command-${commandId}`)
+    const receipt = join(managedRoot, `command-${commandId}.receipt`)
+    await mkdir(commandRoot, { recursive: true })
+    await writeFile(receipt, `v1 command-${commandId}\n`)
+    await writeFile(join(commandRoot, 'left-by-crash.txt'), 'temporary')
+    const owner = new NotebookNetworkSandboxOwner({
+      resourceRoot: fixtureRoot,
+      temporaryRoot: managedRoot,
+      getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      persistAlwaysAllow: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      requestDecision: async () => 'deny'
+    })
+
+    await owner.initialize()
+
+    expect(existsSync(commandRoot)).toBe(false)
+    expect(existsSync(receipt)).toBe(false)
+    await owner.dispose()
+  })
+
   it('quotes executable arguments without allowing shell interpolation', () => {
     expect(
       commandLine(
@@ -199,14 +224,12 @@ describe('NotebookNetworkSandboxOwner', () => {
     expect(backend.wrap).toHaveBeenCalledWith(
       expect.objectContaining({
         env: expect.objectContaining({
-          TMPDIR: expect.stringContaining('open-science-notebook-'),
-          TEMP: expect.stringContaining('open-science-notebook-'),
-          TMP: expect.stringContaining('open-science-notebook-')
+          TMPDIR: expect.stringContaining('open-science-notebook'),
+          TEMP: expect.stringContaining('open-science-notebook'),
+          TMP: expect.stringContaining('open-science-notebook')
         }),
         filesystem: expect.objectContaining({
-          readWriteRoots: expect.arrayContaining([
-            expect.stringContaining('open-science-notebook-')
-          ])
+          readWriteRoots: expect.arrayContaining([expect.stringContaining('open-science-notebook')])
         })
       })
     )
@@ -703,6 +726,7 @@ describe('NotebookNetworkSandboxOwner', () => {
       }
     })
     const commandTempRoot = backend.wrap.mock.calls.at(-1)?.[0].env.TMPDIR as string
+    const commandTempReceipt = `${commandTempRoot}.receipt`
 
     await expect(wrapped.cleanup('cancel', { processesTerminated: false })).resolves.toEqual({
       processesTerminated: false,
@@ -710,6 +734,7 @@ describe('NotebookNetworkSandboxOwner', () => {
       temporaryResourcesRemoved: false
     })
     expect(existsSync(commandTempRoot)).toBe(true)
+    expect(existsSync(commandTempReceipt)).toBe(true)
     const next = await owner.wrap({
       executable: '/bin/sh',
       args: ['-c', 'true'],
@@ -727,6 +752,7 @@ describe('NotebookNetworkSandboxOwner', () => {
       }
     })
     expect(existsSync(commandTempRoot)).toBe(false)
+    expect(existsSync(commandTempReceipt)).toBe(false)
     await next.cleanup('exit', { processesTerminated: true })
     await owner.dispose()
   })

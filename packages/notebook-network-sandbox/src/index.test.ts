@@ -78,6 +78,33 @@ describe('NotebookNetworkSandbox', () => {
     await sandbox.dispose()
   })
 
+  it('aborts and awaits in-flight preparation before disposing it as never spawned', async () => {
+    const sandbox = new NotebookNetworkSandbox(options())
+    vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    backend.wrap.mockImplementationOnce(
+      ({ signal }: { signal: AbortSignal }) =>
+        new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(signal.reason), { once: true })
+        })
+    )
+
+    await sandbox.initialize()
+    const wrapping = sandbox.wrap({
+      command: 'python notebook.py',
+      cwd: '/workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+    await vi.waitFor(() => expect(backend.wrap).toHaveBeenCalledOnce())
+    const disposal = sandbox.dispose()
+
+    await expect(wrapping).rejects.toThrow('Notebook process ended.')
+    await expect(disposal).resolves.toBeUndefined()
+    expect(backend.cleanupAfterCommand).toHaveBeenCalledOnce()
+    expect(backend.cleanupAfterCommand).toHaveBeenCalledWith(expect.any(String), 'spawn-failed', {
+      processesTerminated: true
+    })
+  })
+
   it('owns one process sandbox, wraps commands, and releases ownership', async () => {
     const first = new NotebookNetworkSandbox(options())
     const second = new NotebookNetworkSandbox(options())

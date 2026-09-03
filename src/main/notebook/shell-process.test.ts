@@ -250,6 +250,42 @@ describe('notebook shell process behavior', () => {
       })
     })
 
+    it('prioritizes incomplete WSL preparation cleanup over an aborted signal', async () => {
+      vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
+      const controller = new AbortController()
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn(async () => {
+          controller.abort()
+          throw new Error(
+            'SHELL_CLEANUP_INCOMPLETE: WSL2 shell preparation cleanup could not be verified.'
+          )
+        })
+      }
+
+      await expect(
+        runShellCommand({
+          command: 'echo should-not-run',
+          cwd: 'C:\\workspace',
+          handoffDir: 'C:\\handoff',
+          runtimeRoot: 'C:\\runtime',
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          platform: 'win32',
+          signal: controller.signal,
+          runtimeBinding: {
+            kind: 'wsl2-bash',
+            profileId: 'profile-1',
+            distro: 'Ubuntu-22.04',
+            user: 'researcher'
+          },
+          processSandbox
+        })
+      ).resolves.toMatchObject({
+        exitCode: null,
+        errorCode: 'shell-cleanup-incomplete'
+      })
+    })
+
     it('fails a selected WSL2 runtime closed with a stable unavailable code instead of native fallback', async () => {
       const result = await runShellCommand({
         command: 'Write-Output should-not-run',

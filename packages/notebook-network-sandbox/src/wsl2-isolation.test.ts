@@ -1,6 +1,6 @@
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
-import { wsl2Launch } from '../runtime/src/platform/wsl2-isolation.js'
+import { wsl2Launch, type Wsl2Launch } from '../runtime/src/platform/wsl2-isolation.js'
 import { notebookWorkloadCacheEnv } from '../../../src/main/notebook/notebook-workload-cache-paths.js'
 
 const mapped = new Map([
@@ -271,6 +271,55 @@ describe('WSL2 sandbox adapter', () => {
       })
     ).rejects.toMatchObject({ name: 'AbortError' })
     expect(openBridge).not.toHaveBeenCalled()
+  })
+
+  it('publishes retryable cleanup ownership before an abort can strand a prepared bridge', async () => {
+    const controller = new AbortController()
+    const close = vi
+      .fn()
+      .mockResolvedValueOnce({ networkClosed: false, temporaryResourcesRemoved: false })
+      .mockResolvedValueOnce({ networkClosed: true, temporaryResourcesRemoved: true })
+    let release: Wsl2Launch['release'] | undefined
+
+    await expect(
+      wsl2Launch({
+        target: {
+          kind: 'wsl2',
+          profileId: 'bridge-abort-profile',
+          distro: 'Ubuntu-22.04',
+          user: 'open-science-spike'
+        },
+        command: 'echo should-not-run',
+        cwd: 'C:\\workspace',
+        env: {},
+        signal: controller.signal,
+        gatewayPort: 4312,
+        gatewayCredentials: { username: 'command-user', password: 'command-secret' },
+        filesystem: {
+          readOnlyRoots: [],
+          readWriteRoots: ['C:\\workspace'],
+          deniedReadRoots: [],
+          deniedWriteRoots: []
+        },
+        reconcileGuest: reconciled,
+        mapPath: async () => '/mnt/c/workspace',
+        cleanupGuest: async () => true,
+        openBridge: async () => {
+          controller.abort()
+          return { socketPath: '/tmp/open-science-network-command/gateway.sock', close }
+        },
+        onCleanupReady: (ownedRelease) => {
+          release = ownedRelease
+        }
+      })
+    ).rejects.toThrow('SHELL_CLEANUP_INCOMPLETE')
+    expect(release).toBeDefined()
+    await expect(release?.('cancel')).resolves.toEqual({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+    expect(close).toHaveBeenCalledTimes(2)
   })
 
   it('serializes first-launch receipt reconciliation and remembers success per guest profile', async () => {

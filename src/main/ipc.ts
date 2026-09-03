@@ -577,6 +577,7 @@ const createApplicationModules = async (
       resourceRoot: app.isPackaged
         ? join(process.resourcesPath, 'notebook-network-sandbox')
         : join(app.getAppPath(), 'packages', 'notebook-network-sandbox', 'vendor'),
+      temporaryRoot: join(app.getPath('userData'), 'notebook-command-temp'),
       getSettings: async () => {
         const service = settingsServiceRef.current
         if (!service) throw new Error('Settings are not ready.')

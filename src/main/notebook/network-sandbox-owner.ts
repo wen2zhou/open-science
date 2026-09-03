@@ -1,6 +1,7 @@
 import { NotebookNetworkSandbox } from '@aipoch/notebook-network-sandbox'
 import { existsSync } from 'node:fs'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { randomUUID } from 'node:crypto'
+import { mkdir, readFile, readdir, rm, writeFile } from 'node:fs/promises'
 import { homedir, tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -72,7 +73,10 @@ type NotebookNetworkSandboxOwnerOptions = Readonly<{
   getGrantedLocalRoots?: () => Promise<readonly GrantedLocalRoot[]>
   platform?: NodeJS.Platform
   logger?: Logger
+  temporaryRoot?: string
 }>
+
+const COMMAND_TEMP_ID = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/u
 
 const quotePosix = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`
 const quotePowerShell = (value: string): string => `'${value.replaceAll("'", "''")}'`
@@ -141,7 +145,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     string,
     Map<NotebookCommandRuntime, Set<string>>
   >()
-  private readonly pendingTemporaryRoots = new Set<string>()
+  private readonly pendingTemporaryRoots = new Map<string, string>()
   private readonly pendingCommandCleanups = new Set<() => Promise<NotebookSandboxCleanupResult>>()
   private readonly platform: NodeJS.Platform
   private readonly log: Logger
@@ -188,8 +192,8 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     await this.reconcilePendingCommandCleanups()
     await this.updateTrustBundle()
     const grantedRoots = (await this.options.getGrantedLocalRoots?.()) ?? []
-    const commandTempRoot = await mkdtemp(join(tmpdir(), 'open-science-notebook-'))
-    this.pendingTemporaryRoots.add(commandTempRoot)
+    const { commandTempRoot, receipt } = await this.createCommandTemporaryRoot()
+    this.pendingTemporaryRoots.set(commandTempRoot, receipt)
     const env = {
       ...invocation.env,
       ...notebookTrustBundleEnvironment(this.trustBundle?.path),
@@ -291,7 +295,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
           sandboxCleanup.status === 'fulfilled' &&
           Object.values(sandboxCleanup.value).every(Boolean)
         const temporaryCleanup = backendComplete
-          ? await rm(commandTempRoot, { recursive: true, force: true }).then(
+          ? await this.removeCommandTemporaryRoot(commandTempRoot, receipt).then(
               () => ({ status: 'fulfilled' as const }),
               (error) => ({ status: 'rejected' as const, reason: error })
             )
@@ -554,8 +558,8 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     await this.initializePromise?.catch(() => undefined)
     try {
       await this.sandbox?.dispose()
-      for (const root of this.pendingTemporaryRoots) {
-        await rm(root, { recursive: true, force: true })
+      for (const [root, receipt] of this.pendingTemporaryRoots) {
+        await this.removeCommandTemporaryRoot(root, receipt)
         this.pendingTemporaryRoots.delete(root)
       }
       this.pendingCommandCleanups.clear()
@@ -579,6 +583,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       this.settings = normalizeNotebookNetworkSettings(
         this.settings ?? (await this.options.getSettings())
       )
+      await this.reconcileCommandTemporaryRoots()
       const parentProxy = await this.options.getParentProxy?.()
       this.trustBundle = await resolveNotebookTrustBundle(await this.options.getCaBundlePath?.())
       this.sandbox = this.createSandbox(this.settings, parentProxy)
@@ -627,6 +632,65 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     const results = await Promise.all([...this.pendingCommandCleanups].map((cleanup) => cleanup()))
     if (results.some((result) => !Object.values(result).every(Boolean))) {
       throw new Error('SHELL_CLEANUP_INCOMPLETE: Previous shell cleanup could not be reconciled.')
+    }
+  }
+
+  private commandTemporaryRoot(): string {
+    return this.options.temporaryRoot ?? join(tmpdir(), 'open-science-notebook')
+  }
+
+  private async createCommandTemporaryRoot(): Promise<{
+    commandTempRoot: string
+    receipt: string
+  }> {
+    const ownerRoot = this.commandTemporaryRoot()
+    const id = randomUUID()
+    const commandTempRoot = join(ownerRoot, `command-${id}`)
+    const receipt = join(ownerRoot, `command-${id}.receipt`)
+    await mkdir(ownerRoot, { recursive: true, mode: 0o700 })
+    await writeFile(receipt, `v1 command-${id}\n`, { flag: 'wx', mode: 0o600 })
+    try {
+      await mkdir(commandTempRoot, { mode: 0o700 })
+    } catch (error) {
+      await rm(receipt, { force: true }).catch(() => undefined)
+      throw error
+    }
+    return { commandTempRoot, receipt }
+  }
+
+  private async removeCommandTemporaryRoot(root: string, receipt: string): Promise<void> {
+    await rm(root, { recursive: true, force: true })
+    await rm(receipt, { force: true })
+  }
+
+  private async reconcileCommandTemporaryRoots(): Promise<void> {
+    const ownerRoot = this.commandTemporaryRoot()
+    await mkdir(ownerRoot, { recursive: true, mode: 0o700 })
+    const entries = await readdir(ownerRoot, { withFileTypes: true })
+    const receipts = new Map<string, string>()
+    for (const entry of entries) {
+      const match = /^command-(.+)\.receipt$/u.exec(entry.name)
+      if (!match) continue
+      const id = match[1]!
+      if (!entry.isFile() || !COMMAND_TEMP_ID.test(id)) {
+        throw new Error('SHELL_CLEANUP_INCOMPLETE: Command temporary receipt is invalid.')
+      }
+      const receipt = join(ownerRoot, entry.name)
+      if ((await readFile(receipt, 'utf8')) !== `v1 command-${id}\n`) {
+        throw new Error('SHELL_CLEANUP_INCOMPLETE: Command temporary receipt is invalid.')
+      }
+      receipts.set(id, receipt)
+    }
+    for (const entry of entries) {
+      const match = /^command-(.+)$/u.exec(entry.name)
+      if (!match || entry.name.endsWith('.receipt')) continue
+      const id = match[1]!
+      if (!entry.isDirectory() || !COMMAND_TEMP_ID.test(id) || !receipts.has(id)) {
+        throw new Error('SHELL_CLEANUP_INCOMPLETE: Command temporary ownership is incomplete.')
+      }
+    }
+    for (const [id, receipt] of receipts) {
+      await this.removeCommandTemporaryRoot(join(ownerRoot, `command-${id}`), receipt)
     }
   }
 

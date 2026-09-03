@@ -342,6 +342,57 @@ describe('Notebook runtime configuration updates', () => {
     expect(gateway.close).toHaveBeenCalledOnce()
   })
 
+  it('retains an early WSL cleanup handle and prioritizes incomplete cleanup over abort', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    wslRelease
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: false,
+        temporaryResourcesRemoved: false
+      })
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+    vi.mocked(wsl2Launch).mockImplementationOnce(async (request) => {
+      request.onCleanupReady?.(wslRelease)
+      throw new DOMException('Aborted', 'AbortError')
+    })
+
+    await expect(
+      NotebookNetworkRuntime.wrap({
+        target: {
+          kind: 'wsl2',
+          profileId: 'profile-1',
+          distro: 'Ubuntu',
+          user: 'researcher'
+        },
+        command: 'echo sandboxed',
+        commandId: 'wsl2-aborted-bridge-command',
+        cwd: 'C:\\workspace',
+        env: {},
+        filesystem: {
+          readOnlyRoots: [],
+          readWriteRoots: ['C:\\workspace'],
+          deniedReadRoots: [],
+          deniedWriteRoots: []
+        }
+      })
+    ).rejects.toThrow('SHELL_CLEANUP_INCOMPLETE')
+    expect(wslRelease).toHaveBeenCalledWith('spawn-failed')
+    await expect(
+      NotebookNetworkRuntime.cleanupAfterCommand('wsl2-aborted-bridge-command', 'spawn-failed', {
+        processesTerminated: true
+      })
+    ).resolves.toEqual({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+  })
+
   it('reports the observed process teardown outcome instead of assuming termination', async () => {
     await expect(
       NotebookNetworkRuntime.cleanupAfterCommand('command-1', 'timeout', {

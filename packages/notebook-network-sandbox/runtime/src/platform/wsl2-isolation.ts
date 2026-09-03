@@ -45,6 +45,7 @@ type Wsl2LaunchRequest = Readonly<{
   cleanupGuest?: Wsl2GuestCleanup
   reconcileGuest?: Wsl2GuestReconciliation
   openBridge?: Wsl2GatewayBridgeOpener
+  onCleanupReady?: (release: Wsl2Launch['release']) => void
   signal?: AbortSignal
 }>
 
@@ -187,6 +188,7 @@ type Wsl2GatewayBridgeOpener = (request: {
   target: Wsl2Target
   gatewayPort: number
   signal?: AbortSignal
+  onBridgeCreated?: (bridge: Wsl2GatewayBridge) => void
 }) => Promise<Wsl2GatewayBridge>
 
 const WINDOWS_PATH = /^[a-z]:[\\/]/iu
@@ -416,7 +418,12 @@ const closeBridgeProcess = async (
   }
 }
 
-const openWsl2GatewayBridge: Wsl2GatewayBridgeOpener = async ({ target, gatewayPort, signal }) => {
+const openWsl2GatewayBridge: Wsl2GatewayBridgeOpener = async ({
+  target,
+  gatewayPort,
+  signal,
+  onBridgeCreated
+}) => {
   signal?.throwIfAborted()
   const socketPath = `/tmp/open-science-network-${randomUUID()}/gateway.sock`
   const child = spawn(
@@ -435,6 +442,8 @@ const openWsl2GatewayBridge: Wsl2GatewayBridgeOpener = async ({ target, gatewayP
     ],
     { env: sanitizedHostEnvironment(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }
   )
+  const bridge = { socketPath, close: () => closeBridgeProcess(child, target, socketPath) }
+  onBridgeCreated?.(bridge)
   try {
     await waitForBridgeReady(child, signal)
   } catch (error) {
@@ -444,7 +453,7 @@ const openWsl2GatewayBridge: Wsl2GatewayBridgeOpener = async ({ target, gatewayP
     }
     throw error
   }
-  return { socketPath, close: () => closeBridgeProcess(child, target, socketPath) }
+  return bridge
 }
 
 const validateTarget = (target: Wsl2Target): void => {
@@ -670,13 +679,68 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
   if (!request.gatewayPort || !request.gatewayCredentials) {
     throw new Error('WSL2 network gateway is unavailable.')
   }
-  const bridge = await (request.openBridge ?? openWsl2GatewayBridge)({
+  let bridge: Wsl2GatewayBridge | undefined
+  let launchPublished = false
+  let releasePromise: Promise<Wsl2ReleaseResult> | undefined
+  let releaseReason: Wsl2CleanupReason | undefined
+  let processesTerminated = false
+  let networkClosed = false
+  let bridgeResourcesRemoved = false
+  const release: Wsl2Launch['release'] = (reason = 'exit') => {
+    releaseReason ??= reason
+    if (releasePromise) return releasePromise
+    const attempt = Promise.allSettled([
+      processesTerminated || !launchPublished
+        ? Promise.resolve(true)
+        : (request.cleanupGuest ?? defaultCleanupGuest)({
+            distro: request.target.distro,
+            user: request.target.user,
+            receipt,
+            token,
+            reason: releaseReason
+          }),
+      networkClosed && bridgeResourcesRemoved
+        ? Promise.resolve({ networkClosed: true, temporaryResourcesRemoved: true })
+        : bridge!.close()
+    ]).then(([processes, bridgeCleanup]) => {
+      processesTerminated ||= processes.status === 'fulfilled' && processes.value
+      networkClosed ||= bridgeCleanup.status === 'fulfilled' && bridgeCleanup.value.networkClosed
+      bridgeResourcesRemoved ||=
+        bridgeCleanup.status === 'fulfilled' && bridgeCleanup.value.temporaryResourcesRemoved
+      const temporaryResourcesRemoved = bridgeResourcesRemoved && processesTerminated
+      return { processesTerminated, networkClosed, temporaryResourcesRemoved }
+    })
+    releasePromise = attempt.then(
+      (result) => {
+        if (!Object.values(result).every(Boolean)) releasePromise = undefined
+        return result
+      },
+      (error) => {
+        releasePromise = undefined
+        throw error
+      }
+    )
+    return releasePromise
+  }
+  const ownBridge = (createdBridge: Wsl2GatewayBridge): void => {
+    if (bridge) return
+    bridge = createdBridge
+    request.onCleanupReady?.(release)
+  }
+  const openedBridge = await (request.openBridge ?? openWsl2GatewayBridge)({
     target: request.target,
     gatewayPort: request.gatewayPort,
-    ...(request.signal ? { signal: request.signal } : {})
+    ...(request.signal ? { signal: request.signal } : {}),
+    onBridgeCreated: ownBridge
   })
+  ownBridge(openedBridge)
   if (request.signal?.aborted) {
-    await bridge.close()
+    const cleanup = await release('cancel')
+    if (!Object.values(cleanup).every(Boolean)) {
+      throw new Error(
+        'SHELL_CLEANUP_INCOMPLETE: WSL2 bridge preparation cleanup could not be verified.'
+      )
+    }
     request.signal.throwIfAborted()
   }
 
@@ -696,7 +760,7 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
     '--dir',
     '/run/open-science-notebook',
     '--bind',
-    bridge.socketPath,
+    openedBridge.socketPath,
     '/run/open-science-notebook/gateway.sock',
     '--tmpfs',
     '/home',
@@ -757,11 +821,7 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
     request.command
   )
 
-  let releasePromise: Promise<Wsl2ReleaseResult> | undefined
-  let releaseReason: Wsl2CleanupReason | undefined
-  let processesTerminated = false
-  let networkClosed = false
-  let bridgeResourcesRemoved = false
+  launchPublished = true
   return {
     argv: [
       wslExecutable(),
@@ -781,46 +841,7 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
       ...bwrap
     ],
     env: sanitizedHostEnvironment(),
-    release: (reason = 'exit') => {
-      releaseReason ??= reason
-      if (releasePromise) return releasePromise
-      const attempt = Promise.allSettled([
-        processesTerminated
-          ? Promise.resolve(true)
-          : (request.cleanupGuest ?? defaultCleanupGuest)({
-              distro: request.target.distro,
-              user: request.target.user,
-              receipt,
-              token,
-              reason: releaseReason
-            }),
-        networkClosed && bridgeResourcesRemoved
-          ? Promise.resolve({ networkClosed: true, temporaryResourcesRemoved: true })
-          : bridge.close()
-      ]).then(([processes, bridgeCleanup]) => {
-        processesTerminated ||= processes.status === 'fulfilled' && processes.value
-        networkClosed ||= bridgeCleanup.status === 'fulfilled' && bridgeCleanup.value.networkClosed
-        bridgeResourcesRemoved ||=
-          bridgeCleanup.status === 'fulfilled' && bridgeCleanup.value.temporaryResourcesRemoved
-        const temporaryResourcesRemoved = bridgeResourcesRemoved && processesTerminated
-        return {
-          processesTerminated,
-          networkClosed,
-          temporaryResourcesRemoved
-        }
-      })
-      releasePromise = attempt.then(
-        (result) => {
-          if (!Object.values(result).every(Boolean)) releasePromise = undefined
-          return result
-        },
-        (error) => {
-          releasePromise = undefined
-          throw error
-        }
-      )
-      return releasePromise
-    }
+    release
   }
 }
 

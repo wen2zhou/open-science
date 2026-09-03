@@ -26,6 +26,8 @@ let activeOwnerToken: symbol | undefined
 type ActiveCommand = {
   onNetworkAccessRequest: NotebookSandboxCommand['onNetworkAccessRequest']
   controller: AbortController
+  preparation: Promise<void>
+  prepared: boolean
   detachSignal?: () => void
   cleanupRequest?: Readonly<{
     reason: 'exit' | 'cancel' | 'timeout' | 'spawn-failed'
@@ -130,13 +132,17 @@ class NotebookNetworkSandbox {
     const abort = (): void => controller.abort(command.signal?.reason)
     if (command.signal?.aborted) abort()
     else command.signal?.addEventListener('abort', abort, { once: true })
-    this.#activeCommands.set(commandId, {
+    let finishPreparation!: () => void
+    const activeCommand: ActiveCommand = {
       onNetworkAccessRequest: command.onNetworkAccessRequest,
       controller,
+      preparation: new Promise<void>((resolve) => (finishPreparation = resolve)),
+      prepared: false,
       ...(command.signal
         ? { detachSignal: () => command.signal?.removeEventListener('abort', abort) }
         : {})
-    })
+    }
+    this.#activeCommands.set(commandId, activeCommand)
     let wrapped: Awaited<ReturnType<typeof NotebookNetworkRuntime.wrap>>
     try {
       wrapped = await this.#backend.wrap({
@@ -160,9 +166,12 @@ class NotebookNetworkSandbox {
           deniedWriteRoots: []
         }
       })
+      activeCommand.prepared = true
     } catch (error) {
       await this.#releaseCommand(commandId, { processesTerminated: true }, 'spawn-failed')
       throw error
+    } finally {
+      finishPreparation()
     }
     let cleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
     return {
@@ -251,9 +260,17 @@ class NotebookNetworkSandbox {
   async dispose(): Promise<void> {
     if (this.#initializing) await this.#initializing
     if (!this.#initialized) return
+    const preparing = [...this.#activeCommands.values()]
+    for (const command of preparing) {
+      if (!command.controller.signal.aborted) {
+        command.detachSignal?.()
+        command.controller.abort(new Error('Notebook process ended.'))
+      }
+    }
+    await Promise.all(preparing.map((command) => command.preparation))
     const results = await Promise.all(
-      [...this.#activeCommands.keys()].map((commandId) =>
-        this.#releaseCommand(commandId, { processesTerminated: false })
+      [...this.#activeCommands.entries()].map(([commandId, command]) =>
+        this.#releaseCommand(commandId, { processesTerminated: !command.prepared })
       )
     )
     if (results.some((result) => !Object.values(result).every(Boolean))) {

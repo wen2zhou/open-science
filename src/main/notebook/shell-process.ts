@@ -341,14 +341,6 @@ const runShellCommand = (
         : undefined
     } catch (error) {
       if (runtimeBinding.kind !== 'wsl2-bash') throw error
-      if (options.signal?.aborted) {
-        return {
-          stdout: '',
-          stderr: 'Shell command was cancelled.',
-          exitCode: null,
-          cancelled: true
-        }
-      }
       const message = error instanceof Error ? error.message : String(error)
       if (message.startsWith('SHELL_CLEANUP_INCOMPLETE:')) {
         return {
@@ -356,6 +348,14 @@ const runShellCommand = (
           stderr: SHELL_CLEANUP_INCOMPLETE_MESSAGE,
           exitCode: null,
           errorCode: 'shell-cleanup-incomplete'
+        }
+      }
+      if (options.signal?.aborted) {
+        return {
+          stdout: '',
+          stderr: 'Shell command was cancelled.',
+          exitCode: null,
+          cancelled: true
         }
       }
       if (message.startsWith(SHELL_NETWORK_TRANSPORT_UNSUPPORTED_PREFIX)) {

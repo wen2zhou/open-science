@@ -231,6 +231,14 @@ const wrap = async (
         filesystem,
         gatewayPort: gateway.port,
         gatewayCredentials: credentials,
+        onCleanupReady: (releasePlatform) => {
+          commandContexts.set(request.commandId, {
+            filesystem,
+            gateway,
+            releasePlatform,
+            platformOwnsProcesses: true
+          })
+        },
         ...(request.signal ? { signal: request.signal } : {})
       })
       commandContexts.set(request.commandId, {
@@ -241,7 +249,19 @@ const wrap = async (
       })
       return { argv: launch.argv, env: launch.env }
     } catch (error) {
-      await gateway.close()
+      if (commandContexts.has(request.commandId)) {
+        const cleanup = await cleanupAfterCommand(request.commandId, 'spawn-failed', {
+          processesTerminated: true
+        })
+        if (!Object.values(cleanup).every(Boolean)) {
+          throw new Error(
+            'SHELL_CLEANUP_INCOMPLETE: WSL2 shell preparation cleanup could not be verified.',
+            { cause: error }
+          )
+        }
+      } else {
+        await gateway.close()
+      }
       throw error
     }
   }
