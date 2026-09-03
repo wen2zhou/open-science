@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { dirname } from 'node:path'
 
+import { isWsl2BashDevelopmentEnabled } from '@aipoch/notebook-network-sandbox'
 import { protectManagedRuntimeWrites } from './managed-runtime-guard'
 import type {
   NotebookProcessSandbox,
@@ -247,7 +248,10 @@ const runShellCommand = (
 
     const hostPlatform = options.platform ?? process.platform
     const runtimeBinding = options.runtimeBinding ?? defaultShellRuntimeBinding(hostPlatform)
-    if (runtimeBinding.kind === 'wsl2-bash' && !options.processSandbox) {
+    if (
+      runtimeBinding.kind === 'wsl2-bash' &&
+      (!isWsl2BashDevelopmentEnabled() || !options.processSandbox)
+    ) {
       return {
         stdout: '',
         stderr: 'SHELL_RUNTIME_UNAVAILABLE: The selected WSL2 Bash runtime is unavailable.',

@@ -133,6 +133,7 @@ describe('notebook shell process behavior', () => {
     })
 
     it('uses Bash and the exact selected profile for a WSL2 sandbox target', async () => {
+      vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
       const processSandbox: NotebookProcessSandbox = {
         wrap: vi.fn(async (invocation) => {
           throw new Error(`prepared:${JSON.stringify(invocation.target)}:${invocation.executable}`)
@@ -178,6 +179,39 @@ describe('notebook shell process behavior', () => {
           }
         })
       )
+    })
+
+    it('does not prepare a selected WSL2 runtime while the development gate is disabled', async () => {
+      vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '')
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn()
+      }
+
+      const result = await runShellCommand({
+        command: 'echo should-not-run',
+        cwd: 'C:\\workspace',
+        handoffDir: 'C:\\handoff',
+        runtimeRoot: 'C:\\runtime',
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        platform: 'win32',
+        runtimeBinding: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        },
+        processSandbox
+      })
+
+      expect(result).toEqual({
+        stdout: '',
+        stderr: 'SHELL_RUNTIME_UNAVAILABLE: The selected WSL2 Bash runtime is unavailable.',
+        exitCode: null,
+        runtimeStatus: 'unavailable',
+        errorCode: 'shell-runtime-unavailable'
+      })
+      expect(processSandbox.wrap).not.toHaveBeenCalled()
     })
 
     it('fails a selected WSL2 runtime closed with a stable unavailable code instead of native fallback', async () => {
@@ -239,6 +273,7 @@ describe('notebook shell process behavior', () => {
     })
 
     it('normalizes CLIXML only for the PowerShell binding on a Windows host', async () => {
+      vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
       vi.stubEnv('SystemRoot', 'C:\\Windows')
       const runtimeRoot = await mkdtemp(join(tmpdir(), 'os-shell-binding-stderr-'))
       const execute = async (

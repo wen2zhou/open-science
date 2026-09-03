@@ -2,6 +2,7 @@ import { execFile } from 'node:child_process'
 import { posix, win32 } from 'node:path'
 
 import type { FilesystemLayoutInput } from './filesystem-layout.js'
+import { assertWsl2BashDevelopmentEnabled } from '../wsl2-development-gate.js'
 
 type Wsl2Target = Readonly<{
   kind: 'wsl2'
@@ -87,6 +88,7 @@ const mountParents = (path: string): string[] => {
 }
 
 const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
+  assertWsl2BashDevelopmentEnabled()
   validateTarget(request.target)
   const mapPath = request.mapPath ?? defaultPathMapper(request.target)
   const map = async (path: string): Promise<string> => {

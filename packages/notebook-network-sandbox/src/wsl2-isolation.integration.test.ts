@@ -6,11 +6,13 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { wsl2Launch, type Wsl2Launch } from '../runtime/src/platform/wsl2-isolation.js'
+import { isWsl2BashDevelopmentEnabled } from '../runtime/src/wsl2-development-gate.js'
 import { notebookWorkloadCacheEnv } from '../../../src/main/notebook/notebook-workload-cache-paths.js'
 
 const distro = process.env.OPEN_SCIENCE_WSL_DISTRO
 const user = process.env.OPEN_SCIENCE_WSL_USER
-const enabled = process.platform === 'win32' && Boolean(distro && user)
+const enabled =
+  process.platform === 'win32' && Boolean(distro && user) && isWsl2BashDevelopmentEnabled()
 
 const execute = async (
   argv: readonly string[],

@@ -272,6 +272,12 @@ class NotebookNetworkSandbox {
 }
 
 export { NotebookNetworkSandbox }
+export {
+  WSL2_BASH_DEVELOPMENT_FLAG,
+  WSL2_BASH_UNAVAILABLE_MESSAGE,
+  assertWsl2BashDevelopmentEnabled,
+  isWsl2BashDevelopmentEnabled
+} from '../runtime/src/index.js'
 export type {
   NotebookNetworkAccessRequest,
   NotebookNetworkDecisionHandler,

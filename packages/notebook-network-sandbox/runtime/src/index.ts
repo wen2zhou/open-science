@@ -15,3 +15,9 @@ export {
   type WslFilesystemEvidence,
   type WslFilesystemSpikeRequest
 } from './platform/wsl-filesystem-spike.js'
+export {
+  WSL2_BASH_DEVELOPMENT_FLAG,
+  WSL2_BASH_UNAVAILABLE_MESSAGE,
+  assertWsl2BashDevelopmentEnabled,
+  isWsl2BashDevelopmentEnabled
+} from './wsl2-development-gate.js'

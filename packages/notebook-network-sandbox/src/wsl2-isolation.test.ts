@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from 'vitest'
+import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { wsl2Launch } from '../runtime/src/platform/wsl2-isolation.js'
 import { notebookWorkloadCacheEnv } from '../../../src/main/notebook/notebook-workload-cache-paths.js'
@@ -10,7 +10,37 @@ const mapped = new Map([
   ['C:\\private', '/mnt/c/private']
 ])
 
+beforeEach(() => vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1'))
+afterEach(() => vi.unstubAllEnvs())
+
 describe('WSL2 sandbox adapter', () => {
+  it('does not prepare a WSL launch while the development gate is disabled', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '')
+    const mapPath = vi.fn(async () => '/mnt/c/workspace')
+
+    await expect(
+      wsl2Launch({
+        target: {
+          kind: 'wsl2',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'open-science-spike'
+        },
+        command: 'echo should-not-run',
+        cwd: 'C:\\workspace',
+        env: {},
+        filesystem: {
+          readOnlyRoots: [],
+          readWriteRoots: ['C:\\workspace'],
+          deniedReadRoots: [],
+          deniedWriteRoots: []
+        },
+        mapPath
+      })
+    ).rejects.toThrow('Notebook WSL2 Bash runtime is unavailable.')
+    expect(mapPath).not.toHaveBeenCalled()
+  })
+
   it('compiles Windows filesystem policy into a networkless bwrap Bash launch', async () => {
     const runtimeRoot = 'C:\\Open Science\\runtime 路径'
     const cacheEnvironment = notebookWorkloadCacheEnv(runtimeRoot)

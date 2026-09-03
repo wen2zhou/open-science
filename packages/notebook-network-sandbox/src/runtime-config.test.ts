@@ -84,11 +84,40 @@ beforeEach(async () => {
 
 afterEach(async () => {
   await NotebookNetworkRuntime.reset()
+  vi.unstubAllEnvs()
   if (originalPlatform) Object.defineProperty(process, 'platform', originalPlatform)
 })
 
 describe('Notebook runtime configuration updates', () => {
+  it('fails closed for a WSL2 target while the development gate is disabled', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '')
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+
+    await expect(
+      NotebookNetworkRuntime.wrap({
+        target: {
+          kind: 'wsl2',
+          profileId: 'profile-1',
+          distro: 'Ubuntu',
+          user: 'researcher'
+        },
+        command: 'echo sandboxed',
+        commandId: 'disabled-wsl2-command',
+        cwd: 'C:\\workspace',
+        env: {},
+        filesystem: {
+          readOnlyRoots: [],
+          readWriteRoots: ['C:\\workspace'],
+          deniedReadRoots: [],
+          deniedWriteRoots: []
+        }
+      })
+    ).rejects.toThrow('Notebook WSL2 Bash runtime is unavailable.')
+    expect(wsl2Launch).not.toHaveBeenCalled()
+  })
+
   it('routes an explicit WSL2 target through its adapter without opening a host gateway', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
     const target = {
       kind: 'wsl2' as const,
