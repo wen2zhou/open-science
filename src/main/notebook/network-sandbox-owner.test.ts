@@ -181,7 +181,7 @@ describe('NotebookNetworkSandboxOwner', () => {
     const wrapped = await owner.wrap({
       executable: '/usr/bin/python',
       args: ['loop.py'],
-      env: { PATH: '/usr/bin' },
+      env: { PATH: 'C:\\Windows\\System32' },
       cwd: '/workspace',
       commandText: 'python loop.py',
       sessionId: 'session-1',
@@ -709,6 +709,9 @@ describe('NotebookNetworkSandboxOwner', () => {
     expect(backend.wrap.mock.calls[0]?.[0]).toMatchObject({ target: { kind: 'native' } })
     expect(backend.wrap.mock.calls[1]?.[0]).toMatchObject({ target })
     expect(backend.wrap.mock.calls[1]?.[0]?.command).toBe("'/usr/bin/python' 'script.py'")
+    expect(backend.wrap.mock.calls[1]?.[0]?.filesystem.readOnlyRoots).not.toContain(
+      'C:\\Windows\\System32'
+    )
     await native.cleanup('exit', { processesTerminated: true })
     backend.cleanup.mockResolvedValueOnce({
       processesTerminated: false,

@@ -303,8 +303,12 @@ const runShellCommand = (
               readOnlyRoots: [
                 options.runtimeRoot,
                 ...(options.inputRoot ? [options.inputRoot] : []),
-                dirname(invocation.executable),
-                ...environmentPathRoots(baseEnv, runtimePlatform)
+                ...(runtimeBinding.kind === 'wsl2-bash'
+                  ? []
+                  : [
+                      dirname(invocation.executable),
+                      ...environmentPathRoots(baseEnv, runtimePlatform)
+                    ])
               ],
               readWriteRoots: [
                 options.notebookSessionRoot ?? options.cwd,

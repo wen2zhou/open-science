@@ -6,6 +6,7 @@ const gateway = vi.hoisted(() => ({
   resetConnections: vi.fn(),
   close: vi.fn().mockResolvedValue(undefined)
 }))
+const wslRelease = vi.hoisted(() => vi.fn().mockResolvedValue(undefined))
 
 vi.mock('../runtime/src/gateway/command-gateway.js', () => ({
   CommandGateway: { open: vi.fn().mockResolvedValue(gateway) }
@@ -24,6 +25,14 @@ vi.mock('../runtime/src/platform/linux-isolation.js', () => ({
   }))
 }))
 
+vi.mock('../runtime/src/platform/wsl2-isolation.js', () => ({
+  wsl2Launch: vi.fn(async ({ env }) => ({
+    argv: ['C:\\Windows\\System32\\wsl.exe', '--exec', '/usr/bin/bwrap'],
+    env,
+    release: wslRelease
+  }))
+}))
+
 vi.mock('../runtime/src/platform/windows-appcontainer.js', () => ({
   windowsLaunch: vi.fn(({ env }) => ({ argv: ['sandboxed.exe'], env })),
   windowsStandardLaunch: vi.fn(({ env }) => ({ argv: ['powershell.exe'], env })),
@@ -39,6 +48,7 @@ import {
 } from '../runtime/src/notebook-runtime.js'
 import { CommandGateway } from '../runtime/src/gateway/command-gateway.js'
 import { linuxLaunch } from '../runtime/src/platform/linux-isolation.js'
+import { wsl2Launch } from '../runtime/src/platform/wsl2-isolation.js'
 import { readAppContainerStatus } from '../runtime/src/platform/windows-appcontainer.js'
 import {
   checkWindowsAppContainer,
@@ -78,28 +88,38 @@ afterEach(async () => {
 })
 
 describe('Notebook runtime configuration updates', () => {
-  it('fails closed when an explicit WSL2 target has no adapter', async () => {
-    await expect(
-      NotebookNetworkRuntime.wrap({
-        target: {
-          kind: 'wsl2',
-          profileId: 'profile-1',
-          distro: 'Ubuntu',
-          user: 'researcher'
-        },
-        command: 'echo sandboxed',
-        commandId: 'wsl2-command',
-        cwd: 'C:\\workspace',
-        env: {},
-        filesystem: {
-          readOnlyRoots: [],
-          readWriteRoots: ['C:\\workspace'],
-          deniedReadRoots: [],
-          deniedWriteRoots: []
-        }
-      })
-    ).rejects.toThrow('Notebook WSL2 sandbox target is not available yet.')
+  it('routes an explicit WSL2 target through its adapter without opening a host gateway', async () => {
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    const target = {
+      kind: 'wsl2' as const,
+      profileId: 'profile-1',
+      distro: 'Ubuntu',
+      user: 'researcher'
+    }
+    const wrapped = await NotebookNetworkRuntime.wrap({
+      target,
+      command: 'echo sandboxed',
+      commandId: 'wsl2-command',
+      cwd: 'C:\\workspace',
+      env: {},
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    })
+    expect(wrapped).toEqual({
+      argv: ['C:\\Windows\\System32\\wsl.exe', '--exec', '/usr/bin/bwrap'],
+      env: {}
+    })
+    expect(wsl2Launch).toHaveBeenCalledWith(
+      expect.objectContaining({ target, command: 'echo sandboxed', cwd: 'C:\\workspace' })
+    )
     expect(CommandGateway.open).toHaveBeenCalledOnce()
+    await NotebookNetworkRuntime.cleanupAfterCommand('wsl2-command', { processesTerminated: true })
+    await NotebookNetworkRuntime.cleanupAfterCommand('wsl2-command', { processesTerminated: true })
+    expect(wslRelease).toHaveBeenCalledOnce()
   })
 
   it('disconnects existing tunnels before they can outlive a policy change', () => {

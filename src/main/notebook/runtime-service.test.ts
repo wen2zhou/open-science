@@ -3250,6 +3250,7 @@ describe('notebook runtime service', () => {
 
     it('routes one admitted call through the shell process port and preserves its public result', async () => {
       const root = await createStorageRoot()
+      const info = vi.fn()
       const execute = vi.fn<NotebookShellProcess['execute']>().mockResolvedValue({
         stdout: 'partial output',
         stderr: 'command failed',
@@ -3261,6 +3262,7 @@ describe('notebook runtime service', () => {
         dataRoot: root,
         projectId: 'default-project',
         repository: new NotebookRunRepository(root),
+        logger: { info, warn: vi.fn(), error: vi.fn() },
         shellProcess: { execute },
         shellRuntimeBinding: {
           kind: 'wsl2-bash',
@@ -3313,6 +3315,27 @@ describe('notebook runtime service', () => {
         },
         text: { stdout: 'partial output', stderr: 'command failed' }
       })
+      expect(info).toHaveBeenCalledWith(
+        'shell execution completed',
+        expect.objectContaining({
+          runtime: 'wsl2-bash',
+          profileReference: 'profile-1',
+          stage: 'execution',
+          status: 'failed',
+          exitCode: 9,
+          stdoutByteCount: 14,
+          stderrByteCount: 14,
+          outputByteCount: 28,
+          truncated: true
+        })
+      )
+      const diagnosticText = JSON.stringify(info.mock.calls)
+      expect(diagnosticText).not.toContain('opaque command')
+      expect(diagnosticText).not.toContain('partial output')
+      expect(diagnosticText).not.toContain('command failed')
+      expect(diagnosticText).not.toContain(root)
+      expect(diagnosticText).not.toContain('Ubuntu-22.04')
+      expect(diagnosticText).not.toContain('researcher')
     })
 
     it('records a selected but unavailable WSL runtime as failed without falling back', async () => {

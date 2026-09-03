@@ -135,7 +135,7 @@ type NotebookExecutionOwnerOptions = {
     NotebookHelperModuleHost,
     'preflight' | 'plan' | 'commitInitialized' | 'loadedEvidence'
   >
-  logger: Pick<Logger, 'error'>
+  logger: Pick<Logger, 'error'> & Partial<Pick<Logger, 'info'>>
   platform?: NodeJS.Platform
   shellProcess?: NotebookShellProcess
   shellRuntimeBinding?: ShellRuntimeBinding
@@ -896,6 +896,14 @@ class NotebookExecutionOwner {
       workingFiles: [],
       inputFiles: request.provenanceContext ? (request.registeredInputFiles ?? []) : []
     }
+    this.options.logger.info?.('shell execution started', {
+      executionId: runId,
+      runtime: runtimeBinding.kind,
+      ...(runtimeBinding.kind === 'wsl2-bash'
+        ? { profileReference: runtimeBinding.profileId }
+        : {}),
+      stage: 'execution'
+    })
 
     try {
       const { result } = await this.options.runTerminalization.run({
@@ -982,6 +990,20 @@ class NotebookExecutionOwner {
                   : shellResult.exitCode === null
                     ? 'timeout'
                     : 'failed'
+            this.options.logger.info?.('shell execution completed', {
+              executionId: runId,
+              runtime: runtimeBinding.kind,
+              ...(runtimeBinding.kind === 'wsl2-bash'
+                ? { profileReference: runtimeBinding.profileId }
+                : {}),
+              stage: shellResult.runtimeStatus === 'unavailable' ? 'sandbox-prepare' : 'execution',
+              status,
+              exitCode: shellResult.exitCode,
+              stdoutByteCount: Buffer.byteLength(shellResult.stdout, 'utf8'),
+              stderrByteCount: Buffer.byteLength(shellResult.stderr, 'utf8'),
+              outputByteCount: Buffer.byteLength(shellResult.stdout + shellResult.stderr, 'utf8'),
+              truncated: shellResult.truncated === true
+            })
             const outputs: NotebookOutput[] = [
               ...(shellResult.stdout
                 ? [{ type: 'stream' as const, name: 'stdout' as const, text: shellResult.stdout }]

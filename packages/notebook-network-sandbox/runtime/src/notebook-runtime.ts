@@ -12,6 +12,7 @@ import {
 import { ViolationLog } from './gateway/violation-log.js'
 import { checkLinuxTools, linuxLaunch } from './platform/linux-isolation.js'
 import { macosLaunch } from './platform/macos-isolation.js'
+import { wsl2Launch } from './platform/wsl2-isolation.js'
 import {
   checkWindowsAppContainer,
   installWindowsAppContainer,
@@ -82,7 +83,7 @@ type NetworkWrapRequest = Readonly<{
 
 type RuntimeContext = {
   filesystem: FilesystemLayout
-  gateway: CommandGateway
+  gateway?: CommandGateway
   releasePlatform?: () => Promise<void>
 }
 
@@ -190,9 +191,6 @@ const wrap = async (
   const config = runtimeConfig
   if (!config) throw new Error('Notebook process runtime is not initialized.')
   const target = request.target ?? { kind: 'native' }
-  if (target.kind === 'wsl2') {
-    throw new Error('Notebook WSL2 sandbox target is not available yet.')
-  }
   const filesystem = normalizeFilesystemLayout({
     ...request.filesystem,
     ...((process.platform === 'darwin' || process.platform === 'linux') &&
@@ -200,6 +198,23 @@ const wrap = async (
       ? { privateRoot: homedir() }
       : {})
   })
+  if (target.kind === 'wsl2') {
+    if (process.platform !== 'win32') {
+      throw new Error('Notebook WSL2 sandbox target requires a Windows host.')
+    }
+    const launch = await wsl2Launch({
+      target,
+      command: request.command,
+      cwd: request.cwd,
+      env: request.env,
+      filesystem
+    })
+    commandContexts.set(request.commandId, {
+      filesystem,
+      releasePlatform: launch.release
+    })
+    return { argv: launch.argv, env: launch.env }
+  }
   const credentials = {
     username: `notebook-${request.commandId}`,
     password: randomBytes(32).toString('base64url')
@@ -283,7 +298,7 @@ const closeContext = async (
   processOutcome: SandboxProcessOutcome
 ): Promise<SandboxCleanupResult> => {
   const [network, temporaryResources] = await Promise.allSettled([
-    context.gateway.close(),
+    context.gateway?.close(),
     context.releasePlatform?.()
   ])
   violations.forget(commandId)
@@ -315,7 +330,7 @@ const cleanupAfterCommand = async (
 }
 
 const resetCommandConnections = (commandId: string): void => {
-  commandContexts.get(commandId)?.gateway.resetConnections()
+  commandContexts.get(commandId)?.gateway?.resetConnections()
 }
 
 const updateConfig = (config: NetworkRuntimeConfig): void => {
@@ -324,8 +339,8 @@ const updateConfig = (config: NetworkRuntimeConfig): void => {
   destinationPolicy = buildPolicy(config)
   const nextParent = parentSettings(config)
   for (const context of commandContexts.values()) {
-    context.gateway.updateParentProxy(nextParent)
-    context.gateway.resetConnections()
+    context.gateway?.updateParentProxy(nextParent)
+    context.gateway?.resetConnections()
   }
 }
 
