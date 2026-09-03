@@ -272,6 +272,61 @@ describe('WslLocalShellSection', () => {
     expect(openTerminal).toHaveBeenCalledWith({ distro: 'Ubuntu-22.04' })
   })
 
+  it('opens the selected distro for first launch when the recommended distro is absent', async () => {
+    probe.mockResolvedValue({
+      state: 'first-launch-required',
+      distros: [{ name: 'Debian', version: 2, isDefault: true }],
+      selection: { distro: 'Debian', user: 'scientist' },
+      errorCode: 'wsl_first_launch_required',
+      operationReference: 'decafbad'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    const launch = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Open distribution terminal')
+    )
+    expect(launch).toBeDefined()
+    await act(async () => launch?.click())
+    await flush()
+    expect(openTerminal).toHaveBeenCalledWith({ distro: 'Debian' })
+  })
+
+  it('keeps first launch bound to the selected distro when Ubuntu is also installed', async () => {
+    probe.mockResolvedValue({
+      state: 'first-launch-required',
+      distros: [
+        { name: 'Debian', version: 2, isDefault: true },
+        { name: 'Ubuntu-22.04', version: 2, isDefault: false }
+      ],
+      selection: { distro: 'Debian', user: 'scientist' },
+      errorCode: 'wsl_first_launch_required',
+      operationReference: 'decafbad'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    const launch = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Open distribution terminal')
+    )
+    await act(async () => launch?.click())
+    await flush()
+    expect(openTerminal).toHaveBeenCalledWith({ distro: 'Debian' })
+  })
+
+  it('offers recommended first initialization without a selection only when Ubuntu is installed', async () => {
+    probe.mockResolvedValue({
+      state: 'distro-required',
+      distros: [{ name: 'Debian', version: 2, isDefault: true }],
+      operationReference: 'decafbad'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    expect(container.textContent).not.toContain('Open distribution terminal')
+    expect(openTerminal).not.toHaveBeenCalled()
+  })
+
   it('offers a copyable bubblewrap command and opens the selected user terminal without running it', async () => {
     const writeText = vi.fn().mockResolvedValue(undefined)
     Object.defineProperty(navigator, 'clipboard', {

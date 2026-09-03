@@ -229,6 +229,16 @@ export const WslLocalShellSection = (): React.JSX.Element => {
     }
   }
 
+  const firstInitializationDistro =
+    snapshot.state === 'first-launch-required'
+      ? snapshot.selection?.distro
+      : snapshot.state === 'distro-required' &&
+          snapshot.distros.some(
+            (item) => item.name === RECOMMENDED_WSL_DISTRO && item.version === 2
+          )
+        ? RECOMMENDED_WSL_DISTRO
+        : undefined
+
   const copySuggestedCommand = async (): Promise<void> => {
     if (!snapshot.suggestedCommand) return
     await navigator.clipboard.writeText(snapshot.suggestedCommand)
@@ -373,13 +383,12 @@ export const WslLocalShellSection = (): React.JSX.Element => {
           </div>
         ) : null}
 
-        {!busy &&
-        (snapshot.state === 'first-launch-required' || snapshot.state === 'distro-required') &&
-        snapshot.distros.some(
-          (item) => item.name === RECOMMENDED_WSL_DISTRO && item.version === 2
-        ) ? (
+        {!busy && firstInitializationDistro ? (
           <div className="mt-4">
-            <Button type="button" onClick={() => void openTerminal(false, RECOMMENDED_WSL_DISTRO)}>
+            <Button
+              type="button"
+              onClick={() => void openTerminal(false, firstInitializationDistro)}
+            >
               <SquareTerminal aria-hidden="true" />
               {t('Open distribution terminal')}
             </Button>
