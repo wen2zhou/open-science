@@ -21,6 +21,7 @@ export type WslSelection = Readonly<{
 
 export type WslReadiness = Readonly<{
   wsl2?: boolean
+  home?: boolean
   bash?: boolean
   bwrap?: boolean
   namespaces?: boolean
@@ -33,6 +34,7 @@ export type WslSetupSnapshot = Readonly<{
   selection?: WslSelection
   readiness?: WslReadiness
   errorCode?: string
+  suggestedCommand?: string
   operationReference: string
 }>
 
@@ -49,3 +51,10 @@ export type SelectWslProfileRequest = Readonly<{
   distro: string
   user: string
 }>
+
+export type OpenWslTerminalRequest = Readonly<{
+  distro: string
+  user?: string
+}>
+
+export const RECOMMENDED_WSL_DISTRO = 'Ubuntu-22.04'

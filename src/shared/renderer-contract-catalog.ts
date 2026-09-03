@@ -35,6 +35,7 @@ import type {
   SideChatStartResponse
 } from './side-chat'
 import type {
+  OpenWslTerminalRequest,
   SelectWslProfileRequest,
   WslPlatformInstallResult,
   WslSetupSnapshot
@@ -1953,6 +1954,13 @@ export const RENDERER_API_CONTRACT = Object.freeze({
   'settings.selectWslProfile': callable<
     (request: SelectWslProfileRequest) => Promise<WslSetupSnapshot>
   >()('settings', ['settings:select-wsl-profile', LOCAL]),
+  'settings.installRecommendedWslDistro': callable<() => Promise<WslSetupSnapshot>>()('settings', [
+    'settings:install-recommended-wsl-distro',
+    LOCAL
+  ]),
+  'settings.openWslTerminal': callable<
+    (request: OpenWslTerminalRequest) => Promise<WslSetupSnapshot>
+  >()('settings', ['settings:open-wsl-terminal', LOCAL]),
   'settings.installNotebookNetwork': callable<() => Promise<NotebookNetworkStatus>>()('settings', [
     'settings:install-notebook-network',
     LOCAL

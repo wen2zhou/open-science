@@ -67,7 +67,7 @@ import {
   type UpsertProviderRequest,
   type ValidateProviderRequest
 } from '../../shared/settings'
-import type { SelectWslProfileRequest } from '../../shared/wsl-setup'
+import type { OpenWslTerminalRequest, SelectWslProfileRequest } from '../../shared/wsl-setup'
 import { SettingsService } from './service'
 import { connectorTemplateExportSelection } from './connector-template'
 import type { SettingsWorkflows } from './workflows'
@@ -348,6 +348,12 @@ const registerSettingsIpcHandlers = ({
   ipcMainHandle('settings:install-wsl-platform', () => service.installWslPlatform())
   ipcMainHandle('settings:select-wsl-profile', (_event, request: SelectWslProfileRequest) =>
     service.selectWslProfile(request)
+  )
+  ipcMainHandle('settings:install-recommended-wsl-distro', () =>
+    service.installRecommendedWslDistro()
+  )
+  ipcMainHandle('settings:open-wsl-terminal', (_event, request: OpenWslTerminalRequest) =>
+    service.openWslTerminal(request)
   )
   ipcMainHandle('settings:set-package-mirror', (_event, request: SetPackageMirrorRequest) =>
     snapshotCommits.projectAfter(service.setPackageMirror(request))

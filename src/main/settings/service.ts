@@ -85,6 +85,7 @@ import type { PackageMirror } from '../../shared/mirror'
 import type { NetworkProxySettings } from '../../shared/network-proxy'
 import type { NotebookNetworkSettings, NotebookNetworkStatus } from '../../shared/notebook-network'
 import type {
+  OpenWslTerminalRequest,
   SelectWslProfileRequest,
   WslPlatformInstallResult,
   WslSetupSnapshot
@@ -218,6 +219,8 @@ export type SettingsServiceOptions = {
     probe(): Promise<WslSetupSnapshot>
     installPlatform(): Promise<WslPlatformInstallResult>
     select(request: SelectWslProfileRequest): Promise<WslSetupSnapshot>
+    installRecommendedDistro(): Promise<WslSetupSnapshot>
+    openTerminal(request: OpenWslTerminalRequest): Promise<WslSetupSnapshot>
   }
   // Encrypted-token controller for claude-isolated; default-constructed against this.configRoot
   // when omitted. Storage is delegated to the host's SettingsRepository + encrypt/tryDecryptKey
@@ -508,6 +511,16 @@ class SettingsService {
   selectWslProfile(request: SelectWslProfileRequest): Promise<WslSetupSnapshot> {
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.select(request)
+  }
+
+  installRecommendedWslDistro(): Promise<WslSetupSnapshot> {
+    if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
+    return this.wslSetup.installRecommendedDistro()
+  }
+
+  openWslTerminal(request: OpenWslTerminalRequest): Promise<WslSetupSnapshot> {
+    if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
+    return this.wslSetup.openTerminal(request)
   }
 
   private async migrateLegacyKeyRefs(settings: StoredSettings): Promise<StoredSettings> {

@@ -484,11 +484,11 @@ describe('Settings backend ownership architecture', () => {
         getComputeBookmarks getConnectorDetail getConnectors getConversationSkillImportEnabled getGitHubTokenStatus getGrantedLocalRoots getManualInterpreters getNotebookNetwork getNotebookNetworkStatus getNotificationsEnabled getPackageMirror
         getPreflight getRuntimeEnablement getSettingsView getShowNotificationContent getSkillDetail hasActiveInstall holdInstallAdmission
         getStoredSettings importAgentHomeSkills importSkill importSkillArchiveBatch importSkillZip
-        importSkillZipBatch installClaude installCodeBuddy installCodex installNotebookNetwork installOpencode installWslPlatform isEncryptionAvailable
+        importSkillZipBatch installClaude installCodeBuddy installCodex installNotebookNetwork installOpencode installRecommendedWslDistro installWslPlatform isEncryptionAvailable
         isNpmAvailable listAgentHomeSkills listConnectors listDeviceCredentials listHostSkills listSkills listSpecialistSkillCatalog listUserSkills
         dispose loginClaudeShared loginIsolatedClaude loginIsolatedClaudeBrowser loginIsolatedCodex
         logoutClaudeShared logoutIsolatedClaude logoutIsolatedCodex logoutXaiOAuth markOnboardingComplete
-        markPathsNormalized migrateAgentHomeSkillIdentities previewAgentHomeSkill previewCustomServerTemplateExport
+        markPathsNormalized migrateAgentHomeSkillIdentities openWslTerminal previewAgentHomeSkill previewCustomServerTemplateExport
         previewCustomServerTemplateImport previewGitHubSkill previewSkillArchive previewSkillZip
         probeWslSetup provisionedConnectorSkillNames publishHostSkill refreshProviderModels registeredHelperCatalog rememberCodexAutoHttpsFallback removeCustomServer removeDeviceCredential removeGitHubToken removeNotebookNetwork
         removeManualInterpreter resolveActiveModelChangeTarget resolveActiveReasoningEffort

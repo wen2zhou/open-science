@@ -1,7 +1,9 @@
-import { execFile } from 'node:child_process'
+import { execFile, spawn } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 
+import { RECOMMENDED_WSL_DISTRO } from '../../shared/wsl-setup'
 import type {
+  OpenWslTerminalRequest,
   SelectWslProfileRequest,
   WslDistro,
   WslReadiness,
@@ -37,6 +39,7 @@ export interface WslPlatformInstaller {
 type WslSetupOwnerOptions = Readonly<{
   runner?: WslCommandRunner
   installer?: WslPlatformInstaller
+  terminal?: WslTerminalLauncher
   workspacePath: string | (() => string)
   volumeProbe(path: string): Promise<WindowsVolumeProbeResult>
   readSelection(): Promise<WslSelection | undefined>
@@ -44,6 +47,12 @@ type WslSetupOwnerOptions = Readonly<{
   operationReference?: () => string
   log?: Pick<ReturnType<typeof createLogger>, 'info' | 'warn'>
 }>
+
+export interface WslTerminalLauncher {
+  open(args: readonly string[]): Promise<void>
+}
+
+export { RECOMMENDED_WSL_DISTRO }
 
 const executeWsl: WslCommandRunner = {
   run: (args) =>
@@ -111,6 +120,22 @@ const elevatedWslPlatformInstaller: WslPlatformInstaller = {
     })
 }
 
+const openWslTerminal: WslTerminalLauncher = {
+  open: (args) =>
+    new Promise((resolve, reject) => {
+      const child = spawn('wsl.exe', [...args], {
+        detached: true,
+        windowsHide: false,
+        stdio: 'ignore'
+      })
+      child.once('error', reject)
+      child.once('spawn', () => {
+        child.unref()
+        resolve()
+      })
+    })
+}
+
 const clean = (value: string): string => value.replaceAll('\0', '').replaceAll('\r', '').trim()
 
 export const parseWslDistros = (quietOutput: string, verboseOutput: string): WslDistro[] => {
@@ -164,11 +189,13 @@ const platformFailure = (output: string): { state: WslSetupState; code: string }
 export class WslSetupOwner {
   private readonly runner: WslCommandRunner
   private readonly installer: WslPlatformInstaller
+  private readonly terminal: WslTerminalLauncher
   private readonly log: Pick<ReturnType<typeof createLogger>, 'info' | 'warn'>
 
   constructor(private readonly options: WslSetupOwnerOptions) {
     this.runner = options.runner ?? executeWsl
     this.installer = options.installer ?? elevatedWslPlatformInstaller
+    this.terminal = options.terminal ?? openWslTerminal
     this.log = options.log ?? createLogger('wsl-setup')
   }
 
@@ -227,6 +254,96 @@ export class WslSetupOwner {
     if (outcome === 'completed') this.log.info('wsl install completed', fields)
     else this.log.warn('wsl install completed', fields)
     return { outcome, operationReference, snapshot }
+  }
+
+  async installRecommendedDistro(): Promise<WslSetupSnapshot> {
+    const current = await this.probe()
+    if (current.state !== 'distro-required' || current.distros.length > 0) {
+      return setupSnapshot('failed', this.reference(), current.distros, {
+        selection: current.selection,
+        readiness: current.readiness,
+        errorCode: 'wsl_distro_install_not_allowed'
+      })
+    }
+
+    const operationReference = this.reference()
+    const startedAt = Date.now()
+    this.log.info('wsl distro install started', { operationReference })
+    const result = await this.runner.run([
+      '--install',
+      '--distribution',
+      RECOMMENDED_WSL_DISTRO,
+      '--no-launch'
+    ])
+    const fresh = await this.probe()
+    if (
+      fresh.state === 'restart-required' ||
+      fresh.distros.some((item) => item.name === RECOMMENDED_WSL_DISTRO)
+    ) {
+      this.log.info('wsl distro install completed', {
+        operationReference,
+        outcome: fresh.state,
+        durationMs: Date.now() - startedAt
+      })
+      return fresh
+    }
+    this.log.warn('wsl distro install completed', {
+      operationReference,
+      outcome: 'failed',
+      errorCode:
+        result.exitCode === 0 ? 'wsl_distro_install_unconfirmed' : 'wsl_distro_install_failed',
+      durationMs: Date.now() - startedAt
+    })
+    return setupSnapshot('failed', operationReference, fresh.distros, {
+      errorCode:
+        result.exitCode === 0 ? 'wsl_distro_install_unconfirmed' : 'wsl_distro_install_failed'
+    })
+  }
+
+  async openTerminal(request: OpenWslTerminalRequest): Promise<WslSetupSnapshot> {
+    const distro = request.distro.trim()
+    const user = request.user?.trim()
+    const current = await this.probe()
+    const installed = current.distros.find((item) => item.name === distro && item.version === 2)
+    const verifiedUser =
+      !user ||
+      (current.selection?.distro === distro &&
+        current.selection.user === user &&
+        current.readiness?.wsl2 === true &&
+        current.readiness.home === true)
+    if (
+      !installed ||
+      !verifiedUser ||
+      !this.validName(distro, 256) ||
+      (user !== undefined && !this.validName(user, 128))
+    ) {
+      return setupSnapshot('failed', this.reference(), current.distros, {
+        selection: current.selection,
+        readiness: current.readiness,
+        errorCode: 'wsl_terminal_request_invalid'
+      })
+    }
+
+    const operationReference = this.reference()
+    try {
+      await this.terminal.open([
+        '--distribution',
+        installed.name,
+        ...(user ? ['--user', user] : [])
+      ])
+    } catch {
+      this.log.warn('wsl terminal open failed', {
+        operationReference,
+        errorCode: 'wsl_terminal_open_failed'
+      })
+      return setupSnapshot('failed', operationReference, current.distros, {
+        selection: current.selection,
+        readiness: current.readiness,
+        errorCode: 'wsl_terminal_open_failed'
+      })
+    }
+    this.log.info('wsl terminal opened', { operationReference, withExplicitUser: !!user })
+    return this.probe()
   }
 
   async select(request: SelectWslProfileRequest): Promise<WslSetupSnapshot> {
@@ -344,7 +461,11 @@ export class WslSetupOwner {
       })
     }
 
-    const identity = await this.inGuest(selection, ['sh', '-lc', 'id -u; id -un'])
+    const identity = await this.inGuest(selection, [
+      'sh',
+      '-lc',
+      'id -u; id -un; test -n "$HOME" && test -d "$HOME" && printf "home-ok\\n"'
+    ])
     const identityOutput = clean(identity.stdout)
     if (identity.exitCode !== 0) {
       // Retrying with the distro's default user distinguishes an uninitialized distro from an
@@ -368,7 +489,7 @@ export class WslSetupOwner {
         }
       )
     }
-    const [uid, actualUser] = identityOutput.split('\n')
+    const [uid, actualUser, homeStatus] = identityOutput.split('\n')
     if (uid === '0') {
       return setupSnapshot('failed', operationReference, distros, {
         selection,
@@ -383,6 +504,13 @@ export class WslSetupOwner {
         errorCode: 'wsl_user_mismatch'
       })
     }
+    if (homeStatus !== 'home-ok') {
+      return setupSnapshot('failed', operationReference, distros, {
+        selection,
+        readiness: this.readiness({ wsl2: true, home: false }),
+        errorCode: 'wsl_home_missing'
+      })
+    }
 
     const dependencies = await this.inGuest(selection, [
       'sh',
@@ -395,8 +523,11 @@ export class WslSetupOwner {
     if (!bash || !bwrap) {
       return setupSnapshot('dependency-required', operationReference, distros, {
         selection,
-        readiness: this.readiness({ wsl2: true, bash, bwrap }),
-        errorCode: bash ? 'wsl_bwrap_missing' : 'wsl_bash_missing'
+        readiness: this.readiness({ wsl2: true, home: true, bash, bwrap }),
+        errorCode: bash ? 'wsl_bwrap_missing' : 'wsl_bash_missing',
+        ...(bash && this.bubblewrapCommand(selection.distro)
+          ? { suggestedCommand: this.bubblewrapCommand(selection.distro) }
+          : {})
       })
     }
 
@@ -408,7 +539,13 @@ export class WslSetupOwner {
     if (namespaces.exitCode !== 0 || clean(namespaces.stdout) !== 'ok') {
       return setupSnapshot('dependency-required', operationReference, distros, {
         selection,
-        readiness: this.readiness({ wsl2: true, bash: true, bwrap: true, namespaces: false }),
+        readiness: this.readiness({
+          wsl2: true,
+          home: true,
+          bash: true,
+          bwrap: true,
+          namespaces: false
+        }),
         errorCode: 'wsl_namespace_unavailable'
       })
     }
@@ -426,6 +563,7 @@ export class WslSetupOwner {
         selection,
         readiness: this.readiness({
           wsl2: true,
+          home: true,
           bash: true,
           bwrap: true,
           namespaces: true,
@@ -439,6 +577,7 @@ export class WslSetupOwner {
       selection,
       readiness: this.readiness({
         wsl2: true,
+        home: true,
         bash: true,
         bwrap: true,
         namespaces: true,
@@ -470,5 +609,15 @@ export class WslSetupOwner {
 
   private reference(): string {
     return (this.options.operationReference?.() ?? randomUUID()).replaceAll('-', '').slice(0, 8)
+  }
+
+  private validName(value: string, maxLength: number): boolean {
+    return !!value && value.length <= maxLength && !/[\0\r\n]/.test(value)
+  }
+
+  private bubblewrapCommand(distro: string): string | undefined {
+    return /ubuntu|debian/i.test(distro)
+      ? 'sudo apt-get update && sudo apt-get install bubblewrap'
+      : undefined
   }
 }

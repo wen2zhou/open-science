@@ -1,6 +1,12 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { WslSetupOwner, type WslCommandRunner, type WslPlatformInstaller } from './wsl-setup-owner'
+import {
+  RECOMMENDED_WSL_DISTRO,
+  WslSetupOwner,
+  type WslCommandRunner,
+  type WslPlatformInstaller,
+  type WslTerminalLauncher
+} from './wsl-setup-owner'
 
 const result = (
   stdout = '',
@@ -163,6 +169,190 @@ describe('WslSetupOwner', () => {
     }
   )
 
+  it('installs only the recommended distro after an explicit request and returns a fresh OS probe', async () => {
+    const runner = makeRunner(
+      result('Default Version: 2'),
+      result(''),
+      result(''),
+      result('', 0),
+      result('Default Version: 2'),
+      result('Ubuntu-22.04'),
+      result('* Ubuntu-22.04 Stopped 2')
+    )
+    const log = { info: vi.fn(), warn: vi.fn() }
+    const owner = makeOwner({
+      runner,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn(),
+      log
+    })
+
+    const snapshot = await owner.installRecommendedDistro()
+
+    expect(RECOMMENDED_WSL_DISTRO).toBe('Ubuntu-22.04')
+    expect(runner.run).toHaveBeenNthCalledWith(4, [
+      '--install',
+      '--distribution',
+      'Ubuntu-22.04',
+      '--no-launch'
+    ])
+    expect(snapshot).toMatchObject({
+      state: 'distro-required',
+      distros: [{ name: 'Ubuntu-22.04', version: 2 }]
+    })
+    expect(runner.run).toHaveBeenCalledTimes(7)
+    expect(JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls])).not.toContain(
+      'Ubuntu-22.04'
+    )
+  })
+
+  it('opens an installed distro for interactive first launch without supplying credentials', async () => {
+    const runner = makeRunner(
+      result('Default Version: 2'),
+      result('Ubuntu-22.04'),
+      result('* Ubuntu-22.04 Stopped 2'),
+      result('Default Version: 2'),
+      result('Ubuntu-22.04'),
+      result('* Ubuntu-22.04 Stopped 2')
+    )
+    const terminal: WslTerminalLauncher = { open: vi.fn(async () => undefined) }
+    const owner = makeOwner({
+      runner,
+      terminal,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn()
+    })
+
+    const snapshot = await owner.openTerminal({ distro: 'Ubuntu-22.04' })
+
+    expect(terminal.open).toHaveBeenCalledWith(['--distribution', 'Ubuntu-22.04'])
+    expect(snapshot).toMatchObject({ state: 'distro-required' })
+  })
+
+  it('fails closed when install does not produce the recommended distro', async () => {
+    const runner = makeRunner(
+      result('Default Version: 2'),
+      result(''),
+      result(''),
+      result('', 1, 'localized install failure'),
+      result('Default Version: 2'),
+      result(''),
+      result('')
+    )
+    const owner = makeOwner({
+      runner,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn()
+    })
+
+    await expect(owner.installRecommendedDistro()).resolves.toMatchObject({
+      state: 'failed',
+      errorCode: 'wsl_distro_install_failed'
+    })
+
+    const unconfirmed = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result(''),
+        result(''),
+        result('', 0),
+        result('Default Version: 2'),
+        result(''),
+        result('')
+      ),
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn()
+    })
+    await expect(unconfirmed.installRecommendedDistro()).resolves.toMatchObject({
+      state: 'failed',
+      errorCode: 'wsl_distro_install_unconfirmed'
+    })
+  })
+
+  it('opens dependency help as the selected non-root user and rejects unprobed distros', async () => {
+    const terminal: WslTerminalLauncher = { open: vi.fn(async () => undefined) }
+    const runner = makeRunner(
+      result('Default Version: 2'),
+      result('Ubuntu-22.04'),
+      result('* Ubuntu-22.04 Running 2'),
+      result('1000\nscientist\nhome-ok'),
+      result('/usr/bin/bash'),
+      result('Default Version: 2'),
+      result('Ubuntu-22.04'),
+      result('* Ubuntu-22.04 Running 2'),
+      result('1000\nscientist\nhome-ok'),
+      result('/usr/bin/bash')
+    )
+    const owner = makeOwner({
+      runner,
+      terminal,
+      workspacePath: 'C:\\science',
+      readSelection: async () => ({ distro: 'Ubuntu-22.04', user: 'scientist' }),
+      writeSelection: vi.fn()
+    })
+
+    await expect(
+      owner.openTerminal({ distro: 'Ubuntu-22.04', user: 'scientist' })
+    ).resolves.toMatchObject({ state: 'dependency-required', errorCode: 'wsl_bwrap_missing' })
+    expect(terminal.open).toHaveBeenCalledWith([
+      '--distribution',
+      'Ubuntu-22.04',
+      '--user',
+      'scientist'
+    ])
+
+    const rejected = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu-22.04'),
+        result('* Ubuntu-22.04 Running 2')
+      ),
+      terminal,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn()
+    })
+    await expect(rejected.openTerminal({ distro: 'Attacker\n--exec' })).resolves.toMatchObject({
+      state: 'failed',
+      errorCode: 'wsl_terminal_request_invalid'
+    })
+    expect(terminal.open).toHaveBeenCalledTimes(1)
+  })
+
+  it('returns a stable code without logging terminal errors or profile identity', async () => {
+    const log = { info: vi.fn(), warn: vi.fn() }
+    const terminal: WslTerminalLauncher = {
+      open: vi.fn(async () => {
+        throw new Error('private terminal output for scientist')
+      })
+    }
+    const owner = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu-22.04'),
+        result('* Ubuntu-22.04 Stopped 2')
+      ),
+      terminal,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn(),
+      log
+    })
+
+    await expect(owner.openTerminal({ distro: 'Ubuntu-22.04' })).resolves.toMatchObject({
+      state: 'failed',
+      errorCode: 'wsl_terminal_open_failed'
+    })
+    const logged = JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls])
+    expect(logged).not.toContain('scientist')
+    expect(logged).not.toContain('Ubuntu-22.04')
+    expect(logged).not.toContain('private terminal output')
+  })
+
   it('distinguishes platform, restart, and distro-required setup states', async () => {
     const absent = makeOwner({
       runner: makeRunner(result('', 1, 'WSL is not installed')),
@@ -244,7 +434,7 @@ describe('WslSetupOwner', () => {
       result('Default Version: 2'),
       result('Ubuntu-24.04'),
       result('* Ubuntu-24.04 Running 2'),
-      result('1000\nscientist'),
+      result('1000\nscientist\nhome-ok'),
       result('/usr/bin/bash\n/usr/bin/bwrap'),
       result('ok'),
       result('/mnt/c/science\nok')
@@ -292,7 +482,7 @@ describe('WslSetupOwner', () => {
             '  SUSE Dev               正在 运行           2'
         )
       ),
-      result('1000\nscientist'),
+      result('1000\nscientist\nhome-ok'),
       result('/usr/bin/bash\n/usr/bin/bwrap'),
       result('ok'),
       result('/mnt/c/science\nok')
@@ -352,7 +542,7 @@ describe('WslSetupOwner', () => {
       result('Default Version: 2'),
       result('Ubuntu'),
       result('* Ubuntu Running 2'),
-      result('1000\nscientist'),
+      result('1000\nscientist\nhome-ok'),
       result('/usr/bin/bash\n/usr/bin/bwrap'),
       result('ok'),
       result('/mnt/d/custom-data\nok')
@@ -409,22 +599,27 @@ describe('WslSetupOwner', () => {
   })
 
   it('reports missing dependencies and unsupported workspace paths with actionable stable codes', async () => {
+    const missingRunner = makeRunner(
+      result('Default Version: 2'),
+      result('Ubuntu'),
+      result('* Ubuntu Running 2'),
+      result('1000\nscientist\nhome-ok'),
+      result('/usr/bin/bash\n', 1)
+    )
     const missing = makeOwner({
-      runner: makeRunner(
-        result('Default Version: 2'),
-        result('Ubuntu'),
-        result('* Ubuntu Running 2'),
-        result('1000\nscientist'),
-        result('/usr/bin/bash\n', 1)
-      ),
+      runner: missingRunner,
       workspacePath: 'C:\\science',
       readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),
       writeSelection: vi.fn()
     })
     await expect(missing.probe()).resolves.toMatchObject({
       state: 'dependency-required',
-      errorCode: 'wsl_bwrap_missing'
+      errorCode: 'wsl_bwrap_missing',
+      suggestedCommand: 'sudo apt-get update && sudo apt-get install bubblewrap'
     })
+    expect(
+      JSON.stringify((missingRunner.run as ReturnType<typeof vi.fn>).mock.calls)
+    ).not.toContain('sudo apt-get')
 
     const unsupported = makeOwner({
       runner: makeRunner(
@@ -442,13 +637,33 @@ describe('WslSetupOwner', () => {
     })
   })
 
+  it('does not mark a selected user ready without an existing Linux home directory', async () => {
+    const owner = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu'),
+        result('* Ubuntu Running 2'),
+        result('1000\nscientist')
+      ),
+      workspacePath: 'C:\\science',
+      readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),
+      writeSelection: vi.fn()
+    })
+
+    await expect(owner.probe()).resolves.toMatchObject({
+      state: 'failed',
+      errorCode: 'wsl_home_missing',
+      readiness: { wsl2: true, home: false }
+    })
+  })
+
   it('marks the namespace check as failed when bubblewrap cannot create the sandbox', async () => {
     const owner = makeOwner({
       runner: makeRunner(
         result('Default Version: 2'),
         result('Ubuntu'),
         result('* Ubuntu Running 2'),
-        result('1000\nscientist'),
+        result('1000\nscientist\nhome-ok'),
         result('/usr/bin/bash\n/usr/bin/bwrap'),
         result('', 1, 'namespace unavailable')
       ),
@@ -470,7 +685,7 @@ describe('WslSetupOwner', () => {
         result('Default Version: 2'),
         result('Ubuntu'),
         result('* Ubuntu Running 2'),
-        result('1000\nscientist'),
+        result('1000\nscientist\nhome-ok'),
         result('/usr/bin/bash\n/usr/bin/bwrap'),
         result('ok'),
         result('/mnt/c/science', 1, 'workspace unavailable')

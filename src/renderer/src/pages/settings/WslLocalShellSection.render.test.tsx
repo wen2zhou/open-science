@@ -10,6 +10,8 @@ let root: Root
 let probe: ReturnType<typeof vi.fn>
 let select: ReturnType<typeof vi.fn>
 let install: ReturnType<typeof vi.fn>
+let installRecommended: ReturnType<typeof vi.fn>
+let openTerminal: ReturnType<typeof vi.fn>
 
 const flush = async (): Promise<void> => {
   await act(async () => {})
@@ -44,8 +46,28 @@ beforeEach(() => {
       operationReference: 'feedface'
     }
   })
+  installRecommended = vi.fn().mockResolvedValue({
+    state: 'first-launch-required',
+    distros: [{ name: 'Ubuntu-22.04', version: 2, isDefault: true }],
+    selection: { distro: 'Ubuntu-22.04', user: 'scientist' },
+    errorCode: 'wsl_first_launch_required',
+    operationReference: 'feedface'
+  })
+  openTerminal = vi.fn().mockResolvedValue({
+    state: 'first-launch-required',
+    distros: [{ name: 'Ubuntu-22.04', version: 2, isDefault: true }],
+    selection: { distro: 'Ubuntu-22.04', user: 'scientist' },
+    errorCode: 'wsl_first_launch_required',
+    operationReference: 'feedface'
+  })
   ;(window as unknown as { api: unknown }).api = {
-    settings: { installWslPlatform: install, probeWslSetup: probe, selectWslProfile: select }
+    settings: {
+      probeWslSetup: probe,
+      selectWslProfile: select,
+      installWslPlatform: install,
+      installRecommendedWslDistro: installRecommended,
+      openWslTerminal: openTerminal
+    }
   }
 })
 
@@ -189,5 +211,68 @@ describe('WslLocalShellSection', () => {
     expect(readiness?.querySelector('svg.text-primary')).toBeNull()
     expect(readiness?.querySelector('svg.text-destructive')).toBeNull()
     expect(readiness?.querySelector('svg.text-muted-foreground')).toBeNull()
+  })
+
+  it('requires an explicit click to install the recommended distro, then opens first launch interactively', async () => {
+    probe.mockResolvedValue({
+      state: 'distro-required',
+      distros: [],
+      errorCode: 'wsl_distro_missing',
+      operationReference: 'deadbeef'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    const install = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Install Ubuntu-22.04')
+    )
+    expect(install).toBeDefined()
+    expect(installRecommended).not.toHaveBeenCalled()
+    await act(async () => install?.click())
+    await flush()
+
+    expect(installRecommended).toHaveBeenCalledOnce()
+    const launch = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Open distribution terminal')
+    )
+    await act(async () => launch?.click())
+    await flush()
+    expect(openTerminal).toHaveBeenCalledWith({ distro: 'Ubuntu-22.04' })
+  })
+
+  it('offers a copyable bubblewrap command and opens the selected user terminal without running it', async () => {
+    const writeText = vi.fn().mockResolvedValue(undefined)
+    Object.defineProperty(navigator, 'clipboard', {
+      configurable: true,
+      value: { writeText }
+    })
+    probe.mockResolvedValue({
+      state: 'dependency-required',
+      distros: [{ name: 'Ubuntu-22.04', version: 2, isDefault: true }],
+      selection: { distro: 'Ubuntu-22.04', user: 'scientist' },
+      readiness: { wsl2: true, home: true, bash: true, bwrap: false },
+      errorCode: 'wsl_bwrap_missing',
+      suggestedCommand: 'sudo apt-get update && sudo apt-get install bubblewrap',
+      operationReference: 'decafbad'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    expect(container.textContent).toContain('Open Science will not run sudo or a package manager')
+    expect(container.textContent).toContain(
+      'sudo apt-get update && sudo apt-get install bubblewrap'
+    )
+    const copy = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Copy command')
+    )
+    await act(async () => copy?.click())
+    expect(writeText).toHaveBeenCalledWith('sudo apt-get update && sudo apt-get install bubblewrap')
+
+    const launch = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Open distribution terminal')
+    )
+    await act(async () => launch?.click())
+    await flush()
+    expect(openTerminal).toHaveBeenCalledWith({ distro: 'Ubuntu-22.04', user: 'scientist' })
   })
 })

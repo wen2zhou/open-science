@@ -1,4 +1,13 @@
-import { CheckCircle2, CircleMinus, CircleX, LoaderCircle, RefreshCw } from 'lucide-react'
+import {
+  CheckCircle2,
+  CircleMinus,
+  CircleX,
+  ClipboardCopy,
+  Download,
+  LoaderCircle,
+  RefreshCw,
+  SquareTerminal
+} from 'lucide-react'
 import { useCallback, useEffect, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
@@ -12,10 +21,11 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import type {
-  WslPlatformInstallResult,
-  WslReadiness,
-  WslSetupSnapshot
+import {
+  RECOMMENDED_WSL_DISTRO,
+  type WslPlatformInstallResult,
+  type WslReadiness,
+  type WslSetupSnapshot
 } from '../../../../shared/wsl-setup'
 import { SettingsField, SettingsSection } from './SettingsLayout'
 
@@ -51,6 +61,16 @@ const recoveryCopy = (
     case 'wsl_user_mismatch':
     case 'wsl_user_not_found':
       return t('Choose an exact non-root Linux user, then save and check again.')
+    case 'wsl_home_missing':
+      return t('Choose a non-root Linux user with an existing home directory, then check again.')
+    case 'wsl_distro_install_failed':
+      return t('The distribution installation failed. Check Windows setup, then try again.')
+    case 'wsl_distro_install_unconfirmed':
+      return t(
+        'Windows did not confirm the distribution installation. Check again before retrying.'
+      )
+    case 'wsl_terminal_open_failed':
+      return t('The distribution terminal could not be opened. Check again, then retry.')
     case 'wsl_workspace_path_unsupported':
     case 'wsl_workspace_unreachable':
     case 'wsl_workspace_not_local':
@@ -73,8 +93,10 @@ export const WslLocalShellSection = (): React.JSX.Element => {
   const [user, setUser] = useState('')
   const [busy, setBusy] = useState(true)
   const [installResult, setInstallResult] = useState<WslPlatformInstallResult>()
+  const [copied, setCopied] = useState(false)
   const checks: ReadonlyArray<[keyof WslReadiness, string]> = [
     ['wsl2', t('WSL2 distribution')],
+    ['home', t('Linux home directory')],
     ['bash', t('Bash')],
     ['bwrap', t('bubblewrap')],
     ['namespaces', t('Linux namespaces')],
@@ -152,12 +174,55 @@ export const WslLocalShellSection = (): React.JSX.Element => {
     }
   }
 
+  const installRecommended = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      apply(await window.api.settings.installRecommendedWslDistro())
+    } catch {
+      setSnapshot((current) => ({
+        ...current,
+        state: 'failed',
+        errorCode: 'wsl_distro_install_failed'
+      }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
   const installFailure =
     installResult?.outcome === 'uac-cancelled' ||
     installResult?.outcome === 'spawn-failed' ||
     installResult?.outcome === 'unknown'
       ? installResult.outcome
       : undefined
+
+  const openTerminal = async (withUser: boolean): Promise<void> => {
+    const selectedDistro = snapshot.selection?.distro ?? distro
+    if (!selectedDistro) return
+    setBusy(true)
+    try {
+      apply(
+        await window.api.settings.openWslTerminal({
+          distro: selectedDistro,
+          ...(withUser && snapshot.selection?.user ? { user: snapshot.selection.user } : {})
+        })
+      )
+    } catch {
+      setSnapshot((current) => ({
+        ...current,
+        state: 'failed',
+        errorCode: 'wsl_terminal_open_failed'
+      }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const copySuggestedCommand = async (): Promise<void> => {
+    if (!snapshot.suggestedCommand) return
+    await navigator.clipboard.writeText(snapshot.suggestedCommand)
+    setCopied(true)
+  }
 
   return (
     <SettingsSection
@@ -268,6 +333,63 @@ export const WslLocalShellSection = (): React.JSX.Element => {
           <p className="mt-3 text-sm text-status-warning-foreground" role="status">
             {t('Restart Windows before continuing. Returning here will start a fresh check.')}
           </p>
+        ) : null}
+
+        {!busy && snapshot.state === 'distro-required' && snapshot.distros.length === 0 ? (
+          <div className="mt-4">
+            <Button type="button" onClick={() => void installRecommended()}>
+              <Download aria-hidden="true" />
+              {t('Install {{distro}}', { distro: RECOMMENDED_WSL_DISTRO })}
+            </Button>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t('Installation starts only after you choose this action.')}
+            </p>
+          </div>
+        ) : null}
+
+        {!busy && snapshot.state === 'first-launch-required' && distro ? (
+          <div className="mt-4">
+            <Button type="button" onClick={() => void openTerminal(false)}>
+              <SquareTerminal aria-hidden="true" />
+              {t('Open distribution terminal')}
+            </Button>
+            <p className="mt-2 text-xs text-muted-foreground">
+              {t(
+                'Finish the distribution’s username and password prompts in the terminal. Open Science never enters credentials for you.'
+              )}
+            </p>
+          </div>
+        ) : null}
+
+        {!busy && snapshot.errorCode === 'wsl_bwrap_missing' ? (
+          <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
+            <p className="text-sm">
+              {t(
+                'Install bubblewrap in the distribution terminal. Open Science will not run sudo or a package manager.'
+              )}
+            </p>
+            {snapshot.suggestedCommand ? (
+              <>
+                <code className="mt-2 block overflow-x-auto rounded bg-background p-2 text-xs">
+                  {snapshot.suggestedCommand}
+                </code>
+                <div className="mt-3 flex flex-wrap gap-2">
+                  <Button
+                    type="button"
+                    variant="outline"
+                    onClick={() => void copySuggestedCommand()}
+                  >
+                    <ClipboardCopy aria-hidden="true" />
+                    {copied ? t('Copied') : t('Copy command')}
+                  </Button>
+                  <Button type="button" variant="outline" onClick={() => void openTerminal(true)}>
+                    <SquareTerminal aria-hidden="true" />
+                    {t('Open distribution terminal')}
+                  </Button>
+                </div>
+              </>
+            ) : null}
+          </div>
         ) : null}
 
         {snapshot.distros.length > 0 ? (
