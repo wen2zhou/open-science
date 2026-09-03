@@ -5,7 +5,6 @@ import { deflateRawSync } from 'node:zlib'
 
 import type { FilesystemLayoutInput } from './filesystem-layout.js'
 import type { GatewayCredentials } from '../gateway/command-gateway.js'
-import { assertWsl2BashDevelopmentEnabled } from '../wsl2-development-gate.js'
 
 type Wsl2Target = Readonly<{
   kind: 'wsl2'
@@ -361,7 +360,7 @@ const waitForBridgeReady = (
       finish(
         new Error(
           code === 78 || stderr.includes('OPEN_SCIENCE_WSL_GATEWAY_NAT_UNSUPPORTED')
-            ? 'WSL2_NETWORK_TRANSPORT_UNSUPPORTED: WSL2 Bash network access requires mirrored networking; default NAT support is tracked for Issue 13.'
+            ? 'WSL2_NETWORK_TRANSPORT_UNSUPPORTED: WSL2 Bash Preview network access requires mirrored networking.'
             : 'WSL2 network bridge exited before ready.'
         )
       )
@@ -576,7 +575,7 @@ const profileReconciliations = new Map<string, Promise<void>>()
 const reconcileProfile = (request: Wsl2LaunchRequest): Promise<void> => {
   // Remember a successful reconciliation for this guest user: a concurrent second wrap must not
   // rescan receipts after the first wrap starts publishing its current receipt. This fence is
-  // process-local; cross-app-process first-launch serialization remains an Issue 13 certification
+  // Process-local by design: the desktop single-instance contract owns first-launch serialization.
   // limitation, while every restart still reconciles durable receipts before its first spawn.
   const key = JSON.stringify([request.target.distro, request.target.user])
   const current = profileReconciliations.get(key)
@@ -614,7 +613,6 @@ const mountParents = (path: string): string[] => {
 }
 
 const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
-  assertWsl2BashDevelopmentEnabled()
   validateTarget(request.target)
   request.signal?.throwIfAborted()
   await reconcileProfile(request)

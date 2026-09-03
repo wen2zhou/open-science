@@ -181,8 +181,7 @@ describe('notebook shell process behavior', () => {
       )
     })
 
-    it('does not prepare a selected WSL2 runtime while the development gate is disabled', async () => {
-      vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '')
+    it('does not prepare a selected WSL2 runtime while the main Preview gate is closed', async () => {
       const processSandbox: NotebookProcessSandbox = {
         wrap: vi.fn()
       }
@@ -201,7 +200,8 @@ describe('notebook shell process behavior', () => {
           distro: 'Ubuntu-22.04',
           user: 'researcher'
         },
-        processSandbox
+        processSandbox,
+        previewAvailable: () => false
       })
 
       expect(result).toEqual({
@@ -219,7 +219,7 @@ describe('notebook shell process behavior', () => {
       const processSandbox: NotebookProcessSandbox = {
         wrap: vi.fn(async () => {
           throw new Error(
-            'WSL2_NETWORK_TRANSPORT_UNSUPPORTED: WSL2 Bash network access requires mirrored networking; default NAT support is tracked for Issue 13.'
+            'WSL2_NETWORK_TRANSPORT_UNSUPPORTED: WSL2 Bash Preview network access requires mirrored networking.'
           )
         })
       }
@@ -244,7 +244,7 @@ describe('notebook shell process behavior', () => {
       ).resolves.toEqual({
         stdout: '',
         stderr:
-          'WSL2_NETWORK_TRANSPORT_UNSUPPORTED: WSL2 Bash network access requires mirrored networking; default NAT support is tracked for Issue 13.',
+          'WSL2_NETWORK_TRANSPORT_UNSUPPORTED: WSL2 Bash Preview network access requires mirrored networking.',
         exitCode: null,
         errorCode: 'shell-network-transport-unsupported'
       })

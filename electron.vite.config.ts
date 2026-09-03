@@ -6,6 +6,10 @@ import tailwindcss from '@tailwindcss/vite'
 
 export default defineConfig({
   main: {
+    define: {
+      __OPEN_SCIENCE_WSL2_BASH_PREVIEW__:
+        process.env.OPEN_SCIENCE_BUILD_WSL2_BASH_PREVIEW === '0' ? 'false' : 'true'
+    },
     build: {
       // This workspace package is TypeScript source, not a separately built runtime dependency.
       // Bundle it into the Electron main process so development and packaged builds never ask

@@ -135,6 +135,23 @@ const RuntimesPanel = ({
   const [packages, setPackages] = useState<EnvPackage[] | null>(null)
   const [packagesError, setPackagesError] = useState<string | null>(null)
   const [packagesRetryNonce, setPackagesRetryNonce] = useState(0)
+  const [wsl2PreviewAvailable, setWsl2PreviewAvailable] = useState(false)
+
+  useEffect(() => {
+    let cancelled = false
+    if (window.api.platform !== 'win32') return () => undefined
+    void window.api.settings
+      .getWsl2BashPreviewStatus()
+      .then((status) => {
+        if (!cancelled) setWsl2PreviewAvailable(status.available)
+      })
+      .catch(() => {
+        if (!cancelled) setWsl2PreviewAvailable(false)
+      })
+    return () => {
+      cancelled = true
+    }
+  }, [])
   const [packagesFilter, setPackagesFilter] = useState('')
   const packagesFilterRef = useRef<HTMLInputElement>(null)
   useSettingsSearchShortcut(packagesFilterRef, packagesEnv !== null)
@@ -830,7 +847,7 @@ const RuntimesPanel = ({
           })
         )}
       </SettingsSection>
-      {window.api.platform === 'win32' ? <WslLocalShellSection /> : null}
+      {wsl2PreviewAvailable ? <WslLocalShellSection /> : null}
 
       <AlertDialog.Root
         open={managedRepair !== null}

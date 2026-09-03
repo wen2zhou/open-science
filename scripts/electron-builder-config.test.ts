@@ -32,8 +32,28 @@ describe('electron-builder native image processing', () => {
       from: 'packages/notebook-network-sandbox/vendor/windows/${arch}/notebook-appcontainer-host.exe',
       to: 'notebook-network-sandbox/windows/${arch}/notebook-appcontainer-host.exe'
     })
+    expect(config.win?.extraResources).toContainEqual({
+      from: 'packages/notebook-network-sandbox/vendor/wsl2/manifest.json',
+      to: 'notebook-network-sandbox/wsl2/manifest.json'
+    })
     expect(config.mac?.extraResources).toHaveLength(1)
     expect(config.linux?.extraResources).toHaveLength(1)
+  })
+})
+
+describe('WSL2 Bash Preview certification', () => {
+  it('keeps the versioned reference record privacy-safe and tied to the packaged app', () => {
+    const record = readFileSync(
+      join(process.cwd(), 'docs', 'certification', 'wsl2-bash-preview-v1.md'),
+      'utf8'
+    )
+
+    expect(record).toContain('Application version: 0.24.0')
+    expect(record).toMatch(/\| WSL\s+\| 2\.1\.5\.0/)
+    expect(record).toContain('Ubuntu-22.04')
+    expect(record).toContain('networkingMode=mirrored')
+    expect(record).not.toContain('open-science-spike')
+    expect(record).not.toMatch(/[A-Za-z]:[\\/]/)
   })
 })
 

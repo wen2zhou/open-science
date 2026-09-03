@@ -618,7 +618,7 @@ describe('WslSetupOwner', () => {
       result('Ubuntu-24.04'),
       result('* Ubuntu-24.04 Running 2'),
       result('1000\nscientist\nhome-ok'),
-      result('/usr/bin/bash\n/usr/bin/bwrap'),
+      result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
       result('ok'),
       result('/mnt/c/science\nok')
     )
@@ -659,7 +659,7 @@ describe('WslSetupOwner', () => {
         result('Ubuntu-24.04'),
         result('* Ubuntu-24.04 Running 2'),
         result('1000\nscientist\nhome-ok'),
-        result('/usr/bin/bash\n/usr/bin/bwrap'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
         result('ok'),
         result('/mnt/c/science\nok')
       ),
@@ -682,6 +682,28 @@ describe('WslSetupOwner', () => {
     )
   })
 
+  it('fails closed when the selected WSL2 profile is not using mirrored networking', async () => {
+    const owner = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu-22.04'),
+        result('* Ubuntu-22.04 Running 2'),
+        result('1000\nscientist\nhome-ok'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\nnat')
+      ),
+      workspacePath: 'C:\\science',
+      readSelection: async () => ({ distro: 'Ubuntu-22.04', user: 'scientist' }),
+      writeSelection: vi.fn()
+    })
+
+    await expect(owner.probe()).resolves.toMatchObject({
+      state: 'failed',
+      errorCode: 'wsl_network_mode_unsupported',
+      readiness: { mirroredNetworking: false }
+    })
+    await expect(owner.requireLatestReadySelection()).rejects.toThrow('is not ready')
+  })
+
   it('reports the active profile separately from a newly verified candidate', async () => {
     let candidate = { distro: 'Ubuntu-24.04', user: 'candidate' }
     const active = { distro: 'Ubuntu-22.04', user: 'active' }
@@ -691,7 +713,7 @@ describe('WslSetupOwner', () => {
         result('Ubuntu-24.04'),
         result('* Ubuntu-24.04 Running 2'),
         result('1000\ncandidate\nhome-ok'),
-        result('/usr/bin/bash\n/usr/bin/bwrap'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
         result('ok'),
         result('/mnt/c/science\nok')
       ),
@@ -728,7 +750,7 @@ describe('WslSetupOwner', () => {
         )
       ),
       result('1000\nscientist\nhome-ok'),
-      result('/usr/bin/bash\n/usr/bin/bwrap'),
+      result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
       result('ok'),
       result('/mnt/c/science\nok')
     )
@@ -788,7 +810,7 @@ describe('WslSetupOwner', () => {
       result('Ubuntu'),
       result('* Ubuntu Running 2'),
       result('1000\nscientist\nhome-ok'),
-      result('/usr/bin/bash\n/usr/bin/bwrap'),
+      result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
       result('ok'),
       result('/mnt/d/custom-data\nok')
     )
@@ -909,7 +931,7 @@ describe('WslSetupOwner', () => {
         result('Ubuntu'),
         result('* Ubuntu Running 2'),
         result('1000\nscientist\nhome-ok'),
-        result('/usr/bin/bash\n/usr/bin/bwrap'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
         result('', 1, 'namespace unavailable')
       ),
       workspacePath: 'C:\\science',
@@ -931,7 +953,7 @@ describe('WslSetupOwner', () => {
         result('Ubuntu'),
         result('* Ubuntu Running 2'),
         result('1000\nscientist\nhome-ok'),
-        result('/usr/bin/bash\n/usr/bin/bwrap'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
         result('ok'),
         result('/mnt/c/science', 1, 'workspace unavailable')
       ),

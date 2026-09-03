@@ -1,8 +1,8 @@
 import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { dirname } from 'node:path'
 
-import { isWsl2BashDevelopmentEnabled } from '@aipoch/notebook-network-sandbox'
 import { protectManagedRuntimeWrites } from './managed-runtime-guard'
+import { wsl2BashPreviewStatus } from '../wsl/wsl2-preview-gate'
 import type {
   NotebookProcessSandbox,
   NotebookSandboxCleanupReason,
@@ -239,6 +239,7 @@ const runShellCommand = (
     platform?: NodeJS.Platform
     processSandbox?: NotebookProcessSandbox
     terminateTree?: (process: ChildProcess) => Promise<ProcessTreeKillResult>
+    previewAvailable?: () => boolean
   }
 ): Promise<NotebookShellResult> => {
   const run = async (): Promise<NotebookShellResult> => {
@@ -255,7 +256,8 @@ const runShellCommand = (
     const runtimeBinding = options.runtimeBinding ?? defaultShellRuntimeBinding(hostPlatform)
     if (
       runtimeBinding.kind === 'wsl2-bash' &&
-      (!isWsl2BashDevelopmentEnabled() || !options.processSandbox)
+      (!(options.previewAvailable ?? (() => wsl2BashPreviewStatus().available))() ||
+        !options.processSandbox)
     ) {
       return {
         stdout: '',
