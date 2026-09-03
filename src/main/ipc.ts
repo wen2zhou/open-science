@@ -272,6 +272,7 @@ import { LocalFsService } from './local-fs/service'
 import { SettingsService } from './settings/service'
 import { SettingsRepository } from './settings/repository'
 import { WslSetupOwner } from './wsl/wsl-setup-owner'
+import { initializeWsl2BashPreview } from './wsl/wsl2-preview-gate'
 import { resolveConfiguredShellRuntimeBinding } from './notebook/configured-shell-runtime'
 import { probeWindowsVolume } from './wsl/windows-volume-probe'
 import { SettingsSnapshotCommitOwner } from './settings/settings-snapshot-commit-owner'
@@ -528,6 +529,13 @@ const createApplicationModules = async (
     settingsStore ?? resolveConfigRoot(),
     (operation) => specialistPackageSkillAdapter.runMutationExclusive(operation)
   )
+  initializeWsl2BashPreview({
+    platform: process.platform,
+    arch: process.arch,
+    packaged: app.isPackaged,
+    resourcesPath: process.resourcesPath,
+    appVersion: app.getVersion()
+  })
   const wslSetup = new WslSetupOwner({
     // Managed workspaces, handoff data, and caches live below this local NTFS mount root. The
     // execution adapter will still validate each invocation's concrete authorized paths.

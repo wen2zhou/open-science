@@ -40,6 +40,7 @@ import type {
   SwitchToPowerShellResult,
   UseWsl2BashResult,
   WslPlatformInstallResult,
+  Wsl2BashPreviewStatus,
   WslSetupSnapshot,
   WslSupportHandoff
 } from './wsl-setup'
@@ -1945,6 +1946,10 @@ export const RENDERER_API_CONTRACT = Object.freeze({
   'settings.getNotebookNetworkStatus': callable<() => Promise<NotebookNetworkStatus>>()(
     'settings',
     ['settings:get-notebook-network-status', LOCAL]
+  ),
+  'settings.getWsl2BashPreviewStatus': callable<() => Promise<Wsl2BashPreviewStatus>>()(
+    'settings',
+    ['settings:get-wsl2-bash-preview-status', LOCAL]
   ),
   'settings.probeWslSetup': callable<() => Promise<WslSetupSnapshot>>()('settings', [
     'settings:probe-wsl-setup',

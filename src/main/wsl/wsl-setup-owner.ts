@@ -630,7 +630,7 @@ export class WslSetupOwner {
     const dependencies = await this.inGuest(selection, [
       'sh',
       '-lc',
-      'command -v bash; command -v bwrap'
+      'command -v bash; command -v bwrap; wslinfo --networking-mode'
     ])
     const dependencyOutput = clean(dependencies.stdout)
     const bash = /(^|\n)\/[^\n]*bash(\n|$)/.test(dependencyOutput)
@@ -643,6 +643,21 @@ export class WslSetupOwner {
         ...(bash && this.bubblewrapCommand(selection.distro)
           ? { suggestedCommand: this.bubblewrapCommand(selection.distro) }
           : {})
+      })
+    }
+
+    const mirroredNetworking = dependencyOutput.split('\n').at(-1) === 'mirrored'
+    if (!mirroredNetworking) {
+      return setupSnapshot('failed', operationReference, distros, {
+        selection,
+        readiness: this.readiness({
+          wsl2: true,
+          home: true,
+          bash: true,
+          bwrap: true,
+          mirroredNetworking: false
+        }),
+        errorCode: 'wsl_network_mode_unsupported'
       })
     }
 
@@ -659,6 +674,7 @@ export class WslSetupOwner {
           home: true,
           bash: true,
           bwrap: true,
+          mirroredNetworking: true,
           namespaces: false
         }),
         errorCode: 'wsl_namespace_unavailable'
@@ -695,6 +711,7 @@ export class WslSetupOwner {
         home: true,
         bash: true,
         bwrap: true,
+        mirroredNetworking: true,
         namespaces: true,
         localWorkspace: true
       })

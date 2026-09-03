@@ -11,14 +11,12 @@ import {
   wsl2Launch,
   type Wsl2Launch
 } from '../runtime/src/platform/wsl2-isolation.js'
-import { isWsl2BashDevelopmentEnabled } from '../runtime/src/wsl2-development-gate.js'
 import { notebookWorkloadCacheEnv } from '../../../src/main/notebook/notebook-workload-cache-paths.js'
 import { CommandGateway } from '../runtime/src/gateway/command-gateway.js'
 
 const distro = process.env.OPEN_SCIENCE_WSL_DISTRO
 const user = process.env.OPEN_SCIENCE_WSL_USER
-const enabled =
-  process.platform === 'win32' && Boolean(distro && user) && isWsl2BashDevelopmentEnabled()
+const enabled = process.platform === 'win32' && Boolean(distro && user)
 
 const execute = async (
   argv: readonly string[],

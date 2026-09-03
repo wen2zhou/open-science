@@ -202,6 +202,7 @@ const createService = (
     userSkills?: UserSkillRepositoryType
     log?: Logger
     wslSetup?: SettingsServiceOptions['wslSetup']
+    wsl2PreviewStatus?: SettingsServiceOptions['wsl2PreviewStatus']
   } = {}
 ): InstanceType<typeof SettingsService> =>
   new SettingsService({
@@ -290,7 +291,9 @@ const createService = (
     claudeIsolatedAuth: options.claudeIsolatedAuth as any,
     // eslint-disable-next-line @typescript-eslint/no-explicit-any
     claudeSharedAuth: options.claudeSharedAuth as any,
-    wslSetup: options.wslSetup
+    wslSetup: options.wslSetup,
+    wsl2PreviewStatus:
+      options.wsl2PreviewStatus ?? (() => ({ available: true, reason: 'available' }))
   })
 
 beforeEach(async () => {
@@ -405,8 +408,9 @@ describe('SettingsService: Local Shell runtime', () => {
     })
   })
 
-  it('does not persist WSL2 Bash while the shared development gate is closed', async () => {
+  it('does not persist WSL2 Bash while the main-owned Preview gate is closed', async () => {
     const service = createService(undefined, {
+      wsl2PreviewStatus: () => ({ available: false, reason: 'build-disabled' }),
       wslSetup: {
         probe: vi.fn(),
         installPlatform: vi.fn(),
@@ -423,7 +427,7 @@ describe('SettingsService: Local Shell runtime', () => {
     await repository.setLocalShellRuntime('powershell')
 
     await expect(service.useWsl2Bash()).rejects.toThrow(
-      'Notebook WSL2 Bash runtime is unavailable.'
+      'Notebook WSL2 Bash Preview is unavailable.'
     )
     await expect(repository.getSettings()).resolves.toMatchObject({
       localShellRuntime: 'powershell'

@@ -79,6 +79,8 @@ const recoveryCopy = (
       )
     case 'wsl_terminal_open_failed':
       return t('The distribution terminal could not be opened. Check again, then retry.')
+    case 'wsl_network_mode_unsupported':
+      return t('Set WSL networkingMode to mirrored, shut down WSL, then check again.')
     case 'wsl_workspace_path_unsupported':
     case 'wsl_workspace_unreachable':
     case 'wsl_workspace_not_local':
@@ -117,6 +119,7 @@ export const WslLocalShellSection = (): React.JSX.Element => {
     ['home', t('Linux home directory')],
     ['bash', t('Bash')],
     ['bwrap', t('bubblewrap')],
+    ['mirroredNetworking', t('Mirrored networking')],
     ['namespaces', t('Linux namespaces')],
     ['localWorkspace', t('Local Windows workspace')]
   ]
@@ -317,7 +320,7 @@ export const WslLocalShellSection = (): React.JSX.Element => {
   return (
     <SettingsSection
       separated
-      title={t('Local Shell')}
+      title={t('Local Shell · WSL2 Bash Preview')}
       description={t(
         'Choose the exact WSL2 distribution and non-root Linux user Open Science should verify. Selection alone never enables WSL2 Bash.'
       )}

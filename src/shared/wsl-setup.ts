@@ -21,6 +21,17 @@ export type WslSelection = Readonly<{
 
 export type LocalShellRuntimePreference = 'powershell' | 'wsl2-bash'
 
+export type Wsl2BashPreviewStatus = Readonly<{
+  available: boolean
+  reason:
+    | 'available'
+    | 'build-disabled'
+    | 'unsupported-platform'
+    | 'unsupported-architecture'
+    | 'assets-unavailable'
+    | 'not-initialized'
+}>
+
 export type SwitchToPowerShellResult = Readonly<{
   runtimeBinding: Readonly<{ kind: 'powershell'; version: '5.1' }>
   appliesTo: 'subsequent-executions'
@@ -38,6 +49,7 @@ export type WslReadiness = Readonly<{
   home?: boolean
   bash?: boolean
   bwrap?: boolean
+  mirroredNetworking?: boolean
   namespaces?: boolean
   localWorkspace?: boolean
 }>

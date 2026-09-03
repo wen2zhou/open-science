@@ -13,6 +13,10 @@ import { createInitialNotebookEnvState, useNotebookEnvStore } from '../../stores
 import { useRuntimeSettingsStore } from '../../stores/runtime-settings-store'
 import { RuntimesPanel } from './RuntimesPanel'
 
+vi.mock('./WslLocalShellSection', () => ({
+  WslLocalShellSection: () => <div data-testid="wsl2-preview-section" />
+}))
+
 let container: HTMLDivElement
 let root: Root
 
@@ -127,6 +131,13 @@ beforeEach(() => {
   cancelBridge = vi.fn().mockResolvedValue(undefined)
   repairBridge = vi.fn().mockResolvedValue(undefined)
   ;(window as unknown as { api: unknown }).api = {
+    platform: 'linux',
+    settings: {
+      getWsl2BashPreviewStatus: vi.fn().mockResolvedValue({
+        available: false,
+        reason: 'unsupported-platform'
+      })
+    },
     runtime: {
       listEnvironments,
       listPackages,
@@ -186,6 +197,30 @@ const click = async (el: Element | null): Promise<void> => {
 }
 
 describe('RuntimesPanel', () => {
+  it('shows WSL2 Bash Preview only when the main process admits this build and host', async () => {
+    window.api.platform = 'win32'
+    window.api.settings.getWsl2BashPreviewStatus = vi.fn().mockResolvedValue({
+      available: true,
+      reason: 'available'
+    })
+
+    await render()
+
+    expect(container.querySelector('[data-testid="wsl2-preview-section"]')).not.toBeNull()
+  })
+
+  it('leaves the runtime UI unchanged when main rejects the Preview', async () => {
+    window.api.platform = 'win32'
+    window.api.settings.getWsl2BashPreviewStatus = vi.fn().mockResolvedValue({
+      available: false,
+      reason: 'build-disabled'
+    })
+
+    await render()
+
+    expect(container.querySelector('[data-testid="wsl2-preview-section"]')).toBeNull()
+  })
+
   it('shows the network protection entry only when Settings provides its route', async () => {
     const onOpenNetworkProtection = vi.fn()
     ;(window.api as unknown as { settings: unknown }).settings = {

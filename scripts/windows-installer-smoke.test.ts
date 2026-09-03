@@ -79,7 +79,11 @@ describe('Windows installer smoke plan', () => {
   it('parses an optional positive released migration count', () => {
     expect(parseArguments(['--installer-dir', 'dist'])).toMatchObject({
       artifactRpcContract: 'reservation',
-      expectedMigrationCount: undefined
+      expectedMigrationCount: undefined,
+      retainInstallation: false
+    })
+    expect(parseArguments(['--installer-dir', 'dist', '--retain-installation'])).toMatchObject({
+      retainInstallation: true
     })
     expect(
       parseArguments([
@@ -288,7 +292,16 @@ describe('Windows installer smoke plan', () => {
           launchInstalledApp: false
         }
       ],
-      [{ installer: 'current.exe', phase: 'restart' }]
+      [{ installer: 'current.exe', phase: 'restart', reuseInstallation: true }]
+    ])
+  })
+
+  it('installs, initializes, redetects, and restarts a current-only packaged app', () => {
+    expect(
+      buildSmokePlan({ currentInstaller: 'current.exe', previousInstaller: undefined })
+    ).toEqual([
+      { installer: 'current.exe', phase: 'current' },
+      { installer: 'current.exe', phase: 'restart', reuseInstallation: true }
     ])
   })
 
@@ -637,6 +650,7 @@ Open Science Web: http://127.0.0.1:52378/?token=iUFHGSACwBz2k1kSJfPixHbclDywVg0C
       join(installDirectory, 'open-science.exe'),
       join(installDirectory, 'resources', 'app.asar'),
       join(installDirectory, 'resources', 'micromamba.exe'),
+      join(installDirectory, 'resources', 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
       join(
         installDirectory,
         'resources',
@@ -657,10 +671,20 @@ Open Science Web: http://127.0.0.1:52378/?token=iUFHGSACwBz2k1kSJfPixHbclDywVg0C
       writeFile(join(installDirectory, 'open-science.exe'), ''),
       writeFile(join(resources, 'app.asar'), ''),
       writeFile(join(resources, 'micromamba.exe'), ''),
+      mkdir(join(resources, 'notebook-network-sandbox', 'wsl2'), { recursive: true }).then(() =>
+        writeFile(
+          join(resources, 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
+          JSON.stringify({
+            schemaVersion: 1,
+            appVersion: '0.24.0',
+            assets: ['wsl2-execution-wrapper-v1', 'wsl2-exact-cleanup-v1', 'wsl2-network-bridge-v1']
+          })
+        )
+      ),
       writeFile(join(prismaClient, 'query_engine-windows.dll.node'), '')
     ])
 
-    await expect(assertPackagedResources(installDirectory)).resolves.toBeUndefined()
+    await expect(assertPackagedResources(installDirectory, '0.24.0')).resolves.toBeUndefined()
     await writeFile(join(prismaClient, 'libquery_engine-debian-openssl-3.0.x.so.node'), '')
     await expect(assertPackagedResources(installDirectory)).rejects.toThrow(
       /exactly one Prisma engine/

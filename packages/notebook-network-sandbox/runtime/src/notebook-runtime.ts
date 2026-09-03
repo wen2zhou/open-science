@@ -13,7 +13,6 @@ import { ViolationLog } from './gateway/violation-log.js'
 import { checkLinuxTools, linuxLaunch } from './platform/linux-isolation.js'
 import { macosLaunch } from './platform/macos-isolation.js'
 import { wsl2Launch } from './platform/wsl2-isolation.js'
-import { assertWsl2BashDevelopmentEnabled } from './wsl2-development-gate.js'
 import {
   checkWindowsAppContainer,
   installWindowsAppContainer,
@@ -203,7 +202,6 @@ const wrap = async (
   const config = runtimeConfig
   if (!config) throw new Error('Notebook process runtime is not initialized.')
   const target = request.target ?? { kind: 'native' }
-  if (target.kind === 'wsl2') assertWsl2BashDevelopmentEnabled()
   const filesystem = normalizeFilesystemLayout({
     ...request.filesystem,
     ...((process.platform === 'darwin' || process.platform === 'linux') &&

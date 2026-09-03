@@ -2,8 +2,6 @@ import { homedir } from 'node:os'
 import { readFile, stat } from 'node:fs/promises'
 import { join } from 'node:path'
 
-import { assertWsl2BashDevelopmentEnabled } from '@aipoch/notebook-network-sandbox'
-
 import type { CloseActionPreference } from '../../shared/window-controls'
 import type {
   ClaudeDetectResult,
@@ -97,6 +95,8 @@ import type {
   WslSetupSnapshot,
   WslSupportHandoff
 } from '../../shared/wsl-setup'
+import type { Wsl2BashPreviewStatus } from '../../shared/wsl-setup'
+import { wsl2BashPreviewStatus } from '../wsl/wsl2-preview-gate'
 import type { GrantedLocalRoot } from '../../shared/local-fs'
 import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement } from '../../shared/notebook-runtime'
@@ -232,6 +232,7 @@ export type SettingsServiceOptions = {
     createSupportHandoff(): Promise<WslSupportHandoff>
     requireLatestReadySelection(): Promise<WslSelection>
   }
+  wsl2PreviewStatus?: () => Wsl2BashPreviewStatus
   // Encrypted-token controller for claude-isolated; default-constructed against this.configRoot
   // when omitted. Storage is delegated to the host's SettingsRepository + encrypt/tryDecryptKey
   // pipeline, mirroring how CodexAuthController delegates to openCodexAuthSession.
@@ -262,6 +263,7 @@ class SettingsService {
   private readonly installNotebookNetworkImpl: () => Promise<{ cancelled: boolean }>
   private readonly removeNotebookNetworkImpl: () => Promise<{ cancelled: boolean }>
   private readonly wslSetup?: SettingsServiceOptions['wslSetup']
+  private readonly wsl2PreviewStatus: () => Wsl2BashPreviewStatus
   private readonly userClaudeDir: string
   private readonly log: Logger
   private customServerAuthenticator?: (serverId: string) => Promise<void>
@@ -325,6 +327,7 @@ class SettingsService {
         throw new Error('Notebook network sandbox removal is unavailable.')
       })
     this.wslSetup = options.wslSetup
+    this.wsl2PreviewStatus = options.wsl2PreviewStatus ?? wsl2BashPreviewStatus
     this.log = options.log ?? createLogger('settings')
     this.preferences = new SettingsPreferencesModule(this.repository)
     this.notebookRuntimeSettings = new NotebookRuntimeSettingsModule(this.repository)
@@ -509,31 +512,37 @@ class SettingsService {
   }
 
   probeWslSetup(): Promise<WslSetupSnapshot> {
+    this.requireWsl2Preview()
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.probe()
   }
 
   installWslPlatform(): Promise<WslPlatformInstallResult> {
+    this.requireWsl2Preview()
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.installPlatform()
   }
 
   selectWslProfile(request: SelectWslProfileRequest): Promise<WslSetupSnapshot> {
+    this.requireWsl2Preview()
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.select(request)
   }
 
   installRecommendedWslDistro(): Promise<WslSetupSnapshot> {
+    this.requireWsl2Preview()
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.installRecommendedDistro()
   }
 
   openWslTerminal(request: OpenWslTerminalRequest): Promise<WslSetupSnapshot> {
+    this.requireWsl2Preview()
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.openTerminal(request)
   }
 
   createWslSupportHandoff(): Promise<WslSupportHandoff> {
+    this.requireWsl2Preview()
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.createSupportHandoff()
   }
@@ -559,7 +568,7 @@ class SettingsService {
     result: UseWsl2BashResult
     mutation: LocalShellRuntimeMutation
   }> {
-    assertWsl2BashDevelopmentEnabled()
+    this.requireWsl2Preview()
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     const selection = await this.wslSetup.requireLatestReadySelection()
     const write = await this.repository.setLocalShellRuntime('wsl2-bash', selection)
@@ -571,6 +580,16 @@ class SettingsService {
       }),
       mutation: write.mutation
     })
+  }
+
+  getWsl2BashPreviewStatus(): Wsl2BashPreviewStatus {
+    return this.wsl2PreviewStatus()
+  }
+
+  private requireWsl2Preview(): void {
+    if (!this.wsl2PreviewStatus().available) {
+      throw new Error('Notebook WSL2 Bash Preview is unavailable.')
+    }
   }
 
   async getLocalShellRuntimePreference(): Promise<LocalShellRuntimePreference | undefined> {

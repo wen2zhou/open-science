@@ -5,15 +5,13 @@ import { join } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it, vi } from 'vitest'
 
-import { isWsl2BashDevelopmentEnabled } from '@aipoch/notebook-network-sandbox'
 import { DEFAULT_NOTEBOOK_NETWORK_SETTINGS } from '../../shared/notebook-network'
 import { NotebookNetworkSandboxOwner } from './network-sandbox-owner'
 import { runShellCommand } from './shell-process'
 
 const distro = process.env.OPEN_SCIENCE_WSL_DISTRO
 const user = process.env.OPEN_SCIENCE_WSL_USER
-const enabled =
-  process.platform === 'win32' && Boolean(distro && user) && isWsl2BashDevelopmentEnabled()
+const enabled = process.platform === 'win32' && Boolean(distro && user)
 
 describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
   let root = ''

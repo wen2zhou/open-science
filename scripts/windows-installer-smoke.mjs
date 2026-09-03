@@ -96,9 +96,12 @@ const buildSmokePlan = ({ currentInstaller, previousInstaller }) => [
           runningInstaller: currentInstaller,
           launchInstalledApp: false
         },
-        { installer: currentInstaller, phase: 'restart' }
+        { installer: currentInstaller, phase: 'restart', reuseInstallation: true }
       ]
-    : [{ installer: currentInstaller, phase: 'current' }])
+    : [
+        { installer: currentInstaller, phase: 'current' },
+        { installer: currentInstaller, phase: 'restart', reuseInstallation: true }
+      ])
 ]
 
 const executeSmokePlan = async (plan, runCycle) => {
@@ -378,6 +381,7 @@ const packagedResourcePaths = (installDirectory) => [
   join(installDirectory, APP_EXECUTABLE),
   join(installDirectory, 'resources', 'app.asar'),
   join(installDirectory, 'resources', 'micromamba.exe'),
+  join(installDirectory, 'resources', 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
   join(
     installDirectory,
     'resources',
@@ -733,7 +737,7 @@ const windowsProfileEnvironment = (profileDirectory, baseEnvironment = process.e
   }
 }
 
-const assertPackagedResources = async (installDirectory) => {
+const assertPackagedResources = async (installDirectory, expectedVersion) => {
   for (const path of packagedResourcePaths(installDirectory)) {
     if (!(await pathExists(path))) throw new Error(`Packaged Windows resource is missing: ${path}`)
   }
@@ -744,6 +748,25 @@ const assertPackagedResources = async (installDirectory) => {
   )
   if (nativeEngines.length !== 1 || nativeEngines[0] !== 'query_engine-windows.dll.node') {
     throw new Error(`Packaged Windows must contain exactly one Prisma engine in ${prismaRoot}.`)
+  }
+  const wslManifest = JSON.parse(
+    await readFile(
+      join(installDirectory, 'resources', 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
+      'utf8'
+    )
+  )
+  const requiredWslAssets = [
+    'wsl2-execution-wrapper-v1',
+    'wsl2-exact-cleanup-v1',
+    'wsl2-network-bridge-v1'
+  ]
+  if (
+    wslManifest.schemaVersion !== 1 ||
+    (expectedVersion && wslManifest.appVersion !== expectedVersion) ||
+    !Array.isArray(wslManifest.assets) ||
+    requiredWslAssets.some((asset) => !wslManifest.assets.includes(asset))
+  ) {
+    throw new Error('Packaged Windows WSL2 sandbox assets are missing or version-mismatched.')
   }
 }
 
@@ -984,15 +1007,20 @@ const installAndProbe = async ({
   installer,
   installDirectory,
   phase,
+  reuseInstallation = false,
   env,
   legacyConfigRoots,
   artifactRpcContract,
   expectedMigrationCount,
   onSqliteVersion
 }) => {
-  console.log(`Smoke testing ${phase} installer: ${basename(installer)}`)
-  await runProcess(installer, ['/S', `/D=${installDirectory}`], { env })
-  await assertPackagedResources(installDirectory)
+  console.log(
+    `Smoke testing ${phase} ${reuseInstallation ? 'installed app' : 'installer'}: ${basename(installer)}`
+  )
+  if (!reuseInstallation) {
+    await runProcess(installer, ['/S', `/D=${installDirectory}`], { env })
+  }
+  await assertPackagedResources(installDirectory, installerVersion(installer))
   await runProcess(join(installDirectory, 'resources', 'micromamba.exe'), ['--version'], { env })
   if (phase === 'current')
     await runPackagedLocalRpcSmoke({ installDirectory, env, artifactRpcContract })
@@ -1033,7 +1061,7 @@ const installOverRunningApp = async ({
     throw error
   }
 
-  await assertPackagedResources(installDirectory)
+  await assertPackagedResources(installDirectory, installerVersion(installer))
   await runProcess(join(installDirectory, 'resources', 'micromamba.exe'), ['--version'], { env })
   if (phase === 'current')
     await runPackagedLocalRpcSmoke({ installDirectory, env, artifactRpcContract })
@@ -1250,7 +1278,7 @@ const parseArguments = (argv) => {
   const installerDirectory = valueFor('--installer-dir')
   if (!installerDirectory)
     throw new Error(
-      'Usage: --installer-dir <path> [--previous-installer-dir <path>] [--artifact-rpc-contract <legacy|reservation>] [--expected-migration-count <count>]'
+      'Usage: --installer-dir <path> [--previous-installer-dir <path>] [--artifact-rpc-contract <legacy|reservation>] [--expected-migration-count <count>] [--retain-installation]'
     )
   const artifactRpcContractIndex = argv.indexOf('--artifact-rpc-contract')
   const artifactRpcContract =
@@ -1283,7 +1311,8 @@ const parseArguments = (argv) => {
       : undefined,
     artifactRpcContract,
     expectedMigrationCount,
-    scenario
+    scenario,
+    retainInstallation: argv.includes('--retain-installation')
   }
 }
 
@@ -1431,8 +1460,14 @@ const main = async () => {
         specialPath: 'passed'
       }
     })
-    await uninstallAndVerify(installDirectory, env)
-    console.log('Windows installer smoke completed successfully.')
+    if (options.retainInstallation) {
+      console.log(
+        'Windows installer smoke completed successfully; installation retained for administrator-authorized teardown.'
+      )
+    } else {
+      await uninstallAndVerify(installDirectory, env)
+      console.log('Windows installer smoke completed successfully.')
+    }
   } catch (error) {
     primaryError = error
   }
@@ -1443,7 +1478,9 @@ const main = async () => {
   } catch (error) {
     sentinelCleanupError = error
   }
-  await cleanupSmokeRoot(root, primaryError ?? sentinelCleanupError)
+  if (!options.retainInstallation || primaryError || sentinelCleanupError) {
+    await cleanupSmokeRoot(root, primaryError ?? sentinelCleanupError)
+  }
   if (primaryError) throw primaryError
   if (sentinelCleanupError) throw sentinelCleanupError
 }
