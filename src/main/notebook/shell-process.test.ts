@@ -1,4 +1,5 @@
 import type { ChildProcess } from 'node:child_process'
+import { EventEmitter } from 'node:events'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -217,6 +218,64 @@ describe('notebook shell process behavior', () => {
         reaped: false
       })
     })
+  })
+
+  it('awaits exactly one structured cleanup when spawn throws synchronously', async () => {
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'os-shell-sync-spawn-cleanup-'))
+    let releaseCleanup: (() => void) | undefined
+    const cleanupGate = new Promise<void>((resolve) => {
+      releaseCleanup = resolve
+    })
+    const cleanup = vi.fn(async () => {
+      await cleanupGate
+      return {
+        processesTerminated: false,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      }
+    })
+    const endExecution = vi.fn()
+    const beginExecution = vi.fn(() => endExecution)
+    const processSandbox: NotebookProcessSandbox = {
+      wrap: vi.fn(async (invocation) => ({
+        executable: invocation.executable,
+        args: ['\0'],
+        env: invocation.env,
+        beginExecution,
+        annotateStderr: (stderr: string) => stderr,
+        cleanup
+      }))
+    }
+    let completed = false
+
+    const completion = runShellCommand({
+      command: 'echo unreachable',
+      cwd: process.cwd(),
+      handoffDir: process.cwd(),
+      runtimeRoot,
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      platform: process.platform,
+      processSandbox
+    }).then((result) => {
+      completed = true
+      return result
+    })
+
+    await vi.waitFor(() =>
+      expect(cleanup).toHaveBeenCalledWith('spawn-failed', { processesTerminated: false })
+    )
+    expect(completed).toBe(false)
+    expect(beginExecution).toHaveBeenCalledOnce()
+    expect(endExecution).toHaveBeenCalledOnce()
+    releaseCleanup?.()
+
+    const result = await completion
+    expect(result).toMatchObject({ exitCode: null })
+    expect(result.stderr).toContain('null bytes')
+    expect(cleanup).toHaveBeenCalledOnce()
+    expect(endExecution).toHaveBeenCalledOnce()
+    await rm(runtimeRoot, { recursive: true, force: true })
   })
 
   describe.runIf(process.platform !== 'win32')('process results', () => {

@@ -3248,7 +3248,7 @@ describe('NotebookKernelExecutor shutdown reaping', () => {
 const REPL_LOOP = join(__dirname, '../../../resources/notebook/repl_loop.js')
 
 const delayedSandboxCleanup = (
-  options: { executable?: string } = {}
+  options: { executable?: string; args?: string[] } = {}
 ): {
   processSandbox: NotebookProcessSandbox
   cleanup: ReturnType<typeof vi.fn>
@@ -3270,7 +3270,7 @@ const delayedSandboxCleanup = (
     processSandbox: {
       wrap: vi.fn(async (invocation) => ({
         executable: options.executable ?? invocation.executable,
-        args: invocation.args,
+        args: options.args ?? invocation.args,
         env: invocation.env,
         annotateStderr: (stderr: string) => stderr,
         cleanup
@@ -3446,6 +3446,47 @@ describe('NotebookKernelExecutor repl kind (real repl_loop.js)', () => {
       expect(completed).toBe(false)
       sandbox.release()
       await expect(execution).resolves.toMatchObject({ status: 'failed' })
+      expect(sandbox.cleanup).toHaveBeenCalledOnce()
+    } finally {
+      sandbox.release()
+      await executor.shutdown()
+    }
+  })
+
+  it('waits for exactly one sandbox cleanup when spawn throws synchronously', async () => {
+    cwdDir = await mkdtemp(join(tmpdir(), 'os-kernel-repl-sync-spawn-cleanup-'))
+    const sandbox = delayedSandboxCleanup({ args: ['\0'] })
+    const executor = new NotebookKernelExecutor({
+      replLoopPath: REPL_LOOP,
+      processSandbox: sandbox.processSandbox
+    })
+    let completed = false
+
+    try {
+      const execution = executor
+        .execute({
+          ...baseRequest(cwdDir),
+          code: 'return 1',
+          kind: 'repl',
+          sessionId: 'session-1',
+          projectId: 'project-1'
+        })
+        .then((result) => {
+          completed = true
+          return result
+        })
+
+      await vi.waitFor(() =>
+        expect(sandbox.cleanup).toHaveBeenCalledWith('spawn-failed', {
+          processesTerminated: false
+        })
+      )
+      expect(completed).toBe(false)
+      sandbox.release()
+
+      const result = await execution
+      expect(result).toMatchObject({ status: 'failed', kernelDispatched: false })
+      expect(result.stderr).toContain('null bytes')
       expect(sandbox.cleanup).toHaveBeenCalledOnce()
     } finally {
       sandbox.release()

@@ -1,10 +1,11 @@
-import { spawn, type ChildProcess } from 'node:child_process'
+import { spawn, type ChildProcess, type ChildProcessWithoutNullStreams } from 'node:child_process'
 import { dirname } from 'node:path'
 
 import { protectManagedRuntimeWrites } from './managed-runtime-guard'
 import type {
   NotebookProcessSandbox,
   NotebookSandboxCleanupReason,
+  NotebookSandboxCleanupResult,
   NotebookSandboxProcessOutcome
 } from './process-sandbox'
 import {
@@ -271,10 +272,23 @@ const runShellCommand = (
           ...(options.signal ? { signal: options.signal } : {})
         })
       : undefined
+    let sandboxCleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
+    const cleanupSandbox = (
+      reason: NotebookSandboxCleanupReason,
+      processOutcome: NotebookSandboxProcessOutcome
+    ): Promise<NotebookSandboxCleanupResult> =>
+      (sandboxCleanupPromise ??=
+        sandboxed?.cleanup(reason, processOutcome) ??
+        Promise.resolve({
+          processesTerminated: processOutcome.processesTerminated,
+          networkClosed: true,
+          temporaryResourcesRemoved: true
+        }))
     const endSandboxExecution = sandboxed?.beginExecution?.()
 
-    return new Promise((resolve) => {
-      const child = spawn(
+    let child: ChildProcessWithoutNullStreams
+    try {
+      child = spawn(
         sandboxed?.executable ?? invocation.executable,
         sandboxed?.args ?? invocation.args,
         {
@@ -285,8 +299,22 @@ const runShellCommand = (
           detached: platform !== 'win32'
         }
       )
-      if (platform !== 'win32' && process.platform !== 'win32') trackOwnedPosixProcessTree(child)
+    } catch (error) {
+      endSandboxExecution?.()
+      try {
+        await cleanupSandbox('spawn-failed', { processesTerminated: false })
+      } catch {
+        // Preserve the shell executor's never-reject contract and original spawn diagnostic.
+      }
+      return {
+        stdout: '',
+        stderr: error instanceof Error ? error.message : String(error),
+        exitCode: null
+      }
+    }
+    if (platform !== 'win32' && process.platform !== 'win32') trackOwnedPosixProcessTree(child)
 
+    return new Promise((resolve) => {
       let stdout = ''
       let stderr = ''
       let stdoutBytes = 0
@@ -311,7 +339,7 @@ const runShellCommand = (
         endSandboxExecution?.()
         const normalized = normalizePowerShellStderr(result.stderr)
         const stderr = sandboxed ? sandboxed.annotateStderr(normalized) : normalized
-        await sandboxed?.cleanup(cleanupReason, processOutcome)
+        await cleanupSandbox(cleanupReason, processOutcome)
         resolve({ ...result, stderr })
       }
 

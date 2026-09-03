@@ -32,7 +32,9 @@ type PosixProcessTable = Readonly<{
 
 type PosixProcessTracker = {
   leaderPid: number
-  leaderIdentity: PosixProcessIdentity | undefined
+  // undefined until the first complete sample, null once that sample proves the leader was already
+  // absent. Null is permanent: a later process with the same pid is an unowned replacement.
+  leaderIdentity: PosixProcessIdentity | null | undefined
   identities: Map<number, PosixProcessIdentity>
   complete: boolean
 }
@@ -312,6 +314,7 @@ const captureTrackedDescendants = (
 ): void => {
   tracker.complete &&= table.complete
   if (!table.complete) return
+  if (tracker.leaderIdentity === null) return
   const children = new Map<number, PosixProcessIdentity[]>()
   for (const process of table.processes.values()) {
     const siblings = children.get(process.ppid) ?? []
@@ -322,6 +325,7 @@ const captureTrackedDescendants = (
   if (tracker.leaderIdentity === undefined) {
     if (observedLeader === undefined) {
       tracker.complete = false
+      tracker.leaderIdentity = null
       return
     }
     tracker.leaderIdentity = observedLeader
@@ -635,7 +639,7 @@ const terminateTrackedPosixProcessTree = async (
 ): Promise<ProcessTreeKillResult> => {
   const gracefulSignal = signal ?? 'SIGTERM'
   const finalSample = await stopTrackedProcessTree(tracker)
-  if (process.platform !== 'linux' || !finalSample.complete) {
+  if (process.platform !== 'linux' || !finalSample.complete || tracker.leaderIdentity === null) {
     // The child handle is the only trustworthy identity on portable POSIX or after an incomplete
     // Linux snapshot. Kill it directly, but do not signal numeric descendant pids or groups.
     killDirectChild(child, gracefulSignal)

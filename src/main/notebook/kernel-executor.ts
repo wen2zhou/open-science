@@ -966,16 +966,26 @@ class NotebookKernelExecutor implements NotebookExecutor {
         }))
     const rpcTokenFileDescriptor =
       kind === 'repl' && this.platform === 'linux' && request.mcpRpcToken ? 3 : undefined
-    const child = spawn(
-      sandboxed?.executable ?? invocation.executable,
-      sandboxed?.args ?? invocation.args,
-      {
-        cwd: spawnCwd,
-        env: sandboxed?.env ?? spawnEnv,
-        detached: this.platform !== 'win32',
-        ...(rpcTokenFileDescriptor ? { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] } : {})
+    let child: ChildProcessWithoutNullStreams
+    try {
+      child = spawn(
+        sandboxed?.executable ?? invocation.executable,
+        sandboxed?.args ?? invocation.args,
+        {
+          cwd: spawnCwd,
+          env: sandboxed?.env ?? spawnEnv,
+          detached: this.platform !== 'win32',
+          ...(rpcTokenFileDescriptor ? { stdio: ['pipe', 'pipe', 'pipe', 'pipe'] } : {})
+        }
+      )
+    } catch (error) {
+      try {
+        await cleanupSandbox('spawn-failed', { processesTerminated: false })
+      } catch {
+        // Preserve the original synchronous spawn failure; cleanup is best-effort but awaited.
       }
-    )
+      throw error
+    }
     if (this.platform !== 'win32' && this.canTrackPosixProcesses)
       this.registerOwnedProcessGroup(child)
     if (rpcTokenFileDescriptor) {

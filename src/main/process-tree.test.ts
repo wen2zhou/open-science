@@ -261,6 +261,27 @@ describe('terminateProcessTree (posix)', () => {
     expect(killSpy).not.toHaveBeenCalledWith(-1000, 'SIGTERM')
   })
 
+  it('never adopts a leader pid that first appears after a complete sample found it missing', async () => {
+    setPlatform('linux')
+    readdirMock.mockResolvedValueOnce(['1001']).mockResolvedValueOnce(['1000'])
+    readFileMock
+      .mockResolvedValueOnce(linuxStat(1001, 1, 1001, 1001, 101))
+      .mockResolvedValueOnce(linuxStat(1000, 1, 1000, 1000, 200))
+    const killSpy = vi.spyOn(process, 'kill')
+    const child = new FakeChild(1000)
+
+    trackOwnedPosixProcessTree(child as never)
+    await vi.waitFor(() => expect(readFileMock).toHaveBeenCalledTimes(1))
+
+    const pending = terminateProcessTree(child as never)
+    await vi.waitFor(() => expect(child.kill).toHaveBeenCalledWith('SIGTERM'))
+    child.emit('exit', 0, null)
+
+    await expect(pending).resolves.toEqual({ reaped: false })
+    expect(killSpy).not.toHaveBeenCalledWith(1000, 'SIGTERM')
+    expect(killSpy).not.toHaveBeenCalledWith(-1000, 'SIGTERM')
+  })
+
   it('does not signal a replacement that reused a tracked pid within the same second', async () => {
     setPlatform('linux')
     readdirMock.mockResolvedValueOnce(['1000', '1001']).mockResolvedValueOnce(['1001'])
