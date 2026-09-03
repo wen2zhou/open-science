@@ -61,6 +61,7 @@ const expectedChannels = [
   'settings:preview-agent-home-skill',
   'settings:preview-github-skill',
   'settings:preview-skill-zip',
+  'settings:probe-wsl-setup',
   'settings:refresh-provider-models',
   'settings:scan-repo-skills',
   'settings:save-github-token',
@@ -75,6 +76,7 @@ const expectedChannels = [
   'settings:set-notebook-network',
   'settings:set-project-files-filter',
   'settings:set-reviewer-model',
+  'settings:select-wsl-profile',
   'settings:set-session-details-model',
   'settings:set-subagent-model',
   'settings:set-vision-model',
@@ -218,6 +220,33 @@ describe('Settings core application commands', () => {
       )
     ).resolves.toBe(savedNetwork)
     expect(published).toEqual([currentSnapshot])
+  })
+
+  it('routes local WSL setup commands through the Settings owner', async () => {
+    const { dependencies, serviceMethod } = createDependencies()
+    const snapshot = { state: 'ready', distros: [], operationReference: 'wsl-setup-1' }
+    serviceMethod('probeWslSetup').mockResolvedValue(snapshot)
+    serviceMethod('selectWslProfile').mockResolvedValue(snapshot)
+    const router = createApplicationCommandRouter()
+    registerCoreSettingsApplicationCommands(router.registrar, dependencies)
+
+    await expect(
+      router.dispatcher.invoke(
+        settingsCoreApplicationCommands.probeWslSetup,
+        invocation([] as const)
+      )
+    ).resolves.toBe(snapshot)
+    await expect(
+      router.dispatcher.invoke(
+        settingsCoreApplicationCommands.selectWslProfile,
+        invocation([{ distro: 'Ubuntu-24.04', user: 'scientist' }] as const)
+      )
+    ).resolves.toBe(snapshot)
+    expect(serviceMethod('probeWslSetup')).toHaveBeenCalledOnce()
+    expect(serviceMethod('selectWslProfile')).toHaveBeenCalledWith({
+      distro: 'Ubuntu-24.04',
+      user: 'scientist'
+    })
   })
 
   it('installs the exact command inventory and dispatches a remote-safe preflight query', async () => {

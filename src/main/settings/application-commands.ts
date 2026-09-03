@@ -26,6 +26,7 @@ import type {
   SetVisionModelRequest,
   ValidateProviderRequest
 } from '../../shared/settings'
+import type { SelectWslProfileRequest } from '../../shared/wsl-setup'
 import {
   defineApplicationCommand,
   defineApplicationCommandGroup,
@@ -81,6 +82,7 @@ type CoreSettingsCommandStore = Pick<
   | 'previewAgentHomeSkill'
   | 'previewGitHubSkill'
   | 'previewSkillZip'
+  | 'probeWslSetup'
   | 'refreshProviderModels'
   | 'scanRepoSkills'
   | 'saveGitHubToken'
@@ -94,6 +96,7 @@ type CoreSettingsCommandStore = Pick<
   | 'setNotebookNetwork'
   | 'setProjectFilesFilter'
   | 'setReviewerModel'
+  | 'selectWslProfile'
   | 'setSessionDetailsModel'
   | 'setSubagentModel'
   | 'setVisionModel'
@@ -255,6 +258,11 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [request: PreviewSkillZipRequest],
     StoreResult<'previewSkillZip'>
   >('settings:preview-skill-zip'),
+  probeWslSetup: defineApplicationCommand<
+    'settings:probe-wsl-setup',
+    readonly [],
+    StoreResult<'probeWslSetup'>
+  >('settings:probe-wsl-setup'),
   refreshProviderModels: defineApplicationCommand<
     'settings:refresh-provider-models',
     readonly [request: RefreshProviderModelsRequest],
@@ -325,6 +333,11 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [request: SetReviewerModelRequest],
     StoreResult<'setReviewerModel'>
   >('settings:set-reviewer-model'),
+  selectWslProfile: defineApplicationCommand<
+    'settings:select-wsl-profile',
+    readonly [request: SelectWslProfileRequest],
+    StoreResult<'selectWslProfile'>
+  >('settings:select-wsl-profile'),
   setSessionDetailsModel: defineApplicationCommand<
     'settings:set-session-details-model',
     readonly [request: SetSessionDetailsModelRequest],
@@ -378,6 +391,7 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
   settingsCoreApplicationCommands.previewAgentHomeSkill,
   settingsCoreApplicationCommands.previewGitHubSkill,
   settingsCoreApplicationCommands.previewSkillZip,
+  settingsCoreApplicationCommands.probeWslSetup,
   settingsCoreApplicationCommands.refreshProviderModels,
   settingsCoreApplicationCommands.scanRepoSkills,
   settingsCoreApplicationCommands.saveGitHubToken,
@@ -392,6 +406,7 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
   settingsCoreApplicationCommands.setNotebookNetwork,
   settingsCoreApplicationCommands.setProjectFilesFilter,
   settingsCoreApplicationCommands.setReviewerModel,
+  settingsCoreApplicationCommands.selectWslProfile,
   settingsCoreApplicationCommands.setSessionDetailsModel,
   settingsCoreApplicationCommands.setSubagentModel,
   settingsCoreApplicationCommands.setVisionModel,
@@ -499,6 +514,10 @@ const registerCoreSettingsApplicationCommands = (
       'settings:preview-github-skill': ({ args }) =>
         dependencies.service.previewGitHubSkill(args[0]),
       'settings:preview-skill-zip': ({ args }) => dependencies.service.previewSkillZip(args[0]),
+      'settings:probe-wsl-setup': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:probe-wsl-setup')
+        return dependencies.service.probeWslSetup()
+      },
       'settings:refresh-provider-models': ({ args }) =>
         dependencies.snapshotCommits.projectAfter(
           dependencies.service.refreshProviderModels(args[0])
@@ -570,6 +589,10 @@ const registerCoreSettingsApplicationCommands = (
         dependencies.snapshotCommits.currentSnapshotAfter(
           dependencies.service.setReviewerModel(readReviewerModel(args[0]))
         ),
+      'settings:select-wsl-profile': ({ args, callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:select-wsl-profile')
+        return dependencies.service.selectWslProfile(args[0])
+      },
       'settings:set-session-details-model': ({ args }) =>
         dependencies.snapshotCommits.currentSnapshotAfter(
           dependencies.service.setSessionDetailsModel(readSessionDetailsModel(args[0]))
