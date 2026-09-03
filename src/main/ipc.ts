@@ -272,7 +272,8 @@ import { LocalFsService } from './local-fs/service'
 import { SettingsService } from './settings/service'
 import { SettingsRepository } from './settings/repository'
 import { WslSetupOwner } from './wsl/wsl-setup-owner'
-import { initializeWsl2BashPreview } from './wsl/wsl2-preview-gate'
+import { initializeWsl2BashPreview, wsl2BashPreviewStatus } from './wsl/wsl2-preview-gate'
+import { runPackagedWsl2RestartCertification } from './wsl/wsl2-packaged-restart-certification'
 import { resolveConfiguredShellRuntimeBinding } from './notebook/configured-shell-runtime'
 import { probeWindowsVolume } from './wsl/windows-volume-probe'
 import { SettingsSnapshotCommitOwner } from './settings/settings-snapshot-commit-owner'
@@ -707,6 +708,16 @@ const createApplicationModules = async (
   const storedSettings = await settingsService.getStoredSettings()
   const storageLog = createLogger('storage')
   await networkProxyRuntime.apply(storedSettings.networkProxy)
+  await runPackagedWsl2RestartCertification({
+    appPackaged: app.isPackaged,
+    headless,
+    platform: process.platform,
+    arch: process.arch,
+    previewAvailable: wsl2BashPreviewStatus().available,
+    storageRoot: resolveStorageRoot(),
+    environment: process.env,
+    processSandbox: notebookNetworkSandbox
+  })
   // Prime the data-root cache from settings before any data repository is constructed below. A change
   // to this value only takes effect after a restart, so reading it once here is sufficient.
   initDataRoot(storedSettings.dataRoot)

@@ -22,6 +22,8 @@ import { notebookWorkloadCacheEnv } from './notebook-workload-cache-paths'
 
 afterEach(() => vi.unstubAllEnvs())
 
+const previewAvailable = (): boolean => true
+
 describe('notebook shell process behavior', () => {
   describe('invocation', () => {
     it('uses a POSIX sh command on Unix platforms', () => {
@@ -154,7 +156,8 @@ describe('notebook shell process behavior', () => {
           distro: 'Ubuntu-22.04',
           user: 'researcher'
         },
-        processSandbox
+        processSandbox,
+        previewAvailable
       })
 
       expect(result).toEqual({
@@ -239,7 +242,8 @@ describe('notebook shell process behavior', () => {
             distro: 'Ubuntu-22.04',
             user: 'researcher'
           },
-          processSandbox
+          processSandbox,
+          previewAvailable
         })
       ).resolves.toEqual({
         stdout: '',
@@ -278,7 +282,8 @@ describe('notebook shell process behavior', () => {
             distro: 'Ubuntu-22.04',
             user: 'researcher'
           },
-          processSandbox
+          processSandbox,
+          previewAvailable
         })
       ).resolves.toMatchObject({
         exitCode: null,
@@ -381,6 +386,7 @@ describe('notebook shell process behavior', () => {
           platform: 'win32',
           runtimeBinding,
           processSandbox,
+          previewAvailable,
           terminateTree: async () => ({ reaped: true })
         })
         return result.stderr
@@ -604,7 +610,8 @@ describe('notebook shell process behavior', () => {
           distro: 'Ubuntu-22.04',
           user: 'researcher'
         },
-        processSandbox
+        processSandbox,
+        previewAvailable
       })
     ).resolves.toMatchObject({ cancelled: true, exitCode: null })
     expect(beginSpawn).not.toHaveBeenCalled()
@@ -697,6 +704,7 @@ describe('notebook shell process behavior', () => {
             user: 'researcher'
           },
           processSandbox,
+          previewAvailable,
           terminateTree: async () => ({ reaped: true })
         })
       ).resolves.toEqual({ stdout: 'finished', stderr: '', exitCode: 0 })

@@ -33,19 +33,27 @@ names, full host paths, credentials, user commands, and command output.
 | Field                             | Value                                                                          |
 | --------------------------------- | ------------------------------------------------------------------------------ |
 | Installer                         | `aipoch-open-science-0.24.0-win-x64-setup.exe`                                 |
-| Size                              | 193,853,156 bytes                                                              |
-| SHA-256                           | `752C21CE388C17343A0D6C944E5E48E16A00C3C87D3DE6793D9364134E6B7DA4`             |
+| Size                              | 194,280,037 bytes                                                              |
+| SHA-256                           | `ECABCAB4706B72EB7B6E1CAFDFB006CE9DDE7C7B716BDA6EBCD58CF67061A0B5`             |
 | Packaged Preview manifest         | Schema 1; app version 0.24.0                                                   |
 | Required asset identities         | `wsl2-execution-wrapper-v1`, `wsl2-exact-cleanup-v1`, `wsl2-network-bridge-v1` |
 | Packaged micromamba               | 2.8.1                                                                          |
 | Packaged compatibility micromamba | 1.5.12                                                                         |
 
-The Windows installer smoke passed installation, packaged-resource and app-version validation,
-local RPC, first initialization, runtime redetection, one installed-app restart, fresh and legacy
-database opens, and paths containing spaces and non-ASCII characters. The smoke used its explicit
-retention mode because AppContainer teardown requires interactive UAC approval. Its test-owned
-installation files and registration were removed after evidence collection; administrator-only
-AppContainer cleanup remains a host limitation and is not part of the WSL2 Preview verdict.
+The exact Windows installer smoke passed installation, packaged-resource and app-version
+validation, local RPC, first initialization, runtime redetection, installed-app restart, fresh and
+legacy database opens, and paths containing spaces and non-ASCII characters. After the first
+packaged launch, the smoke created one exact schema-v1 WSL2 command temporary root and matching
+ownership receipt. The next installed-app restart ran the packaged main process's real
+`NotebookNetworkSandboxOwner` reconciliation and removed both pieces of matching evidence without
+spawning a user command. A separate malformed receipt then made packaged startup fail closed during
+sandbox preparation and remained intact; removing only that test-owned malformed evidence restored
+a healthy restart.
+
+The smoke used its explicit retention mode because AppContainer teardown requires interactive UAC
+approval. Its test-owned installation files and registration were removed after evidence
+collection; administrator-only AppContainer cleanup remains a host limitation and is not part of
+the WSL2 Preview verdict.
 
 ## Gate A evidence
 

@@ -345,6 +345,9 @@ const registerSettingsIpcHandlers = ({
   ipcMainHandle('settings:get-package-mirror', () => service.getPackageMirror())
   ipcMainHandle('settings:get-notebook-network-status', () => service.getNotebookNetworkStatus())
   ipcMainHandle('settings:get-wsl2-bash-preview-status', () => service.getWsl2BashPreviewStatus())
+  ipcMainHandle('settings:get-local-shell-runtime-preference', () =>
+    service.getLocalShellRuntimePreference()
+  )
   ipcMainHandle('settings:probe-wsl-setup', () => service.probeWslSetup())
   ipcMainHandle('settings:install-wsl-platform', () => service.installWslPlatform())
   ipcMainHandle('settings:create-wsl-support-handoff', () => service.createWslSupportHandoff())

@@ -124,6 +124,25 @@ afterEach(() => {
 })
 
 describe('WslLocalShellSection', () => {
+  it('offers only explicit PowerShell recovery when Preview admission is unavailable', async () => {
+    await act(async () => root.render(<WslLocalShellSection previewAvailable={false} />))
+    await flush()
+
+    expect(probe).not.toHaveBeenCalled()
+    expect(container.textContent).toContain('WSL2 Bash Preview is unavailable')
+    expect(container.textContent).not.toContain('Check again')
+    expect(container.textContent).not.toContain('Use WSL2 Bash')
+
+    const button = [...container.querySelectorAll('button')].find((candidate) =>
+      candidate.textContent?.includes('Switch to PowerShell')
+    )
+    await act(async () => button?.click())
+    await flush()
+
+    expect(switchToPowerShell).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('Future Shell commands will use PowerShell')
+  })
+
   it('explicitly switches only future Shell commands to PowerShell and never retries failed work', async () => {
     probe.mockResolvedValue({
       state: 'failed',

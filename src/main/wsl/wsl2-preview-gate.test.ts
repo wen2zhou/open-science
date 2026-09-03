@@ -4,9 +4,16 @@ import { tmpdir } from 'node:os'
 
 import { describe, expect, it } from 'vitest'
 
-import { evaluateWsl2BashPreview } from './wsl2-preview-gate'
+import { evaluateWsl2BashPreview, wsl2BashPreviewStatus } from './wsl2-preview-gate'
 
 describe('WSL2 Bash Preview admission', () => {
+  it('starts unavailable until the main process initializes the packaged gate', () => {
+    expect(wsl2BashPreviewStatus()).toEqual({
+      available: false,
+      reason: 'not-initialized'
+    })
+  })
+
   it.each([
     ['linux', 'x64', 'unsupported-platform'],
     ['win32', 'arm64', 'unsupported-architecture']
@@ -25,6 +32,17 @@ describe('WSL2 Bash Preview admission', () => {
         packaged: false
       })
     ).toEqual({ available: false, reason: 'build-disabled' })
+  })
+
+  it('rejects unpackaged Windows x64 builds outside the certified boundary', () => {
+    expect(
+      evaluateWsl2BashPreview({
+        platform: 'win32',
+        arch: 'x64',
+        buildEnabled: true,
+        packaged: false
+      })
+    ).toEqual({ available: false, reason: 'unpackaged-build' })
   })
 
   it('admits a packaged Windows x64 build only with matching versioned assets', async () => {

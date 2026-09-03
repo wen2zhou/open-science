@@ -12,6 +12,7 @@ import { runShellCommand } from './shell-process'
 const distro = process.env.OPEN_SCIENCE_WSL_DISTRO
 const user = process.env.OPEN_SCIENCE_WSL_USER
 const enabled = process.platform === 'win32' && Boolean(distro && user)
+const previewAvailable = (): boolean => true
 
 describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
   let root = ''
@@ -80,6 +81,7 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
         user: user!
       },
       processSandbox: sandbox,
+      previewAvailable,
       terminateTree: async () => ({ reaped: true })
     })
 
@@ -127,6 +129,7 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
           user: user!
         },
         processSandbox: sandbox,
+        previewAvailable,
         // The WSL adapter owns exact guest cleanup; host taskkill is not authoritative here.
         terminateTree: async () => ({ reaped: false })
       })
@@ -157,6 +160,7 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
         user: user!
       },
       processSandbox: sandbox,
+      previewAvailable,
       terminateTree: async () => ({ reaped: true })
     })
     expect(allowed).toMatchObject({ exitCode: 0, stdout: 'wsl-gateway-ok' })
@@ -177,6 +181,7 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
         user: user!
       },
       processSandbox: sandbox,
+      previewAvailable,
       terminateTree: async () => ({ reaped: true })
     })
     expect(denied.exitCode).not.toBe(0)
@@ -200,6 +205,7 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
         user: user!
       },
       processSandbox: sandbox,
+      previewAvailable,
       terminateTree: async () => ({ reaped: true })
     })
     expect(direct.exitCode).not.toBe(0)
@@ -223,6 +229,7 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
         user: user!
       },
       processSandbox: sandbox,
+      previewAvailable,
       terminateTree: async () => ({ reaped: true })
     })
     expect(protectedDestinations.exitCode).toBe(0)

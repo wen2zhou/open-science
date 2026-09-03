@@ -28,6 +28,7 @@ export type Wsl2BashPreviewStatus = Readonly<{
     | 'build-disabled'
     | 'unsupported-platform'
     | 'unsupported-architecture'
+    | 'unpackaged-build'
     | 'assets-unavailable'
     | 'not-initialized'
 }>

@@ -90,13 +90,14 @@ const buildSmokePlan = ({ currentInstaller, previousInstaller }) => [
     ? [
         { installer: previousInstaller, phase: 'previous' },
         { installer: currentInstaller, phase: 'current', runningInstaller: previousInstaller },
+        { installer: currentInstaller, phase: 'restart', reuseInstallation: true },
         {
           installer: previousInstaller,
           phase: 'rollback',
           runningInstaller: currentInstaller,
           launchInstalledApp: false
         },
-        { installer: currentInstaller, phase: 'restart', reuseInstallation: true }
+        { installer: currentInstaller, phase: 'current', runningInstaller: previousInstaller }
       ]
     : [
         { installer: currentInstaller, phase: 'current' },
@@ -737,6 +738,26 @@ const windowsProfileEnvironment = (profileDirectory, baseEnvironment = process.e
   }
 }
 
+const createWslCommandTempEvidence = async ({ ownerRoot, profile, malformed }) => {
+  const id = randomUUID()
+  const root = join(ownerRoot, `command-${id}`)
+  const receipt = join(ownerRoot, `command-${id}.receipt`)
+  await mkdir(root, { recursive: true })
+  await writeFile(join(root, 'left-by-prior-process'), 'certification')
+  await writeFile(
+    receipt,
+    malformed
+      ? 'malformed ownership evidence\n'
+      : `v1 command-${id} wsl2 ${encodeURIComponent(profile.profileId)} ${encodeURIComponent(profile.distro)} ${encodeURIComponent(profile.user)}\n`
+  )
+  return { id, root, receipt }
+}
+
+const removeWslCommandTempEvidence = async ({ root, receipt }) => {
+  await rm(root, { recursive: true, force: true })
+  await rm(receipt, { force: true })
+}
+
 const assertPackagedResources = async (installDirectory, expectedVersion) => {
   for (const path of packagedResourcePaths(installDirectory)) {
     if (!(await pathExists(path))) throw new Error(`Packaged Windows resource is missing: ${path}`)
@@ -755,16 +776,22 @@ const assertPackagedResources = async (installDirectory, expectedVersion) => {
       'utf8'
     )
   )
-  const requiredWslAssets = [
-    'wsl2-execution-wrapper-v1',
-    'wsl2-exact-cleanup-v1',
-    'wsl2-network-bridge-v1'
-  ]
+  const certifiedWslManifest = JSON.parse(
+    await readFile(
+      join(
+        process.cwd(),
+        'packages',
+        'notebook-network-sandbox',
+        'vendor',
+        'wsl2',
+        'manifest.json'
+      ),
+      'utf8'
+    )
+  )
   if (
-    wslManifest.schemaVersion !== 1 ||
-    (expectedVersion && wslManifest.appVersion !== expectedVersion) ||
-    !Array.isArray(wslManifest.assets) ||
-    requiredWslAssets.some((asset) => !wslManifest.assets.includes(asset))
+    (expectedVersion && certifiedWslManifest.appVersion !== expectedVersion) ||
+    JSON.stringify(wslManifest) !== JSON.stringify(certifiedWslManifest)
   ) {
     throw new Error('Packaged Windows WSL2 sandbox assets are missing or version-mismatched.')
   }
@@ -917,7 +944,23 @@ const assertDatabaseDowngradeBlocked = ({ becameHealthy, output }) => {
   }
 }
 
-const launchAndExpectDatabaseBlocked = async ({ installDirectory, env }) => {
+const assertWsl2RestartCleanupBlocked = ({ becameHealthy, output }) => {
+  if (becameHealthy) {
+    throw new Error(`Malformed WSL2 receipt unexpectedly became healthy.\n${output}`)
+  }
+  // Production startup logs intentionally redact exception messages. Pin the failure to the
+  // sandbox preparation phase here; the caller separately proves that the malformed evidence was
+  // retained and that removing only that evidence makes the same packaged app healthy again.
+  if (
+    !/notebook-network-sandbox-initialize/i.test(output) ||
+    !/sandbox process preparation failed/i.test(output) ||
+    !/application startup failed/i.test(output)
+  ) {
+    throw new Error(`Malformed WSL2 receipt did not fail in sandbox preparation.\n${output}`)
+  }
+}
+
+const launchAndCaptureBlockedStartup = async ({ installDirectory, env, description }) => {
   const child = spawn(
     join(installDirectory, APP_EXECUTABLE),
     ['--open-science-headless', '--serve=0'],
@@ -944,16 +987,36 @@ const launchAndExpectDatabaseBlocked = async ({ installDirectory, env }) => {
   )
 
   try {
-    await waitFor('the ledger-aware downgrade to block', async () => (closed ? true : undefined))
+    await waitFor(description, async () => (closed ? true : undefined))
     if (closeError) throw closeError
-    assertDatabaseDowngradeBlocked({
+    return {
       becameHealthy: parsePackagedAppEndpoint(output()) !== undefined,
       output: output()
-    })
+    }
   } catch (error) {
     await terminateProcessTree(child)
     throw error
   }
+}
+
+const launchAndExpectDatabaseBlocked = async ({ installDirectory, env }) => {
+  assertDatabaseDowngradeBlocked(
+    await launchAndCaptureBlockedStartup({
+      installDirectory,
+      env,
+      description: 'the ledger-aware downgrade to block'
+    })
+  )
+}
+
+const launchAndExpectWsl2RestartCleanupBlocked = async ({ installDirectory, env }) => {
+  assertWsl2RestartCleanupBlocked(
+    await launchAndCaptureBlockedStartup({
+      installDirectory,
+      env,
+      description: 'the malformed WSL2 restart receipt to fail closed'
+    })
+  )
 }
 
 // Leaves a healthy packaged process running so the next silent installer must handle the real
@@ -1278,7 +1341,7 @@ const parseArguments = (argv) => {
   const installerDirectory = valueFor('--installer-dir')
   if (!installerDirectory)
     throw new Error(
-      'Usage: --installer-dir <path> [--previous-installer-dir <path>] [--artifact-rpc-contract <legacy|reservation>] [--expected-migration-count <count>] [--retain-installation]'
+      'Usage: --installer-dir <path> [--previous-installer-dir <path>] [--artifact-rpc-contract <legacy|reservation>] [--expected-migration-count <count>] [--retain-installation] [--wsl-certification-distro <name> --wsl-certification-user <name>]'
     )
   const artifactRpcContractIndex = argv.indexOf('--artifact-rpc-contract')
   const artifactRpcContract =
@@ -1304,6 +1367,20 @@ const parseArguments = (argv) => {
   if (scenario !== undefined && scenario !== ORPHANED_UNINSTALLER_LOCK_SCENARIO) {
     throw new Error(`Unsupported Windows installer smoke scenario: ${scenario}`)
   }
+  const wslCertificationDistro = valueFor('--wsl-certification-distro')
+  const wslCertificationUser = valueFor('--wsl-certification-user')
+  if (Boolean(wslCertificationDistro) !== Boolean(wslCertificationUser)) {
+    throw new Error(
+      '--wsl-certification-distro and --wsl-certification-user must be provided together.'
+    )
+  }
+  const safeWslIdentity = /^[A-Za-z0-9._-]{1,128}$/u
+  if (
+    (wslCertificationDistro && !safeWslIdentity.test(wslCertificationDistro)) ||
+    (wslCertificationUser && !safeWslIdentity.test(wslCertificationUser))
+  ) {
+    throw new Error('WSL2 certification identities contain unsupported characters.')
+  }
   return {
     installerDirectory: resolve(installerDirectory),
     previousInstallerDirectory: valueFor('--previous-installer-dir')
@@ -1312,7 +1389,16 @@ const parseArguments = (argv) => {
     artifactRpcContract,
     expectedMigrationCount,
     scenario,
-    retainInstallation: argv.includes('--retain-installation')
+    retainInstallation: argv.includes('--retain-installation'),
+    ...(wslCertificationDistro && wslCertificationUser
+      ? {
+          wslCertificationProfile: {
+            profileId: 'packaged-preview-v1',
+            distro: wslCertificationDistro,
+            user: wslCertificationUser
+          }
+        }
+      : {})
   }
 }
 
@@ -1370,20 +1456,35 @@ const main = async () => {
   const installDirectory = join(root, 'installed app 程序')
   const lockedInstallDirectory = join(root, 'locked uninstaller 程序')
   const profileDirectory = join(root, 'profile 数据 with spaces')
+  const certificationStorageRoot = join(root, 'WSL certification data 数据')
   const freshStorageRoot = join(root, 'fresh database 数据 with spaces')
   const legacyStorageRoot = join(root, 'legacy database 数据 with spaces')
   const legacyConfigRoots = [
     win32.join(homedir(), CONFIG_DIRECTORY),
     win32.join(profileDirectory, CONFIG_DIRECTORY)
   ]
-  const env = windowsProfileEnvironment(profileDirectory)
+  const profileEnvironment = windowsProfileEnvironment(profileDirectory)
+  const env = options.wslCertificationProfile
+    ? {
+        ...profileEnvironment,
+        OPEN_SCIENCE_E2E_STORAGE_ROOT: certificationStorageRoot,
+        OPEN_SCIENCE_E2E_WSL2_RESTART_CERTIFICATION: '1',
+        OPEN_SCIENCE_E2E_WSL2_PROFILE_ID: options.wslCertificationProfile.profileId,
+        OPEN_SCIENCE_E2E_WSL2_DISTRO: options.wslCertificationProfile.distro,
+        OPEN_SCIENCE_E2E_WSL2_USER: options.wslCertificationProfile.user
+      }
+    : profileEnvironment
+  const wslCommandTemporaryRoot = join(env.APPDATA, 'Open Science', 'notebook-command-temp')
   const upgradeProfileGuard = createUpgradeProfileGuard(Boolean(previousInstaller))
   const sqliteVersions = []
   const onSqliteVersion = (sqliteVersion) => sqliteVersions.push(sqliteVersion)
   await Promise.all([
     mkdir(env.APPDATA, { recursive: true }),
     mkdir(env.LOCALAPPDATA, { recursive: true }),
-    mkdir(env.TEMP, { recursive: true })
+    mkdir(env.TEMP, { recursive: true }),
+    ...(options.wslCertificationProfile
+      ? [mkdir(certificationStorageRoot, { recursive: true })]
+      : [])
   ])
 
   let primaryError
@@ -1393,9 +1494,23 @@ const main = async () => {
       installDirectory: lockedInstallDirectory,
       env
     })
+    let currentConfigRoot
+    let wslRestartCertified = false
     await executeSmokePlan(
       buildSmokePlan({ currentInstaller, previousInstaller }),
       async (cycle) => {
+        const validWslEvidence =
+          cycle.phase === 'restart' && options.wslCertificationProfile
+            ? currentConfigRoot
+              ? await createWslCommandTempEvidence({
+                  ownerRoot: wslCommandTemporaryRoot,
+                  profile: options.wslCertificationProfile,
+                  malformed: false
+                })
+              : (() => {
+                  throw new Error('WSL2 restart certification has no current application state.')
+                })()
+            : undefined
         const configRoot = cycle.runningInstaller
           ? await installOverRunningApp({
               ...cycle,
@@ -1421,6 +1536,42 @@ const main = async () => {
               ),
               onSqliteVersion: cycle.phase === 'previous' ? undefined : onSqliteVersion
             })
+        if (cycle.phase === 'current' && configRoot) currentConfigRoot = configRoot
+        if (validWslEvidence && configRoot && options.wslCertificationProfile) {
+          if (
+            (await pathExists(validWslEvidence.root)) ||
+            (await pathExists(validWslEvidence.receipt))
+          ) {
+            throw new Error('Packaged WSL2 restart left exact command-temp evidence behind.')
+          }
+          const malformedEvidence = await createWslCommandTempEvidence({
+            ownerRoot: wslCommandTemporaryRoot,
+            profile: options.wslCertificationProfile,
+            malformed: true
+          })
+          try {
+            await launchAndExpectWsl2RestartCleanupBlocked({ installDirectory, env })
+            if (
+              !(await pathExists(malformedEvidence.root)) ||
+              !(await pathExists(malformedEvidence.receipt))
+            ) {
+              throw new Error('Packaged WSL2 restart removed malformed ownership evidence.')
+            }
+          } finally {
+            await removeWslCommandTempEvidence(malformedEvidence)
+          }
+          await launchAndProbe({
+            installDirectory,
+            expectedVersion: installerVersion(currentInstaller),
+            env,
+            legacyConfigRoots,
+            verifyLedger: true,
+            expectedMigrationCount: options.expectedMigrationCount,
+            onSqliteVersion
+          })
+          wslRestartCertified = true
+          console.log('Packaged WSL2 restart reconciliation smoke completed successfully.')
+        }
         if (cycle.phase === 'rollback' && upgradeProfileGuard.shouldExpectDowngradeBlock()) {
           await launchAndExpectDatabaseBlocked({ installDirectory, env })
         }
@@ -1430,6 +1581,9 @@ const main = async () => {
         }
       }
     )
+    if (options.wslCertificationProfile && !wslRestartCertified) {
+      throw new Error('Packaged WSL2 restart certification did not run.')
+    }
     const smokeIsolatedDatabase = async (storageRoot, expectLegacyProject) => {
       const isolatedEnv = { ...env, OPEN_SCIENCE_E2E_STORAGE_ROOT: storageRoot }
       for (let launch = 0; launch < 2; launch += 1) {
@@ -1497,11 +1651,13 @@ if (invokedAsScript) {
 export {
   authenticatePackagedAppEndpoint,
   assertDatabaseDowngradeBlocked,
+  assertWsl2RestartCleanupBlocked,
   assertPackagedResources,
   assertUpgradeProfilePreserved,
   buildSmokePlan,
   cleanupSmokeRoot,
   createUpgradeProfileGuard,
+  createWslCommandTempEvidence,
   drillLockedUpgrade,
   drillOrphanedUninstallerLock,
   executeSmokePlan,
@@ -1520,6 +1676,7 @@ export {
   parsePackagedAppEndpoint,
   readPackagedAppConfigRoot,
   requestPackagedAppShutdown,
+  removeWslCommandTempEvidence,
   releasedMigrationCountForPhase,
   runProcess,
   terminateDirectoryProcesses,

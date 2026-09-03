@@ -4,6 +4,8 @@ import { join } from 'node:path'
 import { load } from 'js-yaml'
 import { describe, expect, it } from 'vitest'
 
+import { WSL2_BASH_PREVIEW_MANIFEST } from '../src/shared/wsl2-preview-manifest'
+
 import {
   WINDOWS_CACHE_DANGEROUS_RIGHT_NAMES,
   WINDOWS_CACHE_TRUSTED_OWNER_SIDS
@@ -42,6 +44,24 @@ describe('electron-builder native image processing', () => {
 })
 
 describe('WSL2 Bash Preview certification', () => {
+  it('keeps the packaged manifest identical to the main-process certification contract', () => {
+    const packagedManifest = JSON.parse(
+      readFileSync(
+        join(
+          process.cwd(),
+          'packages',
+          'notebook-network-sandbox',
+          'vendor',
+          'wsl2',
+          'manifest.json'
+        ),
+        'utf8'
+      )
+    )
+
+    expect(packagedManifest).toEqual(WSL2_BASH_PREVIEW_MANIFEST)
+  })
+
   it('keeps the versioned reference record privacy-safe and tied to the packaged app', () => {
     const record = readFileSync(
       join(process.cwd(), 'docs', 'certification', 'wsl2-bash-preview-v1.md'),

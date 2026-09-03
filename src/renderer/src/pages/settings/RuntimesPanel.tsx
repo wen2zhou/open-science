@@ -135,19 +135,27 @@ const RuntimesPanel = ({
   const [packages, setPackages] = useState<EnvPackage[] | null>(null)
   const [packagesError, setPackagesError] = useState<string | null>(null)
   const [packagesRetryNonce, setPackagesRetryNonce] = useState(0)
-  const [wsl2PreviewAvailable, setWsl2PreviewAvailable] = useState(false)
+  const [wsl2Preview, setWsl2Preview] = useState<{
+    available: boolean
+    needsPowerShellRecovery: boolean
+  }>()
 
   useEffect(() => {
     let cancelled = false
     if (window.api.platform !== 'win32') return () => undefined
-    void window.api.settings
-      .getWsl2BashPreviewStatus()
-      .then((status) => {
-        if (!cancelled) setWsl2PreviewAvailable(status.available)
-      })
-      .catch(() => {
-        if (!cancelled) setWsl2PreviewAvailable(false)
-      })
+    void Promise.all([
+      window.api.settings
+        .getWsl2BashPreviewStatus()
+        .catch(() => ({ available: false as const, reason: 'not-initialized' as const })),
+      window.api.settings.getLocalShellRuntimePreference().catch(() => undefined)
+    ]).then(([status, preference]) => {
+      if (!cancelled) {
+        setWsl2Preview({
+          available: status.available,
+          needsPowerShellRecovery: !status.available && preference === 'wsl2-bash'
+        })
+      }
+    })
     return () => {
       cancelled = true
     }
@@ -847,7 +855,9 @@ const RuntimesPanel = ({
           })
         )}
       </SettingsSection>
-      {wsl2PreviewAvailable ? <WslLocalShellSection /> : null}
+      {wsl2Preview?.available || wsl2Preview?.needsPowerShellRecovery ? (
+        <WslLocalShellSection previewAvailable={wsl2Preview.available} />
+      ) : null}
 
       <AlertDialog.Root
         open={managedRepair !== null}

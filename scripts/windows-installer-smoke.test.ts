@@ -1,6 +1,6 @@
 import { createHash } from 'node:crypto'
 import { EventEmitter } from 'node:events'
-import { mkdir, mkdtemp, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -11,9 +11,11 @@ import {
   assertDatabaseDowngradeBlocked,
   authenticatePackagedAppEndpoint,
   assertUpgradeProfilePreserved,
+  assertWsl2RestartCleanupBlocked,
   buildSmokePlan,
   cleanupSmokeRoot,
   createUpgradeProfileGuard,
+  createWslCommandTempEvidence,
   executeSmokePlan,
   fetchWithTimeout,
   findSetupInstaller,
@@ -28,6 +30,7 @@ import {
   readPackagedAppConfigRoot,
   releasedMigrationCountForPhase,
   requestPackagedAppShutdown,
+  removeWslCommandTempEvidence,
   runProcess,
   terminateDirectoryProcesses,
   terminateProcessTree,
@@ -122,6 +125,69 @@ describe('Windows installer smoke plan', () => {
     expect(() => parseArguments(['--installer-dir', 'dist', '--scenario', 'unsupported'])).toThrow(
       /Unsupported Windows installer smoke scenario/
     )
+  })
+
+  it('accepts a complete packaged WSL2 restart certification profile only', () => {
+    expect(
+      parseArguments([
+        '--installer-dir',
+        'dist',
+        '--wsl-certification-distro',
+        'Ubuntu-22.04',
+        '--wsl-certification-user',
+        'researcher'
+      ])
+    ).toMatchObject({
+      wslCertificationProfile: {
+        profileId: 'packaged-preview-v1',
+        distro: 'Ubuntu-22.04',
+        user: 'researcher'
+      }
+    })
+    expect(() =>
+      parseArguments(['--installer-dir', 'dist', '--wsl-certification-distro', 'Ubuntu-22.04'])
+    ).toThrow(/must be provided together/)
+  })
+
+  it('creates exact valid and malformed command-temp ownership evidence', async () => {
+    const ownerRoot = await mkdtemp(join(tmpdir(), 'open-science-wsl-restart-evidence-'))
+    const profile = {
+      profileId: 'packaged-preview-v1',
+      distro: 'Ubuntu-22.04',
+      user: 'researcher'
+    }
+    const valid = await createWslCommandTempEvidence({ ownerRoot, profile, malformed: false })
+    expect(await readFile(valid.receipt, 'utf8')).toBe(
+      `v1 command-${valid.id} wsl2 packaged-preview-v1 Ubuntu-22.04 researcher\n`
+    )
+    expect(await readFile(join(valid.root, 'left-by-prior-process'), 'utf8')).toBe('certification')
+
+    const malformed = await createWslCommandTempEvidence({
+      ownerRoot,
+      profile,
+      malformed: true
+    })
+    expect(await readFile(malformed.receipt, 'utf8')).toContain('malformed')
+
+    await removeWslCommandTempEvidence(valid)
+    await removeWslCommandTempEvidence(malformed)
+    await rm(ownerRoot, { recursive: true, force: true })
+  })
+
+  it('accepts malformed receipt startup only when the packaged app fails closed', () => {
+    expect(() =>
+      assertWsl2RestartCleanupBlocked({
+        becameHealthy: false,
+        output:
+          'notebook-network-sandbox-initialize completed\nsandbox process preparation failed\napplication startup failed'
+      })
+    ).not.toThrow()
+    expect(() =>
+      assertWsl2RestartCleanupBlocked({ becameHealthy: true, output: 'healthy' })
+    ).toThrow(/unexpectedly became healthy/)
+    expect(() =>
+      assertWsl2RestartCleanupBlocked({ becameHealthy: false, output: 'unrelated failure' })
+    ).toThrow(/sandbox preparation/)
   })
 
   it('accepts only explicit packaged Artifact RPC contracts', () => {
@@ -272,7 +338,7 @@ describe('Windows installer smoke plan', () => {
     ).toEqual([undefined, 4, undefined, 4])
   })
 
-  it('drills upgrade, process-lock rollback without old-app health, and final restart', async () => {
+  it('restarts current before rollback and restores current after the rollback drill', async () => {
     const plan = buildSmokePlan({
       currentInstaller: 'current.exe',
       previousInstaller: 'previous.exe'
@@ -284,6 +350,7 @@ describe('Windows installer smoke plan', () => {
     expect(runCycle.mock.calls).toEqual([
       [{ installer: 'previous.exe', phase: 'previous' }],
       [{ installer: 'current.exe', phase: 'current', runningInstaller: 'previous.exe' }],
+      [{ installer: 'current.exe', phase: 'restart', reuseInstallation: true }],
       [
         {
           installer: 'previous.exe',
@@ -292,7 +359,7 @@ describe('Windows installer smoke plan', () => {
           launchInstalledApp: false
         }
       ],
-      [{ installer: 'current.exe', phase: 'restart', reuseInstallation: true }]
+      [{ installer: 'current.exe', phase: 'current', runningInstaller: 'previous.exe' }]
     ])
   })
 
@@ -685,6 +752,30 @@ Open Science Web: http://127.0.0.1:52378/?token=iUFHGSACwBz2k1kSJfPixHbclDywVg0C
     ])
 
     await expect(assertPackagedResources(installDirectory, '0.24.0')).resolves.toBeUndefined()
+    await writeFile(
+      join(resources, 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        appVersion: '0.24.0',
+        assets: [
+          'wsl2-execution-wrapper-v1',
+          'wsl2-exact-cleanup-v1',
+          'wsl2-network-bridge-v1',
+          'uncertified-extra'
+        ]
+      })
+    )
+    await expect(assertPackagedResources(installDirectory, '0.24.0')).rejects.toThrow(
+      /missing or version-mismatched/
+    )
+    await writeFile(
+      join(resources, 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
+      JSON.stringify({
+        schemaVersion: 1,
+        appVersion: '0.24.0',
+        assets: ['wsl2-execution-wrapper-v1', 'wsl2-exact-cleanup-v1', 'wsl2-network-bridge-v1']
+      })
+    )
     await writeFile(join(prismaClient, 'libquery_engine-debian-openssl-3.0.x.so.node'), '')
     await expect(assertPackagedResources(installDirectory)).rejects.toThrow(
       /exactly one Prisma engine/

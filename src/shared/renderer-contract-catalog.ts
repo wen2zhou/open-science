@@ -36,6 +36,7 @@ import type {
 } from './side-chat'
 import type {
   OpenWslTerminalRequest,
+  LocalShellRuntimePreference,
   SelectWslProfileRequest,
   SwitchToPowerShellResult,
   UseWsl2BashResult,
@@ -1951,6 +1952,9 @@ export const RENDERER_API_CONTRACT = Object.freeze({
     'settings',
     ['settings:get-wsl2-bash-preview-status', LOCAL]
   ),
+  'settings.getLocalShellRuntimePreference': callable<
+    () => Promise<LocalShellRuntimePreference | undefined>
+  >()('settings', ['settings:get-local-shell-runtime-preference', LOCAL]),
   'settings.probeWslSetup': callable<() => Promise<WslSetupSnapshot>>()('settings', [
     'settings:probe-wsl-setup',
     LOCAL

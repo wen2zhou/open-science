@@ -92,7 +92,11 @@ const recoveryCopy = (
   }
 }
 
-export const WslLocalShellSection = (): React.JSX.Element => {
+export const WslLocalShellSection = ({
+  previewAvailable = true
+}: {
+  previewAvailable?: boolean
+}): React.JSX.Element => {
   const { t } = useTranslation()
   const [snapshot, setSnapshot] = useState<WslSetupSnapshot>({
     state: 'checking',
@@ -101,7 +105,7 @@ export const WslLocalShellSection = (): React.JSX.Element => {
   })
   const [distro, setDistro] = useState('')
   const [user, setUser] = useState('')
-  const [busy, setBusy] = useState(true)
+  const [busy, setBusy] = useState(previewAvailable)
   const [installResult, setInstallResult] = useState<WslPlatformInstallResult>()
   const [copied, setCopied] = useState(false)
   const [shellSwitchResult, setShellSwitchResult] = useState<
@@ -159,12 +163,13 @@ export const WslLocalShellSection = (): React.JSX.Element => {
   )
 
   useEffect(() => {
+    if (!previewAvailable) return () => undefined
     let active = true
     queueMicrotask(() => void probe(() => active))
     return () => {
       active = false
     }
-  }, [probe])
+  }, [previewAvailable, probe])
 
   const saveAndCheck = async (): Promise<void> => {
     setBusy(true)
@@ -308,6 +313,46 @@ export const WslLocalShellSection = (): React.JSX.Element => {
     } finally {
       setBusy(false)
     }
+  }
+
+  if (!previewAvailable) {
+    return (
+      <SettingsSection separated title={t('Local Shell')}>
+        <div className="flex justify-center rounded-lg border border-border bg-card p-4">
+          {shellSwitchResult?.runtime === 'powershell' ? (
+            <div
+              className="rounded-md border border-status-success-accent/30 bg-status-success-surface p-3 text-sm text-status-success-foreground dark:bg-status-success-dark-surface dark:text-status-success-dark-foreground"
+              role="status"
+            >
+              {t('Future Shell commands will use PowerShell.')}
+            </div>
+          ) : (
+            <ErrorNotice
+              icon={CircleX}
+              tone={shellSwitchFailed ? 'red' : 'amber'}
+              title={
+                shellSwitchFailed
+                  ? t('Open Science could not finish changing the Shell runtime.')
+                  : t('WSL2 Bash Preview is unavailable.')
+              }
+              description={
+                shellSwitchFailed
+                  ? t(
+                      'Restart Open Science before running another Shell command, then try the switch again.'
+                    )
+                  : t('Switch to PowerShell to continue with Shell commands.')
+              }
+              primaryButton={{
+                label: shellSwitchFailed ? t('Try switching again') : t('Switch to PowerShell'),
+                onClick: () => void switchToPowerShell(),
+                disabled: busy,
+                loading: busy
+              }}
+            />
+          )}
+        </div>
+      </SettingsSection>
+    )
   }
 
   const supportAvailable = !busy && snapshot.state !== 'checking' && snapshot.state !== 'ready'

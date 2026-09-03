@@ -205,6 +205,7 @@ export const WEB_INVOKE_CHANNELS = {
   'settings.disconnectDeviceCredential': 'settings:disconnect-device-credential',
   'settings.getConnectorDetail': 'settings:get-connector-detail',
   'settings.getGitHubTokenStatus': 'settings:get-github-token-status',
+  'settings.getLocalShellRuntimePreference': 'settings:get-local-shell-runtime-preference',
   'settings.getNotebookNetworkStatus': 'settings:get-notebook-network-status',
   'settings.getPackageMirror': 'settings:get-package-mirror',
   'settings.getPreflight': 'settings:get-preflight',

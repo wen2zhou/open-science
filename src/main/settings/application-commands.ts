@@ -65,6 +65,7 @@ type CoreSettingsCommandStore = Pick<
   | 'getConnectorDetail'
   | 'getPackageMirror'
   | 'getNotebookNetworkStatus'
+  | 'getLocalShellRuntimePreference'
   | 'getWsl2BashPreviewStatus'
   | 'getGitHubTokenStatus'
   | 'getPreflight'
@@ -185,6 +186,11 @@ const settingsCoreApplicationCommands = Object.freeze({
     readonly [],
     StoreResult<'getWsl2BashPreviewStatus'>
   >('settings:get-wsl2-bash-preview-status'),
+  getLocalShellRuntimePreference: defineApplicationCommand<
+    'settings:get-local-shell-runtime-preference',
+    readonly [],
+    StoreResult<'getLocalShellRuntimePreference'>
+  >('settings:get-local-shell-runtime-preference'),
   getPreflight: defineApplicationCommand<
     'settings:get-preflight',
     readonly [],
@@ -416,6 +422,7 @@ const settingsCoreApplicationCommandGroup = defineApplicationCommandGroup('setti
   settingsCoreApplicationCommands.getGitHubTokenStatus,
   settingsCoreApplicationCommands.getPackageMirror,
   settingsCoreApplicationCommands.getNotebookNetworkStatus,
+  settingsCoreApplicationCommands.getLocalShellRuntimePreference,
   settingsCoreApplicationCommands.getWsl2BashPreviewStatus,
   settingsCoreApplicationCommands.getPreflight,
   settingsCoreApplicationCommands.getSettings,
@@ -516,6 +523,10 @@ const registerCoreSettingsApplicationCommands = (
       },
       'settings:get-package-mirror': () => dependencies.service.getPackageMirror(),
       'settings:get-notebook-network-status': () => dependencies.service.getNotebookNetworkStatus(),
+      'settings:get-local-shell-runtime-preference': ({ callerContext }) => {
+        requireLocalCaller(callerContext, 'settings:get-local-shell-runtime-preference')
+        return dependencies.service.getLocalShellRuntimePreference()
+      },
       'settings:get-wsl2-bash-preview-status': ({ callerContext }) => {
         requireLocalCaller(callerContext, 'settings:get-wsl2-bash-preview-status')
         return dependencies.service.getWsl2BashPreviewStatus()
