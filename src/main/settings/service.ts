@@ -84,7 +84,11 @@ import { startDiagnosticOperation } from '../diagnostics/operation'
 import type { PackageMirror } from '../../shared/mirror'
 import type { NetworkProxySettings } from '../../shared/network-proxy'
 import type { NotebookNetworkSettings, NotebookNetworkStatus } from '../../shared/notebook-network'
-import type { SelectWslProfileRequest, WslSetupSnapshot } from '../../shared/wsl-setup'
+import type {
+  SelectWslProfileRequest,
+  WslPlatformInstallResult,
+  WslSetupSnapshot
+} from '../../shared/wsl-setup'
 import type { GrantedLocalRoot } from '../../shared/local-fs'
 import type { NotebookLanguage } from '../../shared/notebook'
 import type { RuntimeEnablement } from '../../shared/notebook-runtime'
@@ -212,6 +216,7 @@ export type SettingsServiceOptions = {
   removeNotebookNetwork?: () => Promise<{ cancelled: boolean }>
   wslSetup?: {
     probe(): Promise<WslSetupSnapshot>
+    installPlatform(): Promise<WslPlatformInstallResult>
     select(request: SelectWslProfileRequest): Promise<WslSetupSnapshot>
   }
   // Encrypted-token controller for claude-isolated; default-constructed against this.configRoot
@@ -493,6 +498,11 @@ class SettingsService {
   probeWslSetup(): Promise<WslSetupSnapshot> {
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.probe()
+  }
+
+  installWslPlatform(): Promise<WslPlatformInstallResult> {
+    if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
+    return this.wslSetup.installPlatform()
   }
 
   selectWslProfile(request: SelectWslProfileRequest): Promise<WslSetupSnapshot> {

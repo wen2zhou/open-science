@@ -537,6 +537,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.installCodex',
       'settings.installNotebookNetwork',
       'settings.installOpencode',
+      'settings.installWslPlatform',
       'settings.isEncryptionAvailable',
       'settings.isNpmAvailable',
       'settings.listAgentHomeSkills',

@@ -218,6 +218,7 @@ export const WEB_INVOKE_CHANNELS = {
   'settings.installCodex': 'settings:install-codex',
   'settings.installNotebookNetwork': 'settings:install-notebook-network',
   'settings.installOpencode': 'settings:install-opencode',
+  'settings.installWslPlatform': 'settings:install-wsl-platform',
   'settings.isEncryptionAvailable': 'settings:encryption-available',
   'settings.isNpmAvailable': 'settings:npm-available',
   'settings.listAgentHomeSkills': 'settings:list-agent-home-skills',

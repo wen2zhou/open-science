@@ -34,7 +34,11 @@ import type {
   SideChatStartRequest,
   SideChatStartResponse
 } from './side-chat'
-import type { SelectWslProfileRequest, WslSetupSnapshot } from './wsl-setup'
+import type {
+  SelectWslProfileRequest,
+  WslPlatformInstallResult,
+  WslSetupSnapshot
+} from './wsl-setup'
 import type { SourcePreviewLoadState } from './source-preview'
 import type {
   ArtifactPreviewResult,
@@ -1940,6 +1944,10 @@ export const RENDERER_API_CONTRACT = Object.freeze({
   ),
   'settings.probeWslSetup': callable<() => Promise<WslSetupSnapshot>>()('settings', [
     'settings:probe-wsl-setup',
+    LOCAL
+  ]),
+  'settings.installWslPlatform': callable<() => Promise<WslPlatformInstallResult>>()('settings', [
+    'settings:install-wsl-platform',
     LOCAL
   ]),
   'settings.selectWslProfile': callable<

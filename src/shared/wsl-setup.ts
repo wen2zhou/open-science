@@ -36,6 +36,15 @@ export type WslSetupSnapshot = Readonly<{
   operationReference: string
 }>
 
+export type WslPlatformInstallOutcome =
+  'uac-cancelled' | 'spawn-failed' | 'restart-required' | 'completed' | 'unknown'
+
+export type WslPlatformInstallResult = Readonly<{
+  outcome: WslPlatformInstallOutcome
+  operationReference: string
+  snapshot: WslSetupSnapshot
+}>
+
 export type SelectWslProfileRequest = Readonly<{
   distro: string
   user: string

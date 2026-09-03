@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
 
-import { WslSetupOwner, type WslCommandRunner } from './wsl-setup-owner'
+import { WslSetupOwner, type WslCommandRunner, type WslPlatformInstaller } from './wsl-setup-owner'
 
 const result = (
   stdout = '',
@@ -28,6 +28,141 @@ const makeOwner = (
   })
 
 describe('WslSetupOwner', () => {
+  it('installs the WSL platform only through the explicit owner command and confirms OS state', async () => {
+    const installer: WslPlatformInstaller = {
+      install: vi.fn(async () => ({ kind: 'exited' as const, exitCode: 1 }))
+    }
+    const runner = makeRunner(result('private-host-output'), result(''), result(''))
+    const log = { info: vi.fn(), warn: vi.fn() }
+    const owner = makeOwner({
+      installer,
+      runner,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn(),
+      operationReference: () => 'install1',
+      log
+    })
+
+    await expect(owner.installPlatform()).resolves.toEqual({
+      outcome: 'completed',
+      operationReference: 'install1',
+      snapshot: {
+        state: 'distro-required',
+        distros: [],
+        errorCode: 'wsl_distro_missing',
+        operationReference: 'install1'
+      }
+    })
+    expect(installer.install).toHaveBeenCalledOnce()
+    expect(runner.run).toHaveBeenCalledWith(['--status'])
+    expect(JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls])).not.toContain(
+      'private-host-output'
+    )
+  })
+
+  it.each([
+    [
+      'UAC cancellation',
+      { kind: 'uac-cancelled' as const },
+      'uac-cancelled',
+      'wsl_install_uac_cancelled'
+    ],
+    [
+      'launcher failure',
+      { kind: 'spawn-failed' as const },
+      'spawn-failed',
+      'wsl_install_spawn_failed'
+    ]
+  ])(
+    'reports %s without probing or replaying the installer',
+    async (_label, execution, outcome, code) => {
+      const installer: WslPlatformInstaller = { install: vi.fn(async () => execution) }
+      const runner = makeRunner()
+      const owner = makeOwner({
+        installer,
+        runner,
+        workspacePath: 'C:\\science',
+        readSelection: async () => undefined,
+        writeSelection: vi.fn(),
+        operationReference: () => 'install2'
+      })
+
+      await expect(owner.installPlatform()).resolves.toMatchObject({
+        outcome,
+        operationReference: 'install2',
+        snapshot: { state: 'not-installed', errorCode: code, operationReference: 'install2' }
+      })
+      expect(installer.install).toHaveBeenCalledOnce()
+      expect(runner.run).not.toHaveBeenCalled()
+    }
+  )
+
+  it('reports an unknown result when the post-install OS probe itself fails', async () => {
+    const installer: WslPlatformInstaller = {
+      install: vi.fn(async () => ({ kind: 'exited' as const, exitCode: 0 }))
+    }
+    const runner: WslCommandRunner = { run: vi.fn(async () => Promise.reject(new Error('boom'))) }
+    const owner = makeOwner({
+      installer,
+      runner,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn(),
+      operationReference: () => 'install5'
+    })
+
+    await expect(owner.installPlatform()).resolves.toMatchObject({
+      outcome: 'unknown',
+      operationReference: 'install5',
+      snapshot: {
+        state: 'failed',
+        errorCode: 'wsl_install_unknown',
+        operationReference: 'install5'
+      }
+    })
+    expect(installer.install).toHaveBeenCalledOnce()
+  })
+
+  it.each([
+    [
+      'restart-required',
+      3010,
+      [result('', 1, 'localized pending state'), result('', 1, 'localized unavailable')],
+      'restart-required'
+    ],
+    [
+      'unknown',
+      1,
+      [result('', 1, 'localized failure'), result('', 1, 'localized failure')],
+      'failed'
+    ]
+  ])(
+    'keeps an uncertain %s install single-shot and returns a fresh probe',
+    async (outcome, exitCode, responses, state) => {
+      const installer: WslPlatformInstaller = {
+        install: vi.fn(async () => ({ kind: 'exited' as const, exitCode }))
+      }
+      const runner = makeRunner(...responses)
+      const owner = makeOwner({
+        installer,
+        runner,
+        workspacePath: 'C:\\science',
+        readSelection: async () => undefined,
+        writeSelection: vi.fn(),
+        operationReference: () => 'install3'
+      })
+
+      await expect(owner.installPlatform()).resolves.toMatchObject({
+        outcome,
+        operationReference: 'install3',
+        snapshot: { state, operationReference: 'install3' }
+      })
+      expect(installer.install).toHaveBeenCalledOnce()
+      expect(runner.run).toHaveBeenCalledTimes(2)
+    }
+  )
+
   it('distinguishes platform, restart, and distro-required setup states', async () => {
     const absent = makeOwner({
       runner: makeRunner(result('', 1, 'WSL is not installed')),

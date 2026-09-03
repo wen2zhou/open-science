@@ -9,6 +9,7 @@ let container: HTMLDivElement
 let root: Root
 let probe: ReturnType<typeof vi.fn>
 let select: ReturnType<typeof vi.fn>
+let install: ReturnType<typeof vi.fn>
 
 const flush = async (): Promise<void> => {
   await act(async () => {})
@@ -33,8 +34,18 @@ beforeEach(() => {
     readiness: { wsl2: true, bash: true, bwrap: true, namespaces: true, localWorkspace: true },
     operationReference: '1234abcd'
   })
+  install = vi.fn().mockResolvedValue({
+    outcome: 'uac-cancelled',
+    operationReference: 'feedface',
+    snapshot: {
+      state: 'not-installed',
+      distros: [],
+      errorCode: 'wsl_install_uac_cancelled',
+      operationReference: 'feedface'
+    }
+  })
   ;(window as unknown as { api: unknown }).api = {
-    settings: { probeWslSetup: probe, selectWslProfile: select }
+    settings: { installWslPlatform: install, probeWslSetup: probe, selectWslProfile: select }
   }
 })
 
@@ -45,6 +56,74 @@ afterEach(() => {
 })
 
 describe('WslLocalShellSection', () => {
+  it('requires a user click to install and never replays after UAC cancellation', async () => {
+    probe.mockResolvedValue({
+      state: 'not-installed',
+      distros: [],
+      errorCode: 'wsl_not_installed',
+      operationReference: 'deadbeef'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    expect(install).not.toHaveBeenCalled()
+    const installButton = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Install WSL2')
+    )
+    await act(async () => installButton?.click())
+    await flush()
+
+    expect(install).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('installation was cancelled')
+    expect(container.textContent).toContain('wsl_install_uac_cancelled · feedface')
+    expect(container.textContent).toContain('keep using PowerShell')
+  })
+
+  it('starts a fresh probe when Settings is reopened instead of retaining install success', async () => {
+    probe
+      .mockResolvedValueOnce({
+        state: 'not-installed',
+        distros: [],
+        errorCode: 'wsl_not_installed',
+        operationReference: 'before01'
+      })
+      .mockResolvedValueOnce({
+        state: 'not-installed',
+        distros: [],
+        errorCode: 'wsl_not_installed',
+        operationReference: 'after002'
+      })
+    install.mockResolvedValue({
+      outcome: 'completed',
+      operationReference: 'install4',
+      snapshot: {
+        state: 'distro-required',
+        distros: [],
+        errorCode: 'wsl_distro_missing',
+        operationReference: 'install4'
+      }
+    })
+
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+    const installButton = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Install WSL2')
+    )
+    await act(async () => installButton?.click())
+    await flush()
+    expect(container.textContent).toContain('platform installation completed')
+
+    act(() => root.unmount())
+    root = createRoot(container)
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    expect(probe).toHaveBeenCalledTimes(2)
+    expect(install).toHaveBeenCalledOnce()
+    expect(container.textContent).not.toContain('platform installation completed')
+    expect(container.textContent).toContain('wsl_not_installed · after002')
+  })
+
   it('selects an existing WSL2 distro and exact user, then shows every readiness result', async () => {
     await act(async () => root.render(<WslLocalShellSection />))
     await flush()

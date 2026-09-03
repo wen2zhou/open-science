@@ -12,7 +12,11 @@ import {
   SelectTrigger,
   SelectValue
 } from '@/components/ui/select'
-import type { WslReadiness, WslSetupSnapshot } from '../../../../shared/wsl-setup'
+import type {
+  WslPlatformInstallResult,
+  WslReadiness,
+  WslSetupSnapshot
+} from '../../../../shared/wsl-setup'
 import { SettingsField, SettingsSection } from './SettingsLayout'
 
 const statusCopy = (snapshot: WslSetupSnapshot, t: (key: string) => string): string => {
@@ -68,6 +72,7 @@ export const WslLocalShellSection = (): React.JSX.Element => {
   const [distro, setDistro] = useState('')
   const [user, setUser] = useState('')
   const [busy, setBusy] = useState(true)
+  const [installResult, setInstallResult] = useState<WslPlatformInstallResult>()
   const checks: ReadonlyArray<[keyof WslReadiness, string]> = [
     ['wsl2', t('WSL2 distribution')],
     ['bash', t('Bash')],
@@ -90,7 +95,10 @@ export const WslLocalShellSection = (): React.JSX.Element => {
       }
       try {
         const next = await window.api.settings.probeWslSetup()
-        if (isActive()) apply(next)
+        if (isActive()) {
+          setInstallResult(undefined)
+          apply(next)
+        }
       } catch {
         if (isActive()) {
           setSnapshot({
@@ -126,6 +134,31 @@ export const WslLocalShellSection = (): React.JSX.Element => {
     }
   }
 
+  const installWslPlatform = async (): Promise<void> => {
+    setBusy(true)
+    try {
+      const result = await window.api.settings.installWslPlatform()
+      setInstallResult(result)
+      apply(result.snapshot)
+    } catch {
+      setInstallResult(undefined)
+      setSnapshot((current) => ({
+        ...current,
+        state: 'not-installed',
+        errorCode: 'wsl_install_spawn_failed'
+      }))
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const installFailure =
+    installResult?.outcome === 'uac-cancelled' ||
+    installResult?.outcome === 'spawn-failed' ||
+    installResult?.outcome === 'unknown'
+      ? installResult.outcome
+      : undefined
+
   return (
     <SettingsSection
       separated
@@ -147,7 +180,52 @@ export const WslLocalShellSection = (): React.JSX.Element => {
       }
     >
       <div className="rounded-lg border border-border bg-card p-4" data-testid="wsl-local-shell">
-        {snapshot.state === 'failed' && !busy ? (
+        {installFailure && !busy ? (
+          <div className="flex justify-center">
+            <ErrorNotice
+              icon={CircleX}
+              tone={installFailure === 'spawn-failed' ? 'red' : 'amber'}
+              title={
+                installFailure === 'uac-cancelled'
+                  ? t('WSL2 installation was cancelled in Windows.')
+                  : installFailure === 'spawn-failed'
+                    ? t('Open Science could not start the WSL2 installer.')
+                    : t('Windows did not confirm the WSL2 installation result.')
+              }
+              description={
+                installFailure === 'unknown'
+                  ? t(
+                      'Check again to read the current Windows state. Installation will not run again automatically.'
+                    )
+                  : t('No installation command will run again unless you choose to retry it.')
+              }
+              errorCode={`${snapshot.errorCode ?? 'wsl_install_unknown'} · ${snapshot.operationReference}`}
+              secondaryButton={{ label: t('Check again'), onClick: () => void probe() }}
+              primaryButton={{
+                label: t('Try installation again'),
+                onClick: () => void installWslPlatform()
+              }}
+            />
+          </div>
+        ) : snapshot.state === 'not-installed' && !busy ? (
+          <div className="flex justify-center">
+            <ErrorNotice
+              icon={CircleX}
+              tone="amber"
+              title={statusCopy(snapshot, t)}
+              description={t(
+                'Windows will ask for administrator approval. Open Science installs only the WSL2 platform, without a distribution.'
+              )}
+              errorCode={
+                snapshot.errorCode
+                  ? `${snapshot.errorCode} · ${snapshot.operationReference}`
+                  : undefined
+              }
+              secondaryButton={{ label: t('Check again'), onClick: () => void probe() }}
+              primaryButton={{ label: t('Install WSL2'), onClick: () => void installWslPlatform() }}
+            />
+          </div>
+        ) : snapshot.state === 'failed' && !busy ? (
           <div className="flex justify-center">
             <ErrorNotice
               icon={CircleX}
@@ -177,6 +255,20 @@ export const WslLocalShellSection = (): React.JSX.Element => {
             <span role="status">{statusCopy(snapshot, t)}</span>
           </div>
         )}
+
+        {!busy && installResult?.outcome === 'completed' ? (
+          <p className="mt-3 text-sm text-status-success-foreground" role="status">
+            {t(
+              'The WSL2 platform installation completed. Continue with the next setup step below.'
+            )}
+          </p>
+        ) : null}
+
+        {!busy && installResult?.outcome === 'restart-required' ? (
+          <p className="mt-3 text-sm text-status-warning-foreground" role="status">
+            {t('Restart Windows before continuing. Returning here will start a fresh check.')}
+          </p>
+        ) : null}
 
         {snapshot.distros.length > 0 ? (
           <div className="mt-4 grid gap-3 sm:grid-cols-2">
@@ -240,6 +332,14 @@ export const WslLocalShellSection = (): React.JSX.Element => {
         {!busy && snapshot.state !== 'failed' && snapshot.errorCode ? (
           <p className="mt-4 font-mono text-xs text-muted-foreground">
             {snapshot.errorCode} · {snapshot.operationReference}
+          </p>
+        ) : null}
+
+        {!busy && snapshot.state !== 'ready' ? (
+          <p className="mt-4 text-xs text-muted-foreground">
+            {t(
+              'You can keep using PowerShell while WSL2 is unavailable; these setup choices are preserved.'
+            )}
           </p>
         ) : null}
       </div>

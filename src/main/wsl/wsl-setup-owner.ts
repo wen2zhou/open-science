@@ -6,10 +6,12 @@ import type {
   WslDistro,
   WslReadiness,
   WslSelection,
+  WslPlatformInstallResult,
   WslSetupSnapshot,
   WslSetupState
 } from '../../shared/wsl-setup'
 import { createLogger } from '../logger'
+import { resolveWindowsPowerShellExecutable } from '../windows-powershell'
 import type { WindowsVolumeProbeResult } from './windows-volume-probe'
 
 export type WslCommandResult = Readonly<{
@@ -23,8 +25,18 @@ export interface WslCommandRunner {
   run(args: readonly string[]): Promise<WslCommandResult>
 }
 
+export type WslPlatformInstallExecution =
+  | Readonly<{ kind: 'exited'; exitCode: number }>
+  | Readonly<{ kind: 'uac-cancelled' }>
+  | Readonly<{ kind: 'spawn-failed' }>
+
+export interface WslPlatformInstaller {
+  install(): Promise<WslPlatformInstallExecution>
+}
+
 type WslSetupOwnerOptions = Readonly<{
   runner?: WslCommandRunner
+  installer?: WslPlatformInstaller
   workspacePath: string | (() => string)
   volumeProbe(path: string): Promise<WindowsVolumeProbeResult>
   readSelection(): Promise<WslSelection | undefined>
@@ -63,6 +75,37 @@ const executeWsl: WslCommandRunner = {
                 ? { failure: 'timeout' as const }
                 : {})
           })
+        }
+      )
+    })
+}
+
+const elevatedWslPlatformInstaller: WslPlatformInstaller = {
+  install: () =>
+    new Promise((resolve) => {
+      const script = [
+        "$ErrorActionPreference = 'Stop'",
+        'try {',
+        "  $process = Start-Process -FilePath (Join-Path $env:SystemRoot 'System32\\wsl.exe') -ArgumentList @('--install', '--no-distribution') -Verb RunAs -WindowStyle Hidden -Wait -PassThru",
+        '  exit $process.ExitCode',
+        '} catch {',
+        '  if ($_.Exception.NativeErrorCode -eq 1223) { exit 1223 }',
+        '  exit 1',
+        '}'
+      ].join('\n')
+      execFile(
+        resolveWindowsPowerShellExecutable(),
+        ['-NoLogo', '-NoProfile', '-NonInteractive', '-Command', script],
+        { windowsHide: true, encoding: 'buffer' },
+        (error) => {
+          const code = (error as { code?: unknown } | null)?.code
+          if (code === 'ENOENT') resolve({ kind: 'spawn-failed' })
+          else if (code === 1223) resolve({ kind: 'uac-cancelled' })
+          else
+            resolve({
+              kind: 'exited',
+              exitCode: typeof code === 'number' ? code : error ? 1 : 0
+            })
         }
       )
     })
@@ -120,11 +163,70 @@ const platformFailure = (output: string): { state: WslSetupState; code: string }
 
 export class WslSetupOwner {
   private readonly runner: WslCommandRunner
+  private readonly installer: WslPlatformInstaller
   private readonly log: Pick<ReturnType<typeof createLogger>, 'info' | 'warn'>
 
   constructor(private readonly options: WslSetupOwnerOptions) {
     this.runner = options.runner ?? executeWsl
+    this.installer = options.installer ?? elevatedWslPlatformInstaller
     this.log = options.log ?? createLogger('wsl-setup')
+  }
+
+  async installPlatform(): Promise<WslPlatformInstallResult> {
+    const startedAt = Date.now()
+    const operationReference = this.reference()
+    this.log.info('wsl install started', { operationReference })
+    let execution: WslPlatformInstallExecution
+    try {
+      execution = await this.installer.install()
+    } catch {
+      execution = { kind: 'spawn-failed' }
+    }
+
+    let outcome: WslPlatformInstallResult['outcome']
+    let snapshot: WslSetupSnapshot
+    if (execution.kind === 'uac-cancelled') {
+      outcome = 'uac-cancelled'
+      snapshot = setupSnapshot('not-installed', operationReference, [], {
+        errorCode: 'wsl_install_uac_cancelled'
+      })
+    } else if (execution.kind === 'spawn-failed') {
+      outcome = 'spawn-failed'
+      snapshot = setupSnapshot('not-installed', operationReference, [], {
+        errorCode: 'wsl_install_spawn_failed'
+      })
+    } else {
+      try {
+        snapshot = await this.runProbe(operationReference)
+      } catch {
+        snapshot = setupSnapshot('failed', operationReference, [], {
+          errorCode: 'wsl_install_unknown'
+        })
+      }
+      if (snapshot.state === 'restart-required' || execution.exitCode === 3010) {
+        outcome = 'restart-required'
+        snapshot = setupSnapshot('restart-required', operationReference, snapshot.distros, {
+          errorCode: 'wsl_restart_required'
+        })
+      } else {
+        outcome =
+          snapshot.state !== 'not-installed' && snapshot.state !== 'failed'
+            ? 'completed'
+            : 'unknown'
+        if (outcome === 'unknown') snapshot = { ...snapshot, errorCode: 'wsl_install_unknown' }
+      }
+    }
+
+    const fields = {
+      operationReference,
+      outcome,
+      state: snapshot.state,
+      errorCode: snapshot.errorCode,
+      durationMs: Date.now() - startedAt
+    }
+    if (outcome === 'completed') this.log.info('wsl install completed', fields)
+    else this.log.warn('wsl install completed', fields)
+    return { outcome, operationReference, snapshot }
   }
 
   async select(request: SelectWslProfileRequest): Promise<WslSetupSnapshot> {
