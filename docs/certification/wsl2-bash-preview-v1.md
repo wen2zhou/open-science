@@ -33,8 +33,8 @@ names, full host paths, credentials, user commands, and command output.
 | Field                             | Value                                                                          |
 | --------------------------------- | ------------------------------------------------------------------------------ |
 | Installer                         | `aipoch-open-science-0.24.0-win-x64-setup.exe`                                 |
-| Size                              | 194,282,973 bytes                                                              |
-| SHA-256                           | `A9A007573D866D9C68531FB038B801A31E8BAC3940334065F6D5846C297A206B`             |
+| Size                              | 194,282,911 bytes                                                              |
+| SHA-256                           | `24405FC599470D9F5D2907F39C8137DCEC2244C2579A02D27342E3A15A5ED950`             |
 | Packaged Preview manifest         | Schema 1; app version 0.24.0                                                   |
 | Required asset identities         | `wsl2-execution-wrapper-v1`, `wsl2-exact-cleanup-v1`, `wsl2-network-bridge-v1` |
 | Packaged micromamba               | 2.8.1                                                                          |

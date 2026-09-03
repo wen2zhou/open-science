@@ -62,7 +62,3 @@ export const initializeWsl2BashPreview = (input: Omit<PreviewEvaluation, 'buildE
 }
 
 export const wsl2BashPreviewStatus = (): Wsl2BashPreviewStatus => currentStatus
-
-export const assertWsl2BashPreviewAvailable = (): void => {
-  if (!currentStatus.available) throw new Error('Notebook WSL2 Bash Preview is unavailable.')
-}
