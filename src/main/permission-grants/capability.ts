@@ -3,7 +3,26 @@ import { createHash } from 'node:crypto'
 import type { PermissionCapability } from '../../shared/permission-grants'
 import { isPreRegisteredPermissionIdentity } from './identity-catalog'
 
-const NOTEBOOK_RUNTIME_QUALIFIERS = new Set(['python', 'r', 'javascript', 'bash'])
+const NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS = Object.freeze({
+  python: 'python',
+  r: 'r',
+  javascript: 'javascript',
+  bash: 'bash',
+  powershell: 'bash',
+  'native-posix': 'bash',
+  'wsl2-bash': 'wsl2-bash'
+} as const)
+type NotebookPermissionRuntimeQualifier =
+  (typeof NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS)[keyof typeof NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS]
+
+const notebookPermissionRuntimeQualifier = (
+  runtime: string | undefined
+): NotebookPermissionRuntimeQualifier | undefined =>
+  runtime && Object.hasOwn(NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS, runtime)
+    ? NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS[
+        runtime as keyof typeof NOTEBOOK_PERMISSION_RUNTIME_QUALIFIERS
+      ]
+    : undefined
 const FILE_OPERATION_KEYS: Readonly<Record<string, string>> = {
   Read: 'read',
   Write: 'write',
@@ -165,7 +184,8 @@ const capabilityFromLegacyCategory = (categoryKey: string): PermissionCapability
     const separator = descriptor.lastIndexOf(':')
     const possibleQualifier = separator >= 0 ? descriptor.slice(separator + 1) : undefined
     const hasRuntimeQualifier =
-      possibleQualifier !== undefined && NOTEBOOK_RUNTIME_QUALIFIERS.has(possibleQualifier)
+      possibleQualifier !== undefined &&
+      notebookPermissionRuntimeQualifier(possibleQualifier) === possibleQualifier
     const identity = hasRuntimeQualifier ? descriptor.slice(0, separator) : descriptor
     if (!identity.includes('/')) return undefined
     const key = `mcp:${identity}`
@@ -203,5 +223,6 @@ export {
   categoryFromTrustedToolName,
   commandPrefixPermissionCategory,
   containsSecretBearingMaterial,
-  exactPermissionQualifier
+  exactPermissionQualifier,
+  notebookPermissionRuntimeQualifier
 }

@@ -1,13 +1,19 @@
+import { mkdtemp, rm } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+
 import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
 
+import { createPermissionGrantRegistry } from '../permission-grants/registry'
+import { createProjectDbClient, migrateApplicationDatabase } from '../projects/prisma-client'
 import {
   AcpPermissionBroker,
   ConversationPermissionGrantStore,
   permissionRequestFingerprint,
   type DurablePermissionWaitCandidate
 } from './permission-broker'
-import { withTrustedNativeToolIdentity } from './permission-policy'
+import { withTrustedMcpToolIdentity, withTrustedNativeToolIdentity } from './permission-policy'
 
 type EmittedPermissionRequest = Parameters<ConstructorParameters<typeof AcpPermissionBroker>[0]>[0]
 
@@ -1681,6 +1687,127 @@ describe('ACP permission broker', () => {
         })
       ])
     )
+  })
+
+  it('offers durable grant scopes for native and WSL2-bound notebook Shell capabilities', async () => {
+    const storageRoot = await mkdtemp(join(tmpdir(), 'open-science-wsl2-permission-'))
+    const client = createProjectDbClient(storageRoot)
+    try {
+      await migrateApplicationDatabase(client)
+      await client.project.create({ data: { id: 'project-1', name: 'Project one' } })
+      let grantId = 0
+      const registry = await createPermissionGrantRegistry({
+        getClient: async () => client,
+        createId: () => `shell-grant-${++grantId}`
+      })
+      const emitted: EmittedPermissionRequest[] = []
+      const broker = new AcpPermissionBroker(
+        (request) => emitted.push(request),
+        undefined,
+        registry
+      )
+
+      const response = broker.requestPermission(
+        withTrustedMcpToolIdentity(
+          createNotebookPermissionRequest('session-1', 'mcp__open-science-notebook__bash_execute', {
+            command: 'pwd'
+          }),
+          'open-science-notebook/bash_execute'
+        ),
+        {
+          profile: 'ask',
+          projectId: 'project-1',
+          mcpServerNames: ['open-science-notebook'],
+          notebookShellRuntime: 'wsl2-bash'
+        }
+      )
+
+      await vi.waitFor(() => expect(emitted).toHaveLength(1))
+      expect(emitted[0].options.map((option) => option.scope).filter(Boolean)).toEqual([
+        'once',
+        'session',
+        'project',
+        'global'
+      ])
+      await broker.respond({
+        requestId: emitted[0].requestId,
+        optionId: getSessionOptionId(emitted[0])
+      })
+      await expect(response).resolves.toEqual({
+        outcome: { outcome: 'selected', optionId: 'allow-once' }
+      })
+
+      await expect(
+        broker.requestPermission(
+          withTrustedMcpToolIdentity(
+            createNotebookPermissionRequest(
+              'session-1',
+              'mcp__open-science-notebook__bash_execute',
+              { command: 'ls' }
+            ),
+            'open-science-notebook/bash_execute'
+          ),
+          {
+            profile: 'ask',
+            projectId: 'project-1',
+            mcpServerNames: ['open-science-notebook'],
+            notebookShellRuntime: 'wsl2-bash'
+          }
+        )
+      ).resolves.toEqual({ outcome: { outcome: 'selected', optionId: 'allow-once' } })
+      expect(emitted).toHaveLength(1)
+
+      const nativeResponse = broker.requestPermission(
+        withTrustedMcpToolIdentity(
+          createNotebookPermissionRequest('session-1', 'mcp__open-science-notebook__bash_execute', {
+            command: 'pwd'
+          }),
+          'open-science-notebook/bash_execute'
+        ),
+        {
+          profile: 'ask',
+          projectId: 'project-1',
+          mcpServerNames: ['open-science-notebook'],
+          notebookShellRuntime: 'native-posix'
+        }
+      )
+      await vi.waitFor(() => expect(emitted).toHaveLength(2))
+      expect(emitted[1].options.map((option) => option.scope).filter(Boolean)).toEqual([
+        'once',
+        'session',
+        'project',
+        'global'
+      ])
+      await broker.respond({
+        requestId: emitted[1].requestId,
+        optionId: getSessionOptionId(emitted[1])
+      })
+      await nativeResponse
+
+      await expect(registry.list()).resolves.toEqual(
+        expect.arrayContaining([
+          expect.objectContaining({
+            capability: {
+              kind: 'mcp_tool',
+              key: 'mcp:open-science-notebook/bash_execute',
+              qualifier: { mode: 'category', value: 'wsl2-bash' }
+            },
+            scope: { kind: 'session', projectId: 'project-1', sessionId: 'session-1' }
+          }),
+          expect.objectContaining({
+            capability: {
+              kind: 'mcp_tool',
+              key: 'mcp:open-science-notebook/bash_execute',
+              qualifier: { mode: 'category', value: 'bash' }
+            },
+            scope: { kind: 'session', projectId: 'project-1', sessionId: 'session-1' }
+          })
+        ])
+      )
+    } finally {
+      await client.$disconnect()
+      await rm(storageRoot, { recursive: true, force: true })
+    }
   })
 
   it('keeps a per-tool session grant when the composer profile changes between calls', async () => {

@@ -31,7 +31,8 @@ import {
   capabilityFromLegacyCategory,
   categoryFromTrustedToolName,
   commandPrefixPermissionCategory,
-  containsSecretBearingMaterial
+  containsSecretBearingMaterial,
+  notebookPermissionRuntimeQualifier
 } from '../permission-grants/capability'
 import { projectPermissionGrantSnapshot } from '../permission-grants/catalog'
 import type { PermissionGrantRegistry } from '../permission-grants/registry'
@@ -488,8 +489,8 @@ const resolveNotebookPermissionRuntime = (
   rawInput: unknown,
   shellRuntime?: 'powershell' | 'native-posix' | 'wsl2-bash'
 ): string | undefined =>
-  tool === 'bash_execute' && shellRuntime === 'wsl2-bash'
-    ? 'wsl2-bash'
+  tool === 'bash_execute'
+    ? notebookPermissionRuntimeQualifier(shellRuntime ?? 'bash')
     : resolveNotebookRuntime(tool, rawInput)
 
 const resolveNotebookPermissionContext = (
