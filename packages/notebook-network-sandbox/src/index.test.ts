@@ -274,11 +274,15 @@ describe('NotebookNetworkSandbox', () => {
       target,
       command: 'python notebook.py',
       cwd: 'C:\\workspace',
+      pathEnvironment: { UV_CACHE_DIR: 'C:\\workspace\\cache\\uv' },
       onNetworkAccessRequest: denyNetwork
     })
 
     expect(backend.wrap.mock.calls[0]?.[0]).toMatchObject({ target: { kind: 'native' } })
-    expect(backend.wrap.mock.calls[1]?.[0]).toMatchObject({ target })
+    expect(backend.wrap.mock.calls[1]?.[0]).toMatchObject({
+      target,
+      pathEnvironment: { UV_CACHE_DIR: 'C:\\workspace\\cache\\uv' }
+    })
     await native.cleanup('exit', { processesTerminated: true })
     await wsl2.cleanup('exit', { processesTerminated: true })
     await sandbox.dispose()

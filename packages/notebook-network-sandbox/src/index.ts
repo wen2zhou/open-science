@@ -131,6 +131,7 @@ class NotebookNetworkSandbox {
         ...(shell ? { shell } : {}),
         cwd: command.cwd,
         env: command.env ?? {},
+        ...(command.pathEnvironment ? { pathEnvironment: command.pathEnvironment } : {}),
         ...(command.localRpcSocketPath ? { localRpcSocketPath: command.localRpcSocketPath } : {}),
         ...(command.inheritedFileDescriptorCount
           ? { inheritedFileDescriptorCount: command.inheritedFileDescriptorCount }

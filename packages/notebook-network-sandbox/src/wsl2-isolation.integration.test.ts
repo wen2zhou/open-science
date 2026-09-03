@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
 import { wsl2Launch, type Wsl2Launch } from '../runtime/src/platform/wsl2-isolation.js'
+import { notebookWorkloadCacheEnv } from '../../../src/main/notebook/notebook-workload-cache-paths.js'
 
 const distro = process.env.OPEN_SCIENCE_WSL_DISTRO
 const user = process.env.OPEN_SCIENCE_WSL_USER
@@ -37,7 +38,7 @@ describe.runIf(enabled)('WSL2 sandbox real profile', () => {
     root = await mkdtemp(join(tmpdir(), 'open-science-wsl-command-'))
     workspace = join(root, 'Workspace 路径')
     handoff = join(root, 'handoff')
-    cache = join(root, 'cache')
+    cache = join(root, 'runtime', 'cache', 'notebook')
     unauthorized = join(root, 'unauthorized')
     await Promise.all(
       [workspace, handoff, cache, unauthorized].map((directory) =>
@@ -61,9 +62,11 @@ describe.runIf(enabled)('WSL2 sandbox real profile', () => {
       cwd: workspace,
       env: {
         PATH: process.env.PATH,
-        OPEN_SCIENCE_HANDOFF_DIR: handoff,
-        OPEN_SCIENCE_NOTEBOOK_CACHE_DIR: cache,
         OPEN_SCIENCE_TEST_SECRET: 'must-not-leak'
+      },
+      pathEnvironment: {
+        OPEN_SCIENCE_HANDOFF_DIR: handoff,
+        ...notebookWorkloadCacheEnv(join(root, 'runtime'))
       },
       filesystem: {
         privateRoot: root,
@@ -80,6 +83,7 @@ printf '你好 stdout\n'
 printf 'guest stderr\n' >&2
 printf handoff > "$OPEN_SCIENCE_HANDOFF_DIR/result.txt"
 printf cache > "$OPEN_SCIENCE_NOTEBOOK_CACHE_DIR/result.txt"
+mkdir -p "$MPLCONFIGDIR" "$UV_CACHE_DIR" "$HF_DATASETS_CACHE" "$HF_XET_CACHE" "$HF_ASSETS_CACHE" "$TORCHINDUCTOR_CACHE_DIR" "$TORCH_EXTENSIONS_DIR" "$PYTORCH_KERNEL_CACHE_PATH" "$TRITON_CACHE_DIR" "$NUMBA_CACHE_DIR" "$R_USER_CACHE_DIR"
 [ ! -e ../unauthorized/secret.txt ]
 [ -z "\${OPEN_SCIENCE_TEST_SECRET:-}" ]
 [ "$PATH" = /usr/bin:/bin ]

@@ -17,6 +17,7 @@ type Wsl2LaunchRequest = Readonly<{
   command: string
   cwd: string
   env: NodeJS.ProcessEnv
+  pathEnvironment?: NodeJS.ProcessEnv
   filesystem: FilesystemLayoutInput
   mapPath?: Wsl2PathMapper
 }>
@@ -29,16 +30,6 @@ type Wsl2Launch = Readonly<{
 
 const WINDOWS_PATH = /^[a-z]:[\\/]/iu
 const SAFE_USER = /^[a-z_][a-z0-9_-]*[$]?$/u
-const PATH_ENVIRONMENT_KEYS = new Set([
-  'OPEN_SCIENCE_HANDOFF_DIR',
-  'OPEN_SCIENCE_NOTEBOOK_CACHE_DIR',
-  'PIP_CACHE_DIR',
-  'HF_HOME',
-  'HF_HUB_CACHE',
-  'TORCH_HOME',
-  'XDG_CACHE_HOME'
-])
-
 const wslExecutable = (): string =>
   win32.join(process.env.SystemRoot ?? process.env.WINDIR ?? 'C:\\Windows', 'System32', 'wsl.exe')
 
@@ -132,8 +123,21 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
     LC_ALL: 'C.UTF-8',
     PATH: '/usr/bin:/bin'
   }
-  for (const [key, value] of Object.entries(request.env)) {
-    if (!value || !PATH_ENVIRONMENT_KEYS.has(key)) continue
+  const hostContains = (parent: string, child: string): boolean => {
+    const relative = win32.relative(parent, child)
+    return relative === '' || (!relative.startsWith('..') && !win32.isAbsolute(relative))
+  }
+  for (const [key, value] of Object.entries(request.pathEnvironment ?? {})) {
+    if (!value) continue
+    if (Object.hasOwn(guestEnvironment, key)) {
+      throw new Error('WSL2 sandbox path environment key is reserved.')
+    }
+    if (
+      !WINDOWS_PATH.test(value) ||
+      !request.filesystem.readWriteRoots.some((root) => hostContains(root, value))
+    ) {
+      throw new Error('WSL2 sandbox path environment is not writable.')
+    }
     guestEnvironment[key] = await map(value)
   }
 

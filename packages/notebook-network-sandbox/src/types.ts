@@ -73,6 +73,7 @@ export type NotebookSandboxCommand = Readonly<{
   args?: readonly string[]
   cwd: string
   env?: NodeJS.ProcessEnv
+  pathEnvironment?: NodeJS.ProcessEnv
   shell?: string | Readonly<{ kind: 'powershell' | 'cmd'; path: string }>
   signal?: AbortSignal
   localRpcSocketPath?: string

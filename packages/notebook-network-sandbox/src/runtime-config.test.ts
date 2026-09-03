@@ -102,6 +102,7 @@ describe('Notebook runtime configuration updates', () => {
       commandId: 'wsl2-command',
       cwd: 'C:\\workspace',
       env: {},
+      pathEnvironment: { UV_CACHE_DIR: 'C:\\workspace\\cache\\uv' },
       filesystem: {
         readOnlyRoots: [],
         readWriteRoots: ['C:\\workspace'],
@@ -114,7 +115,12 @@ describe('Notebook runtime configuration updates', () => {
       env: {}
     })
     expect(wsl2Launch).toHaveBeenCalledWith(
-      expect.objectContaining({ target, command: 'echo sandboxed', cwd: 'C:\\workspace' })
+      expect.objectContaining({
+        target,
+        command: 'echo sandboxed',
+        cwd: 'C:\\workspace',
+        pathEnvironment: { UV_CACHE_DIR: 'C:\\workspace\\cache\\uv' }
+      })
     )
     expect(CommandGateway.open).toHaveBeenCalledOnce()
     await NotebookNetworkRuntime.cleanupAfterCommand('wsl2-command', { processesTerminated: true })

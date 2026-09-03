@@ -259,8 +259,9 @@ const runShellCommand = (
     const runtimePlatform = shellRuntimePlatform(runtimeBinding, hostPlatform)
 
     let shellEnv: NodeJS.ProcessEnv
+    let workloadCacheEnv: NodeJS.ProcessEnv
     try {
-      const workloadCacheEnv = prepareNotebookWorkloadCache(options.runtimeRoot)
+      workloadCacheEnv = prepareNotebookWorkloadCache(options.runtimeRoot)
       shellEnv = buildShellEnv(
         options.handoffDir,
         runtimePlatform,
@@ -294,6 +295,10 @@ const runShellCommand = (
             executable: invocation.executable,
             args: invocation.args,
             env: baseEnv,
+            pathEnvironment: {
+              OPEN_SCIENCE_HANDOFF_DIR: options.handoffDir,
+              ...workloadCacheEnv
+            },
             cwd: options.cwd,
             commandText: options.command,
             sessionId: options.sessionId,

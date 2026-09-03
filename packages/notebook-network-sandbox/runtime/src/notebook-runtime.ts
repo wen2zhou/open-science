@@ -76,6 +76,7 @@ type NetworkWrapRequest = Readonly<{
   shell?: string | WindowsShell
   cwd: string
   env: NodeJS.ProcessEnv
+  pathEnvironment?: NodeJS.ProcessEnv
   localRpcSocketPath?: string
   inheritedFileDescriptorCount?: number
   filesystem: FilesystemLayoutInput
@@ -207,6 +208,7 @@ const wrap = async (
       command: request.command,
       cwd: request.cwd,
       env: request.env,
+      ...(request.pathEnvironment ? { pathEnvironment: request.pathEnvironment } : {}),
       filesystem
     })
     commandContexts.set(request.commandId, {

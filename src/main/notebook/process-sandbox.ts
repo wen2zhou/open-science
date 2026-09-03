@@ -24,6 +24,7 @@ export type NotebookSandboxInvocation = Readonly<{
   executable: string
   args: readonly string[]
   env: NodeJS.ProcessEnv
+  pathEnvironment?: NodeJS.ProcessEnv
   cwd: string
   commandText: string
   sessionId: string

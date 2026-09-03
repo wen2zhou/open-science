@@ -206,6 +206,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
           : {}),
         cwd: invocation.cwd,
         env,
+        ...(invocation.pathEnvironment ? { pathEnvironment: invocation.pathEnvironment } : {}),
         ...(invocation.localRpcSocketPath
           ? { localRpcSocketPath: invocation.localRpcSocketPath }
           : {}),

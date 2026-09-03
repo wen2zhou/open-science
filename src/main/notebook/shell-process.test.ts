@@ -18,6 +18,7 @@ import { NOTEBOOK_TEXT_LIMIT_BYTES } from './content-limits'
 import type { NotebookProcessSandbox } from './process-sandbox'
 import { normalizeFilesystemLayout } from '../../../packages/notebook-network-sandbox/runtime/src/platform/filesystem-layout.js'
 import { terminateProcessTree } from '../process-tree'
+import { notebookWorkloadCacheEnv } from './notebook-workload-cache-paths'
 
 afterEach(() => vi.unstubAllEnvs())
 
@@ -170,7 +171,11 @@ describe('notebook shell process behavior', () => {
             distro: 'Ubuntu-22.04',
             user: 'researcher'
           },
-          executable: '/bin/bash'
+          executable: '/bin/bash',
+          pathEnvironment: {
+            OPEN_SCIENCE_HANDOFF_DIR: 'C:\\handoff',
+            ...notebookWorkloadCacheEnv('C:\\runtime')
+          }
         })
       )
     })

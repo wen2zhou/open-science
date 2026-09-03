@@ -683,7 +683,8 @@ describe('NotebookNetworkSandboxOwner', () => {
     const invocation = {
       executable: '/usr/bin/python',
       args: ['script.py'],
-      env: { PATH: '/usr/bin' },
+      env: { PATH: 'C:\\Windows\\System32' },
+      pathEnvironment: { UV_CACHE_DIR: 'C:\\workspace\\cache\\uv' },
       cwd: 'C:\\workspace',
       commandText: 'python script.py',
       sessionId: 'session-1',
@@ -707,7 +708,10 @@ describe('NotebookNetworkSandboxOwner', () => {
     const wsl2 = await owner.wrap({ ...invocation, target })
 
     expect(backend.wrap.mock.calls[0]?.[0]).toMatchObject({ target: { kind: 'native' } })
-    expect(backend.wrap.mock.calls[1]?.[0]).toMatchObject({ target })
+    expect(backend.wrap.mock.calls[1]?.[0]).toMatchObject({
+      target,
+      pathEnvironment: { UV_CACHE_DIR: 'C:\\workspace\\cache\\uv' }
+    })
     expect(backend.wrap.mock.calls[1]?.[0]?.command).toBe("'/usr/bin/python' 'script.py'")
     expect(backend.wrap.mock.calls[1]?.[0]?.filesystem.readOnlyRoots).not.toContain(
       'C:\\Windows\\System32'
