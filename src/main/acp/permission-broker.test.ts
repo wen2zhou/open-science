@@ -1649,6 +1649,40 @@ describe('ACP permission broker', () => {
     expect(emitted).toHaveLength(2)
   })
 
+  it('does not reuse a native Shell grant for a WSL2-bound capability', async () => {
+    const emitted: EmittedPermissionRequest[] = []
+    const broker = new AcpPermissionBroker((request) => emitted.push(request))
+    const request = createNotebookPermissionRequest(
+      'session-1',
+      'mcp__open-science-notebook__bash_execute',
+      { command: 'pwd' }
+    )
+
+    const native = broker.requestPermission(request, { profile: 'ask' })
+    broker.respond({ requestId: emitted[0].requestId, optionId: getSessionOptionId(emitted[0]) })
+    await native
+
+    const wsl = broker.requestPermission(request, {
+      profile: 'ask',
+      notebookShellRuntime: 'wsl2-bash'
+    })
+    expect(emitted).toHaveLength(2)
+    broker.respond({ requestId: emitted[1].requestId, optionId: getSessionOptionId(emitted[1]) })
+    await wsl
+
+    expect(broker.listGrants('session-1')).toEqual(
+      expect.arrayContaining([
+        expect.objectContaining({
+          categoryKey: 'mcp:open-science-notebook/bash_execute:bash'
+        }),
+        expect.objectContaining({
+          categoryKey: 'mcp:open-science-notebook/bash_execute:wsl2-bash',
+          label: 'Notebook shell (Bash)'
+        })
+      ])
+    )
+  })
+
   it('keeps a per-tool session grant when the composer profile changes between calls', async () => {
     const emitted: EmittedPermissionRequest[] = []
     const broker = new AcpPermissionBroker((request) => emitted.push(request))

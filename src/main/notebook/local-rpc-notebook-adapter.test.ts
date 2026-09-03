@@ -191,7 +191,7 @@ describe('notebook local RPC adapter', () => {
     }
   )
 
-  it.each(['runCell', 'execute'] as const)(
+  it.each(['runCell', 'execute', 'executeShell'] as const)(
     'forwards request cancellation to data execution method %s',
     async (method) => {
       const capability = createCapability()
@@ -214,8 +214,10 @@ describe('notebook local RPC adapter', () => {
         expect(vi.mocked(capability.execute).mock.calls[0]?.[0]).not.toHaveProperty(
           'kernelSkillIds'
         )
-      } else {
+      } else if (method === 'runCell') {
         expect(capability.runCell).toHaveBeenCalledWith(methodRequest, cancellation.signal)
+      } else {
+        expect(capability.executeShell).toHaveBeenCalledWith(methodRequest, cancellation.signal)
       }
     }
   )

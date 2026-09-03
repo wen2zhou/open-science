@@ -3261,7 +3261,13 @@ describe('notebook runtime service', () => {
         dataRoot: root,
         projectId: 'default-project',
         repository: new NotebookRunRepository(root),
-        shellProcess: { execute }
+        shellProcess: { execute },
+        shellRuntimeBinding: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        }
       })
 
       const result = await service.executeShell({
@@ -3282,7 +3288,13 @@ describe('notebook runtime service', () => {
         runtimeRoot: getRuntimeRoot(root),
         sessionId: 'session-1',
         timeoutMs: 321,
-        signal: expect.any(AbortSignal)
+        signal: expect.any(AbortSignal),
+        runtimeBinding: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        }
       })
       expect(result).toEqual({
         stdout: 'partial output',
@@ -3293,8 +3305,82 @@ describe('notebook runtime service', () => {
       const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
       expect(state.runs[0]).toMatchObject({
         status: 'failed',
+        shellRuntime: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        },
         text: { stdout: 'partial output', stderr: 'command failed' }
       })
+    })
+
+    it('records a selected but unavailable WSL runtime as failed without falling back', async () => {
+      const root = await createStorageRoot()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        platform: 'win32',
+        shellRuntimeBinding: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        }
+      })
+
+      await expect(
+        service.executeShell({
+          sessionId: 'session-1',
+          workspaceCwd: root,
+          command: 'Write-Output should-not-run'
+        })
+      ).resolves.toMatchObject({
+        exitCode: null,
+        runtimeStatus: 'unavailable',
+        errorCode: 'shell-runtime-unavailable'
+      })
+      const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
+      expect(state.runs[0]).toMatchObject({
+        status: 'failed',
+        shellRuntime: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        }
+      })
+    })
+
+    it('uses the captured WSL POSIX dialect for mutation detection on a Windows host', async () => {
+      const root = await createStorageRoot()
+      const execute = vi.fn<NotebookShellProcess['execute']>()
+      const service = new NotebookRuntimeService({
+        configRoot: root,
+        dataRoot: root,
+        projectId: 'default-project',
+        repository: new NotebookRunRepository(root),
+        platform: 'win32',
+        shellProcess: { execute },
+        shellRuntimeBinding: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        }
+      })
+
+      const result = await service.executeShell({
+        sessionId: 'session-1',
+        workspaceCwd: root,
+        command: 'tool=python3; mode=-m; action=venv; "$tool" "$mode" "$action" analysis-env'
+      })
+
+      expect(result).toMatchObject({ exitCode: 1 })
+      expect(result.stderr).toMatch(/manage_packages/)
+      expect(execute).not.toHaveBeenCalled()
     })
 
     it('queues overlapping shell calls in the same Session until the active command finishes', async () => {

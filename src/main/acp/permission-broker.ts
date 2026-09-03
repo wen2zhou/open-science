@@ -483,25 +483,36 @@ const resolveNotebookRuntime = (tool: string, rawInput: unknown): string | undef
   return tool === 'notebook_execute' ? 'python' : undefined
 }
 
+const resolveNotebookPermissionRuntime = (
+  tool: string,
+  rawInput: unknown,
+  shellRuntime?: 'powershell' | 'native-posix' | 'wsl2-bash'
+): string | undefined =>
+  tool === 'bash_execute' && shellRuntime === 'wsl2-bash'
+    ? 'wsl2-bash'
+    : resolveNotebookRuntime(tool, rawInput)
+
 const resolveNotebookPermissionContext = (
   name: string | null | undefined,
   rawInput: unknown,
-  mcpServerNames: readonly string[]
+  mcpServerNames: readonly string[],
+  shellRuntime?: 'powershell' | 'native-posix' | 'wsl2-bash'
 ): { runtime?: string } | undefined => {
   const identity = resolveMcpToolIdentity(name, mcpServerNames)
   if (!identity) return undefined
 
-  return resolveNotebookPermissionContextForIdentity(identity, rawInput)
+  return resolveNotebookPermissionContextForIdentity(identity, rawInput, shellRuntime)
 }
 
 const resolveNotebookPermissionContextForIdentity = (
   identity: string,
-  rawInput: unknown
+  rawInput: unknown,
+  shellRuntime?: 'powershell' | 'native-posix' | 'wsl2-bash'
 ): { runtime?: string } | undefined => {
   const tool = resolveNotebookExecutionTool(identity)
   if (!tool) return undefined
 
-  return { runtime: resolveNotebookRuntime(tool, rawInput) }
+  return { runtime: resolveNotebookPermissionRuntime(tool, rawInput, shellRuntime) }
 }
 
 const isMcpPermission = (
@@ -563,7 +574,8 @@ const projectPermissionOptions = (
 const resolveCategoryKey = (
   params: RequestPermissionRequest,
   mcpServerNames: readonly string[] = [],
-  allowLegacyReportedMcp = false
+  allowLegacyReportedMcp = false,
+  shellRuntime?: 'powershell' | 'native-posix' | 'wsl2-bash'
 ): string | undefined => {
   const { toolCall } = params
   const providerToolName = extractProviderToolName(toolCall)
@@ -583,12 +595,23 @@ const resolveCategoryKey = (
 
     const notebookContext =
       (trustedIdentity
-        ? resolveNotebookPermissionContextForIdentity(trustedIdentity, toolCall.rawInput)
-        : resolveNotebookPermissionContext(providerToolName, toolCall.rawInput, mcpServerNames)) ??
+        ? resolveNotebookPermissionContextForIdentity(
+            trustedIdentity,
+            toolCall.rawInput,
+            shellRuntime
+          )
+        : resolveNotebookPermissionContext(
+            providerToolName,
+            toolCall.rawInput,
+            mcpServerNames,
+            shellRuntime
+          )) ??
       (allowLegacyReportedMcp
         ? (() => {
             const tool = resolveNotebookExecutionTool(identity)
-            return tool ? { runtime: resolveNotebookRuntime(tool, toolCall.rawInput) } : undefined
+            return tool
+              ? { runtime: resolveNotebookPermissionRuntime(tool, toolCall.rawInput, shellRuntime) }
+              : undefined
           })()
         : undefined)
     if (notebookContext) {
@@ -652,7 +675,7 @@ const describeGrant = (categoryKey: string): AcpPermissionGrant => {
           ? 'R'
           : runtime === 'javascript'
             ? 'JavaScript'
-            : runtime === 'bash'
+            : runtime === 'bash' || runtime === 'wsl2-bash'
               ? 'Bash'
               : undefined
     const [server, tool] = identity.split('/')
@@ -946,7 +969,12 @@ class AcpPermissionBroker {
       codexGroup?.categoryKey ??
       (codexGroupMatch?.kind === 'unsafe'
         ? undefined
-        : resolveCategoryKey(params, mcpServerNames, !this.permissionGrantRegistry))
+        : resolveCategoryKey(
+            params,
+            mcpServerNames,
+            !this.permissionGrantRegistry,
+            policyContext?.notebookShellRuntime
+          ))
     const capability = categoryKey ? capabilityFromLegacyCategory(categoryKey) : undefined
     const mcpIdentity = isMcp
       ? (resolveTrustedMcpToolIdentity(params, mcpServerNames) ??

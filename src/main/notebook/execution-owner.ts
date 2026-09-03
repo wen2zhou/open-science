@@ -11,6 +11,7 @@ import type {
   NotebookRunProvenanceContext,
   NotebookRunSource,
   NotebookRunStatus,
+  ShellRuntimeBinding,
   NotebookWorkingFile,
   RunNotebookCellRequest
 } from '../../shared/notebook'
@@ -49,6 +50,11 @@ import {
 import type { NotebookHelperModuleHost, NotebookHelperModuleScope } from './helper-module-host'
 import { getNotebookFileEvidenceLocation } from './repository'
 import { getNotebookInputRoot } from './input-staging'
+import {
+  captureShellRuntimeBinding,
+  defaultShellRuntimeBinding,
+  shellRuntimePlatform
+} from './shell-runtime'
 
 type NotebookControlResult = Pick<
   NotebookSessionExecutionResult,
@@ -132,6 +138,7 @@ type NotebookExecutionOwnerOptions = {
   logger: Pick<Logger, 'error'>
   platform?: NodeJS.Platform
   shellProcess?: NotebookShellProcess
+  shellRuntimeBinding?: ShellRuntimeBinding
 }
 
 const errorToExecutionResult = (error: unknown, cwd: string): NotebookSessionExecutionResult => {
@@ -234,6 +241,7 @@ const runAgentFrameId = (
 
 class NotebookExecutionOwner {
   private readonly shellProcess: NotebookShellProcess
+  private readonly shellRuntimeBinding: ShellRuntimeBinding
   // ponytail: fixed runtime-generation ceiling; add settings only when real workloads need tuning.
   private readonly shellAdmission = new NotebookShellExecutionAdmission()
   private readonly shellOperationsByLane = new Map<string, Set<ShellExecutionOperation>>()
@@ -244,6 +252,9 @@ class NotebookExecutionOwner {
 
   constructor(private readonly options: NotebookExecutionOwnerOptions) {
     this.shellProcess = options.shellProcess ?? new NotebookShellProcessAdapter(options.platform)
+    this.shellRuntimeBinding = captureShellRuntimeBinding(
+      options.shellRuntimeBinding ?? defaultShellRuntimeBinding(options.platform)
+    )
   }
 
   private inputRoot(session: NotebookSessionAggregate): string {
@@ -860,6 +871,9 @@ class NotebookExecutionOwner {
     signal: AbortSignal,
     admission: Promise<(() => void) | undefined>
   ): Promise<NotebookShellResult> {
+    const runtimeBinding = captureShellRuntimeBinding(
+      request.shellRuntime ?? this.shellRuntimeBinding
+    )
     const { runId } = this.options.runTerminalization.allocateRunIdentity()
     const queuedRun: NotebookRunRecord = {
       runId,
@@ -870,6 +884,7 @@ class NotebookExecutionOwner {
       source: 'agent',
       inputKind: 'cell',
       kernelKind: 'bash',
+      shellRuntime: runtimeBinding,
       script: request.command,
       status: 'queued',
       startedAt: Date.now(),
@@ -917,10 +932,10 @@ class NotebookExecutionOwner {
             let fileEvidence: ExecutionFileEvidenceSummary | undefined
             const blockedMutation = detectManagedRuntimeMutation({
               source: request.command,
-              surface: this.options.platform === 'win32' ? 'powershell' : 'bash',
+              surface: runtimeBinding.kind === 'powershell' ? 'powershell' : 'bash',
               runtimeRoot: session.runtimeRoot,
               cwd: session.cwd,
-              platform: this.options.platform
+              platform: shellRuntimePlatform(runtimeBinding)
             })
             let shellResult: NotebookShellResult | undefined
             try {
@@ -940,6 +955,7 @@ class NotebookExecutionOwner {
                     protectedDirs: [getAppClaudeConfigDir(this.options.configRoot)],
                     sessionId: session.sessionId,
                     projectId: session.projectId,
+                    runtimeBinding,
                     timeoutMs: request.timeoutMs,
                     signal
                   }))
@@ -959,11 +975,13 @@ class NotebookExecutionOwner {
               throw new Error('Notebook shell execution completed without a result.')
             const status: NotebookRunStatus = shellResult.cancelled
               ? 'cancelled'
-              : shellResult.exitCode === 0
-                ? 'completed'
-                : shellResult.exitCode === null
-                  ? 'timeout'
-                  : 'failed'
+              : shellResult.runtimeStatus === 'unavailable'
+                ? 'failed'
+                : shellResult.exitCode === 0
+                  ? 'completed'
+                  : shellResult.exitCode === null
+                    ? 'timeout'
+                    : 'failed'
             const outputs: NotebookOutput[] = [
               ...(shellResult.stdout
                 ? [{ type: 'stream' as const, name: 'stdout' as const, text: shellResult.stdout }]
@@ -983,7 +1001,9 @@ class NotebookExecutionOwner {
               truncated: shellResult.truncated,
               workingFiles,
               fileEvidence,
-              exitCode: shellResult.exitCode
+              exitCode: shellResult.exitCode,
+              runtimeStatus: shellResult.runtimeStatus,
+              errorCode: shellResult.errorCode
             }
           } finally {
             release()
@@ -995,6 +1015,8 @@ class NotebookExecutionOwner {
         stdout: result.stdout,
         stderr: result.stderr,
         exitCode: result.exitCode,
+        ...(result.runtimeStatus ? { runtimeStatus: result.runtimeStatus } : {}),
+        ...(result.errorCode ? { errorCode: result.errorCode } : {}),
         ...(result.truncated ? { truncated: true } : {})
       }
     } finally {

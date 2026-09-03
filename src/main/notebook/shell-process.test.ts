@@ -88,6 +88,85 @@ describe('notebook shell process behavior', () => {
       expect(script).toContain('[ScriptBlock]::Create($openScienceCommandText)')
       expect(script).toContain('& $openScienceCommand')
     })
+
+    it('uses the shell captured by a native POSIX binding instead of re-reading the host platform', () => {
+      expect(
+        resolveShellInvocation('echo hi', {
+          kind: 'native-posix',
+          shell: '/opt/local/bin/zsh'
+        })
+      ).toEqual({ executable: '/opt/local/bin/zsh', args: ['-c', 'echo hi'] })
+    })
+
+    it('uses Bash and the exact selected profile for a WSL2 sandbox target', async () => {
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn(async (invocation) => {
+          throw new Error(`prepared:${JSON.stringify(invocation.target)}:${invocation.executable}`)
+        })
+      }
+
+      const result = await runShellCommand({
+        command: 'echo hi',
+        cwd: 'C:\\workspace',
+        handoffDir: 'C:\\handoff',
+        runtimeRoot: 'C:\\runtime',
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        platform: 'win32',
+        runtimeBinding: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        },
+        processSandbox
+      })
+
+      expect(result).toEqual({
+        stdout: '',
+        stderr: 'SHELL_RUNTIME_UNAVAILABLE: The selected WSL2 Bash runtime is unavailable.',
+        exitCode: null,
+        runtimeStatus: 'unavailable',
+        errorCode: 'shell-runtime-unavailable'
+      })
+      expect(processSandbox.wrap).toHaveBeenCalledWith(
+        expect.objectContaining({
+          target: {
+            kind: 'wsl2',
+            profileId: 'profile-1',
+            distro: 'Ubuntu-22.04',
+            user: 'researcher'
+          },
+          executable: '/bin/bash'
+        })
+      )
+    })
+
+    it('fails a selected WSL2 runtime closed with a stable unavailable code instead of native fallback', async () => {
+      const result = await runShellCommand({
+        command: 'Write-Output should-not-run',
+        cwd: 'C:\\workspace',
+        handoffDir: 'C:\\handoff',
+        runtimeRoot: 'C:\\runtime',
+        sessionId: 'session-1',
+        projectId: 'project-1',
+        platform: 'win32',
+        runtimeBinding: {
+          kind: 'wsl2-bash',
+          profileId: 'profile-1',
+          distro: 'Ubuntu-22.04',
+          user: 'researcher'
+        }
+      })
+
+      expect(result).toEqual({
+        stdout: '',
+        stderr: 'SHELL_RUNTIME_UNAVAILABLE: The selected WSL2 Bash runtime is unavailable.',
+        exitCode: null,
+        runtimeStatus: 'unavailable',
+        errorCode: 'shell-runtime-unavailable'
+      })
+    })
   })
 
   describe('platform support', () => {

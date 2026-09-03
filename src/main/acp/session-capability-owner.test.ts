@@ -604,6 +604,54 @@ describe('ACP session capability owner', () => {
     expect(releaseSessionCapabilities).toHaveBeenCalledWith('app-session')
   })
 
+  it('captures one immutable Shell binding for capability description, RPC and permission context', async () => {
+    const selected = {
+      kind: 'wsl2-bash' as const,
+      profileId: 'profile-1',
+      distro: 'Ubuntu-22.04',
+      user: 'researcher'
+    }
+    const owner = createOwner({
+      artifacts: undefined,
+      skillImport: undefined,
+      notebook: {
+        projectId: 'project',
+        mcpEntryPath: '/app/main.js',
+        getShellRuntimeBinding: () => selected,
+        getRpcConnection: async () => ({
+          endpoint: 'http://127.0.0.1:1',
+          token: 'notebook'
+        })
+      }
+    })
+
+    const provision = await owner.provision({
+      stableAppSessionId: 'provider-session',
+      framework: opencodeFramework,
+      nativeMcpEnabled: true,
+      bridgeMcpAliasesEnabled: false,
+      policy: CURRENT_PRIMARY_SESSION_CAPABILITY_POLICY,
+      sessionCwd: '/workspace',
+      projectId: 'project'
+    })
+    selected.user = 'changed-after-provision'
+    provision.commit('app-session')
+
+    const notebook = provision.mcpServers.find((server) => server.name === 'open_science_notebook')
+    expect(notebook && 'env' in notebook ? notebook.env : []).toContainEqual({
+      name: 'OPEN_SCIENCE_NOTEBOOK_SHELL_RUNTIME',
+      value:
+        '{"kind":"wsl2-bash","profileId":"profile-1","distro":"Ubuntu-22.04","user":"researcher"}'
+    })
+    expect(owner.shellRuntimeBindingFor('app-session')).toEqual({
+      kind: 'wsl2-bash',
+      profileId: 'profile-1',
+      distro: 'Ubuntu-22.04',
+      user: 'researcher'
+    })
+    expect(Object.isFrozen(owner.shellRuntimeBindingFor('app-session'))).toBe(true)
+  })
+
   it('releases acquired local RPC leases when a later provision step fails', async () => {
     const notebookRelease = vi.fn()
     const releaseSessionCapabilities = vi.fn()

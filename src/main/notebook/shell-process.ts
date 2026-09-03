@@ -15,6 +15,7 @@ import {
 } from '../process-tree'
 import { resolveWindowsPowerShellExecutable } from '../windows-powershell'
 import { NOTEBOOK_SHELL_DEFAULT_TIMEOUT_MS } from '../../shared/notebook'
+import type { ShellRuntimeBinding } from '../../shared/notebook'
 import {
   notebookWorkloadCacheEnv,
   notebookWorkloadCacheRoot,
@@ -26,6 +27,11 @@ import {
   limitUtf8
 } from './content-limits'
 import { buildNotebookShellEnvironment, environmentPathRoots } from './process-environment'
+import {
+  defaultShellRuntimeBinding,
+  shellRuntimePlatform,
+  shellRuntimeSandboxTarget
+} from './shell-runtime'
 
 const SHELL_TIMEOUT_MESSAGE_RESERVE_BYTES = 256
 
@@ -38,6 +44,8 @@ type NotebookShellResult = {
   exitCode: number | null
   truncated?: boolean
   cancelled?: boolean
+  runtimeStatus?: 'unavailable'
+  errorCode?: 'shell-runtime-unavailable'
 }
 
 type NotebookShellProcessRequest = {
@@ -52,6 +60,7 @@ type NotebookShellProcessRequest = {
   projectId: string
   timeoutMs?: number
   signal?: AbortSignal
+  runtimeBinding?: ShellRuntimeBinding
 }
 
 // Runtime-private port: platform invocation, encoding, env projection, and teardown stay in its adapter.
@@ -168,9 +177,10 @@ const encodePowerShellCommand = (command: string): string => {
 // cmd.exe, whose command language cannot run the POSIX-style commands agents commonly emit.
 const resolveShellInvocation = (
   command: string,
-  platform: NodeJS.Platform = process.platform
-): ShellInvocation =>
-  platform === 'win32'
+  runtime: NodeJS.Platform | ShellRuntimeBinding = process.platform
+): ShellInvocation => {
+  const binding = typeof runtime === 'string' ? defaultShellRuntimeBinding(runtime) : runtime
+  return binding.kind === 'powershell'
     ? {
         executable: resolveWindowsPowerShellExecutable(),
         args: [
@@ -181,7 +191,11 @@ const resolveShellInvocation = (
           encodePowerShellCommand(command)
         ]
       }
-    : { executable: '/bin/sh', args: ['-c', command] }
+    : {
+        executable: binding.kind === 'wsl2-bash' ? '/bin/bash' : binding.shell,
+        args: ['-c', command]
+      }
+}
 
 // Cancellation and timeout settle only after the bounded process-tree terminator finishes, so callers
 // may safely tear down or remove the Session workspace after this promise resolves.
@@ -218,12 +232,25 @@ const runShellCommand = (
       }
     }
 
+    const hostPlatform = options.platform ?? process.platform
+    const runtimeBinding = options.runtimeBinding ?? defaultShellRuntimeBinding(hostPlatform)
+    if (runtimeBinding.kind === 'wsl2-bash' && !options.processSandbox) {
+      return {
+        stdout: '',
+        stderr: 'SHELL_RUNTIME_UNAVAILABLE: The selected WSL2 Bash runtime is unavailable.',
+        exitCode: null,
+        runtimeStatus: 'unavailable',
+        errorCode: 'shell-runtime-unavailable'
+      }
+    }
+    const runtimePlatform = shellRuntimePlatform(runtimeBinding)
+
     let shellEnv: NodeJS.ProcessEnv
     try {
       const workloadCacheEnv = prepareNotebookWorkloadCache(options.runtimeRoot)
       shellEnv = buildShellEnv(
         options.handoffDir,
-        options.platform ?? process.platform,
+        runtimePlatform,
         process.env,
         options.runtimeRoot,
         workloadCacheEnv
@@ -237,41 +264,54 @@ const runShellCommand = (
     }
 
     const timeoutMs = options.timeoutMs ?? NOTEBOOK_SHELL_DEFAULT_TIMEOUT_MS
-    const platform = options.platform ?? process.platform
-    const nativeInvocation = resolveShellInvocation(options.command, platform)
+    const platform = hostPlatform
+    const nativeInvocation = resolveShellInvocation(options.command, runtimeBinding)
     const invocation = options.processSandbox
       ? nativeInvocation
-      : protectManagedRuntimeWrites(nativeInvocation, options.runtimeRoot, platform)
+      : protectManagedRuntimeWrites(nativeInvocation, options.runtimeRoot, runtimePlatform)
     const baseEnv = shellEnv
-    const sandboxed = options.processSandbox
-      ? await options.processSandbox.wrap({
-          executable: invocation.executable,
-          args: invocation.args,
-          env: baseEnv,
-          cwd: options.cwd,
-          commandText: options.command,
-          sessionId: options.sessionId,
-          projectId: options.projectId,
-          runtime: 'bash',
-          filesystem: {
-            readOnlyRoots: [
-              options.runtimeRoot,
-              ...(options.inputRoot ? [options.inputRoot] : []),
-              dirname(invocation.executable),
-              ...environmentPathRoots(baseEnv, platform)
-            ],
-            readWriteRoots: [
-              options.notebookSessionRoot ?? options.cwd,
-              options.cwd,
-              options.handoffDir,
-              notebookWorkloadCacheRoot(options.runtimeRoot)
-            ],
-            deniedReadRoots: options.protectedDirs ?? [],
-            deniedWriteRoots: options.protectedDirs ?? []
-          },
-          ...(options.signal ? { signal: options.signal } : {})
-        })
-      : undefined
+    let sandboxed: Awaited<ReturnType<NotebookProcessSandbox['wrap']>> | undefined
+    try {
+      sandboxed = options.processSandbox
+        ? await options.processSandbox.wrap({
+            target: shellRuntimeSandboxTarget(runtimeBinding),
+            executable: invocation.executable,
+            args: invocation.args,
+            env: baseEnv,
+            cwd: options.cwd,
+            commandText: options.command,
+            sessionId: options.sessionId,
+            projectId: options.projectId,
+            runtime: 'bash',
+            filesystem: {
+              readOnlyRoots: [
+                options.runtimeRoot,
+                ...(options.inputRoot ? [options.inputRoot] : []),
+                dirname(invocation.executable),
+                ...environmentPathRoots(baseEnv, runtimePlatform)
+              ],
+              readWriteRoots: [
+                options.notebookSessionRoot ?? options.cwd,
+                options.cwd,
+                options.handoffDir,
+                notebookWorkloadCacheRoot(options.runtimeRoot)
+              ],
+              deniedReadRoots: options.protectedDirs ?? [],
+              deniedWriteRoots: options.protectedDirs ?? []
+            },
+            ...(options.signal ? { signal: options.signal } : {})
+          })
+        : undefined
+    } catch (error) {
+      if (runtimeBinding.kind !== 'wsl2-bash') throw error
+      return {
+        stdout: '',
+        stderr: 'SHELL_RUNTIME_UNAVAILABLE: The selected WSL2 Bash runtime is unavailable.',
+        exitCode: null,
+        runtimeStatus: 'unavailable',
+        errorCode: 'shell-runtime-unavailable'
+      }
+    }
     let sandboxCleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
     const cleanupSandbox = (
       reason: NotebookSandboxCleanupReason,

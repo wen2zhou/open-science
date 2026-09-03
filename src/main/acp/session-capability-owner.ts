@@ -1,6 +1,7 @@
 import type { McpServer } from '@agentclientprotocol/sdk'
 
 import type { SideChatSendMessageRequest, SideChatSendMessageResult } from '../../shared/side-chat'
+import type { ShellRuntimeBinding } from '../../shared/notebook'
 import type { AgentFramework } from '../agent-framework'
 import {
   canonicalAppMcpServerName,
@@ -33,6 +34,7 @@ import {
 } from '../session-plan/plan-mcp-server'
 import { HOST_MESSAGE_MCP_SERVER_NAME } from '../side-chat/host-message-mcp-server'
 import type { AgentMcpHttpHost } from './mcp-http-host'
+import { captureShellRuntimeBinding, defaultShellRuntimeBinding } from '../notebook/shell-runtime'
 
 const log = createLogger('acp')
 
@@ -140,6 +142,7 @@ export type SessionCapabilityNotebookOptions = {
   }) => Promise<NotebookRpcConnection>
   registerSessionAlias?: (aliasSessionId: string, sessionId: string) => void
   releaseSessionCapabilities?: (sessionId: string) => void
+  getShellRuntimeBinding?: () => ShellRuntimeBinding | Promise<ShellRuntimeBinding>
 }
 
 export type SessionCapabilitySkillImportOptions = {
@@ -181,6 +184,7 @@ type BuildSessionCapabilitiesRequest = {
 type BuiltSessionCapabilities = Readonly<{
   mcpServers: McpServer[]
   descriptor: EffectiveSessionCapabilityDescriptor
+  shellRuntime?: ShellRuntimeBinding
 }>
 
 export type ProvisionSessionCapabilitiesRequest = Omit<
@@ -214,6 +218,7 @@ type CommitSessionCapabilitiesRequest = {
   routingIds: SessionCapabilityRoutingIds
   mcpServers: readonly McpServer[]
   descriptor: EffectiveSessionCapabilityDescriptor
+  shellRuntime?: ShellRuntimeBinding
   notebookRelease?: () => void
   skillImportRelease?: () => void
   planRelease?: () => void
@@ -287,6 +292,7 @@ export class AcpSessionCapabilityOwner {
   private readonly literatureRoutingIds = new Map<string, string>()
   private readonly literatureEnabledSessionIds = new Set<string>()
   private readonly descriptors = new Map<string, EffectiveSessionCapabilityDescriptor>()
+  private readonly shellRuntimeBindings = new Map<string, ShellRuntimeBinding>()
   private readonly committedSessionIds = new Set<string>()
   private readonly provisionalRoutingOwners = new Map<string, object>()
   private provisionalGeneration = 0
@@ -397,6 +403,7 @@ export class AcpSessionCapabilityOwner {
 
         built = Object.freeze({
           mcpServers: [...built.mcpServers, ...servers],
+          ...(built.shellRuntime ? { shellRuntime: built.shellRuntime } : {}),
           descriptor: freezeDescriptor({
             ...built.descriptor,
             transport:
@@ -470,6 +477,7 @@ export class AcpSessionCapabilityOwner {
           routingIds,
           mcpServers: built.mcpServers,
           descriptor: built.descriptor,
+          shellRuntime: built.shellRuntime,
           notebookRelease,
           skillImportRelease,
           planRelease
@@ -565,6 +573,12 @@ export class AcpSessionCapabilityOwner {
       policyAllowsSessionCapability(request.policy, 'artifacts') &&
       (request.nativeMcpEnabled || request.bridgeMcpAliasesEnabled)
     const notebookAllowed = policyAllowsSessionCapability(request.policy, 'notebook')
+    const shellRuntime =
+      notebookAllowed && this.options.notebook
+        ? captureShellRuntimeBinding(
+            (await this.options.notebook.getShellRuntimeBinding?.()) ?? defaultShellRuntimeBinding()
+          )
+        : undefined
     const skillImportAllowed = policyAllowsSessionCapability(request.policy, 'skill-import')
     const planAllowed = policyAllowsSessionCapability(request.policy, 'plan')
     const hostMessageAllowed = policyAllowsSessionCapability(request.policy, 'host-message')
@@ -588,7 +602,8 @@ export class AcpSessionCapabilityOwner {
             skillImport: skillImportAllowed,
             plan: planAllowed,
             hostMessage: hostMessageAllowed,
-            memoryTools: memoryToolsEnabled
+            memoryTools: memoryToolsEnabled,
+            shellRuntime
           })
         : transport === 'http'
           ? await this.buildHttpServers(request, {
@@ -597,7 +612,8 @@ export class AcpSessionCapabilityOwner {
               skillImport: skillImportAllowed,
               plan: planAllowed,
               hostMessage: hostMessageAllowed,
-              memoryTools: memoryToolsEnabled
+              memoryTools: memoryToolsEnabled,
+              shellRuntime
             })
           : []
     if (
@@ -701,7 +717,11 @@ export class AcpSessionCapabilityOwner {
       literatureProvisionedWithSessionNew: request.literatureEnabled
     })
 
-    return Object.freeze({ mcpServers: modelFacingServers, descriptor })
+    return Object.freeze({
+      mcpServers: modelFacingServers,
+      descriptor,
+      ...(shellRuntime ? { shellRuntime } : {})
+    })
   }
 
   private commit(request: CommitSessionCapabilitiesRequest): void {
@@ -740,6 +760,7 @@ export class AcpSessionCapabilityOwner {
       this.literatureRoutingIds.set(appSessionId, routingIds.literature)
     }
     this.descriptors.set(appSessionId, descriptor)
+    if (request.shellRuntime) this.shellRuntimeBindings.set(appSessionId, request.shellRuntime)
     this.committedSessionIds.add(appSessionId)
     this.commitNotebookRelease(appSessionId, request.notebookRelease)
     this.commitSkillImportRelease(appSessionId, request.skillImportRelease)
@@ -847,6 +868,7 @@ export class AcpSessionCapabilityOwner {
     this.literatureRoutingIds.delete(appSessionId)
     this.literatureEnabledSessionIds.delete(appSessionId)
     this.descriptors.delete(appSessionId)
+    this.shellRuntimeBindings.delete(appSessionId)
     this.committedSessionIds.delete(appSessionId)
     this.releaseCommittedNotebookCapability(appSessionId)
     this.releaseCommittedSkillImportCapability(appSessionId)
@@ -889,6 +911,7 @@ export class AcpSessionCapabilityOwner {
     this.mcpServers.clear()
     this.literatureEnabledSessionIds.clear()
     this.descriptors.clear()
+    this.shellRuntimeBindings.clear()
     this.committedSessionIds.clear()
     // In-flight provisions retain terminal cleanup ownership across teardown. A same-id successor
     // supersedes that ownership when it starts provisioning.
@@ -904,6 +927,10 @@ export class AcpSessionCapabilityOwner {
 
   mcpServerNamesFor(appSessionId: string): readonly string[] {
     return this.descriptors.get(appSessionId)?.canonicalMcpServerNames ?? []
+  }
+
+  shellRuntimeBindingFor(appSessionId: string): ShellRuntimeBinding | undefined {
+    return this.shellRuntimeBindings.get(appSessionId)
   }
 
   mcpServersFor(appSessionId: string): readonly McpServer[] {
@@ -1004,6 +1031,7 @@ export class AcpSessionCapabilityOwner {
     sessionCwd: string,
     projectId: string,
     memoryTools: boolean,
+    shellRuntime: ShellRuntimeBinding,
     onConnection?: (connection: NotebookRpcConnection) => void
   ): Promise<NotebookMcpEnvironment | undefined> {
     if (!this.options.notebook || !routingId) return undefined
@@ -1022,7 +1050,8 @@ export class AcpSessionCapabilityOwner {
       token: connection.token,
       projectId: projectId,
       sessionId: routingId,
-      workspaceCwd: sessionCwd
+      workspaceCwd: sessionCwd,
+      shellRuntime
     }
   }
 
@@ -1058,6 +1087,7 @@ export class AcpSessionCapabilityOwner {
       plan: boolean
       hostMessage: boolean
       memoryTools: boolean
+      shellRuntime?: ShellRuntimeBinding
     }
   ): Promise<McpServer[]> {
     const servers: McpServer[] = []
@@ -1083,6 +1113,7 @@ export class AcpSessionCapabilityOwner {
         request.sessionCwd,
         request.projectId,
         enabled.memoryTools,
+        enabled.shellRuntime ?? defaultShellRuntimeBinding(),
         request.onNotebookConnection
       )
       if (environment && this.options.notebook) {
@@ -1139,6 +1170,7 @@ export class AcpSessionCapabilityOwner {
       plan: boolean
       hostMessage: boolean
       memoryTools: boolean
+      shellRuntime?: ShellRuntimeBinding
     }
   ): Promise<McpServer[]> {
     const host = this.options.mcpHttpHost
@@ -1169,6 +1201,7 @@ export class AcpSessionCapabilityOwner {
         request.sessionCwd,
         request.projectId,
         enabled.memoryTools,
+        enabled.shellRuntime ?? defaultShellRuntimeBinding(),
         request.onNotebookConnection
       )
       if (environment && this.options.notebook && this.canPublishHttpRoute(request)) {

@@ -17,6 +17,7 @@ import {
 } from '../../shared/notebook'
 import type { ManageEnvironmentsRequest, ManageEnvironmentsResult } from '../../shared/notebook-env'
 import type { InstallRequest, InstallResult } from './package-manager'
+import { shellRuntimeBindingSchema } from './shell-runtime'
 
 const provenanceContextSchema = z
   .object({
@@ -113,7 +114,8 @@ const notebookLocalRpcRequestSchemas = {
   }),
   executeShell: notebookSessionRequestSchema.extend({
     command: z.string(),
-    timeoutMs: positiveTimeoutSchema.optional()
+    timeoutMs: positiveTimeoutSchema.optional(),
+    shellRuntime: shellRuntimeBindingSchema.optional()
   }),
   requestNetworkAccess: notebookSessionRequestSchema.extend({
     hostname: z.string().trim().min(1).max(253),

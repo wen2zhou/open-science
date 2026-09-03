@@ -19,7 +19,8 @@ import {
 } from '../local-rpc-transport'
 import { resolveProjectId } from '../../shared/project-scope'
 import type { ProjectIdScope } from '../../shared/project-scope'
-import { NOTEBOOK_REPL_DEFAULT_TIMEOUT_MS } from '../../shared/notebook'
+import { NOTEBOOK_REPL_DEFAULT_TIMEOUT_MS, type ShellRuntimeBinding } from '../../shared/notebook'
+import { defaultShellRuntimeBinding, shellRuntimeBindingSchema } from './shell-runtime'
 import {
   memoryAgentRememberMcpOutputSchema,
   memoryAgentRememberRequestSchema,
@@ -65,6 +66,7 @@ type NotebookMcpEnvironment = NotebookRpcConnection &
     sessionId: string
     workspaceCwd: string
     memoryTools?: boolean
+    shellRuntime?: ShellRuntimeBinding
   }
 
 type NotebookMcpServerConfigRequest = Omit<NotebookMcpEnvironment, 'memoryTools'> & {
@@ -215,19 +217,24 @@ const REPL_EXECUTE_DOC = [
 
 // Stateless shell contract, embedded as the bash_execute description so the agent always sees it.
 // The tool name is retained for backward compatibility, but Windows deliberately runs PowerShell.
-const buildShellExecuteDoc = (platform: NodeJS.Platform = process.platform): string => {
+const buildShellExecuteDoc = (
+  runtime: NodeJS.Platform | ShellRuntimeBinding = process.platform
+): string => {
+  const binding = typeof runtime === 'string' ? defaultShellRuntimeBinding(runtime) : runtime
   const shellDescription =
-    platform === 'win32'
+    binding.kind === 'powershell'
       ? 'Run one Windows PowerShell command in the shared session workspace. This is not Bash: use PowerShell syntax and do not assume a POSIX shell exists.'
-      : 'Run one shell command with `sh -c` in the shared session workspace.'
+      : binding.kind === 'wsl2-bash'
+        ? 'Run one WSL2 Bash command in the shared session workspace. Use Bash syntax; execution stays in the selected sandboxed WSL2 profile.'
+        : `Run one shell command with \`${binding.shell === '/bin/sh' ? 'sh' : binding.shell} -c\` in the shared session workspace.`
   const handoffVariable =
-    platform === 'win32' ? '$env:OPEN_SCIENCE_HANDOFF_DIR' : '$OPEN_SCIENCE_HANDOFF_DIR'
+    binding.kind === 'powershell' ? '$env:OPEN_SCIENCE_HANDOFF_DIR' : '$OPEN_SCIENCE_HANDOFF_DIR'
   const platformContract =
-    platform === 'win32'
+    binding.kind === 'powershell'
       ? 'Target Windows PowerShell 5.1; aliases are not POSIX utilities and `&&` is unavailable. Use `if ($?) { ... }` for dependent commands.'
       : undefined
   const exitCodeContract =
-    platform === 'win32'
+    binding.kind === 'powershell'
       ? 'Returns { stdout, stderr, exitCode }. PowerShell host/cmdlet text is normalized to UTF-8; native programs must emit UTF-8 themselves or their output may be garbled. A failed native program preserves its exit code, while an unhandled cmdlet failure returns exitCode 1; inspect exitCode instead of assuming success.'
       : 'Returns { stdout, stderr, exitCode } and does not throw on a non-zero exit; inspect exitCode instead of assuming success.'
 
@@ -295,6 +302,14 @@ const createNotebookMcpServerConfig = (request: NotebookMcpServerConfigRequest):
       { name: 'OPEN_SCIENCE_NOTEBOOK_PROJECT_ID', value: projectId },
       { name: 'OPEN_SCIENCE_NOTEBOOK_SESSION_ID', value: request.sessionId },
       { name: 'OPEN_SCIENCE_NOTEBOOK_WORKSPACE_CWD', value: request.workspaceCwd },
+      ...(request.shellRuntime
+        ? [
+            {
+              name: 'OPEN_SCIENCE_NOTEBOOK_SHELL_RUNTIME',
+              value: JSON.stringify(request.shellRuntime)
+            }
+          ]
+        : []),
       {
         name: 'OPEN_SCIENCE_NOTEBOOK_MEMORY_TOOLS',
         value: request.memoryTools ? '1' : '0'
@@ -327,6 +342,19 @@ const createNotebookMcpEnvironmentFromProcess = (
     throw new Error('Conflicting projectId and legacy projectName values.')
   }
   const projectId = resolveProjectId({ projectId: currentProjectId ?? legacyProjectId })
+  const shellRuntimeText = env.OPEN_SCIENCE_NOTEBOOK_SHELL_RUNTIME
+  let shellRuntime: ShellRuntimeBinding | undefined
+  if (shellRuntimeText) {
+    let decoded: unknown
+    try {
+      decoded = JSON.parse(shellRuntimeText)
+    } catch {
+      throw new Error('Invalid notebook Shell runtime binding.')
+    }
+    const parsed = shellRuntimeBindingSchema.safeParse(decoded)
+    if (!parsed.success) throw new Error('Invalid notebook Shell runtime binding.')
+    shellRuntime = parsed.data
+  }
   return {
     endpoint: requireEnvironmentVariable(env, 'OPEN_SCIENCE_NOTEBOOK_RPC_ENDPOINT'),
     socketPath: env.OPEN_SCIENCE_NOTEBOOK_RPC_SOCKET_PATH,
@@ -334,7 +362,8 @@ const createNotebookMcpEnvironmentFromProcess = (
     projectId,
     sessionId: requireEnvironmentVariable(env, 'OPEN_SCIENCE_NOTEBOOK_SESSION_ID'),
     workspaceCwd: requireEnvironmentVariable(env, 'OPEN_SCIENCE_NOTEBOOK_WORKSPACE_CWD'),
-    memoryTools: env.OPEN_SCIENCE_NOTEBOOK_MEMORY_TOOLS === '1'
+    memoryTools: env.OPEN_SCIENCE_NOTEBOOK_MEMORY_TOOLS === '1',
+    ...(shellRuntime ? { shellRuntime } : {})
   }
 }
 
@@ -361,7 +390,10 @@ const callNotebookRpc = async (
           ...((params ?? {}) as Record<string, unknown>),
           sessionId: environment.sessionId,
           workspaceCwd: environment.workspaceCwd,
-          projectId
+          projectId,
+          ...(method === 'executeShell' && environment.shellRuntime
+            ? { shellRuntime: environment.shellRuntime }
+            : {})
         }
       } satisfies RpcRequest),
       // Control REPL does not yet consume cancellation below the RPC boundary. Keep its transport
@@ -707,7 +739,9 @@ const compactNotebookExecutionResult = (raw: unknown, input: unknown = {}): unkn
       'environment',
       'startedAt',
       'endedAt',
-      'exitCode'
+      'exitCode',
+      'runtimeStatus',
+      'errorCode'
     ]),
     ...(staleness.value ? { staleness: staleness.value } : {}),
     ...(invalidatedRuns.length ? { invalidatedRuns } : {}),
@@ -1469,10 +1503,16 @@ const MEMORY_NOTEBOOK_RPC_METHODS = new Set([
 
 const notebookRpcToolsForEnvironment = (
   environment: NotebookMcpEnvironment
-): readonly NotebookRpcToolDefinition[] =>
-  environment.memoryTools
-    ? NOTEBOOK_RPC_TOOLS
-    : NOTEBOOK_RPC_TOOLS.filter((tool) => !MEMORY_NOTEBOOK_RPC_METHODS.has(tool.method))
+): readonly NotebookRpcToolDefinition[] => {
+  const tools = NOTEBOOK_RPC_TOOLS.map((tool) =>
+    tool.method === 'executeShell' && environment.shellRuntime
+      ? { ...tool, description: buildShellExecuteDoc(environment.shellRuntime) }
+      : tool
+  )
+  return environment.memoryTools
+    ? tools
+    : tools.filter((tool) => !MEMORY_NOTEBOOK_RPC_METHODS.has(tool.method))
+}
 
 // Creates the stdio MCP server and attaches every notebook tool to it.
 const createNotebookMcpServer = (
