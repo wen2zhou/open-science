@@ -47,6 +47,7 @@ const trackedPosixProcessTrees = new WeakMap<ChildProcess, PosixProcessTracker>(
 const activePosixProcessTrackers = new Set<PosixProcessTracker>()
 let ownershipSampleTimer: NodeJS.Timeout | undefined
 let ownershipSampling: Promise<PosixProcessTable> | undefined
+let ownershipResampleRequested = false
 
 export const registerOwnedPosixProcessGroup = (child: ChildProcess): void => {
   const groupId = child.pid
@@ -358,15 +359,24 @@ const captureTrackedDescendants = (
 
 const sampleActiveProcessTrees = async (): Promise<PosixProcessTable> => {
   if (ownershipSampling) return ownershipSampling
+  const trackers = [...activePosixProcessTrackers]
   const sampling = collectPosixProcessTable().then((table) => {
-    for (const tracker of activePosixProcessTrackers) captureTrackedDescendants(tracker, table)
+    for (const tracker of trackers) captureTrackedDescendants(tracker, table)
     return table
   })
   ownershipSampling = sampling
   try {
     return await sampling
   } finally {
-    if (ownershipSampling === sampling) ownershipSampling = undefined
+    if (ownershipSampling === sampling) {
+      ownershipSampling = undefined
+      if (ownershipResampleRequested) {
+        ownershipResampleRequested = false
+        if (activePosixProcessTrackers.size > 0) {
+          void sampleActiveProcessTrees().finally(scheduleTrackedProcessSample)
+        }
+      }
+    }
   }
 }
 
@@ -392,6 +402,7 @@ export const trackOwnedPosixProcessTree = (child: ChildProcess): void => {
   }
   trackedPosixProcessTrees.set(child, tracker)
   activePosixProcessTrackers.add(tracker)
+  if (ownershipSampling) ownershipResampleRequested = true
   void sampleActiveProcessTrees().finally(scheduleTrackedProcessSample)
 }
 

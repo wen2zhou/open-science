@@ -282,6 +282,53 @@ describe('terminateProcessTree (posix)', () => {
     expect(killSpy).not.toHaveBeenCalledWith(-1000, 'SIGTERM')
   })
 
+  it('gives a tracker registered during an older in-flight sample a fresh ownership sample', async () => {
+    setPlatform('linux')
+    let releaseFirstSample: ((entries: string[]) => void) | undefined
+    readdirMock
+      .mockImplementationOnce(
+        () =>
+          new Promise<string[]>((resolve) => {
+            releaseFirstSample = resolve
+          })
+      )
+      .mockResolvedValueOnce(['2000', '2001'])
+      .mockResolvedValueOnce(['2001'])
+      .mockResolvedValueOnce([])
+    readFileMock
+      .mockResolvedValueOnce(linuxStat(1000, 1, 1000, 1000, 100))
+      .mockResolvedValueOnce(linuxStat(2000, 1, 2000, 2000, 200))
+      .mockResolvedValueOnce(linuxStat(2001, 2000, 2000, 2000, 201))
+      .mockResolvedValueOnce(linuxStat(2001, 1, 2001, 2001, 201))
+    let helperAlive = true
+    const killSpy = vi.spyOn(process, 'kill').mockImplementation((pid, signal) => {
+      if (pid === -2001) {
+        if (signal === 'SIGTERM') helperAlive = false
+        return true
+      }
+      expect(pid).toBe(2001)
+      if (signal === 0 && !helperAlive) throw esrch()
+      if (signal === 'SIGTERM') helperAlive = false
+      return true
+    })
+    const firstChild = new FakeChild(1000)
+    const secondChild = new FakeChild(2000)
+
+    trackOwnedPosixProcessTree(firstChild as never)
+    await vi.waitFor(() => expect(readdirMock).toHaveBeenCalledTimes(1))
+    trackOwnedPosixProcessTree(secondChild as never)
+    releaseFirstSample?.(['1000'])
+
+    await vi.waitFor(() => expect(readFileMock).toHaveBeenCalledTimes(3))
+    secondChild.exitCode = 0
+    await expect(terminateProcessTree(secondChild as never)).resolves.toEqual({ reaped: true })
+    expect(killSpy).toHaveBeenCalledWith(2001, 'SIGTERM')
+    expect(killSpy).toHaveBeenCalledWith(-2001, 'SIGTERM')
+
+    firstChild.exitCode = 0
+    await terminateProcessTree(firstChild as never)
+  })
+
   it('does not signal a replacement that reused a tracked pid within the same second', async () => {
     setPlatform('linux')
     readdirMock.mockResolvedValueOnce(['1000', '1001']).mockResolvedValueOnce(['1001'])
