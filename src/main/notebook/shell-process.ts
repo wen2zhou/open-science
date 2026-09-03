@@ -393,7 +393,10 @@ const runShellCommand = (
         clearTimeout(timeoutTimer)
         options.signal?.removeEventListener('abort', abort)
         endSandboxExecution?.()
-        const normalized = normalizePowerShellStderr(result.stderr)
+        const normalized =
+          runtimeBinding.kind === 'powershell'
+            ? normalizePowerShellStderr(result.stderr, runtimePlatform)
+            : result.stderr
         const stderr = sandboxed ? sandboxed.annotateStderr(normalized) : normalized
         await cleanupSandbox(cleanupReason, processOutcome)
         resolve({ ...result, stderr })

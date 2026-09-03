@@ -233,6 +233,62 @@ describe('notebook shell process behavior', () => {
       expect(normalizePowerShellStderr(errorClixml, 'win32')).toBe(errorClixml)
     })
 
+    it('normalizes CLIXML only for the PowerShell binding on a Windows host', async () => {
+      vi.stubEnv('SystemRoot', 'C:\\Windows')
+      const runtimeRoot = await mkdtemp(join(tmpdir(), 'os-shell-binding-stderr-'))
+      const execute = async (
+        runtimeBinding:
+          | { kind: 'powershell'; version: '5.1' }
+          | {
+              kind: 'wsl2-bash'
+              profileId: string
+              distro: string
+              user: string
+            }
+      ): Promise<string> => {
+        const processSandbox: NotebookProcessSandbox = {
+          wrap: vi.fn(async (invocation) => ({
+            executable: process.execPath,
+            args: ['-e', `process.stderr.write(${JSON.stringify(completedProgressClixml)})`],
+            env: invocation.env,
+            annotateStderr: (stderr: string) => stderr,
+            cleanup: vi.fn(async () => ({
+              processesTerminated: true,
+              networkClosed: true,
+              temporaryResourcesRemoved: true
+            }))
+          }))
+        }
+        const result = await runShellCommand({
+          command: 'emit stderr',
+          cwd: process.cwd(),
+          handoffDir: process.cwd(),
+          runtimeRoot,
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          platform: 'win32',
+          runtimeBinding,
+          processSandbox,
+          terminateTree: async () => ({ reaped: true })
+        })
+        return result.stderr
+      }
+
+      try {
+        await expect(
+          execute({
+            kind: 'wsl2-bash',
+            profileId: 'profile-1',
+            distro: 'Ubuntu-22.04',
+            user: 'researcher'
+          })
+        ).resolves.toBe(completedProgressClixml)
+        await expect(execute({ kind: 'powershell', version: '5.1' })).resolves.toBe('')
+      } finally {
+        await rm(runtimeRoot, { recursive: true, force: true })
+      }
+    })
+
     it('keeps Windows shell runtime variables while excluding host secrets', () => {
       const runtimeRoot = 'D:\\OpenScience\\runtime'
       const env = buildShellEnv(
