@@ -47,6 +47,17 @@ export type WslPlatformInstallResult = Readonly<{
   snapshot: WslSetupSnapshot
 }>
 
+export type WslSupportHandoff = Readonly<{
+  errorCode: string
+  supportReference: string
+  capabilities: WslReadiness
+  versions: Readonly<{
+    wsl: '2' | 'unknown'
+    distribution: '1' | '2' | 'unknown'
+  }>
+  target: 'restore-wsl2-bash'
+}>
+
 export type SelectWslProfileRequest = Readonly<{
   distro: string
   user: string

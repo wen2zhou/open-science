@@ -5,15 +5,21 @@ import {
   ClipboardCopy,
   Download,
   LoaderCircle,
+  MessagesSquare,
   RefreshCw,
   SquareTerminal
 } from 'lucide-react'
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 
 import { Button } from '@/components/ui/button'
 import { ErrorNotice } from '@/components/error-notice'
 import { Input } from '@/components/ui/input'
+import { resolveCustomizeProjectId } from '@/lib/last-opened-project'
+import { buildWslSupportPrefillDoc } from '@/lib/wsl-support-handoff'
+import { useNavigationStore } from '@/stores/navigation-store'
+import { useProjectStore } from '@/stores/project-store'
+import { useSettingsStore } from '@/stores/settings-store'
 import {
   Select,
   SelectContent,
@@ -94,6 +100,11 @@ export const WslLocalShellSection = (): React.JSX.Element => {
   const [busy, setBusy] = useState(true)
   const [installResult, setInstallResult] = useState<WslPlatformInstallResult>()
   const [copied, setCopied] = useState(false)
+  const projects = useProjectStore((state) => state.projects)
+  const chatProjectId = useMemo(
+    () => resolveCustomizeProjectId(projects.filter((project) => project.archivedAt === undefined)),
+    [projects]
+  )
   const checks: ReadonlyArray<[keyof WslReadiness, string]> = [
     ['wsl2', t('WSL2 distribution')],
     ['home', t('Linux home directory')],
@@ -223,6 +234,21 @@ export const WslLocalShellSection = (): React.JSX.Element => {
     await navigator.clipboard.writeText(snapshot.suggestedCommand)
     setCopied(true)
   }
+
+  const startSupportConversation = async (): Promise<void> => {
+    if (!chatProjectId) return
+    setBusy(true)
+    try {
+      const handoff = await window.api.settings.createWslSupportHandoff()
+      const doc = buildWslSupportPrefillDoc(handoff, t)
+      const opened = useNavigationStore.getState().startWslSupportConversation(chatProjectId, doc)
+      if (opened) useSettingsStore.getState().closeSettings()
+    } finally {
+      setBusy(false)
+    }
+  }
+
+  const supportAvailable = !busy && snapshot.state !== 'checking' && snapshot.state !== 'ready'
 
   return (
     <SettingsSection
@@ -463,6 +489,25 @@ export const WslLocalShellSection = (): React.JSX.Element => {
               'You can keep using PowerShell while WSL2 is unavailable; these setup choices are preserved.'
             )}
           </p>
+        ) : null}
+
+        {supportAvailable ? (
+          <div className="mt-4 flex flex-col items-start gap-1.5">
+            <Button
+              type="button"
+              variant="outline"
+              onClick={() => void startSupportConversation()}
+              disabled={!chatProjectId}
+            >
+              <MessagesSquare aria-hidden="true" />
+              {t('Solve in conversation')}
+            </Button>
+            {!chatProjectId ? (
+              <p className="text-xs text-muted-foreground">
+                {t('Create or open a project to solve this with the agent.')}
+              </p>
+            ) : null}
+          </div>
         ) : null}
       </div>
     </SettingsSection>

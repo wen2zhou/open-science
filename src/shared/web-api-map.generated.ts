@@ -194,6 +194,7 @@ export const WEB_INVOKE_CHANNELS = {
   'settings.checkEnvironment': 'settings:check-environment',
   'settings.createDeviceCredential': 'settings:create-device-credential',
   'settings.createSkill': 'settings:create-skill',
+  'settings.createWslSupportHandoff': 'settings:create-wsl-support-handoff',
   'settings.deleteProvider': 'settings:delete-provider',
   'settings.deleteSkill': 'settings:delete-skill',
   'settings.detectClaude': 'settings:detect-claude',

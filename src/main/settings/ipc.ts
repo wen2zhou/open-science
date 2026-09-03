@@ -346,6 +346,7 @@ const registerSettingsIpcHandlers = ({
   ipcMainHandle('settings:get-notebook-network-status', () => service.getNotebookNetworkStatus())
   ipcMainHandle('settings:probe-wsl-setup', () => service.probeWslSetup())
   ipcMainHandle('settings:install-wsl-platform', () => service.installWslPlatform())
+  ipcMainHandle('settings:create-wsl-support-handoff', () => service.createWslSupportHandoff())
   ipcMainHandle('settings:select-wsl-profile', (_event, request: SelectWslProfileRequest) =>
     service.selectWslProfile(request)
   )

@@ -10,7 +10,8 @@ import type {
   WslSelection,
   WslPlatformInstallResult,
   WslSetupSnapshot,
-  WslSetupState
+  WslSetupState,
+  WslSupportHandoff
 } from '../../shared/wsl-setup'
 import { createLogger } from '../logger'
 import { resolveWindowsPowerShellExecutable } from '../windows-powershell'
@@ -186,11 +187,28 @@ const platformFailure = (output: string): { state: WslSetupState; code: string }
   return { state: 'failed', code: 'wsl_probe_failed' }
 }
 
+const supportErrorCode = (snapshot: WslSetupSnapshot): string => {
+  if (snapshot.errorCode && /^wsl_[a-z0-9_]+$/.test(snapshot.errorCode)) {
+    return snapshot.errorCode
+  }
+  return {
+    checking: 'wsl_probe_required',
+    'not-installed': 'wsl_not_installed',
+    'restart-required': 'wsl_restart_required',
+    'distro-required': 'wsl_distro_selection_required',
+    'first-launch-required': 'wsl_first_launch_required',
+    'dependency-required': 'wsl_dependency_required',
+    ready: 'wsl_ready',
+    failed: 'wsl_probe_failed'
+  }[snapshot.state]
+}
+
 export class WslSetupOwner {
   private readonly runner: WslCommandRunner
   private readonly installer: WslPlatformInstaller
   private readonly terminal: WslTerminalLauncher
   private readonly log: Pick<ReturnType<typeof createLogger>, 'info' | 'warn'>
+  private latestSnapshot: WslSetupSnapshot | undefined
 
   constructor(private readonly options: WslSetupOwnerOptions) {
     this.runner = options.runner ?? executeWsl
@@ -253,17 +271,20 @@ export class WslSetupOwner {
     }
     if (outcome === 'completed') this.log.info('wsl install completed', fields)
     else this.log.warn('wsl install completed', fields)
+    this.latestSnapshot = snapshot
     return { outcome, operationReference, snapshot }
   }
 
   async installRecommendedDistro(): Promise<WslSetupSnapshot> {
     const current = await this.probe()
     if (current.state !== 'distro-required' || current.distros.length > 0) {
-      return setupSnapshot('failed', this.reference(), current.distros, {
-        selection: current.selection,
-        readiness: current.readiness,
-        errorCode: 'wsl_distro_install_not_allowed'
-      })
+      return this.remember(
+        setupSnapshot('failed', this.reference(), current.distros, {
+          selection: current.selection,
+          readiness: current.readiness,
+          errorCode: 'wsl_distro_install_not_allowed'
+        })
+      )
     }
 
     const operationReference = this.reference()
@@ -294,10 +315,12 @@ export class WslSetupOwner {
         result.exitCode === 0 ? 'wsl_distro_install_unconfirmed' : 'wsl_distro_install_failed',
       durationMs: Date.now() - startedAt
     })
-    return setupSnapshot('failed', operationReference, fresh.distros, {
-      errorCode:
-        result.exitCode === 0 ? 'wsl_distro_install_unconfirmed' : 'wsl_distro_install_failed'
-    })
+    return this.remember(
+      setupSnapshot('failed', operationReference, fresh.distros, {
+        errorCode:
+          result.exitCode === 0 ? 'wsl_distro_install_unconfirmed' : 'wsl_distro_install_failed'
+      })
+    )
   }
 
   async openTerminal(request: OpenWslTerminalRequest): Promise<WslSetupSnapshot> {
@@ -317,11 +340,13 @@ export class WslSetupOwner {
       !this.validName(distro, 256) ||
       (user !== undefined && !this.validName(user, 128))
     ) {
-      return setupSnapshot('failed', this.reference(), current.distros, {
-        selection: current.selection,
-        readiness: current.readiness,
-        errorCode: 'wsl_terminal_request_invalid'
-      })
+      return this.remember(
+        setupSnapshot('failed', this.reference(), current.distros, {
+          selection: current.selection,
+          readiness: current.readiness,
+          errorCode: 'wsl_terminal_request_invalid'
+        })
+      )
     }
 
     const operationReference = this.reference()
@@ -336,11 +361,13 @@ export class WslSetupOwner {
         operationReference,
         errorCode: 'wsl_terminal_open_failed'
       })
-      return setupSnapshot('failed', operationReference, current.distros, {
-        selection: current.selection,
-        readiness: current.readiness,
-        errorCode: 'wsl_terminal_open_failed'
-      })
+      return this.remember(
+        setupSnapshot('failed', operationReference, current.distros, {
+          selection: current.selection,
+          readiness: current.readiness,
+          errorCode: 'wsl_terminal_open_failed'
+        })
+      )
     }
     this.log.info('wsl terminal opened', { operationReference, withExplicitUser: !!user })
     return this.probe()
@@ -356,7 +383,11 @@ export class WslSetupOwner {
       /[\0\r\n]/.test(selection.distro) ||
       /[\0\r\n]/.test(selection.user)
     ) {
-      return setupSnapshot('failed', this.reference(), [], { errorCode: 'wsl_selection_invalid' })
+      const snapshot = setupSnapshot('failed', this.reference(), [], {
+        errorCode: 'wsl_selection_invalid'
+      })
+      this.latestSnapshot = snapshot
+      return snapshot
     }
     await this.options.writeSelection(selection)
     return this.probe(selection)
@@ -380,7 +411,45 @@ export class WslSetupOwner {
     }
     if (snapshot.state === 'ready') this.log.info('wsl probe completed', fields)
     else this.log.warn('wsl probe completed', fields)
+    this.latestSnapshot = snapshot
     return snapshot
+  }
+
+  async createSupportHandoff(): Promise<WslSupportHandoff> {
+    const snapshot = this.latestSnapshot
+    if (!snapshot) {
+      return {
+        errorCode: 'wsl_probe_required',
+        supportReference: this.reference(),
+        capabilities: {},
+        versions: { wsl: 'unknown', distribution: 'unknown' },
+        target: 'restore-wsl2-bash'
+      }
+    }
+
+    const selectedDistro = snapshot.selection
+      ? snapshot.distros.find((distro) => distro.name === snapshot.selection?.distro)
+      : undefined
+    const readiness = snapshot.readiness
+    return {
+      errorCode: supportErrorCode(snapshot),
+      supportReference: snapshot.operationReference,
+      capabilities: {
+        ...(typeof readiness?.wsl2 === 'boolean' ? { wsl2: readiness.wsl2 } : {}),
+        ...(typeof readiness?.home === 'boolean' ? { home: readiness.home } : {}),
+        ...(typeof readiness?.bash === 'boolean' ? { bash: readiness.bash } : {}),
+        ...(typeof readiness?.bwrap === 'boolean' ? { bwrap: readiness.bwrap } : {}),
+        ...(typeof readiness?.namespaces === 'boolean' ? { namespaces: readiness.namespaces } : {}),
+        ...(typeof readiness?.localWorkspace === 'boolean'
+          ? { localWorkspace: readiness.localWorkspace }
+          : {})
+      },
+      versions: {
+        wsl: snapshot.readiness?.wsl2 === true ? '2' : 'unknown',
+        distribution: selectedDistro ? (String(selectedDistro.version) as '1' | '2') : 'unknown'
+      },
+      target: 'restore-wsl2-bash'
+    }
   }
 
   private async runProbe(
@@ -607,8 +676,17 @@ export class WslSetupOwner {
       : this.options.workspacePath
   }
 
+  private remember(snapshot: WslSetupSnapshot): WslSetupSnapshot {
+    this.latestSnapshot = snapshot
+    return snapshot
+  }
+
   private reference(): string {
-    return (this.options.operationReference?.() ?? randomUUID()).replaceAll('-', '').slice(0, 8)
+    const reference = (this.options.operationReference?.() ?? randomUUID())
+      .replaceAll('-', '')
+      .replace(/[^a-zA-Z0-9]/g, '')
+      .slice(0, 8)
+    return reference || randomUUID().replaceAll('-', '').slice(0, 8)
   }
 
   private validName(value: string, maxLength: number): boolean {

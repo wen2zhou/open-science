@@ -511,6 +511,7 @@ describe('preload bridge — public surface inventory', () => {
       'settings.checkEnvironment',
       'settings.createDeviceCredential',
       'settings.createSkill',
+      'settings.createWslSupportHandoff',
       'settings.deleteProvider',
       'settings.deleteSkill',
       'settings.detectClaude',

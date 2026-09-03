@@ -3,6 +3,10 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
+import type { Project } from '../../../../shared/projects'
+import { createInitialProjectState, useProjectStore } from '@/stores/project-store'
+import { useNavigationStore } from '@/stores/navigation-store'
+import { useSettingsStore } from '@/stores/settings-store'
 import { WslLocalShellSection } from './WslLocalShellSection'
 
 let container: HTMLDivElement
@@ -12,6 +16,16 @@ let select: ReturnType<typeof vi.fn>
 let install: ReturnType<typeof vi.fn>
 let installRecommended: ReturnType<typeof vi.fn>
 let openTerminal: ReturnType<typeof vi.fn>
+let createSupportHandoff: ReturnType<typeof vi.fn>
+
+const project = (id: string, updatedAt: number): Project => ({
+  id,
+  name: id,
+  description: '',
+  isExample: false,
+  createdAt: 1,
+  updatedAt
+})
 
 const flush = async (): Promise<void> => {
   await act(async () => {})
@@ -60,15 +74,35 @@ beforeEach(() => {
     errorCode: 'wsl_first_launch_required',
     operationReference: 'feedface'
   })
+  createSupportHandoff = vi.fn().mockResolvedValue({
+    errorCode: 'wsl_namespace_unavailable',
+    supportReference: 'a1b2c3d4',
+    capabilities: { wsl2: true, bash: true, bwrap: true, namespaces: false },
+    versions: { wsl: '2', distribution: '2' },
+    target: 'restore-wsl2-bash'
+  })
   ;(window as unknown as { api: unknown }).api = {
     settings: {
       probeWslSetup: probe,
       selectWslProfile: select,
       installWslPlatform: install,
       installRecommendedWslDistro: installRecommended,
-      openWslTerminal: openTerminal
+      openWslTerminal: openTerminal,
+      createWslSupportHandoff: createSupportHandoff
     }
   }
+  useProjectStore.setState({
+    ...createInitialProjectState(),
+    projects: [project('older', 1), project('newest', 2)],
+    isLoaded: true
+  })
+  useNavigationStore.setState({
+    view: 'home',
+    activeProjectId: undefined,
+    pendingCustomizePrefill: undefined,
+    pendingWslSupportPrefill: undefined
+  })
+  useSettingsStore.setState({ isSettingsOpen: true })
 })
 
 afterEach(() => {
@@ -274,5 +308,82 @@ describe('WslLocalShellSection', () => {
     await act(async () => launch?.click())
     await flush()
     expect(openTerminal).toHaveBeenCalledWith({ distro: 'Ubuntu-22.04', user: 'scientist' })
+  })
+
+  it('closes Settings and opens a normal project conversation with only safe WSL diagnostics', async () => {
+    probe.mockResolvedValue({
+      state: 'dependency-required',
+      distros: [{ name: 'Private-Lab', version: 2, isDefault: true }],
+      selection: { distro: 'Private-Lab', user: 'private-user' },
+      readiness: { wsl2: true, bash: true, bwrap: true, namespaces: false },
+      errorCode: 'wsl_namespace_unavailable',
+      operationReference: 'a1b2c3d4'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    const support = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Solve in conversation')
+    )
+    await act(async () => support?.click())
+    await flush()
+
+    expect(createSupportHandoff).toHaveBeenCalledOnce()
+    expect(useSettingsStore.getState().isSettingsOpen).toBe(false)
+    expect(useNavigationStore.getState().activeProjectId).toBe('newest')
+    const intent = useNavigationStore.getState().pendingWslSupportPrefill
+    expect(intent?.doc.nodes).toEqual([
+      expect.objectContaining({
+        type: 'text',
+        text: expect.stringContaining('wsl_namespace_unavailable')
+      })
+    ])
+    expect(JSON.stringify(intent)).not.toContain('Private-Lab')
+    expect(JSON.stringify(intent)).not.toContain('private-user')
+    expect(JSON.stringify(intent)).toContain('must ask me to use an explicit action')
+  })
+
+  it('disables conversation handoff and explains why when no project is available', async () => {
+    useProjectStore.setState({ ...createInitialProjectState(), projects: [], isLoaded: true })
+    probe.mockResolvedValue({
+      state: 'not-installed',
+      distros: [],
+      errorCode: 'wsl_not_installed',
+      operationReference: 'a1b2c3d4'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    const support = [...container.querySelectorAll('button')].find((button) =>
+      button.textContent?.includes('Solve in conversation')
+    )
+    expect(support?.disabled).toBe(true)
+    expect(container.textContent).toContain(
+      'Create or open a project to solve this with the agent.'
+    )
+  })
+
+  it.each([
+    'not-installed',
+    'restart-required',
+    'distro-required',
+    'first-launch-required',
+    'dependency-required',
+    'failed'
+  ] as const)('offers conversation support for the %s state', async (state) => {
+    probe.mockResolvedValue({
+      state,
+      distros: [],
+      errorCode: 'wsl_probe_failed',
+      operationReference: 'a1b2c3d4'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    expect(
+      [...container.querySelectorAll('button')].some((button) =>
+        button.textContent?.includes('Solve in conversation')
+      )
+    ).toBe(true)
   })
 })

@@ -34,6 +34,55 @@ const makeOwner = (
   })
 
 describe('WslSetupOwner', () => {
+  it('creates a privacy-safe support handoff from the current failed probe', async () => {
+    const owner = makeOwner({
+      runner: makeRunner(
+        result('Default Distribution: Private-Lab'),
+        result('Private-Lab'),
+        result('* Private-Lab Running 2'),
+        result('1001\nprivate-user\nhome-ok'),
+        result('/usr/bin/bash', 0, 'raw stderr with credential=private-token')
+      ),
+      workspacePath: 'C:\\science',
+      readSelection: async () => ({ distro: 'Private-Lab', user: 'private-user' }),
+      writeSelection: async () => undefined,
+      operationReference: () => 'a1b2c3d4'
+    })
+
+    await owner.probe()
+    const handoff = await owner.createSupportHandoff()
+
+    expect(handoff).toEqual({
+      errorCode: 'wsl_bwrap_missing',
+      supportReference: 'a1b2c3d4',
+      capabilities: { wsl2: true, home: true, bash: true, bwrap: false },
+      versions: { wsl: '2', distribution: '2' },
+      target: 'restore-wsl2-bash'
+    })
+    const serialized = JSON.stringify(handoff)
+    expect(serialized).not.toContain('Private-Lab')
+    expect(serialized).not.toContain('private-user')
+    expect(serialized).not.toContain('private-token')
+    expect(serialized).not.toContain('C:\\science')
+  })
+
+  it('uses stable fallback diagnostics when no probe has completed yet', async () => {
+    const owner = makeOwner({
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: async () => undefined,
+      operationReference: () => 'deadbeef'
+    })
+
+    await expect(owner.createSupportHandoff()).resolves.toEqual({
+      errorCode: 'wsl_probe_required',
+      supportReference: 'deadbeef',
+      capabilities: {},
+      versions: { wsl: 'unknown', distribution: 'unknown' },
+      target: 'restore-wsl2-bash'
+    })
+  })
+
   it('installs the WSL platform only through the explicit owner command and confirms OS state', async () => {
     const installer: WslPlatformInstaller = {
       install: vi.fn(async () => ({ kind: 'exited' as const, exitCode: 1 }))
@@ -98,6 +147,10 @@ describe('WslSetupOwner', () => {
         outcome,
         operationReference: 'install2',
         snapshot: { state: 'not-installed', errorCode: code, operationReference: 'install2' }
+      })
+      await expect(owner.createSupportHandoff()).resolves.toMatchObject({
+        errorCode: code,
+        supportReference: 'install2'
       })
       expect(installer.install).toHaveBeenCalledOnce()
       expect(runner.run).not.toHaveBeenCalled()

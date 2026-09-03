@@ -88,7 +88,8 @@ import type {
   OpenWslTerminalRequest,
   SelectWslProfileRequest,
   WslPlatformInstallResult,
-  WslSetupSnapshot
+  WslSetupSnapshot,
+  WslSupportHandoff
 } from '../../shared/wsl-setup'
 import type { GrantedLocalRoot } from '../../shared/local-fs'
 import type { NotebookLanguage } from '../../shared/notebook'
@@ -221,6 +222,7 @@ export type SettingsServiceOptions = {
     select(request: SelectWslProfileRequest): Promise<WslSetupSnapshot>
     installRecommendedDistro(): Promise<WslSetupSnapshot>
     openTerminal(request: OpenWslTerminalRequest): Promise<WslSetupSnapshot>
+    createSupportHandoff(): Promise<WslSupportHandoff>
   }
   // Encrypted-token controller for claude-isolated; default-constructed against this.configRoot
   // when omitted. Storage is delegated to the host's SettingsRepository + encrypt/tryDecryptKey
@@ -521,6 +523,11 @@ class SettingsService {
   openWslTerminal(request: OpenWslTerminalRequest): Promise<WslSetupSnapshot> {
     if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
     return this.wslSetup.openTerminal(request)
+  }
+
+  createWslSupportHandoff(): Promise<WslSupportHandoff> {
+    if (!this.wslSetup) throw new Error('WSL setup is unavailable.')
+    return this.wslSetup.createSupportHandoff()
   }
 
   private async migrateLegacyKeyRefs(settings: StoredSettings): Promise<StoredSettings> {

@@ -490,7 +490,7 @@ describe('Settings backend ownership architecture', () => {
         logoutClaudeShared logoutIsolatedClaude logoutIsolatedCodex logoutXaiOAuth markOnboardingComplete
         markPathsNormalized migrateAgentHomeSkillIdentities openWslTerminal previewAgentHomeSkill previewCustomServerTemplateExport
         previewCustomServerTemplateImport previewGitHubSkill previewSkillArchive previewSkillZip
-        probeWslSetup provisionedConnectorSkillNames publishHostSkill refreshProviderModels registeredHelperCatalog rememberCodexAutoHttpsFallback removeCustomServer removeDeviceCredential removeGitHubToken removeNotebookNetwork
+        createWslSupportHandoff probeWslSetup provisionedConnectorSkillNames publishHostSkill refreshProviderModels registeredHelperCatalog rememberCodexAutoHttpsFallback removeCustomServer removeDeviceCredential removeGitHubToken removeNotebookNetwork
         removeManualInterpreter resolveActiveModelChangeTarget resolveActiveReasoningEffort
         resolveAdmittedSubagentBackend resolveAgentBackend resolveDeviceOAuthCredential resolveExplicitAgentBackend resolveSkillDocument resolveSubagentExecutionModel saveCustomServerOAuthState saveGitHubToken
         scanRepoSkills selectWslProfile setActiveProvider setAgentEnvironmentCreationEnabled setAgentFramework setAgentRouting setAppIconVariant setClosePreference

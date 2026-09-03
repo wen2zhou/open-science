@@ -17,6 +17,7 @@ import {
 } from '../../../../shared/session-persistence'
 import { buildCustomizePrefillDoc } from '@/lib/customize-chat'
 import type { CustomizePrefillIntent } from '@/stores/navigation-store'
+import type { WslSupportPrefillIntent } from '@/stores/navigation-store'
 import {
   pendingPdfContextBindingId,
   usePreviewWorkbenchStore
@@ -96,7 +97,9 @@ type WorkspaceComposerControllerInput = {
   newConversationDraftKey: string
   activeProjectId: string | undefined
   pendingCustomizePrefill: CustomizePrefillIntent | undefined
+  pendingWslSupportPrefill?: WslSupportPrefillIntent | undefined
   onCustomizePrefillApplied: () => void
+  onWslSupportPrefillApplied?: () => void
   historyEntries: ComposerHistoryEntry[]
   activeSession: ComposerSessionContext | undefined
   historyPolicy: {
@@ -182,7 +185,9 @@ const useWorkspaceComposerController = ({
   newConversationDraftKey,
   activeProjectId,
   pendingCustomizePrefill,
+  pendingWslSupportPrefill,
   onCustomizePrefillApplied,
+  onWslSupportPrefillApplied = () => undefined,
   historyEntries,
   activeSession,
   historyPolicy,
@@ -196,7 +201,10 @@ const useWorkspaceComposerController = ({
   const [historyBrowsingKey, setHistoryBrowsingKey] = useState<string>()
   const [historyStatus, setHistoryStatus] = useState('')
   const [skillCatalogReady, setSkillCatalogReady] = useState(historyPolicy.skillCatalogReady)
-  const [appliedCustomizePrefill, setAppliedCustomizePrefill] = useState<CustomizePrefillIntent>()
+  const [appliedConversationPrefill, setAppliedConversationPrefill] = useState<{
+    projectId: string
+    requestId: number
+  }>()
   const [caretRequest, setCaretRequest] = useState<{
     key: number
     position: ComposerCaretPosition
@@ -664,28 +672,42 @@ const useWorkspaceComposerController = ({
     [activeProjectId, pendingPdfContextSelection, removeAttachment]
   )
 
+  const pendingConversationPrefill = pendingWslSupportPrefill
+    ? { ...pendingWslSupportPrefill, kind: 'wsl-support' as const }
+    : pendingCustomizePrefill
+      ? {
+          ...pendingCustomizePrefill,
+          kind: 'customize' as const,
+          doc: buildCustomizePrefillDoc(pendingCustomizePrefill.goal)
+        }
+      : undefined
+
   if (
-    pendingCustomizePrefill !== undefined &&
-    pendingCustomizePrefill.projectId === activeProjectId &&
+    pendingConversationPrefill !== undefined &&
+    pendingConversationPrefill.projectId === activeProjectId &&
     currentDraftKey === newConversationDraftKey &&
-    appliedCustomizePrefill?.requestId !== pendingCustomizePrefill.requestId
+    appliedConversationPrefill?.requestId !== pendingConversationPrefill.requestId
   ) {
-    setAppliedCustomizePrefill(pendingCustomizePrefill)
+    setAppliedConversationPrefill({
+      projectId: pendingConversationPrefill.projectId,
+      requestId: pendingConversationPrefill.requestId
+    })
     setHistoryBrowsingKey(undefined)
     setHistoryStatus('')
-    setDoc(buildCustomizePrefillDoc(pendingCustomizePrefill.goal))
-    onCustomizePrefillApplied()
+    setDoc(pendingConversationPrefill.doc)
+    if (pendingConversationPrefill.kind === 'wsl-support') onWslSupportPrefillApplied()
+    else onCustomizePrefillApplied()
   }
 
   useLayoutEffect(() => {
-    if (appliedCustomizePrefill?.projectId === activeProjectId) {
+    if (appliedConversationPrefill?.projectId === activeProjectId) {
       delete historyRef.current[newConversationDraftKey]
       clearPastedTextUndo(newConversationDraftKey)
       clearUndo(newConversationDraftKey)
     }
   }, [
     activeProjectId,
-    appliedCustomizePrefill,
+    appliedConversationPrefill,
     clearPastedTextUndo,
     clearUndo,
     newConversationDraftKey
@@ -735,12 +757,14 @@ const useWorkspaceComposerController = ({
     setHistoryStatus('')
     setCaretRequest(undefined)
 
-    const customizePrefillPending =
+    const conversationPrefillPending =
       currentDraftKey === newConversationDraftKey &&
-      pendingCustomizePrefill !== undefined &&
-      pendingCustomizePrefill.projectId === activeProjectId
+      ((pendingCustomizePrefill !== undefined &&
+        pendingCustomizePrefill.projectId === activeProjectId) ||
+        (pendingWslSupportPrefill !== undefined &&
+          pendingWslSupportPrefill.projectId === activeProjectId))
     const nextDraft = draftsRef.current[currentDraftKey] ?? blank()
-    if (!customizePrefillPending) setActiveDoc(nextDraft.doc)
+    if (!conversationPrefillPending) setActiveDoc(nextDraft.doc)
     setActiveAnnotations(nextDraft.annotations)
     activateDraftAttachments(nextDraft)
     setActiveAutomaticReadingEnabled(nextDraft.automaticReadingEnabled)
@@ -753,6 +777,7 @@ const useWorkspaceComposerController = ({
     doc,
     newConversationDraftKey,
     pendingCustomizePrefill,
+    pendingWslSupportPrefill,
     setActiveAutomaticReadingEnabled,
     activateDraftAttachments,
     setActiveAnnotations,

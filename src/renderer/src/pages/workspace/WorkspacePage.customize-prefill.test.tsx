@@ -132,7 +132,8 @@ describe('WorkspacePage customize prefill', () => {
       activeProjectId: 'proj-1',
       userNavigationRevision: 0,
       explicitNavigationRevision: 0,
-      pendingCustomizePrefill: undefined
+      pendingCustomizePrefill: undefined,
+      pendingWslSupportPrefill: undefined
     })
     useSessionStore.setState({
       ...createInitialSessionState(),
@@ -203,6 +204,19 @@ describe('WorkspacePage customize prefill', () => {
     await renderPage()
 
     expect(conversationProps.composer.view.doc).toEqual(expectedCustomizeDoc)
+  })
+
+  it('prefills and consumes a normal WSL support conversation without sending it', async () => {
+    const doc = { nodes: [{ type: 'text' as const, text: 'safe WSL diagnostics' }] }
+    useNavigationStore.setState({
+      pendingWslSupportPrefill: { projectId: 'proj-1', doc, requestId: 1 }
+    })
+    await renderPage()
+
+    expect(conversationProps.composer.view.doc).toEqual(doc)
+    expect(useNavigationStore.getState().pendingWslSupportPrefill).toBeUndefined()
+    expect(runtime.sendMessage).not.toHaveBeenCalled()
+    expect(useSessionStore.getState().sessions).toHaveLength(2)
   })
 
   it('prefills the Skill chat entry with the Skill Creator goal', async () => {

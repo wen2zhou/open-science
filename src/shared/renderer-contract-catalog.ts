@@ -38,7 +38,8 @@ import type {
   OpenWslTerminalRequest,
   SelectWslProfileRequest,
   WslPlatformInstallResult,
-  WslSetupSnapshot
+  WslSetupSnapshot,
+  WslSupportHandoff
 } from './wsl-setup'
 import type { SourcePreviewLoadState } from './source-preview'
 import type {
@@ -1949,6 +1950,10 @@ export const RENDERER_API_CONTRACT = Object.freeze({
   ]),
   'settings.installWslPlatform': callable<() => Promise<WslPlatformInstallResult>>()('settings', [
     'settings:install-wsl-platform',
+    LOCAL
+  ]),
+  'settings.createWslSupportHandoff': callable<() => Promise<WslSupportHandoff>>()('settings', [
+    'settings:create-wsl-support-handoff',
     LOCAL
   ]),
   'settings.selectWslProfile': callable<

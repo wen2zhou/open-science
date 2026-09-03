@@ -2,6 +2,7 @@ import { create } from 'zustand'
 
 import { recordLastOpenedProject } from '@/lib/last-opened-project'
 import type { CustomizeGoal } from '@/lib/customize-chat'
+import type { ComposerDoc } from '@/pages/workspace/composer/composer-doc'
 
 import { useProjectStore } from './project-store'
 import {
@@ -32,6 +33,12 @@ export type CustomizePrefillIntent = {
   requestId: number
 }
 
+export type WslSupportPrefillIntent = {
+  projectId: string
+  doc: ComposerDoc
+  requestId: number
+}
+
 type NavigationStore = {
   view: NavigationView
   activeProjectId: string | undefined
@@ -44,6 +51,7 @@ type NavigationStore = {
   // Project id targeted by a pending `Chat with agent` prefill, consumed once by WorkspacePage when it
   // opens that project's New Conversation draft. Undefined means no prefill is pending.
   pendingCustomizePrefill: CustomizePrefillIntent | undefined
+  pendingWslSupportPrefill: WslSupportPrefillIntent | undefined
   // Home consumes this one-shot intent to open its existing New Project dialog.
   pendingProjectCreation: boolean
   // A same-Project Artifact selected from global search. WorkspacePage consumes it once and appends
@@ -74,7 +82,9 @@ type NavigationStore = {
   // The intent does not send, create a session, or imply mutation approval; WorkspacePage consumes the
   // prefill once and clears it.
   startCustomizeConversation: (projectId: string, goal?: CustomizeGoal) => void
+  startWslSupportConversation: (projectId: string, doc: ComposerDoc) => boolean
   consumeCustomizePrefill: () => void
+  consumeWslSupportPrefill: () => void
   requestProjectCreation: () => void
   consumeProjectCreation: () => void
   requestArtifactMention: (file: ProjectFileItem) => void
@@ -152,6 +162,7 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
   userNavigationRevision: 0,
   explicitNavigationRevision: 0,
   pendingCustomizePrefill: undefined,
+  pendingWslSupportPrefill: undefined,
   pendingProjectCreation: false,
   pendingArtifactMention: undefined,
   artifactMentionAvailability: undefined,
@@ -252,6 +263,7 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
         })
         return {
           ...navigation,
+          pendingWslSupportPrefill: undefined,
           pendingCustomizePrefill: {
             projectId,
             goal,
@@ -265,6 +277,33 @@ export const useNavigationStore = create<NavigationStore>((set, get) => ({
 
   // Clears the consumed prefill intent so a later normal open starts fresh.
   consumeCustomizePrefill: () => set({ pendingCustomizePrefill: undefined }),
+
+  startWslSupportConversation: (projectId, doc) => {
+    if (!isActiveProject(projectId)) return false
+    return requestPreviewLeaveForNavigation({ view: 'workspace', projectId }, () => {
+      useSessionStore.getState().clearSelection()
+      recordLastOpenedProject(projectId)
+
+      set((state) => {
+        const navigation = navigationState(state, 'user', {
+          view: 'workspace',
+          activeProjectId: projectId
+        })
+        return {
+          ...navigation,
+          pendingCustomizePrefill: undefined,
+          pendingWslSupportPrefill: {
+            projectId,
+            doc,
+            requestId: navigation.explicitNavigationRevision
+          }
+        }
+      })
+      usePreviewWorkbenchStore.getState().activateProject(projectId, undefined, true)
+    })
+  },
+
+  consumeWslSupportPrefill: () => set({ pendingWslSupportPrefill: undefined }),
 
   requestProjectCreation: () => {
     requestPreviewLeaveForNavigation({ view: 'home' }, () =>

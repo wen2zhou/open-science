@@ -61,6 +61,7 @@ beforeEach(() => {
     userNavigationRevision: 0,
     explicitNavigationRevision: 0,
     pendingCustomizePrefill: undefined,
+    pendingWslSupportPrefill: undefined,
     pendingProjectCreation: false,
     pendingArtifactMention: undefined,
     artifactMentionAvailability: undefined
@@ -478,6 +479,22 @@ describe('navigation store customize conversation', () => {
       goal: 'skill',
       requestId: 1
     })
+  })
+})
+
+describe('navigation store WSL support conversation', () => {
+  it('opens a normal new-conversation draft with the supplied safe diagnostic document', () => {
+    const doc = { nodes: [{ type: 'text' as const, text: 'safe WSL diagnostics' }] }
+    expect(useNavigationStore.getState().startWslSupportConversation('project-a', doc)).toBe(true)
+
+    expect(useNavigationStore.getState()).toMatchObject({
+      view: 'workspace',
+      activeProjectId: 'project-a',
+      pendingCustomizePrefill: undefined,
+      pendingWslSupportPrefill: { projectId: 'project-a', doc }
+    })
+    expect(useSessionStore.getState().selectedSessionId).toBeUndefined()
+    expect(useSessionStore.getState().sessions).toEqual([])
   })
 })
 
