@@ -31,6 +31,7 @@ import {
   RECOMMENDED_WSL_DISTRO,
   type SwitchToPowerShellResult,
   type UseWsl2BashResult,
+  type Wsl2BashPreviewStatus,
   type WslPlatformInstallResult,
   type WslReadiness,
   type WslSetupSnapshot
@@ -93,9 +94,11 @@ const recoveryCopy = (
 }
 
 export const WslLocalShellSection = ({
-  previewAvailable = true
+  previewAvailable = true,
+  previewUnavailableReason
 }: {
   previewAvailable?: boolean
+  previewUnavailableReason?: Wsl2BashPreviewStatus['reason']
 }): React.JSX.Element => {
   const { t } = useTranslation()
   const [snapshot, setSnapshot] = useState<WslSetupSnapshot>({
@@ -329,7 +332,11 @@ export const WslLocalShellSection = ({
           ) : (
             <ErrorNotice
               icon={CircleX}
-              tone={shellSwitchFailed ? 'red' : 'amber'}
+              tone={
+                shellSwitchFailed || previewUnavailableReason === 'assets-unavailable'
+                  ? 'red'
+                  : 'amber'
+              }
               title={
                 shellSwitchFailed
                   ? t('Open Science could not finish changing the Shell runtime.')

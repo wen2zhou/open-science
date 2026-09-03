@@ -4050,7 +4050,7 @@
     "You can keep using PowerShell while WSL2 is unavailable; these setup choices are preserved.": "WSL2 を利用できない間も PowerShell を使い続けられます。これらのセットアップ設定は保持されます。",
     "Switch to PowerShell": "PowerShell に切り替える",
     "Local Shell": "ローカルシェル",
-    "WSL2 Bash Preview is unavailable.": "WSL2 Bash Preview は利用できません。",
+    "WSL2 Bash Preview is unavailable.": "WSL2 Bash プレビューは利用できません。",
     "Switch to PowerShell to continue with Shell commands.": "シェルコマンドを引き続き実行するには PowerShell に切り替えてください。",
     "Use WSL2 Bash": "WSL2 Bash を使用する",
     "Future Shell commands will use PowerShell.": "今後のシェルコマンドでは PowerShell が使用されます。",

@@ -34,6 +34,7 @@ import {
   type RuntimeUsage
 } from '../../../../shared/notebook-runtime'
 import type { NotebookLanguage } from '../../../../shared/notebook'
+import type { Wsl2BashPreviewStatus } from '../../../../shared/wsl-setup'
 import { SettingsRow, SettingsSection, SettingsToggle } from './SettingsLayout'
 import {
   getSettingsSearchKeyShortcuts,
@@ -138,6 +139,7 @@ const RuntimesPanel = ({
   const [wsl2Preview, setWsl2Preview] = useState<{
     available: boolean
     needsPowerShellRecovery: boolean
+    reason: Wsl2BashPreviewStatus['reason']
   }>()
 
   useEffect(() => {
@@ -152,7 +154,8 @@ const RuntimesPanel = ({
       if (!cancelled) {
         setWsl2Preview({
           available: status.available,
-          needsPowerShellRecovery: !status.available && preference === 'wsl2-bash'
+          needsPowerShellRecovery: !status.available && preference === 'wsl2-bash',
+          reason: status.reason
         })
       }
     })
@@ -856,7 +859,10 @@ const RuntimesPanel = ({
         )}
       </SettingsSection>
       {wsl2Preview?.available || wsl2Preview?.needsPowerShellRecovery ? (
-        <WslLocalShellSection previewAvailable={wsl2Preview.available} />
+        <WslLocalShellSection
+          previewAvailable={wsl2Preview.available}
+          previewUnavailableReason={wsl2Preview.available ? undefined : wsl2Preview.reason}
+        />
       ) : null}
 
       <AlertDialog.Root

@@ -14,8 +14,18 @@ import { useRuntimeSettingsStore } from '../../stores/runtime-settings-store'
 import { RuntimesPanel } from './RuntimesPanel'
 
 vi.mock('./WslLocalShellSection', () => ({
-  WslLocalShellSection: ({ previewAvailable }: { previewAvailable: boolean }) => (
-    <div data-preview-available={String(previewAvailable)} data-testid="wsl2-preview-section" />
+  WslLocalShellSection: ({
+    previewAvailable,
+    previewUnavailableReason
+  }: {
+    previewAvailable: boolean
+    previewUnavailableReason?: string
+  }) => (
+    <div
+      data-preview-available={String(previewAvailable)}
+      data-preview-reason={previewUnavailableReason}
+      data-testid="wsl2-preview-section"
+    />
   )
 }))
 
@@ -229,13 +239,14 @@ describe('RuntimesPanel', () => {
     window.api.platform = 'win32'
     window.api.settings.getWsl2BashPreviewStatus = vi.fn().mockResolvedValue({
       available: false,
-      reason: 'build-disabled'
+      reason: 'assets-unavailable'
     })
     window.api.settings.getLocalShellRuntimePreference = vi.fn().mockResolvedValue('wsl2-bash')
 
     await render()
 
     expect(container.querySelector('[data-preview-available="false"]')).not.toBeNull()
+    expect(container.querySelector('[data-preview-reason="assets-unavailable"]')).not.toBeNull()
   })
 
   it('shows the network protection entry only when Settings provides its route', async () => {

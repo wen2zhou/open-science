@@ -143,6 +143,21 @@ describe('WslLocalShellSection', () => {
     expect(container.textContent).toContain('Future Shell commands will use PowerShell')
   })
 
+  it('uses the installation-integrity tone when packaged Preview assets are unavailable', async () => {
+    await act(async () =>
+      root.render(
+        <WslLocalShellSection
+          previewAvailable={false}
+          previewUnavailableReason="assets-unavailable"
+        />
+      )
+    )
+    await flush()
+
+    expect(container.querySelector('.bg-status-failure-surface')).not.toBeNull()
+    expect(container.querySelector('.bg-status-warning-surface')).toBeNull()
+  })
+
   it('explicitly switches only future Shell commands to PowerShell and never retries failed work', async () => {
     probe.mockResolvedValue({
       state: 'failed',

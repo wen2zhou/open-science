@@ -97,7 +97,7 @@ const buildSmokePlan = ({ currentInstaller, previousInstaller }) => [
           runningInstaller: currentInstaller,
           launchInstalledApp: false
         },
-        { installer: currentInstaller, phase: 'current', runningInstaller: previousInstaller }
+        { installer: currentInstaller, phase: 'current' }
       ]
     : [
         { installer: currentInstaller, phase: 'current' },
@@ -378,11 +378,13 @@ const waitForShutdownExit = (
     )
   })
 
-const packagedResourcePaths = (installDirectory) => [
+const packagedResourcePaths = (installDirectory, { includeWslPreview = true } = {}) => [
   join(installDirectory, APP_EXECUTABLE),
   join(installDirectory, 'resources', 'app.asar'),
   join(installDirectory, 'resources', 'micromamba.exe'),
-  join(installDirectory, 'resources', 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
+  ...(includeWslPreview
+    ? [join(installDirectory, 'resources', 'notebook-network-sandbox', 'wsl2', 'manifest.json')]
+    : []),
   join(
     installDirectory,
     'resources',
@@ -758,8 +760,14 @@ const removeWslCommandTempEvidence = async ({ root, receipt }) => {
   await rm(receipt, { force: true })
 }
 
-const assertPackagedResources = async (installDirectory, expectedVersion) => {
-  for (const path of packagedResourcePaths(installDirectory)) {
+const assertPackagedResources = async (
+  installDirectory,
+  expectedVersion,
+  { certifyWslPreview = true } = {}
+) => {
+  for (const path of packagedResourcePaths(installDirectory, {
+    includeWslPreview: certifyWslPreview
+  })) {
     if (!(await pathExists(path))) throw new Error(`Packaged Windows resource is missing: ${path}`)
   }
   const prismaRoot = join(installDirectory, 'resources', 'node_modules', '.prisma', 'client')
@@ -770,6 +778,7 @@ const assertPackagedResources = async (installDirectory, expectedVersion) => {
   if (nativeEngines.length !== 1 || nativeEngines[0] !== 'query_engine-windows.dll.node') {
     throw new Error(`Packaged Windows must contain exactly one Prisma engine in ${prismaRoot}.`)
   }
+  if (!certifyWslPreview) return
   const wslManifest = JSON.parse(
     await readFile(
       join(installDirectory, 'resources', 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
@@ -1083,7 +1092,9 @@ const installAndProbe = async ({
   if (!reuseInstallation) {
     await runProcess(installer, ['/S', `/D=${installDirectory}`], { env })
   }
-  await assertPackagedResources(installDirectory, installerVersion(installer))
+  await assertPackagedResources(installDirectory, installerVersion(installer), {
+    certifyWslPreview: phase === 'current' || phase === 'restart'
+  })
   await runProcess(join(installDirectory, 'resources', 'micromamba.exe'), ['--version'], { env })
   if (phase === 'current')
     await runPackagedLocalRpcSmoke({ installDirectory, env, artifactRpcContract })
@@ -1124,7 +1135,9 @@ const installOverRunningApp = async ({
     throw error
   }
 
-  await assertPackagedResources(installDirectory, installerVersion(installer))
+  await assertPackagedResources(installDirectory, installerVersion(installer), {
+    certifyWslPreview: phase === 'current' || phase === 'restart'
+  })
   await runProcess(join(installDirectory, 'resources', 'micromamba.exe'), ['--version'], { env })
   if (phase === 'current')
     await runPackagedLocalRpcSmoke({ installDirectory, env, artifactRpcContract })

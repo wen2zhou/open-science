@@ -359,7 +359,7 @@ describe('Windows installer smoke plan', () => {
           launchInstalledApp: false
         }
       ],
-      [{ installer: 'current.exe', phase: 'current', runningInstaller: 'previous.exe' }]
+      [{ installer: 'current.exe', phase: 'current' }]
     ])
   })
 
@@ -768,6 +768,11 @@ Open Science Web: http://127.0.0.1:52378/?token=iUFHGSACwBz2k1kSJfPixHbclDywVg0C
     await expect(assertPackagedResources(installDirectory, '0.24.0')).rejects.toThrow(
       /missing or version-mismatched/
     )
+    await rm(join(resources, 'notebook-network-sandbox'), { recursive: true, force: true })
+    await expect(
+      assertPackagedResources(installDirectory, '0.23.0', { certifyWslPreview: false })
+    ).resolves.toBeUndefined()
+    await mkdir(join(resources, 'notebook-network-sandbox', 'wsl2'), { recursive: true })
     await writeFile(
       join(resources, 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
       JSON.stringify({

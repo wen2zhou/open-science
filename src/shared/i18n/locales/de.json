@@ -4205,7 +4205,7 @@
     "You can keep using PowerShell while WSL2 is unavailable; these setup choices are preserved.": "Sie können PowerShell weiterverwenden, solange WSL2 nicht verfügbar ist; diese Einrichtungsoptionen bleiben erhalten.",
     "Switch to PowerShell": "Zu PowerShell wechseln",
     "Local Shell": "Lokale Befehlszeile",
-    "WSL2 Bash Preview is unavailable.": "Die WSL2 Bash Preview ist nicht verfügbar.",
+    "WSL2 Bash Preview is unavailable.": "Die WSL2-Bash-Vorschau ist nicht verfügbar.",
     "Switch to PowerShell to continue with Shell commands.": "Wechseln Sie zu PowerShell, um weiterhin Befehlszeilenbefehle auszuführen.",
     "Use WSL2 Bash": "WSL2 Bash verwenden",
     "Future Shell commands will use PowerShell.": "Künftige Befehlszeilenbefehle verwenden PowerShell.",
