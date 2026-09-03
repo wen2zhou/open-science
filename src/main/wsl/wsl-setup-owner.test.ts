@@ -306,4 +306,55 @@ describe('WslSetupOwner', () => {
       errorCode: 'wsl_workspace_path_unsupported'
     })
   })
+
+  it('marks the namespace check as failed when bubblewrap cannot create the sandbox', async () => {
+    const owner = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu'),
+        result('* Ubuntu Running 2'),
+        result('1000\nscientist'),
+        result('/usr/bin/bash\n/usr/bin/bwrap'),
+        result('', 1, 'namespace unavailable')
+      ),
+      workspacePath: 'C:\\science',
+      readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),
+      writeSelection: vi.fn()
+    })
+
+    await expect(owner.probe()).resolves.toMatchObject({
+      state: 'dependency-required',
+      errorCode: 'wsl_namespace_unavailable',
+      readiness: { wsl2: true, bash: true, bwrap: true, namespaces: false }
+    })
+  })
+
+  it('marks the local workspace check as failed when the selected user cannot reach it', async () => {
+    const owner = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu'),
+        result('* Ubuntu Running 2'),
+        result('1000\nscientist'),
+        result('/usr/bin/bash\n/usr/bin/bwrap'),
+        result('ok'),
+        result('/mnt/c/science', 1, 'workspace unavailable')
+      ),
+      workspacePath: 'C:\\science',
+      readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),
+      writeSelection: vi.fn()
+    })
+
+    await expect(owner.probe()).resolves.toMatchObject({
+      state: 'failed',
+      errorCode: 'wsl_workspace_unreachable',
+      readiness: {
+        wsl2: true,
+        bash: true,
+        bwrap: true,
+        namespaces: true,
+        localWorkspace: false
+      }
+    })
+  })
 })

@@ -90,4 +90,25 @@ describe('WslLocalShellSection', () => {
     )
     expect(container.textContent).toContain('Not checked')
   })
+
+  it('uses named Settings status tokens for passed, failed, and unchecked readiness icons', async () => {
+    probe.mockResolvedValue({
+      state: 'dependency-required',
+      distros: [{ name: 'Ubuntu-24.04', version: 2, isDefault: true }],
+      selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
+      readiness: { wsl2: true, bash: true, bwrap: true, namespaces: false },
+      errorCode: 'wsl_namespace_unavailable',
+      operationReference: 'a1b2c3d4'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    const readiness = container.querySelector('[aria-label="Readiness checks"]')
+    expect(readiness?.querySelector('svg.text-status-success-foreground')).not.toBeNull()
+    expect(readiness?.querySelector('svg.text-status-failure-foreground')).not.toBeNull()
+    expect(readiness?.querySelector('svg.text-status-info-foreground')).not.toBeNull()
+    expect(readiness?.querySelector('svg.text-primary')).toBeNull()
+    expect(readiness?.querySelector('svg.text-destructive')).toBeNull()
+    expect(readiness?.querySelector('svg.text-muted-foreground')).toBeNull()
+  })
 })

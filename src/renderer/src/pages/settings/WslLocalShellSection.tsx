@@ -165,11 +165,14 @@ export const WslLocalShellSection = (): React.JSX.Element => {
         ) : (
           <div className="flex items-center gap-2 text-sm font-medium">
             {busy ? (
-              <LoaderCircle className="size-4 animate-spin" aria-hidden="true" />
+              <LoaderCircle
+                className="size-4 animate-spin text-status-info-foreground"
+                aria-hidden="true"
+              />
             ) : snapshot.state === 'ready' ? (
-              <CheckCircle2 className="size-4 text-primary" aria-hidden="true" />
+              <CheckCircle2 className="size-4 text-status-success-foreground" aria-hidden="true" />
             ) : (
-              <CircleX className="size-4 text-destructive" aria-hidden="true" />
+              <CircleX className="size-4 text-status-failure-foreground" aria-hidden="true" />
             )}
             <span role="status">{statusCopy(snapshot, t)}</span>
           </div>
@@ -216,11 +219,14 @@ export const WslLocalShellSection = (): React.JSX.Element => {
             {checks.map(([key, label]) => (
               <li key={key} className="flex items-center gap-2">
                 {snapshot.readiness?.[key] === true ? (
-                  <CheckCircle2 className="size-4 text-primary" aria-hidden="true" />
+                  <CheckCircle2
+                    className="size-4 text-status-success-foreground"
+                    aria-hidden="true"
+                  />
                 ) : snapshot.readiness?.[key] === false ? (
-                  <CircleX className="size-4 text-destructive" aria-hidden="true" />
+                  <CircleX className="size-4 text-status-failure-foreground" aria-hidden="true" />
                 ) : (
-                  <CircleMinus className="size-4 text-muted-foreground" aria-hidden="true" />
+                  <CircleMinus className="size-4 text-status-info-foreground" aria-hidden="true" />
                 )}
                 {label}
                 {snapshot.readiness?.[key] === undefined ? (

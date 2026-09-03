@@ -306,7 +306,7 @@ export class WslSetupOwner {
     if (namespaces.exitCode !== 0 || clean(namespaces.stdout) !== 'ok') {
       return setupSnapshot('dependency-required', operationReference, distros, {
         selection,
-        readiness: this.readiness({ wsl2: true, bash: true, bwrap: true }),
+        readiness: this.readiness({ wsl2: true, bash: true, bwrap: true, namespaces: false }),
         errorCode: 'wsl_namespace_unavailable'
       })
     }
@@ -322,7 +322,13 @@ export class WslSetupOwner {
     if (workspace.exitCode !== 0 || workspaceLines.at(-1) !== 'ok') {
       return setupSnapshot('failed', operationReference, distros, {
         selection,
-        readiness: this.readiness({ wsl2: true, bash: true, bwrap: true, namespaces: true }),
+        readiness: this.readiness({
+          wsl2: true,
+          bash: true,
+          bwrap: true,
+          namespaces: true,
+          localWorkspace: false
+        }),
         errorCode: 'wsl_workspace_unreachable'
       })
     }
