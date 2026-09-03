@@ -201,27 +201,41 @@ const wrap = async (
       ? { privateRoot: homedir() }
       : {})
   })
+  const credentials = {
+    username: `notebook-${request.commandId}`,
+    password: randomBytes(32).toString('base64url')
+  }
   if (target.kind === 'wsl2') {
     if (process.platform !== 'win32') {
       throw new Error('Notebook WSL2 sandbox target requires a Windows host.')
     }
-    const launch = await wsl2Launch({
-      target,
-      command: request.command,
-      cwd: request.cwd,
-      env: request.env,
-      ...(request.pathEnvironment ? { pathEnvironment: request.pathEnvironment } : {}),
-      filesystem
+    const gateway = await CommandGateway.open({
+      decide: (host, port) => decide(request.commandId, host, port),
+      credentials,
+      ...(request.localRpcSocketPath ? { localRpcSocketPath: request.localRpcSocketPath } : {}),
+      parentProxy: parentSettings(config)
     })
-    commandContexts.set(request.commandId, {
-      filesystem,
-      releasePlatform: launch.release
-    })
-    return { argv: launch.argv, env: launch.env }
-  }
-  const credentials = {
-    username: `notebook-${request.commandId}`,
-    password: randomBytes(32).toString('base64url')
+    try {
+      const launch = await wsl2Launch({
+        target,
+        command: request.command,
+        cwd: request.cwd,
+        env: request.env,
+        ...(request.pathEnvironment ? { pathEnvironment: request.pathEnvironment } : {}),
+        filesystem,
+        gatewayPort: gateway.port,
+        gatewayCredentials: credentials
+      })
+      commandContexts.set(request.commandId, {
+        filesystem,
+        gateway,
+        releasePlatform: launch.release
+      })
+      return { argv: launch.argv, env: launch.env }
+    } catch (error) {
+      await gateway.close()
+      throw error
+    }
   }
   const windowsGatewayPort = windowsProtectedGatewayPort
   const gateway = await CommandGateway.open({
@@ -308,7 +322,7 @@ const closeContext = async (
   violations.forget(commandId)
   return {
     processesTerminated: processOutcome.processesTerminated,
-    networkClosed: network.status === 'fulfilled',
+    networkClosed: network.status === 'fulfilled' && temporaryResources.status === 'fulfilled',
     temporaryResourcesRemoved: temporaryResources.status === 'fulfilled'
   }
 }

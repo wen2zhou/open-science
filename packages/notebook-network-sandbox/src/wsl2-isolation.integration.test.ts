@@ -8,6 +8,7 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { wsl2Launch, type Wsl2Launch } from '../runtime/src/platform/wsl2-isolation.js'
 import { isWsl2BashDevelopmentEnabled } from '../runtime/src/wsl2-development-gate.js'
 import { notebookWorkloadCacheEnv } from '../../../src/main/notebook/notebook-workload-cache-paths.js'
+import { CommandGateway } from '../runtime/src/gateway/command-gateway.js'
 
 const distro = process.env.OPEN_SCIENCE_WSL_DISTRO
 const user = process.env.OPEN_SCIENCE_WSL_USER
@@ -35,6 +36,8 @@ describe.runIf(enabled)('WSL2 sandbox real profile', () => {
   let handoff = ''
   let cache = ''
   let unauthorized = ''
+  let gateway: CommandGateway
+  const gatewayCredentials = { username: 'real-command', password: 'real-command-secret' }
 
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'open-science-wsl-command-'))
@@ -48,9 +51,16 @@ describe.runIf(enabled)('WSL2 sandbox real profile', () => {
       )
     )
     await writeFile(join(unauthorized, 'secret.txt'), 'host-secret', 'utf8')
+    gateway = await CommandGateway.open({
+      credentials: gatewayCredentials,
+      decide: async () => ({ allowed: false, message: 'OPEN_SCIENCE_NETWORK_POLICY_BLOCKED' })
+    })
   })
 
-  afterAll(async () => rm(root, { recursive: true, force: true }))
+  afterAll(async () => {
+    await gateway.close()
+    await rm(root, { recursive: true, force: true })
+  })
 
   const launch = (command: string): Promise<Wsl2Launch> =>
     wsl2Launch({
@@ -66,6 +76,8 @@ describe.runIf(enabled)('WSL2 sandbox real profile', () => {
         PATH: process.env.PATH,
         OPEN_SCIENCE_TEST_SECRET: 'must-not-leak'
       },
+      gatewayPort: gateway.port,
+      gatewayCredentials,
       pathEnvironment: {
         OPEN_SCIENCE_HANDOFF_DIR: handoff,
         ...notebookWorkloadCacheEnv(join(root, 'runtime'))
@@ -93,7 +105,6 @@ mkdir -p "$MPLCONFIGDIR" "$UV_CACHE_DIR" "$HF_DATASETS_CACHE" "$HF_XET_CACHE" "$
 [ -z "$(find /run/WSL -name '*_interop' -print -quit 2>/dev/null || true)" ]
 [ ! -r /proc/net/route ] || ! grep -q '^.*[[:space:]]00000000[[:space:]]' /proc/net/route
 `)
-
     await expect(execute(prepared.argv, prepared.env, workspace)).resolves.toEqual({
       exitCode: 0,
       stdout: '你好 stdout\n',

@@ -1,4 +1,5 @@
 import { mkdir, mkdtemp, rm } from 'node:fs/promises'
+import { createServer, type Server } from 'node:http'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
@@ -20,7 +21,10 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
   let runtimeRoot = ''
   let handoff = ''
   let sandbox: NotebookNetworkSandboxOwner
+  let fixture: Server
+  let fixturePort = 0
   const info = vi.fn()
+  const requestDecision = vi.fn().mockResolvedValue('deny')
 
   beforeAll(async () => {
     root = await mkdtemp(join(tmpdir(), 'open-science-wsl-shell-'))
@@ -30,11 +34,23 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
     await Promise.all(
       [workspace, runtimeRoot, handoff].map((path) => mkdir(path, { recursive: true }))
     )
+    fixture = createServer((_request, response) => response.end('wsl-gateway-ok'))
+    await new Promise<void>((resolve, reject) => {
+      fixture.once('error', reject)
+      fixture.listen(0, '127.0.0.1', () => resolve())
+    })
+    const address = fixture.address()
+    if (!address || typeof address === 'string') throw new Error('Fixture did not bind TCP.')
+    fixturePort = address.port
     sandbox = new NotebookNetworkSandboxOwner({
       resourceRoot: join(process.cwd(), 'packages', 'notebook-network-sandbox', 'vendor'),
-      getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      getSettings: async () => ({
+        ...DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+        allowedDomains: ['example.com']
+      }),
+      getParentProxy: async () => ({ http: `http://127.0.0.1:${fixturePort}` }),
       persistAlwaysAllow: vi.fn(),
-      requestDecision: vi.fn().mockResolvedValue('deny'),
+      requestDecision,
       platform: 'win32',
       logger: { debug: vi.fn(), info, warn: vi.fn(), error: vi.fn() }
     })
@@ -42,6 +58,7 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
 
   afterAll(async () => {
     await sandbox?.dispose()
+    await new Promise<void>((resolve) => fixture?.close(() => resolve()))
     await rm(root, { recursive: true, force: true })
   })
 
@@ -79,5 +96,99 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
     expect(diagnosticText).not.toContain(distro)
     expect(diagnosticText).not.toContain(user)
     expect(diagnosticText).not.toContain('你好 stdout')
+  })
+
+  it('allows only gateway-mediated outbound access and preserves denial semantics', async () => {
+    const allowed = await runShellCommand({
+      command: '/usr/bin/curl --silent --show-error --fail http://example.com/',
+      cwd: workspace,
+      handoffDir: handoff,
+      runtimeRoot,
+      notebookSessionRoot: root,
+      sessionId: 'session-network',
+      projectId: 'project-1',
+      platform: 'win32',
+      runtimeBinding: {
+        kind: 'wsl2-bash',
+        profileId: 'real-profile',
+        distro: distro!,
+        user: user!
+      },
+      processSandbox: sandbox,
+      terminateTree: async () => ({ reaped: true })
+    })
+    expect(allowed).toMatchObject({ exitCode: 0, stdout: 'wsl-gateway-ok' })
+
+    const denied = await runShellCommand({
+      command: '/usr/bin/curl --silent --show-error --fail http://example.org/',
+      cwd: workspace,
+      handoffDir: handoff,
+      runtimeRoot,
+      notebookSessionRoot: root,
+      sessionId: 'session-network',
+      projectId: 'project-1',
+      platform: 'win32',
+      runtimeBinding: {
+        kind: 'wsl2-bash',
+        profileId: 'real-profile',
+        distro: distro!,
+        user: user!
+      },
+      processSandbox: sandbox,
+      terminateTree: async () => ({ reaped: true })
+    })
+    expect(denied.exitCode).not.toBe(0)
+    expect(denied.stderr).toContain('OPEN_SCIENCE_NETWORK_DOMAIN_BLOCKED')
+
+    const direct = await runShellCommand({
+      command:
+        'env -u HTTP_PROXY -u HTTPS_PROXY -u ALL_PROXY -u http_proxy -u https_proxy -u all_proxy ' +
+        `/usr/bin/python3 -c 'import socket; socket.create_connection(("127.0.0.1", ${fixturePort}), 1)'`,
+      cwd: workspace,
+      handoffDir: handoff,
+      runtimeRoot,
+      notebookSessionRoot: root,
+      sessionId: 'session-network',
+      projectId: 'project-1',
+      platform: 'win32',
+      runtimeBinding: {
+        kind: 'wsl2-bash',
+        profileId: 'real-profile',
+        distro: distro!,
+        user: user!
+      },
+      processSandbox: sandbox,
+      terminateTree: async () => ({ reaped: true })
+    })
+    expect(direct.exitCode).not.toBe(0)
+
+    const protectedDestinations = await runShellCommand({
+      command:
+        '/usr/bin/curl --silent --fail http://169.254.169.254/latest/meta-data/ >/dev/null && exit 31; ' +
+        `/usr/bin/curl --silent --fail --proxy http://127.0.0.1:${fixturePort} http://example.com/ >/dev/null && exit 32; ` +
+        'exit 0',
+      cwd: workspace,
+      handoffDir: handoff,
+      runtimeRoot,
+      notebookSessionRoot: root,
+      sessionId: 'session-network',
+      projectId: 'project-1',
+      platform: 'win32',
+      runtimeBinding: {
+        kind: 'wsl2-bash',
+        profileId: 'real-profile',
+        distro: distro!,
+        user: user!
+      },
+      processSandbox: sandbox,
+      terminateTree: async () => ({ reaped: true })
+    })
+    expect(protectedDestinations.exitCode).toBe(0)
+    expect(requestDecision).not.toHaveBeenCalled()
+
+    const diagnostics = JSON.stringify(info.mock.calls)
+    expect(diagnostics).not.toContain('example.com')
+    expect(diagnostics).not.toContain('example.org')
+    expect(diagnostics).not.toContain('Download')
   })
 })
