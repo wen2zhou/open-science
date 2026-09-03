@@ -112,6 +112,7 @@ describe('NotebookNetworkSandbox', () => {
       })
     )
 
+    await wrapped.cleanup('exit', { processesTerminated: true })
     await first.dispose()
     await expect(second.initialize()).resolves.toBeUndefined()
     await second.dispose()
@@ -245,7 +246,84 @@ describe('NotebookNetworkSandbox', () => {
     expect(backend.cleanupAfterCommand).toHaveBeenCalledWith(expect.any(String), 'timeout', {
       processesTerminated: false
     })
+    backend.cleanupAfterCommand.mockResolvedValueOnce({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+    await wrapped.cleanup('cancel', { processesTerminated: true })
     await sandbox.dispose()
+  })
+
+  it('retains command ownership and retries incomplete backend cleanup', async () => {
+    const sandbox = new NotebookNetworkSandbox(options())
+    vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    backend.wrap.mockResolvedValue({ argv: ['sandboxed'], env: {} })
+    backend.cleanupAfterCommand
+      .mockResolvedValueOnce({
+        processesTerminated: false,
+        networkClosed: true,
+        temporaryResourcesRemoved: false
+      })
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+
+    await sandbox.initialize()
+    const wrapped = await sandbox.wrap({
+      command: 'sleep 30',
+      cwd: '/workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+    await expect(wrapped.cleanup('cancel', { processesTerminated: false })).resolves.toMatchObject({
+      processesTerminated: false,
+      temporaryResourcesRemoved: false
+    })
+    const next = await sandbox.wrap({
+      command: 'echo next',
+      cwd: '/workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+    expect(backend.cleanupAfterCommand).toHaveBeenCalledTimes(2)
+    expect(backend.cleanupAfterCommand.mock.calls[1]?.[0]).toBe(
+      backend.cleanupAfterCommand.mock.calls[0]?.[0]
+    )
+    await next.cleanup('exit', { processesTerminated: true })
+    await sandbox.dispose()
+  })
+
+  it('keeps disposal retryable when an active command cleanup is incomplete', async () => {
+    const sandbox = new NotebookNetworkSandbox(options())
+    vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    backend.wrap.mockResolvedValue({ argv: ['sandboxed'], env: {} })
+    backend.cleanupAfterCommand
+      .mockResolvedValueOnce({
+        processesTerminated: false,
+        networkClosed: false,
+        temporaryResourcesRemoved: false
+      })
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+
+    await sandbox.initialize()
+    await sandbox.wrap({
+      command: 'sleep 30',
+      cwd: '/workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+
+    await expect(sandbox.dispose()).rejects.toThrow(
+      'Notebook network sandbox cleanup was incomplete.'
+    )
+    expect(backend.reset).not.toHaveBeenCalled()
+    await expect(sandbox.dispose()).resolves.toBeUndefined()
+    expect(backend.cleanupAfterCommand).toHaveBeenCalledTimes(2)
+    expect(backend.reset).toHaveBeenCalledOnce()
   })
 
   it('defaults omitted targets to native and forwards explicit WSL2 targets', async () => {

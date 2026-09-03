@@ -37,6 +37,7 @@ import {
 const SHELL_TIMEOUT_MESSAGE_RESERVE_BYTES = 256
 const SHELL_CLEANUP_INCOMPLETE_MESSAGE =
   'SHELL_CLEANUP_INCOMPLETE: Shell execution cleanup did not complete; the result is not trusted.'
+const SHELL_NETWORK_TRANSPORT_UNSUPPORTED_PREFIX = 'WSL2_NETWORK_TRANSPORT_UNSUPPORTED:'
 
 // Result of one stateless bash_execute run. No status/traceback classification: the shell is
 // expected to fail non-zero sometimes, so the caller inspects exitCode directly instead of a
@@ -48,7 +49,8 @@ type NotebookShellResult = {
   truncated?: boolean
   cancelled?: boolean
   runtimeStatus?: 'unavailable'
-  errorCode?: 'shell-runtime-unavailable' | 'shell-cleanup-incomplete'
+  errorCode?:
+    'shell-runtime-unavailable' | 'shell-cleanup-incomplete' | 'shell-network-transport-unsupported'
 }
 
 type NotebookShellProcessRequest = {
@@ -339,6 +341,31 @@ const runShellCommand = (
         : undefined
     } catch (error) {
       if (runtimeBinding.kind !== 'wsl2-bash') throw error
+      if (options.signal?.aborted) {
+        return {
+          stdout: '',
+          stderr: 'Shell command was cancelled.',
+          exitCode: null,
+          cancelled: true
+        }
+      }
+      const message = error instanceof Error ? error.message : String(error)
+      if (message.startsWith('SHELL_CLEANUP_INCOMPLETE:')) {
+        return {
+          stdout: '',
+          stderr: SHELL_CLEANUP_INCOMPLETE_MESSAGE,
+          exitCode: null,
+          errorCode: 'shell-cleanup-incomplete'
+        }
+      }
+      if (message.startsWith(SHELL_NETWORK_TRANSPORT_UNSUPPORTED_PREFIX)) {
+        return {
+          stdout: '',
+          stderr: message,
+          exitCode: null,
+          errorCode: 'shell-network-transport-unsupported'
+        }
+      }
       return {
         stdout: '',
         stderr: 'SHELL_RUNTIME_UNAVAILABLE: The selected WSL2 Bash runtime is unavailable.',
@@ -347,20 +374,39 @@ const runShellCommand = (
         errorCode: 'shell-runtime-unavailable'
       }
     }
-    let sandboxCleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
-    const cleanupSandbox = (
-      reason: NotebookSandboxCleanupReason,
-      processOutcome: NotebookSandboxProcessOutcome
-    ): Promise<NotebookSandboxCleanupResult> =>
-      (sandboxCleanupPromise ??=
-        sandboxed?.cleanup(reason, processOutcome) ??
-        Promise.resolve({
-          processesTerminated: processOutcome.processesTerminated,
-          networkClosed: true,
-          temporaryResourcesRemoved: true
-        }))
     const cleanupCompleted = (result: NotebookSandboxCleanupResult): boolean =>
       result.processesTerminated && result.networkClosed && result.temporaryResourcesRemoved
+    let sandboxCleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
+    const cleanupSandbox = async (
+      reason: NotebookSandboxCleanupReason,
+      processOutcome: NotebookSandboxProcessOutcome
+    ): Promise<NotebookSandboxCleanupResult> => {
+      if (!sandboxCleanupPromise) {
+        sandboxCleanupPromise =
+          sandboxed?.cleanup(reason, processOutcome) ??
+          Promise.resolve({
+            processesTerminated: processOutcome.processesTerminated,
+            networkClosed: true,
+            temporaryResourcesRemoved: true
+          })
+      }
+      try {
+        const result = await sandboxCleanupPromise
+        if (!cleanupCompleted(result)) sandboxCleanupPromise = undefined
+        return result
+      } catch (error) {
+        sandboxCleanupPromise = undefined
+        throw error
+      }
+    }
+    const cleanupSandboxWithRetry = async (
+      reason: NotebookSandboxCleanupReason,
+      processOutcome: NotebookSandboxProcessOutcome
+    ): Promise<NotebookSandboxCleanupResult> => {
+      const firstResult = await cleanupSandbox(reason, processOutcome)
+      if (runtimeBinding.kind !== 'wsl2-bash' || cleanupCompleted(firstResult)) return firstResult
+      return cleanupSandbox(reason, processOutcome)
+    }
     const withIncompleteCleanup = (result: NotebookShellResult): NotebookShellResult => ({
       ...result,
       stderr:
@@ -370,6 +416,25 @@ const runShellCommand = (
       errorCode: 'shell-cleanup-incomplete'
     })
     const endSandboxExecution = sandboxed?.beginExecution?.()
+
+    if (options.signal?.aborted) {
+      endSandboxExecution?.()
+      let cleanupResult: NotebookSandboxCleanupResult | undefined
+      try {
+        cleanupResult = await cleanupSandboxWithRetry('cancel', { processesTerminated: false })
+      } catch {
+        cleanupResult = undefined
+      }
+      const cancelled: NotebookShellResult = {
+        stdout: '',
+        stderr: 'Shell command was cancelled.',
+        exitCode: null,
+        cancelled: true
+      }
+      return cleanupResult && cleanupCompleted(cleanupResult)
+        ? cancelled
+        : withIncompleteCleanup(cancelled)
+    }
 
     let child: ChildProcessWithoutNullStreams
     try {
@@ -389,7 +454,7 @@ const runShellCommand = (
       let complete = false
       try {
         complete = cleanupCompleted(
-          await cleanupSandbox('spawn-failed', { processesTerminated: false })
+          await cleanupSandboxWithRetry('spawn-failed', { processesTerminated: false })
         )
       } catch {
         // The stable cleanup failure below preserves the executor's never-reject contract.
@@ -433,7 +498,7 @@ const runShellCommand = (
         const stderr = sandboxed ? sandboxed.annotateStderr(normalized) : normalized
         let complete = false
         try {
-          complete = cleanupCompleted(await cleanupSandbox(cleanupReason, processOutcome))
+          complete = cleanupCompleted(await cleanupSandboxWithRetry(cleanupReason, processOutcome))
         } catch {
           complete = false
         }

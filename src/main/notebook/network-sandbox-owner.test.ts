@@ -76,7 +76,6 @@ beforeEach(() => {
       }) => Promise<boolean>
     }) => {
       const controller = new AbortController()
-      let cleaned = false
       backend.request = ({ host, port }) =>
         command.onNetworkAccessRequest({
           host,
@@ -92,8 +91,6 @@ beforeEach(() => {
           _reason: NotebookSandboxCleanupReason,
           processOutcome: NotebookSandboxProcessOutcome
         ) => {
-          if (cleaned) return
-          cleaned = true
           controller.abort(new Error('Notebook process ended.'))
           return backend.cleanup(processOutcome)
         }
@@ -667,6 +664,70 @@ describe('NotebookNetworkSandboxOwner', () => {
     expect(backend.cleanup).toHaveBeenCalledOnce()
     await expect(backend.request?.({ host: 'data.example.org', port: 443 })).resolves.toBe(false)
     expect(requestDecision).not.toHaveBeenCalled()
+    await owner.dispose()
+  })
+
+  it('retains the command temp root until backend teardown succeeds and retries the same root', async () => {
+    const owner = new NotebookNetworkSandboxOwner({
+      resourceRoot: '/resources',
+      getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      persistAlwaysAllow: vi.fn(),
+      requestDecision: vi.fn().mockResolvedValue('deny'),
+      platform: 'linux'
+    })
+    backend.cleanup
+      .mockResolvedValueOnce({
+        processesTerminated: false,
+        networkClosed: true,
+        temporaryResourcesRemoved: false
+      })
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+    const wrapped = await owner.wrap({
+      executable: '/bin/sh',
+      args: ['-c', 'sleep 30'],
+      env: {},
+      cwd: '/workspace',
+      commandText: 'sleep 30',
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      runtime: 'bash',
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['/workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    })
+    const commandTempRoot = backend.wrap.mock.calls.at(-1)?.[0].env.TMPDIR as string
+
+    await expect(wrapped.cleanup('cancel', { processesTerminated: false })).resolves.toEqual({
+      processesTerminated: false,
+      networkClosed: true,
+      temporaryResourcesRemoved: false
+    })
+    expect(existsSync(commandTempRoot)).toBe(true)
+    const next = await owner.wrap({
+      executable: '/bin/sh',
+      args: ['-c', 'true'],
+      env: {},
+      cwd: '/workspace',
+      commandText: 'true',
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      runtime: 'bash',
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['/workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    })
+    expect(existsSync(commandTempRoot)).toBe(false)
+    await next.cleanup('exit', { processesTerminated: true })
     await owner.dispose()
   })
 

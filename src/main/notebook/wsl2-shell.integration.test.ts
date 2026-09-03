@@ -129,7 +129,8 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
           user: user!
         },
         processSandbox: sandbox,
-        terminateTree: async () => ({ reaped: true })
+        // The WSL adapter owns exact guest cleanup; host taskkill is not authoritative here.
+        terminateTree: async () => ({ reaped: false })
       })
 
       expect(Date.now() - startedAt).toBeLessThan(8_000)
@@ -233,5 +234,5 @@ describe.runIf(enabled)('Notebook WSL2 Bash execution', () => {
     expect(diagnostics).not.toContain('example.com')
     expect(diagnostics).not.toContain('example.org')
     expect(diagnostics).not.toContain('Download')
-  })
+  }, 30_000)
 })

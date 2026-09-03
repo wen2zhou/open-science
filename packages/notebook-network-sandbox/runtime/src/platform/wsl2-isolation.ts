@@ -14,7 +14,7 @@ type Wsl2Target = Readonly<{
   user: string
 }>
 
-type Wsl2PathMapper = (path: string) => Promise<string>
+type Wsl2PathMapper = (path: string, signal?: AbortSignal) => Promise<string>
 type Wsl2CleanupReason = 'exit' | 'cancel' | 'timeout' | 'spawn-failed'
 
 type Wsl2GuestCleanupRequest = Readonly<{
@@ -26,6 +26,11 @@ type Wsl2GuestCleanupRequest = Readonly<{
 }>
 
 type Wsl2GuestCleanup = (request: Wsl2GuestCleanupRequest) => Promise<boolean>
+type Wsl2GuestReconciliation = (request: {
+  distro: string
+  user: string
+  signal?: AbortSignal
+}) => Promise<boolean>
 
 type Wsl2LaunchRequest = Readonly<{
   target: Wsl2Target
@@ -38,7 +43,9 @@ type Wsl2LaunchRequest = Readonly<{
   gatewayCredentials?: GatewayCredentials
   mapPath?: Wsl2PathMapper
   cleanupGuest?: Wsl2GuestCleanup
+  reconcileGuest?: Wsl2GuestReconciliation
   openBridge?: Wsl2GatewayBridgeOpener
+  signal?: AbortSignal
 }>
 
 type Wsl2ReleaseResult = Readonly<{
@@ -150,14 +157,36 @@ done
 rm -f -- "$receipt" "$receipt.tmp" || exit 8
 `
 
+const reconcileExecutionReceiptsScript = String.raw`
+cleanup_program=$1
+receipts=
+for receipt in /tmp/.open-science-execution-*.receipt; do
+  [ -e "$receipt" ] || continue
+  [ -f "$receipt" ] && [ ! -L "$receipt" ] && [ -O "$receipt" ] || exit 20
+  name=${'$'}{receipt#/tmp/.open-science-execution-}
+  uuid=${'$'}{name%.receipt}
+  printf '%s\n' "$uuid" | grep -Eq '^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$' || exit 21
+  expected="v1 open-science-execution-$uuid"
+  [ "$(wc -l < "$receipt")" -eq 1 ] || exit 22
+  [ "$(cat -- "$receipt")" = "$expected" ] || exit 22
+  receipts="$receipts $receipt"
+done
+for receipt in $receipts; do
+  name=${'$'}{receipt#/tmp/.open-science-execution-}
+  uuid=${'$'}{name%.receipt}
+  /bin/bash --noprofile --norc -c "$cleanup_program" open-science-wsl-reconcile "$receipt" "open-science-execution-$uuid" || exit $?
+done
+`
+
 type Wsl2GatewayBridge = Readonly<{
   socketPath: string
-  close: () => Promise<void>
+  close: () => Promise<Readonly<{ networkClosed: boolean; temporaryResourcesRemoved: boolean }>>
 }>
 
 type Wsl2GatewayBridgeOpener = (request: {
   target: Wsl2Target
   gatewayPort: number
+  signal?: AbortSignal
 }) => Promise<Wsl2GatewayBridge>
 
 const WINDOWS_PATH = /^[a-z]:[\\/]/iu
@@ -185,6 +214,12 @@ def watch_owner():
     close_all()
 threading.Thread(target=watch_owner, daemon=True).start()
 try:
+    try:
+        probe = socket.create_connection(('127.0.0.1', int(port_text)), timeout=2)
+        probe.close()
+    except OSError:
+        print('OPEN_SCIENCE_WSL_GATEWAY_NAT_UNSUPPORTED', file=sys.stderr, flush=True)
+        raise SystemExit(78)
     listener.bind(socket_path)
     os.chmod(socket_path, 0o600)
     listener.listen(32)
@@ -288,10 +323,13 @@ const sanitizedHostEnvironment = (): NodeJS.ProcessEnv => {
   return env
 }
 
-const waitForBridgeReady = (child: ChildProcessWithoutNullStreams): Promise<void> =>
+const waitForBridgeReady = (
+  child: ChildProcessWithoutNullStreams,
+  signal?: AbortSignal
+): Promise<void> =>
   new Promise((resolve, reject) => {
     let stdout = ''
-    let stderrBytes = 0
+    let stderr = ''
     const timer = setTimeout(
       () => finish(new Error('WSL2 network bridge did not become ready.')),
       5_000
@@ -302,6 +340,7 @@ const waitForBridgeReady = (child: ChildProcessWithoutNullStreams): Promise<void
       child.stderr.removeListener('data', onStderr)
       child.removeListener('error', onError)
       child.removeListener('exit', onExit)
+      signal?.removeEventListener('abort', onAbort)
       if (error) reject(error)
       else resolve()
     }
@@ -310,33 +349,75 @@ const waitForBridgeReady = (child: ChildProcessWithoutNullStreams): Promise<void
       if (stdout.includes('OPEN_SCIENCE_WSL_GATEWAY_READY\n')) finish()
     }
     const onStderr = (chunk: Buffer): void => {
-      stderrBytes += chunk.length
-      if (stderrBytes > 64 * 1024)
+      stderr = (stderr + chunk.toString('utf8')).slice(-64 * 1024)
+      if (Buffer.byteLength(stderr, 'utf8') >= 64 * 1024)
         finish(new Error('WSL2 network bridge output exceeded its limit.'))
     }
     const onError = (): void => finish(new Error('WSL2 network bridge could not start.'))
-    const onExit = (): void => finish(new Error('WSL2 network bridge exited before ready.'))
+    const onExit = (code: number | null): void =>
+      finish(
+        new Error(
+          code === 78 || stderr.includes('OPEN_SCIENCE_WSL_GATEWAY_NAT_UNSUPPORTED')
+            ? 'WSL2_NETWORK_TRANSPORT_UNSUPPORTED: WSL2 Bash network access requires mirrored networking; default NAT support is tracked for Issue 13.'
+            : 'WSL2 network bridge exited before ready.'
+        )
+      )
+    const onAbort = (): void => finish(signal?.reason ?? new DOMException('Aborted', 'AbortError'))
     child.stdout.on('data', onStdout)
     child.stderr.on('data', onStderr)
     child.once('error', onError)
     child.once('exit', onExit)
+    signal?.addEventListener('abort', onAbort, { once: true })
+    if (signal?.aborted) onAbort()
   })
 
-const closeBridgeProcess = async (child: ChildProcessWithoutNullStreams): Promise<void> => {
-  if (child.exitCode !== null) return
-  const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
-  child.stdin.end()
-  const closed = await Promise.race([
-    exited.then(() => true),
-    new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000))
-  ])
-  if (!closed) {
-    child.kill()
-    throw new Error('WSL2 network bridge cleanup was incomplete.')
+const verifyBridgeRemoved = (target: Wsl2Target, socketPath: string): Promise<boolean> =>
+  new Promise((resolve) => {
+    execFile(
+      wslExecutable(),
+      [
+        '--distribution',
+        target.distro,
+        '--user',
+        target.user,
+        '--exec',
+        '/bin/bash',
+        '--noprofile',
+        '--norc',
+        '-c',
+        '[ ! -e "$1" ] && [ ! -e "${1%/*}" ]',
+        'open-science-wsl-bridge-verify',
+        socketPath
+      ],
+      { encoding: 'buffer', maxBuffer: 1024, timeout: 5_000, windowsHide: true },
+      (error) => resolve(!error)
+    )
+  })
+
+const closeBridgeProcess = async (
+  child: ChildProcessWithoutNullStreams,
+  target: Wsl2Target,
+  socketPath: string
+): Promise<Readonly<{ networkClosed: boolean; temporaryResourcesRemoved: boolean }>> => {
+  let exitedCleanly = child.exitCode !== null || child.signalCode !== null
+  if (!exitedCleanly) {
+    const exited = new Promise<void>((resolve) => child.once('exit', () => resolve()))
+    child.stdin.end()
+    exitedCleanly = await Promise.race([
+      exited.then(() => true),
+      new Promise<false>((resolve) => setTimeout(() => resolve(false), 5_000))
+    ])
+    if (!exitedCleanly) child.kill()
+  }
+  const removed = await verifyBridgeRemoved(target, socketPath)
+  return {
+    networkClosed: exitedCleanly && removed,
+    temporaryResourcesRemoved: removed
   }
 }
 
-const openWsl2GatewayBridge: Wsl2GatewayBridgeOpener = async ({ target, gatewayPort }) => {
+const openWsl2GatewayBridge: Wsl2GatewayBridgeOpener = async ({ target, gatewayPort, signal }) => {
+  signal?.throwIfAborted()
   const socketPath = `/tmp/open-science-network-${randomUUID()}/gateway.sock`
   const child = spawn(
     wslExecutable(),
@@ -355,25 +436,30 @@ const openWsl2GatewayBridge: Wsl2GatewayBridgeOpener = async ({ target, gatewayP
     { env: sanitizedHostEnvironment(), windowsHide: true, stdio: ['pipe', 'pipe', 'pipe'] }
   )
   try {
-    await waitForBridgeReady(child)
+    await waitForBridgeReady(child, signal)
   } catch (error) {
-    child.stdin.end()
-    child.kill()
+    const cleanup = await closeBridgeProcess(child, target, socketPath)
+    if (!cleanup.networkClosed || !cleanup.temporaryResourcesRemoved) {
+      throw new Error('WSL2 network bridge cleanup was incomplete.', { cause: error })
+    }
     throw error
   }
-  return { socketPath, close: () => closeBridgeProcess(child) }
+  return { socketPath, close: () => closeBridgeProcess(child, target, socketPath) }
 }
 
 const validateTarget = (target: Wsl2Target): void => {
   if (!target.profileId.trim() || !target.distro.trim() || /[\0\r\n]/u.test(target.distro)) {
     throw new Error('WSL2 sandbox profile is invalid.')
   }
-  if (!SAFE_USER.test(target.user)) throw new Error('WSL2 sandbox user is invalid.')
+  if (!SAFE_USER.test(target.user) || target.user === 'root') {
+    throw new Error('WSL2 sandbox user is invalid.')
+  }
 }
 
 const defaultPathMapper =
   (target: Wsl2Target): Wsl2PathMapper =>
-  async (path) => {
+  async (path, signal) => {
+    signal?.throwIfAborted()
     if (!WINDOWS_PATH.test(path)) {
       if (path.startsWith('/')) return path
       throw new Error('Only canonical Windows or absolute guest paths are supported.')
@@ -392,7 +478,13 @@ const defaultPathMapper =
           '-u',
           path
         ],
-        { encoding: 'utf8', maxBuffer: 64 * 1024, timeout: 5_000, windowsHide: true },
+        {
+          encoding: 'utf8',
+          maxBuffer: 64 * 1024,
+          timeout: 5_000,
+          windowsHide: true,
+          ...(signal ? { signal } : {})
+        },
         (error, stdout) => {
           const mapped = stdout.trim()
           if (error || !mapped.startsWith('/') || /[\0\r\n]/u.test(mapped)) {
@@ -434,6 +526,71 @@ const defaultCleanupGuest: Wsl2GuestCleanup = ({ distro, user, receipt, token })
     )
   })
 
+const reconcileWsl2ExecutionReceipts: Wsl2GuestReconciliation = ({ distro, user, signal }) =>
+  new Promise((resolve, reject) => {
+    execFile(
+      wslExecutable(),
+      [
+        '--distribution',
+        distro,
+        '--user',
+        user,
+        '--exec',
+        '/bin/bash',
+        '--noprofile',
+        '--norc',
+        '-c',
+        reconcileExecutionReceiptsScript,
+        'open-science-wsl-reconcile-receipts',
+        exactExecutionCleanupScript
+      ],
+      {
+        encoding: 'buffer',
+        maxBuffer: MAX_CLEANUP_CAPTURE_BYTES,
+        timeout: GUEST_CLEANUP_TIMEOUT_MS,
+        windowsHide: true,
+        ...(signal ? { signal } : {})
+      },
+      (error) => {
+        if (signal?.aborted) {
+          reject(signal.reason ?? new DOMException('Aborted', 'AbortError'))
+          return
+        }
+        resolve(!error)
+      }
+    )
+  })
+
+const profileReconciliations = new Map<string, Promise<void>>()
+
+const reconcileProfile = (request: Wsl2LaunchRequest): Promise<void> => {
+  // Remember a successful reconciliation for this guest user: a concurrent second wrap must not
+  // rescan receipts after the first wrap starts publishing its current receipt. This fence is
+  // process-local; cross-app-process first-launch serialization remains an Issue 13 certification
+  // limitation, while every restart still reconciles durable receipts before its first spawn.
+  const key = JSON.stringify([request.target.distro, request.target.user])
+  const current = profileReconciliations.get(key)
+  if (current) return current
+  const task = (request.reconcileGuest ?? reconcileWsl2ExecutionReceipts)({
+    distro: request.target.distro,
+    user: request.target.user,
+    ...(request.signal ? { signal: request.signal } : {})
+  })
+    .then((complete) => {
+      if (!complete) {
+        throw new Error(
+          'SHELL_CLEANUP_INCOMPLETE: Previous WSL2 shell execution receipts could not be reconciled.'
+        )
+      }
+    })
+    .catch((error) => {
+      profileReconciliations.delete(key)
+      throw error
+    })
+  profileReconciliations.set(key, task)
+  return task
+}
+
 const unique = <T>(values: readonly T[]): T[] => [...new Set(values)]
 
 const mountParents = (path: string): string[] => {
@@ -449,13 +606,18 @@ const mountParents = (path: string): string[] => {
 const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
   assertWsl2BashDevelopmentEnabled()
   validateTarget(request.target)
+  request.signal?.throwIfAborted()
+  await reconcileProfile(request)
+  request.signal?.throwIfAborted()
   const mapPath = request.mapPath ?? defaultPathMapper(request.target)
   const map = async (path: string): Promise<string> => {
     try {
-      const mapped = await mapPath(path)
+      const mapped = await mapPath(path, request.signal)
+      request.signal?.throwIfAborted()
       if (!mapped.startsWith('/') || /[\0\r\n]/u.test(mapped)) throw new Error('invalid path')
       return mapped
     } catch {
+      request.signal?.throwIfAborted()
       throw new Error('WSL2 sandbox path mapping failed.')
     }
   }
@@ -510,8 +672,13 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
   }
   const bridge = await (request.openBridge ?? openWsl2GatewayBridge)({
     target: request.target,
-    gatewayPort: request.gatewayPort
+    gatewayPort: request.gatewayPort,
+    ...(request.signal ? { signal: request.signal } : {})
   })
+  if (request.signal?.aborted) {
+    await bridge.close()
+    request.signal.throwIfAborted()
+  }
 
   const bwrap = [
     '/usr/bin/bwrap',
@@ -591,6 +758,10 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
   )
 
   let releasePromise: Promise<Wsl2ReleaseResult> | undefined
+  let releaseReason: Wsl2CleanupReason | undefined
+  let processesTerminated = false
+  let networkClosed = false
+  let bridgeResourcesRemoved = false
   return {
     argv: [
       wslExecutable(),
@@ -610,32 +781,54 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
       ...bwrap
     ],
     env: sanitizedHostEnvironment(),
-    release: (reason = 'exit') =>
-      (releasePromise ??= Promise.allSettled([
-        (request.cleanupGuest ?? defaultCleanupGuest)({
-          distro: request.target.distro,
-          user: request.target.user,
-          receipt,
-          token,
-          reason
-        }),
-        bridge.close()
-      ]).then(([processes, network]) => {
-        const processesTerminated = processes.status === 'fulfilled' && processes.value
-        const networkClosed = network.status === 'fulfilled'
+    release: (reason = 'exit') => {
+      releaseReason ??= reason
+      if (releasePromise) return releasePromise
+      const attempt = Promise.allSettled([
+        processesTerminated
+          ? Promise.resolve(true)
+          : (request.cleanupGuest ?? defaultCleanupGuest)({
+              distro: request.target.distro,
+              user: request.target.user,
+              receipt,
+              token,
+              reason: releaseReason
+            }),
+        networkClosed && bridgeResourcesRemoved
+          ? Promise.resolve({ networkClosed: true, temporaryResourcesRemoved: true })
+          : bridge.close()
+      ]).then(([processes, bridgeCleanup]) => {
+        processesTerminated ||= processes.status === 'fulfilled' && processes.value
+        networkClosed ||= bridgeCleanup.status === 'fulfilled' && bridgeCleanup.value.networkClosed
+        bridgeResourcesRemoved ||=
+          bridgeCleanup.status === 'fulfilled' && bridgeCleanup.value.temporaryResourcesRemoved
+        const temporaryResourcesRemoved = bridgeResourcesRemoved && processesTerminated
         return {
           processesTerminated,
           networkClosed,
-          temporaryResourcesRemoved: processesTerminated && networkClosed
+          temporaryResourcesRemoved
         }
-      }))
+      })
+      releasePromise = attempt.then(
+        (result) => {
+          if (!Object.values(result).every(Boolean)) releasePromise = undefined
+          return result
+        },
+        (error) => {
+          releasePromise = undefined
+          throw error
+        }
+      )
+      return releasePromise
+    }
   }
 }
 
-export { openWsl2GatewayBridge, wsl2Launch }
+export { openWsl2GatewayBridge, reconcileWsl2ExecutionReceipts, wsl2Launch }
 export type {
   Wsl2GuestCleanup,
   Wsl2GuestCleanupRequest,
+  Wsl2GuestReconciliation,
   Wsl2GatewayBridge,
   Wsl2GatewayBridgeOpener,
   Wsl2Launch,

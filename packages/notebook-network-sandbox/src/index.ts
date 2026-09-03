@@ -23,11 +23,15 @@ import type {
 
 let activeOwnerToken: symbol | undefined
 
-type ActiveCommand = Readonly<{
+type ActiveCommand = {
   onNetworkAccessRequest: NotebookSandboxCommand['onNetworkAccessRequest']
   controller: AbortController
   detachSignal?: () => void
-}>
+  cleanupRequest?: Readonly<{
+    reason: 'exit' | 'cancel' | 'timeout' | 'spawn-failed'
+    processOutcome: NotebookSandboxProcessOutcome
+  }>
+}
 
 const dependencyStatus = (
   platform: NodeJS.Platform,
@@ -119,8 +123,20 @@ class NotebookNetworkSandbox {
 
   async wrap(command: NotebookSandboxCommand): Promise<NotebookSandboxedProcess> {
     if (!this.#initialized) throw new Error('Notebook network sandbox is not initialized.')
+    await this.#reconcilePendingCommands()
     const commandId = randomUUID()
     const shell = command.shell as string | WindowsShell | undefined
+    const controller = new AbortController()
+    const abort = (): void => controller.abort(command.signal?.reason)
+    if (command.signal?.aborted) abort()
+    else command.signal?.addEventListener('abort', abort, { once: true })
+    this.#activeCommands.set(commandId, {
+      onNetworkAccessRequest: command.onNetworkAccessRequest,
+      controller,
+      ...(command.signal
+        ? { detachSignal: () => command.signal?.removeEventListener('abort', abort) }
+        : {})
+    })
     let wrapped: Awaited<ReturnType<typeof NotebookNetworkRuntime.wrap>>
     try {
       wrapped = await this.#backend.wrap({
@@ -136,6 +152,7 @@ class NotebookNetworkSandbox {
         ...(command.inheritedFileDescriptorCount
           ? { inheritedFileDescriptorCount: command.inheritedFileDescriptorCount }
           : {}),
+        signal: controller.signal,
         filesystem: command.filesystem ?? {
           readOnlyRoots: [command.cwd],
           readWriteRoots: [command.cwd],
@@ -144,30 +161,29 @@ class NotebookNetworkSandbox {
         }
       })
     } catch (error) {
-      await this.#backend.cleanupAfterCommand(commandId, 'spawn-failed', {
-        processesTerminated: true
-      })
+      await this.#releaseCommand(commandId, { processesTerminated: true }, 'spawn-failed')
       throw error
     }
-    const controller = new AbortController()
-    const abort = (): void => controller.abort(command.signal?.reason)
-    if (command.signal?.aborted) abort()
-    else command.signal?.addEventListener('abort', abort, { once: true })
-    this.#activeCommands.set(commandId, {
-      onNetworkAccessRequest: command.onNetworkAccessRequest,
-      controller,
-      ...(command.signal
-        ? { detachSignal: () => command.signal?.removeEventListener('abort', abort) }
-        : {})
-    })
     let cleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
     return {
       argv: wrapped.argv,
       env: wrapped.env,
       annotateStderr: (stderr) => this.#backend.annotateStderr(commandId, stderr),
       resetNetworkConnections: () => this.#backend.resetCommandConnections(commandId),
-      cleanup: (reason, processOutcome) =>
-        (cleanupPromise ??= this.#releaseCommand(commandId, true, processOutcome, reason))
+      cleanup: (reason, processOutcome) => {
+        if (cleanupPromise) return cleanupPromise
+        cleanupPromise = this.#releaseCommand(commandId, processOutcome, reason).then(
+          (result) => {
+            if (!Object.values(result).every(Boolean)) cleanupPromise = undefined
+            return result
+          },
+          (error) => {
+            cleanupPromise = undefined
+            throw error
+          }
+        )
+        return cleanupPromise
+      }
     }
   }
 
@@ -235,22 +251,24 @@ class NotebookNetworkSandbox {
   async dispose(): Promise<void> {
     if (this.#initializing) await this.#initializing
     if (!this.#initialized) return
-    this.#initialized = false
-    await Promise.all(
+    const results = await Promise.all(
       [...this.#activeCommands.keys()].map((commandId) =>
-        this.#releaseCommand(commandId, false, { processesTerminated: false })
+        this.#releaseCommand(commandId, { processesTerminated: false })
       )
     )
+    if (results.some((result) => !Object.values(result).every(Boolean))) {
+      throw new Error('Notebook network sandbox cleanup was incomplete.')
+    }
     try {
       await this.#backend.reset()
+      this.#initialized = false
     } finally {
-      if (activeOwnerToken === this.#ownerToken) activeOwnerToken = undefined
+      if (!this.#initialized && activeOwnerToken === this.#ownerToken) activeOwnerToken = undefined
     }
   }
 
   #releaseCommand(
     commandId: string,
-    cleanupBackend: boolean,
     processOutcome: NotebookSandboxProcessOutcome,
     reason: 'exit' | 'cancel' | 'timeout' | 'spawn-failed' = 'cancel'
   ): Promise<NotebookSandboxCleanupResult> {
@@ -262,15 +280,46 @@ class NotebookNetworkSandbox {
         temporaryResourcesRemoved: true
       })
     }
+    if (!command.controller.signal.aborted) {
+      command.detachSignal?.()
+      command.controller.abort(new Error('Notebook process ended.'))
+    }
+    command.cleanupRequest ??= { reason, processOutcome }
+    return this.#backend
+      .cleanupAfterCommand(
+        commandId,
+        command.cleanupRequest.reason,
+        command.cleanupRequest.processOutcome
+      )
+      .then((result) => {
+        if (Object.values(result).every(Boolean)) this.#forgetCommand(commandId)
+        return result
+      })
+  }
+
+  async #reconcilePendingCommands(): Promise<void> {
+    const pending = [...this.#activeCommands.entries()].filter(([, command]) =>
+      Boolean(command.cleanupRequest)
+    )
+    if (pending.length === 0) return
+    const results = await Promise.all(
+      pending.map(([commandId, command]) =>
+        this.#releaseCommand(
+          commandId,
+          command.cleanupRequest!.processOutcome,
+          command.cleanupRequest!.reason
+        )
+      )
+    )
+    if (results.some((result) => !Object.values(result).every(Boolean))) {
+      throw new Error('SHELL_CLEANUP_INCOMPLETE: Previous shell cleanup could not be reconciled.')
+    }
+  }
+
+  #forgetCommand(commandId: string): void {
+    const command = this.#activeCommands.get(commandId)
+    command?.detachSignal?.()
     this.#activeCommands.delete(commandId)
-    command.detachSignal?.()
-    command.controller.abort(new Error('Notebook process ended.'))
-    if (cleanupBackend) return this.#backend.cleanupAfterCommand(commandId, reason, processOutcome)
-    return Promise.resolve({
-      processesTerminated: processOutcome.processesTerminated,
-      networkClosed: true,
-      temporaryResourcesRemoved: true
-    })
   }
 }
 

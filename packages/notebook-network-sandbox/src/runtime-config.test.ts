@@ -172,11 +172,17 @@ describe('Notebook runtime configuration updates', () => {
   it('fails the process and temporary-resource cleanup stages when exact WSL cleanup is incomplete', async () => {
     vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
     Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
-    wslRelease.mockResolvedValueOnce({
-      processesTerminated: false,
-      networkClosed: true,
-      temporaryResourcesRemoved: false
-    })
+    wslRelease
+      .mockResolvedValueOnce({
+        processesTerminated: false,
+        networkClosed: true,
+        temporaryResourcesRemoved: false
+      })
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
     await NotebookNetworkRuntime.wrap({
       target: {
         kind: 'wsl2',
@@ -204,6 +210,47 @@ describe('Notebook runtime configuration updates', () => {
       processesTerminated: false,
       networkClosed: true,
       temporaryResourcesRemoved: false
+    })
+    await expect(
+      NotebookNetworkRuntime.cleanupAfterCommand('incomplete-wsl2-command', 'cancel', {
+        processesTerminated: false
+      })
+    ).resolves.toEqual({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+    expect(wslRelease).toHaveBeenCalledTimes(2)
+  })
+
+  it('forwards cancellation into WSL preparation', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    const controller = new AbortController()
+
+    await NotebookNetworkRuntime.wrap({
+      target: {
+        kind: 'wsl2',
+        profileId: 'profile-1',
+        distro: 'Ubuntu',
+        user: 'researcher'
+      },
+      command: 'sleep 30',
+      commandId: 'abortable-wsl2-command',
+      cwd: 'C:\\workspace',
+      env: {},
+      signal: controller.signal,
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    })
+
+    expect(wsl2Launch).toHaveBeenCalledWith(expect.objectContaining({ signal: controller.signal }))
+    await NotebookNetworkRuntime.cleanupAfterCommand('abortable-wsl2-command', 'cancel', {
+      processesTerminated: false
     })
   })
 

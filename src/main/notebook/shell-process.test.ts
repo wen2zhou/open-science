@@ -214,6 +214,42 @@ describe('notebook shell process behavior', () => {
       expect(processSandbox.wrap).not.toHaveBeenCalled()
     })
 
+    it('surfaces the stable fail-closed diagnostic when guest-to-host transport is unsupported', async () => {
+      vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
+      const processSandbox: NotebookProcessSandbox = {
+        wrap: vi.fn(async () => {
+          throw new Error(
+            'WSL2_NETWORK_TRANSPORT_UNSUPPORTED: WSL2 Bash network access requires mirrored networking; default NAT support is tracked for Issue 13.'
+          )
+        })
+      }
+
+      await expect(
+        runShellCommand({
+          command: 'echo should-not-run',
+          cwd: 'C:\\workspace',
+          handoffDir: 'C:\\handoff',
+          runtimeRoot: 'C:\\runtime',
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          platform: 'win32',
+          runtimeBinding: {
+            kind: 'wsl2-bash',
+            profileId: 'profile-1',
+            distro: 'Ubuntu-22.04',
+            user: 'researcher'
+          },
+          processSandbox
+        })
+      ).resolves.toEqual({
+        stdout: '',
+        stderr:
+          'WSL2_NETWORK_TRANSPORT_UNSUPPORTED: WSL2 Bash network access requires mirrored networking; default NAT support is tracked for Issue 13.',
+        exitCode: null,
+        errorCode: 'shell-network-transport-unsupported'
+      })
+    })
+
     it('fails a selected WSL2 runtime closed with a stable unavailable code instead of native fallback', async () => {
       const result = await runShellCommand({
         command: 'Write-Output should-not-run',
@@ -525,6 +561,59 @@ describe('notebook shell process behavior', () => {
       })
       expect(cleanup).toHaveBeenCalledOnce()
       expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated: true })
+    } finally {
+      await rm(runtimeRoot, { recursive: true, force: true })
+    }
+  })
+
+  it('retries an incomplete WSL cleanup once before reporting the shell result', async () => {
+    vi.stubEnv('OPEN_SCIENCE_ENABLE_WSL2_BASH', '1')
+    const runtimeRoot = await mkdtemp(join(tmpdir(), 'os-shell-wsl-cleanup-retry-'))
+    const cleanup = vi
+      .fn()
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: false,
+        temporaryResourcesRemoved: false
+      })
+      .mockResolvedValueOnce({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+    const processSandbox: NotebookProcessSandbox = {
+      wrap: vi.fn(async (invocation) => ({
+        executable: process.execPath,
+        args: ['-e', 'process.stdout.write("finished")'],
+        env: invocation.env,
+        annotateStderr: (stderr: string) => stderr,
+        cleanup
+      }))
+    }
+
+    try {
+      await expect(
+        runShellCommand({
+          command: 'echo finished',
+          cwd: process.cwd(),
+          handoffDir: process.cwd(),
+          runtimeRoot,
+          sessionId: 'session-1',
+          projectId: 'project-1',
+          platform: 'win32',
+          runtimeBinding: {
+            kind: 'wsl2-bash',
+            profileId: 'profile-1',
+            distro: 'Ubuntu-22.04',
+            user: 'researcher'
+          },
+          processSandbox,
+          terminateTree: async () => ({ reaped: true })
+        })
+      ).resolves.toEqual({ stdout: 'finished', stderr: '', exitCode: 0 })
+      expect(cleanup).toHaveBeenCalledTimes(2)
+      expect(cleanup).toHaveBeenNthCalledWith(1, 'exit', { processesTerminated: true })
+      expect(cleanup).toHaveBeenNthCalledWith(2, 'exit', { processesTerminated: true })
     } finally {
       await rm(runtimeRoot, { recursive: true, force: true })
     }

@@ -17,7 +17,9 @@ import type {
   NotebookProcessSandbox,
   NotebookNetworkAccessDecisionRequest,
   NotebookNetworkAccessDecisionResult,
+  NotebookSandboxCleanupReason,
   NotebookSandboxCleanupResult,
+  NotebookSandboxProcessOutcome,
   NotebookSandboxedSpawn,
   NotebookSandboxInvocation
 } from './process-sandbox'
@@ -139,6 +141,8 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     string,
     Map<NotebookCommandRuntime, Set<string>>
   >()
+  private readonly pendingTemporaryRoots = new Set<string>()
+  private readonly pendingCommandCleanups = new Set<() => Promise<NotebookSandboxCleanupResult>>()
   private readonly platform: NodeJS.Platform
   private readonly log: Logger
   private lastStatusSignature: string | undefined
@@ -181,9 +185,11 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
 
   async wrap(invocation: NotebookSandboxInvocation): Promise<NotebookSandboxedSpawn> {
     await this.initialize()
+    await this.reconcilePendingCommandCleanups()
     await this.updateTrustBundle()
     const grantedRoots = (await this.options.getGrantedLocalRoots?.()) ?? []
     const commandTempRoot = await mkdtemp(join(tmpdir(), 'open-science-notebook-'))
+    this.pendingTemporaryRoots.add(commandTempRoot)
     const env = {
       ...invocation.env,
       ...notebookTrustBundleEnvironment(this.trustBundle?.path),
@@ -256,7 +262,6 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
         runtime: invocation.runtime
       })
     } catch (error) {
-      await rm(commandTempRoot, { recursive: true, force: true }).catch(() => undefined)
       this.log.error('sandbox process preparation failed', {
         platform: this.platform,
         runtime: invocation.runtime,
@@ -265,20 +270,38 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       throw error
     }
     let cleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
+    let cleanupReason: NotebookSandboxCleanupReason | undefined
+    let cleanupOutcome: NotebookSandboxProcessOutcome | undefined
+    const retryCleanup = (): Promise<NotebookSandboxCleanupResult> =>
+      cleanup(cleanupReason!, cleanupOutcome!)
     const cleanup: NotebookSandboxedSpawn['cleanup'] = (reason, processOutcome) => {
+      cleanupReason ??= reason
+      cleanupOutcome ??= processOutcome
       if (cleanupPromise) return cleanupPromise
       activeExecutionGrants = new Set()
       executionActive = false
       cleanupPromise = (async () => {
-        const [sandboxCleanup, temporaryCleanup] = await Promise.allSettled([
-          wrapped.cleanup(reason, processOutcome),
-          rm(commandTempRoot, { recursive: true, force: true })
-        ])
+        const sandboxCleanup = await Promise.resolve(
+          wrapped.cleanup(cleanupReason!, cleanupOutcome!)
+        ).then(
+          (value) => ({ status: 'fulfilled' as const, value }),
+          (error) => ({ status: 'rejected' as const, reason: error })
+        )
+        const backendComplete =
+          sandboxCleanup.status === 'fulfilled' &&
+          Object.values(sandboxCleanup.value).every(Boolean)
+        const temporaryCleanup = backendComplete
+          ? await rm(commandTempRoot, { recursive: true, force: true }).then(
+              () => ({ status: 'fulfilled' as const }),
+              (error) => ({ status: 'rejected' as const, reason: error })
+            )
+          : { status: 'rejected' as const, reason: new Error('Backend cleanup incomplete.') }
+        if (temporaryCleanup.status === 'fulfilled') {
+          this.pendingTemporaryRoots.delete(commandTempRoot)
+        }
         const result: NotebookSandboxCleanupResult = {
           processesTerminated:
-            processOutcome.processesTerminated &&
-            sandboxCleanup.status === 'fulfilled' &&
-            sandboxCleanup.value.processesTerminated,
+            sandboxCleanup.status === 'fulfilled' && sandboxCleanup.value.processesTerminated,
           networkClosed:
             sandboxCleanup.status === 'fulfilled' && sandboxCleanup.value.networkClosed,
           temporaryResourcesRemoved:
@@ -293,12 +316,27 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
           platform: this.platform,
           target: invocation.target?.kind ?? 'native',
           runtime: invocation.runtime,
-          reason,
+          reason: cleanupReason,
           ...result,
           incompleteStageCount: Object.values(result).filter((complete) => !complete).length
         })
         return result
       })()
+      cleanupPromise = cleanupPromise.then(
+        (result) => {
+          if (Object.values(result).every(Boolean)) {
+            this.pendingCommandCleanups.delete(retryCleanup)
+          } else {
+            this.pendingCommandCleanups.add(retryCleanup)
+            cleanupPromise = undefined
+          }
+          return result
+        },
+        (error) => {
+          cleanupPromise = undefined
+          throw error
+        }
+      )
       return cleanupPromise
     }
     const [executable, ...args] = wrapped.argv
@@ -516,6 +554,11 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     await this.initializePromise?.catch(() => undefined)
     try {
       await this.sandbox?.dispose()
+      for (const root of this.pendingTemporaryRoots) {
+        await rm(root, { recursive: true, force: true })
+        this.pendingTemporaryRoots.delete(root)
+      }
+      this.pendingCommandCleanups.clear()
     } catch (error) {
       this.log.error('sandbox disposal failed', diagnosticErrorFields(error))
       throw error
@@ -577,6 +620,14 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     const level = status.kind === 'error' ? 'error' : status.kind === 'ready' ? 'info' : 'warn'
     this.log[level]('sandbox status changed', { ...fields, ...extraFields })
     return status
+  }
+
+  private async reconcilePendingCommandCleanups(): Promise<void> {
+    if (this.pendingCommandCleanups.size === 0) return
+    const results = await Promise.all([...this.pendingCommandCleanups].map((cleanup) => cleanup()))
+    if (results.some((result) => !Object.values(result).every(Boolean))) {
+      throw new Error('SHELL_CLEANUP_INCOMPLETE: Previous shell cleanup could not be reconciled.')
+    }
   }
 
   private networkAccessResult(

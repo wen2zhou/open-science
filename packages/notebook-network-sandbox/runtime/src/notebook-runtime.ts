@@ -83,6 +83,7 @@ type NetworkWrapRequest = Readonly<{
   localRpcSocketPath?: string
   inheritedFileDescriptorCount?: number
   filesystem: FilesystemLayoutInput
+  signal?: AbortSignal
 }>
 
 type RuntimeContext = {
@@ -229,7 +230,8 @@ const wrap = async (
         ...(request.pathEnvironment ? { pathEnvironment: request.pathEnvironment } : {}),
         filesystem,
         gatewayPort: gateway.port,
-        gatewayCredentials: credentials
+        gatewayCredentials: credentials,
+        ...(request.signal ? { signal: request.signal } : {})
       })
       commandContexts.set(request.commandId, {
         filesystem,
@@ -317,7 +319,6 @@ const wrap = async (
 }
 
 const closeContext = async (
-  commandId: string,
   context: RuntimeContext,
   reason: SandboxCleanupReason,
   processOutcome: SandboxProcessOutcome
@@ -326,8 +327,8 @@ const closeContext = async (
     context.gateway?.close(),
     context.releasePlatform?.(reason)
   ])
-  violations.forget(commandId)
-  const platformResult = temporaryResources.status === 'fulfilled' ? temporaryResources.value : false
+  const platformResult =
+    temporaryResources.status === 'fulfilled' ? temporaryResources.value : false
   const platformProcessesTerminated =
     typeof platformResult === 'object'
       ? platformResult.processesTerminated
@@ -339,9 +340,9 @@ const closeContext = async (
       ? platformResult.temporaryResourcesRemoved
       : platformResult !== false
   return {
-    processesTerminated:
-      platformProcessesTerminated &&
-      (context.platformOwnsProcesses || processOutcome.processesTerminated),
+    processesTerminated: context.platformOwnsProcesses
+      ? platformProcessesTerminated
+      : platformProcessesTerminated && processOutcome.processesTerminated,
     networkClosed: network.status === 'fulfilled' && platformNetworkClosed,
     temporaryResourcesRemoved: platformTemporaryResourcesRemoved
   }
@@ -360,10 +361,15 @@ const cleanupAfterCommand = async (
       temporaryResourcesRemoved: true
     }
   }
-  commandContexts.delete(commandId)
-  const task = closeContext(commandId, context, reason, processOutcome).finally(() =>
-    finishing.delete(task)
-  )
+  const task = closeContext(context, reason, processOutcome)
+    .then((result) => {
+      if (Object.values(result).every(Boolean)) {
+        commandContexts.delete(commandId)
+        violations.forget(commandId)
+      }
+      return result
+    })
+    .finally(() => finishing.delete(task))
   finishing.add(task)
   return task
 }
@@ -385,14 +391,23 @@ const updateConfig = (config: NetworkRuntimeConfig): void => {
 
 const reset = async (): Promise<void> => {
   const active = [...commandContexts.entries()]
-  commandContexts.clear()
   await Promise.all([
     ...finishing,
     ...active.map(([id, context]) =>
-      closeContext(id, context, 'cancel', { processesTerminated: false })
+      closeContext(context, 'cancel', { processesTerminated: false }).then((result) => {
+        const complete = context.platformOwnsProcesses
+          ? Object.values(result).every(Boolean)
+          : result.networkClosed && result.temporaryResourcesRemoved
+        if (!complete) return
+        commandContexts.delete(id)
+        violations.forget(id)
+      })
     )
   ])
   finishing.clear()
+  if (commandContexts.size > 0) {
+    throw new Error('Notebook process runtime cleanup was incomplete.')
+  }
   violations.clear()
   runtimeConfig = undefined
   approval = undefined

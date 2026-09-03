@@ -1,11 +1,16 @@
 import { execFileSync, spawn, type ChildProcessWithoutNullStreams } from 'node:child_process'
+import { randomUUID } from 'node:crypto'
 import { mkdtemp, mkdir, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 
 import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 
-import { wsl2Launch, type Wsl2Launch } from '../runtime/src/platform/wsl2-isolation.js'
+import {
+  reconcileWsl2ExecutionReceipts,
+  wsl2Launch,
+  type Wsl2Launch
+} from '../runtime/src/platform/wsl2-isolation.js'
 import { isWsl2BashDevelopmentEnabled } from '../runtime/src/wsl2-development-gate.js'
 import { notebookWorkloadCacheEnv } from '../../../src/main/notebook/notebook-workload-cache-paths.js'
 import { CommandGateway } from '../runtime/src/gateway/command-gateway.js'
@@ -112,6 +117,53 @@ describe.runIf(enabled)('WSL2 sandbox real profile', () => {
       }
     })
 
+  it('reconciles only exact valid receipt identities and preserves malformed receipts', async () => {
+    const invalidId = randomUUID()
+    const validId = randomUUID()
+    const invalidReceipt = `/tmp/.open-science-execution-${invalidId}.receipt`
+    const validReceipt = `/tmp/.open-science-execution-${validId}.receipt`
+    const guest = (script: string, ...args: string[]): string =>
+      execFileSync(
+        process.env.SystemRoot + '\\System32\\wsl.exe',
+        [
+          '--distribution',
+          distro!,
+          '--user',
+          user!,
+          '--exec',
+          '/bin/bash',
+          '--noprofile',
+          '--norc',
+          '-c',
+          script,
+          'receipt-test',
+          ...args
+        ],
+        { encoding: 'utf8', windowsHide: true }
+      ).trim()
+
+    try {
+      guest(`printf 'malformed\\n' > "$1"`, invalidReceipt)
+      await expect(reconcileWsl2ExecutionReceipts({ distro: distro!, user: user! })).resolves.toBe(
+        false
+      )
+      expect(guest('[ -f "$1" ] && printf PRESENT', invalidReceipt)).toBe('PRESENT')
+
+      guest(
+        'rm -f -- "$1"; printf "v1 %s\\n" "$3" > "$2"',
+        invalidReceipt,
+        validReceipt,
+        `open-science-execution-${validId}`
+      )
+      await expect(reconcileWsl2ExecutionReceipts({ distro: distro!, user: user! })).resolves.toBe(
+        true
+      )
+      expect(guest('[ ! -e "$1" ] && printf REMOVED', validReceipt)).toBe('REMOVED')
+    } finally {
+      guest('rm -f -- "$1" "$2"', invalidReceipt, validReceipt)
+    }
+  })
+
   it('runs Unicode Bash with mapped workspace channels and closed host surfaces', async () => {
     const prepared = await launch(String.raw`
 printf '你好 stdout\n'
@@ -153,7 +205,14 @@ mkdir -p "$MPLCONFIGDIR" "$UV_CACHE_DIR" "$HF_DATASETS_CACHE" "$HF_XET_CACHE" "$
     })
     const startedAt = Date.now()
 
-    await expect(prepared.release('cancel')).resolves.toBe(true)
+    const firstCleanup = await prepared.release('cancel')
+    const cleanup = Object.values(firstCleanup).every(Boolean)
+      ? firstCleanup
+      : await prepared.release('cancel')
+    expect(cleanup).toMatchObject({
+      processesTerminated: true,
+      networkClosed: true
+    })
     expect(Date.now() - startedAt).toBeLessThan(8_000)
     if (child.exitCode === null && child.signalCode === null) {
       await new Promise<void>((resolve, reject) => {
@@ -189,7 +248,10 @@ while :; do sleep 1; done
 
     await waitForStdout(victimChild, 'ready')
     const startedAt = Date.now()
-    await expect(victim.release('cancel')).resolves.toBe(true)
+    await expect(victim.release('cancel')).resolves.toMatchObject({
+      processesTerminated: true,
+      networkClosed: true
+    })
     expect(Date.now() - startedAt).toBeLessThan(8_000)
     await expect(
       new Promise<void>((resolve, reject) => {
