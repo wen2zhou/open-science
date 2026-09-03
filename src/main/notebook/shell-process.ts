@@ -197,6 +197,19 @@ const resolveShellInvocation = (
       }
 }
 
+const resolveShellProcessInvocation = (
+  command: string,
+  runtimeBinding: ShellRuntimeBinding,
+  runtimeRoot: string,
+  hostPlatform: NodeJS.Platform,
+  hasProcessSandbox: boolean
+): ShellInvocation => {
+  const invocation = resolveShellInvocation(command, runtimeBinding)
+  return hasProcessSandbox
+    ? invocation
+    : protectManagedRuntimeWrites(invocation, runtimeRoot, hostPlatform)
+}
+
 // Cancellation and timeout settle only after the bounded process-tree terminator finishes, so callers
 // may safely tear down or remove the Session workspace after this promise resolves.
 const terminateShellOnTimeout = async (
@@ -243,7 +256,7 @@ const runShellCommand = (
         errorCode: 'shell-runtime-unavailable'
       }
     }
-    const runtimePlatform = shellRuntimePlatform(runtimeBinding)
+    const runtimePlatform = shellRuntimePlatform(runtimeBinding, hostPlatform)
 
     let shellEnv: NodeJS.ProcessEnv
     try {
@@ -265,10 +278,13 @@ const runShellCommand = (
 
     const timeoutMs = options.timeoutMs ?? NOTEBOOK_SHELL_DEFAULT_TIMEOUT_MS
     const platform = hostPlatform
-    const nativeInvocation = resolveShellInvocation(options.command, runtimeBinding)
-    const invocation = options.processSandbox
-      ? nativeInvocation
-      : protectManagedRuntimeWrites(nativeInvocation, options.runtimeRoot, runtimePlatform)
+    const invocation = resolveShellProcessInvocation(
+      options.command,
+      runtimeBinding,
+      options.runtimeRoot,
+      hostPlatform,
+      Boolean(options.processSandbox)
+    )
     const baseEnv = shellEnv
     let sandboxed: Awaited<ReturnType<NotebookProcessSandbox['wrap']>> | undefined
     try {
@@ -519,6 +535,7 @@ export {
   buildShellEnv,
   normalizePowerShellStderr,
   resolveShellInvocation,
+  resolveShellProcessInvocation,
   runShellCommand,
   terminateShellOnTimeout
 }

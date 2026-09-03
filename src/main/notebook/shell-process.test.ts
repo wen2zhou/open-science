@@ -10,6 +10,7 @@ import {
   buildShellEnv,
   normalizePowerShellStderr,
   resolveShellInvocation,
+  resolveShellProcessInvocation,
   runShellCommand,
   terminateShellOnTimeout
 } from './shell-process'
@@ -96,6 +97,38 @@ describe('notebook shell process behavior', () => {
           shell: '/opt/local/bin/zsh'
         })
       ).toEqual({ executable: '/opt/local/bin/zsh', args: ['-c', 'echo hi'] })
+    })
+
+    it('keeps host write protection separate from the selected Shell runtime', () => {
+      const nativeBinding = { kind: 'native-posix' as const, shell: '/bin/sh' }
+      const wslBinding = {
+        kind: 'wsl2-bash' as const,
+        profileId: 'profile-1',
+        distro: 'Ubuntu-22.04',
+        user: 'researcher'
+      }
+
+      expect(
+        resolveShellProcessInvocation('echo hi', nativeBinding, '/managed/runtime', 'darwin', false)
+      ).toMatchObject({
+        executable: '/usr/bin/sandbox-exec',
+        args: expect.arrayContaining(['/bin/sh', '-c', 'echo hi'])
+      })
+      expect(
+        resolveShellProcessInvocation('echo hi', nativeBinding, '/managed/runtime', 'linux', false)
+      ).toEqual({ executable: '/bin/sh', args: ['-c', 'echo hi'] })
+      expect(
+        resolveShellProcessInvocation(
+          'Write-Output hi',
+          { kind: 'powershell', version: '5.1' },
+          'C:\\managed\\runtime',
+          'win32',
+          false
+        ).executable
+      ).toMatch(/WindowsPowerShell\\v1\.0\\powershell\.exe$/)
+      expect(
+        resolveShellProcessInvocation('echo hi', wslBinding, 'C:\\managed\\runtime', 'win32', true)
+      ).toEqual({ executable: '/bin/bash', args: ['-c', 'echo hi'] })
     })
 
     it('uses Bash and the exact selected profile for a WSL2 sandbox target', async () => {

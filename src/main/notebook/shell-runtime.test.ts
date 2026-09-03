@@ -4,6 +4,7 @@ import {
   captureShellRuntimeBinding,
   defaultShellRuntimeBinding,
   shellRuntimeDialect,
+  shellRuntimePlatform,
   shellRuntimeSandboxTarget
 } from './shell-runtime'
 
@@ -41,5 +42,23 @@ describe('shell runtime binding', () => {
       distro: 'Ubuntu-22.04',
       user: 'researcher'
     })
+  })
+
+  it.each([
+    [{ kind: 'native-posix', shell: '/bin/sh' }, 'darwin', 'darwin'],
+    [{ kind: 'native-posix', shell: '/bin/sh' }, 'linux', 'linux'],
+    [{ kind: 'powershell', version: '5.1' }, 'win32', 'win32'],
+    [
+      {
+        kind: 'wsl2-bash',
+        profileId: 'profile-1',
+        distro: 'Ubuntu-22.04',
+        user: 'researcher'
+      },
+      'win32',
+      'linux'
+    ]
+  ] as const)('derives execution platform %s on host %s as %s', (binding, host, expected) => {
+    expect(shellRuntimePlatform(binding, host)).toBe(expected)
   })
 })

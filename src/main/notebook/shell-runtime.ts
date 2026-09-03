@@ -54,5 +54,16 @@ export const shellRuntimeSandboxTarget = (binding: ShellRuntimeBinding): Noteboo
       })
     : Object.freeze({ kind: 'native' })
 
-export const shellRuntimePlatform = (binding: ShellRuntimeBinding): NodeJS.Platform =>
-  binding.kind === 'powershell' ? 'win32' : 'linux'
+export const shellRuntimePlatform = (
+  binding: ShellRuntimeBinding,
+  hostPlatform: NodeJS.Platform = process.platform
+): NodeJS.Platform => {
+  switch (binding.kind) {
+    case 'powershell':
+      return 'win32'
+    case 'native-posix':
+      return hostPlatform
+    case 'wsl2-bash':
+      return 'linux'
+  }
+}
