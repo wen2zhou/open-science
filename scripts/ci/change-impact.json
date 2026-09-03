@@ -144,6 +144,7 @@
         "src/main/crash-diagnostics.ts",
         "src/main/immutable-input-authority.ts",
         "src/main/index.ts",
+        "src/main/ipc.ts",
         "src/main/lifecycle-shutdown.ts",
         "src/main/local-rpc-transport.ts",
         "src/main/notebook/environment-discovery.ts",
@@ -219,7 +220,8 @@
         "src/shared/settings.ts",
         "src/shared/update.ts",
         "src/shared/web-api-map.generated.ts",
-        "src/shared/wsl-setup.ts"
+        "src/shared/wsl-setup.ts",
+        "src/shared/wsl2-preview-manifest.ts"
       ],
       "capabilities": ["windows_sensitive"]
     },
