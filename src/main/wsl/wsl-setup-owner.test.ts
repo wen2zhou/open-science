@@ -1,8 +1,12 @@
+import { EventEmitter } from 'node:events'
+import { type spawn } from 'node:child_process'
 import { describe, expect, it, vi } from 'vitest'
 
 import {
   RECOMMENDED_WSL_DISTRO,
+  WSL_DISTRO_INSTALL_TIMEOUT_MS,
   WslSetupOwner,
+  createWslTerminalLauncher,
   type WslCommandRunner,
   type WslPlatformInstaller,
   type WslTerminalLauncher
@@ -285,12 +289,11 @@ describe('WslSetupOwner', () => {
     const snapshot = await owner.installRecommendedDistro()
 
     expect(RECOMMENDED_WSL_DISTRO).toBe('Ubuntu-22.04')
-    expect(runner.run).toHaveBeenNthCalledWith(4, [
-      '--install',
-      '--distribution',
-      'Ubuntu-22.04',
-      '--no-launch'
-    ])
+    expect(runner.run).toHaveBeenNthCalledWith(
+      4,
+      ['--install', '--distribution', 'Ubuntu-22.04', '--no-launch'],
+      { timeoutMs: WSL_DISTRO_INSTALL_TIMEOUT_MS }
+    )
     expect(snapshot).toMatchObject({
       state: 'distro-required',
       distros: [{ name: 'Ubuntu-22.04', version: 2 }]
@@ -299,6 +302,53 @@ describe('WslSetupOwner', () => {
     expect(JSON.stringify([...log.info.mock.calls, ...log.warn.mock.calls])).not.toContain(
       'Ubuntu-22.04'
     )
+  })
+
+  it('gives distro download and registration more than the probe timeout', async () => {
+    vi.useFakeTimers()
+    const responses = [
+      result('Default Version: 2'),
+      result(''),
+      result(''),
+      result('Default Version: 2'),
+      result('Ubuntu-22.04'),
+      result('* Ubuntu-22.04 Stopped 2')
+    ]
+    const runner: WslCommandRunner = {
+      run: vi.fn(async (_args, options) => {
+        if (options?.timeoutMs === WSL_DISTRO_INSTALL_TIMEOUT_MS) {
+          await new Promise((resolve) => setTimeout(resolve, 16_000))
+          return result('', 0)
+        }
+        return responses.shift() ?? result()
+      })
+    }
+    const owner = makeOwner({
+      runner,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection: vi.fn()
+    })
+
+    const installing = owner.installRecommendedDistro()
+    await vi.advanceTimersByTimeAsync(16_000)
+    await expect(installing).resolves.toMatchObject({ state: 'distro-required' })
+    vi.useRealTimers()
+  })
+
+  it('launches WSL in a visible interactive Windows console with exact arguments', async () => {
+    const child = Object.assign(new EventEmitter(), { unref: vi.fn() })
+    const spawnProcess = vi.fn(() => child) as unknown as typeof spawn
+    const launch = createWslTerminalLauncher(spawnProcess).open(['--distribution', 'Ubuntu-22.04'])
+
+    expect(spawnProcess).toHaveBeenCalledWith(
+      'conhost.exe',
+      ['wsl.exe', '--distribution', 'Ubuntu-22.04'],
+      { detached: true, windowsHide: false, stdio: 'inherit', shell: false }
+    )
+    child.emit('spawn')
+    await expect(launch).resolves.toBeUndefined()
+    expect(child.unref).toHaveBeenCalledOnce()
   })
 
   it('opens an installed distro for interactive first launch without supplying credentials', async () => {
@@ -323,6 +373,45 @@ describe('WslSetupOwner', () => {
 
     expect(terminal.open).toHaveBeenCalledWith(['--distribution', 'Ubuntu-22.04'])
     expect(snapshot).toMatchObject({ state: 'distro-required' })
+  })
+
+  it('continues from a fresh install into first initialization without inventing a selection', async () => {
+    const runner = makeRunner(
+      result('Default Version: 2'),
+      result(''),
+      result(''),
+      result('', 0),
+      result('Default Version: 2'),
+      result('Ubuntu-22.04'),
+      result('* Ubuntu-22.04 Stopped 2'),
+      result('Default Version: 2'),
+      result('Ubuntu-22.04'),
+      result('* Ubuntu-22.04 Stopped 2'),
+      result('Default Version: 2'),
+      result('Ubuntu-22.04'),
+      result('* Ubuntu-22.04 Stopped 2')
+    )
+    const terminal: WslTerminalLauncher = { open: vi.fn(async () => undefined) }
+    const writeSelection = vi.fn()
+    const owner = makeOwner({
+      runner,
+      terminal,
+      workspacePath: 'C:\\science',
+      readSelection: async () => undefined,
+      writeSelection
+    })
+
+    const installed = await owner.installRecommendedDistro()
+    expect(installed).toMatchObject({
+      state: 'distro-required',
+      distros: [{ name: 'Ubuntu-22.04', version: 2 }]
+    })
+    expect(installed).not.toHaveProperty('selection')
+    const initialized = await owner.openTerminal({ distro: 'Ubuntu-22.04' })
+    expect(initialized).toMatchObject({ state: 'distro-required' })
+    expect(initialized).not.toHaveProperty('selection')
+    expect(terminal.open).toHaveBeenCalledWith(['--distribution', 'Ubuntu-22.04'])
+    expect(writeSelection).not.toHaveBeenCalled()
   })
 
   it('fails closed when install does not produce the recommended distro', async () => {

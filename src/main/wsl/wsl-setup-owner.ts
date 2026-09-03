@@ -26,7 +26,10 @@ export type WslCommandResult = Readonly<{
 }>
 
 export interface WslCommandRunner {
-  run(args: readonly string[]): Promise<WslCommandResult>
+  run(
+    args: readonly string[],
+    options?: Readonly<{ timeoutMs?: number }>
+  ): Promise<WslCommandResult>
 }
 
 export type WslPlatformInstallExecution =
@@ -55,14 +58,15 @@ export interface WslTerminalLauncher {
 }
 
 export { RECOMMENDED_WSL_DISTRO }
+export const WSL_DISTRO_INSTALL_TIMEOUT_MS = 10 * 60_000
 
 const executeWsl: WslCommandRunner = {
-  run: (args) =>
+  run: (args, options) =>
     new Promise((resolve) => {
       execFile(
         'wsl.exe',
         [...args],
-        { windowsHide: true, timeout: 15_000, encoding: 'buffer' },
+        { windowsHide: true, timeout: options?.timeoutMs ?? 15_000, encoding: 'buffer' },
         (error, stdout, stderr) => {
           const exitCode =
             typeof (error as NodeJS.ErrnoException & { code?: unknown })?.code === 'number'
@@ -122,13 +126,16 @@ const elevatedWslPlatformInstaller: WslPlatformInstaller = {
     })
 }
 
-const openWslTerminal: WslTerminalLauncher = {
+export const createWslTerminalLauncher = (
+  spawnProcess: typeof spawn = spawn
+): WslTerminalLauncher => ({
   open: (args) =>
     new Promise((resolve, reject) => {
-      const child = spawn('wsl.exe', [...args], {
+      const child = spawnProcess('conhost.exe', ['wsl.exe', ...args], {
         detached: true,
         windowsHide: false,
-        stdio: 'ignore'
+        stdio: 'inherit',
+        shell: false
       })
       child.once('error', reject)
       child.once('spawn', () => {
@@ -136,7 +143,9 @@ const openWslTerminal: WslTerminalLauncher = {
         resolve()
       })
     })
-}
+})
+
+const openWslTerminal = createWslTerminalLauncher()
 
 const clean = (value: string): string => value.replaceAll('\0', '').replaceAll('\r', '').trim()
 
@@ -300,12 +309,10 @@ export class WslSetupOwner {
     const operationReference = this.reference()
     const startedAt = Date.now()
     this.log.info('wsl distro install started', { operationReference })
-    const result = await this.runner.run([
-      '--install',
-      '--distribution',
-      RECOMMENDED_WSL_DISTRO,
-      '--no-launch'
-    ])
+    const result = await this.runner.run(
+      ['--install', '--distribution', RECOMMENDED_WSL_DISTRO, '--no-launch'],
+      { timeoutMs: WSL_DISTRO_INSTALL_TIMEOUT_MS }
+    )
     const fresh = await this.probe()
     if (
       fresh.state === 'restart-required' ||

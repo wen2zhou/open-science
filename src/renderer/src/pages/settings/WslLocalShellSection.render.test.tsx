@@ -61,10 +61,8 @@ beforeEach(() => {
     }
   })
   installRecommended = vi.fn().mockResolvedValue({
-    state: 'first-launch-required',
+    state: 'distro-required',
     distros: [{ name: 'Ubuntu-22.04', version: 2, isDefault: true }],
-    selection: { distro: 'Ubuntu-22.04', user: 'scientist' },
-    errorCode: 'wsl_first_launch_required',
     operationReference: 'feedface'
   })
   openTerminal = vi.fn().mockResolvedValue({

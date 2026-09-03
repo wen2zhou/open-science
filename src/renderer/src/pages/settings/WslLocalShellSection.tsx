@@ -207,8 +207,8 @@ export const WslLocalShellSection = (): React.JSX.Element => {
       ? installResult.outcome
       : undefined
 
-  const openTerminal = async (withUser: boolean): Promise<void> => {
-    const selectedDistro = snapshot.selection?.distro ?? distro
+  const openTerminal = async (withUser: boolean, requestedDistro?: string): Promise<void> => {
+    const selectedDistro = requestedDistro ?? snapshot.selection?.distro ?? distro
     if (!selectedDistro) return
     setBusy(true)
     try {
@@ -373,9 +373,13 @@ export const WslLocalShellSection = (): React.JSX.Element => {
           </div>
         ) : null}
 
-        {!busy && snapshot.state === 'first-launch-required' && distro ? (
+        {!busy &&
+        (snapshot.state === 'first-launch-required' || snapshot.state === 'distro-required') &&
+        snapshot.distros.some(
+          (item) => item.name === RECOMMENDED_WSL_DISTRO && item.version === 2
+        ) ? (
           <div className="mt-4">
-            <Button type="button" onClick={() => void openTerminal(false)}>
+            <Button type="button" onClick={() => void openTerminal(false, RECOMMENDED_WSL_DISTRO)}>
               <SquareTerminal aria-hidden="true" />
               {t('Open distribution terminal')}
             </Button>
