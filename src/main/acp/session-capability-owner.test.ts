@@ -636,6 +636,12 @@ describe('ACP session capability owner', () => {
       projectId: 'project'
     })
     selected.user = 'changed-after-provision'
+    expect(provision).not.toHaveProperty('shellRuntime')
+    expect(provision.shellRuntimeAgentContract?.sessionInstruction).toContain('WSL2 Bash')
+    expect(JSON.stringify(provision.shellRuntimeAgentContract)).not.toMatch(
+      /profile-1|Ubuntu-22\.04|researcher/
+    )
+    expect(Object.isFrozen(provision.shellRuntimeAgentContract)).toBe(true)
     provision.commit('app-session')
 
     const notebook = provision.mcpServers.find((server) => server.name === 'open_science_notebook')

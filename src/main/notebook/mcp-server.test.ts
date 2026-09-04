@@ -1115,6 +1115,12 @@ describe('bash_execute tool', () => {
     expect(wslTool?.description).toContain('Bash syntax')
     expect(wslTool?.description).toContain('$OPEN_SCIENCE_HANDOFF_DIR')
     expect(wslTool?.description).not.toContain('Windows PowerShell')
+    expect(wslTool?.inputSchema.command.description).toBe(
+      'WSL2 Bash command using POSIX syntax; do not use PowerShell syntax.'
+    )
+    expect(wslTool?.inputSchema.command.description).not.toMatch(
+      /profile-1|Ubuntu-22\.04|researcher/
+    )
   })
 
   it('forwards bash_execute input to the executeShell RPC method', async () => {

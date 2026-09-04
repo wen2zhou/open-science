@@ -3,6 +3,7 @@ import { describe, expect, it } from 'vitest'
 import {
   captureShellRuntimeBinding,
   defaultShellRuntimeBinding,
+  shellRuntimeAgentContract,
   shellRuntimeDialect,
   shellRuntimePlatform,
   shellRuntimeSandboxTarget
@@ -42,6 +43,14 @@ describe('shell runtime binding', () => {
       distro: 'Ubuntu-22.04',
       user: 'researcher'
     })
+    const agentContract = shellRuntimeAgentContract(binding)
+    expect(agentContract.commandDescription).toContain('WSL2 Bash')
+    expect(agentContract.executionDescription).toContain('selected sandboxed WSL2 profile')
+    expect(agentContract.sessionInstruction).toContain(
+      'even though the host and workspace path are Windows'
+    )
+    expect(JSON.stringify(agentContract)).not.toMatch(/profile-1|Ubuntu-22\.04|researcher/)
+    expect(Object.isFrozen(agentContract)).toBe(true)
   })
 
   it.each([
@@ -60,5 +69,17 @@ describe('shell runtime binding', () => {
     ]
   ] as const)('derives execution platform %s on host %s as %s', (binding, host, expected) => {
     expect(shellRuntimePlatform(binding, host)).toBe(expected)
+  })
+
+  it('keeps an arbitrary native shell path out of every Agent-facing contract string', () => {
+    const contract = shellRuntimeAgentContract({
+      kind: 'native-posix',
+      shell: '/private/custom-shell'
+    })
+
+    expect(JSON.stringify(contract)).not.toContain('/private/custom-shell')
+    expect(contract.commandDescription).toContain('native POSIX shell')
+    expect(contract.executionDescription).toContain('native POSIX shell')
+    expect(contract.sessionInstruction).toContain('native POSIX shell')
   })
 })
