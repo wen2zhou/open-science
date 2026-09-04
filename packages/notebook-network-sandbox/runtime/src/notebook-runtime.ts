@@ -19,6 +19,7 @@ import {
   readAppContainerStatus,
   removeWindowsAppContainer,
   windowsLaunch,
+  windowsSupervisedLaunch,
   windowsStandardLaunch,
   type WindowsShell
 } from './platform/windows-appcontainer.js'
@@ -81,6 +82,7 @@ type NetworkWrapRequest = Readonly<{
   pathEnvironment?: NodeJS.ProcessEnv
   localRpcSocketPath?: string
   inheritedFileDescriptorCount?: number
+  superviseProcessTree?: boolean
   filesystem: FilesystemLayoutInput
   signal?: AbortSignal
 }>
@@ -194,6 +196,7 @@ const wrap = async (
 ): Promise<{
   argv: string[]
   env: NodeJS.ProcessEnv
+  confirmProcessTreeTermination?: () => Promise<boolean>
   beginSpawn?: () => Readonly<{ started: () => void; notStarted: () => void }>
 }> => {
   if (finishing.size > 0) await Promise.allSettled([...finishing])
@@ -319,6 +322,15 @@ const wrap = async (
         gatewayCredentials: credentials,
         env: request.env,
         ...(request.localRpcSocketPath ? { localRpcSocketPath: request.localRpcSocketPath } : {})
+      }
+      // Standard mode has no AppContainer, but opted-in short-lived workers still need reliable
+      // process-tree ownership so a normal leader exit cannot poison the next cleanup attempt.
+      if (!windowsGatewayPort && request.superviseProcessTree) {
+        return windowsSupervisedLaunch({
+          ...launchRequest,
+          cwd: request.cwd,
+          hostPath: config.windowsHostPath
+        })
       }
       if (!windowsGatewayPort) return windowsStandardLaunch(launchRequest)
       return windowsLaunch({

@@ -145,6 +145,7 @@ describe('NotebookNetworkSandbox', () => {
     backend.wrap.mockResolvedValue({
       argv: ['/bin/sh', '-c', 'sandboxed'],
       env: { HTTPS_PROXY: 'http://127.0.0.1:4123' },
+      confirmProcessTreeTermination: async () => true,
       beginSpawn
     })
 
@@ -155,6 +156,7 @@ describe('NotebookNetworkSandbox', () => {
     const wrapped = await first.wrap({
       command: 'python notebook.py',
       cwd: '/workspace',
+      superviseProcessTree: true,
       onNetworkAccessRequest: denyNetwork
     })
     expect(wrapped).toMatchObject({
@@ -165,6 +167,10 @@ describe('NotebookNetworkSandbox', () => {
     expect(wrapped.resetNetworkConnections).toBeTypeOf('function')
     expect(wrapped.cleanup).toBeTypeOf('function')
     expect(wrapped.beginSpawn).toBe(beginSpawn)
+    await expect(wrapped.confirmProcessTreeTermination?.()).resolves.toBe(true)
+    expect(backend.wrap).toHaveBeenCalledWith(
+      expect.objectContaining({ superviseProcessTree: true })
+    )
 
     first.updatePolicy({ allowedDomains: ['api.crossref.org'], deniedDomains: [] })
     expect(backend.updateConfig).toHaveBeenCalledWith(

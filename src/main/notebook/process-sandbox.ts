@@ -33,6 +33,8 @@ export type NotebookSandboxInvocation = Readonly<{
   runtime: 'python' | 'r' | 'repl' | 'bash'
   localRpcSocketPath?: string
   inheritedFileDescriptorCount?: number
+  // Package installers opt in so standard Windows mode can contain helpers in a native Job Object.
+  superviseProcessTree?: boolean
   filesystem: Readonly<{
     readOnlyRoots: readonly string[]
     readWriteRoots: readonly string[]
@@ -46,6 +48,8 @@ export type NotebookSandboxedSpawn = Readonly<{
   executable: string
   args: readonly string[]
   env: NodeJS.ProcessEnv
+  // Validates the native launcher's one-time proof that its Job Object is empty.
+  confirmProcessTreeTermination?: () => Promise<boolean>
   beginSpawn?: () => Readonly<{ started: () => void; notStarted: () => void }>
   beginExecution?: () => () => void
   annotateStderr: (stderr: string) => string

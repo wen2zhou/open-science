@@ -28,6 +28,7 @@ describe('sandboxedPackageSpawn', () => {
         executable: invocation.executable,
         args: invocation.args,
         env: invocation.env,
+        confirmProcessTreeTermination: async () => true,
         beginExecution: () => endExecution,
         annotateStderr: (stderr: string) =>
           `${stderr}<sandbox_violations>blocked</sandbox_violations>`,
@@ -83,7 +84,7 @@ describe('sandboxedPackageSpawn', () => {
     expect(endExecution).toHaveBeenCalledOnce()
     expect(cleanup).toHaveBeenCalledOnce()
     expect(cleanup).toHaveBeenCalledWith('exit', {
-      processesTerminated: process.platform !== 'win32'
+      processesTerminated: true
     })
   })
 
@@ -92,17 +93,68 @@ describe('sandboxedPackageSpawn', () => {
       event: 'close',
       executable: process.execPath,
       args: ['-e', 'process.exit(0)'],
-      code: 0
+      code: 0,
+      platform: 'win32' as const,
+      confirmsTermination: true,
+      processesTerminated: true
+    },
+    {
+      event: 'close without ownership',
+      executable: process.execPath,
+      args: ['-e', 'process.exit(0)'],
+      code: 0,
+      platform: 'win32' as const,
+      confirmsTermination: false,
+      processesTerminated: false
     },
     {
       event: 'spawn error',
       executable: join(process.cwd(), 'missing-installer-executable'),
       args: [],
-      code: 1
+      code: 1,
+      platform: 'win32' as const,
+      confirmsTermination: true,
+      processesTerminated: false
+    },
+    {
+      event: 'confirmation failure',
+      executable: process.execPath,
+      args: ['-e', 'process.exit(0)'],
+      code: 0,
+      platform: 'win32' as const,
+      confirmsTermination: true,
+      confirmationRejects: true,
+      processesTerminated: false
+    },
+    {
+      event: 'Linux close with a Windows-only confirmation flag',
+      executable: process.execPath,
+      args: ['-e', 'process.exit(0)'],
+      code: 0,
+      platform: 'linux' as const,
+      confirmsTermination: true,
+      processesTerminated: false
+    },
+    {
+      event: 'Linux spawn error',
+      executable: join(process.cwd(), 'missing-installer-executable'),
+      args: [],
+      code: 1,
+      platform: 'linux' as const,
+      confirmsTermination: true,
+      processesTerminated: false
     }
   ])(
     'waits for bounded installer-tree observation after $event',
-    async ({ executable, args, code }) => {
+    async ({
+      executable,
+      args,
+      code,
+      platform,
+      confirmsTermination,
+      confirmationRejects,
+      processesTerminated
+    }) => {
       let releaseReaping: (() => void) | undefined
       const gate = new Promise<void>((resolve) => {
         releaseReaping = resolve
@@ -121,6 +173,10 @@ describe('sandboxedPackageSpawn', () => {
           executable: invocation.executable,
           args: invocation.args,
           env: invocation.env,
+          confirmProcessTreeTermination: async () => {
+            if (confirmationRejects) throw new Error('proof unavailable')
+            return confirmsTermination
+          },
           annotateStderr: (stderr: string) => stderr,
           cleanup
         }))
@@ -130,7 +186,7 @@ describe('sandboxedPackageSpawn', () => {
         request: { language: 'python', packages: ['example'] },
         runtimeRoot: join(process.cwd(), '.open-science-test-runtime'),
         storageRoot: process.cwd(),
-        platform: 'linux',
+        platform,
         terminateTree
       })
       let completed = false
@@ -145,7 +201,7 @@ describe('sandboxedPackageSpawn', () => {
       expect(cleanup).not.toHaveBeenCalled()
       releaseReaping?.()
       await expect(completion).resolves.toMatchObject({ code })
-      expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated: false })
+      expect(cleanup).toHaveBeenCalledWith('exit', { processesTerminated })
     }
   )
 

@@ -190,6 +190,7 @@ class NotebookNetworkSandbox {
         ...(command.inheritedFileDescriptorCount
           ? { inheritedFileDescriptorCount: command.inheritedFileDescriptorCount }
           : {}),
+        ...(command.superviseProcessTree ? { superviseProcessTree: true } : {}),
         signal: controller.signal,
         filesystem: command.filesystem ?? {
           readOnlyRoots: [command.cwd],
@@ -219,6 +220,9 @@ class NotebookNetworkSandbox {
     return {
       argv: wrapped.argv,
       env: wrapped.env,
+      ...(wrapped.confirmProcessTreeTermination
+        ? { confirmProcessTreeTermination: wrapped.confirmProcessTreeTermination }
+        : {}),
       ...(wrapped.beginSpawn ? { beginSpawn: wrapped.beginSpawn } : {}),
       annotateStderr: (stderr) => this.#backend.annotateStderr(commandId, stderr),
       resetNetworkConnections: () => this.#backend.resetCommandConnections(commandId),

@@ -36,7 +36,16 @@ vi.mock('../runtime/src/platform/wsl2-isolation.js', () => ({
 }))
 
 vi.mock('../runtime/src/platform/windows-appcontainer.js', () => ({
-  windowsLaunch: vi.fn(({ env }) => ({ argv: ['sandboxed.exe'], env })),
+  windowsLaunch: vi.fn(({ env }) => ({
+    argv: ['sandboxed.exe'],
+    env,
+    confirmProcessTreeTermination: async () => true
+  })),
+  windowsSupervisedLaunch: vi.fn(({ env }) => ({
+    argv: ['supervised.exe'],
+    env,
+    confirmProcessTreeTermination: async () => true
+  })),
   windowsStandardLaunch: vi.fn(({ env }) => ({ argv: ['powershell.exe'], env })),
   checkWindowsAppContainer: vi.fn().mockResolvedValue({ warnings: [], errors: [] }),
   readAppContainerStatus: vi.fn().mockResolvedValue({ gatewayPort: 49700 }),
@@ -54,7 +63,8 @@ import { wsl2Launch } from '../runtime/src/platform/wsl2-isolation.js'
 import { readAppContainerStatus } from '../runtime/src/platform/windows-appcontainer.js'
 import {
   checkWindowsAppContainer,
-  windowsStandardLaunch
+  windowsStandardLaunch,
+  windowsSupervisedLaunch
 } from '../runtime/src/platform/windows-appcontainer.js'
 
 const originalPlatform = Object.getOwnPropertyDescriptor(process, 'platform')
@@ -482,7 +492,7 @@ describe('Notebook runtime configuration updates', () => {
     })
     await NotebookNetworkRuntime.initialize(config(['example.com']), async () => false)
 
-    await NotebookNetworkRuntime.wrap({
+    const wrapped = await NotebookNetworkRuntime.wrap({
       command: 'curl https://example.com',
       commandId: 'standard-windows-command',
       cwd: '/workspace',
@@ -499,5 +509,35 @@ describe('Notebook runtime configuration updates', () => {
       expect.objectContaining({ sharedPort: expect.any(Number) })
     )
     expect(windowsStandardLaunch).toHaveBeenCalledOnce()
+    expect(windowsSupervisedLaunch).not.toHaveBeenCalled()
+    expect(wrapped.confirmProcessTreeTermination).toBeUndefined()
+  })
+
+  it('supervises an opted-in Windows process tree when protected mode is not ready', async () => {
+    await NotebookNetworkRuntime.reset()
+    vi.clearAllMocks()
+    Object.defineProperty(process, 'platform', { configurable: true, value: 'win32' })
+    vi.mocked(checkWindowsAppContainer).mockResolvedValue({
+      warnings: [],
+      errors: ['Notebook AppContainer profile is not installed']
+    })
+    await NotebookNetworkRuntime.initialize(config(['example.com']), async () => false)
+
+    const wrapped = await NotebookNetworkRuntime.wrap({
+      command: 'curl https://example.com',
+      commandId: 'supervised-windows-command',
+      cwd: '/workspace',
+      env: {},
+      superviseProcessTree: true,
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['/workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    })
+
+    expect(windowsSupervisedLaunch).toHaveBeenCalledOnce()
+    await expect(wrapped.confirmProcessTreeTermination?.()).resolves.toBe(true)
   })
 })

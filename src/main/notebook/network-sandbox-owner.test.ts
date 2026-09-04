@@ -69,6 +69,7 @@ beforeEach(() => {
   }))
   backend.wrap.mockImplementation(
     async (command: {
+      superviseProcessTree?: boolean
       onNetworkAccessRequest: (request: {
         host: string
         port?: number
@@ -85,6 +86,9 @@ beforeEach(() => {
       return {
         argv: ['/sandbox/sh', '-c', 'wrapped'],
         env: { HTTPS_PROXY: 'http://127.0.0.1:4567' },
+        ...(command.superviseProcessTree
+          ? { confirmProcessTreeTermination: async () => true }
+          : {}),
         annotateStderr: (stderr: string) => stderr,
         resetNetworkConnections: backend.resetNetworkConnections,
         cleanup: async (
@@ -294,6 +298,7 @@ describe('NotebookNetworkSandboxOwner', () => {
       sessionId: 'session-1',
       projectId: 'project-1',
       runtime: 'python',
+      superviseProcessTree: true,
       filesystem: {
         readOnlyRoots: ['D:\\runtime'],
         readWriteRoots: ['D:\\workspace'],
@@ -306,9 +311,11 @@ describe('NotebookNetworkSandboxOwner', () => {
       expect.objectContaining({
         command: "& 'D:\\runtime\\python.exe' 'D:\\app\\python_loop.py'",
         executable: 'D:\\runtime\\python.exe',
-        args: ['D:\\app\\python_loop.py']
+        args: ['D:\\app\\python_loop.py'],
+        superviseProcessTree: true
       })
     )
+    await expect(wrapped.confirmProcessTreeTermination?.()).resolves.toBe(true)
 
     await wrapped.cleanup('exit', { processesTerminated: true })
   })

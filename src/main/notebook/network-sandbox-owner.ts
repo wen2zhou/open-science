@@ -248,6 +248,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
         ...(invocation.inheritedFileDescriptorCount
           ? { inheritedFileDescriptorCount: invocation.inheritedFileDescriptorCount }
           : {}),
+        ...(invocation.superviseProcessTree ? { superviseProcessTree: true } : {}),
         filesystem: {
           privateRoot: homedir(),
           readOnlyRoots: [
@@ -417,6 +418,9 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       executable,
       args,
       env: wrapped.env,
+      ...(wrapped.confirmProcessTreeTermination
+        ? { confirmProcessTreeTermination: wrapped.confirmProcessTreeTermination }
+        : {}),
       ...(wrapped.beginSpawn ? { beginSpawn: wrapped.beginSpawn } : {}),
       beginExecution: () => {
         if (cleanupPromise) throw new Error('Notebook sandbox process is already closed.')

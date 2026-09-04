@@ -78,6 +78,8 @@ export type NotebookSandboxCommand = Readonly<{
   signal?: AbortSignal
   localRpcSocketPath?: string
   inheritedFileDescriptorCount?: number
+  // Opt-in ownership for short-lived workers; ordinary persistent kernels keep their current path.
+  superviseProcessTree?: boolean
   filesystem?: NotebookFilesystemPolicy
   onNetworkAccessRequest: NotebookNetworkDecisionHandler
 }>
@@ -85,6 +87,8 @@ export type NotebookSandboxCommand = Readonly<{
 export type NotebookSandboxedProcess = Readonly<{
   argv: readonly string[]
   env: NodeJS.ProcessEnv
+  // Only launchers backed by a kill-on-close Job Object may provide this proof check.
+  confirmProcessTreeTermination?: () => Promise<boolean>
   beginSpawn?: () => Readonly<{ started: () => void; notStarted: () => void }>
   annotateStderr: (stderr: string) => string
   resetNetworkConnections: () => void

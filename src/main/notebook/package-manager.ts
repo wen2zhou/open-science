@@ -978,7 +978,8 @@ export const defaultSpawn = (
   captureCondaJson?: boolean,
   cwd?: string,
   terminateTree: (child: ChildProcess) => Promise<ProcessTreeKillResult> = terminateProcessTree,
-  platform: NodeJS.Platform = process.platform
+  platform: NodeJS.Platform = process.platform,
+  confirmProcessTreeTermination?: () => Promise<boolean>
 ): Promise<SpawnResult> => {
   let condaJsonCapture: CondaJsonCapture | undefined
   try {
@@ -1065,17 +1066,24 @@ export const defaultSpawn = (
     let settled = false
     const result = async (
       code: number,
-      processOutcome: ProcessTreeKillResult
+      processOutcome: ProcessTreeKillResult,
+      normalExit: boolean
     ): Promise<SpawnResult> => {
       const stdoutSnapshot = stdout.snapshot()
       const stderrSnapshot = stderr.snapshot()
+      const processTreeTerminationConfirmed =
+        platform === 'win32' && normalExit && confirmProcessTreeTermination
+          ? await confirmProcessTreeTermination().catch(() => false)
+          : false
       const condaJsonSummary = await finalizeCondaJsonCapture(
         condaJsonCapture,
         stdoutSnapshot.droppedBytes > 0 || stderrSnapshot.droppedBytes > 0
       )
       return {
         code,
-        processesTerminated: processOutcome.reaped,
+        // taskkill cannot inspect descendants after the leader has exited. A supervised launcher
+        // supplies a one-time proof only after its Job Object has reached zero active processes.
+        processesTerminated: processOutcome.reaped || processTreeTerminationConfirmed,
         stdout: stdoutSnapshot.text,
         stderr: stderrSnapshot.text,
         ...(stdoutSnapshot.droppedBytes > 0
@@ -1087,12 +1095,12 @@ export const defaultSpawn = (
         ...(condaJsonSummary ?? {})
       }
     }
-    const settle = (code: number): void => {
+    const settle = (code: number, normalExit: boolean): void => {
       if (settled) return
       settled = true
       void terminateTree(child)
         .catch(() => ({ reaped: false }))
-        .then((processOutcome) => result(code, processOutcome))
+        .then((processOutcome) => result(code, processOutcome, normalExit))
         .then(resolve)
     }
     child.on('error', (error) => {
@@ -1103,9 +1111,9 @@ export const defaultSpawn = (
         condaJsonCapture.stdoutLimiter.end()
         condaJsonCapture.stderrLimiter.end()
       }
-      settle(1)
+      settle(1, false)
     })
-    child.on('close', (code) => settle(code ?? 1))
+    child.on('close', (code) => settle(code ?? 1, code !== null))
   })
 }
 

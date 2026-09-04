@@ -99,6 +99,7 @@ export const sandboxedPackageSpawn =
       sessionId: request.sessionId ?? 'notebook-package-manager',
       projectId: request.projectId ?? 'notebook-package-manager',
       runtime: request.language,
+      superviseProcessTree: platform === 'win32',
       filesystem: {
         readOnlyRoots: [...absolutePath(dirname(command)), ...absolutePath(request.workspaceCwd)],
         readWriteRoots: [
@@ -123,7 +124,8 @@ export const sandboxedPackageSpawn =
         args.includes('--json'),
         cwd,
         options.terminateTree,
-        platform
+        platform,
+        sandboxed.confirmProcessTreeTermination
       )
       endExecution?.()
       ended = true
