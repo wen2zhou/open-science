@@ -484,7 +484,7 @@ describe('Settings backend ownership architecture', () => {
         codexSkillDescriptorsForIds createDeviceCredential createSkill deleteProvider deleteSkill detectClaude detectCodeBuddy detectCodex
         detectOpencode deviceCredentialConsumerIds deviceCredentialIdForServer disconnectCustomServer disconnectDeviceCredential dismissLegacyDataMovePrompt getActiveInstallId getAgentEnvironmentCreationEnabled getAppIconVariant getClosePreference
         getComputeBookmarks getConnectorDetail getConnectors getConversationSkillImportEnabled getGitHubTokenStatus getGrantedLocalRoots getLocalShellRuntimePreference getManualInterpreters getNotebookNetwork getNotebookNetworkStatus getNotificationsEnabled getPackageMirror
-        getPreflight getRuntimeEnablement getRuntimeSelection getSettingsView getShowNotificationContent getSkillDetail getWsl2BashPreviewStatus hasActiveInstall holdInstallAdmission
+        getPreflight getRuntimeEnablement getSettingsView getShowNotificationContent getSkillDetail getWsl2BashPreviewStatus hasActiveInstall holdInstallAdmission
         getStoredSettings importAgentHomeSkills importSkill importSkillArchiveBatch importSkillZip
         importSkillZipBatch installClaude installCodeBuddy installCodex installNotebookNetwork installOpencode installRecommendedWslDistro installWslPlatform isEncryptionAvailable
         isNpmAvailable listAgentHomeSkills listConnectors listDeviceCredentials listHostSkills listSkills listSpecialistSkillCatalog listUserSkills

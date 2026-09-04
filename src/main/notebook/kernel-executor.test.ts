@@ -555,8 +555,13 @@ gate('NotebookKernelExecutor (fake loop)', () => {
       ].join('\n')
     )
     let cleaned = false
-    const cleanup = vi.fn(() => {
+    const cleanup = vi.fn(async () => {
       cleaned = true
+      return {
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      }
     })
     const annotateStderr = vi.fn((stderr: string) =>
       cleaned ? stderr : `${stderr}<sandbox_violations>hidden path</sandbox_violations>`

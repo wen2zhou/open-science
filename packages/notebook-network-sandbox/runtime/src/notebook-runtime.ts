@@ -88,9 +88,7 @@ type NetworkWrapRequest = Readonly<{
 type RuntimeContext = {
   filesystem: FilesystemLayout
   gateway?: CommandGateway
-  releasePlatform?: (
-    reason: SandboxCleanupReason
-  ) => Promise<boolean | void | SandboxCleanupResult>
+  releasePlatform?: (reason: SandboxCleanupReason) => Promise<boolean | void | SandboxCleanupResult>
   platformOwnsProcesses?: boolean
 }
 

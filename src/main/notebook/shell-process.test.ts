@@ -460,8 +460,9 @@ describe('notebook shell process behavior', () => {
       )
 
       let settled = false
-      const termination = terminateShellOnTimeout(child, 'win32', terminateTree).then(() => {
+      const termination = terminateShellOnTimeout(child, 'win32', terminateTree).then((result) => {
         settled = true
+        return result
       })
 
       expect(termination).toBeInstanceOf(Promise)

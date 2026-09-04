@@ -310,7 +310,7 @@ describe('NotebookNetworkSandboxOwner', () => {
       })
     )
 
-    wrapped.cleanup()
+    await wrapped.cleanup('exit', { processesTerminated: true })
   })
 
   it('applies allow-once to every matching connection in the next command only', async () => {

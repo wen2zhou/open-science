@@ -613,10 +613,10 @@ class NotebookRuntimeService {
           ...(interpreter ? { interpreter } : {})
         }),
       helperModules: this.helperModules,
-        logger: this.runtimeLogger,
-        platform: options.platform,
-        shellRuntimeBinding: options.shellRuntimeBinding,
-        shellProcess:
+      logger: this.runtimeLogger,
+      platform: options.platform,
+      shellRuntimeBinding: options.shellRuntimeBinding,
+      shellProcess:
         options.shellProcess ??
         new NotebookShellProcessAdapter(options.platform, options.processSandbox)
     })

@@ -818,11 +818,7 @@ class NotebookKernelExecutor implements NotebookExecutor {
             )
           : (() => {
               const reason =
-                code !== null
-                  ? ` with exit code ${code}`
-                  : signal
-                    ? ` after signal ${signal}`
-                    : ''
+                code !== null ? ` with exit code ${code}` : signal ? ` after signal ${signal}` : ''
               const stderr = proc.annotateStderr(proc.stderrTail).trim()
               return new Error(
                 `Notebook kernel process exited${reason}.` + (stderr ? `\n${stderr}` : '')

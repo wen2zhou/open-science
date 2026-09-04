@@ -609,10 +609,16 @@ const runShellCommand = (
         exited = true
         clearTimeout(timeoutTimer)
         void terminateShellOnTimeout(child, platform, options.terminateTree).then(({ reaped }) => {
+          // On Windows, taskkill runs after Node observes the PowerShell exit and can report that
+          // the PID no longer exists. A numeric exit code is authoritative for this normal native
+          // completion; timeout/cancel and WSL guest cleanup retain their stricter ownership checks.
+          const processesTerminated =
+            reaped ||
+            (platform === 'win32' && runtimeBinding.kind === 'powershell' && code !== null)
           void finish(
             { stdout, stderr, exitCode: code, ...(truncated ? { truncated: true } : {}) },
             'exit',
-            { processesTerminated: reaped }
+            { processesTerminated }
           )
         })
       })

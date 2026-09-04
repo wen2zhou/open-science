@@ -3282,6 +3282,7 @@ describe('notebook runtime service', () => {
       expect(execute).toHaveBeenCalledWith({
         command: 'opaque command',
         cwd: join(root, 'notebooks', 'default-project', 'session-1', 'data'),
+        executionReference: expect.any(String),
         handoffDir: join(root, 'notebooks', 'default-project', 'session-1', 'handoff'),
         notebookSessionRoot: join(root, 'notebooks', 'default-project', 'session-1'),
         inputRoot: getNotebookInputRoot(root, 'default-project', 'session-1'),
