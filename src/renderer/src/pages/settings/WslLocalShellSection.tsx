@@ -368,6 +368,12 @@ export const WslLocalShellSection = ({
     snapshot.selection !== undefined &&
     snapshot.activatedSelection?.distro === snapshot.selection.distro &&
     snapshot.activatedSelection.user === snapshot.selection.user
+  const powerShellSwitchButton = (
+    <Button type="button" variant="outline" onClick={() => void switchToPowerShell()}>
+      <SquareTerminal aria-hidden="true" />
+      {t('Switch to PowerShell')}
+    </Button>
+  )
 
   return (
     <SettingsSection
@@ -612,10 +618,7 @@ export const WslLocalShellSection = ({
                 'You can keep using PowerShell while WSL2 is unavailable; these setup choices are preserved.'
               )}
             </p>
-            <Button type="button" variant="outline" onClick={() => void switchToPowerShell()}>
-              <SquareTerminal aria-hidden="true" />
-              {t('Switch to PowerShell')}
-            </Button>
+            {powerShellSwitchButton}
           </div>
         ) : null}
 
@@ -626,12 +629,14 @@ export const WslLocalShellSection = ({
                 ? t('This ready profile is active for future Shell commands.')
                 : t('This ready profile is only a candidate until you choose Use WSL2 Bash.')}
             </p>
-            {!candidateIsActive ? (
+            {candidateIsActive ? (
+              powerShellSwitchButton
+            ) : (
               <Button type="button" onClick={() => void activateWsl2Bash()}>
                 <SquareTerminal aria-hidden="true" />
                 {t('Use WSL2 Bash')}
               </Button>
-            ) : null}
+            )}
           </div>
         ) : null}
 

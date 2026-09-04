@@ -270,7 +270,7 @@ describe('WslLocalShellSection', () => {
     expect(container.textContent).toContain('This ready profile is only a candidate')
   })
 
-  it('shows a persisted active profile separately from a ready candidate after reload', async () => {
+  it('offers an explicit PowerShell switch for a persisted active WSL2 profile', async () => {
     const selection = { distro: 'Ubuntu-24.04', user: 'scientist' }
     probe.mockResolvedValue({
       state: 'ready',
@@ -295,6 +295,17 @@ describe('WslLocalShellSection', () => {
     expect(container.textContent).toContain('This ready profile is active')
     expect(container.textContent).not.toContain('Use WSL2 Bash')
     expect(useWsl2Bash).not.toHaveBeenCalled()
+
+    const switchButton = [...container.querySelectorAll('button')].find((candidate) =>
+      candidate.textContent?.includes('Switch to PowerShell')
+    )
+    expect(switchButton).toBeDefined()
+    await act(async () => switchButton?.click())
+    await flush()
+
+    expect(switchToPowerShell).toHaveBeenCalledOnce()
+    expect(container.textContent).toContain('Future Shell commands will use PowerShell')
+    expect(container.textContent).toContain('saved WSL2 profile is still available')
   })
 
   it('shows retry guidance without claiming a switch when persistence fails', async () => {
