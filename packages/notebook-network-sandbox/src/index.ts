@@ -18,7 +18,8 @@ import type {
   NotebookSandboxCleanupResult,
   NotebookSandboxProcessOutcome,
   NotebookSandboxCommand,
-  NotebookSandboxedProcess
+  NotebookSandboxedProcess,
+  NotebookSandboxTarget
 } from './types.js'
 
 let activeOwnerToken: symbol | undefined
@@ -33,6 +34,7 @@ class NotebookSandboxPreparationError extends Error {
 }
 
 type ActiveCommand = {
+  target: NotebookSandboxTarget
   onNetworkAccessRequest: NotebookSandboxCommand['onNetworkAccessRequest']
   controller: AbortController
   preparation: Promise<void>
@@ -42,6 +44,25 @@ type ActiveCommand = {
     reason: 'exit' | 'cancel' | 'timeout' | 'spawn-failed'
     processOutcome: NotebookSandboxProcessOutcome
   }>
+}
+
+const normalizedTarget = (target: NotebookSandboxTarget | undefined): NotebookSandboxTarget =>
+  target?.kind === 'wsl2'
+    ? {
+        kind: 'wsl2',
+        profileId: target.profileId,
+        distro: target.distro,
+        user: target.user
+      }
+    : { kind: 'native' }
+
+const sharesCleanupDomain = (
+  left: NotebookSandboxTarget,
+  right: NotebookSandboxTarget
+): boolean => {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'native' || right.kind === 'native') return true
+  return left.distro === right.distro && left.user === right.user
 }
 
 const dependencyStatus = (
@@ -134,7 +155,8 @@ class NotebookNetworkSandbox {
 
   async wrap(command: NotebookSandboxCommand): Promise<NotebookSandboxedProcess> {
     if (!this.#initialized) throw new Error('Notebook network sandbox is not initialized.')
-    await this.#reconcilePendingCommands()
+    const target = normalizedTarget(command.target)
+    await this.#reconcilePendingCommands(target)
     const commandId = randomUUID()
     const shell = command.shell as string | WindowsShell | undefined
     const controller = new AbortController()
@@ -143,6 +165,7 @@ class NotebookNetworkSandbox {
     else command.signal?.addEventListener('abort', abort, { once: true })
     let finishPreparation!: () => void
     const activeCommand: ActiveCommand = {
+      target,
       onNetworkAccessRequest: command.onNetworkAccessRequest,
       controller,
       preparation: new Promise<void>((resolve) => (finishPreparation = resolve)),
@@ -155,7 +178,7 @@ class NotebookNetworkSandbox {
     let wrapped: Awaited<ReturnType<typeof NotebookNetworkRuntime.wrap>>
     try {
       wrapped = await this.#backend.wrap({
-        target: command.target ?? { kind: 'native' },
+        target,
         command: command.command,
         ...(command.executable ? { executable: command.executable, args: command.args ?? [] } : {}),
         commandId,
@@ -334,9 +357,10 @@ class NotebookNetworkSandbox {
       })
   }
 
-  async #reconcilePendingCommands(): Promise<void> {
-    const pending = [...this.#activeCommands.entries()].filter(([, command]) =>
-      Boolean(command.cleanupRequest)
+  async #reconcilePendingCommands(target: NotebookSandboxTarget): Promise<void> {
+    const pending = [...this.#activeCommands.entries()].filter(
+      ([, command]) =>
+        Boolean(command.cleanupRequest) && sharesCleanupDomain(command.target, target)
     )
     if (pending.length === 0) return
     const results = await Promise.all(

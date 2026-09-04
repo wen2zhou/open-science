@@ -881,6 +881,127 @@ describe('NotebookNetworkSandboxOwner', () => {
     await owner.dispose()
   })
 
+  it('does not block a native kernel when cleanup remains incomplete for the previous WSL2 kernel', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'os-network-wsl2-to-native-'))
+    fixtureDirectories.push(fixtureRoot)
+    const owner = new NotebookNetworkSandboxOwner({
+      resourceRoot: '/resources',
+      temporaryRoot: fixtureRoot,
+      getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      persistAlwaysAllow: vi.fn(),
+      requestDecision: vi.fn().mockResolvedValue('deny'),
+      platform: 'win32'
+    })
+    backend.cleanup.mockResolvedValue({
+      processesTerminated: false,
+      networkClosed: false,
+      temporaryResourcesRemoved: false
+    })
+    const invocation = {
+      executable: '/bin/bash',
+      args: ['-c', 'true'],
+      env: {},
+      cwd: 'C:\\workspace',
+      commandText: 'true',
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      runtime: 'bash' as const,
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    }
+
+    const wsl2 = await owner.wrap({
+      ...invocation,
+      target: {
+        kind: 'wsl2',
+        profileId: 'profile-1',
+        distro: 'Ubuntu-22.04',
+        user: 'researcher'
+      }
+    })
+    await expect(wsl2.cleanup('timeout', { processesTerminated: false })).resolves.toEqual({
+      processesTerminated: false,
+      networkClosed: false,
+      temporaryResourcesRemoved: false
+    })
+
+    await expect(
+      owner.wrap({
+        ...invocation,
+        executable: 'C:\\Windows\\System32\\WindowsPowerShell\\v1.0\\powershell.exe',
+        args: ['-NoProfile', '-Command', 'Write-Output ready'],
+        commandText: 'Write-Output ready',
+        target: { kind: 'native' }
+      })
+    ).resolves.toMatchObject({ executable: '/sandbox/sh' })
+    expect(backend.cleanup).toHaveBeenCalledTimes(1)
+    expect(backend.wrap).toHaveBeenCalledTimes(2)
+    await owner.dispose()
+  })
+
+  it('retries only the old WSL2 resource and blocks another kernel for the same profile', async () => {
+    const fixtureRoot = await mkdtemp(join(tmpdir(), 'os-network-same-wsl2-retry-'))
+    fixtureDirectories.push(fixtureRoot)
+    const cleanupTargets: string[] = []
+    backend.wrap.mockImplementation(async (command: { target: { kind: string } }) => ({
+      argv: ['/sandbox/sh', '-c', 'wrapped'],
+      env: {},
+      annotateStderr: (stderr: string) => stderr,
+      resetNetworkConnections: backend.resetNetworkConnections,
+      cleanup: async () => {
+        cleanupTargets.push(command.target.kind)
+        return {
+          processesTerminated: false,
+          networkClosed: false,
+          temporaryResourcesRemoved: false
+        }
+      }
+    }))
+    const owner = new NotebookNetworkSandboxOwner({
+      resourceRoot: '/resources',
+      temporaryRoot: fixtureRoot,
+      getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
+      persistAlwaysAllow: vi.fn(),
+      requestDecision: vi.fn().mockResolvedValue('deny'),
+      platform: 'win32'
+    })
+    const invocation = {
+      target: {
+        kind: 'wsl2' as const,
+        profileId: 'profile-1',
+        distro: 'Ubuntu-22.04',
+        user: 'researcher'
+      },
+      executable: '/bin/bash',
+      args: ['-c', 'true'],
+      env: {},
+      cwd: 'C:\\workspace',
+      commandText: 'true',
+      sessionId: 'session-1',
+      projectId: 'project-1',
+      runtime: 'bash' as const,
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      }
+    }
+    const first = await owner.wrap(invocation)
+
+    await first.cleanup('timeout', { processesTerminated: false })
+    await expect(owner.wrap(invocation)).rejects.toThrow(
+      'SHELL_CLEANUP_INCOMPLETE: Previous shell cleanup could not be reconciled.'
+    )
+    expect(cleanupTargets).toEqual(['wsl2', 'wsl2'])
+    expect(backend.wrap).toHaveBeenCalledTimes(1)
+    await owner.dispose()
+  })
+
   it('defaults to native and forwards an explicit WSL2 sandbox target', async () => {
     const { logger, records } = createCapturingLogger()
     const owner = new NotebookNetworkSandboxOwner({

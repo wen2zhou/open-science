@@ -387,6 +387,166 @@ describe('NotebookNetworkSandbox', () => {
     expect(backend.reset).toHaveBeenCalledOnce()
   })
 
+  it('allows a native wrap while cleanup remains incomplete for a previous WSL2 profile', async () => {
+    const sandbox = new NotebookNetworkSandbox(options())
+    vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    backend.wrap.mockResolvedValue({ argv: ['sandboxed'], env: {} })
+    backend.cleanupAfterCommand
+      .mockResolvedValueOnce({
+        processesTerminated: false,
+        networkClosed: false,
+        temporaryResourcesRemoved: false
+      })
+      .mockResolvedValue({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+    const wslTarget = {
+      kind: 'wsl2' as const,
+      profileId: 'profile-1',
+      distro: 'Ubuntu-22.04',
+      user: 'researcher'
+    }
+
+    await sandbox.initialize()
+    const wsl2 = await sandbox.wrap({
+      target: wslTarget,
+      command: 'sleep 30',
+      cwd: 'C:\\workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+    await expect(wsl2.cleanup('timeout', { processesTerminated: false })).resolves.toMatchObject({
+      processesTerminated: false,
+      networkClosed: false,
+      temporaryResourcesRemoved: false
+    })
+
+    const nativeOutcome = await sandbox
+      .wrap({
+        target: { kind: 'native' },
+        command: 'Write-Output ready',
+        cwd: 'C:\\workspace',
+        onNetworkAccessRequest: denyNetwork
+      })
+      .then(
+        (value) => ({ status: 'fulfilled' as const, value }),
+        (error) => ({ status: 'rejected' as const, error })
+      )
+    const wrapCallCountBeforeCleanup = backend.wrap.mock.calls.length
+    const cleanupCallCountBeforeCleanup = backend.cleanupAfterCommand.mock.calls.length
+    backend.cleanupAfterCommand.mockResolvedValue({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+    if (nativeOutcome.status === 'fulfilled') {
+      await nativeOutcome.value.cleanup('exit', { processesTerminated: true })
+    }
+    await sandbox.dispose()
+
+    expect(nativeOutcome).toMatchObject({ status: 'fulfilled' })
+    expect(wrapCallCountBeforeCleanup).toBe(2)
+    expect(cleanupCallCountBeforeCleanup).toBe(1)
+  })
+
+  it('blocks another wrap for the same WSL2 profile while its previous cleanup is incomplete', async () => {
+    const sandbox = new NotebookNetworkSandbox(options())
+    vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    backend.wrap.mockResolvedValue({ argv: ['sandboxed'], env: {} })
+    backend.cleanupAfterCommand.mockResolvedValue({
+      processesTerminated: false,
+      networkClosed: false,
+      temporaryResourcesRemoved: false
+    })
+    const target = {
+      kind: 'wsl2' as const,
+      profileId: 'profile-1',
+      distro: 'Ubuntu-22.04',
+      user: 'researcher'
+    }
+    const command = {
+      target,
+      command: 'sleep 30',
+      cwd: 'C:\\workspace',
+      onNetworkAccessRequest: denyNetwork
+    }
+
+    await sandbox.initialize()
+    const first = await sandbox.wrap(command)
+    await first.cleanup('timeout', { processesTerminated: false })
+
+    await expect(
+      sandbox.wrap({
+        ...command,
+        target: { ...target, profileId: 'profile-id-was-regenerated' }
+      })
+    ).rejects.toThrow('SHELL_CLEANUP_INCOMPLETE: Previous shell cleanup could not be reconciled.')
+    expect(backend.cleanupAfterCommand).toHaveBeenCalledTimes(2)
+    expect(backend.wrap).toHaveBeenCalledTimes(1)
+
+    backend.cleanupAfterCommand.mockResolvedValue({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+    await sandbox.dispose()
+  })
+
+  it('allows a different WSL2 distro and user while previous profile cleanup is incomplete', async () => {
+    const sandbox = new NotebookNetworkSandbox(options())
+    vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+    backend.wrap.mockResolvedValue({ argv: ['sandboxed'], env: {} })
+    backend.cleanupAfterCommand
+      .mockResolvedValueOnce({
+        processesTerminated: false,
+        networkClosed: false,
+        temporaryResourcesRemoved: false
+      })
+      .mockResolvedValue({
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      })
+    const oldTarget = {
+      kind: 'wsl2' as const,
+      profileId: 'old-profile-id',
+      distro: 'Ubuntu-22.04',
+      user: 'researcher'
+    }
+
+    await sandbox.initialize()
+    const old = await sandbox.wrap({
+      target: oldTarget,
+      command: 'sleep 30',
+      cwd: 'C:\\workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+    await old.cleanup('timeout', { processesTerminated: false })
+
+    const different = await sandbox.wrap({
+      target: {
+        kind: 'wsl2',
+        profileId: 'different-profile-id',
+        distro: 'Debian',
+        user: 'analyst'
+      },
+      command: 'true',
+      cwd: 'C:\\workspace',
+      onNetworkAccessRequest: denyNetwork
+    })
+    expect(backend.wrap).toHaveBeenCalledTimes(2)
+    expect(backend.cleanupAfterCommand).toHaveBeenCalledTimes(1)
+
+    await different.cleanup('exit', { processesTerminated: true })
+    backend.cleanupAfterCommand.mockResolvedValue({
+      processesTerminated: true,
+      networkClosed: true,
+      temporaryResourcesRemoved: true
+    })
+    await sandbox.dispose()
+  })
+
   it('defaults omitted targets to native and forwards explicit WSL2 targets', async () => {
     const sandbox = new NotebookNetworkSandbox(options())
     vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })

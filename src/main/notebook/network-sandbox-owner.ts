@@ -21,6 +21,7 @@ import type {
   NotebookSandboxCleanupReason,
   NotebookSandboxCleanupResult,
   NotebookSandboxProcessOutcome,
+  NotebookSandboxTarget,
   NotebookSandboxedSpawn,
   NotebookSandboxInvocation
 } from './process-sandbox'
@@ -46,6 +47,17 @@ type NotebookNetworkDecisionRequest = Readonly<{
   reason?: string
   signal: AbortSignal
 }>
+
+type PendingCommandCleanup = Readonly<{
+  target: NotebookSandboxTarget
+  retry: () => Promise<NotebookSandboxCleanupResult>
+}>
+
+const sameCleanupDomain = (left: NotebookSandboxTarget, right: NotebookSandboxTarget): boolean => {
+  if (left.kind !== right.kind) return false
+  if (left.kind === 'native') return true
+  return right.kind === 'wsl2' && left.distro === right.distro && left.user === right.user
+}
 
 type NotebookCommandRuntime = NotebookSandboxInvocation['runtime']
 
@@ -158,7 +170,7 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     Map<NotebookCommandRuntime, Set<string>>
   >()
   private readonly pendingTemporaryRoots = new Map<string, string>()
-  private readonly pendingCommandCleanups = new Set<() => Promise<NotebookSandboxCleanupResult>>()
+  private readonly pendingCommandCleanups = new Set<PendingCommandCleanup>()
   private readonly platform: NodeJS.Platform
   private readonly log: Logger
   private lastStatusSignature: string | undefined
@@ -201,10 +213,10 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
 
   async wrap(invocation: NotebookSandboxInvocation): Promise<NotebookSandboxedSpawn> {
     await this.initialize()
-    await this.reconcilePendingCommandCleanups()
+    const target = invocation.target ?? { kind: 'native' as const }
+    await this.reconcilePendingCommandCleanups(target)
     await this.updateTrustBundle()
     const grantedRoots = (await this.options.getGrantedLocalRoots?.()) ?? []
-    const target = invocation.target ?? { kind: 'native' as const }
     const { commandTempRoot, receipt } = await this.createCommandTemporaryRoot(target)
     this.pendingTemporaryRoots.set(commandTempRoot, receipt)
     const env = {
@@ -327,8 +339,10 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     let cleanupPromise: Promise<NotebookSandboxCleanupResult> | undefined
     let cleanupReason: NotebookSandboxCleanupReason | undefined
     let cleanupOutcome: NotebookSandboxProcessOutcome | undefined
-    const retryCleanup = (): Promise<NotebookSandboxCleanupResult> =>
-      cleanup(cleanupReason!, cleanupOutcome!)
+    const pendingCleanup: PendingCommandCleanup = {
+      target,
+      retry: () => cleanup(cleanupReason!, cleanupOutcome!)
+    }
     const cleanup: NotebookSandboxedSpawn['cleanup'] = (reason, processOutcome) => {
       cleanupReason ??= reason
       cleanupOutcome ??= processOutcome
@@ -380,9 +394,9 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
       cleanupPromise = cleanupPromise.then(
         (result) => {
           if (Object.values(result).every(Boolean)) {
-            this.pendingCommandCleanups.delete(retryCleanup)
+            this.pendingCommandCleanups.delete(pendingCleanup)
           } else {
-            this.pendingCommandCleanups.add(retryCleanup)
+            this.pendingCommandCleanups.add(pendingCleanup)
             cleanupPromise = undefined
           }
           return result
@@ -678,9 +692,12 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
     return status
   }
 
-  private async reconcilePendingCommandCleanups(): Promise<void> {
-    if (this.pendingCommandCleanups.size === 0) return
-    const results = await Promise.all([...this.pendingCommandCleanups].map((cleanup) => cleanup()))
+  private async reconcilePendingCommandCleanups(target: NotebookSandboxTarget): Promise<void> {
+    const pending = [...this.pendingCommandCleanups].filter((cleanup) =>
+      sameCleanupDomain(cleanup.target, target)
+    )
+    if (pending.length === 0) return
+    const results = await Promise.all(pending.map((cleanup) => cleanup.retry()))
     if (results.some((result) => !Object.values(result).every(Boolean))) {
       throw new Error('SHELL_CLEANUP_INCOMPLETE: Previous shell cleanup could not be reconciled.')
     }
