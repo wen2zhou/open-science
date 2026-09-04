@@ -20,7 +20,11 @@ import {
 import { resolveProjectId } from '../../shared/project-scope'
 import type { ProjectIdScope } from '../../shared/project-scope'
 import { NOTEBOOK_REPL_DEFAULT_TIMEOUT_MS, type ShellRuntimeBinding } from '../../shared/notebook'
-import { defaultShellRuntimeBinding, shellRuntimeBindingSchema } from './shell-runtime'
+import {
+  defaultShellRuntimeBinding,
+  shellRuntimeAgentContract,
+  shellRuntimeBindingSchema
+} from './shell-runtime'
 import {
   memoryAgentRememberMcpOutputSchema,
   memoryAgentRememberRequestSchema,
@@ -93,11 +97,6 @@ const executeToolSchema = {
 const replExecuteToolSchema = {
   code: z.string(),
   timeoutMs: z.number().int().positive().default(NOTEBOOK_REPL_DEFAULT_TIMEOUT_MS)
-}
-
-const bashExecuteToolSchema = {
-  command: z.string(),
-  timeoutMs: z.number().int().positive().optional()
 }
 
 const requestNetworkAccessToolSchema = {
@@ -221,12 +220,7 @@ const buildShellExecuteDoc = (
   runtime: NodeJS.Platform | ShellRuntimeBinding = process.platform
 ): string => {
   const binding = typeof runtime === 'string' ? defaultShellRuntimeBinding(runtime) : runtime
-  const shellDescription =
-    binding.kind === 'powershell'
-      ? 'Run one Windows PowerShell command in the shared session workspace. This is not Bash: use PowerShell syntax and do not assume a POSIX shell exists.'
-      : binding.kind === 'wsl2-bash'
-        ? 'Run one WSL2 Bash command in the shared session workspace. Use Bash syntax; execution stays in the selected sandboxed WSL2 profile.'
-        : `Run one shell command with \`${binding.shell === '/bin/sh' ? 'sh' : binding.shell} -c\` in the shared session workspace.`
+  const agentContract = shellRuntimeAgentContract(binding)
   const handoffVariable =
     binding.kind === 'powershell' ? '$env:OPEN_SCIENCE_HANDOFF_DIR' : '$OPEN_SCIENCE_HANDOFF_DIR'
   const platformContract =
@@ -239,7 +233,7 @@ const buildShellExecuteDoc = (
       : 'Returns { stdout, stderr, exitCode } and does not throw on a non-zero exit; inspect exitCode instead of assuming success.'
 
   return [
-    shellDescription,
+    agentContract.executionDescription,
     ...(platformContract ? [platformContract] : []),
     `Stateless: each call is a fresh process, so cwd, variables, jobs, and functions do not persist. It starts in the data-kernel workspace and shares the handoff directory exposed as ${handoffVariable}; do not resolve handoff relative to cwd.`,
     exitCodeContract,
@@ -248,7 +242,19 @@ const buildShellExecuteDoc = (
   ].join('\n')
 }
 
+const buildShellExecuteToolSchema = (
+  runtime: NodeJS.Platform | ShellRuntimeBinding = process.platform
+): NotebookToolSchema => {
+  const binding = typeof runtime === 'string' ? defaultShellRuntimeBinding(runtime) : runtime
+
+  return {
+    command: z.string().describe(shellRuntimeAgentContract(binding).commandDescription),
+    timeoutMs: z.number().int().positive().optional()
+  }
+}
+
 const BASH_EXECUTE_DOC = buildShellExecuteDoc()
+const bashExecuteToolSchema = buildShellExecuteToolSchema()
 
 type RpcRequest = {
   method: string
@@ -1506,7 +1512,11 @@ const notebookRpcToolsForEnvironment = (
 ): readonly NotebookRpcToolDefinition[] => {
   const tools = NOTEBOOK_RPC_TOOLS.map((tool) =>
     tool.method === 'executeShell' && environment.shellRuntime
-      ? { ...tool, description: buildShellExecuteDoc(environment.shellRuntime) }
+      ? {
+          ...tool,
+          description: buildShellExecuteDoc(environment.shellRuntime),
+          inputSchema: buildShellExecuteToolSchema(environment.shellRuntime)
+        }
       : tool
   )
   return environment.memoryTools
@@ -1550,6 +1560,7 @@ export {
   REPL_EXECUTE_DOC,
   BASH_EXECUTE_DOC,
   buildShellExecuteDoc,
+  buildShellExecuteToolSchema,
   buildNotebookToolContent,
   NOTEBOOK_MCP_CONTROL_RESULT_LIMIT,
   NOTEBOOK_MCP_EXECUTION_RESULT_LIMIT,

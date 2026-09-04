@@ -34,7 +34,12 @@ import {
 } from '../session-plan/plan-mcp-server'
 import { HOST_MESSAGE_MCP_SERVER_NAME } from '../side-chat/host-message-mcp-server'
 import type { AgentMcpHttpHost } from './mcp-http-host'
-import { captureShellRuntimeBinding, defaultShellRuntimeBinding } from '../notebook/shell-runtime'
+import {
+  captureShellRuntimeBinding,
+  defaultShellRuntimeBinding,
+  shellRuntimeAgentContract,
+  type ShellRuntimeAgentContract
+} from '../notebook/shell-runtime'
 
 const log = createLogger('acp')
 
@@ -181,11 +186,16 @@ type BuildSessionCapabilitiesRequest = {
   onPlanConnection?: (connection: NotebookRpcConnection) => void
 }
 
-type BuiltSessionCapabilities = Readonly<{
+type SessionCapabilities = Readonly<{
   mcpServers: McpServer[]
   descriptor: EffectiveSessionCapabilityDescriptor
-  shellRuntime?: ShellRuntimeBinding
 }>
+
+type BuiltSessionCapabilities = SessionCapabilities &
+  Readonly<{
+    shellRuntime?: ShellRuntimeBinding
+    shellRuntimeAgentContract?: ShellRuntimeAgentContract
+  }>
 
 export type ProvisionSessionCapabilitiesRequest = Omit<
   BuildSessionCapabilitiesRequest,
@@ -208,7 +218,8 @@ export type SessionCapabilityOwnershipFacts = Readonly<{
 export type SessionCapabilityProvision = Readonly<{
   mcpServers: McpServer[]
   descriptor: EffectiveSessionCapabilityDescriptor
-  includeFrameworkMcpServers: (servers: readonly McpServer[]) => BuiltSessionCapabilities
+  shellRuntimeAgentContract?: ShellRuntimeAgentContract
+  includeFrameworkMcpServers: (servers: readonly McpServer[]) => SessionCapabilities
   commit: (appSessionId: string) => void
   release: (ownershipFacts: SessionCapabilityOwnershipFacts) => void
 }>
@@ -370,10 +381,16 @@ export class AcpSessionCapabilityOwner {
     let terminal = false
 
     return Object.freeze({
-      ...built,
-      includeFrameworkMcpServers: (servers: readonly McpServer[]): BuiltSessionCapabilities => {
+      mcpServers: built.mcpServers,
+      descriptor: built.descriptor,
+      ...(built.shellRuntimeAgentContract
+        ? { shellRuntimeAgentContract: built.shellRuntimeAgentContract }
+        : {}),
+      includeFrameworkMcpServers: (servers: readonly McpServer[]): SessionCapabilities => {
         if (terminal) throw new Error('ACP session capability provision is already finalized.')
-        if (servers.length === 0) return built
+        if (servers.length === 0) {
+          return Object.freeze({ mcpServers: built.mcpServers, descriptor: built.descriptor })
+        }
 
         const addedNames = servers.map((server) => server.name)
         if (addedNames.some((name) => typeof name !== 'string' || name.length === 0)) {
@@ -404,6 +421,9 @@ export class AcpSessionCapabilityOwner {
         built = Object.freeze({
           mcpServers: [...built.mcpServers, ...servers],
           ...(built.shellRuntime ? { shellRuntime: built.shellRuntime } : {}),
+          ...(built.shellRuntimeAgentContract
+            ? { shellRuntimeAgentContract: built.shellRuntimeAgentContract }
+            : {}),
           descriptor: freezeDescriptor({
             ...built.descriptor,
             transport:
@@ -414,7 +434,7 @@ export class AcpSessionCapabilityOwner {
             controlRpcMethods: [...built.descriptor.controlRpcMethods]
           })
         })
-        return built
+        return Object.freeze({ mcpServers: built.mcpServers, descriptor: built.descriptor })
       },
       commit: (appSessionId: string): void => {
         if (terminal) return
@@ -720,7 +740,12 @@ export class AcpSessionCapabilityOwner {
     return Object.freeze({
       mcpServers: modelFacingServers,
       descriptor,
-      ...(shellRuntime ? { shellRuntime } : {})
+      ...(shellRuntime
+        ? {
+            shellRuntime,
+            shellRuntimeAgentContract: shellRuntimeAgentContract(shellRuntime)
+          }
+        : {})
     })
   }
 
