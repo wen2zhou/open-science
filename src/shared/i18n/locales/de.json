@@ -4178,6 +4178,7 @@
     "Auto (recommended)": "Automatisch (empfohlen)",
     "HTTPS": "HTTPS",
     "Local Shell · WSL2 Bash Preview": "Lokale Befehlszeile · WSL2-Bash-Vorschau",
+    "Local Shell · WSL2 Bash Development Preview": "Lokale Befehlszeile · WSL2-Bash-Entwicklungsvorschau",
     "Choose a non-root Linux user with an existing home directory, then check again.": "Wählen Sie einen Linux-Benutzer ohne Root-Rechte mit vorhandenem Home-Verzeichnis aus und prüfen Sie erneut.",
     "Linux home directory": "Linux-Home-Verzeichnis",
     "Install {{distro}}": "{{distro}} installieren",

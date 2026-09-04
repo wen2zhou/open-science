@@ -23,6 +23,7 @@ export type LocalShellRuntimePreference = 'powershell' | 'wsl2-bash'
 
 export type Wsl2BashPreviewStatus = Readonly<{
   available: boolean
+  development?: true
   reason:
     | 'available'
     | 'build-disabled'

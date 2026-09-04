@@ -16,13 +16,16 @@ import { RuntimesPanel } from './RuntimesPanel'
 vi.mock('./WslLocalShellSection', () => ({
   WslLocalShellSection: ({
     previewAvailable,
+    developmentPreview,
     previewUnavailableReason
   }: {
     previewAvailable: boolean
+    developmentPreview?: boolean
     previewUnavailableReason?: string
   }) => (
     <div
       data-preview-available={String(previewAvailable)}
+      data-preview-development={String(developmentPreview === true)}
       data-preview-reason={previewUnavailableReason}
       data-testid="wsl2-preview-section"
     />
@@ -221,6 +224,20 @@ describe('RuntimesPanel', () => {
 
     expect(container.querySelector('[data-testid="wsl2-preview-section"]')).not.toBeNull()
     expect(container.querySelector('[data-preview-available="true"]')).not.toBeNull()
+  })
+
+  it('labels the explicitly admitted unpackaged flow as Development Preview', async () => {
+    window.api.platform = 'win32'
+    window.api.settings.getWsl2BashPreviewStatus = vi.fn().mockResolvedValue({
+      available: true,
+      reason: 'available',
+      development: true
+    })
+
+    await render()
+
+    expect(container.querySelector('[data-testid="wsl2-preview-section"]')).not.toBeNull()
+    expect(container.querySelector('[data-preview-development="true"]')).not.toBeNull()
   })
 
   it('leaves the runtime UI unchanged when main rejects the Preview', async () => {

@@ -138,6 +138,7 @@ const RuntimesPanel = ({
   const [packagesRetryNonce, setPackagesRetryNonce] = useState(0)
   const [wsl2Preview, setWsl2Preview] = useState<{
     available: boolean
+    development: boolean
     needsPowerShellRecovery: boolean
     reason: Wsl2BashPreviewStatus['reason']
   }>()
@@ -148,12 +149,13 @@ const RuntimesPanel = ({
     void Promise.all([
       window.api.settings
         .getWsl2BashPreviewStatus()
-        .catch(() => ({ available: false as const, reason: 'not-initialized' as const })),
+        .catch((): Wsl2BashPreviewStatus => ({ available: false, reason: 'not-initialized' })),
       window.api.settings.getLocalShellRuntimePreference().catch(() => undefined)
     ]).then(([status, preference]) => {
       if (!cancelled) {
         setWsl2Preview({
           available: status.available,
+          development: status.development === true,
           needsPowerShellRecovery: !status.available && preference === 'wsl2-bash',
           reason: status.reason
         })
@@ -861,6 +863,7 @@ const RuntimesPanel = ({
       {wsl2Preview?.available || wsl2Preview?.needsPowerShellRecovery ? (
         <WslLocalShellSection
           previewAvailable={wsl2Preview.available}
+          developmentPreview={wsl2Preview.development}
           previewUnavailableReason={wsl2Preview.available ? undefined : wsl2Preview.reason}
         />
       ) : null}

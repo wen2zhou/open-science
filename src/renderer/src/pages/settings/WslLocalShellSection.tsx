@@ -95,9 +95,11 @@ const recoveryCopy = (
 
 export const WslLocalShellSection = ({
   previewAvailable = true,
+  developmentPreview = false,
   previewUnavailableReason
 }: {
   previewAvailable?: boolean
+  developmentPreview?: boolean
   previewUnavailableReason?: Wsl2BashPreviewStatus['reason']
 }): React.JSX.Element => {
   const { t } = useTranslation()
@@ -378,7 +380,11 @@ export const WslLocalShellSection = ({
   return (
     <SettingsSection
       separated
-      title={t('Local Shell · WSL2 Bash Preview')}
+      title={
+        developmentPreview
+          ? t('Local Shell · WSL2 Bash Development Preview')
+          : t('Local Shell · WSL2 Bash Preview')
+      }
       description={t(
         'Choose the exact WSL2 distribution and non-root Linux user Open Science should verify. Selection alone never enables WSL2 Bash.'
       )}

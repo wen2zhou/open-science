@@ -4463,6 +4463,7 @@
     "Auto (recommended)": "Автоматически (рекомендуется)",
     "HTTPS": "HTTPS",
     "Local Shell · WSL2 Bash Preview": "Локальная командная строка · Предварительная версия WSL2 Bash",
+    "Local Shell · WSL2 Bash Development Preview": "Локальная командная строка · Предварительная версия WSL2 Bash для разработки",
     "Choose a non-root Linux user with an existing home directory, then check again.": "Выберите пользователя Linux без прав root с существующим домашним каталогом, затем повторите проверку.",
     "Linux home directory": "Домашний каталог Linux",
     "Install {{distro}}": "Установить {{distro}}",

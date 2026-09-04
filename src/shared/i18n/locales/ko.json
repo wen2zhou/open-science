@@ -4021,6 +4021,7 @@
     "Auto (recommended)": "자동(권장)",
     "HTTPS": "HTTPS",
     "Local Shell · WSL2 Bash Preview": "로컬 셸 · WSL2 Bash 미리보기",
+    "Local Shell · WSL2 Bash Development Preview": "로컬 셸 · WSL2 Bash 개발 미리보기",
     "Choose a non-root Linux user with an existing home directory, then check again.": "기존 홈 디렉터리가 있는 루트가 아닌 Linux 사용자를 선택한 후 다시 확인하세요.",
     "Linux home directory": "Linux 홈 디렉터리",
     "Install {{distro}}": "{{distro}} 설치",

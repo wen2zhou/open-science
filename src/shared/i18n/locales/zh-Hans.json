@@ -4023,6 +4023,7 @@
     "Auto (recommended)": "自动（推荐）",
     "HTTPS": "HTTPS",
     "Local Shell · WSL2 Bash Preview": "本地命令行 · WSL2 Bash 预览版",
+    "Local Shell · WSL2 Bash Development Preview": "本地命令行 · WSL2 Bash 开发预览版",
     "Choose a non-root Linux user with an existing home directory, then check again.": "选择具有现有主目录的非 root Linux 用户，然后重新检查。",
     "Linux home directory": "Linux 主目录",
     "Install {{distro}}": "安装 {{distro}}",

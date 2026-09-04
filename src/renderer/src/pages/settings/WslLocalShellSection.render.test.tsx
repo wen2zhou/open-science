@@ -124,6 +124,13 @@ afterEach(() => {
 })
 
 describe('WslLocalShellSection', () => {
+  it('clearly labels the unpackaged development admission', async () => {
+    await act(async () => root.render(<WslLocalShellSection developmentPreview />))
+    await flush()
+
+    expect(container.textContent).toContain('Local Shell · WSL2 Bash Development Preview')
+  })
+
   it('offers only explicit PowerShell recovery when Preview admission is unavailable', async () => {
     await act(async () => root.render(<WslLocalShellSection previewAvailable={false} />))
     await flush()
