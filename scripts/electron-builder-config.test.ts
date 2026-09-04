@@ -44,6 +44,14 @@ describe('electron-builder native image processing', () => {
 })
 
 describe('WSL2 Bash Preview certification', () => {
+  it('keeps the certification contract tied to the packaged application version', () => {
+    const packageJson = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+      version: string
+    }
+
+    expect(WSL2_BASH_PREVIEW_MANIFEST.appVersion).toBe(packageJson.version)
+  })
+
   it('keeps the packaged manifest identical to the main-process certification contract', () => {
     const packagedManifest = JSON.parse(
       readFileSync(

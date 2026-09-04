@@ -1,6 +1,6 @@
 export const WSL2_BASH_PREVIEW_MANIFEST = Object.freeze({
   schemaVersion: 1,
-  appVersion: '0.24.0',
+  appVersion: '0.25.1',
   assets: Object.freeze([
     'wsl2-execution-wrapper-v1',
     'wsl2-exact-cleanup-v1',

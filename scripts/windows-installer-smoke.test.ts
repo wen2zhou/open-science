@@ -6,6 +6,8 @@ import { join } from 'node:path'
 
 import { describe, expect, it, vi } from 'vitest'
 
+import { WSL2_BASH_PREVIEW_MANIFEST } from '../src/shared/wsl2-preview-manifest'
+
 import {
   assertPackagedResources,
   assertDatabaseDowngradeBlocked,
@@ -741,33 +743,25 @@ Open Science Web: http://127.0.0.1:52378/?token=iUFHGSACwBz2k1kSJfPixHbclDywVg0C
       mkdir(join(resources, 'notebook-network-sandbox', 'wsl2'), { recursive: true }).then(() =>
         writeFile(
           join(resources, 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
-          JSON.stringify({
-            schemaVersion: 1,
-            appVersion: '0.24.0',
-            assets: ['wsl2-execution-wrapper-v1', 'wsl2-exact-cleanup-v1', 'wsl2-network-bridge-v1']
-          })
+          JSON.stringify(WSL2_BASH_PREVIEW_MANIFEST)
         )
       ),
       writeFile(join(prismaClient, 'query_engine-windows.dll.node'), '')
     ])
 
-    await expect(assertPackagedResources(installDirectory, '0.24.0')).resolves.toBeUndefined()
+    await expect(
+      assertPackagedResources(installDirectory, WSL2_BASH_PREVIEW_MANIFEST.appVersion)
+    ).resolves.toBeUndefined()
     await writeFile(
       join(resources, 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
       JSON.stringify({
-        schemaVersion: 1,
-        appVersion: '0.24.0',
-        assets: [
-          'wsl2-execution-wrapper-v1',
-          'wsl2-exact-cleanup-v1',
-          'wsl2-network-bridge-v1',
-          'uncertified-extra'
-        ]
+        ...WSL2_BASH_PREVIEW_MANIFEST,
+        assets: [...WSL2_BASH_PREVIEW_MANIFEST.assets, 'uncertified-extra']
       })
     )
-    await expect(assertPackagedResources(installDirectory, '0.24.0')).rejects.toThrow(
-      /missing or version-mismatched/
-    )
+    await expect(
+      assertPackagedResources(installDirectory, WSL2_BASH_PREVIEW_MANIFEST.appVersion)
+    ).rejects.toThrow(/missing or version-mismatched/)
     await rm(join(resources, 'notebook-network-sandbox'), { recursive: true, force: true })
     await expect(
       assertPackagedResources(installDirectory, '0.23.0', { certifyWslPreview: false })
@@ -775,11 +769,7 @@ Open Science Web: http://127.0.0.1:52378/?token=iUFHGSACwBz2k1kSJfPixHbclDywVg0C
     await mkdir(join(resources, 'notebook-network-sandbox', 'wsl2'), { recursive: true })
     await writeFile(
       join(resources, 'notebook-network-sandbox', 'wsl2', 'manifest.json'),
-      JSON.stringify({
-        schemaVersion: 1,
-        appVersion: '0.24.0',
-        assets: ['wsl2-execution-wrapper-v1', 'wsl2-exact-cleanup-v1', 'wsl2-network-bridge-v1']
-      })
+      JSON.stringify(WSL2_BASH_PREVIEW_MANIFEST)
     )
     await writeFile(join(prismaClient, 'libquery_engine-debian-openssl-3.0.x.so.node'), '')
     await expect(assertPackagedResources(installDirectory)).rejects.toThrow(
