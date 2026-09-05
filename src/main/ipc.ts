@@ -714,7 +714,7 @@ const createApplicationModules = async (
     platform: process.platform,
     arch: process.arch,
     previewAvailable: wsl2BashPreviewStatus().available,
-    storageRoot: resolveStorageRoot(),
+    storageRoot: resolveConfigRoot(),
     environment: process.env,
     processSandbox: notebookNetworkSandbox
   })
