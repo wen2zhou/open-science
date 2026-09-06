@@ -65,6 +65,34 @@ describe('module test impact commands', () => {
     )
   })
 
+  it('routes WSL2 sandbox and readiness changes through their release evidence', () => {
+    const expectedEvidence = [
+      'packages/notebook-network-sandbox/src/wsl2-isolation.test.ts',
+      'scripts/wsl2-network-lifecycle-matrix.test.ts',
+      'src/main/notebook/wsl2-shell.integration.test.ts',
+      'src/main/wsl/wsl-setup-owner.test.ts',
+      'src/renderer/src/pages/settings/WslLocalShellSection.render.test.tsx'
+    ]
+
+    expect(createModuleTestPlan('notebook_network_sandbox').testFiles).toEqual(
+      expect.arrayContaining(expectedEvidence)
+    )
+
+    for (const path of [
+      'packages/notebook-network-sandbox/runtime/src/platform/wsl2-isolation.ts',
+      'src/main/wsl/wsl-setup-owner.ts'
+    ]) {
+      const affected = createAffectedTestPlan([{ path, status: 'modified' }], {
+        status: 'current',
+        testFiles: []
+      })
+
+      expect(affected.mode).toBe('selective')
+      expect(affected.modules).toContain('notebook_network_sandbox')
+      expect(affected.testFiles).toEqual(expect.arrayContaining(expectedEvidence))
+    }
+  })
+
   it.each([
     'src/main/compute/compute-job-lifecycle.ts',
     'src/main/compute/job-deletion-owner.ts',

@@ -17,9 +17,28 @@
         "packages/notebook-network-sandbox/runtime/src/platform/macos-isolation.ts",
         "packages/notebook-network-sandbox/runtime/src/platform/proxy-environment.ts",
         "packages/notebook-network-sandbox/runtime/src/platform/windows-appcontainer.ts",
-        "packages/notebook-network-sandbox/vendor/windows-src/src/main.rs"
+        "packages/notebook-network-sandbox/runtime/src/platform/wsl-filesystem-spike.ts",
+        "packages/notebook-network-sandbox/runtime/src/platform/wsl2-isolation.ts",
+        "packages/notebook-network-sandbox/vendor/windows-src/src/main.rs",
+        "packages/notebook-network-sandbox/vendor/wsl2/manifest.json",
+        "scripts/wsl2-matrix-durable-owner.ts",
+        "scripts/wsl2-matrix-runtime-seams.ts",
+        "scripts/wsl2-network-lifecycle-matrix.ts",
+        "scripts/wsl2-network-lifecycle-spike.mjs",
+        "src/main/wsl/windows-volume-probe.ts",
+        "src/main/wsl/wsl-setup-owner.ts",
+        "src/main/wsl/wsl2-packaged-restart-certification.ts",
+        "src/main/wsl/wsl2-preview-gate.ts",
+        "src/renderer/src/lib/wsl-support-handoff.ts",
+        "src/renderer/src/pages/settings/WslLocalShellSection.tsx",
+        "src/shared/wsl-setup.ts",
+        "src/shared/wsl2-preview-manifest.ts"
       ],
-      "interfacePaths": ["packages/notebook-network-sandbox/src/index.ts"],
+      "interfacePaths": [
+        "packages/notebook-network-sandbox/src/index.ts",
+        "src/shared/wsl-setup.ts",
+        "src/shared/wsl2-preview-manifest.ts"
+      ],
       "consumerModules": [],
       "testFiles": {
         "owner": [
@@ -34,10 +53,30 @@
           "packages/notebook-network-sandbox/src/proxy-env.test.ts",
           "packages/notebook-network-sandbox/src/resources.test.ts",
           "packages/notebook-network-sandbox/src/runtime-config.test.ts",
-          "packages/notebook-network-sandbox/src/windows-appcontainer.test.ts"
+          "packages/notebook-network-sandbox/src/windows-appcontainer.test.ts",
+          "packages/notebook-network-sandbox/src/wsl-filesystem-spike.integration.test.ts",
+          "packages/notebook-network-sandbox/src/wsl-filesystem-spike.test.ts",
+          "packages/notebook-network-sandbox/src/wsl2-isolation.integration.test.ts",
+          "packages/notebook-network-sandbox/src/wsl2-isolation.test.ts",
+          "scripts/wsl2-matrix-durable-owner.test.ts",
+          "scripts/wsl2-matrix-runtime-seams.test.ts",
+          "scripts/wsl2-network-lifecycle-matrix.test.ts",
+          "scripts/wsl2-network-lifecycle-spike.test.mjs",
+          "src/main/wsl/windows-volume-probe.test.ts",
+          "src/main/wsl/wsl-setup-owner.test.ts",
+          "src/main/wsl/wsl2-packaged-restart-certification.test.ts",
+          "src/main/wsl/wsl2-preview-gate.test.ts"
         ],
-        "contract": [],
-        "consumer": []
+        "contract": [
+          "scripts/electron-builder-config.test.ts",
+          "scripts/windows-installer-smoke.test.ts",
+          "src/main/notebook/wsl2-shell.integration.test.ts"
+        ],
+        "consumer": [
+          "src/main/settings/application-commands.test.ts",
+          "src/main/settings/ipc.test.ts",
+          "src/renderer/src/pages/settings/WslLocalShellSection.render.test.tsx"
+        ]
       },
       "capabilityOverlays": [],
       "fallbackCapability": "notebook_network_sandbox"
