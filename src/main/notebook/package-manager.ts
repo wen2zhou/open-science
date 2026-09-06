@@ -1786,7 +1786,11 @@ export async function installPackages(
   ])
   if (preflight.code !== 0) {
     const classification = classifyCondaFailure(preflight)
-    const condaAttempt = installerAttempt(0, 'conda', condaPkgs, preflight, classification)
+    // A dry-run cannot mutate the prefix. Keep its diagnostic classification for fallback admission.
+    const condaAttempt = installerAttempt(0, 'conda', condaPkgs, preflight, {
+      ...classification,
+      mutationRisk: 'none'
+    })
     if (condaFallbackIsAuthorized(classification)) {
       return cranFallback(preflight, condaAttempt)
     }
@@ -2106,7 +2110,11 @@ async function uninstallPackages(
   ])
   if (preflight.code !== 0) {
     const classification = classifyCondaFailure(preflight)
-    const condaAttempt = installerAttempt(0, 'conda', condaPkgs, preflight, classification)
+    // A dry-run cannot mutate the prefix. Keep its diagnostic classification for fallback admission.
+    const condaAttempt = installerAttempt(0, 'conda', condaPkgs, preflight, {
+      ...classification,
+      mutationRisk: 'none'
+    })
     if (classification.reason === 'package-not-found' && classification.mutationRisk === 'none') {
       return cranRemoveFallback(preflight, condaAttempt)
     }

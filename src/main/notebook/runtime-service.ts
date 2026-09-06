@@ -869,7 +869,7 @@ class NotebookRuntimeService {
       const cell = session.beginCellWrite(
         {
           cellId,
-          language: request.language ?? 'python',
+          language: request.language,
           writeId,
           source,
           startedAt: Date.now()

@@ -76,6 +76,7 @@ const samePdfContextSources = (
   left.every((source, index) => pdfContextSourceKey(source) === pdfContextSourceKey(right[index]))
 
 export type ComposerSendSnapshot = {
+  queuedEdit?: ComposerDraft['queuedEdit']
   draftKey: string
   version: number
   doc: ComposerDoc
@@ -120,6 +121,7 @@ type WorkspaceComposerControllerInput = {
 
 type WorkspaceComposerController = {
   view: {
+    queuedEdit?: ComposerDraft['queuedEdit']
     doc: ComposerDoc
     annotations: Annotation[]
     attachments: UploadedAttachment[]
@@ -138,6 +140,7 @@ type WorkspaceComposerController = {
     }
   }
   actions: {
+    cancelQueuedEdit?: () => void
     changeDoc: (doc: ComposerDoc, caret?: ComposerCaretPosition) => void
     addAnnotation: (annotation: Annotation) => AnnotationValidationError | undefined
     updateAnnotationNote: (id: string, note: string) => AnnotationValidationError | undefined
@@ -196,6 +199,12 @@ const useWorkspaceComposerController = ({
   uploads,
   onSessionSizeLimit
 }: WorkspaceComposerControllerInput): WorkspaceComposerController => {
+  const [queuedEdit, setQueuedEdit] = useState<ComposerDraft['queuedEdit']>()
+  const queuedEditRef = useRef<ComposerDraft['queuedEdit']>(undefined)
+  const setActiveQueuedEdit = useCallback((intent: ComposerDraft['queuedEdit']): void => {
+    queuedEditRef.current = intent
+    setQueuedEdit(intent)
+  }, [])
   const [doc, setDoc] = useState<ComposerDoc>(emptyDoc)
   const [annotations, setAnnotations] = useState<Annotation[]>([])
   const [historyBrowsingKey, setHistoryBrowsingKey] = useState<string>()
@@ -749,6 +758,7 @@ const useWorkspaceComposerController = ({
         annotations,
         attachments,
         attachmentTransfers: transfers,
+        queuedEdit: queuedEditRef.current,
         automaticReadingEnabled: automaticReadingEnabledRef.current
       }
     }
@@ -768,6 +778,7 @@ const useWorkspaceComposerController = ({
     setActiveAnnotations(nextDraft.annotations)
     activateDraftAttachments(nextDraft)
     setActiveAutomaticReadingEnabled(nextDraft.automaticReadingEnabled)
+    setActiveQueuedEdit(nextDraft.queuedEdit)
     activeDraftKeyRef.current = currentDraftKey
   }, [
     activeProjectId,
@@ -779,6 +790,7 @@ const useWorkspaceComposerController = ({
     pendingCustomizePrefill,
     pendingWslSupportPrefill,
     setActiveAutomaticReadingEnabled,
+    setActiveQueuedEdit,
     activateDraftAttachments,
     setActiveAnnotations,
     setActiveDoc,
@@ -787,7 +799,7 @@ const useWorkspaceComposerController = ({
 
   const navigateHistory = useCallback(
     (direction: 'previous' | 'next'): boolean => {
-      if (attachments.length > 0 || transfers.length > 0) return false
+      if (queuedEditRef.current || attachments.length > 0 || transfers.length > 0) return false
 
       let navigation = historyRef.current[currentDraftKey]
       if (!navigation) {
@@ -984,6 +996,7 @@ const useWorkspaceComposerController = ({
         doc: docRef.current,
         annotations: [...annotationsRef.current],
         attachments,
+        queuedEdit: queuedEditRef.current,
         automaticReadingEnabled: automaticReadingEnabledRef.current,
         ...(includeReadingContext && durableReadingContext
           ? {
@@ -1026,6 +1039,7 @@ const useWorkspaceComposerController = ({
       delete draftsRef.current[draftKey]
       if (activeDraftKeyRef.current !== draftKey) return true
       setActiveDoc(emptyDoc)
+      setActiveQueuedEdit(undefined)
       setActiveAnnotations([])
       clearActiveAttachments()
       setActiveAutomaticReadingEnabled(true)
@@ -1040,6 +1054,7 @@ const useWorkspaceComposerController = ({
       setActiveAnnotations,
       setActiveDoc,
       setActiveAutomaticReadingEnabled,
+      setActiveQueuedEdit,
       setError
     ]
   )
@@ -1050,20 +1065,28 @@ const useWorkspaceComposerController = ({
         return false
       }
       if (
-        (versionsRef.current[snapshot.draftKey] ?? 0) !== snapshot.version &&
-        !(
-          preserveOnConflict &&
-          activeDraftKeyRef.current === snapshot.draftKey &&
-          docIsEmpty(doc) &&
-          annotations.length === 0 &&
-          attachments.length === 0 &&
-          transfers.length === 0
-        )
+        preserveOnConflict &&
+        (activeDraftKeyRef.current !== snapshot.draftKey ||
+          !docIsEmpty(docRef.current) ||
+          annotationsRef.current.length > 0 ||
+          attachments.length > 0 ||
+          transfers.length > 0 ||
+          queuedEditRef.current)
+      )
+        return false
+      if (
+        !preserveOnConflict &&
+        (versionsRef.current[snapshot.draftKey] ?? 0) !== snapshot.version
       ) {
-        if (!preserveOnConflict) deleteAttachmentFiles(snapshot.attachments)
+        deleteAttachmentFiles(snapshot.attachments)
         return false
       }
+      if (preserveOnConflict) markChanged(snapshot.draftKey)
+      clearUndo(snapshot.draftKey)
+      clearPastedTextUndo(snapshot.draftKey)
+      clearHistory(snapshot.draftKey)
       if (activeDraftKeyRef.current === snapshot.draftKey) {
+        setActiveQueuedEdit(snapshot.queuedEdit)
         setActiveDoc(snapshot.doc)
         setActiveAnnotations([...snapshot.annotations])
         setActiveAttachments(snapshot.attachments)
@@ -1071,6 +1094,7 @@ const useWorkspaceComposerController = ({
         return true
       }
       draftsRef.current[snapshot.draftKey] = {
+        queuedEdit: snapshot.queuedEdit,
         doc: snapshot.doc,
         annotations: [...snapshot.annotations],
         attachments: snapshot.attachments,
@@ -1081,9 +1105,12 @@ const useWorkspaceComposerController = ({
     },
     [
       attachments.length,
-      annotations.length,
+      clearUndo,
+      clearPastedTextUndo,
+      clearHistory,
+      markChanged,
+      setActiveQueuedEdit,
       deleteAttachmentFiles,
-      doc,
       setActiveAttachments,
       setActiveAnnotations,
       setActiveDoc,
@@ -1122,6 +1149,7 @@ const useWorkspaceComposerController = ({
 
   return {
     view: {
+      queuedEdit,
       doc,
       annotations,
       attachments,
@@ -1144,6 +1172,12 @@ const useWorkspaceComposerController = ({
       }
     },
     actions: {
+      cancelQueuedEdit: (): void => {
+        clearUndo()
+        clearHistory(activeDraftKeyRef.current)
+        markChanged()
+        setActiveQueuedEdit(undefined)
+      },
       changeDoc,
       addAnnotation,
       updateAnnotationNote: (id, note): AnnotationValidationError | undefined => {
@@ -1203,6 +1237,7 @@ const useWorkspaceComposerController = ({
         if (activeDraftKeyRef.current !== draftKey) return
         clearHistory(draftKey)
         setActiveDoc(emptyDoc)
+        setActiveQueuedEdit(undefined)
         setActiveAnnotations([])
         clearActiveAttachments()
         setError(null)
