@@ -19,6 +19,8 @@ files:
   - '!.scratch{,/**/*}'
   - '!.worktree{,/**/*}'
   - '!.worktrees{,/**/*}'
+  - '!.open-science-test-runtime{,/**/*}'
+  - '!{test-results,playwright-report,coverage}{,/**/*}'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'

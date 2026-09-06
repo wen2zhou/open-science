@@ -24,7 +24,17 @@ describe('electron-builder native image processing', () => {
     ]).createFilter()
     const fileStat = statSync(join(root, 'package.json'))
 
-    for (const directory of ['.scratch', '.worktree', '.worktrees', '.claude', '.codex']) {
+    for (const directory of [
+      '.scratch',
+      '.worktree',
+      '.worktrees',
+      '.claude',
+      '.codex',
+      '.open-science-test-runtime',
+      'test-results',
+      'playwright-report',
+      'coverage'
+    ]) {
       expect(matches(join(root, directory, 'private-diagnostics.json'), fileStat)).toBe(false)
     }
     expect(matches(join(root, 'out', 'main', 'index.js'), fileStat)).toBe(true)
