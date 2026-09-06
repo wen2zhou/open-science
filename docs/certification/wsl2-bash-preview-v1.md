@@ -2,40 +2,40 @@
 
 Status: certified for explicit Preview opt-in on Windows x64
 
-Certification date: 2026-09-03
+Certification date: 2026-09-06
 
-Application version: 0.24.0
+Application version: 0.25.1
 
 ## Certified reference configuration
 
 This record describes one privacy-safe reference configuration. It intentionally omits account
 names, full host paths, credentials, user commands, and command output.
 
-| Component                | Certified value                                   |
-| ------------------------ | ------------------------------------------------- |
-| Application              | Open Science 0.24.0, Windows x64 package          |
-| Windows-reported product | Windows 10 Pro, version 2009, build 26200, 64-bit |
-| WSL                      | 2.1.5.0                                           |
-| WSL kernel package       | 5.15.146.1-2                                      |
-| Guest kernel             | 5.15.146.1-microsoft-standard-WSL2                |
-| WSLg                     | 1.0.60                                            |
-| MSRDC                    | 1.2.5105                                          |
-| Direct3D                 | 1.611.1-81528511                                  |
-| DXCore                   | 10.0.25131.1002-220531-1700.rs-onecore-base2-hyp  |
-| Distribution             | Ubuntu-22.04, Ubuntu 22.04.5 LTS, WSL version 2   |
-| Guest profile            | Dedicated non-root profile, UID 1000              |
-| Bash                     | GNU bash 5.1.16(1)-release, x86_64                |
-| bubblewrap               | 0.6.1                                             |
-| WSL networking           | Mirrored (`networkingMode=mirrored`)              |
+| Component                | Certified value                                     |
+| ------------------------ | --------------------------------------------------- |
+| Application              | Open Science 0.25.1, Windows x64 package            |
+| Windows-reported product | Windows 11 Pro (CIM), 25H2, build 26200.9168, AMD64 |
+| WSL                      | 2.1.5.0                                             |
+| WSL kernel package       | 5.15.146.1-2                                        |
+| Guest kernel             | 5.15.146.1-microsoft-standard-WSL2                  |
+| WSLg                     | 1.0.60                                              |
+| MSRDC                    | 1.2.5105                                            |
+| Direct3D                 | 1.611.1-81528511                                    |
+| DXCore                   | 10.0.25131.1002-220531-1700.rs-onecore-base2-hyp    |
+| Distribution             | Ubuntu-22.04, Ubuntu 22.04.5 LTS, WSL version 2     |
+| Guest profile            | Dedicated non-root profile, UID 1000                |
+| Bash                     | GNU bash 5.1.16(1)-release, x86_64                  |
+| bubblewrap               | 0.6.1                                               |
+| WSL networking           | Mirrored (`networkingMode=mirrored`)                |
 
 ## Package evidence
 
 | Field                             | Value                                                                          |
 | --------------------------------- | ------------------------------------------------------------------------------ |
-| Installer                         | `aipoch-open-science-0.24.0-win-x64-setup.exe`                                 |
-| Size                              | 194,282,911 bytes                                                              |
-| SHA-256                           | `24405FC599470D9F5D2907F39C8137DCEC2244C2579A02D27342E3A15A5ED950`             |
-| Packaged Preview manifest         | Schema 1; app version 0.24.0                                                   |
+| Installer                         | `aipoch-open-science-0.25.1-win-x64-setup.exe`                                 |
+| Size                              | 193,917,606 bytes                                                              |
+| SHA-256                           | `695FEF110B9EEC3F1E0FB78CCA283F5EE8A9FAA947B88782CDC8096144B4180C`             |
+| Packaged Preview manifest         | Schema 1; app version 0.25.1                                                   |
 | Required asset identities         | `wsl2-execution-wrapper-v1`, `wsl2-exact-cleanup-v1`, `wsl2-network-bridge-v1` |
 | Packaged micromamba               | 2.8.1                                                                          |
 | Packaged compatibility micromamba | 1.5.12                                                                         |
@@ -50,20 +50,37 @@ spawning a user command. A separate malformed receipt then made packaged startup
 sandbox preparation and remained intact; removing only that test-owned malformed evidence restored
 a healthy restart.
 
+The final installer smoke completed in 44.44 seconds from application-source checkpoint `17afa494`
+using harness checkpoint `18be94cb`. Package inspection found exactly one Windows Prisma engine,
+all three manifest assets, and no private worktree, scratch, test runtime, report, or legacy output
+entries. The current review and broad-suite limitations are recorded in
+`wsl2-release-readiness-2026-09-06.md`.
+
+The same final package passed the Settings UI journey. All eight readiness rows succeeded against
+the real reference profile. Explicit WSL2 activation survived an application restart; switching to
+PowerShell also survived a restart while preserving the saved WSL profile. The renderer reported no
+errors, and no application processes remained after the journey.
+
 The smoke used its explicit retention mode because AppContainer teardown requires interactive UAC
-approval. Its test-owned installation files and registration were removed after evidence
-collection; administrator-only AppContainer cleanup remains a host limitation and is not part of
-the WSL2 Preview verdict.
+approval. Its test-owned installation, uninstaller, and two matching registrations remain retained
+with no related processes running. Complete teardown must use the retained product uninstaller with
+administrator approval so the owned AppContainer resources are also removed; deleting only files
+or registration would strand them. Administrator-only cleanup remains a host limitation and is not
+part of the WSL2 Preview verdict.
 
 ## Gate A evidence
 
-The real-host WSL suite passed 11 of 11 integration tests on the reference configuration. It covered
+The real-host WSL suite passed 12 of 12 integration tests on the reference configuration. It covered
 bounded execution and non-zero exits; allowed and denied filesystem access; mirrored-network allow
 and deny paths; Windows/WSL environment translation and cleanup; cancellation; timeout; descendant
 termination; concurrent commands; exact v1 command-UUID temporary roots and receipts; successful
 receipt reconciliation; and malformed-receipt fail-closed behavior.
 
-Focused negative tests also passed for missing WSL or bubblewrap dependencies, WSL1, root profiles,
+The added real-adapter regression verifies that a read-only input nested under a writable parent
+stays read-only and that a narrower writable grant cannot reopen a denied ancestor.
+
+Focused negative tests also passed for missing WSL, bubblewrap, or absolute `/usr/bin/python3`
+dependencies, WSL1, root profiles,
 unsupported or non-local workspace paths, non-mirrored networking, sandbox startup failure, missing
 packaged assets, asset/app-version mismatch, non-Windows platforms, non-x64 architectures, and the
 build-level rollback switch. Every negative case keeps PowerShell selected or returns an explicit
