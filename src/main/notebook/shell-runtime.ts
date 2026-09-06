@@ -58,8 +58,7 @@ export const shellRuntimeAgentContract = (
     case 'powershell':
       return Object.freeze({
         commandDescription: 'Windows PowerShell 5.1 command; do not use POSIX shell syntax.',
-        executionDescription:
-          'Run one Windows PowerShell command in the shared session workspace. This is not Bash: use PowerShell syntax and do not assume a POSIX shell exists.',
+        executionDescription: 'Run PowerShell in the shared session workspace.',
         sessionInstruction:
           'Notebook `bash_execute` is bound to Windows PowerShell 5.1 for this Session. Generate PowerShell commands, not POSIX shell syntax.'
       })
