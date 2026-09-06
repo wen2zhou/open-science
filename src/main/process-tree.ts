@@ -1,5 +1,6 @@
 import { spawn } from 'node:child_process'
 import type { ChildProcess } from 'node:child_process'
+import { readFileSync } from 'node:fs'
 import { readFile, readdir } from 'node:fs/promises'
 
 // Optional sink for kill-path diagnostics; callers with a logger pass one, tests and the notebook path
@@ -206,6 +207,23 @@ const parseLinuxProcStat = (stat: string): PosixProcessIdentity | undefined => {
   return { pid, ppid, pgid, sid, birthToken: `linux-proc-starttime:${starttime}` }
 }
 
+const captureSpawnedLinuxLeader = (leaderPid: number): PosixProcessIdentity | null => {
+  try {
+    const identity = parseLinuxProcStat(readFileSync(`/proc/${leaderPid}/stat`, 'utf8'))
+    if (
+      identity?.pid !== leaderPid ||
+      identity.ppid !== process.pid ||
+      identity.pgid !== leaderPid ||
+      identity.sid !== leaderPid
+    ) {
+      return null
+    }
+    return identity
+  } catch {
+    return null
+  }
+}
+
 // Linux exposes a kernel-maintained process birth token in /proc/<pid>/stat field 22. Unlike ps
 // lstart, starttime is measured in clock ticks since boot, so two process epochs that reuse one pid
 // within the same wall-clock second remain distinguishable.
@@ -229,8 +247,10 @@ const collectLinuxProcessTable = async (): Promise<PosixProcessTable> => {
           else complete = false
         } catch (error) {
           // A process disappearing between readdir and readFile is normal churn and cannot survive
-          // teardown. Any other read failure makes the ownership snapshot incomplete.
-          if ((error as NodeJS.ErrnoException).code !== 'ENOENT') complete = false
+          // teardown. Linux procfs reports that race as either ENOENT or ESRCH. Any other read
+          // failure makes the ownership snapshot incomplete.
+          const code = (error as NodeJS.ErrnoException).code
+          if (code !== 'ENOENT' && code !== 'ESRCH') complete = false
         }
       })
   )
@@ -308,6 +328,21 @@ const samePosixIdentity = (
   actual.birthToken !== undefined &&
   actual.pid === expected.pid &&
   actual.birthToken === expected.birthToken
+
+const ownsRecordedLeaderGroup = (
+  tracker: PosixProcessTracker,
+  table: PosixProcessTable
+): boolean => {
+  const leader = tracker.leaderIdentity
+  if (!leader || !table.complete) return false
+  const currentLeader = table.processes.get(tracker.leaderPid)
+  if (currentLeader) return samePosixIdentity(leader, currentLeader)
+  // A process cannot join another POSIX session. Once the exact spawned leader created this session,
+  // any surviving member with its SID and PGID keeps that owned group alive and prevents ID reuse.
+  return [...table.processes.values()].some(
+    ({ pgid, sid }) => pgid === tracker.leaderPid && sid === tracker.leaderPid
+  )
+}
 
 const captureTrackedDescendants = (
   tracker: PosixProcessTracker,
@@ -392,12 +427,20 @@ const scheduleTrackedProcessSample = (): void => {
 export const trackOwnedPosixProcessTree = (child: ChildProcess): void => {
   if (trackedPosixProcessTrees.has(child)) return
   registerOwnedPosixProcessGroup(child)
+  // Linux supplies a collision-resistant /proc start identity for descendants. Portable POSIX does
+  // not, so retain the spawn-time detached process-group receipt instead of installing a tracker
+  // that can only fail closed and would mark every otherwise clean macOS teardown incomplete.
+  if (process.platform !== 'linux') return
   const leaderPid = child.pid
   if (leaderPid === undefined || !Number.isSafeInteger(leaderPid) || leaderPid <= 0) return
+  const leaderIdentity = captureSpawnedLinuxLeader(leaderPid)
   const tracker: PosixProcessTracker = {
     leaderPid,
-    leaderIdentity: undefined,
-    identities: new Map(),
+    // Pin the direct child's kernel birth identity in the same synchronous turn as spawn. If this
+    // exact receipt cannot be proven, null permanently forbids a later table scan from adopting a
+    // replacement that happens to reuse the pid.
+    leaderIdentity,
+    identities: leaderIdentity ? new Map([[leaderPid, leaderIdentity]]) : new Map(),
     complete: true
   }
   trackedPosixProcessTrees.set(child, tracker)
@@ -666,47 +709,58 @@ const terminateTrackedPosixProcessTree = async (
   const live = [...tracker.identities.values()].filter((identity) =>
     samePosixIdentity(identity, finalSample.processes.get(identity.pid))
   )
-  const ownedGroups = (identities: readonly PosixProcessIdentity[]): Set<number> =>
-    new Set(
-      identities
+  const ownedGroups = (
+    identities: readonly PosixProcessIdentity[],
+    table: PosixProcessTable
+  ): Set<number> =>
+    new Set([
+      ...identities
         .filter(({ pid, pgid, sid }) => pgid === tracker.leaderPid || (pid === pgid && pid === sid))
-        .map(({ pgid }) => pgid)
-    )
-  for (const pgid of ownedGroups(live)) {
+        .map(({ pgid }) => pgid),
+      ...(ownsRecordedLeaderGroup(tracker, table) ? [tracker.leaderPid] : [])
+    ])
+  const gracefulGroups = ownedGroups(live, finalSample)
+  for (const pgid of gracefulGroups) {
     signalProcessGroup(pgid, gracefulSignal)
   }
   signalPids(
     live.map(({ pid }) => pid),
     gracefulSignal
   )
-  const gracefulExit = await waitForPidsExit(
-    live.map(({ pid }) => pid),
-    TERMINATE_GRACE_MS
-  )
-  if (gracefulExit) return { reaped: tracker.complete && finalSample.complete }
+  const gracefulExit = await Promise.all([
+    waitForPidsExit(
+      live.map(({ pid }) => pid),
+      TERMINATE_GRACE_MS
+    ),
+    ...[...gracefulGroups].map((pgid) => waitForProcessGroupExit(pgid, TERMINATE_GRACE_MS))
+  ])
+  if (gracefulExit.every(Boolean)) return { reaped: tracker.complete && finalSample.complete }
 
   const beforeForce = await collectPosixProcessTable()
   const survivors = live.filter((identity) =>
     samePosixIdentity(identity, beforeForce.processes.get(identity.pid))
   )
+  const forcedGroups = ownedGroups(survivors, beforeForce)
   if (survivors.length > 0) {
     log?.error(
       `owned process tree left ${survivors.length} exact descendant(s) alive after ${gracefulSignal}; escalating to SIGKILL`
     )
-    for (const pgid of ownedGroups(survivors)) {
-      signalProcessGroup(pgid, 'SIGKILL')
-    }
     signalPids(
       survivors.map(({ pid }) => pid),
       'SIGKILL'
     )
   }
-  const forcedExit = await waitForPidsExit(
-    survivors.map(({ pid }) => pid),
-    SIGKILL_GRACE_MS
-  )
+  for (const pgid of forcedGroups) signalProcessGroup(pgid, 'SIGKILL')
+  const forcedExit = await Promise.all([
+    waitForPidsExit(
+      survivors.map(({ pid }) => pid),
+      SIGKILL_GRACE_MS
+    ),
+    ...[...forcedGroups].map((pgid) => waitForProcessGroupExit(pgid, SIGKILL_GRACE_MS))
+  ])
   return {
-    reaped: tracker.complete && finalSample.complete && beforeForce.complete && forcedExit
+    reaped:
+      tracker.complete && finalSample.complete && beforeForce.complete && forcedExit.every(Boolean)
   }
 }
 
