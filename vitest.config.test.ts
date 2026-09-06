@@ -29,6 +29,18 @@ describe('Vitest discovery boundaries', () => {
     expect(VITEST_EXCLUDE_PATTERNS).toContain(pattern)
   })
 
+  it('excludes repository-generated test copies from every test project', () => {
+    const generatedRoots = ['dist/**', 'out/**', 'test-results/**', '.scratch/**']
+
+    expect(VITEST_EXCLUDE_PATTERNS).toEqual(expect.arrayContaining(generatedRoots))
+    for (const project of vitestConfig.test?.projects ?? []) {
+      expect(project.test?.exclude).toEqual(expect.arrayContaining(generatedRoots))
+    }
+
+    // Keep source-owned fixtures named `dist` discoverable outside the repository output root.
+    expect(VITEST_EXCLUDE_PATTERNS).not.toContain('**/dist/**')
+  })
+
   it('excludes duplicated platform checks only from portable CI shards', () => {
     expect(vitestExcludePatternsFor({})).not.toEqual(
       expect.arrayContaining([...VITEST_PORTABLE_CI_EXCLUDE_PATTERNS])

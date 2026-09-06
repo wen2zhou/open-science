@@ -32,6 +32,10 @@ export const VITEST_PROCESS_TEST_GLOBS = [
 
 const BASE_VITEST_EXCLUDE_PATTERNS = [
   ...configDefaults.exclude,
+  'dist/**',
+  'out/**',
+  'test-results/**',
+  '.scratch/**',
   'e2e/**',
   'docs/internal/**',
   '**/.claude/**',
@@ -160,11 +164,11 @@ export default defineConfig({
       './test/setup-jsdom-polyfills.ts',
       './test/setup-i18n.ts'
     ],
-    // Keep vitest's defaults (node_modules, dist, .git, ...) and also ignore git worktrees — those hold
-    // full source + node_modules copies that would otherwise be discovered and run as duplicate (and
-    // often stale) suites during local runs. Playwright owns e2e/; Vitest must not execute those specs
-    // in its Node workers. .worktree is the project-standard root; .claude remains excluded for
-    // existing local checkouts.
+    // Ignore generated repository-root output and git worktrees: both can hold copied, stale test
+    // files that must not join source discovery. Keep these output patterns root-relative so a
+    // tracked fixture directory named `dist` remains testable. Playwright owns e2e/; Vitest must not
+    // execute those specs in its Node workers. .worktree is the project-standard root; .claude
+    // remains excluded for existing local checkouts.
     exclude: VITEST_EXCLUDE_PATTERNS,
     // Lift the 5s default: the full coverage run instruments 4400+ tests across parallel workers on a
     // shared CI runner, so a fast fully-mocked test can still be CPU-starved past 5s and time out
