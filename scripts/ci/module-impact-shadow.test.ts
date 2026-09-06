@@ -281,7 +281,25 @@ describe('module impact shadow', () => {
       'packages/notebook-network-sandbox/src/proxy-env.test.ts',
       'packages/notebook-network-sandbox/src/resources.test.ts',
       'packages/notebook-network-sandbox/src/runtime-config.test.ts',
-      'packages/notebook-network-sandbox/src/windows-appcontainer.test.ts'
+      'packages/notebook-network-sandbox/src/windows-appcontainer.test.ts',
+      'packages/notebook-network-sandbox/src/wsl-filesystem-spike.integration.test.ts',
+      'packages/notebook-network-sandbox/src/wsl-filesystem-spike.test.ts',
+      'packages/notebook-network-sandbox/src/wsl2-isolation.integration.test.ts',
+      'packages/notebook-network-sandbox/src/wsl2-isolation.test.ts',
+      'scripts/electron-builder-config.test.ts',
+      'scripts/windows-installer-smoke.test.ts',
+      'scripts/wsl2-matrix-durable-owner.test.ts',
+      'scripts/wsl2-matrix-runtime-seams.test.ts',
+      'scripts/wsl2-network-lifecycle-matrix.test.ts',
+      'scripts/wsl2-network-lifecycle-spike.test.mjs',
+      'src/main/notebook/wsl2-shell.integration.test.ts',
+      'src/main/settings/application-commands.test.ts',
+      'src/main/settings/ipc.test.ts',
+      'src/main/wsl/windows-volume-probe.test.ts',
+      'src/main/wsl/wsl-setup-owner.test.ts',
+      'src/main/wsl/wsl2-packaged-restart-certification.test.ts',
+      'src/main/wsl/wsl2-preview-gate.test.ts',
+      'src/renderer/src/pages/settings/WslLocalShellSection.render.test.tsx'
     ])
     expect(report.comparison.requiredLanes).toEqual(
       expect.arrayContaining([

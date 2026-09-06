@@ -1067,10 +1067,15 @@ class AcpPermissionBroker {
       : undefined
 
     const restoredAllowOnce = this.restoredAllowOnceBySession.get(request.sessionId)
+    const legacyCategoryCanMatch =
+      restoredAllowOnce?.categoryKey === undefined &&
+      /^mcp:open-science-notebook\/(?:notebook_execute|repl_execute):(?:python|r|javascript)$/.test(
+        categoryKey ?? ''
+      )
     if (
       durableCandidate &&
       restoredAllowOnce?.fingerprint === durableCandidate.fingerprint &&
-      restoredAllowOnce.categoryKey === categoryKey
+      (restoredAllowOnce.categoryKey === categoryKey || legacyCategoryCanMatch)
     ) {
       this.restoredAllowOnceBySession.delete(request.sessionId)
       return Promise.resolve({

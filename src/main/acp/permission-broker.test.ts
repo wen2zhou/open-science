@@ -572,6 +572,87 @@ describe('ACP permission broker', () => {
     await expect(afterSwitch).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
   })
 
+  it('replays a legacy runtime-invariant Notebook allow-once without a category', async () => {
+    const emitted: EmittedPermissionRequest[] = []
+    const broker = new AcpPermissionBroker((request) => emitted.push(request))
+    const request = createNotebookPermissionRequest(
+      'session-1',
+      'mcp__open-science-notebook__notebook_execute',
+      { language: 'python', code: 'print(1)' }
+    )
+    const originalResponse = broker.requestPermission(request, { profile: 'ask' })
+    const original = emitted[0]
+    broker.cancelAllPending()
+    await expect(originalResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    await broker.prepareRestoredDecision(
+      {
+        state: 'pending',
+        request: original,
+        originatingPromptMessageId: 'prompt-1',
+        fingerprint: permissionRequestFingerprint(original)!,
+        createdAt: 1
+      },
+      original.options.find((option) => option.scope === 'once'),
+      'project-1'
+    )
+
+    await expect(broker.requestPermission(request, { profile: 'ask' })).resolves.toEqual({
+      outcome: { outcome: 'selected', optionId: 'allow-once' }
+    })
+    expect(emitted).toHaveLength(1)
+  })
+
+  it.each([
+    ['default Bash', {}],
+    ['PowerShell', { notebookShellRuntime: 'powershell' as const }],
+    ['WSL2 Bash', { notebookShellRuntime: 'wsl2-bash' as const }],
+    [
+      'a qualified WSL2 profile',
+      {
+        notebookShellRuntime: 'wsl2-bash' as const,
+        notebookShellRuntimeQualifier: 'wsl2-bash@wsl2-aaaaaaaaaaaaaaaaaaaaaaaa'
+      }
+    ]
+  ])(
+    'does not consume a legacy Shell allow-once without a recorded runtime category for %s',
+    async (_runtime, policyContext) => {
+      const emitted: EmittedPermissionRequest[] = []
+      const broker = new AcpPermissionBroker((request) => emitted.push(request))
+      const request = createNotebookPermissionRequest(
+        'session-1',
+        'mcp__open-science-notebook__bash_execute',
+        { command: 'pwd' }
+      )
+      const originalResponse = broker.requestPermission(request, {
+        profile: 'ask',
+        ...policyContext
+      })
+      const original = emitted[0]
+      broker.cancelAllPending()
+      await expect(originalResponse).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+      await broker.prepareRestoredDecision(
+        {
+          state: 'pending',
+          request: original,
+          originatingPromptMessageId: 'prompt-1',
+          fingerprint: permissionRequestFingerprint(original)!,
+          createdAt: 1
+        },
+        original.options.find((option) => option.scope === 'once'),
+        'project-1'
+      )
+
+      const replay = broker.requestPermission(request, {
+        profile: 'ask',
+        ...policyContext
+      })
+
+      expect(emitted).toHaveLength(2)
+      await broker.respond({ requestId: emitted[1].requestId, cancelled: true })
+      await expect(replay).resolves.toEqual({ outcome: { outcome: 'cancelled' } })
+    }
+  )
+
   it('does not consume a restored WSL2 allow-once after the activated profile changes', async () => {
     const emitted: EmittedPermissionRequest[] = []
     const broker = new AcpPermissionBroker((request) => emitted.push(request))
