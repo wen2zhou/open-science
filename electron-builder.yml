@@ -44,6 +44,7 @@ files:
   # vendored source/native trees out of app.asar; the executable resources are copied explicitly per
   # platform below so path resolution and code signing remain deterministic.
   - '!node_modules/@aipoch/notebook-network-sandbox{,/**/*}'
+  - '!packages/notebook-network-sandbox{,/**/*}'
   # pdfjs-dist ships several redundant copies. The main process only loads `legacy/build` (text
   # extraction) and needs `cmaps`/`standard_fonts` for CJK/CID PDFs; the renderer bundles its own
   # copy via Vite. Drop the modern build, viewer, image decoders, TS types, and source maps
