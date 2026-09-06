@@ -966,8 +966,6 @@ describe('production delegated-work composition', () => {
             countWindows: () => 1,
             detectActiveSessions: () => [],
             hasActiveReviewerWork: () => false,
-            getActiveSettingsInstallId: () => undefined,
-            holdSettingsInstallAdmission: () => () => undefined,
             createConfirmClose: () => confirmClose
           })
           quit()
