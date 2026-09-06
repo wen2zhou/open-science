@@ -34,6 +34,7 @@ describe('electron-builder native image processing', () => {
       'test-results',
       'playwright-report',
       'coverage',
+      'dist',
       'packages/notebook-network-sandbox'
     ]) {
       expect(matches(join(root, directory, 'private-diagnostics.json'), fileStat)).toBe(false)

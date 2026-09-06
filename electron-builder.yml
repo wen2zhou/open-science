@@ -21,6 +21,8 @@ files:
   - '!.worktrees{,/**/*}'
   - '!.open-science-test-runtime{,/**/*}'
   - '!{test-results,playwright-report,coverage}{,/**/*}'
+  # Keep earlier builds out even when a certification build selects a different output directory.
+  - '!dist{,/**/*}'
   - '!src/*'
   - '!electron.vite.config.{js,ts,mjs,cjs}'
   - '!{.eslintcache,eslint.config.mjs,.prettierignore,.prettierrc.yaml,dev-app-update.yml,CHANGELOG.md,README.md}'
