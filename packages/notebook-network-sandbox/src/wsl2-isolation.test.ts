@@ -147,6 +147,99 @@ describe('WSL2 sandbox adapter', () => {
     expect(closeBridge).toHaveBeenCalledOnce()
   })
 
+  it('mounts writable parents before read-only children so nested input roots stay read-only', async () => {
+    const launch = await wsl2Launch({
+      target: {
+        kind: 'wsl2',
+        profileId: 'nested-policy-profile',
+        distro: 'Ubuntu-22.04',
+        user: 'open-science-spike'
+      },
+      command: 'echo sandboxed',
+      cwd: 'C:\\workspace',
+      env: {},
+      filesystem: {
+        readOnlyRoots: ['C:\\workspace\\input'],
+        readWriteRoots: ['C:\\workspace'],
+        deniedReadRoots: [],
+        deniedWriteRoots: []
+      },
+      reconcileGuest: reconciled,
+      gatewayPort: 4312,
+      gatewayCredentials: { username: 'command-user', password: 'command-secret' },
+      mapPath: async (path) => `/mnt/c/${path.slice(3).replaceAll('\\', '/')}`,
+      cleanupGuest: async () => true,
+      openBridge: async () => ({
+        socketPath: '/tmp/open-science-network-command/gateway.sock',
+        close: async () => ({ networkClosed: true, temporaryResourcesRemoved: true })
+      })
+    })
+
+    const writableParentMount = launch.argv.findIndex(
+      (value, index) =>
+        value === '--bind' &&
+        launch.argv[index + 1] === '/mnt/c/workspace' &&
+        launch.argv[index + 2] === '/mnt/c/workspace'
+    )
+    const readOnlyChildMount = launch.argv.findIndex(
+      (value, index) =>
+        value === '--ro-bind' &&
+        launch.argv[index + 1] === '/mnt/c/workspace/input' &&
+        launch.argv[index + 2] === '/mnt/c/workspace/input'
+    )
+
+    expect(writableParentMount).toBeGreaterThan(0)
+    expect(readOnlyChildMount).toBeGreaterThan(writableParentMount)
+    await launch.release()
+  })
+
+  it('applies denied ancestors after narrower writable grants', async () => {
+    const launch = await wsl2Launch({
+      target: {
+        kind: 'wsl2',
+        profileId: 'nested-deny-profile',
+        distro: 'Ubuntu-22.04',
+        user: 'open-science-spike'
+      },
+      command: 'echo sandboxed',
+      cwd: 'C:\\workspace',
+      env: {},
+      filesystem: {
+        readOnlyRoots: [],
+        readWriteRoots: ['C:\\protected-write\\child', 'C:\\protected-read\\child'],
+        deniedReadRoots: ['C:\\protected-read'],
+        deniedWriteRoots: ['C:\\protected-write']
+      },
+      reconcileGuest: reconciled,
+      gatewayPort: 4312,
+      gatewayCredentials: { username: 'command-user', password: 'command-secret' },
+      mapPath: async (path) => `/mnt/c/${path.slice(3).replaceAll('\\', '/')}`,
+      cleanupGuest: async () => true,
+      openBridge: async () => ({
+        socketPath: '/tmp/open-science-network-command/gateway.sock',
+        close: async () => ({ networkClosed: true, temporaryResourcesRemoved: true })
+      })
+    })
+
+    const writableChildMount = (path: string): number =>
+      launch.argv.findIndex(
+        (value, index) =>
+          value === '--bind' && launch.argv[index + 1] === path && launch.argv[index + 2] === path
+      )
+    const deniedAncestorMount = (operation: '--ro-bind' | '--tmpfs', path: string): number =>
+      launch.argv.findIndex(
+        (value, index) => value === operation && launch.argv[index + 1] === path
+      )
+
+    expect(deniedAncestorMount('--ro-bind', '/mnt/c/protected-write')).toBeGreaterThan(
+      writableChildMount('/mnt/c/protected-write/child')
+    )
+    expect(deniedAncestorMount('--tmpfs', '/mnt/c/protected-read')).toBeGreaterThan(
+      writableChildMount('/mnt/c/protected-read/child')
+    )
+    await launch.release()
+  })
+
   it('retains the exact receipt and retries an incomplete guest cleanup', async () => {
     const cleanupGuest = vi.fn().mockResolvedValueOnce(false).mockResolvedValueOnce(true)
     const closeBridge = vi.fn().mockResolvedValue({

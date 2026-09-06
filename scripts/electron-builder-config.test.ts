@@ -71,12 +71,16 @@ describe('WSL2 Bash Preview certification', () => {
   })
 
   it('keeps the versioned reference record privacy-safe and tied to the packaged app', () => {
+    const packageJson = JSON.parse(readFileSync(join(process.cwd(), 'package.json'), 'utf8')) as {
+      version: string
+    }
     const record = readFileSync(
       join(process.cwd(), 'docs', 'certification', 'wsl2-bash-preview-v1.md'),
       'utf8'
     )
 
-    expect(record).toContain('Application version: 0.24.0')
+    expect(record).toContain(`Application version: ${packageJson.version}`)
+    expect(record).toContain(`Open Science ${packageJson.version}, Windows x64 package`)
     expect(record).toMatch(/\| WSL\s+\| 2\.1\.5\.0/)
     expect(record).toContain('Ubuntu-22.04')
     expect(record).toContain('networkingMode=mirrored')

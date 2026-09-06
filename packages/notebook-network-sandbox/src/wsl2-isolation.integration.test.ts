@@ -200,6 +200,63 @@ mkdir -p "$MPLCONFIGDIR" "$UV_CACHE_DIR" "$HF_DATASETS_CACHE" "$HF_XET_CACHE" "$
     await prepared.release()
   })
 
+  it('preserves nested read-only and denied roots under writable parents', async () => {
+    const input = join(workspace, 'input')
+    const deniedWrite = join(workspace, 'denied-write')
+    const deniedWriteChild = join(deniedWrite, 'child')
+    const deniedRead = join(workspace, 'denied-read')
+    const deniedReadChild = join(deniedRead, 'child')
+    await Promise.all(
+      [input, deniedWriteChild, deniedReadChild].map((directory) =>
+        mkdir(directory, { recursive: true })
+      )
+    )
+    await writeFile(join(input, 'existing.txt'), 'original', 'utf8')
+    await writeFile(join(deniedWriteChild, 'existing.txt'), 'original', 'utf8')
+    await writeFile(join(deniedReadChild, 'secret.txt'), 'secret', 'utf8')
+
+    const prepared = await wsl2Launch({
+      target: {
+        kind: 'wsl2',
+        profileId: 'real-profile',
+        distro: distro!,
+        user: user!
+      },
+      command: String.raw`
+if /bin/sh -c 'printf changed > input/existing.txt' 2>/dev/null; then exit 41; fi
+[ "$(cat input/existing.txt)" = original ]
+if /bin/sh -c 'printf changed > denied-write/child/existing.txt' 2>/dev/null; then exit 42; fi
+[ "$(cat denied-write/child/existing.txt)" = original ]
+if cat denied-read/child/secret.txt >/dev/null 2>&1; then exit 43; fi
+printf sibling > sibling.txt
+[ "$(cat sibling.txt)" = sibling ]
+`,
+      cwd: workspace,
+      env: {},
+      gatewayPort: gateway.port,
+      gatewayCredentials,
+      pathEnvironment: {
+        OPEN_SCIENCE_HANDOFF_DIR: handoff,
+        ...notebookWorkloadCacheEnv(join(root, 'runtime'))
+      },
+      filesystem: {
+        privateRoot: root,
+        readOnlyRoots: [input],
+        readWriteRoots: [workspace, handoff, cache, deniedWriteChild, deniedReadChild],
+        deniedReadRoots: [unauthorized, deniedRead],
+        deniedWriteRoots: [deniedWrite]
+      }
+    })
+    try {
+      const admission = prepared.beginSpawn()
+      const execution = execute(prepared.argv, prepared.env, workspace)
+      admission.started()
+      await expect(execution).resolves.toEqual({ exitCode: 0, stdout: '', stderr: '' })
+    } finally {
+      await prepared.release()
+    }
+  })
+
   it('cleans an execution when cancellation races receipt publication', async () => {
     const prepared = await launch('sleep 30')
     const admission = prepared.beginSpawn()

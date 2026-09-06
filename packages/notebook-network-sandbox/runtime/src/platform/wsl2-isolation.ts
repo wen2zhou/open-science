@@ -795,11 +795,29 @@ const wsl2Launch = async (request: Wsl2LaunchRequest): Promise<Wsl2Launch> => {
     (parent) => parent !== '/home' && parent !== '/mnt' && parent !== '/media'
   )
   for (const parent of visibleParents) bwrap.push('--dir', parent)
+  // Materialize writable/hidden destinations before sealing the private root. Bind operations may
+  // then safely apply in specificity order without trying to create directories under that seal.
   for (const root of readWriteRoots) bwrap.push('--dir', root)
   for (const root of explicitDeniedReadRoots) bwrap.push('--dir', root)
-  for (const root of readOnlyRoots) bwrap.push('--ro-bind', root, root)
   for (const root of sensitiveRoots) bwrap.push('--remount-ro', root)
-  for (const root of readWriteRoots) bwrap.push('--bind', root, root)
+  // A later bind on an ancestor hides an earlier descendant mount. Apply allowed parents before
+  // their more-specific children; then apply denies last because a denied ancestor owns its entire
+  // subtree and must not be reopened by a narrower grant.
+  const mountPriority = { readOnly: 0, readWrite: 1 } as const
+  const allowedMounts = [
+    ...readOnlyRoots.map((path) => ({ kind: 'readOnly' as const, path })),
+    ...readWriteRoots.map((path) => ({ kind: 'readWrite' as const, path }))
+  ].sort((left, right) => {
+    const depth = left.path.split('/').length - right.path.split('/').length
+    return depth || mountPriority[left.kind] - mountPriority[right.kind]
+  })
+  for (const mount of allowedMounts) {
+    if (mount.kind === 'readOnly') {
+      bwrap.push('--ro-bind', mount.path, mount.path)
+    } else {
+      bwrap.push('--bind', mount.path, mount.path)
+    }
+  }
   for (const root of explicitDeniedWriteRoots) bwrap.push('--ro-bind', root, root)
   for (const root of explicitDeniedReadRoots) bwrap.push('--tmpfs', root)
   bwrap.push('--clearenv')
