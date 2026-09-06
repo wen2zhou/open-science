@@ -40,6 +40,8 @@ const HTTP_REQUEST_TIMEOUT_MS = 15_000
 const TERMINATION_TIMEOUT_MS = 10_000
 const MCP_REQUEST_TIMEOUT_MS = 30_000
 const SMOKE_ROOT_PREFIX = 'open-science-installer-smoke-'
+const APP_GUID = 'a65c5229-0b29-5716-a0fe-d8755e62f3ca'
+const APP_DISPLAY_NAME = 'Open Science'
 const RPC_SMOKE_ROOT_PREFIX = 'open-science-rpc-smoke-'
 const UPGRADE_SENTINEL_PREFIX = 'installer-smoke-upgrade-sentinel-'
 const UPGRADE_SENTINEL_CONTENT = 'previous-version-profile-preserved\n'
@@ -1416,7 +1418,7 @@ const parseArguments = (argv) => {
 }
 
 const removeSmokeRoot = async (root) => {
-  if (!basename(root).startsWith(SMOKE_ROOT_PREFIX)) {
+  if (!win32.basename(root).startsWith(SMOKE_ROOT_PREFIX)) {
     throw new Error(`Refusing to remove unexpected smoke root: ${root}`)
   }
   await rm(root, { force: true, maxRetries: 10, recursive: true, retryDelay: 500 })
@@ -1429,6 +1431,87 @@ const cleanupSmokeRoot = async (root, primaryError, remove = removeSmokeRoot) =>
     if (!primaryError) throw cleanupError
     const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
     console.warn(`Windows installer smoke cleanup also failed: ${message}`)
+  }
+}
+
+const registryValue = (output, name) => {
+  const line = output
+    .split(/\r?\n/u)
+    .find((candidate) => new RegExp(`^\\s*${name}\\s+REG_\\w+\\s+`, 'iu').test(candidate))
+  return line?.replace(new RegExp(`^\\s*${name}\\s+REG_\\w+\\s+`, 'iu'), '').trim()
+}
+
+const executableFromUninstallCommand = (command) => {
+  const value = command?.trim()
+  if (!value) return undefined
+  if (value.startsWith('"')) {
+    const close = value.indexOf('"', 1)
+    return close > 1 ? value.slice(1, close) : undefined
+  }
+  return value.split(/\s+/u)[0]
+}
+
+const isOwnedSmokePath = (root, candidate) => {
+  if (!candidate || !win32.isAbsolute(candidate)) return false
+  const relativePath = win32.relative(win32.resolve(root), win32.resolve(candidate))
+  return (
+    relativePath === '' ||
+    (relativePath !== '..' &&
+      !relativePath.startsWith(`..${win32.sep}`) &&
+      !win32.isAbsolute(relativePath))
+  )
+}
+
+const readRegistryKey = async (key, run) => {
+  const result = await run('reg.exe', ['query', key], { allowNonZero: true })
+  return result.code === 0 ? result.stdout : undefined
+}
+
+const cleanupOwnedSmokeRegistrations = async (root, expectedVersion, { run = runProcess } = {}) => {
+  if (!basename(root).startsWith(SMOKE_ROOT_PREFIX)) {
+    throw new Error(`Refusing to clean registrations for unexpected smoke root: ${root}`)
+  }
+  const uninstallKey = `HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\${APP_GUID}`
+  const uninstallOutput = await readRegistryKey(uninstallKey, run)
+  if (uninstallOutput) {
+    const uninstallTarget = executableFromUninstallCommand(
+      registryValue(uninstallOutput, 'UninstallString')
+    )
+    const quietUninstallTarget = executableFromUninstallCommand(
+      registryValue(uninstallOutput, 'QuietUninstallString')
+    )
+    const installLocation = registryValue(uninstallOutput, 'InstallLocation')
+    const ownedStaleRegistration =
+      registryValue(uninstallOutput, 'DisplayName') === APP_DISPLAY_NAME &&
+      registryValue(uninstallOutput, 'DisplayVersion') === expectedVersion &&
+      (!installLocation || isOwnedSmokePath(root, installLocation)) &&
+      isOwnedSmokePath(root, uninstallTarget) &&
+      isOwnedSmokePath(root, quietUninstallTarget)
+    if (ownedStaleRegistration) await run('reg.exe', ['delete', uninstallKey, '/f'])
+  }
+
+  const installKey = `HKCU\\Software\\${APP_GUID}`
+  const installOutput = await readRegistryKey(installKey, run)
+  const installLocation = installOutput
+    ? registryValue(installOutput, 'InstallLocation')
+    : undefined
+  if (isOwnedSmokePath(root, installLocation)) {
+    await run('reg.exe', ['delete', installKey, '/f'])
+  }
+}
+
+const cleanupSmokeRegistrations = async (
+  root,
+  expectedVersion,
+  primaryError,
+  cleanup = cleanupOwnedSmokeRegistrations
+) => {
+  try {
+    await cleanup(root, expectedVersion)
+  } catch (cleanupError) {
+    if (!primaryError) throw cleanupError
+    const message = cleanupError instanceof Error ? cleanupError.message : String(cleanupError)
+    console.warn(`Windows installer smoke registration cleanup also failed: ${message}`)
   }
 }
 
@@ -1449,6 +1532,7 @@ const runOrphanedUninstallerLockSmoke = async (installer) => {
   } catch (error) {
     primaryError = error
   }
+  await cleanupSmokeRegistrations(root, installerVersion(installer), primaryError)
   await cleanupSmokeRoot(root, primaryError)
   if (primaryError) throw primaryError
   console.log('Windows orphaned-uninstaller lock smoke completed successfully.')
@@ -1646,6 +1730,11 @@ const main = async () => {
     sentinelCleanupError = error
   }
   if (!options.retainInstallation || primaryError || sentinelCleanupError) {
+    await cleanupSmokeRegistrations(
+      root,
+      installerVersion(currentInstaller),
+      primaryError ?? sentinelCleanupError
+    )
     await cleanupSmokeRoot(root, primaryError ?? sentinelCleanupError)
   }
   if (primaryError) throw primaryError
@@ -1669,6 +1758,8 @@ export {
   assertUpgradeProfilePreserved,
   buildSmokePlan,
   cleanupSmokeRoot,
+  cleanupOwnedSmokeRegistrations,
+  cleanupSmokeRegistrations,
   createUpgradeProfileGuard,
   createWslCommandTempEvidence,
   drillLockedUpgrade,

@@ -15,6 +15,8 @@ import {
   assertUpgradeProfilePreserved,
   assertWsl2RestartCleanupBlocked,
   buildSmokePlan,
+  cleanupOwnedSmokeRegistrations,
+  cleanupSmokeRegistrations,
   cleanupSmokeRoot,
   createUpgradeProfileGuard,
   createWslCommandTempEvidence,
@@ -810,5 +812,117 @@ Open Science Web: http://127.0.0.1:52378/?token=iUFHGSACwBz2k1kSJfPixHbclDywVg0C
     )
 
     warning.mockRestore()
+  })
+
+  it('removes only stale registrations owned by the exact failed smoke root', async () => {
+    const root = 'C:\\Temp\\open-science-installer-smoke-owned'
+    const uninstall = join(root, 'installed app 程序', 'Uninstall open-science.exe')
+    const install = join(root, 'installed app 程序')
+    const run = vi.fn(async (_executable: string, args: string[]) => {
+      if (args[0] === 'delete') return { code: 0, stdout: '', stderr: '' }
+      const output = args[1].includes('CurrentVersion')
+        ? `DisplayName    REG_SZ    Open Science\r\nDisplayVersion    REG_SZ    0.25.1\r\nInstallLocation    REG_SZ    ${install}\r\nUninstallString    REG_SZ    "${uninstall}"\r\nQuietUninstallString    REG_SZ    "${uninstall}" /S\r\n`
+        : `InstallLocation    REG_SZ    ${install}\r\n`
+      return { code: 0, stdout: output, stderr: '' }
+    })
+
+    await cleanupOwnedSmokeRegistrations(root, '0.25.1', { run })
+
+    expect(run.mock.calls.filter(([, args]) => args[0] === 'delete')).toEqual([
+      [
+        'reg.exe',
+        [
+          'delete',
+          'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\a65c5229-0b29-5716-a0fe-d8755e62f3ca',
+          '/f'
+        ]
+      ],
+      ['reg.exe', ['delete', 'HKCU\\Software\\a65c5229-0b29-5716-a0fe-d8755e62f3ca', '/f']]
+    ])
+  })
+
+  it('preserves unrelated installer registrations', async () => {
+    const root = 'C:\\Temp\\open-science-installer-smoke-owned'
+    const unrelated = 'C:\\Program Files\\Open Science\\Uninstall open-science.exe'
+    const run = vi.fn(async (_executable: string, args: string[]) => {
+      if (args[0] === 'delete') throw new Error('unrelated registration was deleted')
+      const output = args[1].includes('CurrentVersion')
+        ? `DisplayName    REG_SZ    Open Science\r\nDisplayVersion    REG_SZ    0.25.1\r\nInstallLocation    REG_SZ    \r\nUninstallString    REG_SZ    "${unrelated}"\r\nQuietUninstallString    REG_SZ    "${unrelated}" /S\r\n`
+        : 'InstallLocation    REG_SZ    C:\\Program Files\\Open Science\r\n'
+      return { code: 0, stdout: output, stderr: '' }
+    })
+
+    await cleanupOwnedSmokeRegistrations(root, '0.25.1', { run })
+
+    expect(run.mock.calls.filter(([, args]) => args[0] === 'delete')).toEqual([])
+  })
+
+  it('removes the observed owned uninstall registration with an empty install location', async () => {
+    const root = 'C:\\Temp\\open-science-installer-smoke-owned'
+    const uninstall = join(root, 'installed app 程序', 'Uninstall open-science.exe')
+    const run = vi.fn(async (_executable: string, args: string[]) => {
+      if (args[0] === 'delete') return { code: 0, stdout: '', stderr: '' }
+      if (!args[1].includes('CurrentVersion')) return { code: 1, stdout: '', stderr: '' }
+      return {
+        code: 0,
+        stdout: `DisplayName    REG_SZ    Open Science\r\nDisplayVersion    REG_SZ    0.25.1\r\nInstallLocation    REG_SZ    \r\nUninstallString    REG_SZ    "${uninstall}"\r\nQuietUninstallString    REG_SZ    "${uninstall}" /S\r\n`,
+        stderr: ''
+      }
+    })
+
+    await cleanupOwnedSmokeRegistrations(root, '0.25.1', { run })
+
+    expect(run.mock.calls.filter(([, args]) => args[0] === 'delete')).toEqual([
+      [
+        'reg.exe',
+        [
+          'delete',
+          'HKCU\\Software\\Microsoft\\Windows\\CurrentVersion\\Uninstall\\a65c5229-0b29-5716-a0fe-d8755e62f3ca',
+          '/f'
+        ]
+      ]
+    ])
+  })
+
+  it('preserves an incomplete registration even when one path is under the smoke root', async () => {
+    const root = 'C:\\Temp\\open-science-installer-smoke-owned'
+    const uninstall = join(root, 'installed app 程序', 'Uninstall open-science.exe')
+    const run = vi.fn(async (_executable: string, args: string[]) => {
+      if (args[0] === 'delete') throw new Error('incomplete registration was deleted')
+      if (!args[1].includes('CurrentVersion')) return { code: 1, stdout: '', stderr: '' }
+      return {
+        code: 0,
+        stdout: `DisplayName    REG_SZ    Open Science\r\nDisplayVersion    REG_SZ    0.25.1\r\nInstallLocation    REG_SZ    \r\nUninstallString    REG_SZ    "${uninstall}"\r\n`,
+        stderr: ''
+      }
+    })
+
+    await cleanupOwnedSmokeRegistrations(root, '0.25.1', { run })
+
+    expect(run.mock.calls.filter(([, args]) => args[0] === 'delete')).toEqual([])
+  })
+
+  it('preserves the primary smoke failure when registration cleanup also fails', async () => {
+    const cleanup = vi.fn().mockRejectedValue(new Error('registry unavailable'))
+    const warning = vi.spyOn(console, 'warn').mockImplementation(() => undefined)
+
+    await expect(
+      cleanupSmokeRegistrations('safe-smoke-root', '0.25.1', new Error('startup failed'), cleanup)
+    ).resolves.toBeUndefined()
+    expect(warning).toHaveBeenCalledWith(expect.stringContaining('registry unavailable'))
+    await expect(
+      cleanupSmokeRegistrations('safe-smoke-root', '0.25.1', undefined, cleanup)
+    ).rejects.toThrow('registry unavailable')
+
+    warning.mockRestore()
+  })
+
+  it('rejects registration cleanup outside a generated installer smoke root', async () => {
+    const run = vi.fn()
+
+    await expect(
+      cleanupOwnedSmokeRegistrations('C:\\Temp\\unrelated', '0.25.1', { run })
+    ).rejects.toThrow('unexpected smoke root')
+    expect(run).not.toHaveBeenCalled()
   })
 })
