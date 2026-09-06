@@ -128,6 +128,7 @@ export const WslLocalShellSection = ({
     ['home', t('Linux home directory')],
     ['bash', t('Bash')],
     ['bwrap', t('bubblewrap')],
+    ['python3', t('Python 3')],
     ['mirroredNetworking', t('Mirrored networking')],
     ['namespaces', t('Linux namespaces')],
     ['localWorkspace', t('Local Windows workspace')]
@@ -521,12 +522,18 @@ export const WslLocalShellSection = ({
           </div>
         ) : null}
 
-        {!busy && snapshot.errorCode === 'wsl_bwrap_missing' ? (
+        {!busy &&
+        (snapshot.errorCode === 'wsl_bwrap_missing' ||
+          snapshot.errorCode === 'wsl_python3_missing') ? (
           <div className="mt-4 rounded-md border border-border bg-muted/30 p-3">
             <p className="text-sm">
-              {t(
-                'Install bubblewrap in the distribution terminal. Open Science will not run sudo or a package manager.'
-              )}
+              {snapshot.errorCode === 'wsl_bwrap_missing'
+                ? t(
+                    'Install bubblewrap in the distribution terminal. Open Science will not run sudo or a package manager.'
+                  )
+                : t(
+                    'Install Python 3 in the distribution terminal. Open Science will not run sudo or a package manager.'
+                  )}
             </p>
             {snapshot.suggestedCommand ? (
               <>

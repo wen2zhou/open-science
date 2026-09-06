@@ -49,7 +49,14 @@ beforeEach(() => {
     state: 'ready',
     distros: [{ name: 'Ubuntu-24.04', version: 2, isDefault: true }],
     selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
-    readiness: { wsl2: true, bash: true, bwrap: true, namespaces: true, localWorkspace: true },
+    readiness: {
+      wsl2: true,
+      bash: true,
+      bwrap: true,
+      python3: true,
+      namespaces: true,
+      localWorkspace: true
+    },
     operationReference: '1234abcd'
   })
   install = vi.fn().mockResolvedValue({
@@ -77,7 +84,7 @@ beforeEach(() => {
   createSupportHandoff = vi.fn().mockResolvedValue({
     errorCode: 'wsl_namespace_unavailable',
     supportReference: 'a1b2c3d4',
-    capabilities: { wsl2: true, bash: true, bwrap: true, namespaces: false },
+    capabilities: { wsl2: true, bash: true, bwrap: true, python3: false, namespaces: false },
     versions: { wsl: '2', distribution: '2' },
     target: 'restore-wsl2-bash'
   })
@@ -592,6 +599,26 @@ describe('WslLocalShellSection', () => {
     expect(openTerminal).toHaveBeenCalledWith({ distro: 'Ubuntu-22.04', user: 'scientist' })
   })
 
+  it('identifies an unusable absolute Python 3 dependency and offers its install command', async () => {
+    probe.mockResolvedValue({
+      state: 'dependency-required',
+      distros: [{ name: 'Ubuntu-22.04', version: 2, isDefault: true }],
+      selection: { distro: 'Ubuntu-22.04', user: 'scientist' },
+      readiness: { wsl2: true, home: true, bash: true, bwrap: true, python3: false },
+      errorCode: 'wsl_python3_missing',
+      suggestedCommand: 'sudo apt-get update && sudo apt-get install python3',
+      operationReference: 'decafbad'
+    })
+    await act(async () => root.render(<WslLocalShellSection />))
+    await flush()
+
+    expect(container.textContent).toContain('Python 3')
+    expect(container.textContent).toContain(
+      'Install Python 3 in the distribution terminal. Open Science will not run sudo or a package manager.'
+    )
+    expect(container.textContent).toContain('sudo apt-get update && sudo apt-get install python3')
+  })
+
   it('closes Settings and opens a normal project conversation with only safe WSL diagnostics', async () => {
     probe.mockResolvedValue({
       state: 'dependency-required',
@@ -622,6 +649,7 @@ describe('WslLocalShellSection', () => {
     ])
     expect(JSON.stringify(intent)).not.toContain('Private-Lab')
     expect(JSON.stringify(intent)).not.toContain('private-user')
+    expect(JSON.stringify(intent)).toContain('Python 3: Unavailable')
     expect(JSON.stringify(intent)).toContain('must ask me to use an explicit action')
   })
 

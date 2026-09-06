@@ -485,6 +485,7 @@ export class WslSetupOwner {
         ...(typeof readiness?.home === 'boolean' ? { home: readiness.home } : {}),
         ...(typeof readiness?.bash === 'boolean' ? { bash: readiness.bash } : {}),
         ...(typeof readiness?.bwrap === 'boolean' ? { bwrap: readiness.bwrap } : {}),
+        ...(typeof readiness?.python3 === 'boolean' ? { python3: readiness.python3 } : {}),
         ...(typeof readiness?.namespaces === 'boolean' ? { namespaces: readiness.namespaces } : {}),
         ...(typeof readiness?.localWorkspace === 'boolean'
           ? { localWorkspace: readiness.localWorkspace }
@@ -630,19 +631,24 @@ export class WslSetupOwner {
     const dependencies = await this.inGuest(selection, [
       'sh',
       '-lc',
-      'command -v bash; command -v bwrap; wslinfo --networking-mode'
+      'command -v bash; command -v bwrap; test -x /usr/bin/python3 && /usr/bin/python3 -c "import sys; raise SystemExit(0 if sys.version_info.major == 3 else 1)" && printf "/usr/bin/python3\\n"; wslinfo --networking-mode'
     ])
     const dependencyOutput = clean(dependencies.stdout)
     const bash = /(^|\n)\/[^\n]*bash(\n|$)/.test(dependencyOutput)
     const bwrap = /(^|\n)\/[^\n]*bwrap(\n|$)/.test(dependencyOutput)
-    if (!bash || !bwrap) {
+    const python3 = dependencyOutput.split('\n').includes('/usr/bin/python3')
+    if (!bash || !bwrap || !python3) {
+      const errorCode = !bash
+        ? 'wsl_bash_missing'
+        : !bwrap
+          ? 'wsl_bwrap_missing'
+          : 'wsl_python3_missing'
+      const suggestedCommand = this.dependencyInstallCommand(selection.distro, errorCode)
       return setupSnapshot('dependency-required', operationReference, distros, {
         selection,
-        readiness: this.readiness({ wsl2: true, home: true, bash, bwrap }),
-        errorCode: bash ? 'wsl_bwrap_missing' : 'wsl_bash_missing',
-        ...(bash && this.bubblewrapCommand(selection.distro)
-          ? { suggestedCommand: this.bubblewrapCommand(selection.distro) }
-          : {})
+        readiness: this.readiness({ wsl2: true, home: true, bash, bwrap, python3 }),
+        errorCode,
+        ...(suggestedCommand ? { suggestedCommand } : {})
       })
     }
 
@@ -655,6 +661,7 @@ export class WslSetupOwner {
           home: true,
           bash: true,
           bwrap: true,
+          python3: true,
           mirroredNetworking: false
         }),
         errorCode: 'wsl_network_mode_unsupported'
@@ -674,6 +681,7 @@ export class WslSetupOwner {
           home: true,
           bash: true,
           bwrap: true,
+          python3: true,
           mirroredNetworking: true,
           namespaces: false
         }),
@@ -697,6 +705,7 @@ export class WslSetupOwner {
           home: true,
           bash: true,
           bwrap: true,
+          python3: true,
           namespaces: true,
           localWorkspace: false
         }),
@@ -711,6 +720,7 @@ export class WslSetupOwner {
         home: true,
         bash: true,
         bwrap: true,
+        python3: true,
         mirroredNetworking: true,
         namespaces: true,
         localWorkspace: true
@@ -768,9 +778,14 @@ export class WslSetupOwner {
     return !!value && value.length <= maxLength && !/[\0\r\n]/.test(value)
   }
 
-  private bubblewrapCommand(distro: string): string | undefined {
-    return /ubuntu|debian/i.test(distro)
-      ? 'sudo apt-get update && sudo apt-get install bubblewrap'
-      : undefined
+  private dependencyInstallCommand(distro: string, errorCode: string): string | undefined {
+    if (!/ubuntu|debian/i.test(distro)) return undefined
+    if (errorCode === 'wsl_bwrap_missing') {
+      return 'sudo apt-get update && sudo apt-get install bubblewrap'
+    }
+    if (errorCode === 'wsl_python3_missing') {
+      return 'sudo apt-get update && sudo apt-get install python3'
+    }
+    return undefined
   }
 }

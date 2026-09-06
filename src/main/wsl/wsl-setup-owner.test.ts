@@ -59,7 +59,7 @@ describe('WslSetupOwner', () => {
     expect(handoff).toEqual({
       errorCode: 'wsl_bwrap_missing',
       supportReference: 'a1b2c3d4',
-      capabilities: { wsl2: true, home: true, bash: true, bwrap: false },
+      capabilities: { wsl2: true, home: true, bash: true, bwrap: false, python3: false },
       versions: { wsl: '2', distribution: '2' },
       target: 'restore-wsl2-bash'
     })
@@ -618,7 +618,7 @@ describe('WslSetupOwner', () => {
       result('Ubuntu-24.04'),
       result('* Ubuntu-24.04 Running 2'),
       result('1000\nscientist\nhome-ok'),
-      result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
+      result('/usr/bin/bash\n/usr/bin/bwrap\n/usr/bin/python3\nmirrored'),
       result('ok'),
       result('/mnt/c/science\nok')
     )
@@ -636,9 +636,22 @@ describe('WslSetupOwner', () => {
     expect(snapshot).toMatchObject({
       state: 'ready',
       selection: { distro: 'Ubuntu-24.04', user: 'scientist' },
-      readiness: { wsl2: true, bash: true, bwrap: true, namespaces: true, localWorkspace: true }
+      readiness: {
+        wsl2: true,
+        bash: true,
+        bwrap: true,
+        python3: true,
+        namespaces: true,
+        localWorkspace: true
+      }
     })
     expect(snapshot.operationReference).toMatch(/^[a-f0-9]{8}$/)
+    expect(runner.run).toHaveBeenNthCalledWith(
+      5,
+      expect.arrayContaining([
+        expect.stringContaining('test -x /usr/bin/python3 && /usr/bin/python3 -c')
+      ])
+    )
     expect(runner.run).toHaveBeenNthCalledWith(
       6,
       expect.arrayContaining([
@@ -659,7 +672,7 @@ describe('WslSetupOwner', () => {
         result('Ubuntu-24.04'),
         result('* Ubuntu-24.04 Running 2'),
         result('1000\nscientist\nhome-ok'),
-        result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\n/usr/bin/python3\nmirrored'),
         result('ok'),
         result('/mnt/c/science\nok')
       ),
@@ -689,7 +702,7 @@ describe('WslSetupOwner', () => {
         result('Ubuntu-22.04'),
         result('* Ubuntu-22.04 Running 2'),
         result('1000\nscientist\nhome-ok'),
-        result('/usr/bin/bash\n/usr/bin/bwrap\nnat')
+        result('/usr/bin/bash\n/usr/bin/bwrap\n/usr/bin/python3\nnat')
       ),
       workspacePath: 'C:\\science',
       readSelection: async () => ({ distro: 'Ubuntu-22.04', user: 'scientist' }),
@@ -713,7 +726,7 @@ describe('WslSetupOwner', () => {
         result('Ubuntu-24.04'),
         result('* Ubuntu-24.04 Running 2'),
         result('1000\ncandidate\nhome-ok'),
-        result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\n/usr/bin/python3\nmirrored'),
         result('ok'),
         result('/mnt/c/science\nok')
       ),
@@ -750,7 +763,7 @@ describe('WslSetupOwner', () => {
         )
       ),
       result('1000\nscientist\nhome-ok'),
-      result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
+      result('/usr/bin/bash\n/usr/bin/bwrap\n/usr/bin/python3\nmirrored'),
       result('ok'),
       result('/mnt/c/science\nok')
     )
@@ -810,7 +823,7 @@ describe('WslSetupOwner', () => {
       result('Ubuntu'),
       result('* Ubuntu Running 2'),
       result('1000\nscientist\nhome-ok'),
-      result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
+      result('/usr/bin/bash\n/usr/bin/bwrap\n/usr/bin/python3\nmirrored'),
       result('ok'),
       result('/mnt/d/custom-data\nok')
     )
@@ -871,7 +884,7 @@ describe('WslSetupOwner', () => {
       result('Ubuntu'),
       result('* Ubuntu Running 2'),
       result('1000\nscientist\nhome-ok'),
-      result('/usr/bin/bash\n', 1)
+      result('/usr/bin/bash\n/usr/bin/python3\n', 1)
     )
     const missing = makeOwner({
       runner: missingRunner,
@@ -887,6 +900,26 @@ describe('WslSetupOwner', () => {
     expect(
       JSON.stringify((missingRunner.run as ReturnType<typeof vi.fn>).mock.calls)
     ).not.toContain('sudo apt-get')
+
+    const missingPython = makeOwner({
+      runner: makeRunner(
+        result('Default Version: 2'),
+        result('Ubuntu'),
+        result('* Ubuntu Running 2'),
+        result('1000\nscientist\nhome-ok'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored')
+      ),
+      workspacePath: 'C:\\science',
+      readSelection: async () => ({ distro: 'Ubuntu', user: 'scientist' }),
+      writeSelection: vi.fn()
+    })
+    await expect(missingPython.probe()).resolves.toMatchObject({
+      state: 'dependency-required',
+      errorCode: 'wsl_python3_missing',
+      readiness: { bash: true, bwrap: true, python3: false },
+      suggestedCommand: 'sudo apt-get update && sudo apt-get install python3'
+    })
+    await expect(missingPython.requireLatestReadySelection()).rejects.toThrow('is not ready')
 
     const unsupported = makeOwner({
       runner: makeRunner(
@@ -931,7 +964,7 @@ describe('WslSetupOwner', () => {
         result('Ubuntu'),
         result('* Ubuntu Running 2'),
         result('1000\nscientist\nhome-ok'),
-        result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\n/usr/bin/python3\nmirrored'),
         result('', 1, 'namespace unavailable')
       ),
       workspacePath: 'C:\\science',
@@ -953,7 +986,7 @@ describe('WslSetupOwner', () => {
         result('Ubuntu'),
         result('* Ubuntu Running 2'),
         result('1000\nscientist\nhome-ok'),
-        result('/usr/bin/bash\n/usr/bin/bwrap\nmirrored'),
+        result('/usr/bin/bash\n/usr/bin/bwrap\n/usr/bin/python3\nmirrored'),
         result('ok'),
         result('/mnt/c/science', 1, 'workspace unavailable')
       ),
@@ -969,6 +1002,7 @@ describe('WslSetupOwner', () => {
         wsl2: true,
         bash: true,
         bwrap: true,
+        python3: true,
         namespaces: true,
         localWorkspace: false
       }

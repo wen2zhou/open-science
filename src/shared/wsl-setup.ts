@@ -51,6 +51,7 @@ export type WslReadiness = Readonly<{
   home?: boolean
   bash?: boolean
   bwrap?: boolean
+  python3?: boolean
   mirroredNetworking?: boolean
   namespaces?: boolean
   localWorkspace?: boolean

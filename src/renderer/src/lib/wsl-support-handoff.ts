@@ -27,6 +27,7 @@ export const buildWslSupportPrefillDoc = (
         }),
         t('Bash: {{status}}', { status: availability(handoff.capabilities.bash, t) }),
         t('bubblewrap: {{status}}', { status: availability(handoff.capabilities.bwrap, t) }),
+        t('Python 3: {{status}}', { status: availability(handoff.capabilities.python3, t) }),
         t('Linux namespaces: {{status}}', {
           status: availability(handoff.capabilities.namespaces, t)
         }),
