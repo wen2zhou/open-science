@@ -6,6 +6,7 @@ import type {
 import type { NotebookRunRecord } from '../../shared/notebook'
 
 const SUMMARY_LIMIT = 8_000
+const WORKING_FILE_LIMIT = 100
 
 const resultSummary = (run: NotebookRunRecord): string => {
   const parts = [
@@ -58,6 +59,11 @@ const notebookRunDeliveryContext = (
           ? `${run.shellConcurrency.slot}/${run.shellConcurrency.limit}`
           : 'shell'
         : (run.environment ?? (run.kernelKind === 'r' ? 'R' : 'Python'))
+  const workingFiles = run.workingFiles.slice(0, WORKING_FILE_LIMIT).map((file) => ({
+    relativePath: file.relativePath,
+    ...(file.size === undefined ? {} : { size: file.size }),
+    ...(file.createdByRunId ? { createdByRunId: file.createdByRunId } : {})
+  }))
   return {
     runId: run.runId,
     executionType,
@@ -69,6 +75,7 @@ const notebookRunDeliveryContext = (
     title,
     lane,
     acceptedAt: run.admittedAt ?? run.startedAt,
+    ...(workingFiles.length > 0 ? { workingFiles } : {}),
     ...(run.agentFrameId ? { agentFrameId: run.agentFrameId } : {}),
     ...(Object.keys(provenance).length > 0 ? { provenance } : {})
   }

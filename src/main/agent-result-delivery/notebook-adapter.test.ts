@@ -65,6 +65,33 @@ describe('notebookRunDeliveryContext', () => {
       )
     ).toBeUndefined()
   })
+
+  it('delivers canonical working-file paths with their producer Run identity', () => {
+    expect(
+      notebookRunDeliveryContext(
+        { projectId: 'project-1', sessionId: 'session-1' },
+        run({
+          workingFiles: [
+            {
+              path: '/data/notebooks/project-1/session-1/data/result.csv',
+              relativePath: 'data/result.csv',
+              kind: 'other',
+              size: 42,
+              createdByRunId: 'run-1'
+            }
+          ]
+        })
+      )
+    ).toMatchObject({
+      workingFiles: [
+        {
+          relativePath: 'data/result.csv',
+          size: 42,
+          createdByRunId: 'run-1'
+        }
+      ]
+    })
+  })
 })
 
 describe('NotebookRunResultDeliveryAdapter', () => {

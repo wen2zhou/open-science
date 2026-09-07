@@ -92,6 +92,31 @@ describe('AgentResultDeliveryOwner', () => {
     expect(prompt).toContain('Do not recap background outcomes already handled in earlier Turns')
   })
 
+  it('explains how to publish a prior-Turn local Run without copying or rerunning it', () => {
+    const localRun = delivery('run-1')
+    const prompt = buildDeliveryPrompt([
+      {
+        ...localRun,
+        context: {
+          ...localRun.context,
+          workingFiles: [
+            {
+              relativePath: 'data/result.csv',
+              size: 42,
+              createdByRunId: 'run-1'
+            }
+          ]
+        }
+      }
+    ])
+
+    expect(prompt).toContain(
+      'use its runId as producerRunId with the matching workingFiles[].relativePath'
+    )
+    expect(prompt).toContain('Do not copy or rerun a completed local Run merely because it began')
+    expect(prompt).toContain('"workingFiles":[{"relativePath":"data/result.csv"')
+  })
+
   it('batches pending outcomes from one Session into one app continuation', async () => {
     const { owner, repository, sendContinuation } = harness()
 

@@ -39,7 +39,10 @@ import { AgentResultDeliveryOwner } from './agent-result-delivery/owner'
 import { ComputeJobResultDeliveryAdapter } from './agent-result-delivery/compute-adapter'
 import { NotebookRunResultDeliveryAdapter } from './agent-result-delivery/notebook-adapter'
 import { registerAgentResultDeliveryIpcHandlers } from './agent-result-delivery/ipc'
-import { hasSavedAgentResultContinuation } from './agent-result-delivery/continuation'
+import {
+  buildAgentResultContinuationPrompt,
+  hasSavedAgentResultContinuation
+} from './agent-result-delivery/continuation'
 import type { ProjectBackgroundActivityChangedEvent } from '../shared/agent-result-delivery'
 import {
   LIFECYCLE_CHANNELS,
@@ -794,12 +797,18 @@ const createApplicationModules = async (
       }) => {
         const runtime = runtimeRef.current
         if (!runtime) throw new Error('Agent runtime is unavailable for result delivery.')
+        const projectId = await sessionPersistenceCoordinator.sessionProjectId(request.sessionId)
+        if (!projectId) throw new Error('Background result delivery Session is unavailable.')
+        const session = await sessionPersistenceCoordinator.loadSessionForContinuation(
+          projectId,
+          request.sessionId
+        )
         const response = await runtime.sendApplicationPrompt(
-          {
+          buildAgentResultContinuationPrompt(session, {
             sessionId: request.sessionId,
             text: request.text,
-            provenanceContext: { promptMessageId: request.continuationMessageId }
-          },
+            continuationMessageId: request.continuationMessageId
+          }),
           {
             kind: 'application',
             feature: 'background-results',

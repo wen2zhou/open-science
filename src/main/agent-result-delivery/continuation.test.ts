@@ -1,6 +1,8 @@
 import { describe, expect, it } from 'vitest'
 
-import { hasSavedAgentResultContinuation } from './continuation'
+import { createLinearConversationGraph } from '../../shared/conversation-graph'
+import type { PersistedChatSession } from '../../shared/session-persistence'
+import { buildAgentResultContinuationPrompt, hasSavedAgentResultContinuation } from './continuation'
 
 const request = {
   continuationMessageId: 'continuation-1',
@@ -55,5 +57,66 @@ describe('hasSavedAgentResultContinuation', () => {
         { ...request, deliveryIds: [...request.deliveryIds, second] }
       )
     ).toBe(true)
+  })
+})
+
+describe('buildAgentResultContinuationPrompt', () => {
+  it('preserves the durable active ancestry and Runtime Segment for a background result turn', () => {
+    const messages: PersistedChatSession['messages'] = [
+      {
+        id: 'original-prompt',
+        role: 'user',
+        content: 'Run the analysis in the background.',
+        status: 'complete',
+        eventIds: [],
+        createdAt: 1,
+        updatedAt: 1
+      },
+      {
+        id: 'original-reply',
+        role: 'agent',
+        content: 'The background Run was submitted.',
+        status: 'complete',
+        responseToMessageId: 'original-prompt',
+        eventIds: [],
+        createdAt: 2,
+        updatedAt: 2
+      }
+    ]
+    const session: PersistedChatSession = {
+      id: 'session-1',
+      projectId: 'project-1',
+      title: 'Background analysis',
+      cwd: '/workspace',
+      status: 'idle',
+      messages,
+      conversationGraph: createLinearConversationGraph({
+        sessionId: 'session-1',
+        messages,
+        frameworkId: 'opencode',
+        providerId: 'provider-1',
+        model: 'model-1',
+        createdAt: 1,
+        updatedAt: 2
+      }),
+      createdAt: 1,
+      updatedAt: 2
+    }
+
+    const prompt = buildAgentResultContinuationPrompt(session, {
+      sessionId: 'session-1',
+      text: 'Background execution outcomes are now available.',
+      continuationMessageId: 'delivery-prompt'
+    })
+
+    expect(prompt.provenanceContext).toEqual({
+      promptMessageId: 'delivery-prompt',
+      rootFrameId: 'root-frame-session-1',
+      agentFrameId: 'root-frame-session-1',
+      messageBranchId: 'message-branch-session-1',
+      messageBranchAncestry: ['message-branch-session-1'],
+      messageAncestry: ['original-prompt', 'original-reply', 'delivery-prompt'],
+      runtimeSegmentId: 'runtime-segment-session-1'
+    })
   })
 })

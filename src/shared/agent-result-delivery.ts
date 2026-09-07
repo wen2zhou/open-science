@@ -21,6 +21,11 @@ export type LocalRunAgentResultDeliveryContext = Readonly<{
   title?: string
   lane?: string
   acceptedAt?: number
+  workingFiles?: readonly Readonly<{
+    relativePath: string
+    size?: number
+    createdByRunId?: string
+  }>[]
   provenance?: Readonly<{
     messageBranchId?: string
     runtimeSegmentId?: string

@@ -1,4 +1,10 @@
-import { isAgentResultDeliveryAttribution } from '../../shared/session-persistence'
+import type { AcpPromptRequest } from '../../shared/acp'
+import { getActiveConversationContext } from '../../shared/conversation-graph'
+import {
+  isAgentResultDeliveryAttribution,
+  materializeSessionConversationGraph,
+  type PersistedChatSession
+} from '../../shared/session-persistence'
 
 type PersistedDeliveryMessage = Readonly<{
   id: string
@@ -7,6 +13,23 @@ type PersistedDeliveryMessage = Readonly<{
   responseToMessageId?: string
   attribution?: unknown
 }>
+
+const buildAgentResultContinuationPrompt = (
+  session: PersistedChatSession,
+  request: Readonly<{
+    sessionId: string
+    text: string
+    continuationMessageId: string
+  }>
+): AcpPromptRequest => {
+  const graph = materializeSessionConversationGraph(session).conversationGraph
+  if (!graph) throw new Error('Background result continuation has no Conversation graph.')
+  return {
+    sessionId: request.sessionId,
+    text: request.text,
+    provenanceContext: getActiveConversationContext(graph, request.continuationMessageId)
+  }
+}
 
 const hasSavedAgentResultContinuation = (
   messages: readonly PersistedDeliveryMessage[],
@@ -39,4 +62,4 @@ const hasSavedAgentResultContinuation = (
   )
 }
 
-export { hasSavedAgentResultContinuation }
+export { buildAgentResultContinuationPrompt, hasSavedAgentResultContinuation }
