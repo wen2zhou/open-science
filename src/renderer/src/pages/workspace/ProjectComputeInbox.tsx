@@ -1,303 +1,480 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { CheckCircle2, Circle, Clock3, Cpu, Loader2, RadioTower } from 'lucide-react'
+import { ArrowUpRight, ChevronDown, Cpu, RadioTower } from 'lucide-react'
 
+import type { JobSummary } from '../../../../shared/compute'
 import type {
-  BackgroundResultExecutionType,
-  ProjectBackgroundActivityItem
-} from '../../../../shared/background-result-delivery'
-import { useNavigationStore } from '@/stores/navigation-store'
-import {
-  EMPTY_ACTIVITY,
-  useProjectBackgroundActivityStore
-} from '@/stores/project-background-activity-store'
-import { useSessionStore } from '@/stores/session-store'
+  NotebookProjectActivity,
+  NotebookProjectBackgroundRunActivity,
+  NotebookProjectKernelActivity
+} from '../../../../shared/notebook'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
-import {
-  Select,
-  SelectContent,
-  SelectItem,
-  SelectTrigger,
-  SelectValue
-} from '@/components/ui/select'
+import { useRelativeTimeFormat } from '@/hooks/useDateTimeFormat'
+import { useNavigationStore } from '@/stores/navigation-store'
+import { useSessionStore } from '@/stores/session-store'
 import { backgroundActivityStatusLabel } from './background-activity-presentation'
 
-type TypeFilter = 'all' | BackgroundResultExecutionType
+const RECENT_COMPUTE_WINDOW_MS = 48 * 60 * 60 * 1_000
+const EMPTY_NOTEBOOK_ACTIVITY: NotebookProjectActivity = { kernels: [], backgroundRuns: [] }
+const EMPTY_JOBS: JobSummary[] = []
+const ACTIVE_COMPUTE_JOB_STATUSES = new Set<JobSummary['status']>([
+  'queued',
+  'submitted',
+  'running'
+])
 
-const statusIcon = (item: ProjectBackgroundActivityItem): typeof Circle => {
-  if (item.status === 'running') return Circle
-  if (item.status === 'queued' || item.status === 'submitted') return Clock3
-  if (item.status === 'cancelling') return Loader2
-  return CheckCircle2
-}
-
-const localExecutionLabel = (
-  type: BackgroundResultExecutionType | undefined,
+const kernelLabel = (
+  kernel: NotebookProjectKernelActivity,
   t: ReturnType<typeof useTranslation>['t']
 ): string => {
-  if (type === 'python') return t('Python Notebook Run')
-  if (type === 'r') return t('R Notebook Run')
-  if (type === 'repl') return t('JavaScript REPL')
-  if (type === 'shell') return t('Shell Command')
-  return type === 'compute-job' ? t('Compute Job') : t('Local Run')
+  if (kernel.kind === 'repl') return t('JavaScript REPL')
+  const language = kernel.kind === 'r' ? 'R' : 'Python'
+  return kernel.environment ? `${language} · ${kernel.environment}` : language
 }
+
+const kernelStatusLabel = (
+  status: NotebookProjectKernelActivity['status'],
+  t: ReturnType<typeof useTranslation>['t']
+): string => {
+  if (status === 'idle') return t('Idle')
+  if (status === 'starting') return t('Starting')
+  if (status === 'restarting') return t('Restarting')
+  return t('Running')
+}
+
+const kernelStatusClassName = (status: NotebookProjectKernelActivity['status']): string => {
+  if (status === 'running') {
+    return 'inline-flex rounded-full bg-status-success-surface px-2 py-0.5 text-[10px] font-semibold text-status-success-foreground dark:bg-status-success-dark-surface dark:text-status-success-dark-foreground'
+  }
+  if (status === 'idle') {
+    return 'inline-flex rounded-full bg-bg-100 px-2 py-0.5 text-[10px] font-semibold text-text-100'
+  }
+  return 'inline-flex rounded-full bg-status-warning-surface px-2 py-0.5 text-[10px] font-semibold text-status-warning-foreground dark:bg-status-warning-dark-surface dark:text-status-warning-dark-foreground'
+}
+
+const jobStatusLabel = (job: JobSummary, t: ReturnType<typeof useTranslation>['t']): string =>
+  backgroundActivityStatusLabel(
+    job.cancellation_status === 'cancelling'
+      ? 'cancelling'
+      : job.cancellation_status === 'cancelled'
+        ? 'cancelled'
+        : job.status,
+    undefined,
+    t
+  )
 
 const ProjectComputeInbox = (): React.JSX.Element => {
   const { t } = useTranslation()
+  const formatRelativeTime = useRelativeTimeFormat()
   const projectId = useNavigationStore((state) => state.activeProjectId)
   const openSession = useNavigationStore((state) => state.openSession)
   const sessions = useSessionStore((state) => state.sessions)
   const currentSessionId = useSessionStore((state) => state.selectedSessionId)
-  const snapshotProjectId = useProjectBackgroundActivityStore((state) => state.projectId)
-  const snapshot = useProjectBackgroundActivityStore((state) => state.snapshot)
-  const hydrate = useProjectBackgroundActivityStore((state) => state.hydrate)
-  const clear = useProjectBackgroundActivityStore((state) => state.clear)
-  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
-  const [announcementRevision, setAnnouncementRevision] = useState(0)
+  const [notebookSnapshot, setNotebookSnapshot] = useState<{
+    projectId: string
+    activity: NotebookProjectActivity
+  }>()
+  const [jobsSnapshot, setJobsSnapshot] = useState<{ projectId: string; jobs: JobSummary[] }>()
+  const [recentSince, setRecentSince] = useState(() => Date.now() - RECENT_COMPUTE_WINDOW_MS)
+  const notebookActivity =
+    projectId && notebookSnapshot?.projectId === projectId
+      ? notebookSnapshot.activity
+      : EMPTY_NOTEBOOK_ACTIVITY
+  const jobs = projectId && jobsSnapshot?.projectId === projectId ? jobsSnapshot.jobs : EMPTY_JOBS
 
   useEffect(() => {
-    const delivery = window.api.backgroundResultDelivery
-    if (!projectId || !delivery?.getProjectActivity) {
-      clear()
-      return
-    }
+    if (!projectId) return
     let alive = true
     let requestVersion = 0
     const load = async (): Promise<void> => {
       const version = ++requestVersion
-      const next = await delivery.getProjectActivity({ projectId }).catch(() => undefined)
-      if (alive && version === requestVersion && next) hydrate(projectId, next)
+      const activity = await window.api.notebook
+        .getProjectActivity({ projectId })
+        .catch(() => undefined)
+      if (alive && version === requestVersion && activity) {
+        setNotebookSnapshot({ projectId, activity })
+      }
     }
-    const stopDelivery = delivery.onChanged((event) => {
+    const stop = window.api.notebook.onChanged((event) => {
       if (event.projectId === projectId) void load()
     })
-    const stopNotebook = window.api.notebook.onChanged((event) => {
-      if (event.projectId === projectId) void load()
-    })
-    const stopCompute = window.api.compute?.onJobUpdated((job) => {
+    void load()
+    return () => {
+      alive = false
+      stop()
+    }
+  }, [projectId])
+
+  useEffect(() => {
+    if (!projectId) return
+    let alive = true
+    let requestVersion = 0
+    const load = async (): Promise<void> => {
+      const version = ++requestVersion
+      const next = await window.api.compute
+        .jobsList({ projectId, since: recentSince })
+        .catch(() => [])
+      if (alive && version === requestVersion) setJobsSnapshot({ projectId, jobs: next })
+    }
+    const stop = window.api.compute.onJobUpdated((job) => {
       if (job.project_id === projectId) void load()
     })
     void load()
-    const poll = window.setInterval(() => void load(), 30_000)
     return () => {
       alive = false
-      stopDelivery()
-      stopNotebook()
-      stopCompute?.()
-      window.clearInterval(poll)
+      stop()
     }
-  }, [clear, hydrate, projectId])
+  }, [projectId, recentSince])
 
-  const currentSnapshot = snapshotProjectId === projectId ? snapshot : EMPTY_ACTIVITY
+  useEffect(() => {
+    const nextExpiry = Math.min(
+      ...jobs
+        .filter(
+          (job) =>
+            !ACTIVE_COMPUTE_JOB_STATUSES.has(job.status) && job.cancellation_status !== 'cancelling'
+        )
+        .map((job) => (job.finished_at ?? job.created_at) + RECENT_COMPUTE_WINDOW_MS)
+    )
+    if (!Number.isFinite(nextExpiry)) return
+    const timer = window.setTimeout(
+      () => setRecentSince(Date.now() - RECENT_COMPUTE_WINDOW_MS),
+      Math.max(0, nextExpiry - Date.now() + 1)
+    )
+    return () => window.clearTimeout(timer)
+  }, [jobs])
 
   const sessionById = useMemo(
     () => new Map(sessions.map((session) => [session.id, session] as const)),
     [sessions]
   )
-  const presentedItems = useMemo(
-    () =>
-      currentSnapshot.items.map((item) => {
-        const session = sessionById.get(item.sessionId)
-        if (session && session.archivedAt === undefined) return item
-        return !session ? { ...item, status: 'result-unavailable' as const, active: false } : item
-      }),
-    [currentSnapshot.items, sessionById]
-  )
-  const visible = useMemo(
-    () =>
-      presentedItems.filter((item) => typeFilter === 'all' || item.executionType === typeFilter),
-    [presentedItems, typeFilter]
-  )
-  const groups = useMemo(() => {
-    const grouped = new Map<string, ProjectBackgroundActivityItem[]>()
-    for (const item of visible)
-      grouped.set(item.sessionId, [...(grouped.get(item.sessionId) ?? []), item])
-    return [...grouped.entries()]
-      .map(([sessionId, items]) => ({
-        sessionId,
-        items,
-        updatedAt: Math.max(...items.map((item) => item.updatedAt))
-      }))
-      .sort((left, right) => {
-        const leftCurrent = left.sessionId === currentSessionId
-        const rightCurrent = right.sessionId === currentSessionId
-        if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1
-        return right.updatedAt - left.updatedAt
-      })
-  }, [currentSessionId, visible])
-
-  useEffect(() => {
-    const signature = groups
-      .flatMap((group) =>
-        group.items.map(
-          (item) => `${item.id}:${item.status}:${item.outcomeStatus ?? ''}:${item.updatedAt}`
-        )
+  const kernels = useMemo(() => {
+    const latestBySession = new Map<string, NotebookProjectKernelActivity>()
+    for (const kernel of notebookActivity.kernels) {
+      const previous = latestBySession.get(kernel.sessionId)
+      if (!previous || kernel.lastActivityAt > previous.lastActivityAt) {
+        latestBySession.set(kernel.sessionId, kernel)
+      }
+    }
+    return [...latestBySession.values()].sort((left, right) => {
+      const leftCurrent = left.sessionId === currentSessionId
+      const rightCurrent = right.sessionId === currentSessionId
+      if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1
+      return (
+        left.sessionId.localeCompare(right.sessionId) ||
+        left.processKey.localeCompare(right.processKey)
       )
-      .join('|')
-    if (!signature) return
-    const timer = window.setTimeout(() => setAnnouncementRevision((revision) => revision + 1), 500)
-    return () => window.clearTimeout(timer)
-  }, [groups])
+    })
+  }, [currentSessionId, notebookActivity.kernels])
+  const latestBackgroundRunBySessionAndKernel = useMemo(() => {
+    const bySession = new Map<string, Map<string, NotebookProjectBackgroundRunActivity>>()
+    for (const run of notebookActivity.backgroundRuns) {
+      if (!run.processKey) continue
+      let byKernel = bySession.get(run.sessionId)
+      if (!byKernel) {
+        byKernel = new Map()
+        bySession.set(run.sessionId, byKernel)
+      }
+      const previous = byKernel.get(run.processKey)
+      if (!previous || run.acceptedAt > previous.acceptedAt) {
+        byKernel.set(run.processKey, run)
+      }
+    }
+    return bySession
+  }, [notebookActivity.backgroundRuns])
+
+  const goToSession = (sessionId: string): void => {
+    if (projectId && sessionById.has(sessionId)) openSession(projectId, sessionId, 'user')
+  }
 
   return (
     <section
       className="@container/compute flex h-full min-h-0 flex-col bg-bg-10"
       aria-labelledby="project-compute-title"
     >
-      <header className="flex flex-wrap items-start gap-4 border-b border-border-200 px-6 py-4">
-        <div className="min-w-[260px] flex-1">
-          <h1 id="project-compute-title" className="text-lg font-semibold">
-            {t('Compute')}
-          </h1>
-          <p className="mt-1 text-xs text-text-100">
-            {t('Project-level overview of local runs and compute jobs.')}
-          </p>
-        </div>
-        <div className="flex items-center gap-2 text-xs text-text-100">
-          <span id="project-compute-type-label">{t('Type')}</span>
-          <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)}>
-            <SelectTrigger aria-labelledby="project-compute-type-label" className="w-52">
-              <SelectValue />
-            </SelectTrigger>
-            <SelectContent>
-              <SelectItem value="all">{t('All types')}</SelectItem>
-              <SelectItem value="python">{t('Python Notebook Run')}</SelectItem>
-              <SelectItem value="r">{t('R Notebook Run')}</SelectItem>
-              <SelectItem value="repl">{t('JavaScript REPL')}</SelectItem>
-              <SelectItem value="shell">{t('Shell Command')}</SelectItem>
-              <SelectItem value="compute-job">{t('Compute Job')}</SelectItem>
-            </SelectContent>
-          </Select>
-        </div>
+      <header className="border-b border-border-200 px-6 py-4">
+        <h1 id="project-compute-title" className="text-lg font-semibold">
+          {t('Compute')}
+        </h1>
+        <p className="mt-1 text-xs text-text-100">
+          {t(
+            'Active kernels, active Compute Jobs, and Compute Jobs completed in the last 48 hours.'
+          )}
+        </p>
       </header>
 
       <ScrollArea className="min-h-0 flex-1">
-        <div className="px-6 py-4">
-          <aside className="mb-4 rounded-lg border border-status-info-border bg-status-info-surface p-3 text-xs leading-5 text-status-info-foreground dark:text-status-info-dark-foreground">
-            <p>
-              {t('Local Runs execute in this app. Compute Jobs execute on a remote Compute Host.')}
-            </p>
-            <p>{t("Lifecycle management is available only in the task's Session.")}</p>
-          </aside>
-
-          {groups.length === 0 ? (
-            <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-border-200 text-sm text-text-100">
-              {t('No visible compute activity')}
-            </div>
-          ) : (
-            <div className="space-y-4" data-testid="project-compute-groups">
-              {groups.map((group) => {
-                const session = sessionById.get(group.sessionId)
-                const localRuns = group.items.filter((item) => item.sourceKind === 'local-run')
-                const computeJobs = group.items.filter((item) => item.sourceKind === 'compute-job')
-                return (
-                  <section
-                    key={group.sessionId}
-                    className="overflow-hidden rounded-lg border border-border-200 bg-bg-000"
-                  >
-                    <header className="flex items-center gap-2 bg-bg-200 px-3 py-2 text-sm font-semibold">
-                      <Cpu className="size-4 text-text-100" aria-hidden="true" />
-                      <span>{session?.title ?? t('Deleted Session')}</span>
-                      {group.sessionId === currentSessionId ? (
-                        <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] text-accent-foreground">
-                          {t('Current Session')}
+        <div className="space-y-5 px-6 py-4">
+          <section aria-labelledby="active-kernels-title">
+            {kernels.length === 0 ? (
+              <div className="overflow-hidden rounded-lg border border-border-200 bg-bg-000">
+                <h2
+                  id="active-kernels-title"
+                  className="border-b border-border-200 px-3.5 py-3 text-sm font-semibold"
+                >
+                  {t('Active kernels')} · {kernels.length}
+                </h2>
+                <div className="px-3 py-6 text-center text-xs text-text-100">
+                  {t('No active kernels')}
+                </div>
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-lg border border-border-200 bg-bg-000">
+                <h2
+                  id="active-kernels-title"
+                  className="border-b border-border-200 px-3.5 py-3 text-sm font-semibold"
+                >
+                  {t('Active kernels')} · {kernels.length}
+                </h2>
+                <div
+                  role="row"
+                  className="hidden grid-cols-[minmax(180px,1.15fr)_minmax(220px,1.4fr)_100px_28px] gap-4 border-b border-border-200 bg-bg-10 px-3.5 py-2 text-[10px] font-semibold tracking-wide text-text-100 uppercase @3xl/compute:grid"
+                >
+                  <span role="columnheader">{t('Session')}</span>
+                  <span role="columnheader">{t('Kernel')}</span>
+                  <span role="columnheader">{t('Status')}</span>
+                  <span aria-hidden="true" />
+                </div>
+                {kernels.map((kernel) => {
+                  const workload = latestBackgroundRunBySessionAndKernel
+                    .get(kernel.sessionId)
+                    ?.get(kernel.processKey)
+                  const session = sessionById.get(kernel.sessionId)
+                  return (
+                    <div
+                      key={`${kernel.sessionId}:${kernel.processKey}`}
+                      className="relative border-t border-border-200 px-3.5 py-3 text-xs first:border-t-0"
+                    >
+                      <div className="flex min-w-0 items-center gap-2 pr-8 @3xl/compute:hidden">
+                        <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-bg-100 text-text-100">
+                          <Cpu className="size-3.5" aria-hidden="true" />
                         </span>
-                      ) : null}
-                      {session?.archivedAt !== undefined ? (
-                        <span className="text-[10px] font-normal text-text-100">
-                          {t('Archived Session')}
-                        </span>
-                      ) : null}
-                    </header>
-                    {[
-                      { label: t('Local runs'), items: localRuns },
-                      { label: t('Compute jobs'), items: computeJobs }
-                    ].map((section) =>
-                      section.items.length ? (
-                        <div key={section.label}>
-                          <div className="border-t border-border-200 bg-bg-100 px-3 py-1 text-[10px] font-semibold tracking-wide text-text-300 uppercase">
-                            {section.label}
+                        <div className="min-w-0 flex-1">
+                          <div className="flex min-w-0 items-center gap-2">
+                            <span className="truncate font-medium">
+                              {session?.title ?? t('Deleted Session')}
+                            </span>
+                            <span className={kernelStatusClassName(kernel.status)}>
+                              {kernelStatusLabel(kernel.status, t)}
+                            </span>
                           </div>
-                          {section.items.map((item) => {
-                            const StatusIcon = statusIcon(item)
-                            return (
-                              <div
-                                key={item.id}
-                                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-t border-border-200 px-3 py-2 text-xs @3xl/compute:grid-cols-[minmax(240px,1.5fr)_minmax(150px,1fr)_140px_130px]"
-                              >
-                                <div className="col-span-2 flex min-w-0 items-center gap-2 @3xl/compute:col-span-1">
-                                  {item.sourceKind === 'compute-job' ? (
-                                    <RadioTower className="size-4 shrink-0" aria-hidden="true" />
-                                  ) : (
-                                    <Cpu className="size-4 shrink-0" aria-hidden="true" />
-                                  )}
-                                  <div className="min-w-0">
-                                    <div
-                                      className="truncate font-medium"
-                                      title={item.title ?? item.sourceId}
-                                    >
-                                      {item.title ?? item.sourceId}
-                                    </div>
-                                    <div className="text-[10px] text-text-100">
-                                      {item.sourceKind === 'compute-job'
-                                        ? t('Remote Compute Job')
-                                        : `${t('Local Run')} · ${localExecutionLabel(item.executionType, t)}`}
-                                    </div>
-                                  </div>
-                                </div>
-                                <span className="truncate text-text-100" title={item.lane}>
-                                  {item.lane ?? '—'}
+                          <div className="mt-1 flex min-w-0 items-center gap-1.5 text-[11px] text-text-100">
+                            <span className="shrink-0">{kernelLabel(kernel, t)}</span>
+                            {workload ? (
+                              <>
+                                <span className="shrink-0 rounded border border-border-300 bg-bg-100 px-1.5 py-0.5 text-[10px] font-semibold text-text-200">
+                                  {t('Background')}
                                 </span>
-                                <span className="flex items-center gap-1.5 text-text-100">
-                                  <StatusIcon
-                                    className={
-                                      item.status === 'cancelling'
-                                        ? 'size-3.5 animate-spin motion-reduce:animate-none'
-                                        : 'size-3.5'
-                                    }
-                                    aria-hidden="true"
-                                  />
-                                  {backgroundActivityStatusLabel(
-                                    item.status,
-                                    item.outcomeStatus,
-                                    t
-                                  )}
+                                <span className="truncate" title={workload.title}>
+                                  {workload.title}
                                 </span>
-                                <Button
-                                  variant="outline"
-                                  size="sm"
-                                  className="col-span-2 justify-self-end @3xl/compute:col-span-1 @3xl/compute:justify-self-stretch"
-                                  disabled={!session}
-                                  onClick={() =>
-                                    projectId && openSession(projectId, item.sessionId, 'user')
-                                  }
-                                >
-                                  {t('Go to Session')}
-                                </Button>
-                              </div>
-                            )
-                          })}
+                              </>
+                            ) : null}
+                          </div>
                         </div>
-                      ) : null
-                    )}
-                  </section>
-                )
-              })}
-            </div>
-          )}
-          {snapshot.truncated ? (
-            <p className="mt-3 text-xs text-text-100">
-              {t('Showing the 200 most recently updated visible tasks.')}
-            </p>
-          ) : null}
+                      </div>
+                      <dl className="hidden grid-cols-[minmax(180px,1.15fr)_minmax(220px,1.4fr)_100px_28px] items-center gap-4 @3xl/compute:grid">
+                        <div>
+                          <dt className="sr-only">{t('Session')}</dt>
+                          <dd className="flex min-w-0 items-center gap-2 font-medium">
+                            <span className="flex size-6 shrink-0 items-center justify-center rounded-md bg-bg-100 text-text-100">
+                              <Cpu className="size-3.5" aria-hidden="true" />
+                            </span>
+                            <span className="truncate">
+                              {session?.title ?? t('Deleted Session')}
+                            </span>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="sr-only">{t('Kernel')}</dt>
+                          <dd className="min-w-0">
+                            <div className="flex min-w-0 flex-wrap items-center gap-1.5 font-medium">
+                              <span className="truncate">{kernelLabel(kernel, t)}</span>
+                              {workload ? (
+                                <span className="shrink-0 rounded border border-border-300 bg-bg-100 px-1.5 py-0.5 text-[10px] font-semibold text-text-200">
+                                  {t('Background')}
+                                </span>
+                              ) : null}
+                            </div>
+                            {workload ? (
+                              <div
+                                className="mt-1 min-w-0 truncate text-[11px] font-normal text-text-100"
+                                title={workload.title}
+                              >
+                                {workload.title}
+                              </div>
+                            ) : null}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="sr-only">{t('Status')}</dt>
+                          <dd>
+                            <span className={kernelStatusClassName(kernel.status)}>
+                              {kernelStatusLabel(kernel.status, t)}
+                            </span>
+                          </dd>
+                        </div>
+                        <div aria-hidden="true" />
+                      </dl>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        className="absolute top-3 right-3 text-text-100 hover:text-text-000 @3xl/compute:top-1/2 @3xl/compute:-translate-y-1/2"
+                        disabled={!session}
+                        aria-label={t('Go to Session')}
+                        title={t('Go to Session')}
+                        onClick={() => goToSession(kernel.sessionId)}
+                      >
+                        <ArrowUpRight aria-hidden="true" />
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </section>
+
+          <section aria-labelledby="compute-jobs-title">
+            {jobs.length === 0 ? (
+              <div className="overflow-hidden rounded-lg border border-border-200 bg-bg-000">
+                <h2
+                  id="compute-jobs-title"
+                  className="border-b border-border-200 px-3.5 py-3 text-sm font-semibold"
+                >
+                  {t('Compute jobs')} · {jobs.length}
+                </h2>
+                <div className="px-3 py-6 text-center text-xs text-text-100">
+                  {t('No active or recently completed Compute Jobs.')}
+                </div>
+              </div>
+            ) : (
+              <div className="overflow-hidden rounded-lg border border-border-200 bg-bg-000">
+                <h2
+                  id="compute-jobs-title"
+                  className="border-b border-border-200 px-3.5 py-3 text-sm font-semibold"
+                >
+                  {t('Compute jobs')} · {jobs.length}
+                </h2>
+                <div
+                  role="row"
+                  className="hidden grid-cols-[minmax(200px,1.35fr)_minmax(160px,1fr)_minmax(140px,1fr)_100px_110px_28px] gap-4 border-b border-border-200 bg-bg-10 px-3.5 py-2 text-[10px] font-semibold tracking-wide text-text-100 uppercase @3xl/compute:grid"
+                >
+                  <span role="columnheader">{t('Task')}</span>
+                  <span role="columnheader">{t('Session')}</span>
+                  <span role="columnheader">{t('Host')}</span>
+                  <span role="columnheader">{t('Status')}</span>
+                  <span role="columnheader">{t('Updated')}</span>
+                  <span aria-hidden="true" />
+                </div>
+                {jobs.map((job) => {
+                  const session = sessionById.get(job.session_id)
+                  const updatedAt = job.finished_at ?? job.started_at ?? job.created_at
+                  return (
+                    <div
+                      key={job.job_id}
+                      className="relative border-t border-border-200 px-3.5 py-3 text-xs first:border-t-0"
+                    >
+                      <details className="group pr-8 @3xl/compute:hidden">
+                        <summary className="flex cursor-pointer list-none items-center gap-2 pr-1 [&::-webkit-details-marker]:hidden">
+                          <RadioTower
+                            className="size-3.5 shrink-0 text-text-100"
+                            aria-hidden="true"
+                          />
+                          <span className="min-w-0 flex-1">
+                            <span className="block truncate font-medium" title={job.intent}>
+                              {job.intent}
+                            </span>
+                            <span className="mt-1 flex items-center gap-1.5 text-[11px] text-text-100">
+                              <span>{jobStatusLabel(job, t)}</span>
+                              <span aria-hidden="true">·</span>
+                              <time dateTime={new Date(updatedAt).toISOString()}>
+                                {formatRelativeTime(updatedAt)}
+                              </time>
+                            </span>
+                          </span>
+                          <ChevronDown
+                            className="size-3.5 shrink-0 transition-transform group-open:rotate-180"
+                            aria-hidden="true"
+                          />
+                        </summary>
+                        <dl className="mt-3 grid gap-2 border-t border-border-200 pt-3">
+                          <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-2">
+                            <dt className="text-[10px] font-semibold tracking-wide text-text-100 uppercase">
+                              {t('Session')}
+                            </dt>
+                            <dd className="truncate text-text-100">
+                              {session?.title ?? t('Deleted Session')}
+                            </dd>
+                          </div>
+                          <div className="grid grid-cols-[72px_minmax(0,1fr)] gap-2">
+                            <dt className="text-[10px] font-semibold tracking-wide text-text-100 uppercase">
+                              {t('Host')}
+                            </dt>
+                            <dd className="truncate text-text-100">{job.display_name}</dd>
+                          </div>
+                        </dl>
+                      </details>
+                      <dl className="hidden grid-cols-[minmax(200px,1.35fr)_minmax(160px,1fr)_minmax(140px,1fr)_100px_110px_28px] items-center gap-4 @3xl/compute:grid">
+                        <div>
+                          <dt className="sr-only">{t('Task')}</dt>
+                          <dd className="flex min-w-0 items-center gap-2 font-medium">
+                            <RadioTower
+                              className="size-3.5 shrink-0 text-text-100"
+                              aria-hidden="true"
+                            />
+                            <span className="truncate" title={job.intent}>
+                              {job.intent}
+                            </span>
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="sr-only">{t('Session')}</dt>
+                          <dd className="truncate text-text-100">
+                            {session?.title ?? t('Deleted Session')}
+                          </dd>
+                        </div>
+                        <div>
+                          <dt className="sr-only">{t('Host')}</dt>
+                          <dd className="truncate text-text-100">{job.display_name}</dd>
+                        </div>
+                        <div>
+                          <dt className="sr-only">{t('Status')}</dt>
+                          <dd className="text-text-100">{jobStatusLabel(job, t)}</dd>
+                        </div>
+                        <div>
+                          <dt className="sr-only">{t('Updated')}</dt>
+                          <dd>
+                            <time
+                              dateTime={new Date(updatedAt).toISOString()}
+                              className="text-text-100"
+                            >
+                              {formatRelativeTime(updatedAt)}
+                            </time>
+                          </dd>
+                        </div>
+                        <div aria-hidden="true" />
+                      </dl>
+                      <Button
+                        type="button"
+                        variant="ghost"
+                        size="icon-xs"
+                        className="absolute top-3 right-3 text-text-100 hover:text-text-000 @3xl/compute:top-1/2 @3xl/compute:-translate-y-1/2"
+                        disabled={!session}
+                        aria-label={t('Go to Session')}
+                        title={t('Go to Session')}
+                        onClick={() => goToSession(job.session_id)}
+                      >
+                        <ArrowUpRight aria-hidden="true" />
+                      </Button>
+                    </div>
+                  )
+                })}
+              </div>
+            )}
+          </section>
         </div>
       </ScrollArea>
-      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
-        <span key={announcementRevision}>
-          {announcementRevision > 0 ? t('Compute activity updated.') : null}
-        </span>
-      </p>
     </section>
   )
 }

@@ -14403,6 +14403,101 @@ describe('v4 runtime bindings & agent tools', () => {
     })
   })
 
+  it('reports only live Kernels owned by the requested Project without materializing dormant Sessions', async () => {
+    const root = await createStorageRoot()
+    const { service } = lifecycleCallbackHarness(root)
+    await service.execute({
+      projectId: 'project-a',
+      sessionId: 'session-a',
+      workspaceCwd: root,
+      language: 'python',
+      code: '1'
+    })
+    await service.state({
+      projectId: 'project-a',
+      sessionId: 'dormant-session',
+      workspaceCwd: root
+    })
+    await service.execute({
+      projectId: 'project-b',
+      sessionId: 'session-b',
+      workspaceCwd: root,
+      language: 'python',
+      code: '2'
+    })
+
+    const projectActivity = service.getProjectActivity({ projectId: 'project-a' })
+
+    expect(projectActivity).toEqual({
+      kernels: [
+        {
+          projectId: 'project-a',
+          sessionId: 'session-a',
+          processKey: 'python:default-python',
+          kind: 'python',
+          environment: 'default-python',
+          status: 'idle',
+          lastActivityAt: expect.any(Number)
+        }
+      ],
+      backgroundRuns: []
+    })
+  })
+
+  it('attaches an active background Run to its Kernel and removes it after completion', async () => {
+    const root = await createStorageRoot()
+    const executionStarted = createDeferred<void>()
+    const releaseExecution = createDeferred<void>()
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      backgroundExecutionEnabled: true,
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          executionStarted.resolve()
+          await releaseExecution.promise
+          return {
+            status: 'completed',
+            stdout: '',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const receipt = await service.executeBackground({
+      projectId: 'project-a',
+      sessionId: 'session-a',
+      workspaceCwd: root,
+      language: 'python',
+      code: 'long_running_analysis()\nprint("done")',
+      background: true,
+      executionInvocationId: 'project-activity-background'
+    })
+    await executionStarted.promise
+
+    expect(service.getProjectActivity({ projectId: 'project-a' }).backgroundRuns).toEqual([
+      {
+        projectId: 'project-a',
+        sessionId: 'session-a',
+        runId: receipt.runId,
+        executionType: 'python',
+        processKey: 'python:default-python',
+        title: 'long_running_analysis()',
+        acceptedAt: receipt.acceptedAt
+      }
+    ])
+
+    releaseExecution.resolve()
+    await service.waitForBackgroundRun(receipt.runId)
+    expect(service.getProjectActivity({ projectId: 'project-a' }).backgroundRuns).toEqual([])
+  })
+
   it('force-stop disable aborts the running cell and records it cancelled (WS10 force-stop)', async () => {
     const root = await createStorageRoot()
     // A blocking executor: execute() stays pending until terminate() rejects it (a killed kernel).

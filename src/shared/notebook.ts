@@ -685,6 +685,37 @@ export type NotebookEnvironmentStatus = {
   restartRecommended?: boolean
 }
 
+// Lightweight, process-local projection for the Project Compute overview. Unlike state(), this
+// describes only live execution resources and never materializes a dormant Notebook or reads Run
+// history from disk.
+export type NotebookProjectKernelActivity = ProjectIdScope & {
+  sessionId: string
+  processKey: string
+  kind: 'python' | 'r' | 'repl'
+  environment?: string
+  status: Extract<
+    NotebookKernelMetadata['lastKnownStatus'],
+    'starting' | 'idle' | 'running' | 'restarting'
+  >
+  lastActivityAt: number
+}
+
+export type NotebookProjectBackgroundRunActivity = ProjectIdScope & {
+  sessionId: string
+  runId: string
+  executionType: 'python' | 'r' | 'repl' | 'shell'
+  processKey?: string
+  title: string
+  acceptedAt: number
+}
+
+export type NotebookProjectActivityRequest = ProjectIdScope
+
+export type NotebookProjectActivity = Readonly<{
+  kernels: readonly NotebookProjectKernelActivity[]
+  backgroundRuns: readonly NotebookProjectBackgroundRunActivity[]
+}>
+
 // Bounded, non-persisted discovery metadata for one Agent's complete durable history. The renderer
 // requests one summary at a time so old kernel kinds remain exportable without widening `runs`.
 export type NotebookRunHistorySummary = {

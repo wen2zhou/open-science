@@ -22,6 +22,9 @@ import type {
   NotebookLanguage,
   NotebookNamespaceRequest,
   NotebookNamespaceSnapshot,
+  NotebookProjectActivity,
+  NotebookProjectBackgroundRunActivity,
+  NotebookProjectActivityRequest,
   NotebookRestartRequest,
   NotebookRunRecord,
   NotebookRunSummary,
@@ -423,7 +426,11 @@ class NotebookRuntimeService {
   private runLifecycleRecovery: Promise<void> | undefined
   private readonly backgroundRuns = new Map<
     string,
-    { controller: AbortController; completion: Promise<unknown> }
+    {
+      controller: AbortController
+      completion: Promise<unknown>
+      activity: NotebookProjectBackgroundRunActivity
+    }
   >()
   private readonly pythonRBackgroundExecutionEnabled: boolean
   private readonly replBackgroundExecutionEnabled: boolean
@@ -1187,7 +1194,11 @@ class NotebookRuntimeService {
             transportSignal?.removeEventListener('abort', cancelBeforeReceipt)
             const receipt = this.backgroundReceipt(projectId, request.sessionId, admitted)
             if (!this.backgroundRuns.has(admitted.runId)) {
-              this.backgroundRuns.set(admitted.runId, { controller, completion })
+              this.backgroundRuns.set(admitted.runId, {
+                controller,
+                completion,
+                activity: this.backgroundRunActivity(projectId, request.sessionId, admitted)
+              })
             }
             resolveReceipt(receipt)
           }
@@ -1256,6 +1267,51 @@ class NotebookRuntimeService {
       lifecycleScope: 'app-process',
       submissionIdentity: run.submissionIdentity,
       ...(run.shellConcurrency ? { shellConcurrency: run.shellConcurrency } : {})
+    }
+  }
+
+  private backgroundRunActivity(
+    projectId: string,
+    sessionId: string,
+    run: NotebookRunRecord
+  ): NotebookProjectBackgroundRunActivity {
+    const title =
+      run.script
+        .split(/\r?\n/u)
+        .find((line) => line.trim())
+        ?.trim()
+        .slice(0, 80) || run.runId
+    if (run.kernelKind === 'bash') {
+      return {
+        projectId,
+        sessionId,
+        runId: run.runId,
+        executionType: 'shell',
+        title,
+        acceptedAt: run.admittedAt ?? run.startedAt
+      }
+    }
+    if (run.kernelKind === 'repl') {
+      return {
+        projectId,
+        sessionId,
+        runId: run.runId,
+        executionType: 'repl',
+        processKey: 'repl',
+        title,
+        acceptedAt: run.admittedAt ?? run.startedAt
+      }
+    }
+    const executionType = run.kernelKind === 'r' ? 'r' : 'python'
+    const environment = run.environment ?? (executionType === 'r' ? DEFAULT_R_ENV : DEFAULT_PY_ENV)
+    return {
+      projectId,
+      sessionId,
+      runId: run.runId,
+      executionType,
+      processKey: `${executionType}:${environment}`,
+      title,
+      acceptedAt: run.admittedAt ?? run.startedAt
     }
   }
 
@@ -1453,7 +1509,11 @@ class NotebookRuntimeService {
             this.observeBackgroundAdmission(projectId, request.sessionId, admitted)
             transportSignal?.removeEventListener('abort', cancelBeforeReceipt)
             if (!this.backgroundRuns.has(admitted.runId)) {
-              this.backgroundRuns.set(admitted.runId, { controller, completion })
+              this.backgroundRuns.set(admitted.runId, {
+                controller,
+                completion,
+                activity: this.backgroundRunActivity(projectId, request.sessionId, admitted)
+              })
             }
             resolveReceipt(this.backgroundReceipt(projectId, request.sessionId, admitted))
           }
@@ -1562,7 +1622,15 @@ class NotebookRuntimeService {
             this.observeBackgroundAdmission(projectId, backgroundRequest.sessionId, admitted)
             transportSignal?.removeEventListener('abort', cancelBeforeReceipt)
             if (!this.backgroundRuns.has(admitted.runId)) {
-              this.backgroundRuns.set(admitted.runId, { controller, completion })
+              this.backgroundRuns.set(admitted.runId, {
+                controller,
+                completion,
+                activity: this.backgroundRunActivity(
+                  projectId,
+                  backgroundRequest.sessionId,
+                  admitted
+                )
+              })
             }
             resolveReceipt(this.backgroundReceipt(projectId, backgroundRequest.sessionId, admitted))
           }
@@ -2220,6 +2288,50 @@ class NotebookRuntimeService {
   // Lists sessions with a cell mid-execution, for the pre-migration active-session warning.
   getActiveNotebookSessions(): { projectId: string; sessionId: string }[] {
     return this.sessionLifecycle.activeSessions()
+  }
+
+  // Purely in-memory Project projection for renderer monitoring. Dormant Sessions have no kernel
+  // status entries and disk-backed Notebook state is deliberately outside this interface.
+  getProjectActivity(request: NotebookProjectActivityRequest): NotebookProjectActivity {
+    const kernels: NotebookProjectActivity['kernels'][number][] = []
+    for (const session of this.sessions.values()) {
+      if (session.projectId !== request.projectId) continue
+      for (const [processKey, status, lastActivityAt] of session.kernelActivityEntries()) {
+        if (
+          status !== 'starting' &&
+          status !== 'idle' &&
+          status !== 'running' &&
+          status !== 'restarting'
+        ) {
+          continue
+        }
+        if (processKey === 'repl') {
+          kernels.push({
+            projectId: session.projectId,
+            sessionId: session.sessionId,
+            processKey,
+            kind: 'repl',
+            status,
+            lastActivityAt
+          })
+          continue
+        }
+        const separator = processKey.indexOf(':')
+        kernels.push({
+          projectId: session.projectId,
+          sessionId: session.sessionId,
+          processKey,
+          kind: processKey.slice(0, separator) === 'r' ? 'r' : 'python',
+          environment: processKey.slice(separator + 1),
+          status,
+          lastActivityAt
+        })
+      }
+    }
+    const backgroundRuns = Array.from(this.backgroundRuns.values(), ({ activity }) => activity)
+      .filter((activity) => activity.projectId === request.projectId)
+      .sort((left, right) => left.acceptedAt - right.acceptedAt)
+    return { kernels, backgroundRuns }
   }
 }
 

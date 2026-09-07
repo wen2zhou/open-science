@@ -11,6 +11,7 @@ import type {
   FinishNotebookCodeCellRequest,
   NotebookBackgroundRunLookupRequest,
   NotebookNamespaceRequest,
+  NotebookProjectActivityRequest,
   NotebookRestartRequest,
   NotebookSessionRequest,
   NotebookSessionStateRequest,
@@ -24,6 +25,9 @@ const log = createLogger('notebook:ipc')
 const registerNotebookIpcHandlers = (handlers: NotebookCommandWorkflows): void => {
   ipcMainHandle('notebook:state', (_event, request: NotebookSessionStateRequest) =>
     handlers.state(request)
+  )
+  ipcMainHandle('notebook:project-activity', (_event, request: NotebookProjectActivityRequest) =>
+    handlers.projectActivity(request)
   )
   ipcMainHandle('notebook:inspect-namespace', (_event, request: NotebookNamespaceRequest) =>
     handlers.inspectNamespace(request)

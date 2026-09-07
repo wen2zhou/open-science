@@ -32,6 +32,11 @@ const notebookStateCommand = defineApplicationCommand<
   WorkflowArgs<'state'>,
   WorkflowResult<'state'>
 >('notebook:state')
+const notebookProjectActivityCommand = defineApplicationCommand<
+  'notebook:project-activity',
+  WorkflowArgs<'projectActivity'>,
+  WorkflowResult<'projectActivity'>
+>('notebook:project-activity')
 const notebookInspectNamespaceCommand = defineApplicationCommand<
   'notebook:inspect-namespace',
   WorkflowArgs<'inspectNamespace'>,
@@ -110,6 +115,7 @@ const notebookReadInputPreviewCommand = defineApplicationCommand<
 
 const notebookApplicationCommands = defineApplicationCommandGroup('notebook', [
   notebookStateCommand,
+  notebookProjectActivityCommand,
   notebookInspectNamespaceCommand,
   notebookReferenceCommand,
   notebookBeginCodeCellCommand,
@@ -135,6 +141,8 @@ const installNotebookApplicationCommands = (
   try {
     scope.registerGroup(notebookApplicationCommands, {
       'notebook:state': (invocation) => dependencies.workflows.state(invocation.args[0]),
+      'notebook:project-activity': (invocation) =>
+        dependencies.workflows.projectActivity(invocation.args[0]),
       'notebook:inspect-namespace': (invocation) =>
         dependencies.workflows.inspectNamespace(invocation.args[0]),
       'notebook:reference': (invocation) => dependencies.workflows.reference(invocation.args[0]),
@@ -185,6 +193,7 @@ export {
   notebookFinishCodeCellCommand,
   notebookGetBackgroundRunCommand,
   notebookInspectNamespaceCommand,
+  notebookProjectActivityCommand,
   notebookReadInputPreviewCommand,
   notebookReferenceCommand,
   notebookRestartCommand,

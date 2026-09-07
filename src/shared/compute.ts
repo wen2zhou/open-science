@@ -595,6 +595,8 @@ export type JobSummary = {
 // The existing per-Session feed supports workspace history. The non-terminal variant is a bounded
 // cross-Session query used to hydrate renderer-lifetime activity after startup or recovery.
 export type ComputeJobsListFilter =
-  Readonly<{ sessionId: string; status?: string[] }> | Readonly<{ nonTerminal: true }>
+  | Readonly<{ sessionId: string; status?: string[] }>
+  | Readonly<{ nonTerminal: true }>
+  | Readonly<{ projectId: string; since: number }>
 
 export type ComputeJobsPendingNotificationFilter = string | Readonly<{ allSessions: true }>

@@ -115,6 +115,7 @@ export const WEB_INVOKE_CHANNELS = {
   'notebook.exportIpynbAll': 'notebook:export-ipynb-all',
   'notebook.finishCodeCell': 'notebook:finish-code-cell',
   'notebook.getBackgroundRun': 'notebook:background-run',
+  'notebook.getProjectActivity': 'notebook:project-activity',
   'notebook.getReference': 'notebook:reference',
   'notebook.inspectNamespace': 'notebook:inspect-namespace',
   'notebook.readInputPreview': 'notebook:read-input-preview',

@@ -560,6 +560,17 @@ const createComputeHandlers = (
     jobsList: async (filter) => {
       if (!jobRepository || !storageRoot) return []
       const hostNameMap = await listHostNames()
+      if ('projectId' in filter) {
+        const jobs = await jobRepository.findProjectOverview(
+          filter.projectId,
+          new Date(filter.since)
+        )
+        return Promise.all(
+          jobs.map((job) =>
+            toJobSummary(job, hostNameMap.get(job.provider_id) ?? job.provider_id, storageRoot)
+          )
+        )
+      }
       const jobs =
         'nonTerminal' in filter
           ? await jobRepository.findNonTerminal()

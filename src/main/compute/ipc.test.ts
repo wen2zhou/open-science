@@ -1002,6 +1002,38 @@ describe('compute handlers — jobsList', () => {
     expect(findNonTerminal).toHaveBeenCalledOnce()
   })
 
+  it('returns the project overview without consulting Agent Result Delivery state', async () => {
+    const job = makeJob({ project_id: 'proj-1', status: 'success', finished_at: 2000 })
+    const findProjectOverview = vi.fn().mockResolvedValue([job])
+    const hasDeliveryPath = vi.fn().mockResolvedValue(true)
+    const handlers = createComputeHandlers(
+      mockRepository({ list: vi.fn().mockResolvedValue([]) }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockJobRepository({ findProjectOverview }),
+      undefined,
+      undefined,
+      '/tmp/test-storage',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { hasDeliveryPath }
+    )
+
+    const result = await handlers.jobsList({ projectId: 'proj-1', since: 1725541200000 })
+
+    expect(findProjectOverview).toHaveBeenCalledWith('proj-1', new Date('2024-09-05T13:00:00.000Z'))
+    expect(hasDeliveryPath).not.toHaveBeenCalled()
+    expect(result).toEqual([expect.objectContaining({ job_id: 'job-1', project_id: 'proj-1' })])
+    expect(result[0]).not.toHaveProperty('result_delivery_path')
+  })
+
   it('returns empty array when no jobRepository is injected', async () => {
     const handlers = createComputeHandlers(mockRepository({}))
     const result = await handlers.jobsList({ sessionId: 'sess-1' })
@@ -2623,6 +2655,26 @@ describe('installComputeIpcHandlers', () => {
 
     expect(handlers.has('compute:list')).toBe(true)
     expect(module.computeService).toBeDefined()
+  })
+
+  it('accepts a project overview jobs list request at the Electron boundary', async () => {
+    const findProjectOverview = vi.fn().mockResolvedValue([])
+    const module = createComputeIpcModule(
+      mockRepository({ list: vi.fn().mockResolvedValue([]) }),
+      mockJobRepo({ findProjectOverview })
+    )
+    installComputeModule(module)
+
+    await expect(
+      invokeHandler(COMPUTE_JOBS_LIST_CHANNEL, {
+        projectId: 'project-1',
+        since: 1725541200000
+      })
+    ).resolves.toEqual([])
+    expect(findProjectOverview).toHaveBeenCalledWith(
+      'project-1',
+      new Date('2024-09-05T13:00:00.000Z')
+    )
   })
 
   it('rejects an invalid approval decision without settling the pending operation', async () => {

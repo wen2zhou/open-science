@@ -289,6 +289,7 @@ export class NotebookSessionAggregate<
   private mcpRpcConnection: NotebookSessionMcpRpcConnection | undefined
   private readonly terminatedKernels = new Set<string>()
   private readonly kernelStatuses = new Map<string, NotebookKernelMetadata['lastKnownStatus']>()
+  private readonly kernelStatusLastActivityAt = new Map<string, number>()
   private readonly restoredKernelStatusValue?: NotebookKernelMetadata['lastKnownStatus']
   private readonly durableTerminatedKernelKeys = new Set<string>()
   private durableUnknownKernelTermination: boolean
@@ -527,6 +528,7 @@ export class NotebookSessionAggregate<
 
   clearProcessState(processKey: string): void {
     this.kernelStatuses.delete(processKey)
+    this.kernelStatusLastActivityAt.delete(processKey)
     this.terminatedKernels.delete(processKey)
     this.executionQueues.delete(processKey)
     this.kernelEpochs.delete(processKey)
@@ -544,12 +546,21 @@ export class NotebookSessionAggregate<
     return Array.from(this.kernelStatuses.entries())
   }
 
+  kernelActivityEntries(): Array<[string, NotebookKernelMetadata['lastKnownStatus'], number]> {
+    return Array.from(this.kernelStatuses, ([processKey, status]) => [
+      processKey,
+      status,
+      this.kernelStatusLastActivityAt.get(processKey)!
+    ])
+  }
+
   kernelProcessKeys(): string[] {
     return Array.from(this.kernelStatuses.keys())
   }
 
   setKernelStatus(processKey: string, status: NotebookKernelMetadata['lastKnownStatus']): void {
     this.kernelStatuses.set(processKey, status)
+    this.kernelStatusLastActivityAt.set(processKey, Date.now())
   }
 
   markKernelTerminated(processKey: string): void {

@@ -13,6 +13,8 @@ import type {
   NotebookBackgroundRunResult,
   NotebookNamespaceRequest,
   NotebookNamespaceSnapshot,
+  NotebookProjectActivity,
+  NotebookProjectActivityRequest,
   NotebookRestartRequest,
   NotebookRunSummary,
   NotebookSessionReference,
@@ -48,6 +50,7 @@ type NotebookShutdownResult = { sessionId: string; status: 'shutdown' }
 
 type NotebookCommandRuntime = {
   state(request: NotebookSessionStateRequest): Promise<NotebookSessionState>
+  getProjectActivity(request: NotebookProjectActivityRequest): NotebookProjectActivity
   inspectNamespace(request: NotebookNamespaceRequest): Promise<NotebookNamespaceSnapshot>
   getSessionReference(request: NotebookSessionRequest): Promise<NotebookSessionReference | null>
   beginCodeCell(request: BeginNotebookCodeCellRequest): Promise<BeginNotebookCodeCellResult>
@@ -70,6 +73,7 @@ type NotebookCommandRuntime = {
 
 type NotebookCommandWorkflows = {
   state(request: NotebookSessionStateRequest): Promise<NotebookSessionState>
+  projectActivity(request: NotebookProjectActivityRequest): Promise<NotebookProjectActivity>
   inspectNamespace(request: NotebookNamespaceRequest): Promise<NotebookNamespaceSnapshot>
   reference(request: NotebookSessionRequest): Promise<NotebookSessionReference | null>
   beginCodeCell(request: BeginNotebookCodeCellRequest): Promise<BeginNotebookCodeCellResult>
@@ -117,6 +121,7 @@ const createNotebookCommandWorkflows = (
   // These projections can initialize a previously unseen Notebook session and persist run.json,
   // so they share the same data-root admission as explicit mutation commands.
   state: (request) => withDataRootWrite(() => runtime.state(request)),
+  projectActivity: async (request) => runtime.getProjectActivity(request),
   inspectNamespace: (request) =>
     withDataRootWrite(() => runtime.inspectNamespace(withoutTrustedTurnContext(request))),
   reference: (request) => runtime.getSessionReference(request),
