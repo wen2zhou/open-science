@@ -11,12 +11,14 @@ import { ShellProcessOwnershipRegistry } from './shell-process-ownership'
 import type { ChildProcess } from 'node:child_process'
 
 const roots: string[] = []
+const BOOT_A = '11111111-1111-4111-8111-111111111111'
+const BOOT_B = '22222222-2222-4222-8222-222222222222'
 
 afterEach(async () => {
   await Promise.all(roots.splice(0).map((root) => rm(root, { recursive: true, force: true })))
 })
 
-describe.runIf(process.platform !== 'win32')('Shell process ownership recovery', () => {
+describe.runIf(process.platform === 'linux')('Shell process ownership recovery', () => {
   it('reaps a previous app instance process group before recovery completes', async () => {
     const root = await mkdtemp(join(tmpdir(), 'shell-process-recovery-'))
     roots.push(root)
@@ -51,7 +53,8 @@ describe('Shell process ownership receipt lifecycle', () => {
       kill: vi.fn(() => true)
     }) as unknown as ChildProcess
     const registry = new ShellProcessOwnershipRegistry(root, {
-      processStartIdentity: () => 'start-identity'
+      processStartIdentity: () => 'start-identity',
+      readBootToken: () => BOOT_A
     })
     const release = registry.claim(child, {
       runId: 'notebook-run-receipt-1',
@@ -72,6 +75,7 @@ describe('Shell process ownership receipt lifecycle', () => {
       processExists: () => true,
       ownedTreeExists: () => true,
       processStartIdentity: () => 'start-identity',
+      readBootToken: () => BOOT_A,
       terminateOwnedTree: terminate
     })
 
@@ -117,6 +121,55 @@ describe('Shell process ownership receipt lifecycle', () => {
     expect(terminate).not.toHaveBeenCalled()
   })
 
+  it('never signals a reused POSIX group after a proven reboot', async () => {
+    const { root } = await claimedReceipt()
+    const terminate = vi.fn(async () => ({ reaped: true }))
+    const registry = new ShellProcessOwnershipRegistry(root, {
+      processExists: () => true,
+      ownedTreeExists: () => true,
+      processStartIdentity: () => 'start-identity',
+      readBootToken: () => BOOT_B,
+      terminateOwnedTree: terminate
+    })
+
+    await registry.recover()
+
+    expect(terminate).not.toHaveBeenCalled()
+    expect(registry.hasReceipts()).toBe(false)
+  })
+
+  it('clears a dead macOS group without requiring a Linux boot token', async () => {
+    const { root } = await claimedReceipt('darwin')
+    const terminate = vi.fn(async () => ({ reaped: true }))
+    const registry = new ShellProcessOwnershipRegistry(root, {
+      processExists: () => false,
+      ownedTreeExists: () => false,
+      terminateOwnedTree: terminate
+    })
+
+    await registry.recover()
+
+    expect(terminate).not.toHaveBeenCalled()
+    expect(registry.hasReceipts()).toBe(false)
+  })
+
+  it('retains a leaderless POSIX group instead of signaling a reused numeric id', async () => {
+    const { root } = await claimedReceipt()
+    const terminate = vi.fn(async () => ({ reaped: true }))
+    const registry = new ShellProcessOwnershipRegistry(root, {
+      processExists: () => false,
+      ownedTreeExists: () => true,
+      readBootToken: () => BOOT_A,
+      terminateOwnedTree: terminate
+    })
+
+    await expect(registry.recover()).rejects.toMatchObject({
+      code: 'SHELL_PROCESS_RECOVERY_BLOCKED'
+    })
+    expect(terminate).not.toHaveBeenCalled()
+    expect(registry.hasReceipts()).toBe(true)
+  })
+
   it('fails closed and retains ownership when start identity cannot be read', async () => {
     const { root } = await claimedReceipt()
     const terminate = vi.fn(async () => ({ reaped: true }))
@@ -124,6 +177,7 @@ describe('Shell process ownership receipt lifecycle', () => {
       processExists: () => true,
       ownedTreeExists: () => true,
       processStartIdentity: () => undefined,
+      readBootToken: () => BOOT_A,
       terminateOwnedTree: terminate
     })
 

@@ -46,7 +46,6 @@ describe('Project Compute inbox', () => {
 
   it('groups current Session first and exposes navigation without lifecycle or detail actions', async () => {
     const getProjectActivity = vi.fn().mockResolvedValue({
-      revision: 20,
       truncated: false,
       items: [
         {
@@ -72,9 +71,10 @@ describe('Project Compute inbox', () => {
           sessionId: 'session-attention',
           title: 'Fit remote model',
           lane: 'Compute Host · Cluster One',
-          status: 'needs-attention',
+          status: 'success',
           active: false,
           needsAttention: true,
+          outcomeStatus: 'success',
           updatedAt: 20
         }
       ]
@@ -83,7 +83,7 @@ describe('Project Compute inbox', () => {
       'window',
       Object.assign(window, {
         api: {
-          agentResultDelivery: {
+          backgroundResultDelivery: {
             getProjectActivity,
             onChanged: vi.fn(() => () => undefined)
           },
@@ -104,9 +104,12 @@ describe('Project Compute inbox', () => {
     )
     expect(container.textContent).toContain('Local Run')
     expect(container.textContent).toContain('Remote Compute Job')
+    expect(container.textContent).toContain('Local runs')
+    expect(container.textContent).toContain('Compute jobs')
+    expect(container.textContent).toContain('Completed')
+    expect(container.textContent).not.toMatch(/Awaiting Agent|Needs Agent|Pending delivery/u)
     expect([...container.querySelectorAll('button')].map((button) => button.textContent)).toEqual([
       'All types',
-      'Needs attention',
       'Go to Session',
       'Go to Session'
     ])
@@ -115,10 +118,10 @@ describe('Project Compute inbox', () => {
 
   it('subscribes before hydrate and refreshes only for its Project delivery events', async () => {
     const calls: string[] = []
-    let changed: ((event: { projectId: string; revision: number }) => void) | undefined
+    let changed: ((event: { projectId: string }) => void) | undefined
     const getProjectActivity = vi.fn(async () => {
       calls.push('query')
-      return { revision: 1, truncated: false, items: [] }
+      return { truncated: false, items: [] }
     })
     const onChanged = vi.fn((listener: typeof changed) => {
       calls.push('subscribe')
@@ -129,7 +132,7 @@ describe('Project Compute inbox', () => {
       'window',
       Object.assign(window, {
         api: {
-          agentResultDelivery: { getProjectActivity, onChanged },
+          backgroundResultDelivery: { getProjectActivity, onChanged },
           notebook: { onChanged: vi.fn(() => () => undefined) },
           compute: { onJobUpdated: vi.fn(() => () => undefined) }
         }
@@ -143,9 +146,52 @@ describe('Project Compute inbox', () => {
     await vi.waitFor(() => expect(getProjectActivity).toHaveBeenCalledOnce())
 
     expect(calls.slice(0, 2)).toEqual(['subscribe', 'query'])
-    act(() => changed?.({ projectId: 'project-2', revision: 2 }))
+    act(() => changed?.({ projectId: 'project-2' }))
     expect(getProjectActivity).toHaveBeenCalledOnce()
-    act(() => changed?.({ projectId: 'project-1', revision: 2 }))
+    act(() => changed?.({ projectId: 'project-1' }))
     await vi.waitFor(() => expect(getProjectActivity).toHaveBeenCalledTimes(2))
+  })
+
+  it('does not render a cached snapshot owned by another Project', async () => {
+    useProjectBackgroundActivityStore.getState().hydrate('project-1', {
+      truncated: false,
+      items: [
+        {
+          id: 'local-run:stale-run',
+          sourceKind: 'local-run',
+          sourceId: 'stale-run',
+          executionType: 'python',
+          projectId: 'project-1',
+          sessionId: 'session-current',
+          title: 'Stale project result',
+          status: 'running',
+          active: true,
+          needsAttention: false,
+          updatedAt: 10
+        }
+      ]
+    })
+    useNavigationStore.setState({ activeProjectId: 'project-2' })
+    vi.stubGlobal(
+      'window',
+      Object.assign(window, {
+        api: {
+          backgroundResultDelivery: {
+            getProjectActivity: vi.fn(() => new Promise(() => undefined)),
+            onChanged: vi.fn(() => () => undefined)
+          },
+          notebook: { onChanged: vi.fn(() => () => undefined) },
+          compute: { onJobUpdated: vi.fn(() => () => undefined) }
+        }
+      })
+    )
+    const container = document.createElement('div')
+    document.body.append(container)
+    root = createRoot(container)
+
+    await act(async () => root?.render(<ProjectComputeInbox />))
+
+    expect(container.textContent).not.toContain('Stale project result')
+    expect(container.textContent).toContain('No visible compute activity')
   })
 })

@@ -139,8 +139,8 @@ describe('packaged database migration ledger smoke', () => {
         checksum: '77d0476e02c6993e54772e2a17908b62a6998c540c56d826a691fe358ac1093a'
       },
       {
-        id: '0032_agent_result_delivery',
-        checksum: '506e5d2bd6695d744b767563cfb9a924b1e55097c01e64482e3af42713315ab6'
+        id: '0032_background_result_delivery',
+        checksum: '6d4e9d8a6beed847a63ac589916c23f165e845291803cae4a16dadb30734b925'
       }
     ])
     expect(() => assertApplicationMigrationLedger(MIGRATION_MANIFEST)).not.toThrow()
@@ -179,7 +179,7 @@ describe('packaged database migration ledger smoke', () => {
       await rebuildComputeJobWithoutAnalysisConstraints(client, true)
       await removeArchiveAndLiteratureSchema(client)
       await client.$executeRawUnsafe(
-        `DELETE FROM "_open_science_migrations" WHERE "id" IN ('0020_compute_job_analysis_state', '0021_compute_job_analysis_constraints', '0022_memory_global_content_unique', '0023_compute_job_operation', '0024_compute_job_file_evidence', '0025_managed_file_version_foundation', '0026_compute_job_remote_cleanup', '0027_project_session_defaults', '0028_database_numeric_and_null_constraints', '0029_compute_host_execution_mode', '0030_literature_foundation', '0031_project_archive_revision', '0032_agent_result_delivery')`
+        `DELETE FROM "_open_science_migrations" WHERE "id" IN ('0020_compute_job_analysis_state', '0021_compute_job_analysis_constraints', '0022_memory_global_content_unique', '0023_compute_job_operation', '0024_compute_job_file_evidence', '0025_managed_file_version_foundation', '0026_compute_job_remote_cleanup', '0027_project_session_defaults', '0028_database_numeric_and_null_constraints', '0029_compute_host_execution_mode', '0030_literature_foundation', '0031_project_archive_revision', '0032_background_result_delivery')`
       )
 
       await migrateApplicationDatabase(client)
@@ -215,7 +215,7 @@ describe('packaged database migration ledger smoke', () => {
       await migrateApplicationDatabase(client)
       await rebuildComputeJobWithoutAnalysisConstraints(client, false)
       await client.$executeRawUnsafe(
-        `DELETE FROM "_open_science_migrations" WHERE "id" IN ('0021_compute_job_analysis_constraints', '0022_memory_global_content_unique', '0023_compute_job_operation', '0024_compute_job_file_evidence', '0025_managed_file_version_foundation', '0026_compute_job_remote_cleanup', '0027_project_session_defaults', '0028_database_numeric_and_null_constraints', '0029_compute_host_execution_mode', '0030_literature_foundation', '0031_project_archive_revision', '0032_agent_result_delivery')`
+        `DELETE FROM "_open_science_migrations" WHERE "id" IN ('0021_compute_job_analysis_constraints', '0022_memory_global_content_unique', '0023_compute_job_operation', '0024_compute_job_file_evidence', '0025_managed_file_version_foundation', '0026_compute_job_remote_cleanup', '0027_project_session_defaults', '0028_database_numeric_and_null_constraints', '0029_compute_host_execution_mode', '0030_literature_foundation', '0031_project_archive_revision', '0032_background_result_delivery')`
       )
       await client.$executeRawUnsafe(`INSERT INTO "ComputeJob" (
         "id", "providerId", "shape", "sessionId", "projectId", "status", "intent",
@@ -249,7 +249,7 @@ describe('packaged database migration ledger smoke', () => {
       await migrateApplicationDatabase(client)
       await client.$executeRawUnsafe('DROP INDEX "MemoryEntry_global_contentKey_key"')
       await client.$executeRawUnsafe(
-        `DELETE FROM "_open_science_migrations" WHERE "id" IN ('0022_memory_global_content_unique', '0023_compute_job_operation', '0024_compute_job_file_evidence', '0025_managed_file_version_foundation', '0026_compute_job_remote_cleanup', '0027_project_session_defaults', '0028_database_numeric_and_null_constraints', '0029_compute_host_execution_mode', '0030_literature_foundation', '0031_project_archive_revision', '0032_agent_result_delivery')`
+        `DELETE FROM "_open_science_migrations" WHERE "id" IN ('0022_memory_global_content_unique', '0023_compute_job_operation', '0024_compute_job_file_evidence', '0025_managed_file_version_foundation', '0026_compute_job_remote_cleanup', '0027_project_session_defaults', '0028_database_numeric_and_null_constraints', '0029_compute_host_execution_mode', '0030_literature_foundation', '0031_project_archive_revision', '0032_background_result_delivery')`
       )
       await client.memoryEntry.createMany({
         data: [
@@ -347,7 +347,7 @@ describe('packaged database migration ledger smoke', () => {
         'ALTER TABLE "SessionAuxiliaryTurnUsage" DROP COLUMN "providerId"'
       )
       await client.$executeRawUnsafe(
-        `DELETE FROM "_open_science_migrations" WHERE "id" IN ('0019_session_usage_attribution', '0020_compute_job_analysis_state', '0021_compute_job_analysis_constraints', '0022_memory_global_content_unique', '0023_compute_job_operation', '0024_compute_job_file_evidence', '0025_managed_file_version_foundation', '0026_compute_job_remote_cleanup', '0027_project_session_defaults', '0028_database_numeric_and_null_constraints', '0029_compute_host_execution_mode', '0030_literature_foundation', '0031_project_archive_revision', '0032_agent_result_delivery')`
+        `DELETE FROM "_open_science_migrations" WHERE "id" IN ('0019_session_usage_attribution', '0020_compute_job_analysis_state', '0021_compute_job_analysis_constraints', '0022_memory_global_content_unique', '0023_compute_job_operation', '0024_compute_job_file_evidence', '0025_managed_file_version_foundation', '0026_compute_job_remote_cleanup', '0027_project_session_defaults', '0028_database_numeric_and_null_constraints', '0029_compute_host_execution_mode', '0030_literature_foundation', '0031_project_archive_revision', '0032_background_result_delivery')`
       )
       await rebuildComputeJobWithoutAnalysisConstraints(client, true)
       await removeArchiveAndLiteratureSchema(client)
@@ -429,7 +429,7 @@ describe('packaged database migration ledger smoke', () => {
            '0028_database_numeric_and_null_constraints',
            '0029_compute_host_execution_mode',
            '0030_literature_foundation', '0031_project_archive_revision',
-           '0032_agent_result_delivery'
+           '0032_background_result_delivery'
          )`
       )
       await rebuildComputeJobWithoutAnalysisConstraints(client, true)

@@ -171,15 +171,12 @@ vi.mock('./use-session-background-tasks', async (importOriginal) => ({
   useSessionBackgroundTasks: () => ({
     runs: [],
     jobs: mockAllJobs,
-    deliveryByRunId: new Map(),
-    deliveryByJobId: new Map(),
     now: 0,
     summary: {
       activeCount: mockHasRunningJobs ? mockAllJobs.length : 0,
       oldestActiveStartedAt: mockHasRunningJobs ? 0 : undefined,
       totalTasks: mockAllJobs.length
-    },
-    dismissDelivery: () => undefined
+    }
   })
 }))
 

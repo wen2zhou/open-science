@@ -1,4 +1,4 @@
-import type { AgentResultFollowUpDelivery } from '../../shared/agent-result-delivery'
+import type { AgentResultFollowUpDelivery } from '../../shared/background-result-delivery'
 import type {
   AgentComputeHostSummary,
   ComputeHost,

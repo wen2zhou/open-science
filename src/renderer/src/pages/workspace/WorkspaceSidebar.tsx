@@ -838,7 +838,7 @@ const WorkspaceSidebarView = ({
                 isComputeOpen && 'bg-bg-300',
                 sidebarInteractiveTransitionClassName
               )}
-              disabled={!canCreateConversation}
+              disabled={!canCreateConversation || !onOpenCompute}
               aria-controls="right-panel"
               aria-pressed={isComputeOpen}
               onClick={onOpenCompute}

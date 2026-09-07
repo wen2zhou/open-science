@@ -22,6 +22,7 @@ type PrismaOwnerModel = Readonly<{
 }>
 
 type ProjectDeletionPath =
+  | 'background-result-delivery-target-delete'
   | 'compute-job-project-delete'
   | 'delegated-runtime-quiescence'
   | 'notification-session-invalidation'
@@ -238,21 +239,21 @@ const PROJECT_OWNED_DATA_CATALOG: readonly ProjectOwnedDataCatalogEntry[] = [
     }
   },
   {
-    id: 'agent-result-delivery-history',
+    id: 'background-result-delivery',
     medium: 'sqlite',
-    resources: ['AgentResultDelivery'],
+    resources: ['BackgroundResultDelivery'],
     prismaModels: [
       {
-        name: 'AgentResultDelivery',
+        name: 'BackgroundResultDelivery',
         ownerFields: [requiredOwner('projectId'), requiredOwner('sessionId')]
       }
     ],
     policy: {
-      kind: 'retained-history',
-      effect: 'retain',
-      retention: 'Retained as the durable delivery ledger after Project soft deletion.',
-      reason:
-        'Consumed and dismissed facts remain idempotency tombstones; pending facts preserve explicit needs-attention state.'
+      kind: 'coordinator-cleanup',
+      effect: 'hard-delete',
+      path: 'background-result-delivery-target-delete',
+      operation: 'BackgroundResultDeliveryOwner.commitProjectDeletion',
+      note: 'Delivery obligations and replay tombstones are removed only after Project authority deletion.'
     }
   },
   {

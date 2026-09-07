@@ -2386,6 +2386,40 @@ describe('WorkspaceSidebar accessible render', () => {
     expect(onOpenLiterature).toHaveBeenCalledTimes(1)
   })
 
+  it('disables the Project Compute entry when its read capability is unavailable', async () => {
+    const { WorkspaceSidebarView } = await import('./WorkspaceSidebar')
+    const tree = WorkspaceSidebarView({
+      now: Date.now(),
+      projectName: 'Example project',
+      sessions: [],
+      activeSessionId: undefined,
+      canCreateConversation: true,
+      canMutateConversations: true,
+      canDeleteConversations: true,
+      onGoHome: vi.fn(),
+      onNewConversation: vi.fn(),
+      isFilesOpen: false,
+      onOpenFiles: vi.fn(),
+      onOpenSession: vi.fn(),
+      onRenameSession: vi.fn(),
+      canDownloadArtifacts: false,
+      onDownloadArtifacts: vi.fn(),
+      onViewNotebook: vi.fn(),
+      onTogglePin: vi.fn(),
+      onDeleteSession: vi.fn(),
+      onOpenSettings: vi.fn(),
+      onOpenProjectSettings: vi.fn(),
+      onNewProject: vi.fn(),
+      canDownloadProjectArtifacts: false,
+      onDownloadProjectArtifacts: vi.fn()
+    })
+    const computeButton = collectElements(tree)
+      .filter((element) => element.type === 'button')
+      .find((button) => getTextContent(button).trim() === 'Compute')
+
+    expect(computeButton?.props.disabled).toBe(true)
+  })
+
   it('wires the View notebook menu item to the matching session', async () => {
     const { WorkspaceSidebarView } = await import('./WorkspaceSidebar')
     const sessions = [

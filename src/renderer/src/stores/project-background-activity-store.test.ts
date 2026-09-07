@@ -1,16 +1,15 @@
 import { beforeEach, describe, expect, it } from 'vitest'
 
-import type { ProjectBackgroundActivity } from '../../../shared/agent-result-delivery'
+import type { ProjectBackgroundActivity } from '../../../shared/background-result-delivery'
 import {
   EMPTY_ACTIVITY,
   useProjectBackgroundActivityStore
 } from './project-background-activity-store'
 
 const snapshot = (
-  revision: number,
-  status: 'running' | 'pending-delivery'
+  updatedAt: number,
+  status: 'running' | 'completed'
 ): ProjectBackgroundActivity => ({
-  revision,
   truncated: false,
   items: [
     {
@@ -25,7 +24,7 @@ const snapshot = (
       status,
       active: status === 'running',
       needsAttention: false,
-      updatedAt: revision
+      updatedAt
     }
   ]
 })
@@ -35,20 +34,18 @@ describe('Project background activity store', () => {
     useProjectBackgroundActivityStore.setState({ projectId: undefined, snapshot: EMPTY_ACTIVITY })
   )
 
-  it('does not let an older hydrate regress a terminal delivery to running', () => {
+  it('replaces the projection supplied by the request-sequenced caller', () => {
     const store = useProjectBackgroundActivityStore.getState()
-    store.hydrate('project-1', snapshot(20, 'pending-delivery'))
+    store.hydrate('project-1', snapshot(20, 'completed'))
     store.hydrate('project-1', snapshot(10, 'running'))
 
-    expect(useProjectBackgroundActivityStore.getState().snapshot).toEqual(
-      snapshot(20, 'pending-delivery')
-    )
+    expect(useProjectBackgroundActivityStore.getState().snapshot).toEqual(snapshot(10, 'running'))
   })
 
   it('accepts a newer empty hydrate so consumed results disappear', () => {
     const store = useProjectBackgroundActivityStore.getState()
-    store.hydrate('project-1', snapshot(20, 'pending-delivery'))
-    store.hydrate('project-1', { revision: 21, items: [], truncated: false })
+    store.hydrate('project-1', snapshot(20, 'completed'))
+    store.hydrate('project-1', { items: [], truncated: false })
 
     expect(useProjectBackgroundActivityStore.getState().snapshot.items).toEqual([])
   })

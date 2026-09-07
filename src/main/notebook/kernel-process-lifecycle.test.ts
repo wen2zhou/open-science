@@ -5,7 +5,7 @@ import { join } from 'node:path'
 
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import { KernelProcessLifecycleOwner } from './kernel-process-lifecycle'
+import { defaultController, KernelProcessLifecycleOwner } from './kernel-process-lifecycle'
 import { readProcessStartToken } from './operation-recovery'
 
 const processIsAlive = (pid: number): boolean => {
@@ -17,10 +17,15 @@ const processIsAlive = (pid: number): boolean => {
   }
 }
 
+const BOOT_TOKEN = '11111111-1111-4111-8111-111111111111'
+
 describe('KernelProcessLifecycleOwner', () => {
+  const bootA = '11111111-1111-4111-8111-111111111111'
+  const bootB = '22222222-2222-4222-8222-222222222222'
   let root: string | undefined
 
   afterEach(async () => {
+    vi.restoreAllMocks()
     if (root) await rm(root, { recursive: true, force: true })
     root = undefined
   })
@@ -105,6 +110,105 @@ describe('KernelProcessLifecycleOwner', () => {
     })
   })
 
+  it('drops a reboot-stale POSIX group receipt without terminating its recycled numeric id', async () => {
+    root = await mkdtemp(join(tmpdir(), 'kernel-process-reused-group-'))
+    const first = new KernelProcessLifecycleOwner({
+      storageRoot: root,
+      ownerInstanceId: 'owner-a',
+      platform: 'linux',
+      readBootToken: () => bootA,
+      controller: {
+        probe: vi.fn(async () => 'owned' as const),
+        terminate: vi.fn(async () => ({ reaped: true }))
+      }
+    })
+    await first.ensureReady()
+    const intent = first.beginSpawn({
+      laneKey: '["project-1","session-1","root",null,null]',
+      processKey: 'python:default-python',
+      kernelEpochId: 'epoch-reused-group'
+    })
+    first.recordSpawned(intent, { pid: 4242 })
+
+    const restarted = new KernelProcessLifecycleOwner({
+      storageRoot: root,
+      ownerInstanceId: 'owner-b',
+      platform: 'linux',
+      readBootToken: () => bootB
+    })
+
+    await restarted.ensureReady()
+
+    expect(await readdir(join(root, 'runtime', 'kernel-processes'))).toEqual([])
+  })
+
+  it('does not probe or signal a numeric POSIX group after a proven reboot', async () => {
+    const kill = vi.spyOn(process, 'kill')
+    const controller = defaultController('linux', () => bootB)
+
+    await expect(
+      controller.probe({
+        version: 1,
+        receiptId: 'receipt-a',
+        ownerInstanceId: 'owner-a',
+        ownerToken: 'owner-token-a',
+        platform: 'linux',
+        spawnedAt: 1,
+        laneKey: 'lane-a',
+        processKey: 'repl',
+        kernelEpochId: 'epoch-a',
+        pid: process.pid,
+        bootToken: bootA
+      })
+    ).resolves.toBe('dead')
+
+    expect(kill).not.toHaveBeenCalledWith(-process.pid, 0)
+  })
+
+  it('treats a missing macOS process group as dead without a boot token', async () => {
+    vi.spyOn(process, 'kill').mockImplementation(() => {
+      throw Object.assign(new Error('missing'), { code: 'ESRCH' })
+    })
+
+    await expect(
+      defaultController('darwin').probe({
+        version: 1,
+        receiptId: 'receipt-mac',
+        ownerInstanceId: 'owner-a',
+        ownerToken: 'owner-token-a',
+        platform: 'darwin',
+        spawnedAt: 1,
+        laneKey: 'lane-a',
+        processKey: 'repl',
+        kernelEpochId: 'epoch-a',
+        pid: 4242
+      })
+    ).resolves.toBe('dead')
+  })
+
+  it('does not claim a leaderless same-boot POSIX group by numeric id alone', async () => {
+    vi.spyOn(process, 'kill').mockImplementation((pid) => {
+      if (pid === -4242) return true
+      throw Object.assign(new Error('missing'), { code: 'ESRCH' })
+    })
+
+    await expect(
+      defaultController('linux', () => bootA).probe({
+        version: 1,
+        receiptId: 'receipt-reused',
+        ownerInstanceId: 'owner-a',
+        ownerToken: 'owner-token-a',
+        platform: 'linux',
+        spawnedAt: 1,
+        laneKey: 'lane-a',
+        processKey: 'repl',
+        kernelEpochId: 'epoch-a',
+        pid: 4242,
+        bootToken: bootA
+      })
+    ).resolves.toBe('unknown')
+  })
+
   it('rolls back an interrupted pre-admission spawn intent on the next startup', async () => {
     root = await mkdtemp(join(tmpdir(), 'kernel-process-pre-spawn-'))
     const first = new KernelProcessLifecycleOwner({
@@ -168,12 +272,13 @@ describe('KernelProcessLifecycleOwner', () => {
     await expect(readFile(marker, 'utf8')).rejects.toMatchObject({ code: 'ENOENT' })
   })
 
-  describe.skipIf(process.platform === 'win32')('POSIX startup recovery', () => {
+  describe.runIf(process.platform === 'linux')('POSIX startup recovery', () => {
     it('recovers a process host that survived before its main owner recorded the PID', async () => {
       root = await mkdtemp(join(tmpdir(), 'kernel-process-host-recovery-'))
       const first = new KernelProcessLifecycleOwner({
         storageRoot: root,
-        ownerInstanceId: 'owner-a'
+        ownerInstanceId: 'owner-a',
+        readBootToken: () => BOOT_TOKEN
       })
       await first.ensureReady()
       const ownerToken = first.createOwnerToken()
@@ -209,7 +314,8 @@ describe('KernelProcessLifecycleOwner', () => {
 
       const restarted = new KernelProcessLifecycleOwner({
         storageRoot: root,
-        ownerInstanceId: 'owner-b'
+        ownerInstanceId: 'owner-b',
+        readBootToken: () => BOOT_TOKEN
       })
       await restarted.ensureReady()
 
@@ -221,7 +327,8 @@ describe('KernelProcessLifecycleOwner', () => {
       root = await mkdtemp(join(tmpdir(), 'kernel-process-posix-recovery-'))
       const first = new KernelProcessLifecycleOwner({
         storageRoot: root,
-        ownerInstanceId: 'owner-a'
+        ownerInstanceId: 'owner-a',
+        readBootToken: () => BOOT_TOKEN
       })
       await first.ensureReady()
       const ownerToken = first.createOwnerToken()
@@ -250,7 +357,8 @@ describe('KernelProcessLifecycleOwner', () => {
 
       const restarted = new KernelProcessLifecycleOwner({
         storageRoot: root,
-        ownerInstanceId: 'owner-b'
+        ownerInstanceId: 'owner-b',
+        readBootToken: () => BOOT_TOKEN
       })
       await restarted.ensureReady()
 

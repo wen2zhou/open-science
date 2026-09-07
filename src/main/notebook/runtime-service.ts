@@ -150,10 +150,9 @@ import {
 } from './prompt-input-materialization'
 import type {
   AgentResultFollowUpDelivery,
-  LocalRunAgentResultDeliveryContext,
-  LocalRunAgentResultWaitingContext
-} from '../../shared/agent-result-delivery'
-import { notebookRunDeliveryContext } from '../agent-result-delivery/notebook-adapter'
+  BackgroundResultSourceRef
+} from '../../shared/background-result-delivery'
+import { notebookRunSourceRef } from '../background-result-delivery/notebook-adapter'
 
 // The default stays outside CN mirror routing when no explicit locale is injected.
 const DEFAULT_LOCALE = 'en-US'
@@ -217,10 +216,10 @@ type NotebookRuntimeServiceOptions = ProjectIdScope & {
     lifecycle: NotebookExecutorLifecycleCallbacks
   ) => NotebookExecutor
   callbacks?: NotebookRuntimeServiceCallbacks
-  onBackgroundRunTerminal?: (context: LocalRunAgentResultDeliveryContext) => Promise<void>
-  onBackgroundRunAdmitted?: (context: LocalRunAgentResultWaitingContext) => Promise<void>
+  onBackgroundRunTerminal?: (source: BackgroundResultSourceRef) => Promise<void>
+  onBackgroundRunAdmitted?: (source: BackgroundResultSourceRef) => Promise<void>
   onBackgroundRunObserved?: (
-    context: LocalRunAgentResultDeliveryContext
+    source: BackgroundResultSourceRef
   ) => Promise<AgentResultFollowUpDelivery>
   // Resolves the connector RPC connection to inject into the kernel spawn env. Usually set after
   // construction via setMcpRpcConnectionResolver, since the RPC server is constructed with this
@@ -646,15 +645,16 @@ class NotebookRuntimeService {
             lane: notebookLaneKey(session.lane)
           })
         })
-        const deliveryContext = notebookRunDeliveryContext(session, run)
-        if (deliveryContext && options.onBackgroundRunTerminal) {
-          await options.onBackgroundRunTerminal(deliveryContext).catch((error) => {
-            this.runtimeLogger.error('Background Run delivery fact settlement failed', {
-              ...errorLogFields(error),
-              runId: run.runId,
-              lane: notebookLaneKey(session.lane)
+        if (run.executionMode === 'background' && options.onBackgroundRunTerminal) {
+          await options
+            .onBackgroundRunTerminal(notebookRunSourceRef(session, run))
+            .catch((error) => {
+              this.runtimeLogger.error('Background Run delivery fact settlement failed', {
+                ...errorLogFields(error),
+                runId: run.runId,
+                lane: notebookLaneKey(session.lane)
+              })
             })
-          })
         }
       }
     })
@@ -1079,14 +1079,28 @@ class NotebookRuntimeService {
       cellId: begin.cellId
     })
 
-    const result = await this.runCell(
-      {
-        ...request,
-        cellId: begin.cellId
-      },
-      signal,
-      request.helperModules
-    )
+    let result: NotebookRunSummary
+    try {
+      result = await this.runCell(
+        {
+          ...request,
+          cellId: begin.cellId
+        },
+        signal,
+        request.helperModules
+      )
+    } catch (error) {
+      if (!signal?.aborted || error !== signal.reason) throw error
+      const projectId = resolveProjectId(request, this.options.projectId)
+      const document = await this.repository.findExisting(projectId, request.sessionId)
+      const cancelled = document?.runs.find(
+        (run) => run.cellId === begin.cellId && run.status === 'cancelled'
+      )
+      if (!document || !cancelled) throw error
+      // The execute convenience facade historically resolves an admitted queued cancellation to
+      // its durable terminal Run. Direct runCell callers still receive their AbortSignal reason.
+      result = this.sessionReadModel.toRunSummaryFromDocument(document, cancelled)
+    }
     if (result.cellId !== begin.cellId) {
       await this.sessionLifecycle
         .runProjectOperation(request, async () => {
@@ -1252,38 +1266,7 @@ class NotebookRuntimeService {
   ): void {
     const observe = this.options.onBackgroundRunAdmitted
     if (!observe) return
-    const firstLine = run.script
-      .split(/\r?\n/u)
-      .find((line) => line.trim())
-      ?.trim()
-    const executionType: LocalRunAgentResultWaitingContext['executionType'] =
-      run.kernelKind === 'repl'
-        ? 'repl'
-        : run.kernelKind === 'bash'
-          ? 'shell'
-          : run.kernelKind === 'r'
-            ? 'r'
-            : 'python'
-    const lane =
-      run.kernelKind === 'repl'
-        ? 'project-control'
-        : run.kernelKind === 'bash'
-          ? run.shellConcurrency?.slot
-            ? `${run.shellConcurrency.slot}/${run.shellConcurrency.limit}`
-            : 'shell'
-          : (run.environment ?? (run.kernelKind === 'r' ? 'R' : 'Python'))
-    void observe({
-      sourceKind: 'local-run',
-      runId: run.runId,
-      executionType,
-      terminalStatus: 'waiting-result',
-      projectId,
-      sessionId,
-      ...(run.agentFrameId ? { agentFrameId: run.agentFrameId } : {}),
-      title: firstLine?.slice(0, 80) || run.runId,
-      lane,
-      acceptedAt: run.admittedAt ?? run.startedAt
-    }).catch((error) => {
+    void observe(notebookRunSourceRef({ projectId, sessionId }, run)).catch((error) => {
       this.runtimeLogger.error('Background Run activity projection failed', {
         ...errorLogFields(error),
         runId: run.runId
@@ -1339,11 +1322,12 @@ class NotebookRuntimeService {
           receipt: this.backgroundReceipt(projectId, request.sessionId, found.run),
           run: this.sessionReadModel.toRunSummaryFromDocument(found.document, found.run)
         }
-        const observed = notebookRunDeliveryContext(
+        const observed = notebookRunSourceRef(
           { projectId, sessionId: request.sessionId },
           found.run
         )
-        if (observed && observation?.consumer === 'agent' && this.options.onBackgroundRunObserved) {
+        const terminal = found.run.status !== 'queued' && found.run.status !== 'running'
+        if (terminal && observation?.consumer === 'agent' && this.options.onBackgroundRunObserved) {
           followUpDelivery = await this.options.onBackgroundRunObserved(observed).catch((error) => {
             this.runtimeLogger.warn('Background Run observation settlement failed', {
               runId: found.run.runId,
@@ -2007,9 +1991,10 @@ class NotebookRuntimeService {
       if (this.options.onBackgroundRunTerminal) {
         await Promise.all(
           recoveredRuns.map(async ({ projectId, sessionId, run }) => {
-            const context = notebookRunDeliveryContext({ projectId, sessionId }, run)
-            if (!context) return
-            await this.options.onBackgroundRunTerminal!(context).catch((error) => {
+            if (run.executionMode !== 'background') return
+            await this.options.onBackgroundRunTerminal!(
+              notebookRunSourceRef({ projectId, sessionId }, run)
+            ).catch((error) => {
               this.runtimeLogger.error('Recovered background Run delivery fact settlement failed', {
                 ...errorLogFields(error),
                 runId: run.runId,

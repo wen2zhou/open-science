@@ -29,21 +29,29 @@ import {
 import { registerApplicationCommandElectronAdapter } from './application-command-electron-adapter'
 import type { ApplicationInvocation } from './application-command-router'
 import { createApplicationEventModule, type ApplicationEventSource } from './application-events'
+import type { JobSummary } from '../shared/compute'
 import { TagRepository } from './tags/repository'
 import { TagResourceCatalog } from './tags/resource-catalog'
 import { TagService } from './tags/service'
 import { MemoryRepository } from './memory/repository'
 import { MemoryService } from './memory/service'
-import { AgentResultDeliveryRepository } from './agent-result-delivery/repository'
-import { AgentResultDeliveryOwner } from './agent-result-delivery/owner'
-import { ComputeJobResultDeliveryAdapter } from './agent-result-delivery/compute-adapter'
-import { NotebookRunResultDeliveryAdapter } from './agent-result-delivery/notebook-adapter'
-import { registerAgentResultDeliveryIpcHandlers } from './agent-result-delivery/ipc'
+import { BackgroundResultDeliveryRepository } from './background-result-delivery/repository'
+import { BackgroundResultDeliveryOwner } from './background-result-delivery/owner'
+import { ComputeJobResultDeliveryAdapter } from './background-result-delivery/compute-adapter'
+import { NotebookRunResultDeliveryAdapter } from './background-result-delivery/notebook-adapter'
+import { registerBackgroundResultDeliveryIpcHandlers } from './background-result-delivery/ipc'
+import {
+  resolveBackgroundResultSources,
+  type ResolvedBackgroundResultSource
+} from './background-result-delivery/source-resolver'
 import {
   buildAgentResultContinuationPrompt,
   hasSavedAgentResultContinuation
-} from './agent-result-delivery/continuation'
-import type { ProjectBackgroundActivityChangedEvent } from '../shared/agent-result-delivery'
+} from './background-result-delivery/continuation'
+import type {
+  BackgroundResultDelivery,
+  ProjectBackgroundActivityChangedEvent
+} from '../shared/background-result-delivery'
 import {
   LIFECYCLE_CHANNELS,
   MAIN_DELEGATED_WORK_LIFECYCLE_CLIENT_ID,
@@ -770,57 +778,164 @@ const createApplicationModules = async (
   const runtimeRef: { current: ReturnType<typeof createAcpRuntime> | undefined } = {
     current: undefined
   }
-  const agentResultDeliveryRepository = new AgentResultDeliveryRepository(() =>
+  const backgroundResultDeliveryRepository = new BackgroundResultDeliveryRepository(() =>
     getProjectDbClient(resolveConfigRoot())
   )
-  const publishAgentResultDeliveryChanged = async (projectId: string): Promise<void> => {
-    try {
-      applicationEvents.publish('agent-result-delivery:changed', {
-        projectId,
-        revision: await agentResultDeliveryRepository.projectRevision(projectId)
-      })
-    } catch (error) {
-      createLogger('agent-result-delivery').warn(
-        'Agent result delivery change publication failed',
-        diagnosticErrorFields(error)
-      )
-    }
-  }
-  const agentResultDelivery = await modules.add(
+  let markNotebookResultAuthorityReady!: () => void
+  let markComputeResultAuthorityReady!: () => void
+  const notebookResultAuthorityReady = new Promise<void>((resolve) => {
+    markNotebookResultAuthorityReady = resolve
+  })
+  const computeResultAuthorityReady = new Promise<void>((resolve) => {
+    markComputeResultAuthorityReady = resolve
+  })
+  const resolveDeliverySources = (
+    deliveries: readonly BackgroundResultDelivery[]
+  ): Promise<ResolvedBackgroundResultSource[]> =>
+    resolveBackgroundResultSources(deliveries, {
+      loadNotebookRuns: async (group) => {
+        const state = await notebookCommands.state({
+          projectId: group.projectId,
+          sessionId: group.sessionId,
+          workspaceCwd: '',
+          runIds: group.sources.map(({ sourceId }) => sourceId)
+        })
+        return state.runs
+      },
+      loadComputeJobs: async (sources) =>
+        new Map(
+          (
+            await Promise.all(
+              sources.map(async ({ sourceId }) => {
+                const job = await jobRepository.get(sourceId)
+                if (!job) return undefined
+                const host = await hostRepository.get(job.provider_id).catch(() => null)
+                return [
+                  sourceId,
+                  await toJobSummary(job, host?.displayName ?? job.provider_id, resolveDataRoot())
+                ] as const
+              })
+            )
+          ).filter((entry): entry is readonly [string, JobSummary] => entry !== undefined)
+        )
+    })
+  const backgroundResultDelivery: BackgroundResultDeliveryOwner = await modules.add(
     {
-      repository: agentResultDeliveryRepository,
-      sendContinuation: async (request: {
+      repository: backgroundResultDeliveryRepository,
+      resolveSources: resolveDeliverySources,
+      waitForAuthoritiesReady: () =>
+        Promise.all([notebookResultAuthorityReady, computeResultAuthorityReady]).then(
+          () => undefined
+        ),
+      loadSessionCatalog: async () => {
+        const catalog = await sessionRepository.loadAllWithDiagnostics({ mode: 'read-only' })
+        return {
+          complete: catalog.isComplete,
+          sessions: catalog.result.sessions.map(({ projectId, id }) => ({
+            projectId,
+            sessionId: id
+          }))
+        }
+      },
+      sendContinuation: (request: {
         sessionId: string
         text: string
         deliveryIds: readonly string[]
         continuationMessageId: string
       }) => {
-        const runtime = runtimeRef.current
-        if (!runtime) throw new Error('Agent runtime is unavailable for result delivery.')
-        const projectId = await sessionPersistenceCoordinator.sessionProjectId(request.sessionId)
-        if (!projectId) throw new Error('Background result delivery Session is unavailable.')
-        const session = await sessionPersistenceCoordinator.loadSessionForContinuation(
-          projectId,
-          request.sessionId
-        )
-        const response = await runtime.sendApplicationPrompt(
-          buildAgentResultContinuationPrompt(session, {
-            sessionId: request.sessionId,
-            text: request.text,
-            continuationMessageId: request.continuationMessageId
-          }),
-          {
-            kind: 'application',
-            feature: 'background-results',
-            purpose: 'agent-result-delivery',
-            deliveryKey: `agent-result-delivery:${request.continuationMessageId}`,
-            deliveryIds: [...request.deliveryIds]
+        let settleAdmitted!: () => void
+        let rejectAdmission!: (error: unknown) => void
+        let admissionSettled = false
+        const admitted = new Promise<void>((resolve, reject) => {
+          settleAdmitted = () => {
+            if (admissionSettled) return
+            admissionSettled = true
+            resolve()
           }
-        )
-        return {
-          stopReason: response.stopReason,
-          continuationMessageId: request.continuationMessageId
-        }
+          rejectAdmission = (error) => {
+            if (admissionSettled) return
+            admissionSettled = true
+            reject(error)
+          }
+        })
+        const result = (async () => {
+          try {
+            const runtime = runtimeRef.current
+            if (!runtime) throw new Error('Agent runtime is unavailable for result delivery.')
+            const projectId = await sessionPersistenceCoordinator.sessionProjectId(
+              request.sessionId
+            )
+            if (!projectId) throw new Error('Background result delivery Session is unavailable.')
+            let session = await sessionPersistenceCoordinator.loadSessionForContinuation(
+              projectId,
+              request.sessionId
+            )
+            const agentTarget = await resolveSessionAgentTarget(session)
+            if (
+              agentTarget &&
+              shouldPersistSessionAgentConfiguration(session.agentConfiguration, agentTarget)
+            ) {
+              session = await sessionPersistenceCoordinator.saveSession({
+                ...session,
+                agentConfiguration: toSessionAgentConfiguration(agentTarget)
+              })
+            }
+            if (!runtime.hasLiveSession(session.projectId, session.id) || agentTarget) {
+              await runtime.resumeSession({
+                sessionId: session.id,
+                cwd: session.cwd,
+                projectId: session.projectId,
+                ...(session.permissionProfile
+                  ? { permissionProfile: session.permissionProfile }
+                  : {}),
+                memoryEnabled: session.memoryEnabled !== false,
+                ...(session.agentFrameworkId
+                  ? { previousFrameworkId: session.agentFrameworkId }
+                  : {}),
+                ...(session.agentBackendId ? { previousBackendId: session.agentBackendId } : {}),
+                ...(session.specialistId ? { specialistId: session.specialistId } : {}),
+                ...(session.specialistBindingPending === true
+                  ? { specialistBindingPending: true }
+                  : {}),
+                ...(session.providerSessionId
+                  ? { providerSessionId: session.providerSessionId }
+                  : {}),
+                ...(session.providerContinuityToken
+                  ? { providerContinuityToken: session.providerContinuityToken }
+                  : {}),
+                ...(agentTarget ? { agentTarget } : {})
+              })
+            }
+            const response = await runtime.sendApplicationPrompt(
+              buildAgentResultContinuationPrompt(session, {
+                sessionId: request.sessionId,
+                text: request.text,
+                continuationMessageId: request.continuationMessageId
+              }),
+              {
+                kind: 'application',
+                feature: 'background-results',
+                purpose: 'agent-result-delivery',
+                deliveryKey: `agent-result-delivery:${request.continuationMessageId}`,
+                deliveryIds: [...request.deliveryIds]
+              },
+              undefined,
+              (prompt) => {
+                void prompt.then(settleAdmitted, rejectAdmission)
+                setImmediate(settleAdmitted)
+              }
+            )
+            settleAdmitted()
+            return {
+              stopReason: response.stopReason,
+              continuationMessageId: request.continuationMessageId
+            }
+          } catch (error) {
+            rejectAdmission(error)
+            throw error
+          }
+        })()
+        return { admitted, result }
       },
       isContinuationSaved: async (request: {
         sessionId: string
@@ -841,34 +956,28 @@ const createApplicationModules = async (
         return runtime ? !runtime.getState().promptInFlightSessionIds.includes(sessionId) : false
       },
       onChanged: (event: ProjectBackgroundActivityChangedEvent) =>
-        applicationEvents.publish('agent-result-delivery:changed', event)
+        applicationEvents.publish('background-result-delivery:changed', event)
     },
     (options) => {
-      const owner = new AgentResultDeliveryOwner(options)
+      const owner = new BackgroundResultDeliveryOwner(options)
       return {
-        name: 'agent-result-delivery',
+        name: 'background-result-delivery',
         capability: owner,
         dispose: () => owner.dispose()
       }
     }
   )
   const computeJobResultDelivery = new ComputeJobResultDeliveryAdapter({
-    repository: {
-      registerComputeJob: async (registration) => {
-        const delivery = await agentResultDeliveryRepository.registerComputeJob(registration)
-        await publishAgentResultDeliveryChanged(registration.projectId)
-        return delivery
-      },
-      hasComputeJobDeliveryPath: (jobId) =>
-        agentResultDeliveryRepository.hasComputeJobDeliveryPath(jobId),
-      listWaitingComputeJobIds: () => agentResultDeliveryRepository.listWaitingComputeJobIds()
-    },
-    enqueue: (context) => agentResultDelivery.enqueue(context),
-    acknowledge: (context) => agentResultDelivery.acknowledgeObservedOutcome(context)
+    register: (source) => backgroundResultDelivery.register(source),
+    enqueue: (source) => backgroundResultDelivery.enqueue(source),
+    acknowledgeObserved: (source) => backgroundResultDelivery.acknowledgeObserved(source),
+    listWaiting: () => backgroundResultDeliveryRepository.listWaiting('compute-job'),
+    hasDeliveryPath: (sourceKind, sourceId) =>
+      backgroundResultDeliveryRepository.hasDeliveryPath(sourceKind, sourceId)
   })
   const notebookRunResultDelivery = new NotebookRunResultDeliveryAdapter({
-    repository: agentResultDeliveryRepository,
-    enqueue: (context) => agentResultDelivery.enqueue(context)
+    listWaiting: () => backgroundResultDeliveryRepository.listWaiting('local-run'),
+    enqueue: (source) => backgroundResultDelivery.enqueue(source)
   })
   const userSkillCatalogObserverRef: { current: UserSkillCatalogObserver | undefined } = {
     current: undefined
@@ -1313,6 +1422,7 @@ const createApplicationModules = async (
         })
       },
       restoreProjectDeletion: async (projectId) => {
+        await backgroundResultDelivery.prepareProjectDeletion(projectId)
         archiveCoordinator.restoreProjectDeletion(projectId)
         notebookService.beginProjectDeletion(projectId)
         reviewerProjectRuntime.restoreProjectDeletion(projectId)
@@ -1324,6 +1434,7 @@ const createApplicationModules = async (
         await owner.completeProjectDeletion(projectId)
         await notebookService.deleteProjectFileEvidence(projectId)
         await notebookService.deleteProjectInputs(projectId)
+        await backgroundResultDelivery.commitProjectDeletion(projectId)
       },
       completeProjectDeletion: (projectId) => {
         archiveCoordinator.releaseProjectDeletion(projectId)
@@ -1335,6 +1446,7 @@ const createApplicationModules = async (
         notebookService.releaseProjectDeletion(projectId)
         reviewerProjectRuntime.releaseProjectDeletion(projectId)
         sideChatOwnerRef.current?.restoreProject(projectId)
+        backgroundResultDelivery.abortProjectDeletion(projectId)
         await computeJobDeletionPort.abortProjectJobDeletion(projectId)
       }
     },
@@ -1585,13 +1697,11 @@ const createApplicationModules = async (
       translate,
       helperModuleCatalog: settingsService.registeredHelperCatalog(),
       processSandbox: notebookNetworkSandbox,
-      onBackgroundRunTerminal: (context) =>
-        agentResultDelivery.enqueue(context).then(() => undefined),
-      onBackgroundRunAdmitted: (context) =>
-        agentResultDeliveryRepository
-          .registerLocalRun(context)
-          .then(() => publishAgentResultDeliveryChanged(context.projectId)),
-      onBackgroundRunObserved: (context) => agentResultDelivery.acknowledgeObservedOutcome(context),
+      onBackgroundRunTerminal: (source) =>
+        backgroundResultDelivery.enqueue(source).then(() => undefined),
+      onBackgroundRunAdmitted: (source) =>
+        backgroundResultDelivery.register(source).then(() => undefined),
+      onBackgroundRunObserved: (source) => backgroundResultDelivery.acknowledgeObserved(source),
       events: applicationEvents,
       disposeTimeoutMs: QUIT_SHUTDOWN_BUDGET_MS,
       isBackendTeardownOwned: () => backendTeardownOwnedByCoordinator
@@ -2980,11 +3090,11 @@ const createApplicationModules = async (
   )
   surfaceAdapters = afterAcpAdapters
   runtimeRef.current = runtime
-  void agentResultDelivery
+  void backgroundResultDelivery
     .recover()
     .catch((error) =>
-      createLogger('agent-result-delivery').warn(
-        'Agent result delivery recovery failed',
+      createLogger('background-result-delivery').warn(
+        'Background result delivery recovery failed',
         diagnosticErrorFields(error)
       )
     )
@@ -3193,6 +3303,8 @@ const createApplicationModules = async (
               'Compute Job result delivery recovery failed; Compute lifecycle will continue',
               diagnosticErrorFields(error)
             )
+          } finally {
+            markComputeResultAuthorityReady()
           }
           await jobPoller.start()
         },
@@ -3648,12 +3760,9 @@ const createApplicationModules = async (
     })
   )
   declareElectronAdapter('notebook', () => registerNotebookIpcHandlers(notebookCommands))
-  declareElectronAdapter('agent-result-delivery', () =>
-    registerAgentResultDeliveryIpcHandlers(agentResultDeliveryRepository, {
-      resolveLocalRun: (request) =>
-        notebookCommands.getBackgroundRun({ ...request, workspaceCwd: '' }).catch(() => undefined),
-      listActiveComputeJobs: () => computeIpcModule.handlers.jobsList({ nonTerminal: true }),
-      onChanged: (event) => applicationEvents.publish('agent-result-delivery:changed', event)
+  declareElectronAdapter('background-result-delivery', () =>
+    registerBackgroundResultDeliveryIpcHandlers(backgroundResultDeliveryRepository, {
+      resolveSources: resolveDeliverySources
     })
   )
   // Wire session deletion to the binding store so stale in-memory bindings do not accumulate.
@@ -3957,16 +4066,20 @@ const createApplicationModules = async (
   // actually orders the prefix work.
   void runDataRootStartupRecovery(
     async () => {
-      await notebookService.recoverInterruptedOperations()
-      await notebookRunResultDelivery.recoverWaiting(async (request) => {
-        const state = await notebookCommands.state({
-          projectId: request.projectId,
-          sessionId: request.sessionId,
-          workspaceCwd: '',
-          runIds: [request.runId]
+      try {
+        await notebookService.recoverInterruptedOperations()
+        await notebookRunResultDelivery.recoverWaiting(async (request) => {
+          const state = await notebookCommands.state({
+            projectId: request.projectId,
+            sessionId: request.sessionId,
+            workspaceCwd: '',
+            runIds: [request.runId]
+          })
+          return state.runs.find((run) => run.runId === request.runId)
         })
-        return state.runs.find((run) => run.runId === request.runId)
-      })
+      } finally {
+        markNotebookResultAuthorityReady()
+      }
     },
     {
       reportFailure: (error) =>
@@ -4125,6 +4238,7 @@ const createApplicationModules = async (
   })
   const sessionDeletionOwner = new SessionDeletionOwner({
     runtime,
+    backgroundResults: backgroundResultDelivery,
     persistence: {
       deleteSession: (request) =>
         withDataRootWrite(() =>

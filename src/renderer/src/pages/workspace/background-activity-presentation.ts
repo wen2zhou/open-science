@@ -1,4 +1,4 @@
-import type { ProjectBackgroundActivityItem } from '../../../../shared/agent-result-delivery'
+import type { ProjectBackgroundActivityItem } from '../../../../shared/background-result-delivery'
 
 type BackgroundActivityStatus = ProjectBackgroundActivityItem['status']
 type BackgroundActivityOutcome = ProjectBackgroundActivityItem['outcomeStatus']
@@ -24,12 +24,11 @@ const backgroundActivityStatusLabel = (
   outcome: BackgroundActivityOutcome,
   t: Translate
 ): string => {
+  if (!status) return t('Result unavailable')
   const outcomeLabel = terminalOutcomeLabel(outcome, t)
-  if (status === 'needs-attention')
-    return outcomeLabel ? `${outcomeLabel} · ${t('Needs Agent')}` : t('Needs Agent')
+  if (status === 'needs-attention') return outcomeLabel ?? t('Result unavailable')
   if (status === 'result-unavailable') return t('Result unavailable')
-  if (status === 'pending-delivery')
-    return outcomeLabel ? `${outcomeLabel} · ${t('Pending delivery')}` : t('Pending delivery')
+  if (status === 'pending-delivery') return outcomeLabel ?? t('Result unavailable')
   if (status === 'queued' || status === 'submitted') return t('Queued')
   if (status === 'running') return t('Running')
   if (status === 'cancelling') return t('Cancelling')

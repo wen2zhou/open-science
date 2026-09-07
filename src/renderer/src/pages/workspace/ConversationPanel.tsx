@@ -1264,13 +1264,10 @@ const ConversationPanel = ({
                     notebook={notebookReference}
                     runs={backgroundTasks.runs}
                     jobs={backgroundTasks.jobs}
-                    deliveryByRunId={backgroundTasks.deliveryByRunId}
-                    deliveryByJobId={backgroundTasks.deliveryByJobId}
                     now={backgroundTasks.now}
                     onOpenNotebook={onOpenNotebook}
                     onOpenComputeJob={onOpenJob ?? ((job) => onOpenJobList(job.session_id))}
                     onOpenJobList={onOpenJobList}
-                    onDismissDelivery={backgroundTasks.dismissDelivery}
                   />
                 ) : null}
 

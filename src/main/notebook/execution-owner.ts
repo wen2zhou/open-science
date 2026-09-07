@@ -932,6 +932,7 @@ class NotebookExecutionOwner {
       }
       session.markCellRunning(cell.id, runId, executionCount)
       session.completeCellRun(cell.id, run.status, run.cwdAfter ?? cwdBefore)
+      if (!request.background) throw signal.reason
       const dependencyProjection = await this.options
         .projectDependencies(session, run, resolvedInterpreter)
         .catch(() => unavailableNotebookDependencyProjection([run]))

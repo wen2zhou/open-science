@@ -189,13 +189,12 @@ import type {
 } from './notebook'
 import type { ProvisionProgress, ProvisionStatus } from './notebook-env'
 import type {
-  AgentResultDeliveryProjectRequest,
-  AgentResultDeliverySessionRequest,
-  DismissAgentResultDeliveryRequest,
+  BackgroundResultDeliveryProjectRequest,
+  BackgroundResultDeliverySessionRequest,
   ProjectBackgroundActivity,
   ProjectBackgroundActivityChangedEvent,
-  SessionAgentResultActivity
-} from './agent-result-delivery'
+  SessionBackgroundResultActivity
+} from './background-result-delivery'
 import type {
   DiscoveredInterpreter,
   EnvPackage,
@@ -755,18 +754,15 @@ export type RendererApiFromContract<
 }
 
 export const RENDERER_API_CONTRACT = Object.freeze({
-  'agentResultDelivery.dismiss': callable<
-    (request: DismissAgentResultDeliveryRequest) => Promise<boolean>
-  >()('agent-result-delivery', ['agent-result-delivery:dismiss', ELECTRON]),
-  'agentResultDelivery.getSessionActivity': callable<
-    (request: AgentResultDeliverySessionRequest) => Promise<SessionAgentResultActivity>
-  >()('agent-result-delivery', ['agent-result-delivery:session-activity', ELECTRON]),
-  'agentResultDelivery.getProjectActivity': callable<
-    (request: AgentResultDeliveryProjectRequest) => Promise<ProjectBackgroundActivity>
-  >()('agent-result-delivery', ['agent-result-delivery:project-activity', ELECTRON]),
-  'agentResultDelivery.onChanged': callable<
+  'backgroundResultDelivery.getSessionActivity': callable<
+    (request: BackgroundResultDeliverySessionRequest) => Promise<SessionBackgroundResultActivity>
+  >()('background-result-delivery', ['background-result-delivery:session-activity', ELECTRON]),
+  'backgroundResultDelivery.getProjectActivity': callable<
+    (request: BackgroundResultDeliveryProjectRequest) => Promise<ProjectBackgroundActivity>
+  >()('background-result-delivery', ['background-result-delivery:project-activity', ELECTRON]),
+  'backgroundResultDelivery.onChanged': callable<
     (listener: AcpListener<ProjectBackgroundActivityChangedEvent>) => RemoveListener
-  >()('agent-result-delivery', ['agent-result-delivery:changed', EVENT]),
+  >()('background-result-delivery', ['background-result-delivery:changed', ELECTRON_EVENT]),
   'acp.cancel': callable<(request: AcpCancelPromptRequest) => Promise<AcpStateCommandResponse>>()(
     'acp',
     ['acp:cancel']

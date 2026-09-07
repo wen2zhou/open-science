@@ -656,7 +656,9 @@ describe('WorkspaceMessageItem user message actions', () => {
     )
 
     expect(container.querySelector('[data-testid="agent-result-delivery-event"]')).not.toBeNull()
-    expect(container.textContent).toContain('Session activity')
+    expect(container.textContent).toContain('Background activity')
+    expect(container.textContent).toContain('New task results are available')
+    expect(container.textContent).not.toContain('Pending delivery')
     expect(container.textContent).not.toContain('run-1')
   })
 

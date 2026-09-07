@@ -33,7 +33,7 @@ const MAX_ENVIRONMENT_RESULTS = 30
 const HOST_SDK_DISCOVERY_GUIDANCE =
   "Host SDK discovery in `repl_execute`: `await host.help()` is the role-aware catalog with field descriptions; query only needed topics. Main/root agents may call `await host.help('delegate')`; do not prefetch all topics. Delegate agents should use the same catalog; unavailable root-only topics remain visible."
 const LOCAL_BACKGROUND_RUN_RECEIPT_GUIDANCE =
-  'Save runId. Query background_run with action:"query" and the exact runId when relevant. Queries are non-blocking snapshots and never scan Run history. A terminal response reports followUpDelivery:"suppressed" if it prevented fallback, or "committed" if fallback crossed the dispatch fence. Unread terminal results arrive in a follow-up Turn.'
+  'Save runId. Query background_run with action:"query" and the exact runId when relevant. It is a non-blocking snapshot; never scan Run history. followUpDelivery:"suppressed" means the query prevented fallback; "committed" means fallback crossed the dispatch fence. Unread results arrive in a follow-up Turn.'
 
 // Scoped prompt addendum that only applies when the agent is given notebook tools. Keep equivalent
 // guidance concise because this prompt and the complete Notebook MCP schema share a 3,500-token cap.
@@ -1431,7 +1431,7 @@ const NOTEBOOK_RPC_TOOLS: NotebookRpcToolDefinition[] = [
     name: 'background_run',
     title: 'Query or cancel a local background Run',
     description:
-      'Query a saved runId with a non-blocking snapshot; never scan Run history. On a terminal result, followUpDelivery:"suppressed" means the query won; "committed" means fallback crossed its dispatch fence. Unread results can arrive in a follow-up Turn. submissionIdentity recovers only a missing receipt. Cancel is idempotent for queued/running Runs.',
+      'Query a saved runId as a non-blocking snapshot; never scan Run history. followUpDelivery:"suppressed" means query won; "committed" means fallback crossed dispatch. Unread results may arrive in a follow-up Turn. submissionIdentity recovers only a missing receipt. Cancel is idempotent for active Runs.',
     method: 'getBackgroundRun',
     resolveMethod: (input) =>
       asRecord(input)?.action === 'cancel' ? 'cancelBackgroundRun' : 'getBackgroundRun',

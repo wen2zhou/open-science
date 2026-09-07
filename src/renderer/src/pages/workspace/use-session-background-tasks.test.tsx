@@ -3,7 +3,7 @@ import { act, useEffect } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { AgentResultDelivery } from '../../../../shared/agent-result-delivery'
+import type { BackgroundResultActivityItem } from '../../../../shared/background-result-delivery'
 import type { NotebookRunRecord, NotebookSessionReference } from '../../../../shared/notebook'
 import {
   useSessionBackgroundTasks,
@@ -41,39 +41,34 @@ const run = (overrides: Partial<NotebookRunRecord> = {}): NotebookRunRecord => (
   ...overrides
 })
 
-const delivery = (overrides: Partial<AgentResultDelivery> = {}): AgentResultDelivery => ({
+const delivery = (
+  overrides: Partial<BackgroundResultActivityItem> = {}
+): BackgroundResultActivityItem => ({
   id: 'delivery-1',
-  state: 'pending',
-  attemptCount: 0,
-  createdAt: Date.now() - 1_000,
+  sourceKind: 'local-run',
+  sourceId: 'run-1',
+  projectId: 'project-1',
+  sessionId: 'session-1',
+  executionType: 'python',
+  title: 'QC',
+  lane: 'Python',
+  status: 'pending-delivery',
+  active: false,
+  needsAttention: false,
   updatedAt: Date.now() - 1_000,
-  context: {
-    runId: 'run-1',
-    executionType: 'python',
-    terminalStatus: 'completed',
-    resultSummary: 'QC completed',
-    projectId: 'project-1',
-    sessionId: 'session-1',
-    agentFrameId: 'frame-1'
-  },
   ...overrides
 })
 
-const jobDelivery = (overrides: Partial<AgentResultDelivery> = {}): AgentResultDelivery =>
+const jobDelivery = (
+  overrides: Partial<BackgroundResultActivityItem> = {}
+): BackgroundResultActivityItem =>
   delivery({
     id: 'delivery-job-1',
-    context: {
-      sourceKind: 'compute-job',
-      jobId: 'job-1',
-      executionType: 'compute-job',
-      terminalStatus: 'success',
-      resultSummary: 'Remote sweep finished',
-      projectId: 'project-1',
-      sessionId: 'session-1',
-      computeHost: { providerId: 'host-1', displayName: 'Cluster One' },
-      featuredFiles: [],
-      leftOnRemote: []
-    },
+    sourceKind: 'compute-job',
+    sourceId: 'job-1',
+    executionType: 'compute-job',
+    title: 'Remote sweep',
+    lane: 'Cluster One',
     ...overrides
   })
 
@@ -101,11 +96,9 @@ const runningJob = {
 
 const emptyDeliveryApi = (): {
   getSessionActivity: ReturnType<typeof vi.fn>
-  dismiss: ReturnType<typeof vi.fn>
   onChanged: ReturnType<typeof vi.fn>
 } => ({
   getSessionActivity: vi.fn().mockResolvedValue({ active: [], awaitingAgent: [] }),
-  dismiss: vi.fn().mockResolvedValue(true),
   onChanged: vi.fn(() => () => undefined)
 })
 
@@ -163,7 +156,7 @@ describe('useSessionBackgroundTasks', () => {
   it('collects background Runs, deliveries, and Compute Jobs with a unified summary', async () => {
     const runStart = Date.now() - 5_000
     stubApi({
-      agentResultDelivery: emptyDeliveryApi(),
+      backgroundResultDelivery: emptyDeliveryApi(),
       notebook: {
         state: vi.fn().mockResolvedValue({
           runs: [
@@ -194,11 +187,10 @@ describe('useSessionBackgroundTasks', () => {
   it('keeps observing Compute Jobs and their deliveries without a Notebook', async () => {
     const state = vi.fn().mockResolvedValue({ runs: [] })
     stubApi({
-      agentResultDelivery: {
+      backgroundResultDelivery: {
         getSessionActivity: vi
           .fn()
           .mockResolvedValue({ active: [], awaitingAgent: [jobDelivery()] }),
-        dismiss: vi.fn().mockResolvedValue(true),
         onChanged: vi.fn(() => () => undefined)
       },
       notebook: { state, onChanged: vi.fn(() => () => undefined), cancelBackgroundRun: vi.fn() },
@@ -216,16 +208,14 @@ describe('useSessionBackgroundTasks', () => {
 
     expect(state).not.toHaveBeenCalled()
     expect(latest?.runs).toHaveLength(0)
-    expect(latest?.deliveryByJobId.get('job-1')?.id).toBe('delivery-job-1')
     expect(latest?.summary.activeCount).toBe(0)
     expect(latest?.summary.totalTasks).toBe(1)
   })
 
   it('orders active work before rows awaiting delivery', async () => {
     stubApi({
-      agentResultDelivery: {
+      backgroundResultDelivery: {
         getSessionActivity: vi.fn().mockResolvedValue({ active: [], awaitingAgent: [delivery()] }),
-        dismiss: vi.fn().mockResolvedValue(true),
         onChanged: vi.fn(() => () => undefined)
       },
       notebook: {
@@ -248,7 +238,7 @@ describe('useSessionBackgroundTasks', () => {
 
   it('keeps terminal Rows only while a delivery awaits', async () => {
     stubApi({
-      agentResultDelivery: emptyDeliveryApi(),
+      backgroundResultDelivery: emptyDeliveryApi(),
       notebook: {
         state: vi.fn().mockResolvedValue({
           runs: [run({ status: 'completed', endedAt: Date.now() })]
@@ -269,7 +259,7 @@ describe('useSessionBackgroundTasks', () => {
       .fn()
       .mockResolvedValue([{ ...runningJob, status: 'success', finished_at: Date.now() }])
     stubApi({
-      agentResultDelivery: emptyDeliveryApi(),
+      backgroundResultDelivery: emptyDeliveryApi(),
       notebook: {
         state: vi.fn().mockResolvedValue({
           runs: [run({ status: 'completed', endedAt: Date.now() })]
@@ -292,40 +282,38 @@ describe('useSessionBackgroundTasks', () => {
     expect(latest?.summary).toMatchObject({ activeCount: 0, totalTasks: 1 })
   })
 
-  it('dismissDelivery removes the awaiting row locally once the API confirms', async () => {
-    const dismiss = vi.fn().mockResolvedValue(true)
+  it('clears the previous Session snapshot immediately when the Session changes', async () => {
+    const jobsList = vi.fn(async ({ sessionId }: { sessionId: string }) =>
+      sessionId === 'session-1' ? [runningJob] : []
+    )
     stubApi({
-      agentResultDelivery: {
-        getSessionActivity: vi.fn().mockResolvedValue({
-          active: [],
-          awaitingAgent: [delivery({ state: 'needs-attention' })]
-        }),
-        dismiss,
-        onChanged: vi.fn(() => () => undefined)
-      },
+      backgroundResultDelivery: emptyDeliveryApi(),
       notebook: {
-        state: vi
-          .fn()
-          .mockResolvedValue({ runs: [run({ status: 'completed', endedAt: Date.now() })] }),
+        state: vi.fn().mockResolvedValue({ runs: [run()] }),
         onChanged: vi.fn(() => () => undefined),
         cancelBackgroundRun: vi.fn()
+      },
+      compute: {
+        jobsList,
+        onJobUpdated: vi.fn(() => () => undefined),
+        jobsCancel: vi.fn()
       }
     })
 
     await mount('session-1', 'project-1', notebook)
-    await vi.waitFor(() => expect(latest?.runs).toHaveLength(1))
+    await vi.waitFor(() => expect(latest?.summary.totalTasks).toBe(2))
 
     await act(async () => {
-      latest?.dismissDelivery('delivery-1')
+      root?.render(<Probe sessionId="session-2" projectId="project-1" notebook={undefined} />)
     })
 
-    expect(dismiss).toHaveBeenCalledWith({ sessionId: 'session-1', deliveryId: 'delivery-1' })
-    await vi.waitFor(() => expect(latest?.runs).toHaveLength(0))
+    expect(latest?.runs).toEqual([])
+    await vi.waitFor(() => expect(latest?.summary.totalTasks).toBe(0))
   })
 
   it('subscribes before hydrate and refreshes only for delivery events in its Project', async () => {
     const calls: string[] = []
-    let changed: ((event: { projectId: string; revision: number }) => void) | undefined
+    let changed: ((event: { projectId: string }) => void) | undefined
     const getSessionActivity = vi.fn(async () => {
       calls.push('query')
       return { active: [], awaitingAgent: [] }
@@ -336,7 +324,7 @@ describe('useSessionBackgroundTasks', () => {
       return () => undefined
     })
     stubApi({
-      agentResultDelivery: { getSessionActivity, onChanged, dismiss: vi.fn() },
+      backgroundResultDelivery: { getSessionActivity, onChanged },
       notebook: {
         state: vi.fn().mockResolvedValue({ runs: [] }),
         onChanged: vi.fn(() => () => undefined),
@@ -348,9 +336,9 @@ describe('useSessionBackgroundTasks', () => {
     await vi.waitFor(() => expect(getSessionActivity).toHaveBeenCalledOnce())
 
     expect(calls.slice(0, 2)).toEqual(['subscribe', 'query'])
-    act(() => changed?.({ projectId: 'project-2', revision: 2 }))
+    act(() => changed?.({ projectId: 'project-2' }))
     expect(getSessionActivity).toHaveBeenCalledOnce()
-    act(() => changed?.({ projectId: 'project-1', revision: 2 }))
+    act(() => changed?.({ projectId: 'project-1' }))
     await vi.waitFor(() => expect(getSessionActivity).toHaveBeenCalledTimes(2))
   })
 })

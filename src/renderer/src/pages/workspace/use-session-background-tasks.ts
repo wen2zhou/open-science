@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 
-import type { AgentResultDelivery } from '../../../../shared/agent-result-delivery'
+import type { BackgroundResultActivityItem } from '../../../../shared/background-result-delivery'
 import type { JobSummary } from '../../../../shared/compute'
 import type { NotebookRunRecord, NotebookSessionReference } from '../../../../shared/notebook'
 
@@ -10,16 +10,12 @@ import type { NotebookRunRecord, NotebookSessionReference } from '../../../../sh
 // one or an awaiting delivery, so the hook must be callable before the
 // Notebook reference exists.
 type SessionBackgroundTasks = {
-  /** Background Runs, active first, awaiting-delivery rows kept. */
+  /** Background Runs, active first, with recently completed activity kept. */
   runs: NotebookRunRecord[]
   /** All Compute Jobs, active first. */
   jobs: JobSummary[]
-  deliveryByRunId: Map<string, AgentResultDelivery>
-  deliveryByJobId: Map<string, AgentResultDelivery>
   /** Ticks every second while anything is live; frozen otherwise. */
   now: number
-  /** Dismisses one awaiting-agent row; removes it locally once the API confirms. */
-  dismissDelivery: (deliveryId: string) => void
   /** Counts for the collapsed strip chip (no awaiting/attention breakdown by design). */
   summary: {
     activeCount: number
@@ -37,18 +33,26 @@ const isJobActive = (job: JobSummary): boolean =>
 
 const jobStartedAt = (job: JobSummary): number => job.started_at ?? job.created_at
 
+type TaskSnapshot = Readonly<{
+  identityKey?: string
+  runs: NotebookRunRecord[]
+  deliveries: BackgroundResultActivityItem[]
+  computeJobs: JobSummary[]
+}>
+
+const EMPTY_TASK_SNAPSHOT: TaskSnapshot = { runs: [], deliveries: [], computeJobs: [] }
+
 const useSessionBackgroundTasks = (
   sessionId: string | undefined,
   projectId: string | undefined,
   notebook: NotebookSessionReference | undefined
 ): SessionBackgroundTasks => {
-  const [runs, setRuns] = useState<NotebookRunRecord[]>([])
-  const [deliveries, setDeliveries] = useState<AgentResultDelivery[]>([])
-  const [computeJobs, setComputeJobs] = useState<JobSummary[]>([])
+  const identityKey = sessionId && projectId ? `${projectId}\0${sessionId}` : undefined
+  const [snapshot, setSnapshot] = useState<TaskSnapshot>(EMPTY_TASK_SNAPSHOT)
   const [now, setNow] = useState(() => Date.now())
 
   useEffect(() => {
-    if (!sessionId || !projectId) return
+    if (!sessionId || !projectId || !identityKey) return
     let active = true
     let requestVersion = 0
     const load = async (): Promise<void> => {
@@ -57,16 +61,28 @@ const useSessionBackgroundTasks = (
         notebook
           ? window.api.notebook.state(notebook).catch(() => undefined)
           : Promise.resolve(undefined),
-        window.api.agentResultDelivery?.getSessionActivity({ sessionId }).catch(() => undefined),
+        window.api.backgroundResultDelivery?.getSessionActivity
+          ? window.api.backgroundResultDelivery
+              .getSessionActivity({ sessionId })
+              .catch(() => undefined)
+          : Promise.resolve(undefined),
         window.api.compute?.jobsList({ sessionId }).catch(() => undefined)
       ])
       if (!active || version !== requestVersion) return
-      if (state) setRuns(state.runs.filter((run) => run.executionMode === 'background'))
-      if (activity) setDeliveries([...activity.awaitingAgent])
-      if (jobs) setComputeJobs(jobs)
+      setSnapshot((current) => {
+        const previous = current.identityKey === identityKey ? current : EMPTY_TASK_SNAPSHOT
+        return {
+          identityKey,
+          runs: state
+            ? state.runs.filter((run) => run.executionMode === 'background')
+            : previous.runs,
+          deliveries: activity ? [...activity.awaitingAgent] : previous.deliveries,
+          computeJobs: jobs ?? previous.computeJobs
+        }
+      })
     }
     const stopDelivery =
-      window.api.agentResultDelivery?.onChanged?.((event) => {
+      window.api.backgroundResultDelivery?.onChanged?.((event) => {
         if (event.projectId === projectId) void load()
       }) ?? (() => undefined)
     const stop =
@@ -89,26 +105,16 @@ const useSessionBackgroundTasks = (
       stopCompute?.()
       window.clearInterval(poll)
     }
-  }, [notebook, projectId, sessionId])
+  }, [identityKey, notebook, projectId, sessionId])
+
+  const current = snapshot.identityKey === identityKey ? snapshot : EMPTY_TASK_SNAPSHOT
+  const { runs, deliveries, computeJobs } = current
 
   const deliveryByRunId = useMemo(
     () =>
       new Map(
         deliveries.flatMap((delivery) =>
-          delivery.context.sourceKind === 'compute-job'
-            ? []
-            : [[delivery.context.runId, delivery] as const]
-        )
-      ),
-    [deliveries]
-  )
-  const deliveryByJobId = useMemo(
-    () =>
-      new Map(
-        deliveries.flatMap((delivery) =>
-          delivery.context.sourceKind === 'compute-job'
-            ? [[delivery.context.jobId, delivery] as const]
-            : []
+          delivery.sourceKind === 'compute-job' ? [] : [[delivery.sourceId, delivery] as const]
         )
       ),
     [deliveries]
@@ -155,26 +161,11 @@ const useSessionBackgroundTasks = (
     }
   }, [orderedJobs, orderedRuns])
 
-  const dismissDelivery = (deliveryId: string): void => {
-    if (!sessionId) return
-    void window.api.agentResultDelivery
-      ?.dismiss({ sessionId, deliveryId })
-      .then((dismissed) => {
-        if (dismissed) {
-          setDeliveries((current) => current.filter((delivery) => delivery.id !== deliveryId))
-        }
-      })
-      .catch(() => undefined)
-  }
-
   return {
     runs: orderedRuns,
     jobs: orderedJobs,
-    deliveryByRunId,
-    deliveryByJobId,
     now,
-    summary,
-    dismissDelivery
+    summary
   }
 }
 

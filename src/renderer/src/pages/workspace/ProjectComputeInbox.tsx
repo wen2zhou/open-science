@@ -1,13 +1,16 @@
 import { useEffect, useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
-import { AlertTriangle, CheckCircle2, Circle, Clock3, Cpu, Loader2, RadioTower } from 'lucide-react'
+import { CheckCircle2, Circle, Clock3, Cpu, Loader2, RadioTower } from 'lucide-react'
 
 import type {
-  AgentResultExecutionType,
+  BackgroundResultExecutionType,
   ProjectBackgroundActivityItem
-} from '../../../../shared/agent-result-delivery'
+} from '../../../../shared/background-result-delivery'
 import { useNavigationStore } from '@/stores/navigation-store'
-import { useProjectBackgroundActivityStore } from '@/stores/project-background-activity-store'
+import {
+  EMPTY_ACTIVITY,
+  useProjectBackgroundActivityStore
+} from '@/stores/project-background-activity-store'
 import { useSessionStore } from '@/stores/session-store'
 import { Button } from '@/components/ui/button'
 import { ScrollArea } from '@/components/ui/scroll-area'
@@ -20,10 +23,9 @@ import {
 } from '@/components/ui/select'
 import { backgroundActivityStatusLabel } from './background-activity-presentation'
 
-type TypeFilter = 'all' | AgentResultExecutionType
+type TypeFilter = 'all' | BackgroundResultExecutionType
 
 const statusIcon = (item: ProjectBackgroundActivityItem): typeof Circle => {
-  if (item.needsAttention) return AlertTriangle
   if (item.status === 'running') return Circle
   if (item.status === 'queued' || item.status === 'submitted') return Clock3
   if (item.status === 'cancelling') return Loader2
@@ -31,14 +33,14 @@ const statusIcon = (item: ProjectBackgroundActivityItem): typeof Circle => {
 }
 
 const localExecutionLabel = (
-  type: AgentResultExecutionType,
+  type: BackgroundResultExecutionType | undefined,
   t: ReturnType<typeof useTranslation>['t']
 ): string => {
   if (type === 'python') return t('Python Notebook Run')
   if (type === 'r') return t('R Notebook Run')
   if (type === 'repl') return t('JavaScript REPL')
   if (type === 'shell') return t('Shell Command')
-  return t('Compute Job')
+  return type === 'compute-job' ? t('Compute Job') : t('Local Run')
 }
 
 const ProjectComputeInbox = (): React.JSX.Element => {
@@ -47,15 +49,16 @@ const ProjectComputeInbox = (): React.JSX.Element => {
   const openSession = useNavigationStore((state) => state.openSession)
   const sessions = useSessionStore((state) => state.sessions)
   const currentSessionId = useSessionStore((state) => state.selectedSessionId)
+  const snapshotProjectId = useProjectBackgroundActivityStore((state) => state.projectId)
   const snapshot = useProjectBackgroundActivityStore((state) => state.snapshot)
   const hydrate = useProjectBackgroundActivityStore((state) => state.hydrate)
   const clear = useProjectBackgroundActivityStore((state) => state.clear)
   const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
-  const [attentionOnly, setAttentionOnly] = useState(false)
   const [announcementRevision, setAnnouncementRevision] = useState(0)
 
   useEffect(() => {
-    if (!projectId) {
+    const delivery = window.api.backgroundResultDelivery
+    if (!projectId || !delivery?.getProjectActivity) {
       clear()
       return
     }
@@ -63,12 +66,10 @@ const ProjectComputeInbox = (): React.JSX.Element => {
     let requestVersion = 0
     const load = async (): Promise<void> => {
       const version = ++requestVersion
-      const next = await window.api.agentResultDelivery
-        .getProjectActivity({ projectId })
-        .catch(() => undefined)
+      const next = await delivery.getProjectActivity({ projectId }).catch(() => undefined)
       if (alive && version === requestVersion && next) hydrate(projectId, next)
     }
-    const stopDelivery = window.api.agentResultDelivery.onChanged((event) => {
+    const stopDelivery = delivery.onChanged((event) => {
       if (event.projectId === projectId) void load()
     })
     const stopNotebook = window.api.notebook.onChanged((event) => {
@@ -88,31 +89,25 @@ const ProjectComputeInbox = (): React.JSX.Element => {
     }
   }, [clear, hydrate, projectId])
 
+  const currentSnapshot = snapshotProjectId === projectId ? snapshot : EMPTY_ACTIVITY
+
   const sessionById = useMemo(
     () => new Map(sessions.map((session) => [session.id, session] as const)),
     [sessions]
   )
   const presentedItems = useMemo(
     () =>
-      snapshot.items.map((item) => {
+      currentSnapshot.items.map((item) => {
         const session = sessionById.get(item.sessionId)
         if (session && session.archivedAt === undefined) return item
-        return {
-          ...item,
-          needsAttention: true,
-          ...(!session ? { status: 'result-unavailable' as const, active: false } : {})
-        }
+        return !session ? { ...item, status: 'result-unavailable' as const, active: false } : item
       }),
-    [sessionById, snapshot.items]
+    [currentSnapshot.items, sessionById]
   )
   const visible = useMemo(
     () =>
-      presentedItems.filter(
-        (item) =>
-          (typeFilter === 'all' || item.executionType === typeFilter) &&
-          (!attentionOnly || item.needsAttention)
-      ),
-    [attentionOnly, presentedItems, typeFilter]
+      presentedItems.filter((item) => typeFilter === 'all' || item.executionType === typeFilter),
+    [presentedItems, typeFilter]
   )
   const groups = useMemo(() => {
     const grouped = new Map<string, ProjectBackgroundActivityItem[]>()
@@ -122,14 +117,12 @@ const ProjectComputeInbox = (): React.JSX.Element => {
       .map(([sessionId, items]) => ({
         sessionId,
         items,
-        needsAttention: items.some((item) => item.needsAttention),
         updatedAt: Math.max(...items.map((item) => item.updatedAt))
       }))
       .sort((left, right) => {
         const leftCurrent = left.sessionId === currentSessionId
         const rightCurrent = right.sessionId === currentSessionId
         if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1
-        if (left.needsAttention !== right.needsAttention) return left.needsAttention ? -1 : 1
         return right.updatedAt - left.updatedAt
       })
   }, [currentSessionId, visible])
@@ -138,8 +131,7 @@ const ProjectComputeInbox = (): React.JSX.Element => {
     const signature = groups
       .flatMap((group) =>
         group.items.map(
-          (item) =>
-            `${item.id}:${item.status}:${item.outcomeStatus ?? ''}:${item.needsAttention}:${item.updatedAt}`
+          (item) => `${item.id}:${item.status}:${item.outcomeStatus ?? ''}:${item.updatedAt}`
         )
       )
       .join('|')
@@ -159,9 +151,7 @@ const ProjectComputeInbox = (): React.JSX.Element => {
             {t('Compute')}
           </h1>
           <p className="mt-1 text-xs text-text-100">
-            {t(
-              'Project-level read-only inbox for active work and results awaiting Agent delivery.'
-            )}
+            {t('Project-level overview of local runs and compute jobs.')}
           </p>
         </div>
         <div className="flex items-center gap-2 text-xs text-text-100">
@@ -180,14 +170,6 @@ const ProjectComputeInbox = (): React.JSX.Element => {
             </SelectContent>
           </Select>
         </div>
-        <Button
-          variant="outline"
-          size="sm"
-          aria-pressed={attentionOnly}
-          onClick={() => setAttentionOnly((value) => !value)}
-        >
-          {t('Needs attention')}
-        </Button>
       </header>
 
       <ScrollArea className="min-h-0 flex-1">
@@ -195,16 +177,6 @@ const ProjectComputeInbox = (): React.JSX.Element => {
           <aside className="mb-4 rounded-lg border border-status-info-border bg-status-info-surface p-3 text-xs leading-5 text-status-info-foreground dark:text-status-info-dark-foreground">
             <p>
               {t('Local Runs execute in this app. Compute Jobs execute on a remote Compute Host.')}
-            </p>
-            <p>
-              {t(
-                'Active means queued, running, or cancelling. Awaiting Agent means the execution ended but its outcome has not been successfully delivered.'
-              )}
-            </p>
-            <p>
-              {t(
-                "Viewing this page does not consume a result. Consumed means the result was saved into the original Session's Agent context and that Agent Turn completed and was saved."
-              )}
             </p>
             <p>{t("Lifecycle management is available only in the task's Session.")}</p>
           </aside>
@@ -217,22 +189,15 @@ const ProjectComputeInbox = (): React.JSX.Element => {
             <div className="space-y-4" data-testid="project-compute-groups">
               {groups.map((group) => {
                 const session = sessionById.get(group.sessionId)
-                const active = group.items.filter((item) => item.active)
-                const awaiting = group.items.filter((item) => !item.active)
+                const localRuns = group.items.filter((item) => item.sourceKind === 'local-run')
+                const computeJobs = group.items.filter((item) => item.sourceKind === 'compute-job')
                 return (
                   <section
                     key={group.sessionId}
                     className="overflow-hidden rounded-lg border border-border-200 bg-bg-000"
                   >
                     <header className="flex items-center gap-2 bg-bg-200 px-3 py-2 text-sm font-semibold">
-                      {group.needsAttention ? (
-                        <AlertTriangle
-                          className="size-4 text-status-warning-foreground"
-                          aria-hidden="true"
-                        />
-                      ) : (
-                        <Cpu className="size-4 text-text-100" aria-hidden="true" />
-                      )}
+                      <Cpu className="size-4 text-text-100" aria-hidden="true" />
                       <span>{session?.title ?? t('Deleted Session')}</span>
                       {group.sessionId === currentSessionId ? (
                         <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] text-accent-foreground">
@@ -246,8 +211,8 @@ const ProjectComputeInbox = (): React.JSX.Element => {
                       ) : null}
                     </header>
                     {[
-                      { label: t('Active'), items: active },
-                      { label: t('Awaiting Agent'), items: awaiting }
+                      { label: t('Local runs'), items: localRuns },
+                      { label: t('Compute jobs'), items: computeJobs }
                     ].map((section) =>
                       section.items.length ? (
                         <div key={section.label}>
@@ -268,8 +233,11 @@ const ProjectComputeInbox = (): React.JSX.Element => {
                                     <Cpu className="size-4 shrink-0" aria-hidden="true" />
                                   )}
                                   <div className="min-w-0">
-                                    <div className="truncate font-medium" title={item.title}>
-                                      {item.title}
+                                    <div
+                                      className="truncate font-medium"
+                                      title={item.title ?? item.sourceId}
+                                    >
+                                      {item.title ?? item.sourceId}
                                     </div>
                                     <div className="text-[10px] text-text-100">
                                       {item.sourceKind === 'compute-job'

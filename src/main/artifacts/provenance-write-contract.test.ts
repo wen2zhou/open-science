@@ -13,7 +13,7 @@ import { ManagedFileVersionService } from '../managed-file-versions/service'
 import { createFrameNotebookLane } from '../notebook/lane-identity'
 import { getNotebookSessionRoot } from '../notebook/repository'
 import { NotebookRuntimeService, type NotebookExecutionResult } from '../notebook/runtime-service'
-import { buildAgentResultContinuationPrompt } from '../agent-result-delivery/continuation'
+import { buildAgentResultContinuationPrompt } from '../background-result-delivery/continuation'
 import {
   beginComputeJobFileEvidence,
   publishComputeJobFileEvidence,

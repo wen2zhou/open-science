@@ -1,8 +1,7 @@
-import { useState } from 'react'
+import { useMemo, useState } from 'react'
 import { useTranslation } from 'react-i18next'
 import { Circle, CircleCheck, CircleX, Clock3, Loader2 } from 'lucide-react'
 
-import type { AgentResultDelivery } from '../../../../shared/agent-result-delivery'
 import type { JobSummary } from '../../../../shared/compute'
 import type { NotebookRunRecord, NotebookSessionReference } from '../../../../shared/notebook'
 import { Button } from '@/components/ui/button'
@@ -16,13 +15,10 @@ type Props = {
   notebook?: NotebookSessionReference
   runs: NotebookRunRecord[]
   jobs: JobSummary[]
-  deliveryByRunId: Map<string, AgentResultDelivery>
-  deliveryByJobId: Map<string, AgentResultDelivery>
   now: number
   onOpenNotebook: (notebook: NotebookSessionReference, runId?: string) => void
   onOpenComputeJob?: (job: JobSummary) => void
   onOpenJobList?: (sessionId: string) => void
-  onDismissDelivery: (deliveryId: string) => void
 }
 
 const terminalStatuses = new Set<NotebookRunRecord['status']>([
@@ -63,59 +59,50 @@ const shellLaneLabel = (
 // Expanded "Background tasks" ledger above the composer. Fed by
 // useSessionBackgroundTasks and toggled by the BackgroundTasksChip in the
 // strip; data fetching and ordering live in the hook, this component only
-// renders sections and owns optimistic cancelling/dismissal state.
+// renders sections and owns optimistic cancelling state.
 const SessionBackgroundActivity = ({
   sessionId,
   projectId,
   notebook,
   runs,
   jobs,
-  deliveryByRunId,
-  deliveryByJobId,
   now,
   onOpenNotebook,
   onOpenComputeJob,
-  onOpenJobList,
-  onDismissDelivery
+  onOpenJobList
 }: Props): React.JSX.Element | null => {
   const { t } = useTranslation()
-  const [cancelling, setCancelling] = useState<Set<string>>(() => new Set())
+  const [cancellationRequests, setCancellationRequests] = useState<Set<string>>(() => new Set())
+  const cancelling = useMemo(() => {
+    const activeIds = new Set<string>([
+      ...runs.filter(isRunActive).map(({ runId }) => runId),
+      ...jobs.filter(isJobActive).map(({ job_id: jobId }) => jobId)
+    ])
+    return new Set([...cancellationRequests].filter((id) => activeIds.has(id)))
+  }, [cancellationRequests, jobs, runs])
   if (runs.length === 0 && jobs.length === 0) return null
 
   const columnClass =
     'grid min-w-[680px] grid-cols-[minmax(180px,1.4fr)_110px_110px_90px_140px] items-center gap-2'
 
   const runStatus = (run: NotebookRunRecord): string => {
-    const delivery = deliveryByRunId.get(run.runId)
-    const status = cancelling.has(run.runId)
-      ? 'cancelling'
-      : delivery?.state === 'needs-attention'
-        ? 'needs-attention'
-        : delivery
-          ? 'pending-delivery'
-          : run.status
+    const status = cancelling.has(run.runId) ? 'cancelling' : run.status
     return backgroundActivityStatusLabel(status, undefined, t)
   }
 
   const jobStatus = (job: JobSummary): string => {
     const isCancelling = cancelling.has(job.job_id) || job.cancellation_status === 'cancelling'
-    const delivery = deliveryByJobId.get(job.job_id)
     const effectiveStatus = isCancelling
       ? 'cancelling'
-      : delivery?.state === 'needs-attention'
-        ? 'needs-attention'
-        : delivery
-          ? 'pending-delivery'
-          : job.cancellation_status === 'cancelled'
-            ? 'cancelled'
-            : job.status
+      : job.cancellation_status === 'cancelled'
+        ? 'cancelled'
+        : job.status
     return backgroundActivityStatusLabel(effectiveStatus, undefined, t)
   }
 
   const runRow = (run: NotebookRunRecord, ref: NotebookSessionReference): React.JSX.Element => {
     const isActive = isRunActive(run)
     const isCancelling = cancelling.has(run.runId)
-    const delivery = deliveryByRunId.get(run.runId)
     const StatusIcon = isCancelling
       ? Loader2
       : run.status === 'completed'
@@ -131,15 +118,6 @@ const SessionBackgroundActivity = ({
         className={`${columnClass} min-h-10 border-t border-border-200 px-3 py-1.5 text-[11px]`}
       >
         <span className="min-w-0 truncate font-medium" title={taskName(run)}>
-          <span className="mr-2 inline-grid min-h-6 place-items-center rounded-md bg-bg-200 px-2 font-mono text-[10px] text-text-100">
-            {run.kernelKind === 'bash'
-              ? t('Shell Command')
-              : run.kernelKind === 'repl'
-                ? t('JavaScript REPL')
-                : run.kernelKind === 'r'
-                  ? 'R'
-                  : 'Python'}
-          </span>
           {taskName(run)}
         </span>
         <span className="truncate text-text-100">
@@ -169,7 +147,7 @@ const SessionBackgroundActivity = ({
               size="xs"
               disabled={isCancelling}
               onClick={() => {
-                setCancelling((current) => new Set(current).add(run.runId))
+                setCancellationRequests((current) => new Set(current).add(run.runId))
                 void window.api.notebook
                   .cancelBackgroundRun({
                     ...ref,
@@ -177,7 +155,7 @@ const SessionBackgroundActivity = ({
                     agentFrameId: run.agentFrameId
                   })
                   .catch(() =>
-                    setCancelling((current) => {
+                    setCancellationRequests((current) => {
                       const next = new Set(current)
                       next.delete(run.runId)
                       return next
@@ -186,15 +164,6 @@ const SessionBackgroundActivity = ({
               }}
             >
               {t('Cancel')}
-            </Button>
-          ) : delivery?.state === 'needs-attention' ? (
-            <Button
-              variant="outline"
-              size="xs"
-              title={t('Hide this item. The original execution result is kept.')}
-              onClick={() => onDismissDelivery(delivery.id)}
-            >
-              {t('Dismiss')}
             </Button>
           ) : null}
         </span>
@@ -205,7 +174,6 @@ const SessionBackgroundActivity = ({
   const jobRow = (job: JobSummary): React.JSX.Element => {
     const isActive = isJobActive(job)
     const isCancelling = cancelling.has(job.job_id) || job.cancellation_status === 'cancelling'
-    const delivery = deliveryByJobId.get(job.job_id)
     const StatusIcon = isCancelling
       ? Loader2
       : job.status === 'success'
@@ -225,9 +193,6 @@ const SessionBackgroundActivity = ({
         className={`${columnClass} min-h-10 border-t border-border-200 px-3 py-1.5 text-[11px]`}
       >
         <span className="min-w-0 truncate font-medium" title={job.intent}>
-          <span className="mr-2 inline-grid min-h-6 place-items-center rounded-md bg-bg-200 px-2 font-mono text-[10px] text-text-100">
-            {t('Compute Job')}
-          </span>
           {job.intent}
         </span>
         <span className="truncate text-text-100">
@@ -253,7 +218,7 @@ const SessionBackgroundActivity = ({
               size="xs"
               disabled={isCancelling}
               onClick={() => {
-                setCancelling((current) => new Set(current).add(job.job_id))
+                setCancellationRequests((current) => new Set(current).add(job.job_id))
                 void window.api.compute
                   .jobsCancel({
                     jobId: job.job_id,
@@ -262,7 +227,7 @@ const SessionBackgroundActivity = ({
                     projectId
                   })
                   .catch(() =>
-                    setCancelling((current) => {
+                    setCancellationRequests((current) => {
                       const next = new Set(current)
                       next.delete(job.job_id)
                       return next
@@ -271,10 +236,6 @@ const SessionBackgroundActivity = ({
               }}
             >
               {t('Cancel')}
-            </Button>
-          ) : delivery?.state === 'needs-attention' ? (
-            <Button variant="outline" size="xs" onClick={() => onDismissDelivery(delivery.id)}>
-              {t('Dismiss')}
             </Button>
           ) : null}
         </span>
@@ -287,18 +248,6 @@ const SessionBackgroundActivity = ({
       {label} · {count}
     </div>
   )
-
-  const groupHeader = (label: string): React.JSX.Element => (
-    <div className="min-w-[680px] border-t border-border-200 bg-bg-100 px-3 py-1 text-[10px] font-semibold tracking-wide text-text-300 uppercase">
-      {label}
-    </div>
-  )
-
-  const activeRuns = runs.filter(isRunActive)
-  const awaitingRuns = runs.filter((run) => !isRunActive(run))
-  const activeJobs = jobs.filter(isJobActive)
-  const awaitingJobs = jobs.filter((job) => !isJobActive(job) && deliveryByJobId.has(job.job_id))
-  const historyJobs = jobs.filter((job) => !isJobActive(job) && !deliveryByJobId.has(job.job_id))
 
   return (
     <section
@@ -319,18 +268,7 @@ const SessionBackgroundActivity = ({
       {notebook && runs.length > 0 ? (
         <>
           {sectionHeader(t('Local runs'), runs.length)}
-          {activeRuns.length > 0 ? (
-            <>
-              {groupHeader(t('Active'))}
-              {activeRuns.map((item) => runRow(item, notebook))}
-            </>
-          ) : null}
-          {awaitingRuns.length > 0 ? (
-            <>
-              {groupHeader(t('Awaiting Agent'))}
-              {awaitingRuns.map((item) => runRow(item, notebook))}
-            </>
-          ) : null}
+          {runs.map((item) => runRow(item, notebook))}
         </>
       ) : null}
       {jobs.length > 0 ? (
@@ -350,24 +288,7 @@ const SessionBackgroundActivity = ({
               </Button>
             ) : null}
           </div>
-          {activeJobs.length > 0 ? (
-            <>
-              {groupHeader(t('Active'))}
-              {activeJobs.map(jobRow)}
-            </>
-          ) : null}
-          {awaitingJobs.length > 0 ? (
-            <>
-              {groupHeader(t('Awaiting Agent'))}
-              {awaitingJobs.map(jobRow)}
-            </>
-          ) : null}
-          {historyJobs.length > 0 ? (
-            <>
-              {groupHeader(t('History'))}
-              {historyJobs.map(jobRow)}
-            </>
-          ) : null}
+          {jobs.map(jobRow)}
         </>
       ) : null}
     </section>

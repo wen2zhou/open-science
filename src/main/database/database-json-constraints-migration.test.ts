@@ -171,10 +171,10 @@ describe('database JSON constraints migration', () => {
           '0029_compute_host_execution_mode',
           '0030_literature_foundation',
           '0031_project_archive_revision',
-          '0032_agent_result_delivery'
+          '0032_background_result_delivery'
         ],
         from: '0007_notification_attention_metadata',
-        to: '0032_agent_result_delivery'
+        to: '0032_background_result_delivery'
       })
       await expect(access(`${databasePath}.before-${MIGRATION_ID}.backup`)).resolves.toBeUndefined()
       await expect(
@@ -219,7 +219,7 @@ describe('database JSON constraints migration', () => {
         access(`${databasePath}.before-0025_managed_file_version_foundation.backup`)
       ).rejects.toMatchObject({ code: 'ENOENT' })
       await expect(
-        access(`${databasePath}.before-0032_agent_result_delivery.backup`)
+        access(`${databasePath}.before-0032_background_result_delivery.backup`)
       ).rejects.toMatchObject({ code: 'ENOENT' })
 
       await expect(

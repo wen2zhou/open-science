@@ -16,6 +16,7 @@ import { EventEmitter } from 'node:events'
 
 import { registerOwnedPosixProcessGroup, terminateProcessTree } from '../process-tree'
 import { resolveWindowsPowerShellExecutable } from '../windows-powershell'
+import { bootTokenProvesReboot, isValidBootToken, readBootToken } from './operation-journal'
 
 type ShellProcessOwnershipRecord = Readonly<{
   version: 1
@@ -27,6 +28,7 @@ type ShellProcessOwnershipRecord = Readonly<{
   ownerInstanceId: string
   launchedAt: number
   processStartIdentity: string
+  bootToken?: string
 }>
 
 type ShellProcessLaunchIntent = Readonly<{
@@ -54,6 +56,7 @@ type ShellProcessOwnershipRegistryOptions = Readonly<{
   processExists?: (pid: number) => boolean
   ownedTreeExists?: (record: ShellProcessOwnershipRecord) => boolean
   processStartIdentity?: (pid: number, platform: NodeJS.Platform) => string | undefined
+  readBootToken?: () => string | undefined
   terminateOwnedTree?: (record: ShellProcessOwnershipRecord) => Promise<{ reaped: boolean }>
 }>
 
@@ -197,6 +200,8 @@ class ShellProcessOwnershipRegistry {
         if (pid === undefined || !Number.isSafeInteger(pid) || pid <= 0) {
           throw new Error('Shell process did not expose a valid process identity.')
         }
+        const bootToken =
+          platform === 'linux' ? (this.options.readBootToken ?? readBootToken)() : undefined
         const record: ShellProcessOwnershipRecord = {
           version: 1,
           runId: metadata.runId,
@@ -206,6 +211,7 @@ class ShellProcessOwnershipRegistry {
           platform,
           ownerInstanceId: this.ownerInstanceId,
           launchedAt: intent.launchedAt,
+          ...(bootToken ? { bootToken } : {}),
           processStartIdentity:
             (this.options.processStartIdentity ?? processStartIdentity)(pid, platform) ??
             (() => {
@@ -262,12 +268,23 @@ class ShellProcessOwnershipRegistry {
         typeof parsed.platform !== 'string' ||
         typeof parsed.ownerInstanceId !== 'string' ||
         typeof parsed.launchedAt !== 'number' ||
-        typeof parsed.processStartIdentity !== 'string'
+        typeof parsed.processStartIdentity !== 'string' ||
+        (parsed.bootToken !== undefined && !isValidBootToken(parsed.bootToken))
       ) {
         throw new Error(`Corrupt Shell process ownership record: ${entry}`)
       }
       const record = parsed as ShellProcessOwnershipRecord
-      if ((this.options.processExists ?? processExists)(record.pid)) {
+      if (record.platform !== 'win32') {
+        const currentBootToken = (this.options.readBootToken ?? readBootToken)()
+        if (bootTokenProvesReboot(record.bootToken, currentBootToken)) {
+          // A detached process group cannot survive a reboot. Its numeric id may already name an
+          // unrelated group, so discard this stale receipt before any group liveness/kill probe.
+          await unlink(path)
+          continue
+        }
+      }
+      const leaderExists = (this.options.processExists ?? processExists)(record.pid)
+      if (leaderExists) {
         const currentIdentity = (this.options.processStartIdentity ?? processStartIdentity)(
           record.pid,
           record.platform
@@ -283,7 +300,13 @@ class ShellProcessOwnershipRegistry {
           continue
         }
       }
-      if ((this.options.ownedTreeExists ?? ownedTreeExists)(record)) {
+      const treeExists = (this.options.ownedTreeExists ?? ownedTreeExists)(record)
+      if (treeExists && record.platform !== 'win32' && !leaderExists) {
+        // A leaderless POSIX group cannot be tied back to the persisted start identity. Its numeric
+        // id may have been reused during this boot, so never signal it from the receipt alone.
+        throw new ShellProcessRecoveryBlockedError(record.runId)
+      }
+      if (treeExists) {
         const result = this.options.terminateOwnedTree
           ? await this.options.terminateOwnedTree(record)
           : await terminateProcessTree(recoveryHandle(record))

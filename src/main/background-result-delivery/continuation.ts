@@ -16,11 +16,7 @@ type PersistedDeliveryMessage = Readonly<{
 
 const buildAgentResultContinuationPrompt = (
   session: PersistedChatSession,
-  request: Readonly<{
-    sessionId: string
-    text: string
-    continuationMessageId: string
-  }>
+  request: Readonly<{ sessionId: string; text: string; continuationMessageId: string }>
 ): AcpPromptRequest => {
   const graph = materializeSessionConversationGraph(session).conversationGraph
   if (!graph) throw new Error('Background result continuation has no Conversation graph.')
@@ -33,10 +29,7 @@ const buildAgentResultContinuationPrompt = (
 
 const hasSavedAgentResultContinuation = (
   messages: readonly PersistedDeliveryMessage[],
-  request: Readonly<{
-    continuationMessageId: string
-    deliveryIds: readonly string[]
-  }>
+  request: Readonly<{ continuationMessageId: string; deliveryIds: readonly string[] }>
 ): boolean => {
   const prompt = messages.find(
     (message) =>
@@ -44,16 +37,13 @@ const hasSavedAgentResultContinuation = (
       message.id === request.continuationMessageId &&
       isAgentResultDeliveryAttribution(message.attribution)
   )
-  if (!prompt || !isAgentResultDeliveryAttribution(prompt.attribution)) {
-    return false
-  }
+  if (!prompt || !isAgentResultDeliveryAttribution(prompt.attribution)) return false
   const attribution = prompt.attribution
   if (
     attribution.deliveryIds.length !== request.deliveryIds.length ||
     !request.deliveryIds.every((deliveryId) => attribution.deliveryIds.includes(deliveryId))
-  ) {
+  )
     return false
-  }
   return messages.some(
     (message) =>
       message.role === 'agent' &&

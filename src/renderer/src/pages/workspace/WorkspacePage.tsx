@@ -1161,6 +1161,8 @@ const WorkspacePage = ({
     if (!isSessionPersistenceReady) return
     usePreviewWorkbenchStore.getState().upsertAndActivateItem(createProjectComputePreviewItem())
   }
+  const canOpenProjectCompute =
+    typeof window.api.backgroundResultDelivery?.getProjectActivity === 'function'
 
   return (
     <main className="h-[100dvh] overflow-hidden bg-bg-10 text-[13px] leading-normal text-text-000 md:h-screen md:p-[10px]">
@@ -1197,8 +1199,10 @@ const WorkspacePage = ({
             isFilesOpen={activePreviewItemId === PROJECT_FILES_PREVIEW_ID}
             onOpenFiles={openFilesPreview}
             onOpenLiterature={() => openProjectLiterature(scopedProjectId, 'user')}
-            isComputeOpen={activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID}
-            onOpenCompute={openComputePreview}
+            isComputeOpen={
+              canOpenProjectCompute && activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID
+            }
+            onOpenCompute={canOpenProjectCompute ? openComputePreview : undefined}
             onOpenSession={openSessionWithoutExportError}
             onRenameSession={sessionController.actions.openEdit}
             onRenameSessionTitle={sessionController.actions.renameTitle}
@@ -1256,11 +1260,17 @@ const WorkspacePage = ({
             onOpenLiterature={() => {
               if (openProjectLiterature(scopedProjectId, 'user')) close()
             }}
-            isComputeOpen={activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID}
-            onOpenCompute={() => {
-              close()
-              openComputePreview()
-            }}
+            isComputeOpen={
+              canOpenProjectCompute && activePreviewItemId === PROJECT_COMPUTE_PREVIEW_ID
+            }
+            onOpenCompute={
+              canOpenProjectCompute
+                ? () => {
+                    close()
+                    openComputePreview()
+                  }
+                : undefined
+            }
             onOpenSession={(sessionId) => {
               close()
               openSessionWithoutExportError(sessionId)

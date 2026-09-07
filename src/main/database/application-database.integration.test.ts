@@ -216,7 +216,7 @@ describe('application database (integration)', () => {
         '0029_compute_host_execution_mode',
         '0030_literature_foundation',
         '0031_project_archive_revision',
-        '0032_agent_result_delivery'
+        '0032_background_result_delivery'
       ]
     })
 
@@ -1277,7 +1277,7 @@ describe('application database (integration)', () => {
         '0029_compute_host_execution_mode',
         '0030_literature_foundation',
         '0031_project_archive_revision',
-        '0032_agent_result_delivery'
+        '0032_background_result_delivery'
       ]
     })
 

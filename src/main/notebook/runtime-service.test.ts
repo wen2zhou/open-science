@@ -5453,8 +5453,8 @@ describe('notebook runtime service', () => {
     expect(onBackgroundRunTerminal).toHaveBeenCalledTimes(2)
     expect(onBackgroundRunTerminal).toHaveBeenCalledWith(
       expect.objectContaining({
-        runId: 'background-run-1',
-        terminalStatus: 'interrupted',
+        sourceKind: 'local-run',
+        sourceId: 'background-run-1',
         projectId: 'default-project',
         sessionId: 'crashed-background'
       })
@@ -6016,13 +6016,9 @@ describe('notebook runtime service', () => {
     expect(onBackgroundRunAdmitted).toHaveBeenCalledWith(
       expect.objectContaining({
         sourceKind: 'local-run',
-        runId: receipt.runId,
-        executionType: 'python',
-        terminalStatus: 'waiting-result',
+        sourceId: receipt.runId,
         projectId: 'default-project',
-        sessionId: 'session-background',
-        title: 'long_running_analysis()',
-        lane: 'default-python'
+        sessionId: 'session-background'
       })
     )
     await executionStarted.promise
@@ -6350,9 +6346,9 @@ describe('notebook runtime service', () => {
     })
     expect(onBackgroundRunObserved).toHaveBeenCalledWith(
       expect.objectContaining({
-        runId: receipt.runId,
-        sessionId: 'canonical-session',
-        terminalStatus: 'completed'
+        sourceKind: 'local-run',
+        sourceId: receipt.runId,
+        sessionId: 'canonical-session'
       })
     )
   })

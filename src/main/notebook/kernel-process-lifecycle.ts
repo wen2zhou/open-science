@@ -20,6 +20,7 @@ import {
   type ProcessTreeKillResult
 } from '../process-tree'
 import { readProcessStartToken } from './operation-recovery'
+import { bootTokenProvesReboot, isValidBootToken, readBootToken } from './operation-journal'
 
 const OWNER_TOKEN_ENV = 'OPEN_SCIENCE_KERNEL_OWNER_TOKEN'
 const RECORD_VERSION = 1
@@ -40,6 +41,7 @@ type KernelProcessRecord = KernelProcessSpawnScope & {
   pid?: number
   processStartToken?: string
   commandIdentityMarker?: string
+  bootToken?: string
 }
 
 type KernelProcessSpawnIntent = Readonly<{
@@ -65,6 +67,7 @@ type KernelProcessLifecycleOwnerOptions = Readonly<{
   ownerInstanceId?: string
   platform?: NodeJS.Platform
   controller?: KernelProcessRecoveryController
+  readBootToken?: () => string | undefined
 }>
 
 const isPositivePid = (value: unknown): value is number =>
@@ -106,7 +109,9 @@ const decodeRecord = (contents: string): KernelProcessRecord | undefined => {
       !Number.isFinite(value.spawnedAt) ||
       (value.pid !== undefined && !isPositivePid(value.pid)) ||
       (value.processStartToken !== undefined && typeof value.processStartToken !== 'string') ||
-      (value.commandIdentityMarker !== undefined && typeof value.commandIdentityMarker !== 'string')
+      (value.commandIdentityMarker !== undefined &&
+        typeof value.commandIdentityMarker !== 'string') ||
+      (value.bootToken !== undefined && !isValidBootToken(value.bootToken))
     ) {
       return undefined
     }
@@ -174,18 +179,26 @@ const terminateWindowsPid = async (pid: number): Promise<ProcessTreeKillResult> 
   return { reaped: false }
 }
 
-const defaultController = (platform: NodeJS.Platform): KernelProcessRecoveryController => ({
+const defaultController = (
+  platform: NodeJS.Platform,
+  currentBootToken: () => string | undefined = readBootToken
+): KernelProcessRecoveryController => ({
   probe: async (record) => {
     if (record.platform !== platform) return 'dead'
     if (!record.pid) return 'unknown'
 
+    if (platform !== 'win32') {
+      const bootToken = currentBootToken()
+      if (bootTokenProvesReboot(record.bootToken, bootToken)) return 'dead'
+    }
     const alive = pidIsAlive(record.pid)
     if (platform !== 'win32') {
       const groupAlive = isOwnedPosixProcessGroupAlive(record.pid)
       if (!groupAlive) return 'dead'
-      // A detached group remains the original owned group after its leader exits; its id cannot be
-      // reused while any member survives, so it is safe to reap even without the leader's /proc row.
-      if (!alive) return 'owned'
+      // Once the leader exits, its numeric group id is no longer tied to the persisted process
+      // identity. A later group can reuse it during the same boot, so retain the fence rather than
+      // authorizing a group signal from the number alone.
+      if (!alive) return 'unknown'
     } else if (!alive) {
       return 'dead'
     }
@@ -218,13 +231,15 @@ class KernelProcessLifecycleOwner {
   private readonly directory: string
   private readonly platform: NodeJS.Platform
   private readonly controller: KernelProcessRecoveryController
+  private readonly readBootToken: () => string | undefined
   private recovery: Promise<void> | undefined
 
   constructor(options: KernelProcessLifecycleOwnerOptions) {
     this.ownerInstanceId = options.ownerInstanceId ?? randomUUID()
     this.directory = join(options.storageRoot, 'runtime', 'kernel-processes')
     this.platform = options.platform ?? process.platform
-    this.controller = options.controller ?? defaultController(this.platform)
+    this.readBootToken = options.readBootToken ?? readBootToken
+    this.controller = options.controller ?? defaultController(this.platform, this.readBootToken)
   }
 
   ensureReady(): Promise<void> {
@@ -255,6 +270,7 @@ class KernelProcessLifecycleOwner {
     }
     const receiptId = randomUUID()
     const path = join(this.directory, `${prefix}.pending.${receiptId}.json`)
+    const bootToken = this.platform === 'linux' ? this.readBootToken() : undefined
     const record: KernelProcessRecord = {
       version: RECORD_VERSION,
       receiptId,
@@ -262,6 +278,7 @@ class KernelProcessLifecycleOwner {
       ownerToken,
       platform: this.platform,
       spawnedAt: Date.now(),
+      ...(bootToken ? { bootToken } : {}),
       ...scope
     }
     writeRecordSync(path, record)

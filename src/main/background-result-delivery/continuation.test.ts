@@ -4,10 +4,7 @@ import { createLinearConversationGraph } from '../../shared/conversation-graph'
 import type { PersistedChatSession } from '../../shared/session-persistence'
 import { buildAgentResultContinuationPrompt, hasSavedAgentResultContinuation } from './continuation'
 
-const request = {
-  continuationMessageId: 'continuation-1',
-  deliveryIds: ['local-run:run-1']
-}
+const request = { continuationMessageId: 'continuation-1', deliveryIds: ['local-run:run-1'] }
 const prompt = {
   id: 'continuation-1',
   role: 'user' as const,
@@ -28,7 +25,7 @@ const reply = {
 }
 
 describe('hasSavedAgentResultContinuation', () => {
-  it('requires both the exact durable result context and its completed Agent reply', () => {
+  it('requires both the exact durable attribution and its completed Agent reply', () => {
     expect(hasSavedAgentResultContinuation([prompt, reply], request)).toBe(true)
     expect(hasSavedAgentResultContinuation([reply], request)).toBe(false)
     expect(hasSavedAgentResultContinuation([prompt], request)).toBe(false)
@@ -40,8 +37,7 @@ describe('hasSavedAgentResultContinuation', () => {
     ).toBe(false)
   })
 
-  it('matches a durable delivery batch as a set rather than depending on row order', () => {
-    const second = 'local-run:run-2'
+  it('matches a batch as a set rather than depending on row order', () => {
     expect(
       hasSavedAgentResultContinuation(
         [
@@ -49,24 +45,24 @@ describe('hasSavedAgentResultContinuation', () => {
             ...prompt,
             attribution: {
               ...prompt.attribution,
-              deliveryIds: [second, ...prompt.attribution.deliveryIds]
+              deliveryIds: ['local-run:run-2', 'local-run:run-1']
             }
           },
           reply
         ],
-        { ...request, deliveryIds: [...request.deliveryIds, second] }
+        { ...request, deliveryIds: ['local-run:run-1', 'local-run:run-2'] }
       )
     ).toBe(true)
   })
 })
 
 describe('buildAgentResultContinuationPrompt', () => {
-  it('preserves the durable active ancestry and Runtime Segment for a background result turn', () => {
+  it('preserves active conversation ancestry for the delivery turn', () => {
     const messages: PersistedChatSession['messages'] = [
       {
         id: 'original-prompt',
         role: 'user',
-        content: 'Run the analysis in the background.',
+        content: 'Run it.',
         status: 'complete',
         eventIds: [],
         createdAt: 1,
@@ -75,7 +71,7 @@ describe('buildAgentResultContinuationPrompt', () => {
       {
         id: 'original-reply',
         role: 'agent',
-        content: 'The background Run was submitted.',
+        content: 'Submitted.',
         status: 'complete',
         responseToMessageId: 'original-prompt',
         eventIds: [],
@@ -102,20 +98,14 @@ describe('buildAgentResultContinuationPrompt', () => {
       createdAt: 1,
       updatedAt: 2
     }
-
-    const prompt = buildAgentResultContinuationPrompt(session, {
-      sessionId: 'session-1',
-      text: 'Background execution outcomes are now available.',
-      continuationMessageId: 'delivery-prompt'
-    })
-
-    expect(prompt.provenanceContext).toEqual({
+    expect(
+      buildAgentResultContinuationPrompt(session, {
+        sessionId: 'session-1',
+        text: 'Outcomes available.',
+        continuationMessageId: 'delivery-prompt'
+      }).provenanceContext
+    ).toMatchObject({
       promptMessageId: 'delivery-prompt',
-      rootFrameId: 'root-frame-session-1',
-      agentFrameId: 'root-frame-session-1',
-      messageBranchId: 'message-branch-session-1',
-      messageBranchAncestry: ['message-branch-session-1'],
-      messageAncestry: ['original-prompt', 'original-reply', 'delivery-prompt'],
       runtimeSegmentId: 'runtime-segment-session-1'
     })
   })

@@ -3,7 +3,6 @@ import { act } from 'react'
 import { createRoot, type Root } from 'react-dom/client'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
-import type { AgentResultDelivery } from '../../../../shared/agent-result-delivery'
 import type { JobSummary } from '../../../../shared/compute'
 import type { NotebookRunRecord, NotebookSessionReference } from '../../../../shared/notebook'
 import { makeJob } from '@/test-utils/compute-job'
@@ -54,24 +53,6 @@ const job = (overrides: Partial<JobSummary> = {}): JobSummary =>
     ...overrides
   })
 
-const delivery = (overrides: Partial<AgentResultDelivery> = {}): AgentResultDelivery => ({
-  id: 'delivery-1',
-  state: 'pending',
-  attemptCount: 0,
-  createdAt: Date.now() - 1_000,
-  updatedAt: Date.now() - 1_000,
-  context: {
-    runId: 'run-1',
-    executionType: 'python',
-    terminalStatus: 'completed',
-    resultSummary: 'QC completed',
-    projectId: 'project-1',
-    sessionId: 'session-1',
-    agentFrameId: 'frame-1'
-  },
-  ...overrides
-})
-
 type Props = Parameters<typeof SessionBackgroundActivity>[0]
 
 const baseProps = (overrides: Partial<Props> = {}): Props => ({
@@ -80,11 +61,8 @@ const baseProps = (overrides: Partial<Props> = {}): Props => ({
   notebook,
   runs: [],
   jobs: [],
-  deliveryByRunId: new Map(),
-  deliveryByJobId: new Map(),
   now: Date.now(),
   onOpenNotebook: vi.fn(),
-  onDismissDelivery: vi.fn(),
   ...overrides
 })
 
@@ -131,7 +109,6 @@ describe('Session background activity ledger', () => {
     expect(container.querySelector('[aria-label="Background tasks"]')).not.toBeNull()
     expect(container.textContent).toContain('Compute jobs · 1')
     expect(container.textContent).not.toContain('Local runs')
-    expect(container.textContent).toContain('Compute Job')
     expect(container.textContent).toContain('Remote · Cluster One')
 
     act(() => buttonByText(container, 'Open')?.click())
@@ -149,15 +126,15 @@ describe('Session background activity ledger', () => {
     expect(openJobList).toHaveBeenCalledWith('session-1')
   })
 
-  it('keeps a terminal Compute Job without a pending delivery openable in History', async () => {
+  it('keeps a terminal Compute Job openable without an extra status group', async () => {
     const openComputeJob = vi.fn()
     const terminalJob = job({ status: 'success', finished_at: Date.now() })
     const container = await renderLedger(
       baseProps({ jobs: [terminalJob], onOpenComputeJob: openComputeJob })
     )
 
-    expect(container.textContent).toContain('History')
-    expect(container.textContent).not.toContain('Awaiting Agent')
+    expect(container.textContent).not.toContain('History')
+    expect(container.textContent).toContain('Completed')
     expect(container.textContent).toContain('Fit remote model')
 
     act(() => buttonByText(container, 'Open')?.click())
@@ -177,7 +154,7 @@ describe('Session background activity ledger', () => {
     )
 
     expect(container.textContent).toContain('Local runs · 2')
-    expect(container.textContent).toContain('Active')
+    expect(container.textContent).not.toContain('Active')
     expect(container.textContent).toContain('donor_level_qc()')
     expect(container.textContent).not.toContain('Compute jobs')
 
@@ -191,6 +168,30 @@ describe('Session background activity ledger', () => {
       agentFrameId: 'frame-1'
     })
     expect(container.textContent).toContain('Cancelling')
+  })
+
+  it('clears optimistic cancelling state after the task becomes terminal', async () => {
+    vi.stubGlobal('window', {
+      ...window,
+      api: { notebook: { cancelBackgroundRun: vi.fn().mockResolvedValue(undefined) } }
+    })
+    const container = await renderLedger(baseProps({ runs: [run()] }))
+
+    act(() => buttonByText(container, 'Cancel')?.click())
+    expect(container.textContent).toContain('Cancelling')
+
+    await act(async () => {
+      roots
+        .at(-1)
+        ?.render(
+          <SessionBackgroundActivity
+            {...baseProps({ runs: [run({ status: 'completed', endedAt: Date.now() })] })}
+          />
+        )
+    })
+
+    expect(container.textContent).toContain('Completed')
+    expect(container.textContent).not.toContain('Cancelling')
   })
 
   it('shows a JavaScript REPL Run with its persistent lane and active controls', async () => {
@@ -212,7 +213,6 @@ describe('Session background activity ledger', () => {
       })
     )
 
-    expect(container.textContent).toContain('JavaScript REPL')
     expect(container.textContent).toContain('Persistent REPL')
     expect(container.textContent).toContain('Running')
     expect(container.textContent).toMatch(/0m \d{2}s/u)
@@ -248,29 +248,24 @@ describe('Session background activity ledger', () => {
       })
     )
 
-    expect(container.textContent).toContain('Shell Command')
     expect(container.textContent).toContain('Shell slot 1 of 2')
     expect(container.textContent).toContain('Waiting for shell slot')
     expect(container.textContent).not.toContain('Compute Job')
     expect(container.textContent).not.toContain('View all jobs')
   })
 
-  it('groups terminal results awaiting Agent delivery and forwards Dismiss', async () => {
-    const onDismissDelivery = vi.fn()
+  it('shows only the execution outcome for terminal Local runs', async () => {
     const container = await renderLedger(
       baseProps({
-        runs: [run({ status: 'completed', endedAt: Date.now() })],
-        deliveryByRunId: new Map([['run-1', delivery({ state: 'needs-attention' })]]),
-        onDismissDelivery
+        runs: [run({ status: 'completed', endedAt: Date.now() })]
       })
     )
 
-    expect(container.textContent).toContain('Awaiting Agent')
-    expect(container.textContent).toContain('Needs Agent')
-    expect(container.textContent).not.toContain('Retry')
-
-    act(() => buttonByText(container, 'Dismiss')?.click())
-    expect(onDismissDelivery).toHaveBeenCalledWith('delivery-1')
+    expect(container.textContent).toContain('Completed')
+    expect(container.textContent).not.toMatch(/Awaiting Agent|Needs Agent|Pending delivery/u)
+    expect([...container.querySelectorAll('button')].map((button) => button.textContent)).toEqual([
+      'Open'
+    ])
   })
 
   it('renders nothing when both sections are empty', async () => {

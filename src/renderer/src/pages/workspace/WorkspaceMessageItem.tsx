@@ -1589,8 +1589,8 @@ const WorkspaceMessageItemImpl = ({
             >
               <Bot className="mt-0.5 size-3.5 shrink-0 text-text-300" aria-hidden="true" />
               <div className="flex min-w-0 flex-col gap-0.5 sm:flex-row sm:items-baseline sm:gap-2">
-                <span className="font-medium text-text-200">{t('Session activity')}</span>
-                <span className="text-text-300">{t('Pending delivery')}</span>
+                <span className="font-medium text-text-200">{t('Background activity')}</span>
+                <span className="text-text-300">{t('New task results are available')}</span>
               </div>
             </div>
           ) : isComputeJobCompletion ? (
