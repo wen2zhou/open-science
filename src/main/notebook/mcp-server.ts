@@ -826,9 +826,16 @@ const compactBackgroundRunSubmissionReceipt = (raw: unknown): unknown => {
 const compactBackgroundRunResult = (raw: unknown): unknown => {
   const result = asRecord(raw)
   if (!result) return raw
+  const receipt = asRecord(result.receipt)
+  const run = asRecord(result.run)
+  const compactRun =
+    run?.kernelKind === 'repl'
+      ? compactReplExecutionResult(result.run)
+      : compactNotebookExecutionResult(result.run)
+  // Keep the durable receipt internal; queries already carry the Run identity and scope.
   return {
-    receipt: compactBackgroundRunReceipt(result.receipt),
-    run: compactNotebookExecutionResult(result.run),
+    ...asRecord(compactRun),
+    ...(receipt ? pickDefined(receipt, ['shellConcurrency']) : {}),
     ...(typeof result.followUpDelivery === 'string'
       ? { followUpDelivery: result.followUpDelivery }
       : {})

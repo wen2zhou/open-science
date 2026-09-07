@@ -949,7 +949,7 @@ describe('background_run tool', () => {
     expect(tool?.description).toMatch(/submissionIdentity.*recovers only a missing receipt/i)
   })
 
-  it('preserves the durable receipt and compacts nested terminal output without losing identity', () => {
+  it('preserves the durable receipt internally and flattens compact query output', () => {
     const receipt = {
       runId: 'run-1',
       executionType: 'python-notebook-run',
@@ -961,22 +961,25 @@ describe('background_run tool', () => {
       submissionIdentity: 'submission-1'
     }
     expect(compactBackgroundRunReceipt(receipt)).toEqual(receipt)
-    expect(
-      compactBackgroundRunResult({
-        receipt,
-        followUpDelivery: 'suppressed',
-        run: {
-          runId: 'run-1',
-          status: 'completed',
-          text: { stdout: 'x'.repeat(30_000), stderr: '', traceback: '' },
-          outputs: []
-        }
-      })
-    ).toMatchObject({
+    const result = compactBackgroundRunResult({
       receipt,
       followUpDelivery: 'suppressed',
-      run: { runId: 'run-1', status: 'completed', truncated: true }
+      run: {
+        runId: 'run-1',
+        status: 'completed',
+        text: { stdout: 'x'.repeat(30_000), stderr: '', traceback: '' },
+        outputs: []
+      }
     })
+    expect(result).toMatchObject({
+      runId: 'run-1',
+      status: 'completed',
+      truncated: true,
+      followUpDelivery: 'suppressed'
+    })
+    expect(Object.keys(result as object).sort()).toEqual(
+      ['runId', 'status', 'stdout', 'truncated', 'note', 'followUpDelivery'].sort()
+    )
   })
 
   it('returns compact terminal Shell output, working files, and file evidence', () => {
@@ -1027,21 +1030,73 @@ describe('background_run tool', () => {
     })
 
     expect(result).toMatchObject({
-      receipt: { executionType: 'shell-command', shellConcurrency: { limit: 2, slot: 1 } },
-      run: {
-        kernelKind: 'bash',
-        status: 'failed',
-        exitCode: 7,
-        stdout: 'partial',
-        stderr: 'failed',
-        workingFiles: [{ relativePath: 'data/output.csv' }],
-        fileEvidence: {
-          activityId: 'shell-run-1',
-          state: 'available',
-          evidenceId: 'evidence-1'
-        }
+      shellConcurrency: { limit: 2, slot: 1 },
+      kernelKind: 'bash',
+      status: 'failed',
+      exitCode: 7,
+      stdout: 'partial',
+      stderr: 'failed',
+      workingFiles: [{ relativePath: 'data/output.csv' }],
+      fileEvidence: {
+        activityId: 'shell-run-1',
+        state: 'available',
+        evidenceId: 'evidence-1'
       }
     })
+  })
+
+  it.each(['pending', 'suppressed', 'committed'])(
+    'preserves %s delivery state in query and cancel responses',
+    (followUpDelivery) => {
+      const status = followUpDelivery === 'pending' ? 'running' : 'completed'
+      for (const action of ['query', 'cancel']) {
+        expect(
+          tool?.mapResult?.(
+            {
+              receipt: { runId: 'run-1', status, projectId: 'project-1' },
+              run: { runId: 'run-1', status, kernelKind: 'python' },
+              followUpDelivery
+            },
+            { action, runId: 'run-1' }
+          )
+        ).toEqual({
+          runId: 'run-1',
+          status,
+          kernelKind: 'python',
+          followUpDelivery
+        })
+      }
+    }
+  )
+
+  it('compacts background REPL errors like foreground errors without changing stored output', () => {
+    const message = 'Error: connector failed'
+    const traceback = [message, '    at <repl>:1:7', '    at run (node:vm:117:7)'].join('\n')
+    const run = {
+      runId: 'repl-1',
+      kernelKind: 'repl',
+      status: 'failed',
+      text: { stdout: '', stderr: '', traceback },
+      outputs: [{ type: 'error', message, traceback }]
+    }
+    const replTool = NOTEBOOK_RPC_TOOLS.find((entry) => entry.name === 'repl_execute')
+    const result = tool?.mapResult?.({ receipt: {}, run }, { action: 'query', runId: 'repl-1' })
+    expect(result).toEqual(replTool?.mapResult?.(run, {}))
+    expect(result).toMatchObject({ traceback: message, outputs: [{ type: 'error', message }] })
+    expect(JSON.stringify(result)).not.toContain('node:vm')
+    expect(run.text.traceback).toBe(traceback)
+    expect(run.outputs[0].traceback).toBe(traceback)
+  })
+
+  it('preserves background Python traceback frames', () => {
+    const traceback =
+      'Traceback (most recent call last):\n  File "analysis.py", line 2\nValueError: boom'
+    expect(
+      compactBackgroundRunResult({
+        receipt: {},
+        run: { runId: 'python-1', kernelKind: 'python', status: 'failed', text: { traceback } }
+      })
+    ).toMatchObject({ traceback })
   })
 
   it('preserves the structured recovery envelope through the MCP RPC client', async () => {
