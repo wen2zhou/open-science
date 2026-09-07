@@ -34,6 +34,13 @@ import { TagResourceCatalog } from './tags/resource-catalog'
 import { TagService } from './tags/service'
 import { MemoryRepository } from './memory/repository'
 import { MemoryService } from './memory/service'
+import { AgentResultDeliveryRepository } from './agent-result-delivery/repository'
+import { AgentResultDeliveryOwner } from './agent-result-delivery/owner'
+import { ComputeJobResultDeliveryAdapter } from './agent-result-delivery/compute-adapter'
+import { NotebookRunResultDeliveryAdapter } from './agent-result-delivery/notebook-adapter'
+import { registerAgentResultDeliveryIpcHandlers } from './agent-result-delivery/ipc'
+import { hasSavedAgentResultContinuation } from './agent-result-delivery/continuation'
+import type { ProjectBackgroundActivityChangedEvent } from '../shared/agent-result-delivery'
 import {
   LIFECYCLE_CHANNELS,
   MAIN_DELEGATED_WORK_LIFECYCLE_CLIENT_ID,
@@ -69,7 +76,7 @@ import {
 import { ArtifactProvenanceRepository } from './artifacts/provenance-repository'
 import { ProvenanceMessageSnapshotRepository } from './artifacts/provenance-message-snapshot'
 import { ArtifactRunRegistry } from './artifacts/run-registry'
-import { createComputeIpcModule } from './compute/ipc'
+import { broadcastJobUpdated, createComputeIpcModule, toJobSummary } from './compute/ipc'
 import { createComputeArtifactResolver } from './compute/compute-service'
 import { bindComputeApprovalSessionLifecycle } from './compute/approval-session-lifecycle'
 import type { ComputeJobOwnerLiveness } from './compute/job-deletion-owner'
@@ -760,6 +767,100 @@ const createApplicationModules = async (
   const runtimeRef: { current: ReturnType<typeof createAcpRuntime> | undefined } = {
     current: undefined
   }
+  const agentResultDeliveryRepository = new AgentResultDeliveryRepository(() =>
+    getProjectDbClient(resolveConfigRoot())
+  )
+  const publishAgentResultDeliveryChanged = async (projectId: string): Promise<void> => {
+    try {
+      applicationEvents.publish('agent-result-delivery:changed', {
+        projectId,
+        revision: await agentResultDeliveryRepository.projectRevision(projectId)
+      })
+    } catch (error) {
+      createLogger('agent-result-delivery').warn(
+        'Agent result delivery change publication failed',
+        diagnosticErrorFields(error)
+      )
+    }
+  }
+  const agentResultDelivery = await modules.add(
+    {
+      repository: agentResultDeliveryRepository,
+      sendContinuation: async (request: {
+        sessionId: string
+        text: string
+        deliveryIds: readonly string[]
+        continuationMessageId: string
+      }) => {
+        const runtime = runtimeRef.current
+        if (!runtime) throw new Error('Agent runtime is unavailable for result delivery.')
+        const response = await runtime.sendApplicationPrompt(
+          {
+            sessionId: request.sessionId,
+            text: request.text,
+            provenanceContext: { promptMessageId: request.continuationMessageId }
+          },
+          {
+            kind: 'application',
+            feature: 'background-results',
+            purpose: 'agent-result-delivery',
+            deliveryKey: `agent-result-delivery:${request.continuationMessageId}`,
+            deliveryIds: [...request.deliveryIds]
+          }
+        )
+        return {
+          stopReason: response.stopReason,
+          continuationMessageId: request.continuationMessageId
+        }
+      },
+      isContinuationSaved: async (request: {
+        sessionId: string
+        continuationMessageId: string
+        deliveryIds: readonly string[]
+      }) => {
+        const projectId = await sessionPersistenceCoordinator.sessionProjectId(request.sessionId)
+        if (!projectId) return false
+        const saved = await sessionPersistenceCoordinator.loadSessionForContinuation(
+          projectId,
+          request.sessionId
+        )
+        const messages = [...(saved.conversationGraph?.messages ?? []), ...saved.messages]
+        return hasSavedAgentResultContinuation(messages, request)
+      },
+      canStartSessionTurn: (sessionId: string) => {
+        const runtime = runtimeRef.current
+        return runtime ? !runtime.getState().promptInFlightSessionIds.includes(sessionId) : false
+      },
+      onChanged: (event: ProjectBackgroundActivityChangedEvent) =>
+        applicationEvents.publish('agent-result-delivery:changed', event)
+    },
+    (options) => {
+      const owner = new AgentResultDeliveryOwner(options)
+      return {
+        name: 'agent-result-delivery',
+        capability: owner,
+        dispose: () => owner.dispose()
+      }
+    }
+  )
+  const computeJobResultDelivery = new ComputeJobResultDeliveryAdapter({
+    repository: {
+      registerComputeJob: async (registration) => {
+        const delivery = await agentResultDeliveryRepository.registerComputeJob(registration)
+        await publishAgentResultDeliveryChanged(registration.projectId)
+        return delivery
+      },
+      hasComputeJobDeliveryPath: (jobId) =>
+        agentResultDeliveryRepository.hasComputeJobDeliveryPath(jobId),
+      listWaitingComputeJobIds: () => agentResultDeliveryRepository.listWaitingComputeJobIds()
+    },
+    enqueue: (context) => agentResultDelivery.enqueue(context),
+    acknowledge: (context) => agentResultDelivery.acknowledgeObservedOutcome(context)
+  })
+  const notebookRunResultDelivery = new NotebookRunResultDeliveryAdapter({
+    repository: agentResultDeliveryRepository,
+    enqueue: (context) => agentResultDelivery.enqueue(context)
+  })
   const userSkillCatalogObserverRef: { current: UserSkillCatalogObserver | undefined } = {
     current: undefined
   }
@@ -1475,6 +1576,13 @@ const createApplicationModules = async (
       translate,
       helperModuleCatalog: settingsService.registeredHelperCatalog(),
       processSandbox: notebookNetworkSandbox,
+      onBackgroundRunTerminal: (context) =>
+        agentResultDelivery.enqueue(context).then(() => undefined),
+      onBackgroundRunAdmitted: (context) =>
+        agentResultDeliveryRepository
+          .registerLocalRun(context)
+          .then(() => publishAgentResultDeliveryChanged(context.projectId)),
+      onBackgroundRunObserved: (context) => agentResultDelivery.acknowledgeObservedOutcome(context),
       events: applicationEvents,
       disposeTimeoutMs: QUIT_SHUTDOWN_BUDGET_MS,
       isBackendTeardownOwned: () => backendTeardownOwnedByCoordinator
@@ -2027,7 +2135,8 @@ const createApplicationModules = async (
         }
       }
     },
-    sessionLimitPersistence
+    sessionLimitPersistence,
+    computeJobResultDelivery
   )
   surfaceAdapters = beforeAcpAdapters
   const {
@@ -2097,7 +2206,26 @@ const createApplicationModules = async (
   const dataRoot = resolveDataRoot()
   // The Notebook RPC receives only this Session-admitted facade, never the unrestricted service
   // used by Settings and internal runtimes.
-  const agentComputeService = new AgentComputeService(computeService, hostsRegistry)
+  const agentComputeService = new AgentComputeService(computeService, hostsRegistry, {
+    onFinalJobObserved: async (_context, _providerId, snapshot) => {
+      const job = await jobRepository.get(snapshot.job_id)
+      if (!job) return 'pending'
+      const host = await hostRepository.get(job.provider_id).catch(() => null)
+      const summary = await toJobSummary(job, host?.displayName ?? job.provider_id, dataRoot)
+      return computeJobResultDelivery.observeResult({
+        ...summary,
+        status: snapshot.status,
+        cancellation_status: snapshot.cancellation_status,
+        exit_code: snapshot.exit_code,
+        stdout_tail: snapshot.stdout_tail,
+        stderr_tail: snapshot.stderr_tail,
+        remote_workdir: snapshot.remote_workdir,
+        harvest_error: snapshot.harvest_error,
+        ...('featured_files' in snapshot ? { featured_files: snapshot.featured_files } : {}),
+        ...('left_on_remote' in snapshot ? { left_on_remote: snapshot.left_on_remote } : {})
+      })
+    }
+  })
   // host.agents control-plane SDK (issue 02/05): read Specialist/catalog surface plus the durable
   // immediate-handoff lifecycle. The catalog adapter delegates to the authoritative
   // SettingsService + SpecialistService; switch() reuses the SAME SessionBindingService and durable
@@ -2843,6 +2971,14 @@ const createApplicationModules = async (
   )
   surfaceAdapters = afterAcpAdapters
   runtimeRef.current = runtime
+  void agentResultDelivery
+    .recover()
+    .catch((error) =>
+      createLogger('agent-result-delivery').warn(
+        'Agent result delivery recovery failed',
+        diagnosticErrorFields(error)
+      )
+    )
   composition.phase('acp-runtime')
   runtime.setSessionResumeObserver(async (request) => {
     if (request.specialistBindingPending !== true) return
@@ -2966,7 +3102,26 @@ const createApplicationModules = async (
       storageRoot: dataRoot
     },
     (dependencies) => {
-      const jobPoller = createComputeJobRuntime(dependencies)
+      const jobPoller = createComputeJobRuntime(dependencies, {
+        broadcast: (summary) => {
+          void (async () => {
+            let owned = false
+            try {
+              await computeJobResultDelivery.observeNotification(summary)
+              owned = await computeJobResultDelivery.hasDeliveryPath(summary.job_id)
+            } catch (error) {
+              createLogger('agent-result-delivery').warn(
+                'Compute Job result delivery observation failed',
+                diagnosticErrorFields(error)
+              )
+              return
+            }
+            broadcastJobUpdated(
+              owned ? { ...summary, result_delivery_path: 'agent-result-delivery' } : summary
+            )
+          })()
+        }
+      })
       return {
         name: 'compute-job-runtime',
         capability: undefined,
@@ -3011,6 +3166,22 @@ const createApplicationModules = async (
           } catch (error) {
             createLogger('compute:file-evidence').warn(
               'Compute Job file-evidence startup reconciliation failed closed.',
+              diagnosticErrorFields(error)
+            )
+          }
+          try {
+            await computeJobResultDelivery.takeOver(
+              await computeIpcModule.handlers.jobsList({ nonTerminal: true })
+            )
+            await computeJobResultDelivery.recoverWaiting(async (jobId) => {
+              const job = await jobRepository.get(jobId)
+              if (!job) return undefined
+              const host = await hostRepository.get(job.provider_id).catch(() => null)
+              return toJobSummary(job, host?.displayName ?? job.provider_id, dataRoot)
+            })
+          } catch (error) {
+            createLogger('agent-result-delivery').warn(
+              'Compute Job result delivery recovery failed; Compute lifecycle will continue',
               diagnosticErrorFields(error)
             )
           }
@@ -3468,6 +3639,14 @@ const createApplicationModules = async (
     })
   )
   declareElectronAdapter('notebook', () => registerNotebookIpcHandlers(notebookCommands))
+  declareElectronAdapter('agent-result-delivery', () =>
+    registerAgentResultDeliveryIpcHandlers(agentResultDeliveryRepository, {
+      resolveLocalRun: (request) =>
+        notebookCommands.getBackgroundRun({ ...request, workspaceCwd: '' }).catch(() => undefined),
+      listActiveComputeJobs: () => computeIpcModule.handlers.jobsList({ nonTerminal: true }),
+      onChanged: (event) => applicationEvents.publish('agent-result-delivery:changed', event)
+    })
+  )
   // Wire session deletion to the binding store so stale in-memory bindings do not accumulate.
   // The renderer calls sessions:delete-session (via sessionPersistenceBackend) and acp:delete-session
   // separately; both paths should clear the binding. Override the backend deleteSession callback here
@@ -3767,10 +3946,24 @@ const createApplicationModules = async (
   // create, on-demand materialize, install) can await it and never race recovery's cleanup/delete.
   // Fire-and-forget so a slow/failed recovery never blocks IPC registration; the barrier itself is what
   // actually orders the prefix work.
-  void runDataRootStartupRecovery(() => notebookService.recoverInterruptedOperations(), {
-    reportFailure: (error) =>
-      notebookStartupLog.error('operation recovery failed', errorLogFields(error))
-  })
+  void runDataRootStartupRecovery(
+    async () => {
+      await notebookService.recoverInterruptedOperations()
+      await notebookRunResultDelivery.recoverWaiting(async (request) => {
+        const state = await notebookCommands.state({
+          projectId: request.projectId,
+          sessionId: request.sessionId,
+          workspaceCwd: '',
+          runIds: [request.runId]
+        })
+        return state.runs.find((run) => run.runId === request.runId)
+      })
+    },
+    {
+      reportFailure: (error) =>
+        notebookStartupLog.error('operation recovery failed', errorLogFields(error))
+    }
+  )
   const waitForRecovery = (): Promise<void> => notebookService.ensureRecovered()
   // Lets UI provision/repair refuse when recovery left the default env's prefix blocked (an
   // unknown-liveness orphan may still be writing it) — throws with an actionable message.

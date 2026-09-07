@@ -141,20 +141,46 @@ vi.mock('@/stores/session-job-store', () => ({
     })
 }))
 
-// RemoteJobBadge renders a sentinel element when a sessionId is provided so tests can assert presence.
-vi.mock('@/components/RemoteJobBadge', () => ({
-  RemoteJobBadge: ({
-    sessionId,
-    onOpenJobList
+// BackgroundTasksChip renders a sentinel element when tasks are visible so tests can assert
+// presence; clicking it toggles the ledger instead of opening the job list.
+vi.mock('./BackgroundTasksChip', () => ({
+  BackgroundTasksChip: ({
+    summary,
+    expanded,
+    onToggle
   }: {
-    sessionId: string
-    onOpenJobList?: () => void
+    summary: { activeCount: number; totalTasks: number }
+    expanded: boolean
+    onToggle: () => void
   }): React.JSX.Element | null =>
-    sessionId ? (
-      <span data-testid="remote-job-badge" onClick={onOpenJobList}>
-        {sessionId}
+    summary.activeCount > 0 || summary.totalTasks > 0 ? (
+      <span
+        data-testid="background-tasks-chip"
+        data-expanded={expanded ? 'true' : 'false'}
+        onClick={onToggle}
+      >
+        chip
       </span>
     ) : null
+}))
+
+// The shared data hook is mocked so chip visibility stays driven by the same
+// mockAllJobs / mockHasRunningJobs knobs the old badge tests used.
+vi.mock('./use-session-background-tasks', async (importOriginal) => ({
+  ...(await importOriginal<typeof import('./use-session-background-tasks')>()),
+  useSessionBackgroundTasks: () => ({
+    runs: [],
+    jobs: mockAllJobs,
+    deliveryByRunId: new Map(),
+    deliveryByJobId: new Map(),
+    now: 0,
+    summary: {
+      activeCount: mockHasRunningJobs ? mockAllJobs.length : 0,
+      oldestActiveStartedAt: mockHasRunningJobs ? 0 : undefined,
+      totalTasks: mockAllJobs.length
+    },
+    dismissDelivery: () => undefined
+  })
 }))
 
 vi.mock('./WorkspaceMessageScroller', () => ({
@@ -180,6 +206,31 @@ vi.mock('./WorkspaceMessageScroller', () => ({
       </span>
     </>
   )
+}))
+
+// The ledger is covered by its own test file; here it is a props-reflecting sentinel so
+// wiring (toggle mounting, View all jobs) stays assertable.
+vi.mock('./SessionBackgroundActivity', () => ({
+  SessionBackgroundActivity: ({
+    sessionId,
+    runs,
+    jobs,
+    onOpenJobList
+  }: {
+    sessionId: string
+    runs: unknown[]
+    jobs: unknown[]
+    onOpenJobList?: (sessionId: string) => void
+  }): React.JSX.Element | null =>
+    runs.length > 0 || jobs.length > 0 ? (
+      <div data-testid="session-background-activity" data-session-id={sessionId}>
+        {jobs.length > 0 && onOpenJobList ? (
+          <button type="button" onClick={() => onOpenJobList(sessionId)}>
+            View all jobs
+          </button>
+        ) : null}
+      </div>
+    ) : null
 }))
 
 vi.mock('./PermissionApprovalControls', () => ({
@@ -904,6 +955,13 @@ const hasDropOverlay = (): boolean =>
   container.textContent?.includes('Drop files to attach') ?? false
 
 beforeEach(() => {
+  window.api = {
+    notebook: {
+      state: vi.fn().mockResolvedValue({ runs: [] }),
+      onChanged: vi.fn(() => vi.fn()),
+      cancelBackgroundRun: vi.fn()
+    }
+  } as unknown as Window['api']
   container = document.createElement('div')
   document.body.appendChild(container)
   root = createRoot(container)
@@ -1612,7 +1670,7 @@ describe('ConversationPanel composer intake', () => {
     expect(scrollSurface.classList.contains('shadow-sm')).toBe(true)
     expect(scrollSurface.classList.contains('shadow-card-opaque')).toBe(false)
     expectComposerChromeCovered('[aria-label="Open notebook"]')
-    expectComposerChromeCovered('[data-testid="remote-job-badge"]')
+    expectComposerChromeCovered('[data-testid="background-tasks-chip"]')
 
     const optionRows = container.querySelectorAll<HTMLElement>(
       '[data-elicitation-option-row="true"]'
@@ -1817,7 +1875,7 @@ describe('ConversationPanel composer intake', () => {
     expect(container.querySelector('[data-testid="permission-approval-controls"]')).not.toBeNull()
     expect(container.querySelector('[data-testid="elicitation-composer"]')).toBeNull()
     expectComposerChromeCovered('[aria-label="Open notebook"]')
-    expectComposerChromeCovered('[data-testid="remote-job-badge"]')
+    expectComposerChromeCovered('[data-testid="background-tasks-chip"]')
     expectComposerCoveredByBlockingOverlay()
     expect(
       container
@@ -3997,7 +4055,7 @@ describe('ConversationPanel + menu', () => {
       )
     ).toBe(false)
     expectComposerChromeCovered('[aria-label="Open notebook"]')
-    expectComposerChromeCovered('[data-testid="remote-job-badge"]')
+    expectComposerChromeCovered('[data-testid="background-tasks-chip"]')
     const pendingPlanCard = [...container.querySelectorAll('article')].find((article) =>
       article.textContent?.includes('Plan ready for review')
     )
@@ -4048,7 +4106,7 @@ describe('ConversationPanel + menu', () => {
       container.querySelector('[role="textbox"]')?.closest('form')?.classList.contains('hidden')
     ).toBe(false)
     expect(container.querySelector('[aria-label="Open notebook"]')).not.toBeNull()
-    expect(container.querySelector('[data-testid="remote-job-badge"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="background-tasks-chip"]')).not.toBeNull()
 
     renderPanel({
       view: {
@@ -5437,7 +5495,15 @@ describe('ConversationPanel notebook bar', () => {
     })
 
     expect(container.querySelector('[aria-label="Open notebook"]')).toBeNull()
-    expect(container.querySelector('[data-testid="remote-job-badge"]')).toBeNull()
+    expect(container.querySelector('[data-testid="background-tasks-chip"]')).toBeNull()
+  })
+
+  it('does not render an empty task strip before a new session becomes active', () => {
+    mockAllJobs = [{ job_id: 'job-from-previous-session', status: 'done', created_at: 1 }]
+
+    renderPanel({ view: { activeSession: undefined } })
+
+    expect(container.querySelector('div.min-h-9.shadow-card')).toBeNull()
   })
 
   it('keeps the Notebook chrome available when queued work exists before a notebook reference', () => {
@@ -5475,7 +5541,7 @@ describe('ConversationPanel notebook bar', () => {
     })
 
     expect(container.querySelector('[aria-label="Open notebook"]')).not.toBeNull()
-    expect(container.querySelector('[data-testid="remote-job-badge"]')).toBeNull()
+    expect(container.querySelector('[data-testid="background-tasks-chip"]')).toBeNull()
   })
 
   it('places the queue disclosure at the right edge of the Notebook bar', () => {
@@ -5551,7 +5617,7 @@ describe('ConversationPanel notebook bar', () => {
     })
 
     expect(container.querySelector('[aria-label="Open notebook"]')).toBeNull()
-    expect(container.querySelector('[data-testid="remote-job-badge"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="background-tasks-chip"]')).not.toBeNull()
   })
 
   it('keeps the job-only bar compact and static', () => {
@@ -5565,7 +5631,7 @@ describe('ConversationPanel notebook bar', () => {
       }
     })
 
-    const jobBar = container.querySelector('[data-testid="remote-job-badge"]')?.parentElement
+    const jobBar = container.querySelector('[data-testid="background-tasks-chip"]')?.parentElement
 
     expect(jobBar?.classList.contains('min-h-9')).toBe(true)
     expect(jobBar?.classList.contains('bg-bg-000')).toBe(true)
@@ -5582,7 +5648,7 @@ describe('ConversationPanel notebook bar', () => {
         notebookReference: undefined
       }
     })
-    const jobBar = container.querySelector('[data-testid="remote-job-badge"]')?.parentElement
+    const jobBar = container.querySelector('[data-testid="background-tasks-chip"]')?.parentElement
 
     renderPanel({
       view: {
@@ -5628,7 +5694,7 @@ describe('ConversationPanel notebook bar', () => {
     })
 
     expect(container.querySelector('[aria-label="Open notebook"]')).not.toBeNull()
-    expect(container.querySelector('[data-testid="remote-job-badge"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="background-tasks-chip"]')).not.toBeNull()
   })
 
   it('keeps the notebook bar visible when there are finished jobs but no running jobs', () => {
@@ -5644,13 +5710,15 @@ describe('ConversationPanel notebook bar', () => {
     })
 
     // The badge's parent is the shared notebook/job bar.
-    const notebookBar = container.querySelector('[data-testid="remote-job-badge"]')?.parentElement
+    const notebookBar = container.querySelector(
+      '[data-testid="background-tasks-chip"]'
+    )?.parentElement
     expect(notebookBar).not.toBeNull()
     // Badge should be visible even though no jobs are running
-    expect(container.querySelector('[data-testid="remote-job-badge"]')).not.toBeNull()
+    expect(container.querySelector('[data-testid="background-tasks-chip"]')).not.toBeNull()
   })
 
-  it('calls onOpenJobList when the badge is clicked', () => {
+  it('expands the background tasks ledger from the chip and opens the job list from View all jobs', () => {
     mockHasRunningJobs = true
     mockAllJobs = [{ job_id: 'job-1', status: 'running', created_at: Date.now() }]
     const handleOpenJobList = vi.fn()
@@ -5664,11 +5732,23 @@ describe('ConversationPanel notebook bar', () => {
       }
     })
 
-    const badge = container.querySelector('[data-testid="remote-job-badge"]')
-    expect(badge).not.toBeNull()
+    const chip = container.querySelector('[data-testid="background-tasks-chip"]')
+    expect(chip).not.toBeNull()
+    expect(container.querySelector('[data-testid="session-background-activity"]')).toBeNull()
 
     act(() => {
-      ;(badge as HTMLElement).click()
+      ;(chip as HTMLElement).click()
+    })
+
+    const ledger = container.querySelector('[data-testid="session-background-activity"]')
+    expect(ledger).not.toBeNull()
+
+    const viewAll = [...(ledger?.querySelectorAll('button') ?? [])].find(
+      (button) => button.textContent === 'View all jobs'
+    )
+    expect(viewAll).toBeDefined()
+    act(() => {
+      viewAll?.click()
     })
 
     expect(handleOpenJobList).toHaveBeenCalledTimes(1)

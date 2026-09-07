@@ -215,6 +215,7 @@ describe('Project-owned data catalog architecture', () => {
       'project-preview-state',
       'vision-evidence',
       'session-metadata-usage-history',
+      'agent-result-delivery-history',
       'notification-inbox-history',
       'literature-inbox-provenance',
       'project-literature-links',

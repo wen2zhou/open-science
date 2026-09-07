@@ -1,0 +1,337 @@
+import { useEffect, useMemo, useState } from 'react'
+import { useTranslation } from 'react-i18next'
+import { AlertTriangle, CheckCircle2, Circle, Clock3, Cpu, Loader2, RadioTower } from 'lucide-react'
+
+import type {
+  AgentResultExecutionType,
+  ProjectBackgroundActivityItem
+} from '../../../../shared/agent-result-delivery'
+import { useNavigationStore } from '@/stores/navigation-store'
+import { useProjectBackgroundActivityStore } from '@/stores/project-background-activity-store'
+import { useSessionStore } from '@/stores/session-store'
+import { Button } from '@/components/ui/button'
+import { ScrollArea } from '@/components/ui/scroll-area'
+import {
+  Select,
+  SelectContent,
+  SelectItem,
+  SelectTrigger,
+  SelectValue
+} from '@/components/ui/select'
+import { backgroundActivityStatusLabel } from './background-activity-presentation'
+
+type TypeFilter = 'all' | AgentResultExecutionType
+
+const statusIcon = (item: ProjectBackgroundActivityItem): typeof Circle => {
+  if (item.needsAttention) return AlertTriangle
+  if (item.status === 'running') return Circle
+  if (item.status === 'queued' || item.status === 'submitted') return Clock3
+  if (item.status === 'cancelling') return Loader2
+  return CheckCircle2
+}
+
+const localExecutionLabel = (
+  type: AgentResultExecutionType,
+  t: ReturnType<typeof useTranslation>['t']
+): string => {
+  if (type === 'python') return t('Python Notebook Run')
+  if (type === 'r') return t('R Notebook Run')
+  if (type === 'repl') return t('JavaScript REPL')
+  if (type === 'shell') return t('Shell Command')
+  return t('Compute Job')
+}
+
+const ProjectComputeInbox = (): React.JSX.Element => {
+  const { t } = useTranslation()
+  const projectId = useNavigationStore((state) => state.activeProjectId)
+  const openSession = useNavigationStore((state) => state.openSession)
+  const sessions = useSessionStore((state) => state.sessions)
+  const currentSessionId = useSessionStore((state) => state.selectedSessionId)
+  const snapshot = useProjectBackgroundActivityStore((state) => state.snapshot)
+  const hydrate = useProjectBackgroundActivityStore((state) => state.hydrate)
+  const clear = useProjectBackgroundActivityStore((state) => state.clear)
+  const [typeFilter, setTypeFilter] = useState<TypeFilter>('all')
+  const [attentionOnly, setAttentionOnly] = useState(false)
+  const [announcementRevision, setAnnouncementRevision] = useState(0)
+
+  useEffect(() => {
+    if (!projectId) {
+      clear()
+      return
+    }
+    let alive = true
+    let requestVersion = 0
+    const load = async (): Promise<void> => {
+      const version = ++requestVersion
+      const next = await window.api.agentResultDelivery
+        .getProjectActivity({ projectId })
+        .catch(() => undefined)
+      if (alive && version === requestVersion && next) hydrate(projectId, next)
+    }
+    const stopDelivery = window.api.agentResultDelivery.onChanged((event) => {
+      if (event.projectId === projectId) void load()
+    })
+    const stopNotebook = window.api.notebook.onChanged((event) => {
+      if (event.projectId === projectId) void load()
+    })
+    const stopCompute = window.api.compute?.onJobUpdated((job) => {
+      if (job.project_id === projectId) void load()
+    })
+    void load()
+    const poll = window.setInterval(() => void load(), 30_000)
+    return () => {
+      alive = false
+      stopDelivery()
+      stopNotebook()
+      stopCompute?.()
+      window.clearInterval(poll)
+    }
+  }, [clear, hydrate, projectId])
+
+  const sessionById = useMemo(
+    () => new Map(sessions.map((session) => [session.id, session] as const)),
+    [sessions]
+  )
+  const presentedItems = useMemo(
+    () =>
+      snapshot.items.map((item) => {
+        const session = sessionById.get(item.sessionId)
+        if (session && session.archivedAt === undefined) return item
+        return {
+          ...item,
+          needsAttention: true,
+          ...(!session ? { status: 'result-unavailable' as const, active: false } : {})
+        }
+      }),
+    [sessionById, snapshot.items]
+  )
+  const visible = useMemo(
+    () =>
+      presentedItems.filter(
+        (item) =>
+          (typeFilter === 'all' || item.executionType === typeFilter) &&
+          (!attentionOnly || item.needsAttention)
+      ),
+    [attentionOnly, presentedItems, typeFilter]
+  )
+  const groups = useMemo(() => {
+    const grouped = new Map<string, ProjectBackgroundActivityItem[]>()
+    for (const item of visible)
+      grouped.set(item.sessionId, [...(grouped.get(item.sessionId) ?? []), item])
+    return [...grouped.entries()]
+      .map(([sessionId, items]) => ({
+        sessionId,
+        items,
+        needsAttention: items.some((item) => item.needsAttention),
+        updatedAt: Math.max(...items.map((item) => item.updatedAt))
+      }))
+      .sort((left, right) => {
+        const leftCurrent = left.sessionId === currentSessionId
+        const rightCurrent = right.sessionId === currentSessionId
+        if (leftCurrent !== rightCurrent) return leftCurrent ? -1 : 1
+        if (left.needsAttention !== right.needsAttention) return left.needsAttention ? -1 : 1
+        return right.updatedAt - left.updatedAt
+      })
+  }, [currentSessionId, visible])
+
+  useEffect(() => {
+    const signature = groups
+      .flatMap((group) =>
+        group.items.map(
+          (item) =>
+            `${item.id}:${item.status}:${item.outcomeStatus ?? ''}:${item.needsAttention}:${item.updatedAt}`
+        )
+      )
+      .join('|')
+    if (!signature) return
+    const timer = window.setTimeout(() => setAnnouncementRevision((revision) => revision + 1), 500)
+    return () => window.clearTimeout(timer)
+  }, [groups])
+
+  return (
+    <section
+      className="@container/compute flex h-full min-h-0 flex-col bg-bg-10"
+      aria-labelledby="project-compute-title"
+    >
+      <header className="flex flex-wrap items-start gap-4 border-b border-border-200 px-6 py-4">
+        <div className="min-w-[260px] flex-1">
+          <h1 id="project-compute-title" className="text-lg font-semibold">
+            {t('Compute')}
+          </h1>
+          <p className="mt-1 text-xs text-text-100">
+            {t(
+              'Project-level read-only inbox for active work and results awaiting Agent delivery.'
+            )}
+          </p>
+        </div>
+        <div className="flex items-center gap-2 text-xs text-text-100">
+          <span id="project-compute-type-label">{t('Type')}</span>
+          <Select value={typeFilter} onValueChange={(value) => setTypeFilter(value as TypeFilter)}>
+            <SelectTrigger aria-labelledby="project-compute-type-label" className="w-52">
+              <SelectValue />
+            </SelectTrigger>
+            <SelectContent>
+              <SelectItem value="all">{t('All types')}</SelectItem>
+              <SelectItem value="python">{t('Python Notebook Run')}</SelectItem>
+              <SelectItem value="r">{t('R Notebook Run')}</SelectItem>
+              <SelectItem value="repl">{t('JavaScript REPL')}</SelectItem>
+              <SelectItem value="shell">{t('Shell Command')}</SelectItem>
+              <SelectItem value="compute-job">{t('Compute Job')}</SelectItem>
+            </SelectContent>
+          </Select>
+        </div>
+        <Button
+          variant="outline"
+          size="sm"
+          aria-pressed={attentionOnly}
+          onClick={() => setAttentionOnly((value) => !value)}
+        >
+          {t('Needs attention')}
+        </Button>
+      </header>
+
+      <ScrollArea className="min-h-0 flex-1">
+        <div className="px-6 py-4">
+          <aside className="mb-4 rounded-lg border border-status-info-border bg-status-info-surface p-3 text-xs leading-5 text-status-info-foreground dark:text-status-info-dark-foreground">
+            <p>
+              {t('Local Runs execute in this app. Compute Jobs execute on a remote Compute Host.')}
+            </p>
+            <p>
+              {t(
+                'Active means queued, running, or cancelling. Awaiting Agent means the execution ended but its outcome has not been successfully delivered.'
+              )}
+            </p>
+            <p>
+              {t(
+                "Viewing this page does not consume a result. Consumed means the result was saved into the original Session's Agent context and that Agent Turn completed and was saved."
+              )}
+            </p>
+            <p>{t("Lifecycle management is available only in the task's Session.")}</p>
+          </aside>
+
+          {groups.length === 0 ? (
+            <div className="grid min-h-48 place-items-center rounded-lg border border-dashed border-border-200 text-sm text-text-100">
+              {t('No visible compute activity')}
+            </div>
+          ) : (
+            <div className="space-y-4" data-testid="project-compute-groups">
+              {groups.map((group) => {
+                const session = sessionById.get(group.sessionId)
+                const active = group.items.filter((item) => item.active)
+                const awaiting = group.items.filter((item) => !item.active)
+                return (
+                  <section
+                    key={group.sessionId}
+                    className="overflow-hidden rounded-lg border border-border-200 bg-bg-000"
+                  >
+                    <header className="flex items-center gap-2 bg-bg-200 px-3 py-2 text-sm font-semibold">
+                      {group.needsAttention ? (
+                        <AlertTriangle
+                          className="size-4 text-status-warning-foreground"
+                          aria-hidden="true"
+                        />
+                      ) : (
+                        <Cpu className="size-4 text-text-100" aria-hidden="true" />
+                      )}
+                      <span>{session?.title ?? t('Deleted Session')}</span>
+                      {group.sessionId === currentSessionId ? (
+                        <span className="rounded-full bg-accent px-2 py-0.5 text-[10px] text-accent-foreground">
+                          {t('Current Session')}
+                        </span>
+                      ) : null}
+                      {session?.archivedAt !== undefined ? (
+                        <span className="text-[10px] font-normal text-text-100">
+                          {t('Archived Session')}
+                        </span>
+                      ) : null}
+                    </header>
+                    {[
+                      { label: t('Active'), items: active },
+                      { label: t('Awaiting Agent'), items: awaiting }
+                    ].map((section) =>
+                      section.items.length ? (
+                        <div key={section.label}>
+                          <div className="border-t border-border-200 bg-bg-100 px-3 py-1 text-[10px] font-semibold tracking-wide text-text-300 uppercase">
+                            {section.label}
+                          </div>
+                          {section.items.map((item) => {
+                            const StatusIcon = statusIcon(item)
+                            return (
+                              <div
+                                key={item.id}
+                                className="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-x-3 gap-y-2 border-t border-border-200 px-3 py-2 text-xs @3xl/compute:grid-cols-[minmax(240px,1.5fr)_minmax(150px,1fr)_140px_130px]"
+                              >
+                                <div className="col-span-2 flex min-w-0 items-center gap-2 @3xl/compute:col-span-1">
+                                  {item.sourceKind === 'compute-job' ? (
+                                    <RadioTower className="size-4 shrink-0" aria-hidden="true" />
+                                  ) : (
+                                    <Cpu className="size-4 shrink-0" aria-hidden="true" />
+                                  )}
+                                  <div className="min-w-0">
+                                    <div className="truncate font-medium" title={item.title}>
+                                      {item.title}
+                                    </div>
+                                    <div className="text-[10px] text-text-100">
+                                      {item.sourceKind === 'compute-job'
+                                        ? t('Remote Compute Job')
+                                        : `${t('Local Run')} · ${localExecutionLabel(item.executionType, t)}`}
+                                    </div>
+                                  </div>
+                                </div>
+                                <span className="truncate text-text-100" title={item.lane}>
+                                  {item.lane ?? '—'}
+                                </span>
+                                <span className="flex items-center gap-1.5 text-text-100">
+                                  <StatusIcon
+                                    className={
+                                      item.status === 'cancelling'
+                                        ? 'size-3.5 animate-spin motion-reduce:animate-none'
+                                        : 'size-3.5'
+                                    }
+                                    aria-hidden="true"
+                                  />
+                                  {backgroundActivityStatusLabel(
+                                    item.status,
+                                    item.outcomeStatus,
+                                    t
+                                  )}
+                                </span>
+                                <Button
+                                  variant="outline"
+                                  size="sm"
+                                  className="col-span-2 justify-self-end @3xl/compute:col-span-1 @3xl/compute:justify-self-stretch"
+                                  disabled={!session}
+                                  onClick={() =>
+                                    projectId && openSession(projectId, item.sessionId, 'user')
+                                  }
+                                >
+                                  {t('Go to Session')}
+                                </Button>
+                              </div>
+                            )
+                          })}
+                        </div>
+                      ) : null
+                    )}
+                  </section>
+                )
+              })}
+            </div>
+          )}
+          {snapshot.truncated ? (
+            <p className="mt-3 text-xs text-text-100">
+              {t('Showing the 200 most recently updated visible tasks.')}
+            </p>
+          ) : null}
+        </div>
+      </ScrollArea>
+      <p className="sr-only" role="status" aria-live="polite" aria-atomic="true">
+        <span key={announcementRevision}>
+          {announcementRevision > 0 ? t('Compute activity updated.') : null}
+        </span>
+      </p>
+    </section>
+  )
+}
+
+export { ProjectComputeInbox }

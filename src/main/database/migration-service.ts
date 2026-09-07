@@ -60,6 +60,7 @@ import { computeJobRemoteCleanupMigration } from './migrations/0026-compute-job-
 import { projectSessionDefaultsMigration } from './migrations/0027-project-session-defaults'
 import { numericAndNullConstraintsMigration } from './migrations/0028-database-numeric-and-null-constraints'
 import { computeHostExecutionModeMigration } from './migrations/0029-compute-host-execution-mode'
+import { agentResultDeliveryMigration } from './migrations/0032-agent-result-delivery'
 import {
   applySqliteMigrationOperations,
   type SqliteMigrationOperation
@@ -268,6 +269,12 @@ const MANAGED_FILE_VERSION_FOUNDATION_CHECKSUM = checksumMigrationPayload(
   managedFileVersionFoundationMigration.id,
   managedFileVersionFoundationMigration.statements,
   managedFileVersionFoundationMigration.verifiers
+)
+const AGENT_RESULT_DELIVERY_CHECKSUM = checksumMigrationPayload(
+  agentResultDeliveryMigration.id,
+  agentResultDeliveryMigration.statements,
+  agentResultDeliveryMigration.verifiers,
+  agentResultDeliveryMigration.operations
 )
 const VISION_EVIDENCE_CHECKSUM = checksumMigrationPayload(
   visionEvidenceMigration.id,
@@ -688,6 +695,12 @@ const MIGRATION_MANIFEST = [
     ),
     backupOnApply: 'required',
     backupRetention: 'retain'
+  },
+  {
+    ...agentResultDeliveryMigration,
+    checksum: AGENT_RESULT_DELIVERY_CHECKSUM,
+    backupOnApply: 'required',
+    backupRetention: 'retain'
   }
 ] as const satisfies readonly MigrationManifestEntry[]
 // schema-locality: begin frozen-0001-repairs
@@ -1097,6 +1110,8 @@ const verifyCurrentApplicationSchema = async (client: PrismaClient): Promise<voi
   )
   await runMigrationVerifiers(client, computeJobFileEvidenceMigration.verifiers)
   await runMigrationVerifiers(client, literatureFoundationMigration.verifiers)
+  await runMigrationVerifiers(client, computeJobRemoteCleanupMigration.verifiers)
+  await runMigrationVerifiers(client, agentResultDeliveryMigration.verifiers)
 }
 
 const readLedger = async (client: PrismaClient): Promise<LedgerRow[]> => {
@@ -1934,6 +1949,16 @@ const migrateApplicationDatabaseWithManifest = async (
       candidate.id === literatureFoundationMigration.id &&
       candidate.checksum === LITERATURE_FOUNDATION_CHECKSUM
   )
+  const adoptsComputeJobRemoteCleanup = manifest.some(
+    (candidate) =>
+      candidate.id === computeJobRemoteCleanupMigration.id &&
+      candidate.checksum === COMPUTE_JOB_REMOTE_CLEANUP_CHECKSUM
+  )
+  const adoptsAgentResultDelivery = manifest.some(
+    (candidate) =>
+      candidate.id === agentResultDeliveryMigration.id &&
+      candidate.checksum === AGENT_RESULT_DELIVERY_CHECKSUM
+  )
   const adoptedLegacy = appliedCount === 0 && hasExistingApplicationTables
   const allowedSuffixChecks = mergeAllowedSuffixChecks(
     adoptsDatabaseDomainConstraints ? DATABASE_DOMAIN_ALLOWED_SUFFIX_CHECKS : {},
@@ -1959,16 +1984,26 @@ const migrateApplicationDatabaseWithManifest = async (
       allowedSuffixChecks,
       adoptsManagedFileVersionFoundation,
       {
-        ...(adoptsAgentMemoryProjectScope
+        ...(adoptsAgentMemoryProjectScope || adoptsAgentResultDelivery
           ? {
-              tableNames: MEMORY_AUXILIARY_TABLE_NAMES,
+              tableNames: [
+                ...(adoptsAgentMemoryProjectScope ? MEMORY_AUXILIARY_TABLE_NAMES : []),
+                ...(adoptsAgentResultDelivery ? ['AgentResultDelivery'] : [])
+              ],
               schemaObjects: MEMORY_AUXILIARY_SCHEMA_OBJECTS.flatMap(({ type, name }) =>
-                type === 'trigger' ? [{ type, name }] : []
+                adoptsAgentMemoryProjectScope && type === 'trigger' ? [{ type, name }] : []
               )
             }
           : {}),
-        ...(adoptsComputeJobFileEvidence
-          ? { columns: { ComputeJob: ['producerRunId', 'fileEvidence'] } }
+        ...(adoptsComputeJobFileEvidence || adoptsComputeJobRemoteCleanup
+          ? {
+              columns: {
+                ComputeJob: [
+                  ...(adoptsComputeJobFileEvidence ? ['producerRunId', 'fileEvidence'] : []),
+                  ...(adoptsComputeJobRemoteCleanup ? ['remoteCleanupDisposition'] : [])
+                ]
+              }
+            }
           : {})
       }
     )
@@ -2015,6 +2050,7 @@ export {
   AGENT_MEMORY_PROJECT_SCOPE_CHECKSUM,
   COMPUTE_JOB_ANALYSIS_CONSTRAINTS_CHECKSUM,
   MEMORY_GLOBAL_CONTENT_UNIQUE_CHECKSUM,
+  AGENT_RESULT_DELIVERY_CHECKSUM,
   DatabaseMigrationError,
   checksumMigrationPayload,
   classifyDatabaseFailure,

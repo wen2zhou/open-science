@@ -38,6 +38,8 @@ const createRuntime = (
   exportIpynbAll: unavailable('exportIpynbAll'),
   restart: unavailable('restart'),
   shutdown: unavailable('shutdown'),
+  getBackgroundRun: unavailable('getBackgroundRun'),
+  cancelBackgroundRun: unavailable('cancelBackgroundRun'),
   ...overrides
 })
 

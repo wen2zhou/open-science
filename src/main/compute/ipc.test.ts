@@ -104,6 +104,7 @@ describe('compute handlers', () => {
     const cancelJob = vi.fn(async () => ({
       job_id: 'job-1',
       status: 'running' as const,
+      result_final: false,
       cancellation_status: 'cancelling' as const,
       exit_code: undefined,
       stdout_tail: undefined,
@@ -860,6 +861,66 @@ describe('compute handlers — jobsList', () => {
     expect(result[0]!.display_name).toBe('Biowulf HPC')
     expect(result[0]!.session_id).toBe('sess-1')
     expect(findBySession).toHaveBeenCalledWith('sess-1', undefined)
+  })
+
+  it('projects the durable Agent Result Delivery path without changing Compute Job truth', async () => {
+    const job = makeJob({ session_id: 'sess-1' })
+    const hasDeliveryPath = vi.fn().mockResolvedValue(true)
+    const handlers = createComputeHandlers(
+      mockRepository({ list: vi.fn().mockResolvedValue([]) }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockJobRepository({ findBySession: vi.fn().mockResolvedValue([job]) }),
+      undefined,
+      undefined,
+      '/tmp/test-storage',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { hasDeliveryPath }
+    )
+
+    const result = await handlers.jobsList({ sessionId: 'sess-1' })
+
+    expect(result[0]).toMatchObject({
+      job_id: 'job-1',
+      status: 'running',
+      result_delivery_path: 'agent-result-delivery'
+    })
+    expect(hasDeliveryPath).toHaveBeenCalledWith('job-1')
+  })
+
+  it('keeps the Compute Job feed available when Agent Result Delivery ownership cannot be determined', async () => {
+    const handlers = createComputeHandlers(
+      mockRepository({ list: vi.fn().mockResolvedValue([]) }),
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      mockJobRepository({ findBySession: vi.fn().mockResolvedValue([makeJob()]) }),
+      undefined,
+      undefined,
+      '/tmp/test-storage',
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      undefined,
+      { hasDeliveryPath: vi.fn().mockRejectedValue(new Error('delivery database unavailable')) }
+    )
+
+    const result = await handlers.jobsList({ sessionId: 'sess-1' })
+
+    expect(result).toEqual([expect.objectContaining({ job_id: 'job-1', status: 'running' })])
+    expect(result[0]).not.toHaveProperty('result_delivery_path')
   })
 
   it('retains a safe needs-attention projection in the renderer jobs list', async () => {
@@ -1918,6 +1979,34 @@ describe('createJobUpdatedBroadcaster', () => {
       channel: COMPUTE_JOB_UPDATED_CHANNEL,
       payload: expect.objectContaining({ status: 'success', finished_at: 2, exit_code: 0 })
     })
+  })
+
+  it('broadcasts the canonical Compute Job update when Agent Result Delivery observation fails', async () => {
+    const current = sampleJob({ status: 'success', finished_at: 2, exit_code: 0 })
+    const resultDelivery = {
+      observeJob: vi.fn(async () => {
+        throw new Error('delivery database unavailable')
+      }),
+      hasDeliveryPath: vi.fn(async () => true)
+    }
+    const broadcaster = createJobUpdatedBroadcaster(
+      mockRepository({ get: vi.fn(async () => sampleHost()) }),
+      storageRoot,
+      { get: vi.fn(async () => current) },
+      resultDelivery
+    )
+
+    const captured = captureNextBroadcast()
+    broadcaster(current)
+
+    const result = await captured
+
+    expect(result).toMatchObject({
+      channel: COMPUTE_JOB_UPDATED_CHANNEL,
+      payload: expect.objectContaining({ job_id: 'job-bcast', status: 'success' })
+    })
+    expect(result.payload).not.toHaveProperty('result_delivery_path')
+    expect(resultDelivery.observeJob).toHaveBeenCalledOnce()
   })
 
   it('does not broadcast an unverified snapshot when the current-row lookup fails', async () => {

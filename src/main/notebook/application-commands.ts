@@ -72,6 +72,16 @@ const notebookExecuteCommand = defineApplicationCommand<
   WorkflowArgs<'execute'>,
   WorkflowResult<'execute'>
 >('notebook:execute')
+const notebookGetBackgroundRunCommand = defineApplicationCommand<
+  'notebook:background-run',
+  WorkflowArgs<'getBackgroundRun'>,
+  WorkflowResult<'getBackgroundRun'>
+>('notebook:background-run')
+const notebookCancelBackgroundRunCommand = defineApplicationCommand<
+  'notebook:cancel-background-run',
+  WorkflowArgs<'cancelBackgroundRun'>,
+  WorkflowResult<'cancelBackgroundRun'>
+>('notebook:cancel-background-run')
 const notebookExportIpynbCommand = defineApplicationCommand<
   'notebook:export-ipynb',
   WorkflowArgs<'exportIpynb'>,
@@ -108,6 +118,8 @@ const notebookApplicationCommands = defineApplicationCommandGroup('notebook', [
   notebookFinishCodeCellCommand,
   notebookRunCellCommand,
   notebookExecuteCommand,
+  notebookGetBackgroundRunCommand,
+  notebookCancelBackgroundRunCommand,
   notebookExportIpynbCommand,
   notebookExportIpynbAllCommand,
   notebookRestartCommand,
@@ -136,6 +148,10 @@ const installNotebookApplicationCommands = (
         dependencies.workflows.finishCodeCell(invocation.args[0]),
       'notebook:run-cell': (invocation) => dependencies.workflows.runCell(invocation.args[0]),
       'notebook:execute': (invocation) => dependencies.workflows.execute(invocation.args[0]),
+      'notebook:background-run': (invocation) =>
+        dependencies.workflows.getBackgroundRun(invocation.args[0]),
+      'notebook:cancel-background-run': (invocation) =>
+        dependencies.workflows.cancelBackgroundRun(invocation.args[0]),
       'notebook:export-ipynb': (invocation) => {
         assertLocalCaller(invocation.callerContext, notebookExportIpynbCommand.name)
         return dependencies.workflows.exportIpynb(invocation.args[0])
@@ -161,11 +177,13 @@ export {
   notebookAppendCodeCellCommand,
   notebookApplicationCommands,
   notebookBeginCodeCellCommand,
+  notebookCancelBackgroundRunCommand,
   notebookExecuteCommand,
   notebookExportIpynbAllCommand,
   notebookExportIpynbCommand,
   notebookAbortCodeCellCommand,
   notebookFinishCodeCellCommand,
+  notebookGetBackgroundRunCommand,
   notebookInspectNamespaceCommand,
   notebookReadInputPreviewCommand,
   notebookReferenceCommand,

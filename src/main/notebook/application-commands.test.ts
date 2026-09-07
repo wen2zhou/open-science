@@ -11,11 +11,13 @@ import {
   notebookAppendCodeCellCommand,
   notebookApplicationCommands,
   notebookBeginCodeCellCommand,
+  notebookCancelBackgroundRunCommand,
   notebookExecuteCommand,
   notebookExportIpynbAllCommand,
   notebookExportIpynbCommand,
   notebookAbortCodeCellCommand,
   notebookFinishCodeCellCommand,
+  notebookGetBackgroundRunCommand,
   notebookInspectNamespaceCommand,
   notebookReadInputPreviewCommand,
   notebookReferenceCommand,
@@ -74,7 +76,7 @@ const invocation = <Args extends readonly unknown[]>(
 })
 
 describe('Notebook application commands', () => {
-  it('owns exactly the 18 renderer-callable Notebook and Environment commands', () => {
+  it('owns exactly the 20 renderer-callable Notebook and Environment commands', () => {
     expect([
       ...notebookApplicationCommands.commands,
       ...notebookEnvironmentApplicationCommands.commands
@@ -88,6 +90,8 @@ describe('Notebook application commands', () => {
       expect.objectContaining({ name: 'notebook:finish-code-cell' }),
       expect.objectContaining({ name: 'notebook:run-cell' }),
       expect.objectContaining({ name: 'notebook:execute' }),
+      expect.objectContaining({ name: 'notebook:background-run' }),
+      expect.objectContaining({ name: 'notebook:cancel-background-run' }),
       expect.objectContaining({ name: 'notebook:export-ipynb' }),
       expect.objectContaining({ name: 'notebook:export-ipynb-all' }),
       expect.objectContaining({ name: 'notebook:restart' }),
@@ -111,6 +115,8 @@ describe('Notebook application commands', () => {
       'finishCodeCell',
       'runCell',
       'execute',
+      'getBackgroundRun',
+      'cancelBackgroundRun',
       'exportIpynb',
       'exportIpynbAll',
       'restart',
@@ -157,6 +163,8 @@ describe('Notebook application commands', () => {
       ],
       [notebookRunCellCommand, [{ ...session, cellId: 'cell-1' }], 'runCell'],
       [notebookExecuteCommand, [{ ...session, code: 'print(1)' }], 'execute'],
+      [notebookGetBackgroundRunCommand, [{ ...session, runId: 'run-1' }], 'getBackgroundRun'],
+      [notebookCancelBackgroundRunCommand, [{ ...session, runId: 'run-1' }], 'cancelBackgroundRun'],
       [notebookExportIpynbCommand, [{ ...session, kernel: 'python' }], 'exportIpynb'],
       [notebookExportIpynbAllCommand, [session], 'exportIpynbAll'],
       [notebookRestartCommand, [session], 'restart'],
