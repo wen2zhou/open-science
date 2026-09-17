@@ -65,7 +65,8 @@ import {
   LIFECYCLE_CHANNELS,
   MAIN_DELEGATED_WORK_LIFECYCLE_CLIENT_ID,
   MAIN_SESSION_DETAILS_LIFECYCLE_CLIENT_ID,
-  MAIN_RUNTIME_CONTEXT_LIFECYCLE_CLIENT_ID
+  MAIN_RUNTIME_CONTEXT_LIFECYCLE_CLIENT_ID,
+  MAIN_RUNTIME_TRANSCRIPT_LIFECYCLE_CLIENT_ID
 } from '../shared/lifecycle-events'
 import { parseLiteratureAttachmentVersionReference } from '../shared/literature'
 
@@ -1465,6 +1466,13 @@ const createApplicationModules = async (
         broadcastToRenderers(LIFECYCLE_CHANNELS.sessionUpdated, {
           session,
           originClientId: MAIN_RUNTIME_CONTEXT_LIFECYCLE_CLIENT_ID
+        })
+        return
+      }
+      if (owner === 'runtime-transcript') {
+        broadcastToRenderers(LIFECYCLE_CHANNELS.sessionUpdated, {
+          session,
+          originClientId: MAIN_RUNTIME_TRANSCRIPT_LIFECYCLE_CLIENT_ID
         })
         return
       }
@@ -3324,6 +3332,11 @@ const createApplicationModules = async (
       initializationBarrier: initialConnectorSkillsReady,
       specialistService,
       sessionPersistenceCoordinator,
+      finalizeRuntimeArtifacts: async (request) => {
+        const handlers = artifactHandlersRef.current
+        if (!handlers) throw new Error('Artifact finalization is not initialized.')
+        return handlers.finalizeRunArtifacts(request)
+      },
       literatureReader: literatureDocumentReader,
       pdfElementReader,
       literatureAttachments: literatureAttachmentAuthority,

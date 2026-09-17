@@ -4261,7 +4261,10 @@ describe('ACP runtime session management', () => {
       }),
       appendUserMessageToInteraction: vi.fn(),
       containsMessageOnActiveBranch: vi.fn(async () => true),
-      loadSessionForContinuation: vi.fn(async () => structuredClone(persistedSession))
+      loadSessionForContinuation: vi.fn(async () => structuredClone(persistedSession)),
+      mutateRuntimeSession: vi.fn(async (_scope, mutate) =>
+        mutate(structuredClone(persistedSession))
+      )
     }
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
@@ -4433,7 +4436,10 @@ describe('ACP runtime session management', () => {
       }),
       appendUserMessageToInteraction: vi.fn(),
       containsMessageOnActiveBranch: vi.fn(async () => true),
-      loadSessionForContinuation: vi.fn(async () => structuredClone(persistedSession))
+      loadSessionForContinuation: vi.fn(async () => structuredClone(persistedSession)),
+      mutateRuntimeSession: vi.fn(async (_scope, mutate) =>
+        mutate(structuredClone(persistedSession))
+      )
     }
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
@@ -4723,7 +4729,10 @@ describe('ACP runtime session management', () => {
       patchSessionRuntimeContext,
       appendUserMessageToInteraction: vi.fn(),
       containsMessageOnActiveBranch: vi.fn(async () => true),
-      loadSessionForContinuation: vi.fn(async () => structuredClone(persistedSession))
+      loadSessionForContinuation: vi.fn(async () => structuredClone(persistedSession)),
+      mutateRuntimeSession: vi.fn(async (_scope, mutate) =>
+        mutate(structuredClone(persistedSession))
+      )
     }
     const runtime = new AcpRuntime({
       appVersion: '0.1.0',
@@ -27892,6 +27901,9 @@ describe('Specialist Skill scoping', () => {
             throw new Error('not used in this test')
           },
           loadSessionForContinuation: async () => {
+            throw new Error('not used in this test')
+          },
+          mutateRuntimeSession: async () => {
             throw new Error('not used in this test')
           },
           containsMessageOnActiveBranch: async () => true

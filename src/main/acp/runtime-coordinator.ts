@@ -880,13 +880,15 @@ class AcpRuntimeCoordinator {
   sendPromptObserved(
     request: AcpPromptRequest,
     onProviderPromptAccepted: () => void,
-    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>
+    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>,
+    runtimeReviewOwner: 'task' | 'renderer' = 'renderer'
   ): ReturnType<AcpRuntime['sendPrompt']> {
     return this.sendObservedPrompt(
       request,
       observePromptAcceptance(onProviderPromptAccepted),
       undefined,
-      onPromptAdmitted
+      onPromptAdmitted,
+      runtimeReviewOwner
     )
   }
 
@@ -894,7 +896,8 @@ class AcpRuntimeCoordinator {
     request: AcpPromptRequest,
     acceptance?: PromptAcceptance,
     onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void,
-    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>
+    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>,
+    runtimeReviewOwner: 'task' | 'renderer' = 'renderer'
   ): ReturnType<AcpRuntime['sendPrompt']> {
     if (this.promptAdmissionClosedForQuit) return this.rejectPromptForQuit()
     const dispatch = (): ReturnType<AcpRuntime['sendPrompt']> =>
@@ -907,7 +910,8 @@ class AcpRuntimeCoordinator {
           true,
           undefined,
           onApplicationPromptAdmitted,
-          onPromptAdmitted
+          onPromptAdmitted,
+          runtimeReviewOwner
         ).finally(() => this.delegatedWork?.wakeMessages?.(request.sessionId))
       )
     const admission = this.promptAdmissionGuard?.(request.sessionId)
@@ -1058,7 +1062,8 @@ class AcpRuntimeCoordinator {
     retainAsLatestUserPrompt = operation === 'sendPrompt',
     attribution?: MessageAttribution,
     onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void,
-    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>
+    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>,
+    runtimeReviewOwner: 'task' | 'renderer' = 'renderer'
   ): ReturnType<AcpRuntime['sendPrompt']> {
     let dispatchStarted = false
     const dispatch = (): ReturnType<AcpRuntime['sendPrompt']> => {
@@ -1071,7 +1076,8 @@ class AcpRuntimeCoordinator {
         retainAsLatestUserPrompt,
         attribution,
         onApplicationPromptAdmitted,
-        onPromptAdmitted
+        onPromptAdmitted,
+        runtimeReviewOwner
       )
     }
     if (!this.promptDispatchAdmissionGuard) return dispatch()
@@ -1096,7 +1102,8 @@ class AcpRuntimeCoordinator {
     retainAsLatestUserPrompt = operation === 'sendPrompt',
     attribution?: MessageAttribution,
     onApplicationPromptAdmitted?: (prompt: ReturnType<AcpRuntime['sendPrompt']>) => void,
-    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>
+    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>,
+    runtimeReviewOwner: 'task' | 'renderer' = 'renderer'
   ): ReturnType<AcpRuntime['sendPrompt']> {
     if (this.promptAdmissionClosedForQuit) return this.rejectPromptForQuit()
     const owner = pinnedRuntime ?? this.findRuntimeForSession(request.sessionId)
@@ -1177,6 +1184,9 @@ class AcpRuntimeCoordinator {
         })
       }
       if (operation === 'sendPrompt') {
+        if (runtimeReviewOwner === 'task') {
+          return runtime.sendPrompt(taskRequest, attempt.id, admitPrompt, runtimeReviewOwner)
+        }
         return admitPrompt
           ? runtime.sendPrompt(taskRequest, attempt.id, admitPrompt)
           : runtime.sendPrompt(taskRequest, attempt.id)

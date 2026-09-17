@@ -468,6 +468,7 @@ describe('Session persistence coordinator architecture', () => {
         'loadSessionForContinuation',
         'loadPersistedSideChats',
         'markCommittedProjectSessionsPrepared',
+        'mutateRuntimeSession',
         'mutateSessionComputeHostAccess',
         'mutateSessionDetailsAuthority',
         'patchSessionRuntimeContext',
@@ -721,6 +722,7 @@ describe('Session persistence coordinator architecture', () => {
         'containsMessageOnActiveBranch',
         'failTaskRun',
         'loadSessionForContinuation',
+        'mutateRuntimeSession',
         'mutateSessionComputeHostAccess',
         'mutateSessionDetailsAuthority',
         'patchSessionRuntimeContext',
@@ -809,7 +811,7 @@ describe('Session persistence coordinator architecture', () => {
       expect(methods(owner, 'private')).not.toContain('enqueue')
     }
 
-    expect(expectedSchedulerRoute.size).toBe(46)
+    expect(expectedSchedulerRoute.size).toBe(47)
     const constructorSource = facade.members.filter(isConstructorDeclaration)[0].getText(facadeFile)
     expect(constructorSource).toContain('this.operationScheduler.runSession(')
     expect(constructorSource).toContain('this.operationScheduler.runGlobal(work)')
@@ -943,6 +945,7 @@ describe('Session persistence coordinator architecture', () => {
         'invalidateBindingTopology',
         'markMetadataIncomplete',
         'metadataSnapshot',
+        'mutateRuntimeSession',
         'patchRuntimeContext',
         'pruneEnabledComputeHosts',
         'readRuntimeContext',
@@ -1192,7 +1195,10 @@ describe('Session persistence coordinator architecture', () => {
       'src/main/session-persistence/session-data-paths.ts',
       'src/main/session-persistence/session-update-publication.ts',
       'src/main/session-persistence/task-admission.ts',
-      'src/main/session-persistence/usage-regressions.test.ts'
+      'src/main/session-persistence/usage-regressions.test.ts',
+      'src/main/session-persistence/runtime-authority.test.ts',
+      'src/main/session-persistence/runtime-session-owner.test.ts',
+      'src/main/session-persistence/runtime-session-owner.ts'
     ])
     expect(sessionPersistence.interfacePaths).toEqual([
       'src/main/session-persistence/coordinator.ts',
@@ -1217,7 +1223,8 @@ describe('Session persistence coordinator architecture', () => {
       'src/main/session-persistence/runtime-lookup.ts',
       'src/main/session-persistence/session-data-paths.ts',
       'src/main/session-persistence/state-owner.ts',
-      'src/main/session-persistence/task-admission.ts'
+      'src/main/session-persistence/task-admission.ts',
+      'src/main/session-persistence/runtime-session-owner.ts'
     ])
     expect(sessionPersistence.consumerModules).toEqual(['project_lifecycle'])
     expect(sessionPersistence.testFiles.owner).toEqual([
@@ -1244,7 +1251,9 @@ describe('Session persistence coordinator architecture', () => {
       'src/main/session-persistence/revision-conflict.test.ts',
       'src/main/session-persistence/runtime-lookup.test.ts',
       'src/main/session-persistence/save-session.test.ts',
-      'src/main/session-persistence/usage-regressions.test.ts'
+      'src/main/session-persistence/usage-regressions.test.ts',
+      'src/main/session-persistence/runtime-authority.test.ts',
+      'src/main/session-persistence/runtime-session-owner.test.ts'
     ])
     expect(sessionPersistence.testFiles.contract).toEqual([
       'src/shared/session-persistence.test.ts',

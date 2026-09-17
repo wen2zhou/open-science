@@ -10,6 +10,7 @@ import { queryObjects } from 'node:v8'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import type { AcpRuntimeEvent } from '../../shared/acp'
+import type { ArtifactFile } from '../../shared/artifacts'
 import { ComputeHostPreferenceValidationError } from '../../shared/compute'
 import type { Project } from '../../shared/projects'
 import { resolveProviderEffectiveModel } from '../../shared/provider-reasoning-effort'
@@ -19,6 +20,7 @@ import {
   normalizeSessionFile,
   SessionConfigurationBusyError,
   type PersistedChatSession,
+  type PersistedChatMessage,
   type SettleTaskSessionCompletionRequest
 } from '../../shared/session-persistence'
 import type { TaskRun } from '../../shared/task-api'
@@ -2167,6 +2169,7 @@ describe('TaskRunner', () => {
   it('skips automatic review when the current turn has no assistant message', async () => {
     const historical: PersistedChatSession = {
       ...session,
+      runtimeTranscriptOwner: undefined,
       autoReviewEnabled: true,
       messages: [
         {
@@ -2195,7 +2198,7 @@ describe('TaskRunner', () => {
     const ids = ['current-user', 'current-run', 'unused-agent']
     const runner = createRunner({
       sessions: {
-        list: async () => [historical],
+        list: async () => [savedSessions.at(-1) ?? historical],
         save: async (saved) => {
           savedSessions.push(structuredClone(saved))
         }
@@ -2677,6 +2680,7 @@ describe('TaskRunner', () => {
   it('cleans up an admitted Task turn when Session persistence commits before rejecting', async () => {
     let durableSession: PersistedChatSession = {
       ...session,
+      runtimeTranscriptOwner: undefined,
       revision: 1,
       messages: []
     }
@@ -2775,7 +2779,7 @@ describe('TaskRunner', () => {
     const completed = await runner.waitForRun(started.id)
 
     expect(completed.status).toBe('completed')
-    expect(list).toHaveBeenCalledTimes(2)
+    expect(list).toHaveBeenCalledTimes(3)
     expect(durableSession).toMatchObject({
       title: 'Renamed concurrently',
       description: 'Keep this edit'
@@ -3484,6 +3488,245 @@ describe('TaskRunner', () => {
       })
     ])
   })
+
+  it('consumes Main-owned terminal transcript and published artifacts without restaging them', async () => {
+    let emitEvent: ((event: AcpRuntimeEvent) => void) | undefined
+    let authoritative: PersistedChatSession | undefined
+    let lastSaved: PersistedChatSession | undefined
+    const stageCompletion = vi.fn<TaskSessionPort['stageCompletion']>()
+    const settleCompletion = vi.fn<TaskSessionPort['settleCompletion']>(async (request) => ({
+      ...authoritative!,
+      taskRunCommitId: request.taskRunCommitId
+    }))
+    const finalizeRun = vi.fn<TaskRunnerDependencies['artifacts']['finalizeRun']>()
+    const artifact: ArtifactFile = {
+      id: 'version-main',
+      artifactId: 'artifact-main',
+      versionId: 'version-main',
+      versionNumber: 1,
+      checksum: 'a'.repeat(64),
+      projectId: project.id,
+      sessionId: 'session-main-owner',
+      messageId: 'agent-final',
+      name: 'result.txt',
+      path: '/artifacts/result.txt',
+      fileUrl: 'open-science-preview://version-main/result.txt',
+      size: 6,
+      mtimeMs: 12
+    }
+    const runner = createRunner({
+      sessions: {
+        list: async () => (authoritative ? [authoritative] : []),
+        save: async (session) => {
+          lastSaved = structuredClone({ ...session, runtimeTranscriptOwner: 'main' })
+          return lastSaved
+        },
+        stageCompletion,
+        settleCompletion
+      },
+      agent: {
+        createSession: async () => ({ sessionId: 'session-main-owner' }),
+        prompt: async (request) => {
+          const admitted = lastSaved!
+          const first: PersistedChatMessage = {
+            id: 'agent-first',
+            role: 'agent',
+            content: 'first ',
+            status: 'complete',
+            responseToMessageId: request.promptMessageId,
+            eventIds: ['message-event-1'],
+            createdAt: 10,
+            updatedAt: 10
+          }
+          const final: PersistedChatMessage = {
+            id: 'agent-final',
+            role: 'agent',
+            content: 'second',
+            status: 'complete',
+            responseToMessageId: request.promptMessageId,
+            eventIds: ['message-event-2'],
+            artifactIds: ['version-main'],
+            createdAt: 11,
+            updatedAt: 12
+          }
+          authoritative = materializeSessionConversationGraph({
+            ...admitted,
+            runtimeTranscriptOwner: 'main',
+            status: 'idle',
+            activeRun: undefined,
+            messages: [...admitted.messages, first, final],
+            artifacts: [
+              {
+                id: artifact.id,
+                artifactId: artifact.artifactId,
+                versionId: artifact.versionId,
+                versionNumber: artifact.versionNumber,
+                sha256: artifact.checksum,
+                kind: 'managed-file',
+                path: artifact.path,
+                fileUrl: artifact.fileUrl,
+                name: artifact.name,
+                size: artifact.size,
+                mtimeMs: artifact.mtimeMs
+              }
+            ],
+            updatedAt: 12
+          })
+          emitEvent?.({
+            id: 'published-artifact',
+            timestamp: 12,
+            level: 'info',
+            kind: 'artifact',
+            sessionId: authoritative.id,
+            runId: 'run-main',
+            promptMessageId: request.promptMessageId,
+            artifactClaimId: 'already-finalized',
+            publicationOwner: 'main',
+            messageId: 'agent-final',
+            artifacts: [artifact]
+          } as AcpRuntimeEvent)
+        }
+      },
+      artifacts: { finalizeRun },
+      runtimeEvents: {
+        subscribe: (listener) => {
+          emitEvent = listener
+          return () => undefined
+        }
+      }
+    })
+
+    const started = await runner.startRun({ project: project.id, prompt: 'Produce output.' })
+    const completed = await runner.waitForRun(started.id)
+
+    expect(completed).toMatchObject({
+      status: 'completed',
+      output: 'first second',
+      artifacts: [{ id: 'version-main', messageId: 'agent-final' }]
+    })
+    expect(stageCompletion).not.toHaveBeenCalled()
+    expect(finalizeRun).not.toHaveBeenCalled()
+    expect(settleCompletion).toHaveBeenCalledWith(expect.objectContaining({ artifacts: [] }))
+    expect(
+      authoritative?.messages.filter(({ role }) => role === 'agent').map(({ id }) => id)
+    ).toEqual(['agent-first', 'agent-final'])
+  })
+
+  it.each(['provider-failure', 'cancelled'] as const)(
+    'projects Main-owned partial output for %s without creating another message',
+    async (outcome) => {
+      let emitEvent: ((event: AcpRuntimeEvent) => void) | undefined
+      let authoritative: PersistedChatSession | undefined
+      let admitted: PersistedChatSession | undefined
+      let promptMessageId: string | undefined
+      const stageCompletion = vi.fn<TaskSessionPort['stageCompletion']>()
+      const finalizeRun = vi.fn<TaskRunnerDependencies['artifacts']['finalizeRun']>()
+      const failRun = vi.fn<TaskSessionPort['failRun']>(async (request) => ({
+        ...authoritative!,
+        taskRunCommitId: request.taskRunCommitId,
+        error: request.error
+      }))
+      const settleCompletion = vi.fn<TaskSessionPort['settleCompletion']>(async (request) => ({
+        ...authoritative!,
+        taskRunCommitId: request.taskRunCommitId
+      }))
+      const runner = createRunner({
+        sessions: {
+          list: async () => (authoritative ? [authoritative] : []),
+          save: async (session) => {
+            admitted = structuredClone({ ...session, runtimeTranscriptOwner: 'main' })
+            return admitted
+          },
+          stageCompletion,
+          settleCompletion,
+          failRun
+        },
+        agent: {
+          createSession: async () => ({ sessionId: `session-main-${outcome}` }),
+          prompt: async (request) => {
+            promptMessageId = request.promptMessageId
+            const partial: PersistedChatMessage = {
+              id: `agent-${outcome}`,
+              role: 'agent',
+              content: 'partial output',
+              status: 'complete',
+              responseToMessageId: request.promptMessageId,
+              eventIds: ['partial-event'],
+              createdAt: 10,
+              updatedAt: 10
+            }
+            authoritative = materializeSessionConversationGraph({
+              ...admitted!,
+              runtimeTranscriptOwner: 'main',
+              status: outcome === 'provider-failure' ? 'error' : 'idle',
+              activeRun: undefined,
+              messages: [...admitted!.messages, partial],
+              ...(outcome === 'provider-failure' ? { error: 'provider unavailable' } : {}),
+              updatedAt: 10
+            })
+            if (outcome === 'cancelled') {
+              emitEvent?.({
+                id: 'cancelled-stop',
+                timestamp: 11,
+                level: 'info',
+                kind: 'stop',
+                sessionId: authoritative.id,
+                promptMessageId: request.promptMessageId,
+                text: 'cancelled'
+              })
+              return
+            }
+            emitEvent?.({
+              id: 'provider-error',
+              timestamp: 11,
+              level: 'error',
+              kind: 'error',
+              sessionId: authoritative.id,
+              promptMessageId: request.promptMessageId,
+              text: 'provider unavailable',
+              providerError: true
+            })
+            throw new Error('raw provider failure')
+          }
+        },
+        artifacts: { finalizeRun },
+        runtimeEvents: {
+          subscribe: (listener) => {
+            emitEvent = listener
+            return () => undefined
+          }
+        }
+      })
+
+      const started = await runner.startRun({ project: project.id, prompt: 'Start.' })
+      const terminal = await runner.waitForRun(started.id)
+
+      expect(terminal).toMatchObject({
+        status: outcome === 'cancelled' ? 'cancelled' : 'failed',
+        output: 'partial output',
+        ...(outcome === 'provider-failure' ? { error: 'provider unavailable' } : {})
+      })
+      expect(stageCompletion).not.toHaveBeenCalled()
+      expect(finalizeRun).not.toHaveBeenCalled()
+      expect(
+        authoritative?.messages.filter(
+          ({ responseToMessageId }) => responseToMessageId === promptMessageId
+        )
+      ).toHaveLength(1)
+      if (outcome === 'cancelled') {
+        expect(settleCompletion).toHaveBeenCalledWith(expect.objectContaining({ artifacts: [] }))
+        expect(failRun).not.toHaveBeenCalled()
+      } else {
+        expect(failRun).toHaveBeenCalledWith(
+          expect.objectContaining({
+            messageId: `agent-${outcome}`,
+            artifacts: [],
+            error: 'provider unavailable'
+          })
+        )
+      }
+    }
+  )
 
   it('reuses the renderer-settled response identity when finalizing Task artifacts', async () => {
     let emitEvent: ((event: AcpRuntimeEvent) => void) | undefined
@@ -4958,6 +5201,61 @@ describe('TaskRunner', () => {
     })
   })
 
+  it('repairs a failed Main-owned prompt admission through the narrow failure command', async () => {
+    let durableSession: PersistedChatSession | undefined
+    let rejectedAdmission = false
+    const save = vi.fn(async (value: PersistedChatSession) => {
+      if (!rejectedAdmission && value.status === 'running') {
+        rejectedAdmission = true
+        durableSession = structuredClone({ ...value, runtimeTranscriptOwner: 'main' })
+        throw new Error('Main admission receipt was lost.')
+      }
+      durableSession = structuredClone(value)
+      return value
+    })
+    const failRun = vi.fn<TaskSessionPort['failRun']>(async (request) => {
+      durableSession = {
+        ...durableSession!,
+        status: 'error',
+        activeRun: undefined,
+        taskRunCommitId: request.taskRunCommitId,
+        error: request.error
+      }
+      return structuredClone(durableSession)
+    })
+    const runner = createRunner({
+      sessions: {
+        list: async () => (durableSession ? [structuredClone(durableSession)] : []),
+        save,
+        failRun
+      },
+      runJournal: { load: async () => [], replace: async () => undefined },
+      createId: (() => {
+        const ids = ['main-admission-prompt', 'main-admission-run']
+        return () => ids.shift() ?? 'generated-id'
+      })()
+    })
+
+    await expect(
+      runner.startRun({
+        project: project.id,
+        prompt: 'Preserve the Main transcript.'
+      })
+    ).rejects.toThrow('Main admission receipt was lost.')
+
+    expect(failRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        promptMessageId: 'main-admission-prompt',
+        taskRunCommitId: 'main-admission-run',
+        artifacts: [],
+        error: 'Main admission receipt was lost.'
+      })
+    )
+    expect(
+      save.mock.calls.filter(([value]) => value.taskRunCommitId === 'main-admission-run')
+    ).toHaveLength(0)
+  })
+
   it('recovers a post-commit Session failure before its compensation save completes', async () => {
     let markCompensationStarted: (() => void) | undefined
     let releaseCompensation: (() => void) | undefined
@@ -5170,6 +5468,65 @@ describe('TaskRunner', () => {
     })
     expect(durableSession.activeRun).toBeUndefined()
     expect(failureWasStagedBeforeSessionSave).toBe(true)
+  })
+
+  it('repairs a Main-owned interrupted Run through the narrow failure command', async () => {
+    const promptMessage = {
+      id: 'main-interrupted-prompt',
+      role: 'user' as const,
+      content: 'Resume safely after restart.',
+      status: 'complete' as const,
+      eventIds: [],
+      createdAt: 2,
+      updatedAt: 2
+    }
+    const durableSession = normalizeSessionFile({
+      ...session,
+      runtimeTranscriptOwner: 'main',
+      status: 'running',
+      activeRun: { promptMessageId: promptMessage.id, startedAt: 2 },
+      messages: [promptMessage]
+    })!
+    const save = vi.fn(async (value: PersistedChatSession) => value)
+    const failRun = vi.fn<TaskSessionPort['failRun']>(async (request) => ({
+      ...durableSession,
+      status: 'error',
+      activeRun: undefined,
+      taskRunCommitId: request.taskRunCommitId,
+      error: request.error
+    }))
+    const runner = createRunner({
+      sessions: { list: async () => [structuredClone(durableSession)], save, failRun },
+      runJournal: {
+        load: async () => [
+          {
+            id: 'main-interrupted-run',
+            sessionId: session.id,
+            projectId: project.id,
+            cwd: session.cwd,
+            status: 'running',
+            startedAt: 2,
+            artifacts: [],
+            preferredComputeHostIds: [],
+            promptMessageId: promptMessage.id
+          }
+        ],
+        replace: async () => undefined
+      }
+    })
+
+    await runner.initialize()
+
+    expect(failRun).toHaveBeenCalledWith(
+      expect.objectContaining({
+        sessionId: session.id,
+        promptMessageId: promptMessage.id,
+        taskRunCommitId: 'main-interrupted-run',
+        artifacts: [],
+        error: 'Session was interrupted before the app closed.'
+      })
+    )
+    expect(save).not.toHaveBeenCalled()
   })
 
   it('does not overwrite newer Session activity while reconciling an interrupted Run', async () => {

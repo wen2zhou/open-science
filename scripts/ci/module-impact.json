@@ -430,12 +430,16 @@
         "src/renderer/src/stores/session-job-store.test.ts",
         "src/renderer/src/stores/session-store.architecture.test.ts",
         "src/renderer/src/stores/session-store.archive-order.test.ts",
-        "src/renderer/src/stores/session-store.test.ts"
+        "src/renderer/src/stores/session-store.test.ts",
+        "src/renderer/src/stores/session-conversation-intents.test.ts",
+        "src/renderer/src/stores/session-conversation-intents.ts",
+        "src/renderer/src/stores/session-store-conversation-intents.test.ts"
       ],
       "interfacePaths": [
         "src/renderer/src/stores/session-store.ts",
         "src/renderer/src/stores/session-job-store.ts",
-        "src/renderer/src/stores/session-store-run-activity-helpers.ts"
+        "src/renderer/src/stores/session-store-run-activity-helpers.ts",
+        "src/renderer/src/stores/session-conversation-intents.ts"
       ],
       "consumerModules": [
         "workspace_runtime",
@@ -448,7 +452,9 @@
           "src/renderer/src/stores/session-store.test.ts",
           "src/renderer/src/stores/session-store.archive-order.test.ts",
           "src/renderer/src/stores/session-store.architecture.test.ts",
-          "src/renderer/src/stores/session-job-store.test.ts"
+          "src/renderer/src/stores/session-job-store.test.ts",
+          "src/renderer/src/stores/session-conversation-intents.test.ts",
+          "src/renderer/src/stores/session-store-conversation-intents.test.ts"
         ],
         "contract": ["src/shared/session-persistence.test.ts"],
         "consumer": [
@@ -2285,7 +2291,8 @@
           "src/renderer/web/renderer-argument-shape-characterization.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/session-persistence/runtime-authority.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -3654,7 +3661,8 @@
           "src/renderer/src/stores/settings-connectors-slice.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/connectors/descriptors/variants-gnomad.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -4163,7 +4171,8 @@
           "src/renderer/src/stores/settings-connectors-slice.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/connectors/descriptors/variants-gnomad.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -5877,7 +5886,8 @@
           "src/renderer/web/bootstrap.test.ts",
           "src/renderer/web/renderer-argument-shape-characterization.test.ts",
           "src/main/settings/skill-catalog.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/session-persistence/runtime-authority.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -5951,7 +5961,10 @@
         "src/main/session-persistence/session-data-paths.ts",
         "src/main/session-persistence/session-update-publication.ts",
         "src/main/session-persistence/task-admission.ts",
-        "src/main/session-persistence/usage-regressions.test.ts"
+        "src/main/session-persistence/usage-regressions.test.ts",
+        "src/main/session-persistence/runtime-authority.test.ts",
+        "src/main/session-persistence/runtime-session-owner.test.ts",
+        "src/main/session-persistence/runtime-session-owner.ts"
       ],
       "interfacePaths": [
         "src/main/session-persistence/coordinator.ts",
@@ -5976,7 +5989,8 @@
         "src/main/session-persistence/runtime-lookup.ts",
         "src/main/session-persistence/session-data-paths.ts",
         "src/main/session-persistence/state-owner.ts",
-        "src/main/session-persistence/task-admission.ts"
+        "src/main/session-persistence/task-admission.ts",
+        "src/main/session-persistence/runtime-session-owner.ts"
       ],
       "consumerModules": ["project_lifecycle"],
       "testFiles": {
@@ -6004,7 +6018,9 @@
           "src/main/session-persistence/revision-conflict.test.ts",
           "src/main/session-persistence/runtime-lookup.test.ts",
           "src/main/session-persistence/save-session.test.ts",
-          "src/main/session-persistence/usage-regressions.test.ts"
+          "src/main/session-persistence/usage-regressions.test.ts",
+          "src/main/session-persistence/runtime-authority.test.ts",
+          "src/main/session-persistence/runtime-session-owner.test.ts"
         ],
         "contract": [
           "src/shared/session-persistence.test.ts",
@@ -8596,7 +8612,8 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/shared/run-error-classification.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/connectors/descriptors/variants-gnomad.test.ts"
         ]
       },
       "capabilityOverlays": ["windows_sensitive", "e2e_regressions", "e2e_delegation"],
@@ -9780,7 +9797,8 @@
           "src/shared/renderer-surface-matrix.test.ts",
           "scripts/ci/e2e-setup-snapshot.test.ts",
           "src/main/process-tree-native-loading.macos.integration.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/connectors/descriptors/variants-gnomad.test.ts"
         ]
       },
       "capabilityOverlays": ["notebook_network_sandbox", "windows_sensitive"],
@@ -10572,7 +10590,8 @@
           "src/renderer/src/stores/settings-connectors-slice.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/connectors/descriptors/variants-gnomad.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -11896,7 +11915,8 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/notebook/dependency-analysis.stdlib-replay.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/session-persistence/runtime-authority.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -18018,7 +18038,8 @@
           "src/renderer/src/stores/settings-connectors-slice.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/connectors/descriptors/variants-gnomad.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -22900,7 +22921,8 @@
           "src/renderer/src/pages/settings/PermissionsPanel.render.test.tsx",
           "src/renderer/src/pages/settings/SpecialistEditor.persistence.render.test.tsx",
           "src/shared/renderer-surface-inventory.test.ts",
-          "src/shared/renderer-surface-matrix.test.ts"
+          "src/shared/renderer-surface-matrix.test.ts",
+          "src/main/connectors/descriptors/variants-gnomad.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -23956,7 +23978,8 @@
           "src/renderer/src/stores/settings-connectors-slice.test.ts",
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/connectors/descriptors/variants-gnomad.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -25071,7 +25094,8 @@
           "src/shared/renderer-surface-inventory.test.ts",
           "src/shared/renderer-surface-matrix.test.ts",
           "src/main/notebook/dependency-analysis.stdlib-replay.test.ts",
-          "src/main/session-package/fork.test.ts"
+          "src/main/session-package/fork.test.ts",
+          "src/main/session-persistence/runtime-authority.test.ts"
         ]
       },
       "capabilityOverlays": ["e2e_regressions", "e2e_delegation", "windows_sensitive"],
@@ -33720,7 +33744,8 @@
           "src/renderer/src/stores/session-store.test.ts",
           "src/renderer/web/bootstrap.test.ts",
           "src/renderer/web/renderer-argument-shape-characterization.test.ts",
-          "src/renderer/src/lib/session-fork.test.ts"
+          "src/renderer/src/lib/session-fork.test.ts",
+          "src/renderer/src/stores/session-store-conversation-intents.test.ts"
         ]
       },
       "capabilityOverlays": [],
@@ -34089,7 +34114,12 @@
         "src/shared/side-chat.ts",
         "src/shared/source-preview.ts",
         "src/shared/wsl2-preview-manifest.ts",
-        "src/shared/session-branch-source.ts"
+        "src/shared/session-branch-source.ts",
+        "src/shared/runtime-message-identity.ts",
+        "src/shared/runtime-session-projection.test.ts",
+        "src/shared/runtime-session-projection.ts",
+        "src/shared/session-conversation-command.test.ts",
+        "src/shared/session-conversation-command.ts"
       ],
       "interfacePaths": [
         "src/shared/acp.ts",
@@ -34120,7 +34150,10 @@
         "src/shared/side-chat.ts",
         "src/shared/source-preview.ts",
         "src/shared/wsl2-preview-manifest.ts",
-        "src/shared/session-branch-source.ts"
+        "src/shared/session-branch-source.ts",
+        "src/shared/runtime-message-identity.ts",
+        "src/shared/runtime-session-projection.ts",
+        "src/shared/session-conversation-command.ts"
       ],
       "consumerModules": [],
       "testFiles": {
@@ -34137,7 +34170,9 @@
           "src/shared/session-configuration.test.ts",
           "src/shared/session-history-replay.test.ts",
           "src/shared/session-package.test.ts",
-          "src/shared/session-persistence.test.ts"
+          "src/shared/session-persistence.test.ts",
+          "src/shared/runtime-session-projection.test.ts",
+          "src/shared/session-conversation-command.test.ts"
         ],
         "contract": [],
         "consumer": []

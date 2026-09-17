@@ -942,7 +942,8 @@ describe('Artifact Provenance repository architecture', () => {
       'src/renderer/web/bootstrap.test.ts',
       'src/renderer/web/renderer-argument-shape-characterization.test.ts',
       'src/main/settings/skill-catalog.test.ts',
-      'src/main/session-package/fork.test.ts'
+      'src/main/session-package/fork.test.ts',
+      'src/main/session-persistence/runtime-authority.test.ts'
     ])
     expect(module.capabilityOverlays).toEqual([
       'windows_sensitive',

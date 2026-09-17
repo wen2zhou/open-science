@@ -3,12 +3,14 @@ import { hydrateSession } from '../../stores/session-store-persistence-owner'
 import { usePackageOperationStore } from '../../stores/package-operation-store'
 
 import { SessionPersistenceStateOwner } from '../../../../main/session-persistence/state-owner'
+import { sanitizeRendererSaveSessionOptions } from '../../../../main/session-persistence/renderer-save-options'
 import { preserveImportedSession } from '../../../../main/session-persistence/imported-session'
 import { ARTIFACT_FINALIZATION_INVALID_PROOF } from '../../../../shared/artifacts'
 import {
   activateConversationBranch,
   createLinearConversationGraph,
   forkEditedConversationMessage,
+  getActiveConversationContext,
   synchronizeActiveConversationMessages
 } from '../../../../shared/conversation-graph'
 import {
@@ -28,6 +30,10 @@ import {
   toPersistedSession,
   useSessionStore
 } from '../../stores/session-store'
+import {
+  pendingSessionConversationCommands,
+  resetSessionConversationIntentsForTests
+} from '../../stores/session-conversation-intents'
 import {
   MAX_SESSION_REVISION_REBASE_ATTEMPTS,
   createOrderedSessionPersistence,
@@ -4023,6 +4029,132 @@ describe('renderer session persistence bridge', () => {
     })
   })
 
+  it('admits a second turn after Main artifact authority while cadence and explicit saves overlap', async () => {
+    resetSessionConversationIntentsForTests()
+    const prompt = {
+      id: 'prompt-1',
+      role: 'user' as const,
+      content: 'Create an artifact',
+      status: 'complete' as const,
+      eventIds: [] as string[],
+      createdAt: 1,
+      updatedAt: 1
+    }
+    const response = {
+      id: 'agent-1',
+      role: 'agent' as const,
+      content: 'Created it',
+      status: 'complete' as const,
+      responseToMessageId: prompt.id,
+      eventIds: ['message-1', 'artifact-1'],
+      artifactIds: ['version-1'],
+      createdAt: 2,
+      updatedAt: 3,
+      completedAt: 3
+    }
+    let durable: PersistedChatSession = materializeSessionConversationGraph(
+      createPersistedSession({
+        projectId: 'project-a',
+        revision: 5,
+        agentFrameworkId: 'opencode',
+        runtimeTranscriptOwner: 'main',
+        runtimeTranscriptLastRun: { promptMessageId: prompt.id, startedAt: 1 },
+        runtimeTranscriptReviewOwner: { promptMessageId: prompt.id, owner: 'renderer' },
+        messages: [prompt, response],
+        artifacts: [
+          {
+            id: 'version-1',
+            kind: 'managed-file',
+            path: '/artifacts/result.txt',
+            fileUrl: 'file:///artifacts/result.txt',
+            name: 'result.txt',
+            size: 6,
+            mtimeMs: 3,
+            artifactId: 'artifact-1',
+            versionId: 'version-1',
+            versionNumber: 1,
+            sha256: 'a'.repeat(64),
+            createdAt: 3
+          }
+        ],
+        filesRevision: 1,
+        updatedAt: 3
+      })
+    )
+    const firstWrite = createDeferred<void>()
+    let writes = 0
+    const repository = {
+      loadSessionWithDiagnostics: async () => ({ status: 'found' as const, session: durable }),
+      saveSession: async (candidate: PersistedChatSession) => {
+        writes += 1
+        if (writes === 1) await firstWrite.promise
+        durable = structuredClone({ ...candidate, revision: (durable.revision ?? 0) + 1 })
+        return durable
+      }
+    }
+    const main = new SessionPersistenceStateOwner({
+      repository,
+      fileIndex: { syncSession: async () => [] },
+      assertMutable: () => undefined,
+      notifyFilesChanged: () => undefined,
+      notifyRuntimeContextSessionUpdated: () => undefined,
+      log: { debug: vi.fn(), info: vi.fn(), warn: vi.fn(), error: vi.fn() }
+    })
+    const saveSession = vi.fn<SessionPersistenceApi['saveSession']>((submitted, options) =>
+      main.saveSession(submitted, sanitizeRendererSaveSessionOptions(options, submitted))
+    )
+    const api = createApi({
+      loadOne: vi.fn(async () => structuredClone(durable)),
+      saveSession
+    })
+    const persistence = createOrderedSessionPersistence(api)
+    const beforeReceipt = materializeSessionConversationGraph({
+      ...durable,
+      revision: 4,
+      status: 'running',
+      activeRun: { promptMessageId: prompt.id, startedAt: 1 },
+      runtimeTranscriptLastRun: undefined,
+      messages: [prompt],
+      artifacts: undefined,
+      filesRevision: undefined,
+      updatedAt: 2
+    })
+    useSessionStore.getState().hydrateSessions([beforeReceipt])
+    useSessionStore.getState().applyDurableSessionProjection({
+      source: useSessionStore.getState().sessions[0],
+      session: structuredClone(durable),
+      mode: 'runtime-transcript-authority'
+    })
+    const save = createStoreSaver(api, useSessionStore.getState(), {}, persistence)
+    const second = useSessionStore.getState().appendUserMessage({
+      sessionId: durable.id,
+      content: 'Continue with the artifact'
+    })!
+    const commandIds = pendingSessionConversationCommands(durable.id).map(({ id }) => id)
+    expect(commandIds).toHaveLength(2)
+
+    const cadenceSave = save(useSessionStore.getState())
+    const explicitSave = saveSessionInOrder(
+      toPersistedSession(useSessionStore.getState().sessions[0]),
+      persistence,
+      api
+    )
+    await flushMicrotasks()
+    firstWrite.resolve()
+    await Promise.all([cadenceSave, explicitSave])
+    await persistence.flush()
+
+    expect(pendingSessionConversationCommands(durable.id)).toEqual([])
+    expect(durable.runtimeConversationCommandIds).toEqual(expect.arrayContaining(commandIds))
+    expect(durable.activeRun).toMatchObject({ promptMessageId: second.messageId })
+    expect(durable.status).toBe('running')
+    expect(durable.artifacts?.[0]).toMatchObject({ versionId: 'version-1' })
+    expect(() =>
+      getActiveConversationContext(durable.conversationGraph!, second.messageId)
+    ).not.toThrow()
+    resetSessionConversationIntentsForTests()
+  })
+
   it('does not merge competing edits that select different Branch identities', async () => {
     const target = {
       id: 'prompt-1',
@@ -4504,6 +4636,23 @@ describe('renderer session persistence bridge', () => {
       await expect(persistence.flush()).resolves.toBeUndefined()
     }
   )
+
+  it('forwards an explicit preference field through an ordered Session save', async () => {
+    const session = createPersistedSession({ memoryEnabled: false })
+    const saveSession = vi
+      .fn<SessionPersistenceApi['saveSession']>()
+      .mockImplementation(async (value) => ({ ...value, revision: 1 }))
+    const api = createApi({ saveSession })
+    const persistence = createOrderedSessionPersistence(api)
+
+    await saveSessionInOrder(session, persistence, api, {
+      conflictRebaseFields: ['memoryEnabled']
+    })
+
+    expect(saveSession).toHaveBeenCalledWith(expect.objectContaining(session), {
+      conflictRebaseFields: ['memoryEnabled']
+    })
+  })
 
   it('retains the renderer terminal context sample while reconciling the Task reply identity', async () => {
     const { base, submitted, latest } = createCompletedTaskReplyConflict()

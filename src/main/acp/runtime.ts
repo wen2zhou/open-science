@@ -187,6 +187,7 @@ import type {
 import type { AcpRuntimeBaseOwners } from './runtime-base-composition'
 import type { AcpRuntimePublicationOwner } from './runtime-publication-owner'
 import type { AcpRuntimeSessionOwners } from './runtime-session-composition'
+import type { RuntimeSessionOwner } from '../session-persistence/runtime-session-owner'
 import type { AcpSessionEnvironmentPolicy } from './session-environment-policy'
 import { composeAcpRuntimeLifecycleOwners } from './runtime-lifecycle-composition'
 import { composeAcpRuntimeProviderSessionOwners } from './runtime-provider-session-composition'
@@ -242,6 +243,7 @@ type AcpRuntimeOptions = {
     systemPromptAppends: string[]
   }) => Promise<ResolvedAgentBackend> | ResolvedAgentBackend
   artifacts?: AcpRuntimeArtifactOptions
+  runtimeSessions?: RuntimeSessionOwner
   uploads?: AcpRuntimeUploadOptions
   // Resolves a granted local root and its current access level (backed by the GrantedLocalRoot
   // table), enabling the linked-folder file-reference adapter. Absent ⇒ linked-folder references
@@ -1674,7 +1676,8 @@ class AcpRuntime {
   async sendPrompt(
     request: AcpPromptRequest,
     promptAttemptId?: string,
-    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>
+    onPromptAdmitted?: () => Promise<AcpPromptRequest['provenanceContext']>,
+    runtimeReviewOwner: 'task' | 'renderer' = 'renderer'
   ): Promise<PromptResponse> {
     if (
       request.referencedArtifacts?.some(
@@ -1689,7 +1692,8 @@ class AcpRuntime {
         request,
         {
           kind: 'user',
-          ...(promptAttemptId === undefined ? {} : { promptAttemptId })
+          ...(promptAttemptId === undefined ? {} : { promptAttemptId }),
+          runtimeReviewOwner
         },
         onPromptAdmitted
       )
@@ -1743,7 +1747,11 @@ class AcpRuntime {
   private runPromptTurn(
     request: AcpPromptRequest,
     intent:
-      | Readonly<{ kind: 'user'; promptAttemptId?: string }>
+      | Readonly<{
+          kind: 'user'
+          promptAttemptId?: string
+          runtimeReviewOwner?: 'task' | 'renderer'
+        }>
       | Readonly<{
           kind: 'application'
           attribution: MessageAttribution

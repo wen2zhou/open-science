@@ -1,5 +1,6 @@
 import { createSessionBranchSource } from '../../../shared/session-branch-source'
 import type { StoreApi } from 'zustand'
+import { captureSessionConversationIntents } from './session-conversation-intents'
 import { sessionExportLocked, usePackageOperationStore } from './package-operation-store'
 import {
   activateConversationBranch,
@@ -64,6 +65,7 @@ export const createSessionMessageGraphOwner = <
   get: StoreApi<State>['getState']
 ): SessionMessageGraphActions => ({
   openContextResetRuntimeSegment: (sessionId) => {
+    const before = get().sessions.find((session) => session.id === sessionId)
     let runtimeSegmentId: string | undefined
     const now = Date.now()
     set({
@@ -89,6 +91,10 @@ export const createSessionMessageGraphOwner = <
         }
       })
     } as Partial<State>)
+    captureSessionConversationIntents(
+      before,
+      get().sessions.find((session) => session.id === sessionId)
+    )
     return runtimeSegmentId
   },
   appendRoutedUserMessage: ({
@@ -260,6 +266,10 @@ export const createSessionMessageGraphOwner = <
               : session
           )
         } as Partial<State>)
+        captureSessionConversationIntents(
+          existingSession,
+          get().sessions.find((session) => session.id === sessionId)
+        )
       }
       return { sessionId, messageId: existingMessage.id }
     }
@@ -382,6 +392,11 @@ export const createSessionMessageGraphOwner = <
         sessions: [newSession, ...state.sessions]
       } as Partial<State>)
     }
+
+    captureSessionConversationIntents(
+      existingSession,
+      get().sessions.find((session) => session.id === sessionId)
+    )
 
     return { sessionId, messageId: userMessage.id }
   },
@@ -592,6 +607,7 @@ export const createSessionMessageGraphOwner = <
 
   removeMessage: (sessionId, messageId) => {
     if (!sessionId || !messageId) return
+    const before = get().sessions.find((session) => session.id === sessionId)
 
     set((state) => {
       let retainedMessageIds: Set<string> | undefined
@@ -640,10 +656,15 @@ export const createSessionMessageGraphOwner = <
           : {})
       } as Partial<State>
     })
+    captureSessionConversationIntents(
+      before,
+      get().sessions.find((session) => session.id === sessionId)
+    )
   },
 
   truncateSessionFromMessage: (sessionId, messageId) => {
     if (!sessionId || !messageId) return
+    const before = get().sessions.find((session) => session.id === sessionId)
 
     set((state) => {
       let retainedMessageIds: Set<string> | undefined
@@ -713,6 +734,10 @@ export const createSessionMessageGraphOwner = <
           : {})
       } as Partial<State>
     })
+    captureSessionConversationIntents(
+      before,
+      get().sessions.find((session) => session.id === sessionId)
+    )
   },
 
   setElicitationHistoryReplayRequest: (sessionId, requestId) => {
@@ -728,6 +753,7 @@ export const createSessionMessageGraphOwner = <
 
   reviseSessionFromElicitation: (sessionId, activityId) => {
     if (!sessionId || !activityId) return false
+    const before = get().sessions.find((session) => session.id === sessionId)
     let revised = false
     set((state) => {
       let retainedMessageIds: Set<string> | undefined
@@ -758,11 +784,16 @@ export const createSessionMessageGraphOwner = <
           : {})
       } as Partial<State>
     })
+    captureSessionConversationIntents(
+      before,
+      get().sessions.find((session) => session.id === sessionId)
+    )
     return revised
   },
 
   activateMessageBranch: (sessionId, branchId) => {
     if (!sessionId || !branchId) return
+    const before = get().sessions.find((session) => session.id === sessionId)
     set((state) => {
       let retainedMessageIds: Set<string> | undefined
       const sessions = state.sessions.map((session) => {
@@ -822,5 +853,9 @@ export const createSessionMessageGraphOwner = <
           : {})
       } as Partial<State>
     })
+    captureSessionConversationIntents(
+      before,
+      get().sessions.find((session) => session.id === sessionId)
+    )
   }
 })
