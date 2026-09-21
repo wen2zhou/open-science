@@ -4,6 +4,7 @@ import type { ComputeJob, JobSummary } from '../../shared/compute'
 import type { ComputeJobRepository } from './job-repository'
 import type { ComputeHostRepository } from './repository'
 import {
+  isConnectionStdoutTruncated,
   classifyConnectionFailure,
   ComputeConnectionError,
   redactConnectionOutputs,
@@ -707,7 +708,7 @@ export class JobPoller {
       return
     }
 
-    if (runResult.truncated) {
+    if (isConnectionStdoutTruncated(runResult)) {
       await this._recordPollError(batched, 'poll_protocol_incomplete', signal, false)
       return
     }

@@ -1,3 +1,4 @@
+import { isConnectionStdoutTruncated } from './connection-broker'
 import { quoteRemotePath } from './remote-path-security'
 import type { ComputeConnectionLease } from './connection-broker'
 
@@ -86,7 +87,8 @@ export const probeRemoteJobProcessOwnership = async (
   } catch {
     return 'unknown'
   }
-  if (result.timedOut || result.truncated || result.exitCode !== 0) return 'unknown'
+  if (result.timedOut || isConnectionStdoutTruncated(result) || result.exitCode !== 0)
+    return 'unknown'
   const ownership = result.stdout.trim()
   return ownership === 'owned' || ownership === 'mismatch' || ownership === 'absent'
     ? ownership
@@ -110,7 +112,7 @@ export const terminateRemoteJobProcessIfOwned = async (
   }
   return (
     !result.timedOut &&
-    !result.truncated &&
+    !isConnectionStdoutTruncated(result) &&
     result.exitCode === 0 &&
     result.stdout.trim() === 'terminated'
   )

@@ -1,4 +1,8 @@
-import { classifyConnectionFailure, type ComputeConnectionLease } from './connection-broker'
+import {
+  isConnectionStdoutTruncated,
+  classifyConnectionFailure,
+  type ComputeConnectionLease
+} from './connection-broker'
 import { quoteRemotePath } from './remote-path-security'
 
 import type { ComputeJob } from '../../shared/compute'
@@ -92,7 +96,7 @@ export const probeRemoteLaunch = async (
   })
   const connectionFailure = classifyConnectionFailure(result, false)
   if (connectionFailure) throw connectionFailure
-  if (result.exitCode !== 0 || result.truncated) return { kind: 'ambiguous' }
+  if (result.exitCode !== 0 || isConnectionStdoutTruncated(result)) return { kind: 'ambiguous' }
 
   const lines = result.stdout.trimEnd().split('\n')
   if ((lines.length !== 5 && lines.length !== 6) || lines[0] !== RECOVERY_PROTOCOL) {

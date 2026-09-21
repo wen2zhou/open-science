@@ -6,6 +6,7 @@ import { hasImmutableExecutionFileEvidenceReference } from '../../shared/executi
 import { createLogger, errorLogFields } from '../logger'
 import { decodeDataPath } from '../storage/data-path'
 import {
+  isConnectionStdoutTruncated,
   classifyConnectionFailure,
   ComputeConnectionError,
   redactConnectionOutputs,
@@ -393,7 +394,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
   // parseInt prefixes are ambiguous because adopting the wrong PID can later target another job.
   const pidOutput = runResult.stdout.trim()
   const pid = /^[1-9]\d*$/.test(pidOutput) ? Number(pidOutput) : Number.NaN
-  if (runResult.truncated || !Number.isSafeInteger(pid) || pid <= 1) {
+  if (isConnectionStdoutTruncated(runResult) || !Number.isSafeInteger(pid) || pid <= 1) {
     await recoverAmbiguousRemoteLaunch(job, connection, workdir, lifecycle, runResult.stdout)
     return
   }
