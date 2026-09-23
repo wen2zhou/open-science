@@ -177,6 +177,51 @@ describe('NotebookNetworkSandbox', () => {
     )
   })
 
+  it.each(['incomplete', 'throw'] as const)(
+    'certifies only the rejected request when admission cleanup is %s',
+    async (failure) => {
+      const sandbox = new NotebookNetworkSandbox(options())
+      vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })
+      const command = { command: 'true', cwd: '/workspace', onNetworkAccessRequest: denyNetwork }
+      const complete = {
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      }
+      backend.wrap.mockRejectedValueOnce(new Error('preparation failed'))
+      backend.cleanupAfterCommand.mockResolvedValue({ ...complete, networkClosed: false })
+      await sandbox.initialize()
+      try {
+        await expect(sandbox.wrap(command)).rejects.toMatchObject({
+          name: 'NotebookSandboxPreparationCleanupError',
+          retryCleanup: expect.any(Function)
+        })
+        const originalId = backend.wrap.mock.calls[0][0].commandId
+        if (failure === 'throw')
+          backend.cleanupAfterCommand.mockRejectedValue(new Error('cleanup rejected'))
+        const results = await Promise.allSettled([sandbox.wrap(command), sandbox.wrap(command)])
+        for (const result of results) {
+          expect(result.status).toBe('rejected')
+          if (result.status === 'rejected') {
+            expect(result.reason).toBeInstanceOf(NotebookSandboxPreparationError)
+            expect(result.reason.cleanupComplete).toBe(true)
+          }
+        }
+        expect(backend.wrap).toHaveBeenCalledOnce()
+        expect(backend.cleanupAfterCommand.mock.calls.every(([id]) => id === originalId)).toBe(true)
+        backend.cleanupAfterCommand.mockResolvedValue(complete)
+        backend.wrap.mockResolvedValue({ argv: ['sandboxed'], env: {} })
+        const fresh = await sandbox.wrap(command)
+        expect(backend.wrap).toHaveBeenCalledTimes(2)
+        expect(backend.cleanupAfterCommand.mock.lastCall?.[0]).toBe(originalId)
+        await fresh.cleanup('exit', { processesTerminated: true })
+      } finally {
+        backend.cleanupAfterCommand.mockResolvedValue(complete)
+        await sandbox.dispose()
+      }
+    }
+  )
+
   it('awaits one backend cleanup when command preparation fails', async () => {
     const sandbox = new NotebookNetworkSandbox(options())
     vi.spyOn(sandbox, 'status').mockResolvedValue({ kind: 'ready', warnings: [] })

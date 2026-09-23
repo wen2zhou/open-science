@@ -221,7 +221,7 @@ const completedPreparationCleanupCause = (error: unknown): unknown | undefined =
   ) {
     return undefined
   }
-  return error.cause
+  return error.cause ?? error
 }
 
 const quotePosix = (value: string): string => `'${value.replaceAll("'", `'"'"'`)}'`

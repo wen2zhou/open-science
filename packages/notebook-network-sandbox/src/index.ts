@@ -29,6 +29,7 @@ import type {
 let activeOwnerToken: symbol | undefined
 
 class NotebookSandboxPreparationError extends Error {
+  // Certifies only this request: other commands may still own unresolved cleanup debt.
   readonly cleanupComplete = true
 
   constructor(cause: unknown) {
@@ -177,9 +178,16 @@ class NotebookNetworkSandbox {
   }
 
   async wrap(command: NotebookSandboxCommand): Promise<NotebookSandboxedProcess> {
-    if (!this.#initialized) throw new Error('Notebook network sandbox is not initialized.')
-    const target = normalizedTarget(command.target)
-    await this.#reconcilePendingCommands(target)
+    let target: NotebookSandboxTarget
+    try {
+      if (!this.#initialized) throw new Error('Notebook network sandbox is not initialized.')
+      target = normalizedTarget(command.target)
+      await this.#reconcilePendingCommands(target)
+    } catch (error) {
+      // No command has been registered or passed to the runtime. The caller may release this
+      // request's unused resources, but the commands blocking admission retain their own debt.
+      throw new NotebookSandboxPreparationError(error)
+    }
     const commandId = randomUUID()
     const shell = command.shell as string | WindowsShell | undefined
     const controller = new AbortController()

@@ -3161,7 +3161,7 @@ describe('R startup authorization admission', () => {
 
 describe('macOS retained cleanup admission', () => {
   const makeFixture = async (
-    onGrantedRoots?: () => void
+    onGrantedRoots?: () => void | Promise<void>
   ): Promise<{
     owner: NotebookNetworkSandboxOwner
     invocation: NotebookSandboxInvocation
@@ -3176,7 +3176,7 @@ describe('macOS retained cleanup admission', () => {
       temporaryRoot: managed,
       platform: 'darwin',
       getGrantedLocalRoots: async () => {
-        onGrantedRoots?.()
+        await onGrantedRoots?.()
         return []
       },
       getSettings: async () => DEFAULT_NOTEBOOK_NETWORK_SETTINGS,
@@ -3496,6 +3496,93 @@ describe('macOS retained cleanup admission', () => {
         await next.cleanup('exit', { processesTerminated: true })
         await other.cleanup('exit', { processesTerminated: true })
       } finally {
+        recovered = true
+        await owner.dispose()
+        await sandbox.dispose()
+        reset.mockRestore()
+        cleanup.mockRestore()
+        runtimeWrap.mockRestore()
+        initialize.mockRestore()
+      }
+    }
+  )
+
+  it.each(['incomplete', 'throw', 'undefined'] as const)(
+    'releases concurrent rejected admission roots while retaining original %s cleanup debt',
+    async (failure) => {
+      const { NotebookNetworkSandbox } = await vi.importActual<
+        typeof import('../../../packages/notebook-network-sandbox/src/index')
+      >('../../../packages/notebook-network-sandbox/src/index')
+      const { NotebookNetworkRuntime } =
+        await import('../../../packages/notebook-network-sandbox/runtime/src/index')
+      const sandbox = new NotebookNetworkSandbox({
+        policy: { allowedDomains: [], deniedDomains: [] },
+        resources: { root: '/resources' }
+      })
+      const initialize = vi.spyOn(NotebookNetworkRuntime, 'initialize').mockResolvedValue(undefined)
+      const runtimeWrap = vi.spyOn(NotebookNetworkRuntime, 'wrap').mockResolvedValue({
+        argv: ['/sandbox/sh'],
+        env: {}
+      })
+      const complete = {
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      }
+      let recovered = false
+      const cleanup = vi
+        .spyOn(NotebookNetworkRuntime, 'cleanupAfterCommand')
+        .mockImplementation(async () => {
+          if (recovered) return complete
+          if (failure === 'throw') throw new Error('temporary cleanup failure')
+          if (failure === 'undefined') return Promise.reject(undefined)
+          return { ...complete, networkClosed: false }
+        })
+      const reset = vi.spyOn(NotebookNetworkRuntime, 'reset').mockResolvedValue(undefined)
+      let release!: () => void
+      const gate = new Promise<void>((resolve) => {
+        release = resolve
+      })
+      let arrivals = 0
+      const { owner, invocation } = await makeFixture(async () => {
+        if (++arrivals <= 3) await gate
+      })
+      try {
+        await sandbox.initialize()
+        backend.wrap.mockImplementation((command) => sandbox.wrap(command))
+        const waiting = Promise.allSettled(
+          [1, 2, 3].map((id) => owner.wrap({ ...invocation, sessionId: `waiting-${id}` }))
+        )
+        await vi.waitFor(() => expect(arrivals).toBe(3))
+        runtimeWrap.mockRejectedValueOnce(new Error('transient preparation failure'))
+        await expect(owner.wrap(invocation)).rejects.toThrow('SHELL_CLEANUP_INCOMPLETE')
+        const failed = runtimeWrap.mock.calls[0][0]
+        const failedRoot = failed.env.TMPDIR!
+        await writeFile(join(failedRoot, 'sentinel'), 'original owner')
+        release()
+        const rejected = await waiting
+        expect(rejected.every((result) => result.status === 'rejected')).toBe(true)
+        expect(backend.wrap).toHaveBeenCalledTimes(4)
+        expect(runtimeWrap).toHaveBeenCalledTimes(1)
+        for (const [command] of backend.wrap.mock.calls) {
+          if (command.env.TMPDIR === failedRoot) continue
+          expect(existsSync(command.env.TMPDIR)).toBe(false)
+          expect(existsSync(command.env.TMPDIR + '.receipt')).toBe(false)
+        }
+        const [stillBlocked] = await Promise.allSettled([owner.wrap(invocation)])
+        expect(stillBlocked.status).toBe('rejected')
+        expect(runtimeWrap).toHaveBeenCalledTimes(1)
+        expect(await readFile(join(failedRoot, 'sentinel'), 'utf8')).toBe('original owner')
+        expect(existsSync(failedRoot + '.receipt')).toBe(true)
+        expect(cleanup.mock.calls.every(([id]) => id === failed.commandId)).toBe(true)
+        recovered = true
+        const next = await owner.wrap({ ...invocation, sessionId: 'recovered' })
+        expect(runtimeWrap).toHaveBeenCalledTimes(2)
+        expect(existsSync(failedRoot)).toBe(false)
+        expect(existsSync(failedRoot + '.receipt')).toBe(false)
+        await next.cleanup('exit', { processesTerminated: true })
+      } finally {
+        release()
         recovered = true
         await owner.dispose()
         await sandbox.dispose()
