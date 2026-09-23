@@ -8114,6 +8114,52 @@ describe('notebook runtime service', () => {
     expect(terminated).toEqual([['r', DEFAULT_R_ENV]])
   })
 
+  it('preserves Python and R state across a targeted REPL restart', async () => {
+    const root = await createStorageRoot()
+    const values = new Map<string, string>()
+    const terminate = vi.fn(async (kind: string) => {
+      values.delete(kind)
+    })
+    const service = new NotebookRuntimeService({
+      configRoot: root,
+      dataRoot: root,
+      projectId: 'default-project',
+      repository: new NotebookRunRepository(root),
+      executorFactory: () => ({
+        execute: async (request): Promise<NotebookExecutionResult> => {
+          const kind = request.language ?? 'repl'
+          if (request.code !== 'read') values.set(kind, request.code)
+          return {
+            status: 'completed',
+            stdout: values.get(kind) ?? 'undefined',
+            stderr: '',
+            traceback: '',
+            cwdAfter: request.cwd,
+            outputs: []
+          }
+        },
+        terminate,
+        shutdown: async () => ({ reaped: true })
+      })
+    })
+    const request = { sessionId: 'session-1', workspaceCwd: root }
+    await service.execute({ ...request, language: 'python', code: 'python sentinel' })
+    await service.execute({ ...request, language: 'r', code: 'r sentinel' })
+    await service.executeControl({ ...request, code: 'repl sentinel' })
+    await service.restart({ ...request, kernel: 'repl' })
+    expect(terminate).toHaveBeenCalledExactlyOnceWith('repl', '')
+    expect(await service.execute({ ...request, language: 'python', code: 'read' })).toMatchObject({
+      text: { stdout: 'python sentinel' }
+    })
+    expect(await service.execute({ ...request, language: 'r', code: 'read' })).toMatchObject({
+      text: { stdout: 'r sentinel' }
+    })
+    expect(await service.executeControl({ ...request, code: 'read' })).toMatchObject({
+      stdout: 'undefined'
+    })
+    await service.shutdownAll()
+  })
+
   it('persists default Python idle after reload when a targeted restart recovers a coarse error', async () => {
     const root = await createStorageRoot()
     const request = { sessionId: 'session-1', workspaceCwd: root }

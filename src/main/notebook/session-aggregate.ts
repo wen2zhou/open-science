@@ -537,7 +537,12 @@ export class NotebookSessionAggregate<
   }
 
   async drainExecution(processKey: string): Promise<void> {
-    await (this.executionQueues.get(processKey) ?? Promise.resolve()).catch(() => undefined)
+    // Capture the existing tail before the caller installs its own lifecycle barrier.
+    const current =
+      processKey === 'repl'
+        ? this.controlQueue
+        : (this.executionQueues.get(processKey) ?? Promise.resolve())
+    await current.catch(() => undefined)
   }
 
   enqueueControl<T>(task: () => Promise<T>, signal?: AbortSignal): Promise<T> {

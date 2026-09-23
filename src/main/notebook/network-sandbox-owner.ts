@@ -477,6 +477,35 @@ class NotebookNetworkSandboxOwner implements NotebookProcessSandbox {
           )
         }
       }
+      if (
+        !wrapped &&
+        error instanceof Error &&
+        error.name === 'NotebookSandboxPreparationCleanupError' &&
+        'retryCleanup' in error &&
+        typeof error.retryCleanup === 'function'
+      ) {
+        const retryCleanup = error.retryCleanup as () => Promise<NotebookSandboxCleanupResult>
+        let retryPromise: Promise<NotebookSandboxCleanupResult> | undefined
+        const pendingCleanup: PendingCommandCleanup = {
+          target,
+          retry: () => {
+            retryPromise ??= (async () => {
+              const result = await retryCleanup()
+              // Preparation debt requires complete proof; it cannot use independent-command admission.
+              if (!cleanupComplete(result)) return { ...result, admission: 'blocked' as const }
+              if (retained) retained.preparationCleanupReady = true
+              await this.removeCommandTemporaryRoot(commandTempRoot, receipt, retained)
+              this.pendingTemporaryRoots.delete(commandTempRoot)
+              this.pendingCommandCleanups.delete(pendingCleanup)
+              return result
+            })().finally(() => {
+              retryPromise = undefined
+            })
+            return retryPromise
+          }
+        }
+        this.pendingCommandCleanups.add(pendingCleanup)
+      }
       const preparationCause = completedPreparationCleanupCause(error)
       if (preparationCause !== undefined) {
         if (retained) {

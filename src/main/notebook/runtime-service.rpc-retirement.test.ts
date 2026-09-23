@@ -1,9 +1,11 @@
-import { mkdtemp, rm } from 'node:fs/promises'
+import { existsSync } from 'node:fs'
+import { mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { fetchLocalRpc } from '../local-rpc-transport'
+import { NotebookKernelExecutor } from './kernel-executor'
 import { NotebookLocalRpcServer } from './local-rpc-server'
 import { NotebookRunRepository } from './repository'
 import {
@@ -29,6 +31,8 @@ function deferred(): { promise: Promise<void>; resolve: () => void } {
 async function harness(
   options: {
     onExecute?: (request: NotebookExecutionRequest) => Promise<void>
+    realExecutor?: boolean
+    onSpawn?: () => Promise<void>
     serverOptions?: ConstructorParameters<typeof NotebookLocalRpcServer>[1]
   } = {}
 ): Promise<{
@@ -57,6 +61,21 @@ async function harness(
     repository,
     executorFactory: (_sessionId, lifecycle) => {
       lifecycles.push(lifecycle)
+      if (options.realExecutor) {
+        const executor = new NotebookKernelExecutor(lifecycle)
+        const execute = executor.execute.bind(executor)
+        vi.spyOn(executor, 'execute').mockImplementation(async (request) => {
+          requests.push(request)
+          await options.onExecute?.(request)
+          return execute(request)
+        })
+        const spawn = executor['spawnLoop'].bind(executor)
+        executor['spawnLoop'] = async (...args) => {
+          await options.onSpawn?.()
+          return spawn(...args)
+        }
+        return executor
+      }
       return {
         execute: async (request) => {
           requests.push(request)
@@ -120,6 +139,72 @@ async function harness(
 }
 
 describe('REPL process RPC ownership', () => {
+  it.each(['starting', 'running'] as const)(
+    'waits for a %s REPL and fences later calls until targeted restart completes',
+    async (phase) => {
+      const entered = deferred()
+      const release = deferred()
+      let first = true
+      const h = await harness({
+        realExecutor: true,
+        onSpawn: async () => {
+          if (phase !== 'starting' || !first) return
+          first = false
+          entered.resolve()
+          await release.promise
+        }
+      })
+      const marker = join(h.root, 'running')
+      const gate = join(h.root, 'continue')
+      const initial = h.execute(
+        'session-1',
+        phase === 'starting'
+          ? 'globalThis.reviewSentinel = 17'
+          : `globalThis.reviewSentinel = 17;
+         require('node:fs').writeFileSync(${JSON.stringify(marker)}, '');
+         while (!require('node:fs').existsSync(${JSON.stringify(gate)})) {
+           await new Promise(resolve => setTimeout(resolve, 10));
+         }`
+      )
+      const operations: Promise<unknown>[] = [initial]
+      try {
+        if (phase === 'starting') await entered.promise
+        else await vi.waitFor(() => expect(existsSync(marker)).toBe(true))
+        let restarted = false
+        const restart = h.service
+          .restart({
+            projectId: 'default-project',
+            sessionId: 'session-1',
+            workspaceCwd: h.root,
+            kernel: 'repl'
+          })
+          .then(() => {
+            restarted = true
+          })
+        operations.push(restart)
+        await new Promise((resolve) => setTimeout(resolve, 100))
+        expect(restarted).toBe(false)
+        expect(await h.authorityStatus(h.requests[0])).toBe(200)
+        const next = h.execute('session-1', 'console.log(globalThis.reviewSentinel)')
+        operations.push(next)
+        release.resolve()
+        await writeFile(gate, '')
+        expect((await initial).status).toBe('completed')
+        await restart
+        const result = await next
+        expect(result.stdout.trim()).toBe('undefined')
+        expect(h.requests[1].kernelEpochId).not.toBe(h.requests[0].kernelEpochId)
+        expect(await h.authorityStatus(h.requests[0])).toBe(401)
+        expect(await h.authorityStatus(h.requests[1])).toBe(200)
+        expect((await h.execute('session-1', 'console.log(23)')).stdout.trim()).toBe('23')
+      } finally {
+        release.resolve()
+        await writeFile(gate, '')
+        await Promise.allSettled(operations)
+      }
+    }
+  )
+
   it('revokes a retired REPL capability while preserving another session and its successor', async () => {
     const h = await harness()
     await h.execute()

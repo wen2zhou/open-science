@@ -37,6 +37,16 @@ class NotebookSandboxPreparationError extends Error {
   }
 }
 
+class NotebookSandboxPreparationCleanupError extends Error {
+  constructor(
+    cause: unknown,
+    readonly retryCleanup: () => Promise<NotebookSandboxCleanupResult>
+  ) {
+    super('SHELL_CLEANUP_INCOMPLETE: Shell preparation cleanup could not be verified.', { cause })
+    this.name = 'NotebookSandboxPreparationCleanupError'
+  }
+}
+
 type ActiveCommand = {
   target: NotebookSandboxTarget
   onNetworkAccessRequest: NotebookSandboxCommand['onNetworkAccessRequest']
@@ -222,9 +232,9 @@ class NotebookNetworkSandbox {
         'spawn-failed'
       ).catch(() => undefined)
       if (!cleanup || !cleanupComplete(cleanup)) {
-        throw new Error(
-          'SHELL_CLEANUP_INCOMPLETE: Shell preparation cleanup could not be verified.',
-          { cause: error }
+        // Retain the exact command's cleanup ownership even though no process was returned.
+        throw new NotebookSandboxPreparationCleanupError(error, () =>
+          this.#releaseCommand(commandId, { processesTerminated: true }, 'spawn-failed')
         )
       }
       throw new NotebookSandboxPreparationError(error)

@@ -3435,6 +3435,78 @@ describe('macOS retained cleanup admission', () => {
     }
   })
 
+  it.each(['incomplete', 'throw'] as const)(
+    'retries exact preparation cleanup after a transient %s failure without touching another session',
+    async (failure) => {
+      const { NotebookNetworkSandbox } = await vi.importActual<
+        typeof import('../../../packages/notebook-network-sandbox/src/index')
+      >('../../../packages/notebook-network-sandbox/src/index')
+      const { NotebookNetworkRuntime } =
+        await import('../../../packages/notebook-network-sandbox/runtime/src/index')
+      const sandbox = new NotebookNetworkSandbox({
+        policy: { allowedDomains: [], deniedDomains: [] },
+        resources: { root: '/resources' }
+      })
+      const initialize = vi.spyOn(NotebookNetworkRuntime, 'initialize').mockResolvedValue(undefined)
+      const runtimeWrap = vi.spyOn(NotebookNetworkRuntime, 'wrap').mockResolvedValue({
+        argv: ['/sandbox/sh'],
+        env: {}
+      })
+      const complete = {
+        processesTerminated: true,
+        networkClosed: true,
+        temporaryResourcesRemoved: true
+      }
+      let recovered = false
+      const cleanup = vi
+        .spyOn(NotebookNetworkRuntime, 'cleanupAfterCommand')
+        .mockImplementation(async () => {
+          if (recovered) return complete
+          if (failure === 'throw') throw new Error('temporary cleanup failure')
+          return { ...complete, networkClosed: false }
+        })
+      const reset = vi.spyOn(NotebookNetworkRuntime, 'reset').mockResolvedValue(undefined)
+      const { owner, invocation } = await makeFixture()
+      try {
+        await sandbox.initialize()
+        backend.wrap.mockImplementation((command) => sandbox.wrap(command))
+        const other = await owner.wrap({ ...invocation, sessionId: 'other-session' })
+        const otherRoot = runtimeWrap.mock.calls[0][0].env.TMPDIR!
+        await writeFile(join(otherRoot, 'sentinel'), 'other session')
+        runtimeWrap.mockRejectedValueOnce(new Error('transient preparation failure'))
+        await expect(owner.wrap(invocation)).rejects.toThrow('SHELL_CLEANUP_INCOMPLETE')
+        const failedCommand = runtimeWrap.mock.calls[1][0]
+        const failedRoot = failedCommand.env.TMPDIR!
+        await expect(owner.wrap(invocation)).rejects.toThrow()
+        expect(runtimeWrap).toHaveBeenCalledTimes(2)
+        expect(cleanup).toHaveBeenCalledTimes(2)
+        expect(existsSync(failedRoot)).toBe(true)
+        expect(existsSync(failedRoot + '.receipt')).toBe(true)
+        recovered = true
+        const next = await owner.wrap(invocation)
+        expect(runtimeWrap).toHaveBeenCalledTimes(3)
+        expect(cleanup.mock.calls.map(([id]) => id)).toEqual([
+          failedCommand.commandId,
+          failedCommand.commandId,
+          failedCommand.commandId
+        ])
+        expect(existsSync(failedRoot)).toBe(false)
+        expect(existsSync(failedRoot + '.receipt')).toBe(false)
+        expect(await readFile(join(otherRoot, 'sentinel'), 'utf8')).toBe('other session')
+        await next.cleanup('exit', { processesTerminated: true })
+        await other.cleanup('exit', { processesTerminated: true })
+      } finally {
+        recovered = true
+        await owner.dispose()
+        await sandbox.dispose()
+        reset.mockRestore()
+        cleanup.mockRestore()
+        runtimeWrap.mockRestore()
+        initialize.mockRestore()
+      }
+    }
+  )
+
   it('keeps unverified preparation failures fenced even without a cleanup closure', async () => {
     const { owner, invocation } = await makeFixture()
     backend.wrap.mockRejectedValueOnce(new Error('unverified preparation'))
