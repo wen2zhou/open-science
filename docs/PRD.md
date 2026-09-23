@@ -103,6 +103,58 @@ authorization. Its queued Memory calls remain valid while the Session preference
 connection release, Session disable, or full connection detach invalidates them. ACP-owned tokens
 are still revoked by `releaseSessionCapabilities`, independently of the retained control token.
 
+### Notebook command cleanup admission
+
+Command retirement is irreversible even when physical cleanup needs another attempt. A retired
+REPL loses its original epoch's RPC authority; provider-only reconnect preserves a live epoch.
+Pending invocation output remains owned until completion or Session shutdown.
+
+On native macOS, the sandbox runtime may explicitly permit an independent command after gateway,
+trust and platform resources are released, while the original process termination proof remains
+unknown. Missing permission, other platforms, and failed resource release remain blocked. This
+permission does not satisfy `cleanupComplete`, release the old owner, permit same-kernel replacement,
+or relax global disposal. Unknown processes can still write shared working directories; this is
+cleanup-fault isolation, not a promise that failed code stopped or that Sessions have private files.
+
+The existing application sandbox owner retains command roots and version-1 receipts under its
+managed temporary directory. On macOS it checks creation-time parent/root/receipt identity before
+deleting same-process-owned objects. Replaced or unrecognized objects are preserved. These checks
+prevent accidental reuse and deletion; they are not an atomic defense against hostile same-UID
+filesystem replacement. Restart receipts contain no process proof and are retained but never
+upgraded into removal authority. Legacy UUID command directories without receipts are also retained
+and validated, without creating receipts or acquiring deletion authority. Invalid names, files and
+symlinks remain blocked. No receipt format migration or background cleanup service is added.
+
+Command roots and receipts are ownership records, not a measure of active processes or resource
+pressure. Their count must not gate unrelated command admission, whether they were created by this
+application instance or recovered from a previous one. No replacement count limit or resource-quota
+subsystem is introduced. Independent admission still requires the runtime's explicit permission and
+valid directory/receipt identities; failed shared-resource release remains blocked.
+A short creation queue prevents successors from observing partially registered receipts. Cleanup
+keeps responsibility for every retained root until verified removal; historical residue is preserved
+without acquiring deletion authority. Long-term historical reclamation is a separate work item.
+
+### Notebook kernel exit recovery
+
+An unexpected Python, R or Agent SDK interpreter exit retains its exit code/signal and affected
+interpreter identity even when process-tree cleanup cannot be verified. Durable run results carry
+structured execution certainty, cleanup state and exit cause. On macOS, SIGKILL is attributed to
+memory pressure only when a bounded OS-log lookup finds a matching process kill record; unavailable
+or inconclusive evidence remains unknown. SIGKILL alone is not an OOM diagnosis.
+
+After the initial cleanup attempt, the executor makes at most two automatic reconciliation retries
+against the same owned tree. It never replays the failed code. Verified cleanup permits replacement;
+unverified cleanup retains the original resources and blocks only the affected interpreter where
+macOS independent admission is supported. Other platform/resource gates retain their existing rules.
+
+For an unresolved exit whose cleanup was unverified, the agent receives the scoped `notebook_restart`
+option with the affected language/environment or `kernel: "repl"`. Verified cleanup needs no additional
+restart: the next execution starts a fresh interpreter. A successful targeted restart discharges only that interpreter's captured failure
+in the requesting Turn; it neither clears unrelated failures nor acquires a newer Turn's authority.
+The legacy no-selector restart remains Session-wide. Recovery preserves other interpreters' memory,
+saved files and run history; the replaced interpreter's in-memory variables are lost. Partial file
+or external side effects must be inspected before deliberately rebuilding required state.
+
 ### Durable external component ownership
 
 A durable external component is a resource created by Open-Science that survives its creating

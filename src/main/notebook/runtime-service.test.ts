@@ -9258,19 +9258,31 @@ describe('notebook runtime service', () => {
     it('writes a running kernel status during a live run, then settles to idle (G4)', async () => {
       const root = await createStorageRoot()
       let release: (() => void) | undefined
+      let signalStarted!: () => void
+      const started = new Promise<void>((resolve) => {
+        signalStarted = resolve
+      })
       const service = holdingService(root, (_request, resolve) => {
         release = resolve
+        signalStarted()
       })
 
       const run = service.execute({ sessionId: 'session-1', workspaceCwd: root, code: '1' })
-      await vi.waitFor(() => expect(release).toBeDefined())
-
-      // The kernel reads 'running' while the run is in flight (G4: the union member is now written).
-      const midFlight = await service.state({ sessionId: 'session-1', workspaceCwd: root })
-      expect(midFlight.kernelStatus).toBe('running')
-
-      release?.()
-      await run
+      try {
+        // Use the execution boundary, not a one-second polling budget under load.
+        await Promise.race([
+          started,
+          run.then(() => {
+            throw new Error('Run settled before the holding executor started')
+          })
+        ])
+        const midFlight = await service.state({ sessionId: 'session-1', workspaceCwd: root })
+        expect(midFlight.kernelStatus).toBe('running')
+      } finally {
+        // Settle before fixture deletion, including if the mid-flight assertion fails.
+        release?.()
+        await run
+      }
       const settled = await service.state({ sessionId: 'session-1', workspaceCwd: root })
       expect(settled.kernelStatus).toBe('idle')
     })

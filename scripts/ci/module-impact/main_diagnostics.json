@@ -227,6 +227,7 @@
       "src/main/notebook/mcp-management-lifecycle.integration.test.ts",
       "src/main/notebook/mcp-server.test.ts",
       "src/main/notebook/native-shell-certification.macos.integration.test.ts",
+      "src/main/notebook/network-sandbox-owner.macos-isolation.integration.test.ts",
       "src/main/notebook/network-sandbox-owner.test.ts",
       "src/main/notebook/no-legacy-bridge.test.ts",
       "src/main/notebook/package-cache-sandbox.integration.test.ts",
@@ -386,6 +387,8 @@
       "src/main/settings/provider-runtime-health-owner.test.ts",
       "src/main/settings/provider-transport-owner.test.ts",
       "src/main/settings/session-details-model-owner.test.ts",
+      "src/main/notebook/runtime-service.macos-isolation.integration.test.ts",
+      "src/main/notebook/runtime-service.rpc-retirement.test.ts",
       "src/main/literature/smart-collections.test.ts"
     ]
   },
