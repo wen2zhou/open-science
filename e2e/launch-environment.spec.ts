@@ -96,3 +96,19 @@ test('uses the real Keychain and native identity probe for packaged macOS E2E', 
     executablePath: '/artifacts/Open-Science.app/Contents/MacOS/Open-Science'
   })
 })
+
+test('lets packaged macOS performance runs avoid a runner Keychain prompt', () => {
+  expect(
+    electronLaunchTarget(
+      'profile-root',
+      {
+        OPEN_SCIENCE_E2E_EXECUTABLE: '/artifacts/Open-Science.app/Contents/MacOS/Open-Science',
+        OPEN_SCIENCE_E2E_MOCK_KEYCHAIN: '1'
+      },
+      'darwin'
+    )
+  ).toEqual({
+    args: ['--user-data-dir=profile-root', '--use-mock-keychain'],
+    executablePath: '/artifacts/Open-Science.app/Contents/MacOS/Open-Science'
+  })
+})

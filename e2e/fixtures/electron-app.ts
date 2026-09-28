@@ -62,12 +62,12 @@ const electronLaunchTarget = (
     args: [
       `--user-data-dir=${userDataRoot}`,
       ...(platform === 'linux' ? ['--password-store=basic'] : []),
+      ...(platform === 'darwin' &&
+      (!executablePath || environment.OPEN_SCIENCE_E2E_MOCK_KEYCHAIN === '1')
+        ? ['--use-mock-keychain']
+        : []),
       ...(platform === 'darwin' && !executablePath
-        ? [
-            '--use-mock-keychain',
-            '--require',
-            resolve(APP_ROOT, 'e2e/fixtures/mock-credential-identity.cjs')
-          ]
+        ? ['--require', resolve(APP_ROOT, 'e2e/fixtures/mock-credential-identity.cjs')]
         : []),
       ...(executablePath ? [] : [APP_ROOT])
     ],
