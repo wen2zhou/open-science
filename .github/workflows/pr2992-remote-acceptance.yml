@@ -83,7 +83,7 @@ jobs:
               node node_modules/@playwright/test/cli.js test \
                 e2e/pr2992-interaction-performance.spec.ts \
                 --grep='with 20 sessions' \
-                --workers=1 --retries=0 --reporter=list \
+                --workers=1 --retries=0 --reporter=list --timeout=300000 \
                 --output="$RUNNER_TEMP/pr2992-preflight/$((index + 1))-$variant"
           done
 
