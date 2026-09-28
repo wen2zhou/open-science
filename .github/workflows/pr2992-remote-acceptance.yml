@@ -79,12 +79,35 @@ jobs:
           for index in "${!variants[@]}"; do
             variant="${variants[$index]}"
             export OPEN_SCIENCE_E2E_EXECUTABLE="$RUNNER_TEMP/pr2992-packaged/$variant/mac-arm64/Open-Science.app/Contents/MacOS/Open-Science"
+            diagnostics="$RUNNER_TEMP/pr2992-preflight-diagnostics/$((index + 1))-$variant"
+            mkdir -p "$diagnostics"
+            ps -Ao pid,ppid,state,%cpu,%mem,command > "$diagnostics/before-processes.txt"
+            df -h > "$diagnostics/before-disk.txt"
+            if [ "$index" -eq 1 ]; then
+              (
+                sleep 30
+                ps -Ao pid,ppid,state,%cpu,%mem,command > "$diagnostics/during-processes.txt"
+                df -h > "$diagnostics/during-disk.txt"
+                vm_stat > "$diagnostics/during-memory.txt"
+                for pid in $(pgrep -f "$OPEN_SCIENCE_E2E_EXECUTABLE" || true); do
+                  sample "$pid" 3 -file "$diagnostics/sample-$pid.txt" || true
+                done
+              ) &
+              diagnostic_pid=$!
+            fi
+            set +e
             OPEN_SCIENCE_INTERACTION_PROFILE=1 \
               node node_modules/@playwright/test/cli.js test \
                 e2e/pr2992-interaction-performance.spec.ts \
                 --grep='with 20 sessions' \
                 --workers=1 --retries=0 --reporter=list --timeout=300000 \
                 --output="$RUNNER_TEMP/pr2992-preflight/$((index + 1))-$variant"
+            result=$?
+            set -e
+            if [ "$index" -eq 1 ]; then
+              wait "$diagnostic_pid" || true
+            fi
+            if [ "$result" -ne 0 ]; then exit "$result"; fi
           done
 
       - name: Run frozen three-group ABBA comparison
@@ -119,6 +142,7 @@ jobs:
             ${{ runner.temp }}/pr2992-packaged/candidate/build-manifest.json
             ${{ runner.temp }}/pr2992-packaged/candidate/source-hashes.json
             ${{ runner.temp }}/pr2992-preflight/
+            ${{ runner.temp }}/pr2992-preflight-diagnostics/
             ${{ runner.temp }}/pr2992-comparison/
           if-no-files-found: warn
           retention-days: 7
