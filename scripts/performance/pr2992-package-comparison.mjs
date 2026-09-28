@@ -144,9 +144,7 @@ const bundleIdentifier = await run(
 )
 if (bundleIdentifier !== config.appId)
   throw new Error(`Unexpected packaged bundle identifier: ${bundleIdentifier}`)
-await run('codesign', ['--verify', '--deep', '--strict', app])
-// Signing validates the container signature, not each ASAR entry's offset/content. A changing
-// input (such as a test log) can corrupt later offsets while the container still signs correctly.
+// A changing input (such as a test log) can corrupt later ASAR offsets/content.
 const asar = require('@electron/asar')
 const asarPath = join(app, 'Contents/Resources/app.asar')
 let verifiedAsarFiles = 0

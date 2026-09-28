@@ -1444,6 +1444,10 @@ class ElectronAppHarness implements ElectronApp {
 
   private async launch(packagePath?: string, timingName = 'startup-ready'): Promise<void> {
     const launchStartedAt = performance.now()
+    // The isolated packaged profile is known before startup. Capture its log path without an
+    // inspector round-trip, because a blocked native migration can stall Electron evaluation.
+    if (process.env.OPEN_SCIENCE_E2E_EXECUTABLE)
+      this.mainLogDirectory = join(this.roots.userDataRoot, 'logs')
     this.application = await launchOpenScience(
       this.roots,
       this.fakeAgentEnabled,
@@ -1512,7 +1516,7 @@ class ElectronAppHarness implements ElectronApp {
         )
       }
     } finally {
-      this.mainLogDirectory = await this.application
+      this.mainLogDirectory ??= await this.application
         .evaluate(({ app }) => app.getPath('logs'))
         .catch(() => undefined)
     }

@@ -54,7 +54,7 @@ jobs:
           test "$(shasum -a 256 "$RUNNER_TEMP/pr2992-baseline/package-lock.json" | cut -d ' ' -f 1)" = \
             '108fd769119b30ffd2d6c7f8982f451185ab88fc02ea32a6f2bc4453f1becf89'
 
-      - name: Build independently signed production packages
+      - name: Build independent production packages
         id: build
         shell: bash
         run: |
