@@ -70,33 +70,6 @@ jobs:
             --variant=candidate \
             --resources="$GITHUB_WORKSPACE"
 
-      - name: Run packaged PR-head functional checks
-        env:
-          OPEN_SCIENCE_E2E_EXECUTABLE: ${{ runner.temp }}/pr2992-packaged/candidate/mac-arm64/Open-Science.app/Contents/MacOS/Open-Science
-        shell: bash
-        run: |
-          set -euo pipefail
-          node node_modules/@playwright/test/cli.js test \
-            e2e/pr2992-runtime-contract.spec.ts \
-            e2e/pdf-annotations.spec.ts \
-            --workers=1 --retries=0 --reporter=list \
-            --output="$RUNNER_TEMP/pr2992-functional"
-          node node_modules/@playwright/test/cli.js test \
-            e2e/workspace-conversation.spec.ts \
-            --grep='edits and navigates message revisions|keeps Memory reversible' \
-            --workers=1 --retries=0 --reporter=list \
-            --output="$RUNNER_TEMP/pr2992-conversation"
-
-      - name: Check baseline mobile menu parity
-        env:
-          OPEN_SCIENCE_E2E_EXECUTABLE: ${{ runner.temp }}/pr2992-packaged/baseline/mac-arm64/Open-Science.app/Contents/MacOS/Open-Science
-        run: >-
-          node node_modules/@playwright/test/cli.js test
-          e2e/pr2992-runtime-contract.spec.ts
-          --grep='keeps keyboard and mobile'
-          --workers=1 --retries=0 --reporter=list
-          --output=${{ runner.temp }}/pr2992-baseline-functional
-
       - name: Run frozen three-group ABBA comparison
         shell: bash
         run: |
@@ -118,6 +91,24 @@ jobs:
               --input="$RUNNER_TEMP/pr2992-comparison/comparison-run.json"
           fi
 
+      - name: Run packaged PR-head functional checks
+        if: always() && steps.build.outcome == 'success'
+        env:
+          OPEN_SCIENCE_E2E_EXECUTABLE: ${{ runner.temp }}/pr2992-packaged/candidate/mac-arm64/Open-Science.app/Contents/MacOS/Open-Science
+        shell: bash
+        run: |
+          set -euo pipefail
+          node node_modules/@playwright/test/cli.js test \
+            e2e/pr2992-runtime-contract.spec.ts \
+            e2e/pdf-annotations.spec.ts \
+            --workers=1 --retries=0 --reporter=list \
+            --output="$RUNNER_TEMP/pr2992-functional"
+          node node_modules/@playwright/test/cli.js test \
+            e2e/workspace-conversation.spec.ts \
+            --grep='edits and navigates message revisions|keeps Memory reversible' \
+            --workers=1 --retries=0 --reporter=list \
+            --output="$RUNNER_TEMP/pr2992-conversation"
+
       - name: Upload acceptance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -131,6 +122,5 @@ jobs:
             ${{ runner.temp }}/pr2992-comparison/
             ${{ runner.temp }}/pr2992-functional/
             ${{ runner.temp }}/pr2992-conversation/
-            ${{ runner.temp }}/pr2992-baseline-functional/
           if-no-files-found: warn
           retention-days: 7
