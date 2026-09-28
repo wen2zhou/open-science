@@ -346,6 +346,7 @@ type ElectronApp = {
   restoreDelegatedHandoffCleanup: (childName: string) => Promise<void>
   emitPreviewContextMenuAtCssPoint: (point: { x: number; y: number }) => Promise<void>
   showMainWindow: () => Promise<void>
+  showMainWindowInactive: () => Promise<void>
   restart: (options?: { resourceProfilePhase?: string }) => Promise<Page>
   restartAfterCrash: (options?: { force?: boolean }) => Promise<Page>
   restartWithCorruptHistoricalSessionFile: (projectId: string) => Promise<Page>
@@ -1085,6 +1086,15 @@ class ElectronAppHarness implements ElectronApp {
     await expect.poll(() => this.mainWindowState()).toMatchObject({ visible: true })
   }
 
+  async showMainWindowInactive(): Promise<void> {
+    await this.runningApplication.evaluate(({ BrowserWindow }) => {
+      const mainWindow = BrowserWindow.getAllWindows()[0]
+      if (!mainWindow) throw new Error('Open-Science main window was not found.')
+      mainWindow.showInactive()
+    })
+    await expect.poll(() => this.mainWindowState()).toMatchObject({ visible: true })
+  }
+
   async setMainWindowSize(width: number, height: number): Promise<void> {
     await this.runningApplication.evaluate(
       ({ BrowserWindow }, { width, height }) => {
@@ -1571,6 +1581,7 @@ class ElectronAppHarness implements ElectronApp {
     if (!this.application) return
 
     const application = this.application
+    const processHandle = application.process()
     const page = this.currentPage
     await this.stopElectronTrace(application)
     this.resourceProfiler?.detach(application)
@@ -1608,6 +1619,16 @@ class ElectronAppHarness implements ElectronApp {
       this.stopFlushDiagnostics?.()
       this.stopFlushDiagnostics = undefined
     })
+    if (process.env.OPEN_SCIENCE_E2E_EXECUTABLE) {
+      // Packaged macOS relaunches can race the old process's single-instance lock.
+      // Wait for that process to exit before starting the next independent app process.
+      await expect
+        .poll(() => processHandle.exitCode !== null || processHandle.signalCode !== null, {
+          timeout: 10_000
+        })
+        .toBe(true)
+      await new Promise((resolve) => setTimeout(resolve, 5_000))
+    }
   }
 
   private async stopElectronTrace(application = this.application): Promise<void> {

@@ -1,0 +1,136 @@
+name: PR 2992 remote macOS acceptance
+
+on:
+  push:
+    branches: [codex/pr2992-remote-acceptance]
+
+permissions:
+  contents: read
+
+concurrency:
+  group: pr2992-remote-acceptance
+  cancel-in-progress: true
+
+jobs:
+  packaged-acceptance:
+    runs-on: macos-15
+    timeout-minutes: 180
+    env:
+      BASELINE_SHA: 62a6e1df0c2633c28840e41ca760b8973f335a14
+      CANDIDATE_SHA: d244dbca669629ba26ad42e82b6f0776453a6ad9
+      OPEN_SCIENCE_E2E_BACKGROUND: '1'
+      OPEN_SCIENCE_E2E_MOCK_KEYCHAIN: '1'
+    steps:
+      - name: Checkout isolated acceptance harness
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+
+      - name: Setup Node 24
+        uses: actions/setup-node@820762786026740c76f36085b0efc47a31fe5020 # v7
+        with:
+          node-version: 24
+          cache: npm
+
+      - name: Install matched dependencies and native binaries
+        run: node scripts/ci/npm-ci.mjs
+
+      - name: Fetch pinned micromamba binary
+        run: node scripts/fetch-micromamba.mjs osx-arm64 resources/bin/mac/arm64/micromamba
+
+      - name: Prepare exact current-main and PR-head sources
+        shell: bash
+        run: |
+          set -euo pipefail
+          git fetch --no-tags https://github.com/aipoch/open-science.git main
+          git fetch --no-tags https://github.com/wen2zhou/open-science.git perf/sidebar-session-switch
+          git cat-file -e "${BASELINE_SHA}^{commit}"
+          git cat-file -e "${CANDIDATE_SHA}^{commit}"
+          git worktree add --detach "$RUNNER_TEMP/pr2992-baseline" "$BASELINE_SHA"
+          git worktree add --detach "$RUNNER_TEMP/pr2992-candidate" "$CANDIDATE_SHA"
+          test "$(git -C "$RUNNER_TEMP/pr2992-baseline" rev-parse HEAD)" = "$BASELINE_SHA"
+          test "$(git -C "$RUNNER_TEMP/pr2992-candidate" rev-parse HEAD)" = "$CANDIDATE_SHA"
+          test "$(shasum -a 256 "$RUNNER_TEMP/pr2992-baseline/package-lock.json" | cut -d ' ' -f 1)" = \
+            '108fd769119b30ffd2d6c7f8982f451185ab88fc02ea32a6f2bc4453f1becf89'
+
+      - name: Build independently signed production packages
+        id: build
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/performance/pr2992-package-comparison.mjs \
+            --source="$RUNNER_TEMP/pr2992-baseline" \
+            --output="$RUNNER_TEMP/pr2992-packaged/baseline" \
+            --variant=baseline \
+            --resources="$GITHUB_WORKSPACE"
+          node scripts/performance/pr2992-package-comparison.mjs \
+            --source="$RUNNER_TEMP/pr2992-candidate" \
+            --output="$RUNNER_TEMP/pr2992-packaged/candidate" \
+            --variant=candidate \
+            --resources="$GITHUB_WORKSPACE"
+
+      - name: Run packaged PR-head functional checks
+        env:
+          OPEN_SCIENCE_E2E_EXECUTABLE: ${{ runner.temp }}/pr2992-packaged/candidate/mac-arm64/Open-Science.app/Contents/MacOS/Open-Science
+        shell: bash
+        run: |
+          set -euo pipefail
+          node node_modules/@playwright/test/cli.js test \
+            e2e/pr2992-runtime-contract.spec.ts \
+            e2e/pdf-annotations.spec.ts \
+            --workers=1 --retries=0 --reporter=list \
+            --output="$RUNNER_TEMP/pr2992-functional"
+          node node_modules/@playwright/test/cli.js test \
+            e2e/workspace-conversation.spec.ts \
+            --grep='edits and navigates message revisions|keeps Memory reversible' \
+            --workers=1 --retries=0 --reporter=list \
+            --output="$RUNNER_TEMP/pr2992-conversation"
+
+      - name: Check baseline mobile menu parity
+        env:
+          OPEN_SCIENCE_E2E_EXECUTABLE: ${{ runner.temp }}/pr2992-packaged/baseline/mac-arm64/Open-Science.app/Contents/MacOS/Open-Science
+        run: >-
+          node node_modules/@playwright/test/cli.js test
+          e2e/pr2992-runtime-contract.spec.ts
+          --grep='keeps keyboard and mobile'
+          --workers=1 --retries=0 --reporter=list
+          --output=${{ runner.temp }}/pr2992-baseline-functional
+
+      - name: Run frozen three-group ABBA comparison
+        shell: bash
+        run: |
+          set -euo pipefail
+          node scripts/performance/pr2992-compare-packaged.mjs \
+            --plan=scripts/performance/pr2992-final-head-acceptance-plan.json \
+            --baseline="$RUNNER_TEMP/pr2992-packaged/baseline" \
+            --candidate="$RUNNER_TEMP/pr2992-packaged/candidate" \
+            --output="$RUNNER_TEMP/pr2992-comparison" \
+            --groups=3
+
+      - name: Summarize every comparison launch
+        if: always() && steps.build.outcome == 'success'
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ -f "$RUNNER_TEMP/pr2992-comparison/comparison-run.json" ]; then
+            node scripts/performance/pr2992-summarize-packaged.mjs \
+              --input="$RUNNER_TEMP/pr2992-comparison/comparison-run.json"
+          fi
+
+      - name: Upload acceptance evidence
+        if: always()
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
+        with:
+          name: pr2992-remote-acceptance-${{ github.run_id }}-${{ github.run_attempt }}
+          path: |
+            ${{ runner.temp }}/pr2992-packaged/baseline/build-manifest.json
+            ${{ runner.temp }}/pr2992-packaged/baseline/source-hashes.json
+            ${{ runner.temp }}/pr2992-packaged/candidate/build-manifest.json
+            ${{ runner.temp }}/pr2992-packaged/candidate/source-hashes.json
+            ${{ runner.temp }}/pr2992-comparison/
+            ${{ runner.temp }}/pr2992-functional/
+            ${{ runner.temp }}/pr2992-conversation/
+            ${{ runner.temp }}/pr2992-baseline-functional/
+          if-no-files-found: warn
+          retention-days: 7

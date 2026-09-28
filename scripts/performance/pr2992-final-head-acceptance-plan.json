@@ -1,0 +1,32 @@
+{
+  "baselineRevision": "62a6e1df0c2633c28840e41ca760b8973f335a14",
+  "candidateRevision": "d244dbca669629ba26ad42e82b6f0776453a6ad9",
+  "lockfileSha256": "108fd769119b30ffd2d6c7f8982f451185ab88fc02ea32a6f2bc4453f1becf89",
+  "expectedProductionFiles": [
+    "src/renderer/src/pages/workspace/ConversationPanel.tsx",
+    "src/renderer/src/pages/workspace/SessionHoverPreview.tsx",
+    "src/renderer/src/pages/workspace/WorkspacePage.tsx",
+    "src/renderer/src/pages/workspace/WorkspaceSidebar.tsx",
+    "src/renderer/src/pages/workspace/use-conversation-submissions.ts"
+  ],
+  "groups": 3,
+  "orderPerGroup": ["baseline", "candidate", "candidate", "baseline"],
+  "independentLaunchesPerVariant": 6,
+  "sessionCounts": [20, 100, 500],
+  "primaryMetric": "session switch click to matching content at next renderer RAF, median of six switches per independent launch",
+  "retainIf": {
+    "sessionCount": 500,
+    "minimumRelativeImprovement": 0.2,
+    "minimumAbsoluteImprovementMs": 20
+  },
+  "regressionGate": {
+    "sessionCounts": [20, 100],
+    "minimumRelativeSlowdown": 0.05,
+    "minimumAbsoluteSlowdownMs": 5,
+    "requiresRepeatedDirection": true,
+    "newRepeatedInteractionLongTaskMs": 50,
+    "inputFrameBudgetMs": 16.7
+  },
+  "retentionRule": "Reject confirmed functional regressions, repeated ordinary-load slowdown above both gates, or new repeated >50 ms interaction long tasks. Retain only if 500-session primary gain exceeds both thresholds. Diagnose repeated long tasks before deciding. Preserve every failed and anomalous launch.",
+  "measurementMethod": "Three ABBA groups, one worker, no retries, separate app process per scenario and isolated profile, visible inactive window, fixed 1280x900 at zoom 1, same logical seed for both packages; compare medians/ranges across six independent launches per arm and direction within each group. Wall and renderer RAF metrics remain separate. Electron runs on a remote macOS runner only."
+}
