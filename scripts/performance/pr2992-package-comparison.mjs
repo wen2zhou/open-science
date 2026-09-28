@@ -116,6 +116,9 @@ await run(process.execPath, [
 ])
 await run('npm', ['run', 'build:web'])
 const config = yaml.load(await readFile(join(source, 'electron-builder.yml'), 'utf8'))
+// Both arms are launched from separate .app paths on one macOS runner. Give each temporary
+// ad-hoc package its own LaunchServices identity so one path cannot capture the other's launch.
+config.appId = `${config.appId}.pr2992.${args.variant}`
 config.directories.output = output
 config.files.push('!test-results{,/**/*}', '!playwright-report{,/**/*}', '!.scratch{,/**/*}')
 config.mac.icon = 'build/icon.icns'
@@ -134,6 +137,13 @@ await run(process.execPath, [
   configPath
 ])
 const app = join(output, 'mac-arm64/Open-Science.app')
+const bundleIdentifier = await run(
+  'plutil',
+  ['-extract', 'CFBundleIdentifier', 'raw', join(app, 'Contents/Info.plist')],
+  true
+)
+if (bundleIdentifier !== config.appId)
+  throw new Error(`Unexpected packaged bundle identifier: ${bundleIdentifier}`)
 await run('codesign', ['--verify', '--deep', '--strict', app])
 // Signing validates the container signature, not each ASAR entry's offset/content. A changing
 // input (such as a test log) can corrupt later offsets while the container still signs correctly.
@@ -161,10 +171,11 @@ await writeFile(
     {
       ...identity,
       app,
+      bundleIdentifier,
       verifiedAsarFiles,
       asarSha256: digest(await readFile(join(app, 'Contents/Resources/app.asar'))),
       configuration:
-        'electron-builder production config; local ad-hoc signing, ICNS fallback, test results and scratch logs excluded',
+        'electron-builder production config with comparison-only variant bundle identifier; local ad-hoc signing, ICNS fallback, test results and scratch logs excluded',
       completedAt: new Date().toISOString()
     },
     null,

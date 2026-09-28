@@ -50,6 +50,8 @@ if (
   artifacts.baseline.lockfileSha256 !== artifacts.candidate.lockfileSha256 ||
   artifacts.baseline.lockfileSha256 !== plan.lockfileSha256 ||
   artifacts.baseline.micromambaSha256 !== artifacts.candidate.micromambaSha256 ||
+  artifacts.baseline.bundleIdentifier !== plan.bundleIdentifiers?.baseline ||
+  artifacts.candidate.bundleIdentifier !== plan.bundleIdentifiers?.candidate ||
   JSON.stringify(artifacts.baseline.nativeHashes) !==
     JSON.stringify(artifacts.candidate.nativeHashes)
 )

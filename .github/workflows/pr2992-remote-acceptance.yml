@@ -70,12 +70,29 @@ jobs:
             --variant=candidate \
             --resources="$GITHUB_WORKSPACE"
 
+      - name: Preflight isolated package switching
+        timeout-minutes: 15
+        shell: bash
+        run: |
+          set -euo pipefail
+          variants=(baseline candidate candidate baseline)
+          for index in "${!variants[@]}"; do
+            variant="${variants[$index]}"
+            export OPEN_SCIENCE_E2E_EXECUTABLE="$RUNNER_TEMP/pr2992-packaged/$variant/mac-arm64/Open-Science.app/Contents/MacOS/Open-Science"
+            OPEN_SCIENCE_INTERACTION_PROFILE=1 \
+              node node_modules/@playwright/test/cli.js test \
+                e2e/pr2992-interaction-performance.spec.ts \
+                --grep='with 20 sessions' \
+                --workers=1 --retries=0 --reporter=list \
+                --output="$RUNNER_TEMP/pr2992-preflight/$((index + 1))-$variant"
+          done
+
       - name: Run frozen three-group ABBA comparison
         shell: bash
         run: |
           set -euo pipefail
           node scripts/performance/pr2992-compare-packaged.mjs \
-            --plan=scripts/performance/pr2992-final-head-acceptance-plan.json \
+            --plan=scripts/performance/pr2992-final-head-isolated-app-plan.json \
             --baseline="$RUNNER_TEMP/pr2992-packaged/baseline" \
             --candidate="$RUNNER_TEMP/pr2992-packaged/candidate" \
             --output="$RUNNER_TEMP/pr2992-comparison" \
@@ -91,24 +108,6 @@ jobs:
               --input="$RUNNER_TEMP/pr2992-comparison/comparison-run.json"
           fi
 
-      - name: Run packaged PR-head functional checks
-        if: always() && steps.build.outcome == 'success'
-        env:
-          OPEN_SCIENCE_E2E_EXECUTABLE: ${{ runner.temp }}/pr2992-packaged/candidate/mac-arm64/Open-Science.app/Contents/MacOS/Open-Science
-        shell: bash
-        run: |
-          set -euo pipefail
-          node node_modules/@playwright/test/cli.js test \
-            e2e/pr2992-runtime-contract.spec.ts \
-            e2e/pdf-annotations.spec.ts \
-            --workers=1 --retries=0 --reporter=list \
-            --output="$RUNNER_TEMP/pr2992-functional"
-          node node_modules/@playwright/test/cli.js test \
-            e2e/workspace-conversation.spec.ts \
-            --grep='edits and navigates message revisions|keeps Memory reversible' \
-            --workers=1 --retries=0 --reporter=list \
-            --output="$RUNNER_TEMP/pr2992-conversation"
-
       - name: Upload acceptance evidence
         if: always()
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v7
@@ -119,8 +118,7 @@ jobs:
             ${{ runner.temp }}/pr2992-packaged/baseline/source-hashes.json
             ${{ runner.temp }}/pr2992-packaged/candidate/build-manifest.json
             ${{ runner.temp }}/pr2992-packaged/candidate/source-hashes.json
+            ${{ runner.temp }}/pr2992-preflight/
             ${{ runner.temp }}/pr2992-comparison/
-            ${{ runner.temp }}/pr2992-functional/
-            ${{ runner.temp }}/pr2992-conversation/
           if-no-files-found: warn
           retention-days: 7
