@@ -161,7 +161,10 @@ const byVariant = Object.fromEntries(
           unfinished: variantRuns.filter((run) => !['passed', 'failed'].includes(run.status)).length
         },
         interaction: Object.fromEntries(
-          [20, 100, 500].map((count) => [count, interactionAggregate(variantRuns, `interaction:${count}`)])
+          [20, 100, 500].map((count) => [
+            count,
+            interactionAggregate(variantRuns, `interaction:${count}`)
+          ])
         )
       }
     ]

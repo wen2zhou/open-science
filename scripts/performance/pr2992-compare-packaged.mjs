@@ -60,7 +60,9 @@ const baselineSource = JSON.parse(
 const candidateSource = JSON.parse(
   await readFile(resolve(args.candidate, 'source-hashes.json'), 'utf8')
 )
-const sourceChanges = [...new Set([...Object.keys(baselineSource), ...Object.keys(candidateSource)])]
+const sourceChanges = [
+  ...new Set([...Object.keys(baselineSource), ...Object.keys(candidateSource)])
+]
   .filter((path) => baselineSource[path] !== candidateSource[path])
   .sort()
 if (JSON.stringify(sourceChanges) !== JSON.stringify([...plan.expectedProductionFiles].sort()))

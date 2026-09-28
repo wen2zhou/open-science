@@ -16,7 +16,7 @@ for (const sessionCount of [20, 100, 500]) {
     app
   }, testInfo) => {
     test.setTimeout(240_000)
-    let page = await app.completeOnboarding()
+    const page = await app.completeOnboarding()
     await app.showMainWindowInactive()
     await page.emulateMedia({ reducedMotion: 'no-preference' })
     const cwd = await app.createTestDirectory('interaction-profile')

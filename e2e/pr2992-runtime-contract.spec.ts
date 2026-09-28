@@ -1,9 +1,11 @@
-import { expect } from '@playwright/test'
+import { expect, type Locator } from '@playwright/test'
 import { test } from './fixtures/electron-app'
 
 test.use({ windowMode: 'hidden' })
 
-test('preserves A/B drafts while resetting message editing and keeping session hover scoped', async ({ app }, testInfo) => {
+test('preserves A/B drafts while resetting message editing and keeping session hover scoped', async ({
+  app
+}, testInfo) => {
   test.setTimeout(180_000)
   await app.completeOnboarding()
   const page = await app.configureFakeAgent()
@@ -26,7 +28,8 @@ test('preserves A/B drafts while resetting message editing and keeping session h
     await expect.poll(() => page.evaluate(() => window.api.storage.detectActive())).toEqual([])
     if (index === 0) await page.getByRole('button', { name: 'New', exact: true }).click()
   }
-  const row = (title: string) => page.locator('[data-slot="session-open-button"]').filter({ hasText: title })
+  const row = (title: string): Locator =>
+    page.locator('[data-slot="session-open-button"]').filter({ hasText: title })
   const alpha = row(prompts[0])
   const beta = row(prompts[1])
   await alpha.click()
@@ -52,7 +55,9 @@ test('preserves A/B drafts while resetting message editing and keeping session h
   await preview.getByRole('textbox', { name: 'Session title' }).fill('Unsaved alpha rename')
   await beta.hover()
   await expect(preview).toHaveAttribute('aria-label', prompts[0])
-  await expect(preview.getByRole('textbox', { name: 'Session title' })).toHaveValue('Unsaved alpha rename')
+  await expect(preview.getByRole('textbox', { name: 'Session title' })).toHaveValue(
+    'Unsaved alpha rename'
+  )
   await preview.getByRole('textbox', { name: 'Session title' }).press('Escape')
   // Focus remains inside the title card after Escape, so the preview is intentionally
   // protected until a navigation action moves focus away.
@@ -75,7 +80,9 @@ test('preserves A/B drafts while resetting message editing and keeping session h
   await page.screenshot({ path: testInfo.outputPath('alpha-restored.png') })
 })
 
-test('keeps keyboard and mobile session menus usable without stealing desktop focus', async ({ app }, testInfo) => {
+test('keeps keyboard and mobile session menus usable without stealing desktop focus', async ({
+  app
+}, testInfo) => {
   test.setTimeout(120_000)
   await app.completeOnboarding()
   const page = await app.configureFakeAgent()
