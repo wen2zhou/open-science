@@ -95,6 +95,16 @@ const collectRegistrations = (source: string, filename: string): string[] => {
 const digest = (value: unknown): string =>
   createHash('sha256').update(JSON.stringify(value)).digest('hex')
 const tools = notebookRpcToolsForEnvironment({ memoryTools: true, wslSetupTools: true })
+const automaticSourceFingerprints = (read = readSource): Record<string, string> => {
+  const files = [
+    ...new Set(
+      Object.entries(registrations)
+        .filter(([, mode]) => mode !== 'legacy')
+        .map(([key]) => key.slice(0, key.indexOf(':')))
+    )
+  ]
+  return Object.fromEntries(files.sort().map((file) => [file, digest(read(join(mainRoot, file)))]))
+}
 
 describe('Auto operation completeness against real tool registrations', () => {
   it('requires an explicit Auto disposition for every actual app tool', () => {
@@ -124,16 +134,7 @@ describe('Auto operation completeness against real tool registrations', () => {
     // Update these fingerprints only after reviewing the new parameter/handler branches against
     // the operation classifier and its positive/negative tests. Whole-source hashes intentionally
     // err toward extra review; they cannot silently bless a newly added side-effect branch.
-    const automaticFiles = [
-      ...new Set(
-        Object.entries(registrations)
-          .filter(([key, mode]) => mode !== 'legacy' && !key.startsWith('notebook/'))
-          .map(([key]) => key.slice(0, key.indexOf(':')))
-      )
-    ]
-    const definitions = Object.fromEntries(
-      automaticFiles.sort().map((file) => [file, digest(readSource(join(mainRoot, file)))])
-    )
+    const definitions = automaticSourceFingerprints()
     const notebookSchemas = Object.fromEntries(
       tools
         .filter((tool) => notebookOperations[tool.name] !== 'legacy')
@@ -152,6 +153,26 @@ describe('Auto operation completeness against real tool registrations', () => {
       activityDeclaration: digest(readSource(join(mainRoot, '../shared/activity-groups.ts')))
     }
     expect({ definitions, notebookSchemas, sharedContracts }).toMatchSnapshot()
+  })
+
+  it('detects a permission-relevant Notebook callback change without a schema change', () => {
+    const path = join(mainRoot, 'notebook/mcp-server.ts')
+    const original = readSource(path)
+    const branch = 'const rpcMethod = definition.resolveMethod?.(input) ?? definition.method'
+    expect(original).toContain(branch)
+    const changed = original.replace(
+      branch,
+      `const rpcMethod = asRecord(input)?.name === 'analysis' ? 'executeShell' :
+        (definition.resolveMethod?.(input) ?? definition.method)`
+    )
+    // Same registered tools, same exported schemas and resolveMethod; only the callback changed.
+    expect(collectRegistrations(changed, path)).toEqual(collectRegistrations(original, path))
+    const reviewed = automaticSourceFingerprints()
+    const mutated = automaticSourceFingerprints((file) =>
+      file === path ? changed : readSource(file)
+    )
+    expect(mutated).not.toEqual(reviewed)
+    expect(mutated['notebook/mcp-server.ts']).not.toBe(reviewed['notebook/mcp-server.ts'])
   })
 
   it('detects an unmapped operation added to an automatic tool schema', () => {

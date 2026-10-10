@@ -2,6 +2,7 @@ import type { RequestPermissionRequest } from '@agentclientprotocol/sdk'
 import { describe, expect, it, vi } from 'vitest'
 import { modelFacingAppMcpToolName } from '../agent-framework/app-mcp-names'
 import { codexFramework } from '../agent-framework'
+import { resolveCategoryKey } from './permission-broker'
 import { AcpPermissionContext } from './permission-context'
 import { resolveAutomaticPermission, trustedMcpToolIdentity } from './permission-policy'
 
@@ -91,8 +92,13 @@ describe.each(['claude-code', 'codebuddy', 'opencode', 'codex'] as const)(
             restoreContext
           )
           const restored = await context.restoreToolCall(request, restoreContext)
-          expect(trustedMcpToolIdentity(restored!)).toBe(`${server}/${tool}`)
-          expect(restored?.toolCall.rawInput).toEqual(input)
+          if (framework === 'codebuddy') {
+            expect(trustedMcpToolIdentity(restored!)).toBeUndefined()
+            expect(restored?.toolCall).toBe(request.toolCall)
+          } else {
+            expect(trustedMcpToolIdentity(restored!)).toBe(`${server}/${tool}`)
+            expect(restored?.toolCall.rawInput).toEqual(input)
+          }
           expect(restored?.options).toEqual(request.options)
           for (const autoReviewStrategy of ['native', 'conservative'] as const) {
             const policy = {
@@ -159,14 +165,20 @@ describe.each(['claude-code', 'codebuddy', 'opencode', 'codex'] as const)(
           },
           restoreContext
         )
-        expect(
-          trustedMcpToolIdentity((await context.restoreToolCall(request, restoreContext))!)
-        ).toBeUndefined()
+        request.options = [{ optionId: 'once', name: 'Once', kind: 'allow_once' }]
+        const policy = {
+          profile: 'auto' as const,
+          frameworkId: framework,
+          mcpServerNames: [server]
+        }
+        const wrongCall = (await context.restoreToolCall(request, restoreContext))!
+        expect(trustedMcpToolIdentity(wrongCall)).toBeUndefined()
+        expect(resolveAutomaticPermission(wrongCall, policy)).toBeUndefined()
         context.clearCorrelationsForSession('session')
         request.toolCall.toolCallId = 'call'
-        expect(
-          trustedMcpToolIdentity((await context.restoreToolCall(request, restoreContext))!)
-        ).toBeUndefined()
+        const cleared = (await context.restoreToolCall(request, restoreContext))!
+        expect(trustedMcpToolIdentity(cleared)).toBeUndefined()
+        expect(resolveAutomaticPermission(cleared, policy)).toBeUndefined()
       } finally {
         context.dispose()
       }
@@ -213,3 +225,61 @@ it.each([
     context.dispose()
   }
 })
+
+it.each(['list', 'create', 'remove'] as const)(
+  'keeps CodeBuddy %s grant identity unchanged while Auto uses verified arguments',
+  async (action) => {
+    const context = new AcpPermissionContext({ emitPermissionRequest: vi.fn(), routing })
+    const server = 'open-science-notebook'
+    const title = modelFacingAppMcpToolName('codebuddy', server, 'manage_environments')
+    const input = { action, name: 'analysis', language: 'python' }
+    const request: RequestPermissionRequest = {
+      sessionId: 'session',
+      toolCall: { toolCallId: 'call', title, kind: 'other' },
+      options: [{ optionId: 'once', name: 'Once', kind: 'allow_once' }]
+    }
+    const restoreContext = {
+      sessionId: 'session',
+      framework: 'codebuddy' as const,
+      mcpServerNames: [server],
+      isCancelled: () => false
+    }
+    try {
+      context.observeToolCall(
+        {
+          sessionId: 'session',
+          update: {
+            sessionUpdate: 'tool_call',
+            toolCallId: 'call',
+            title,
+            kind: 'other',
+            status: 'pending',
+            rawInput: input,
+            _meta: { toolName: title }
+          }
+        },
+        restoreContext
+      )
+      const restored = (await context.restoreToolCall(request, restoreContext))!
+      expect(restored.toolCall).toBe(request.toolCall)
+      expect(trustedMcpToolIdentity(restored)).toBeUndefined()
+      // The actual durable-grant categorizer must still refuse a title-only identity.
+      expect(resolveCategoryKey(request, [server], false)).toBeUndefined()
+      expect(resolveCategoryKey(restored, [server], false)).toBeUndefined()
+      for (const profile of ['ask', 'auto', 'full'] as const) {
+        expect(
+          resolveAutomaticPermission(restored, {
+            profile,
+            frameworkId: 'codebuddy',
+            mcpServerNames: [server],
+            autoReviewStrategy: 'conservative'
+          })
+        ).toBe(profile === 'full' || (profile === 'auto' && action === 'list') ? 'once' : undefined)
+      }
+      // Correlation is one-use and cannot promote the subsequent request to a durable identity.
+      expect(await context.restoreToolCall(request, restoreContext)).toBe(request)
+    } finally {
+      context.dispose()
+    }
+  }
+)
