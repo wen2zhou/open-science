@@ -34,6 +34,7 @@ import {
   type RestoredPermissionContinuation
 } from './permission-broker'
 import type { PermissionPolicyContext } from './permission-policy'
+import { APP_AUTO_OPERATION_IDENTITIES } from './auto-operation-policy'
 import {
   isNativeWebFetchCandidate,
   isNativeWebSearchCandidate,
@@ -1092,6 +1093,16 @@ class AcpPermissionContext {
     }
     if (framework === 'claude-code') {
       return this.restoreClaudeCodeMcpToolInput(params, sessionId, mcpServerNames)
+    }
+    if (framework === 'codebuddy') {
+      // Repair identity correlation only for this Auto change. Restoring unrelated CodeBuddy
+      // metadata would also change existing automatic rules and remembered-grant matching.
+      const identity = this.claudeCodeMcpToolInputs
+        .get(sessionId)
+        ?.get(params.toolCall.toolCallId)?.mcpIdentity
+      return identity && APP_AUTO_OPERATION_IDENTITIES.has(identity)
+        ? this.restoreClaudeCodeMcpToolInput(params, sessionId, mcpServerNames)
+        : params
     }
     if (framework === 'opencode') {
       if (this.isOpenCodeRequestCancelled(sessionId, params.toolCall.toolCallId, context)) {

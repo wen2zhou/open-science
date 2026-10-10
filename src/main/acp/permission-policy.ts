@@ -14,6 +14,11 @@ import {
 } from '../../shared/activity-groups'
 import { extractProviderToolName } from './runtime-events'
 import {
+  APP_AUTO_OPERATION_IDENTITIES,
+  classifyAppAutoOperation,
+  type AutoOperationDecision
+} from './auto-operation-policy'
+import {
   appMcpServerAliases,
   canonicalAppMcpServerName,
   resolveCanonicalMcpToolIdentity
@@ -143,7 +148,9 @@ const isMcpTool = (
   const providerToolName = extractProviderToolName(toolCall)
 
   return (
-    isMcpToolName(toolCall.title, mcpServerNames) || isMcpToolName(providerToolName, mcpServerNames)
+    trustedMcpToolIdentity(params) != null ||
+    isMcpToolName(toolCall.title, mcpServerNames) ||
+    isMcpToolName(providerToolName, mcpServerNames)
   )
 }
 
@@ -330,7 +337,7 @@ const isAppInteractionTool = (
 // user's explicit, dialog-confirmed choice, so it auto-approves everything (for frameworks that delegate
 // permissions rather than bypassing natively — a native-bypass agent sends no requests here at all).
 // Otherwise, only native-less 'auto' conservatively approves workspace-contained low-risk operations.
-const resolveAutomaticPermissionReason = (
+const resolveLegacyAutomaticPermissionReason = (
   params: RequestPermissionRequest,
   context: PermissionPolicyContext | undefined
 ): string | undefined => {
@@ -386,6 +393,32 @@ const resolveAutomaticPermissionReason = (
   return 'conservative_auto'
 }
 
+// All automatic classifications share this entry. Existing cross-profile exceptions retain their
+// original precedence and semantics; the new operation rules apply only to trusted Auto requests.
+const resolveAutoOperation = (
+  params: RequestPermissionRequest,
+  context: PermissionPolicyContext | undefined
+): AutoOperationDecision => {
+  const identity = trustedMcpToolIdentity(params)
+  if (context?.profile === 'auto' && identity && APP_AUTO_OPERATION_IDENTITIES.has(identity)) {
+    if (!context.mcpServerNames?.map(canonicalAppMcpServerName).includes(identity.split('/')[0])) {
+      return { kind: 'legacy' }
+    }
+    return classifyAppAutoOperation(identity, params.toolCall.rawInput)
+  }
+  const reason = resolveLegacyAutomaticPermissionReason(params, context)
+  if (!reason) return { kind: 'legacy' }
+  return { kind: reason === 'app_interaction' ? 'inner_authorization' : 'allow_once', reason }
+}
+
+const resolveAutomaticPermissionReason = (
+  params: RequestPermissionRequest,
+  context: PermissionPolicyContext | undefined
+): string | undefined => {
+  const operation = resolveAutoOperation(params, context)
+  return operation.kind === 'legacy' ? undefined : operation.reason
+}
+
 const resolveAutomaticPermission = (
   params: RequestPermissionRequest,
   context: PermissionPolicyContext | undefined
@@ -404,6 +437,7 @@ const isManagedSkillPermission = (
 export {
   isManagedSkillPermission,
   resolveAutomaticPermissionReason,
+  resolveAutoOperation,
   LIBRARY_AUTO_TOOL_IDENTITIES,
   isNativeWebSearchCandidate,
   isNativeWebSearchPermission,

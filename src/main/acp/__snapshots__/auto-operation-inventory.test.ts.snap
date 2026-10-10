@@ -1,0 +1,24 @@
+// Vitest Snapshot v1, https://vitest.dev/guide/snapshot.html
+
+exports[`Auto operation completeness against real tool registrations > requires review when automatically handled schemas or handler branches change 1`] = `
+{
+  "definitions": {
+    "artifacts/mcp-server.ts": "6b43e2b69387c7310dee65d97674b94e608a349f987ef90d7dd5cee7ff675c7f",
+    "literature/library-mcp-server.ts": "f67afa11e9d035610ef4a863424cbfd4504dd3444808803b993989f32caa84d2",
+    "literature/mcp-server.ts": "d7baeae460b294940d198e2a16f701c399b7630da945f31226260f19decdae72",
+    "session-plan/plan-mcp-server.ts": "9a98aecaaca3fd1908942006132eeb24b8bb3a8f5a284dfcaac1eaacefa1dd94",
+    "skills/mcp-server.ts": "65e6e7632855c2799a8f58cd6292777b2eb50779170148bd3c6fdd0f1e257edc",
+  },
+  "notebookSchemas": {
+    "ask_user_question": "f4a3e6c178ec5dc5fbbd9ef256a046f32565a58be8bc8fa263a9e642e789002a",
+    "background_run": "4198921bb3f61261431524f7e57c92d8713bfe5db49c360a30b66b3cc4e027fd",
+    "manage_environments": "15d33c6e75c14aaddad62bc062f714238ae7c87ab08976d77efd1f77e8641675",
+    "request_network_access": "6b5a49d73cc704691da193510764101bc5577b48bb7c0fa8bf99f1b29b500f95",
+  },
+  "sharedContracts": {
+    "activityDeclaration": "1739b6cfadd2912aa53f4d11bf69d908da37d5f822476a998b928e9de7ddffdc",
+    "planSchema": "16f6ba38e7ae9320c2fb9d1a215592c11ada256781882e5e3f16336eb303cfb7",
+    "planValidation": "0b1349725044d30d8cd9518e5891a237ff11cfde31c9f613b3550bdb37463414",
+  },
+}
+`;
