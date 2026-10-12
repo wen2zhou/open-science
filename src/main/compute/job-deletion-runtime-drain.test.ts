@@ -2,11 +2,8 @@ import { spawnSync } from 'node:child_process'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
-import {
-  createComputeExecution,
-  type ComputeConnectionLease,
-  type ComputeHostRepository
-} from '@aipoch/compute/node'
+import { createComputeExecution, type ComputeConnectionLease } from '@aipoch/compute/node'
+import type { ComputeHostRepository } from '@aipoch/compute'
 import { createProjectDbClient, migrateApplicationDatabase } from '../projects/prisma-client'
 import { ComputeJobRepository } from './job-repository'
 import { describe, expect, it, vi } from 'vitest'
@@ -77,7 +74,25 @@ describe('persisted pre-launch owner cleanup', () => {
         const owner = createComputeExecution().createDeletionOwner({
           jobRepository: repository,
           queueManager,
-          hostRepository: { get: async () => ({ scratchRoot: root }) } as ComputeHostRepository,
+          hostRepository: {
+            get: async () => ({
+              id: 'host-1',
+              providerId: 'ssh:cluster',
+              displayName: 'Cluster',
+              shape: 'direct_ssh',
+              sshAlias: 'cluster',
+              sshOverrides: undefined,
+              concurrencyLimit: undefined,
+              probeResult: undefined,
+              detailsUpdatedAt: undefined,
+              detailsUpdatedBy: undefined,
+              scratchRoot: root,
+              scratchPinned: false,
+              detailsDoc: '',
+              createdAt: 1,
+              updatedAt: 1
+            })
+          } satisfies Pick<ComputeHostRepository, 'get'>,
           connectionBroker: {
             acquire: async () =>
               ({
@@ -95,8 +110,16 @@ describe('persisted pre-launch owner cleanup', () => {
                     truncated: false,
                     timedOut: false
                   }
-                }
-              }) as ComputeConnectionLease
+                },
+                upload: async () => undefined,
+                download: async () => ({
+                  exitCode: 0,
+                  stderr: '',
+                  timedOut: false,
+                  bytesWritten: 0,
+                  exceeded: false
+                })
+              }) satisfies ComputeConnectionLease
           }
         })
         await owner.prepareSessionJobDeletion('project-1', 'session-1')

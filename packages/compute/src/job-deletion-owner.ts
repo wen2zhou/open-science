@@ -1,4 +1,4 @@
-import { ComputeJobLifecycle } from './compute-job-lifecycle'
+import { ComputeJobLifecycle, dispatchMayHaveStarted } from './compute-job-lifecycle'
 import { classifyConnectionFailure, type ComputeConnectionBrokerAcquirer } from './connection'
 import { DispatchTracker } from './dispatch-tracker'
 import {
@@ -577,11 +577,14 @@ class ComputeJobDeletionOwner {
       command: cleanupCommand(
         workdir,
         handle,
-        job.execution_mode !== 'slurm' && job.status === 'submitted' && !handle,
+        job.execution_mode !== 'slurm' &&
+          (job.status === 'submitted' || dispatchMayHaveStarted(job)) &&
+          !handle,
         job.execution_mode !== 'slurm',
         job.status === 'error' &&
           job.error_code === 'dispatch_failed' &&
           !job.remote_handle &&
+          !dispatchMayHaveStarted(job) &&
           job.started_at === undefined
       ),
       ...(isActiveSlurm

@@ -1,4 +1,9 @@
-import { createComputeExecution, createJobCancellation } from '@aipoch/compute/node'
+import {
+  createComputeExecution,
+  createJobCancellation,
+  createSshRunner,
+  resolveSshTarget
+} from '@aipoch/compute/node'
 // RUN_COMPUTE_CANCELLATION=1 COMPUTE_TEST_SSH_ALIAS=hpc-dev npx vitest run src/main/compute/cancellation.real-ssh.integration.test.ts
 import {
   type ComputeConnectionBrokerAcquirer,
@@ -7,10 +12,8 @@ import {
 import { execFile, spawnSync } from 'node:child_process'
 import { randomUUID } from 'node:crypto'
 import { expect, it } from 'vitest'
-import {
-  createMigratedComputeTestDatabase,
-  createRealSshTestBroker
-} from './compute-integration.test-support'
+import { createMigratedComputeTestDatabase } from './compute-integration.test-support'
+import { SshConfigComputeConnectionBroker } from './connection-broker'
 
 import { probeRemoteLaunch, quoteRemotePath, shellSingleQuote } from '@aipoch/compute/node'
 import { dispatchComputeJob as dispatchJob } from './dispatch-evidence'
@@ -54,7 +57,11 @@ it.skipIf(!enabled).each(['running', 'orphaned'] as const)(
     const hosts = new ComputeHostRepository(async () => db.client)
     await hosts.create({ sshAlias: alias, executionMode: 'direct_ssh' })
     const broker: ComputeConnectionBrokerAcquirer = remoteEnabled
-      ? createRealSshTestBroker(hosts)
+      ? new SshConfigComputeConnectionBroker({
+          getHost: (id) => hosts.get(id),
+          runner: createSshRunner(),
+          resolveTarget: (alias, overrides) => resolveSshTarget(alias, overrides)
+        })
       : { acquire: async () => ({ run: localRun }) as ComputeConnectionLease }
     const connection = await broker.acquire(scope.providerId, { intent: 'job_cleanup' })
     const run = (command: string): ReturnType<ComputeConnectionLease['run']> =>

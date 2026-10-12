@@ -3,6 +3,11 @@ import type { ComputeJobOwner, ComputeJobRepository, UpdateJobRequest } from './
 
 export type ComputeJobTransitionResult = { kind: 'applied'; job: ComputeJob } | { kind: 'ignored' }
 
+export const DISPATCH_MAY_HAVE_STARTED = 'dispatch_may_have_started'
+export const dispatchMayHaveStarted = (job: ComputeJob): boolean =>
+  job.last_poll_error === DISPATCH_MAY_HAVE_STARTED ||
+  job.last_poll_error?.startsWith(`${DISPATCH_MAY_HAVE_STARTED}: `) === true
+
 type ActiveJobStatus = Extract<ComputeJobStatus, 'submitted' | 'running'>
 type PollTails = { stdoutTail: string | null; stderrTail: string | null }
 type PolledJobFinish = PollTails & {
@@ -36,6 +41,12 @@ export class ComputeJobLifecycle {
     })
   }
 
+  async beginRemoteDispatch(jobId: string): Promise<ComputeJobTransitionResult> {
+    // Persist before sending a command that may launch. Absence of a PID after a lost response
+    // cannot prove that launch never happened, including after a process restart.
+    return this.apply(jobId, ['submitted'], { lastPollError: DISPATCH_MAY_HAVE_STARTED })
+  }
+
   async dispatchRunning(
     jobId: string,
     remoteHandle: string,
@@ -44,6 +55,7 @@ export class ComputeJobLifecycle {
   ): Promise<ComputeJobTransitionResult> {
     return this.apply(jobId, ['submitted'], {
       status: 'running',
+      lastPollError: null,
       remoteHandle,
       startedAt,
       ...(remoteWorkdir === undefined ? {} : { remoteWorkdir })
@@ -73,11 +85,20 @@ export class ComputeJobLifecycle {
 
   async dispatchError(
     jobId: string,
-    failure: { errorCode: string; stderrTail?: string }
+    failure: { errorCode: string; stderrTail?: string; definitelyNotStarted?: boolean }
   ): Promise<ComputeJobTransitionResult> {
+    const current = await this.repository.get(jobId)
+    if (current && dispatchMayHaveStarted(current) && !failure.definitelyNotStarted) {
+      return this.recordPollError(
+        jobId,
+        'submitted',
+        `dispatch_recovery_pending: ${failure.errorCode}`
+      )
+    }
     return this.apply(jobId, ['submitted'], {
       status: 'error',
       errorCode: failure.errorCode,
+      lastPollError: null,
       ...(failure.stderrTail === undefined ? {} : { stderrTail: failure.stderrTail }),
       finishedAt: new Date()
     })
@@ -137,8 +158,13 @@ export class ComputeJobLifecycle {
     message: string,
     retryAfterUserAction = true
   ): Promise<ComputeJobTransitionResult> {
+    const current = observedStatus === 'submitted' ? await this.repository.get(jobId) : null
+    const diagnostic =
+      current && dispatchMayHaveStarted(current)
+        ? `${DISPATCH_MAY_HAVE_STARTED}: ${message}`
+        : message
     return this.apply(jobId, [observedStatus], {
-      lastPollError: message,
+      lastPollError: diagnostic,
       retryAfterUserAction
     })
   }

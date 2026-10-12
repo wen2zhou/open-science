@@ -94,6 +94,7 @@ it('keeps lifecycle state ownership behind the narrow intent interface', () => {
     [
       'abortOwnerDeletion',
       'beginOwnerDeletion',
+      'beginRemoteDispatch',
       'deleteOwnerRows',
       'dispatchError',
       'dispatchRunning',
@@ -112,6 +113,7 @@ it('keeps lifecycle state ownership behind the narrow intent interface', () => {
       'abortOwnerDeletion',
       'beginOwnerDeletion',
       'deleteByOwner',
+      'get',
       'recordCancellationHandle',
       'updateIfStatus'
     ].sort()

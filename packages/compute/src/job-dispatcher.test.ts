@@ -359,6 +359,7 @@ describe('dispatchJob', () => {
     expect(transition).toHaveBeenCalledWith('job-1', ['submitted'], {
       status: 'error',
       errorCode: 'authentication_failed',
+      lastPollError: null,
       stderrTail: 'Authentication failed. Verify the username and password.',
       finishedAt: expect.any(Date)
     })
@@ -391,7 +392,7 @@ describe('dispatchJob', () => {
         ['submitted'],
         expect.objectContaining({ status: 'running' })
       )
-      const updateCall = transition.mock.calls[0]![2]
+      const updateCall = transition.mock.calls.find((call) => call[2].status === 'running')![2]
       expect(updateCall).toHaveProperty('remoteHandle')
       const handle = JSON.parse(updateCall.remoteHandle as string)
       expect(handle.pid).toBe(12345)
@@ -436,9 +437,7 @@ describe('dispatchJob', () => {
       'job-1',
       ['submitted'],
       expect.objectContaining({
-        status: 'error',
-        errorCode: 'dispatch_failed',
-        stderrTail: 'Could not read pid from dispatch output: "not-a-pid [redacted]"'
+        lastPollError: 'Could not read pid from dispatch output: "not-a-pid [redacted]"'
       })
     )
     expect(JSON.stringify(transition.mock.calls)).not.toContain(secret)
@@ -893,16 +892,15 @@ describe('post-launch shell failures', () => {
       const { repo, transition } = makeJobRepo(job)
       transition.mockResolvedValue(null)
       const onJobUpdated = vi.fn()
+      const runner = makeSshRunner({
+        exitCode: 73,
+        stdout: 'OPEN_SCIENCE_DISPATCH_PRE_LAUNCH_FAILED_V1',
+        stderr: '',
+        timedOut: false,
+        truncated: false
+      })
       await execution.dispatchJob(job.job_id, {
-        connectionBroker: brokerFromRunners(
-          makeSshRunner({
-            exitCode: 73,
-            stdout: 'OPEN_SCIENCE_DISPATCH_PRE_LAUNCH_FAILED_V1',
-            stderr: '',
-            timedOut: false,
-            truncated: false
-          })
-        ),
+        connectionBroker: brokerFromRunners(runner),
         hostRepository: makeHostRepo(sampleHost()) as ComputeHostRepository,
         jobRepository: repo as ComputeJobRepository,
         onJobUpdated
@@ -910,8 +908,9 @@ describe('post-launch shell failures', () => {
       expect(transition).toHaveBeenCalledWith(
         'job-1',
         ['submitted'],
-        expect.objectContaining({ status: 'error' })
+        expect.objectContaining({ lastPollError: 'dispatch_may_have_started' })
       )
+      expect(runner.run).not.toHaveBeenCalled()
       expect(onJobUpdated).not.toHaveBeenCalled()
       expect(execution.isDispatching(job.job_id)).toBe(false)
     }
@@ -993,4 +992,89 @@ describe('ambiguous post-launch recovery', () => {
     expect(readFileSync(join(root, 'blocked'), 'utf8')).toBe('sentinel')
     expect(existsSync(join(root, 'command.sh'))).toBe(false)
   })
+})
+
+describe('durable uncertain launch recovery', () => {
+  it.each(['pending', 'not_started'] as const)(
+    'keeps %s launches recoverable across polling, unavailable host, and a new execution scope',
+    async (observation) => {
+      let current = makeJob()
+      const updateIfStatus = vi.fn(
+        async (
+          _id: string,
+          statuses: readonly string[],
+          updates: import('./ports').UpdateJobRequest
+        ) => {
+          if (!statuses.includes(current.status)) return null
+          current = {
+            ...current,
+            status: updates.status ?? current.status,
+            last_poll_error:
+              updates.lastPollError === null
+                ? undefined
+                : (updates.lastPollError ?? current.last_poll_error),
+            error_code:
+              updates.errorCode === null ? undefined : (updates.errorCode ?? current.error_code),
+            remote_handle: updates.remoteHandle ?? current.remote_handle,
+            exit_code: updates.exitCode ?? current.exit_code
+          }
+          return structuredClone(current)
+        }
+      )
+      const repository = {
+        get: async () => structuredClone(current),
+        updateIfStatus,
+        findNonTerminal: async () =>
+          ['submitted', 'running'].includes(current.status) ? [structuredClone(current)] : [],
+        findTerminalUnharvested: async () => [],
+        findNotificationReadyUnnotified: async () => []
+      } as unknown as ComputeJobRepository
+      let phase: 'dispatch' | 'recover' | 'unavailable' | 'exited' = 'dispatch'
+      const runner: SshRunner = {
+        run: vi.fn(async () => {
+          if (phase === 'dispatch') {
+            phase = 'recover'
+            return { exitCode: 74, stdout: '', stderr: '', timedOut: false, truncated: false }
+          }
+          if (phase === 'unavailable') throw new ComputeConnectionError('host_unreachable')
+          return {
+            exitCode: 0,
+            stdout: [
+              'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+              `workdir:${observation === 'pending' || phase === 'exited' ? 1 : 0}`,
+              `exit_code:${phase === 'exited' ? 0 : ''}`,
+              'pid:',
+              'cwd_match:0'
+            ].join('\n'),
+            stderr: '',
+            timedOut: false,
+            truncated: false
+          }
+        })
+      }
+      const deps = {
+        connectionBroker: brokerFromRunners(runner),
+        hostRepository: makeHostRepo(sampleHost()) as ComputeHostRepository,
+        jobRepository: repository
+      }
+      const execution = createComputeExecution()
+      await execution.dispatchJob(current.job_id, deps)
+      const poller = execution.createPoller(deps)
+      await poller.tick()
+      await poller.tick()
+      expect(current.status).toBe('submitted')
+      phase = 'unavailable'
+      await poller.tick()
+      expect(current.last_poll_error).toContain('host_unreachable')
+      phase = 'recover'
+      const restartedPoller = createComputeExecution().createPoller(deps)
+      for (let attempt = 0; attempt < 3; attempt++) await restartedPoller.tick()
+      expect(current.status).toBe('submitted')
+      expect(current.error_code).toBeUndefined()
+      phase = 'exited'
+      await restartedPoller.tick()
+      expect(current.status).toBe('success')
+      expect(current.exit_code).toBe(0)
+    }
+  )
 })

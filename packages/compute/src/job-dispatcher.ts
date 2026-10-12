@@ -163,12 +163,20 @@ export async function dispatchJob(jobId: string, deps: DispatcherDeps): Promise<
           await lifecycle.recordPollError(jobId, 'submitted', error.message, false)
           return
         }
-        await lifecycle.dispatchError(jobId, { errorCode: error.code, stderrTail: error.message })
+        await lifecycle.dispatchError(jobId, {
+          definitelyNotStarted: true,
+          errorCode: error.code,
+          stderrTail: error.message
+        })
         return
       }
       if (!(error instanceof ComputeConnectionError)) return
       const lifecycle = new ComputeJobLifecycle(deps.jobRepository, deps.onJobUpdated)
-      await lifecycle.dispatchError(jobId, { errorCode: error.code, stderrTail: error.message })
+      await lifecycle.dispatchError(jobId, {
+        definitelyNotStarted: true,
+        errorCode: error.code,
+        stderrTail: error.message
+      })
     }
   } finally {
     try {
@@ -188,7 +196,10 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
 
   const host = await hostRepository.get(job.provider_id)
   if (!host) {
-    await lifecycle.dispatchError(jobId, { errorCode: 'dispatch_failed' })
+    await lifecycle.dispatchError(jobId, {
+      definitelyNotStarted: true,
+      errorCode: 'dispatch_failed'
+    })
     return
   }
 
@@ -202,6 +213,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
         ? { code: err.code, message: err.message }
         : { code: 'host_unreachable', message: 'The Compute Host could not be reached.' }
     await lifecycle.dispatchError(jobId, {
+      definitelyNotStarted: true,
       errorCode: failure.code,
       stderrTail: failure.message
     })
@@ -227,6 +239,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
       )
     } catch {
       await lifecycle.dispatchError(jobId, {
+        definitelyNotStarted: true,
         errorCode: 'dispatch_failed',
         stderrTail: 'Failed to parse inputManifest JSON'
       })
@@ -243,6 +256,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     if (mkdirConnectionFailure) throw mkdirConnectionFailure
     if (mkdirResult.exitCode !== 0) {
       await lifecycle.dispatchError(jobId, {
+        definitelyNotStarted: true,
         errorCode: 'dispatch_failed',
         stderrTail: 'Could not prepare the remote Compute Job directory.'
       })
@@ -255,6 +269,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
       if (err instanceof ComputeConnectionError) throw err
       const msg = err instanceof Error ? err.message : String(err)
       await lifecycle.dispatchError(jobId, {
+        definitelyNotStarted: true,
         errorCode: 'dispatch_failed',
         stderrTail: `Input staging failed: ${msg}`
       })
@@ -296,6 +311,9 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     `echo $LAUNCHED_PID`
   ].join('\n')
 
+  const dispatchAttempt = await lifecycle.beginRemoteDispatch(jobId)
+  if (dispatchAttempt.kind === 'ignored') return
+
   let runResult
   try {
     runResult = await connection.run(dispatchCmd, {
@@ -323,6 +341,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     runResult.stdout.trim() === PRE_LAUNCH_FAILURE
   ) {
     await lifecycle.dispatchError(jobId, {
+      definitelyNotStarted: true,
       errorCode: 'dispatch_failed',
       stderrTail: 'The remote Compute Job launcher failed.'
     })
@@ -430,7 +449,7 @@ const recoverAmbiguousRemoteLaunch = async (
   if (observation.kind === 'not_started' && invalidProtocolOutput !== undefined) {
     const [safeStdout = ''] = await redactConnectionOutputs(connection, [invalidProtocolOutput])
     const stderrTail = `Could not read pid from dispatch output: ${JSON.stringify(safeStdout)}`
-    await lifecycle.dispatchError(job.job_id, { errorCode: 'dispatch_failed', stderrTail })
+    await lifecycle.recordPollError(job.job_id, 'submitted', stderrTail)
     return
   }
   if (observation.kind === 'pending' || observation.kind === 'not_started') {

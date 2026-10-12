@@ -2,9 +2,10 @@
 import {
   createComputeExecution,
   createSshRunner,
+  createScpRunner,
+  resolveSshTarget,
   quoteRemotePath,
   shellSingleQuote,
-  type ComputeConnectionBrokerAcquirer,
   type JobPoller
 } from '@aipoch/compute/node'
 import { computeProviderId, type ComputeJobStatus } from '@aipoch/compute'
@@ -15,10 +16,8 @@ import { afterAll, beforeAll, describe, expect, it } from 'vitest'
 import { configureTestRuntimeMetadata } from '../../../test/runtime-metadata'
 import { ComputeApprovalBroker } from './compute-approval-broker'
 import { ComputeService } from './compute-service'
-import {
-  createMigratedComputeTestDatabase,
-  createRealSshTestBroker
-} from './compute-integration.test-support'
+import { createMigratedComputeTestDatabase } from './compute-integration.test-support'
+import { SshConfigComputeConnectionBroker, type ComputeConnectionBroker } from './connection-broker'
 import { ComputeHostRepository } from './repository'
 
 const RUN = process.env.RUN_COMPUTE_JOBS === '1'
@@ -27,7 +26,11 @@ const describeIf = RUN && ALIAS ? describe : describe.skip
 const MAX_POLL_WAIT_MS = 120_000
 const POLL_PAUSE_MS = 2_000
 
-async function pollUntilTerminal(poller: JobPoller, service: ComputeService, jobId: string) {
+async function pollUntilTerminal(
+  poller: JobPoller,
+  service: ComputeService,
+  jobId: string
+): ReturnType<ComputeService['getJobStatus']> {
   const startMs = Date.now()
   let status = await service.getJobStatus(jobId)
   const terminal: ComputeJobStatus[] = ['success', 'failed', 'timeout', 'error']
@@ -48,7 +51,7 @@ configureTestRuntimeMetadata()
 describeIf('compute-jobs integration (real SSH)', () => {
   let db: Awaited<ReturnType<typeof createMigratedComputeTestDatabase>>
   let hosts: ComputeHostRepository
-  let broker: ReturnType<typeof createRealSshTestBroker>
+  let broker: SshConfigComputeConnectionBroker
   // One live host/database owns one scope, including submission handoffs and polling.
   const execution = createComputeExecution()
   const providerId = computeProviderId(ALIAS)
@@ -60,10 +63,15 @@ describeIf('compute-jobs integration (real SSH)', () => {
     db = await createMigratedComputeTestDatabase('open-science-jobs-int-')
     hosts = new ComputeHostRepository(async () => db.client)
     await hosts.create({ sshAlias: ALIAS, displayName: `test-${ALIAS}` })
-    broker = createRealSshTestBroker(hosts, runner)
+    broker = new SshConfigComputeConnectionBroker({
+      getHost: (id) => hosts.get(id),
+      runner,
+      scpRunner: createScpRunner(),
+      resolveTarget: (alias, overrides) => resolveSshTarget(alias, overrides)
+    })
   })
 
-  async function run(command: string) {
+  async function run(command: string): ReturnType<typeof runner.run> {
     const connection = await broker.acquire(providerId, { intent: 'job_cleanup' })
     return connection.run(command, { timeoutMs: 30_000, loginShell: false })
   }
@@ -92,7 +100,19 @@ for name in os.listdir('/proc'):
     }
   })
 
-  function fixture(approvalId: string, connectionBroker: ComputeConnectionBrokerAcquirer = broker) {
+  function fixture(
+    approvalId: string,
+    connectionBroker: ComputeConnectionBroker = broker
+  ): {
+    service: ComputeService
+    poller: JobPoller
+    submit: (
+      command: string,
+      timeoutSeconds?: number,
+      inputs?: { src: string; dst_filename: string }[],
+      workspaceCwd?: string
+    ) => ReturnType<ComputeService['submitJob']>
+  } {
     const approval = new ComputeApprovalBroker({
       broadcast: () => undefined,
       generateId: () => approvalId,
@@ -129,7 +149,7 @@ for name in os.listdir('/proc'):
       timeoutSeconds = 60,
       inputs?: { src: string; dst_filename: string }[],
       workspaceCwd?: string
-    ) {
+    ): ReturnType<ComputeService['submitJob']> {
       const result = await service.submitJob(
         providerId,
         approvalId,
@@ -155,7 +175,10 @@ for name in os.listdir('/proc'):
     const dispatchGate = new Promise<void>((resolve) => {
       release = resolve
     })
-    const gated: ComputeConnectionBrokerAcquirer = {
+    const gated: ComputeConnectionBroker = {
+      beginHostDeletion: (id) => broker.beginHostDeletion(id),
+      abortHostDeletion: (id) => broker.abortHostDeletion(id),
+      completeHostDeletion: (id) => broker.completeHostDeletion(id),
       acquire: async (id, request) => {
         if (request.intent === 'job_dispatch') {
           entered()
