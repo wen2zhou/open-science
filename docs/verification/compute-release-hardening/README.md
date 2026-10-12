@@ -8,7 +8,8 @@
 - 分支：`codex/compute-release-hardening`。
 - 已验证代码提交：`f901f88a4d439258162f047a20012476749ce38f`。
 - 修复基线：`7bd0e4c6395f2b6cc4ed896bb233641ead79d6d1`。
-- 分支后续交接提交只新增本目录文档/清单。记录拉取时的完整 HEAD；先检查代码提交到 HEAD 的 diff，不能把以后增加的代码修改当成已在 macOS 验证。
+- 分支后续提交除本目录文档/清单，还修改了 Slurm 与密码 SSH 认证夹具。记录拉取时的完整 HEAD；先检查代码提交到 HEAD 的 diff，不能把以后增加的代码修改当成已在 macOS 验证。
+- [2026-10-12 原生 Windows 执行报告](windows-2026-10-12/REPORT.md)：修复了已有 host.compute 夹具漏传 named-pipe 地址的问题；最终宿主仍有符号链接权限阻塞，并保留未定位 receipt 替换不稳定失败记录，不是全绿或发布认证。
 
 可以在新的目录拉取，避免覆盖 Windows 机器上的既有工作：
 
@@ -144,6 +145,7 @@ Invoke-LoggedNative 'impact-tests' 'node' @(
 )
 ```
 
+Windows 实测补充：上面的直接 Node 入口不会自动设置 `npm_execpath`，影响测试中的真实 npm 子命令需要它；`bash` 还可能命中系统 WSL shim。运行影响测试前，在当前 PowerShell 进程中将 `npm_execpath` 指向已安装 npm 的 `node_modules/npm/bin/npm-cli.js`，并把已安装 Git for Windows 的 `bin` 目录放到 `PATH` 首位。先用 `Get-Command bash` 核对为 Git Bash，记录实际路径；不要修改个人配置、使用缺少 `/bin/bash` 的 WSL shim，或把这些环境失败当成测试通过。此次具体值及修复前后完整日志见 Windows 报告。
 沿用仓库规则对实际改动运行 lint/格式检查；若修复 renderer 文案，遵守八语言 i18n 及 guard。保守影响闭包在此前还包含 447 个未跑的广泛传递 consumer，本交接的 157 文件清单不等价于全仓 CI。完整 Windows/GUI 门禁仍以项目规则为准。
 
 遇到失败先保留日志，再诊断。仅补齐忽略的环境产物时，记录来源并在同 SHA 重跑失败所属完整组；代码修复则记录新提交并重跑受影响门禁。不要用旧候选、单案例复跑或没有发现文件的空运行覆盖失败组。不要无限重试抹掉不稳定结果。
