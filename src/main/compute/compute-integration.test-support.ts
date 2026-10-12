@@ -1,3 +1,11 @@
+import {
+  createScpRunner,
+  createSshRunner,
+  resolveSshTarget,
+  type SshRunner
+} from '@aipoch/compute/node'
+import { SshConfigComputeConnectionBroker } from './connection-broker'
+import type { ComputeHostRepository } from './repository'
 import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -50,3 +58,16 @@ export const createMigratedComputeTestDatabase = async (
     }
   }
 }
+
+// Real transport, with no desktop-owned multiplexing directory. A private ssh/scp PATH wrapper
+// can select an isolated -F config without modifying the user's SSH configuration.
+export const createRealSshTestBroker = (
+  hosts: ComputeHostRepository,
+  runner: SshRunner = createSshRunner()
+): SshConfigComputeConnectionBroker =>
+  new SshConfigComputeConnectionBroker({
+    getHost: (providerId) => hosts.get(providerId),
+    runner,
+    scpRunner: createScpRunner(),
+    resolveTarget: (alias, overrides) => resolveSshTarget(alias, overrides)
+  })

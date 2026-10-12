@@ -9,6 +9,7 @@ import type { ComputeJob } from './model'
 import type { ComputeHostRepository, ComputeJobRepository } from './ports'
 import type { ResolvedSshTarget, SshRunner } from './ssh-runner'
 
+import { createComputeExecution } from './execution'
 import { DispatchTracker } from './dispatch-tracker'
 import type { HarvestFn } from './job-harvest-scheduler'
 import { JobPoller, POLL_INTERVAL_MS } from './job-poller'
@@ -126,6 +127,76 @@ const sampleHost = (): import('./model').ComputeHost => ({
 // ---------------------------------------------------------------------------
 
 describe('JobPoller', () => {
+  it.each(['pause', 'stop'] as const)(
+    '%s drains a pending provider after another provider persistence fails',
+    async (method) => {
+      let releaseB!: () => void
+      const pendingB = new Promise<void>((resolve) => {
+        releaseB = resolve
+      })
+      let finishWriteB!: () => void
+      const pendingWriteB = new Promise<void>((resolve) => {
+        finishWriteB = resolve
+      })
+      const completedB = vi.fn()
+      const jobs = [makeJob(), makeJob({ job_id: 'job-2', provider_id: 'ssh:second' })]
+      const updateIfStatus = vi.fn(async (id: string) => {
+        if (id === 'job-1') throw new Error('database unavailable')
+        await pendingWriteB
+        return jobs[1]
+      })
+      const acquire = vi.fn(async (provider: string, options: { signal?: AbortSignal }) => {
+        if (provider === 'ssh:biowulf') throw new Error('connection failed')
+        await pendingB
+        completedB(options.signal?.aborted)
+        throw new Error('second connection failed')
+      })
+      const poller = createComputeExecution().createPoller({
+        connectionBroker: { acquire },
+        jobRepository: {
+          findNonTerminal: vi.fn(async () => jobs),
+          updateIfStatus
+        } as unknown as ComputeJobRepository,
+        hostRepository: {} as ComputeHostRepository
+      })
+      poller.start()
+      try {
+        await vi.waitFor(() =>
+          expect(updateIfStatus).toHaveBeenCalledWith('job-1', expect.anything(), expect.anything())
+        )
+        expect(acquire).toHaveBeenCalledTimes(2)
+        const drained = vi.fn()
+        const draining = poller[method]().then(drained)
+        await new Promise((resolve) => setTimeout(resolve, 10))
+        expect(drained).not.toHaveBeenCalled()
+        expect(completedB).not.toHaveBeenCalled()
+        releaseB()
+        if (method === 'pause') {
+          await vi.waitFor(() =>
+            expect(updateIfStatus).toHaveBeenCalledWith(
+              'job-2',
+              expect.anything(),
+              expect.anything()
+            )
+          )
+          expect(drained).not.toHaveBeenCalled()
+        }
+        finishWriteB()
+        await draining
+        expect(completedB).toHaveBeenCalledWith(method === 'stop')
+        if (method === 'pause') {
+          expect(updateIfStatus).toHaveBeenCalledWith('job-2', expect.anything(), expect.anything())
+          poller.resume()
+          await vi.waitFor(() => expect(acquire).toHaveBeenCalledTimes(4))
+        }
+      } finally {
+        releaseB()
+        finishWriteB()
+        await poller.stop()
+      }
+    }
+  )
+
   it('reports startup integrity issues once without preventing ordinary recovery ticks', async () => {
     const integrityIssue = {
       jobId: 'unknown-job',

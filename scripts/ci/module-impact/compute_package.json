@@ -41,6 +41,7 @@
     "packages/compute/src/scp-runner.ts",
     "packages/compute/src/slurm-driver-boundaries.test.ts",
     "packages/compute/src/slurm-driver.ts",
+    "packages/compute/src/ssh-runner.real-process.test.ts",
     "packages/compute/src/ssh-runner.test.ts",
     "packages/compute/src/ssh-runner.ts",
     "packages/compute/src/submitted-job-recovery.ts",
@@ -71,6 +72,7 @@
       "packages/compute/src/remote-job-process.test.ts",
       "packages/compute/src/scp-runner.test.ts",
       "packages/compute/src/slurm-driver-boundaries.test.ts",
+      "packages/compute/src/ssh-runner.real-process.test.ts",
       "packages/compute/src/ssh-runner.test.ts",
       "packages/compute/src/execution.test.ts",
       "packages/compute/src/lifecycle-boundary.test.ts"

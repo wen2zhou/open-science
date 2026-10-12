@@ -286,11 +286,15 @@ export class JobPoller {
     }
 
     // Poll each provider's jobs in parallel (different SSH connections, no ordering dependency).
-    await Promise.all(
+    const results = await Promise.allSettled(
       Array.from(byProvider.entries()).map(([providerId, providerJobs]) =>
         this._pollProvider(providerId, providerJobs, signal)
       )
     )
+    // Keep the tick tracked until every started host operation has settled, even when
+    // error persistence fails on another host. Preserve rejection for the caller.
+    const failure = results.find((result) => result.status === 'rejected')
+    if (failure?.status === 'rejected') throw failure.reason
   }
 
   // Polls all jobs for one provider in a single SSH round-trip (where possible).

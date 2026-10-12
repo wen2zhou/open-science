@@ -1,5 +1,13 @@
 import { spawnSync } from 'node:child_process'
-import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import {
+  chmodSync,
+  existsSync,
+  mkdirSync,
+  mkdtempSync,
+  rmSync,
+  symlinkSync,
+  writeFileSync
+} from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { describe, expect, it, vi } from 'vitest'
@@ -980,4 +988,96 @@ describe('ComputeJobDeletionOwner', () => {
     expect(harness.runner.run).not.toHaveBeenCalled()
     expect(harness.lifecycle.deleteOwnerRows).not.toHaveBeenCalled()
   })
+})
+
+describe('absent cleanup parents', () => {
+  it.skipIf(process.platform === 'win32').each(['.open-science', '.openscience'])(
+    'safely deletes a pre-launch failed owner with absent %s parents',
+    async (directory) => {
+      const root = mkdtempSync(join(tmpdir(), 'compute-absent-parent-'))
+      try {
+        const workdir = join(root, directory, 'jobs', 'job-1')
+        const harness = createHarness([
+          job({
+            status: 'error',
+            error_code: 'dispatch_failed',
+            started_at: undefined,
+            remote_handle: undefined,
+            remote_workdir: workdir
+          })
+        ])
+        harness.runner.run.mockImplementation(async (_target, command) => {
+          const result = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' })
+          return {
+            ...sshSuccess(result.stdout),
+            exitCode: result.status ?? 1,
+            stderr: result.stderr
+          }
+        })
+        for (let attempt = 0; attempt < 2; attempt++) {
+          await harness.owner.prepareSessionJobDeletion('project-1', 'session-1')
+          await harness.owner.commitSessionJobDeletion('project-1', 'session-1')
+        }
+        expect(harness.lifecycle.deleteOwnerRows).toHaveBeenCalledTimes(2)
+        expect(harness.queueManager.resumeOwner).toHaveBeenCalledTimes(2)
+      } finally {
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
+})
+
+describe('absent cleanup safety boundaries', () => {
+  it
+    .skipIf(process.platform === 'win32')
+    .each(['handle', 'submitted', 'file', 'symlink', 'permissions'])(
+    'retains owner rows for %s evidence or an unsafe parent',
+    async (kind) => {
+      const root = mkdtempSync(join(tmpdir(), 'compute-cleanup-conservative-'))
+      const parent = join(root, '.open-science')
+      const workdir = join(parent, 'jobs', 'job-1')
+      try {
+        if (kind === 'file') writeFileSync(parent, 'sentinel')
+        if (kind === 'symlink') symlinkSync(tmpdir(), parent)
+        if (kind === 'permissions') {
+          mkdirSync(parent)
+          chmodSync(parent, 0o000)
+        }
+        const record = job({
+          status: kind === 'submitted' ? 'submitted' : kind === 'handle' ? 'running' : 'error',
+          error_code: 'dispatch_failed',
+          started_at: undefined,
+          remote_workdir: workdir,
+          remote_handle:
+            kind === 'handle'
+              ? JSON.stringify({
+                  pid: process.pid,
+                  workdir,
+                  exit_code_path: `${workdir}/exit_code`,
+                  stdout_path: `${workdir}/stdout`,
+                  stderr_path: `${workdir}/stderr`
+                })
+              : undefined
+        })
+        const harness = createHarness([record])
+        harness.runner.run.mockImplementation(async (_target, command) => {
+          const result = spawnSync('/bin/sh', ['-c', command], { encoding: 'utf8' })
+          return {
+            ...sshSuccess(result.stdout),
+            exitCode: result.status ?? 1,
+            stderr: result.stderr
+          }
+        })
+        await harness.owner.prepareSessionJobDeletion('project-1', 'session-1')
+        await expect(
+          harness.owner.commitSessionJobDeletion('project-1', 'session-1')
+        ).rejects.toThrow(/cleanup failed/)
+        expect(harness.lifecycle.deleteOwnerRows).not.toHaveBeenCalled()
+        expect(harness.queueManager.resumeOwner).not.toHaveBeenCalled()
+      } finally {
+        if (kind === 'permissions') chmodSync(parent, 0o700)
+        rmSync(root, { recursive: true, force: true })
+      }
+    }
+  )
 })

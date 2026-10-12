@@ -97,7 +97,8 @@ const cleanupCommand = (
   workdir: string,
   handle: ComputeRemoteHandle | undefined,
   requirePidWitness = false,
-  allowPidCleanup = true
+  allowPidCleanup = true,
+  allowAbsentParents = false
 ): string => {
   const markerIndex = Math.max(
     workdir.lastIndexOf('/.open-science/jobs/'),
@@ -120,6 +121,23 @@ const cleanupCommand = (
   const lines = [
     `[ ! -L ${quotedWorkdir} ] || exit 1`,
     `scratch_root=$(cd -- ${quotedScratchRoot} 2>/dev/null && pwd -P) || exit 1`,
+    // Walk from a readable/searchable canonical scratch directory. A failed lookup is only
+    // absence after validating its parent; files, symlinks and inaccessible directories fail.
+    ...(allowAbsentParents
+      ? [
+          'cleanup_parent=$scratch_root',
+          ...workdirSuffix
+            .split('/')
+            .flatMap((component) => [
+              '[ -d "$cleanup_parent" ] && [ -r "$cleanup_parent" ] && [ -x "$cleanup_parent" ] || exit 1',
+              `cleanup_child="$cleanup_parent"/${quoteRemotePath(component)}`,
+              '[ ! -L "$cleanup_child" ] || exit 1',
+              '[ -e "$cleanup_child" ] || exit 0',
+              '[ -d "$cleanup_child" ] || exit 1',
+              'cleanup_parent=$cleanup_child'
+            ])
+        ]
+      : []),
     `workdir_parent=$(cd -- ${quotedWorkdirParent} 2>/dev/null && pwd -P) || exit 1`,
     'expected_workdir_parent=${scratch_root%/}/' + quotedWorkdirParentSuffix,
     '[ "$workdir_parent" = "$expected_workdir_parent" ] || exit 1',
@@ -138,6 +156,7 @@ const cleanupCommand = (
     '  case $ownership in 0|1|3) return 0 ;; *) return 2 ;; esac',
     '}'
   ]
+  if (handle || requirePidWitness) lines.push('[ -n "$workdir" ] || exit 1')
   if (handle && handle.driver !== 'slurm') lines.push(`cleanup_job_pid ${handle.pid} || exit 1`)
   if (requirePidWitness) {
     lines.push(`[ -z "$workdir" ] || [ -f ${quotedPidFile} ] || exit 1`)
@@ -559,7 +578,11 @@ class ComputeJobDeletionOwner {
         workdir,
         handle,
         job.execution_mode !== 'slurm' && job.status === 'submitted' && !handle,
-        job.execution_mode !== 'slurm'
+        job.execution_mode !== 'slurm',
+        job.status === 'error' &&
+          job.error_code === 'dispatch_failed' &&
+          !job.remote_handle &&
+          job.started_at === undefined
       ),
       ...(isActiveSlurm
         ? {
