@@ -2297,3 +2297,60 @@ describe('JobPoller sub-batching (per-job output budget)', () => {
     for (let i = 0; i < 10; i++) expect(updatedIds.has(`job-${i}`)).toBe(true)
   })
 })
+
+describe('uncertain historical recovery path validation', () => {
+  it.each(['missing-host', 'unsafe-root'] as const)(
+    'retains a marked legacy row with %s',
+    async (scenario) => {
+      let current = makeJob({
+        status: 'submitted',
+        remote_workdir: undefined,
+        remote_handle: undefined,
+        last_poll_error: 'dispatch_may_have_started: host_unreachable'
+      })
+      const runner = makeSshRunner({
+        exitCode: 0,
+        stdout: '',
+        stderr: '',
+        timedOut: false,
+        truncated: false
+      })
+      const jobRepository = {
+        get: async () => structuredClone(current),
+        findNonTerminal: async () => [structuredClone(current)],
+        findTerminalUnharvested: async () => [],
+        findNotificationReadyUnnotified: async () => [],
+        updateIfStatus: vi.fn(
+          async (
+            _id: string,
+            statuses: readonly string[],
+            updates: import('./ports').UpdateJobRequest
+          ) => {
+            if (!statuses.includes(current.status)) return null
+            current = {
+              ...current,
+              status: updates.status ?? current.status,
+              last_poll_error: updates.lastPollError ?? current.last_poll_error
+            }
+            return structuredClone(current)
+          }
+        )
+      } as unknown as ComputeJobRepository
+      const poller = createComputeExecution().createPoller({
+        jobRepository,
+        hostRepository: {
+          get: async () =>
+            scenario === 'missing-host' ? null : { ...sampleHost(), scratchRoot: '../unsafe' },
+          updateConcurrencyLimit: async () => undefined
+        } satisfies ComputeHostRepository,
+        connectionBroker: brokerFromRunner(runner)
+      })
+      await poller.tick()
+      await poller.tick()
+      expect(runner.run).not.toHaveBeenCalled()
+      expect(current.status).toBe('submitted')
+      expect(current.remote_workdir).toBeUndefined()
+      expect(current.last_poll_error).toBe('dispatch_may_have_started: dispatch_recovery_required')
+    }
+  )
+})

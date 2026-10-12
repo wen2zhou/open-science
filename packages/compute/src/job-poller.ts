@@ -1,6 +1,6 @@
 import { randomBytes } from 'node:crypto'
 
-import { ComputeJobLifecycle } from './compute-job-lifecycle'
+import { ComputeJobLifecycle, dispatchMayHaveStarted } from './compute-job-lifecycle'
 import {
   classifyConnectionFailure,
   ComputeConnectionError,
@@ -533,6 +533,16 @@ export class JobPoller {
     const workdir = parseRemoteJobWorkdir(job.job_id, job.remote_workdir, fallbackWorkdir)
     if (!workdir) {
       await this._recordPollError([job], 'dispatch_recovery_required', signal)
+      return undefined
+    }
+
+    // A historical row may already carry an uncertain-launch witness without a durable path.
+    // Resolve its historical directory, but never use the legacy receipt cleanup protocol:
+    // missing job.pid does not prove that a detached workload stopped or never launched.
+    if (dispatchMayHaveStarted(job)) {
+      this._applySubmittedRecoveryResult(
+        await this.submittedJobRecovery.recover({ ...job, remote_workdir: workdir }, connection)
+      )
       return undefined
     }
 

@@ -311,7 +311,7 @@ async function dispatchJobInner(jobId: string, deps: DispatcherDeps): Promise<vo
     `echo $LAUNCHED_PID`
   ].join('\n')
 
-  const dispatchAttempt = await lifecycle.beginRemoteDispatch(jobId)
+  const dispatchAttempt = await lifecycle.beginRemoteDispatch(jobId, workdir)
   if (dispatchAttempt.kind === 'ignored') return
 
   let runResult

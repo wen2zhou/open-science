@@ -41,10 +41,13 @@ export class ComputeJobLifecycle {
     })
   }
 
-  async beginRemoteDispatch(jobId: string): Promise<ComputeJobTransitionResult> {
+  async beginRemoteDispatch(jobId: string, workdir: string): Promise<ComputeJobTransitionResult> {
     // Persist before sending a command that may launch. Absence of a PID after a lost response
     // cannot prove that launch never happened, including after a process restart.
-    return this.apply(jobId, ['submitted'], { lastPollError: DISPATCH_MAY_HAVE_STARTED })
+    return this.apply(jobId, ['submitted'], {
+      lastPollError: DISPATCH_MAY_HAVE_STARTED,
+      remoteWorkdir: workdir
+    })
   }
 
   async dispatchRunning(

@@ -1078,3 +1078,107 @@ describe('durable uncertain launch recovery', () => {
     }
   )
 })
+
+describe('legacy uncertain dispatch recovery', () => {
+  it.each(['new-dispatch', 'existing-marker'] as const)(
+    'preserves the historical workdir and never cleans uncertain %s work during polling',
+    async (scenario) => {
+      const workdir = '/scratch/legacy/.openscience/jobs/job-1'
+      let current = makeJob({
+        remote_workdir: undefined,
+        last_poll_error:
+          scenario === 'existing-marker'
+            ? 'dispatch_may_have_started: dispatch_recovery_pending'
+            : undefined
+      })
+      const repository = {
+        get: async () => structuredClone(current),
+        updateIfStatus: vi.fn(
+          async (
+            _id: string,
+            statuses: readonly string[],
+            updates: import('./ports').UpdateJobRequest
+          ) => {
+            if (!statuses.includes(current.status)) return null
+            current = {
+              ...current,
+              status: updates.status ?? current.status,
+              remote_workdir: updates.remoteWorkdir ?? current.remote_workdir,
+              remote_handle: updates.remoteHandle ?? current.remote_handle,
+              last_poll_error:
+                updates.lastPollError === null
+                  ? undefined
+                  : (updates.lastPollError ?? current.last_poll_error),
+              error_code:
+                updates.errorCode === null ? undefined : (updates.errorCode ?? current.error_code),
+              exit_code: updates.exitCode ?? current.exit_code
+            }
+            return structuredClone(current)
+          }
+        ),
+        findNonTerminal: async () =>
+          ['submitted', 'running'].includes(current.status) ? [structuredClone(current)] : [],
+        findTerminalUnharvested: async () => [],
+        findNotificationReadyUnnotified: async () => []
+      } as unknown as ComputeJobRepository
+      let phase: 'dispatch' | 'pending' | 'unavailable' | 'exited' =
+        scenario === 'new-dispatch' ? 'dispatch' : 'pending'
+      const commands: string[] = []
+      const runner: SshRunner = {
+        run: vi.fn(async (_target, command) => {
+          commands.push(command)
+          if (phase === 'dispatch') {
+            phase = 'pending'
+            return { exitCode: 74, stdout: '', stderr: '', timedOut: false, truncated: false }
+          }
+          if (phase === 'unavailable') throw new ComputeConnectionError('host_unreachable')
+          return {
+            exitCode: 0,
+            stdout: [
+              'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+              'workdir:1',
+              `exit_code:${phase === 'exited' ? 0 : ''}`,
+              'pid:',
+              'cwd_match:0'
+            ].join('\n'),
+            stderr: '',
+            timedOut: false,
+            truncated: false
+          }
+        })
+      }
+      const deps = {
+        connectionBroker: brokerFromRunners(runner),
+        hostRepository: makeHostRepo({
+          ...sampleHost(),
+          scratchRoot: '/scratch/legacy'
+        }) as ComputeHostRepository,
+        jobRepository: repository
+      }
+      const execution = createComputeExecution()
+      if (scenario === 'new-dispatch') {
+        await execution.dispatchJob(current.job_id, deps)
+        expect(current.remote_workdir).toBe(workdir)
+      }
+      const poller = execution.createPoller(deps)
+      await poller.tick()
+      await poller.tick()
+      expect(commands.some((command) => command.includes('rm -rf'))).toBe(false)
+      expect(current.status).toBe('submitted')
+      phase = 'unavailable'
+      await poller.tick()
+      expect(current.last_poll_error).toContain('dispatch_may_have_started: host_unreachable')
+      phase = 'pending'
+      const restartedPoller = createComputeExecution().createPoller(deps)
+      await restartedPoller.tick()
+      await restartedPoller.tick()
+      expect(current.status).toBe('submitted')
+      expect(commands.every((command) => command.includes(workdir))).toBe(true)
+      expect(commands.some((command) => command.includes('rm -rf'))).toBe(false)
+      phase = 'exited'
+      await restartedPoller.tick()
+      expect(current.status).toBe('success')
+      expect(current.exit_code).toBe(0)
+    }
+  )
+})
