@@ -8,7 +8,7 @@ import { execFile } from 'node:child_process'
 import { promisify } from 'node:util'
 import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
-import { join } from 'node:path'
+import { join, posix } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
 
 import { ComputeHostUnavailableError } from '@aipoch/compute'
@@ -111,7 +111,14 @@ describe('Compute Job cancellation owner (SQLite + fake SSH)', () => {
       await createJob('submitted')
       const scratchRoot = await mkdtemp(join(tmpdir(), 'cancellation-missing-workdir-'))
       try {
-        const workdir = join(scratchRoot, '.openscience', 'jobs', 'job-1')
+        const localWorkdir = join(scratchRoot, '.openscience', 'jobs', 'job-1')
+        // Remote paths always use POSIX syntax, independently of the SQLite host platform.
+        const workdir = posix.join(
+          process.platform === 'win32' ? '/scratch/cancellation-test' : scratchRoot,
+          '.openscience',
+          'jobs',
+          'job-1'
+        )
         await jobs.update('job-1', {
           remoteWorkdir: workdir,
           lastPollError: 'dispatch_may_have_started: host_unreachable'
@@ -225,10 +232,13 @@ describe('Compute Job cancellation owner (SQLite + fake SSH)', () => {
         // Harvest has completed; cleanup must not demand a PID witness after definitive
         // cancellation evidence, even when job.pid was never a usable file.
         await jobs.update('job-1', { harvestedAt: new Date(clock) })
-        await mkdir(join(workdir, 'job.pid'), { recursive: true })
-        await writeFile(join(workdir, 'exit_code'), '0')
+        await mkdir(join(localWorkdir, 'job.pid'), { recursive: true })
+        await writeFile(join(localWorkdir, 'exit_code'), '0')
         cleanupRun.mockImplementation(async (command) => {
           expect(command).not.toContain('[ -z "$workdir" ] || [ -f ')
+          // Keep the complete SQLite/owner protocol test portable; execute the generated
+          // remote shell command locally only where this host provides Unix semantics.
+          if (process.platform === 'win32') return success('')
           const result = await promisify(execFile)('sh', ['-c', command])
           return success(result.stdout)
         })
