@@ -1,0 +1,67 @@
+{
+  "description": "2026-10-12 已完成的 macOS 客户端 + 隔离 Linux SSH 验收摘要；不是 Windows 验证结果。",
+  "codeCommit": "f901f88a4d439258162f047a20012476749ce38f",
+  "baseCommit": "7bd0e4c6395f2b6cc4ed896bb233641ead79d6d1",
+  "branch": "codex/compute-release-hardening",
+  "platform": "macOS 26.5.2 ARM64; isolated Ubuntu 24.04 ARM64 SSH server",
+  "node": "24.21.0",
+  "vitest": "4.1.11",
+  "package": {
+    "files": 18,
+    "passed": 479,
+    "failed": 0,
+    "skipped": 0
+  },
+  "host": {
+    "files": 62,
+    "passed": 1031,
+    "failed": 0,
+    "skipped": 10
+  },
+  "consumer": {
+    "files": 95,
+    "passed": 3239,
+    "failed": 0,
+    "skipped": 0
+  },
+  "impact": {
+    "files": 5,
+    "passed": 243,
+    "failed": 0,
+    "skipped": 0
+  },
+  "realSsh": {
+    "originalPassed": 7,
+    "additionalPassed": 21,
+    "failed": 0,
+    "skipped": 0
+  },
+  "checksPassed": [
+    "compute build",
+    "package types",
+    "isolated tarball consumption",
+    "Node and Web types",
+    "changed-file ESLint and Prettier",
+    "independent Standards / Spec review"
+  ],
+  "review": {
+    "changedFiles": 23,
+    "openActionableFindings": 0,
+    "closedFindings": [
+      "R1 durable ambiguous launch and legacy path recovery",
+      "R2 unknown cancellation cannot confirm cleanup",
+      "R3 definitive cancellation clears stale launch marker",
+      "R4 portable SQLite fixture path and shell boundary"
+    ]
+  },
+  "initialConsumerFailure": "First 95-file run: 3238 pass / 1 fail due to missing ignored safe-file-publisher-native build. Existing install script built it, then all 95 files reran at same SHA: 3239 pass.",
+  "cleanup": "Owned SSH container, ephemeral keys, private config and wrappers removed; test port closed; unrelated containers preserved.",
+  "unverified": [
+    "Windows execution",
+    "real Slurm",
+    "real password SSH",
+    "full GUI and full repository CI",
+    "447 additional transitive consumer files"
+  ],
+  "evidenceLocation": "Original detailed logs and Chinese reports are retained on the originating machine under .scratch/compute-package-release-hardening-20261012/implementation/. They are not included in this tracked handoff; generate independent Windows logs."
+}

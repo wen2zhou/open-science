@@ -1,0 +1,27 @@
+[
+  {
+    "file": "src/main/compute/connection-broker.test.ts",
+    "tests": [
+      "ComputeConnectionBroker SSH configuration compatibility returns one matching password through the constrained Windows askpass helper"
+    ]
+  },
+  {
+    "file": "src/main/compute/compute-submission-evidence-recovery.integration.test.ts",
+    "tests": [
+      "Compute submission evidence recovery creates no Job on persistent publication denial and submits once after the reader closes"
+    ]
+  },
+  {
+    "file": "src/main/notebook/file-evidence-publication.integration.test.ts",
+    "tests": [
+      "file-evidence Windows atomic publication source Node publishes the complete receipt after a reader releases its delete-sharing restriction",
+      "file-evidence Windows atomic publication source Node fails within its retry budget and preserves the old receipt when the reader stays open",
+      "file-evidence Windows atomic publication source Node rejects a changed source before attempting another replacement",
+      "file-evidence Windows atomic publication source Node rejects a changed destination before attempting another replacement",
+      "file-evidence Windows atomic publication packaged Electron publishes the complete receipt after a reader releases its delete-sharing restriction",
+      "file-evidence Windows atomic publication packaged Electron fails within its retry budget and preserves the old receipt when the reader stays open",
+      "file-evidence Windows atomic publication packaged Electron rejects a changed source before attempting another replacement",
+      "file-evidence Windows atomic publication packaged Electron rejects a changed destination before attempting another replacement"
+    ]
+  }
+]
