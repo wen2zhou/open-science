@@ -47,7 +47,7 @@ describe('ambiguous Compute Job dispatch recovery', () => {
     timeoutSeconds
   }: {
     id: string
-    remoteWorkdir: string
+    remoteWorkdir?: string
     intent?: string
     command?: string
     timeoutSeconds?: number
@@ -121,6 +121,100 @@ describe('ambiguous Compute Job dispatch recovery', () => {
     })
     expect(run).toHaveBeenCalledOnce()
   })
+
+  it.each(['running', 'exited', 'vanished'] as const)(
+    'persists the historical fallback across %s recovery, restart, harvest, and deletion',
+    async (observation) => {
+      const jobId = `legacy-path-${observation}`
+      const workdir = `~/.openscience/jobs/${jobId}`
+      await createSubmittedJob({ id: jobId })
+      await jobRepository.update(jobId, {
+        lastPollError: 'dispatch_may_have_started: dispatch_recovery_pending'
+      })
+      const run = vi
+        .fn<ComputeConnectionLease['run']>()
+        .mockResolvedValue(
+          successfulRun(
+            [
+              'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
+              'workdir:1',
+              `exit_code:${observation === 'exited' ? 0 : ''}`,
+              'pid:4321',
+              `cwd_match:${observation === 'running' ? 1 : 0}`
+            ].join('\n')
+          )
+        )
+      const harvestFn = vi.fn(async () => undefined)
+      const connectionBroker = serviceBroker(run)
+      const nonce = 'legacy_path_'
+      let poller = createComputeExecution().createPoller({
+        connectionBroker,
+        hostRepository,
+        jobRepository,
+        harvestFn,
+        makeNonce: () => nonce
+      })
+      await poller.tick()
+      const restoredRepository = new ComputeJobRepository(() => Promise.resolve(database.client))
+      await expect(restoredRepository.get(jobId)).resolves.toMatchObject({
+        remote_workdir: workdir
+      })
+      if (observation === 'running') {
+        const recovered = await restoredRepository.get(jobId)
+        expect(recovered).toMatchObject({ status: 'running', last_poll_error: undefined })
+        expect(JSON.parse(recovered!.remote_handle!)).toMatchObject({ pid: 4321, workdir })
+        poller = createComputeExecution().createPoller({
+          connectionBroker,
+          hostRepository,
+          jobRepository: restoredRepository,
+          harvestFn,
+          makeNonce: () => nonce
+        })
+        const output = (alive: number, exitCode: string): string =>
+          [
+            `${nonce}JOB_START:${jobId}`,
+            `${nonce}alive:${alive}`,
+            `${nonce}exit:${exitCode}`,
+            '',
+            `${nonce}STDOUT_END:${jobId}`,
+            '',
+            `${nonce}STDERR_END:${jobId}`
+          ].join('\n')
+        run.mockResolvedValue(successfulRun(output(1, '')))
+        await poller.tick()
+        await expect(restoredRepository.get(jobId)).resolves.toMatchObject({
+          status: 'running',
+          remote_workdir: workdir,
+          error_code: undefined
+        })
+        run.mockResolvedValue(successfulRun(output(0, '0')))
+        await poller.tick()
+      }
+      await poller.pause()
+      const expectedStatus = observation === 'vanished' ? 'failed' : 'success'
+      await expect(restoredRepository.get(jobId)).resolves.toMatchObject({
+        status: expectedStatus,
+        remote_workdir: workdir
+      })
+      expect(harvestFn).toHaveBeenCalledWith(
+        expect.objectContaining({ status: expectedStatus, remote_workdir: workdir }),
+        observation === 'running' ? expect.any(AbortSignal) : undefined
+      )
+      const cleanupRun = vi.fn<ComputeConnectionLease['run']>().mockResolvedValue(successfulRun(''))
+      const owner = createComputeExecution().createDeletionOwner({
+        jobRepository: restoredRepository,
+        hostRepository,
+        connectionBroker: serviceBroker(cleanupRun)
+      })
+      await owner.prepareSessionJobDeletion('project-1', 'session-1')
+      await owner.commitSessionJobDeletion('project-1', 'session-1')
+      expect(cleanupRun).toHaveBeenCalledWith(
+        expect.stringContaining(`~/'.openscience/jobs/${jobId}'`),
+        expect.anything()
+      )
+      await expect(restoredRepository.get(jobId)).resolves.toBeNull()
+    }
+  )
 
   it('adopts a launched job when lsof proves cwd on a host without procfs', async () => {
     const remoteWorkdir = '/scratch/.openscience/jobs/job-lsof'

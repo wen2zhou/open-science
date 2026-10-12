@@ -540,8 +540,12 @@ export class JobPoller {
     // Resolve its historical directory, but never use the legacy receipt cleanup protocol:
     // missing job.pid does not prove that a detached workload stopped or never launched.
     if (dispatchMayHaveStarted(job)) {
+      // Repair the existing witness, not a new launch: persist its resolved directory before
+      // any recovery branch can clear the marker or publish a handle/terminal harvest record.
+      const repaired = await this.lifecycle.beginRemoteDispatch(job.job_id, workdir)
+      if (repaired.kind === 'ignored') return undefined
       this._applySubmittedRecoveryResult(
-        await this.submittedJobRecovery.recover({ ...job, remote_workdir: workdir }, connection)
+        await this.submittedJobRecovery.recover(repaired.job, connection)
       )
       return undefined
     }
