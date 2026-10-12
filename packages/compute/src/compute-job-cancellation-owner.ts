@@ -1,6 +1,7 @@
 import { createLogger, diagnosticErrorFields, errorLogFields } from '@aipoch/diagnostics/node'
 import { randomUUID } from 'node:crypto'
 import { DispatchTracker } from './dispatch-tracker'
+import { dispatchMayHaveStarted } from './compute-job-lifecycle'
 import { probeRemoteLaunch } from './remote-launch-recovery'
 
 import { projectJobStatus } from './compute-job-status'
@@ -199,6 +200,12 @@ class ComputeJobCancellationReaper {
       }
       if (!handle && job.execution_mode !== 'slurm' && job.remote_workdir) {
         const observation = await probeRemoteLaunch(connection, job.remote_workdir)
+        if (observation.kind === 'not_started' && dispatchMayHaveStarted(job)) {
+          // A missing directory after a possible launch is not evidence that the process stopped.
+          // Keep the cancellation claim retryable; do not mark results harvested or cleaned.
+          await this.scheduleRetry(claim, 'handle-unavailable')
+          return
+        }
         if (observation.kind === 'running') {
           handle = observation.handle
           await this.jobs.recordCancellationHandle(job.job_id, JSON.stringify(handle))
