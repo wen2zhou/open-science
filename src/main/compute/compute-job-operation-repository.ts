@@ -275,6 +275,8 @@ class ComputeJobOperationRepository {
             data: {
               status: 'failed',
               finishedAt: now,
+              // Definitive cancellation evidence supersedes uncertain dispatch diagnostics.
+              lastPollError: null,
               // Persist the definitive no-launch result with cancellation settlement so a restart
               // cannot retry harvesting a directory that was never created.
               ...(remoteWorkdirAbsent
@@ -339,7 +341,7 @@ class ComputeJobOperationRepository {
       if ((ACTIVE_STATUSES as readonly string[]).includes(job.status)) {
         await transaction.computeJob.update({
           where: { id: jobId },
-          data: { status: 'failed', finishedAt: now }
+          data: { status: 'failed', finishedAt: now, lastPollError: null }
         })
       }
       const settled = await transaction.computeJobOperation.updateMany({

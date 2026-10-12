@@ -4,7 +4,9 @@ import {
   createJobLifecycle,
   createSshRunner
 } from '@aipoch/compute/node'
-import { mkdtemp, rm, writeFile } from 'node:fs/promises'
+import { execFile } from 'node:child_process'
+import { promisify } from 'node:util'
+import { mkdir, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, expect, it, vi } from 'vitest'
@@ -122,7 +124,7 @@ describe('Compute Job cancellation owner (SQLite + fake SSH)', () => {
                 'OPEN_SCIENCE_DISPATCH_RECOVERY_V1',
                 `workdir:${observation === 'not_started' ? 0 : 1}`,
                 `exit_code:${observation === 'exited' ? 0 : ''}`,
-                `pid:${observation === 'not_started' ? '' : 4321}`,
+                `pid:${observation === 'not_started' || observation === 'exited' ? '' : 4321}`,
                 `cwd_match:${observation === 'running' ? 1 : 0}`
               ].join('\n')
             )
@@ -219,6 +221,21 @@ describe('Compute Job cancellation owner (SQLite + fake SSH)', () => {
         expect(onConfirmed).toHaveBeenCalledOnce()
         expect((await jobs.get('job-1'))?.remote_cleanup_disposition).not.toBe('cleaned')
         expect((await jobs.get('job-1'))?.harvested_at).toBeUndefined()
+        expect((await jobs.get('job-1'))?.last_poll_error).toBeUndefined()
+        // Harvest has completed; cleanup must not demand a PID witness after definitive
+        // cancellation evidence, even when job.pid was never a usable file.
+        await jobs.update('job-1', { harvestedAt: new Date(clock) })
+        await mkdir(join(workdir, 'job.pid'), { recursive: true })
+        await writeFile(join(workdir, 'exit_code'), '0')
+        cleanupRun.mockImplementation(async (command) => {
+          expect(command).not.toContain('[ -z "$workdir" ] || [ -f ')
+          const result = await promisify(execFile)('sh', ['-c', command])
+          return success(result.stdout)
+        })
+        await deletion.prepareSessionJobDeletion(scope.projectId, scope.sessionId)
+        await deletion.commitSessionJobDeletion(scope.projectId, scope.sessionId)
+        await expect(jobs.get('job-1')).resolves.toBeNull()
+        expect(queueManager.resumeOwner).toHaveBeenCalled()
       } finally {
         await rm(scratchRoot, { recursive: true, force: true })
       }
