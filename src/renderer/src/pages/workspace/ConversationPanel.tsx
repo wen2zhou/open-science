@@ -1,3 +1,4 @@
+import { useWorkspaceOperationErrors } from '@/lib/acp/workspace-operation-error'
 import { replayAnnotationTarget } from '../../../../shared/replay-reference'
 import { SessionDiscussionSource } from './SessionDiscussionSource'
 import { composerContextRowClassName } from './SessionDiscussionBar'
@@ -974,6 +975,11 @@ const ConversationPanel = ({
   // so neither its failure nor the live terminal-write exception returns to the composer. A newly
   // saved preparation is not an anchor yet and cannot displace anchorless attachment recovery.
   const showLegacyRunError = legacyDisplayState?.status === 'error' && !hasCurrentTurnAnchor
+  const operationDiagnostic = useWorkspaceOperationErrors((state) =>
+    activeSession ? state.diagnostics[activeSession.id] : undefined
+  )
+  const resumeDiagnostic =
+    operationDiagnostic?.message === actionError ? operationDiagnostic : undefined
   const resolvedActionError =
     (isClaudeCliCompatibilityError(actionError ?? '')
       ? t(
@@ -1692,7 +1698,45 @@ const ConversationPanel = ({
                     {/* Transient action errors and a run failure can coexist; show each on its own row
                         so the run's report affordance is never suppressed by a transient error. */}
                     {resolvedActionError ? (
-                      <span className="min-w-0 break-words pr-6">{resolvedActionError}</span>
+                      resumeDiagnostic ? (
+                        <div data-testid="resume-operation-error" className="min-w-0 pr-6">
+                          <ErrorNotice
+                            inline
+                            tone="amber"
+                            title={t('Could not resume this conversation')}
+                            description={
+                              /timed out/i.test(resumeDiagnostic.detail)
+                                ? t(
+                                    'The agent did not respond in time. Your conversation is preserved. Try Resume again.'
+                                  )
+                                : /Runtime Segment does not match the adopted Agent context/i.test(
+                                      resumeDiagnostic.detail
+                                    )
+                                  ? t(
+                                      'The selected agent could not be attached to this conversation. Try Resume again.'
+                                    )
+                                  : !isReportableRunFailure(actionError)
+                                    ? resolvedActionError
+                                    : t('Your conversation is preserved. Try Resume again.')
+                            }
+                            primaryButton={
+                              activeSession && sessionTools.exportDiagnostics
+                                ? {
+                                    label: t('Export diagnostics…'),
+                                    onClick: () => sessionTools.exportDiagnostics?.(activeSession)
+                                  }
+                                : undefined
+                            }
+                          />
+                          <DiagnosticDetails
+                            key={resumeDiagnostic.detail}
+                            detail={resumeDiagnostic.detail}
+                            copyable
+                          />
+                        </div>
+                      ) : (
+                        <span className="min-w-0 break-words pr-6">{resolvedActionError}</span>
+                      )
                     ) : null}
                     {showLegacyRunErrorRow ? (
                       <div className="flex flex-col items-stretch gap-2">

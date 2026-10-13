@@ -1,3 +1,7 @@
+import {
+  reportWorkspaceOperationError,
+  clearWorkspaceOperationError
+} from '@/lib/acp/workspace-operation-error'
 import { annotationTransfers, ANNOTATION_DRAG_TYPE } from './annotations/annotation-transfer'
 import { parseSideChatAnnotationText, type Annotation } from '../../../../shared/annotations'
 import { SideChatPanel } from './SideChatPanel'
@@ -8339,6 +8343,57 @@ describe('ConversationPanel error box + report affordance', () => {
     // Still reportable — the affordance follows the failure status, not the presence of text.
     expect(reportButton()).not.toBeNull()
   })
+
+  it.each(
+    [true, false].flatMap((canExport) =>
+      [
+        'Internal error',
+        'Resume timed out',
+        'Resume Runtime Segment does not match the adopted Agent context.'
+      ].map((failure) => ({ canExport, failure }))
+    )
+  )(
+    'shows resume diagnostics for $failure with export capability $canExport',
+    async ({ canExport, failure }) => {
+      const session = { ...errorSession, status: 'idle' as const, error: undefined }
+      const raw = new Error(`Error invoking remote method 'acp:resume-session': ${failure}`)
+      const message = 'Agent session resume failed: Unknown error'
+      const exportDiagnostics = vi.fn()
+      const writeText = vi.fn().mockResolvedValue(undefined)
+      Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
+      act(() =>
+        reportWorkspaceOperationError(session.id, message, { operation: 'resume', rawError: raw })
+      )
+      renderPanel({
+        view: { activeSession: session, actionError: message },
+        sessionTools: { exportDiagnostics: canExport ? exportDiagnostics : undefined }
+      })
+      const notice = container.querySelector('[data-testid="resume-operation-error"]')!
+      expect(notice).not.toBeNull()
+      expect(notice.textContent).toContain('Could not resume this conversation')
+      const details = notice.querySelector('details')!
+      expect(details.open).toBe(false)
+      expect(details.textContent).toContain(raw.message)
+      act(() => details.querySelector('summary')!.click())
+      expect(details.open).toBe(true)
+      await act(async () => details.querySelector<HTMLButtonElement>('button')!.click())
+      expect(writeText).toHaveBeenCalledWith(raw.stack)
+      const button = Array.from(notice.querySelectorAll('button')).find(
+        (button) => button.textContent === 'Export diagnostics…'
+      )
+      expect(Boolean(button)).toBe(canExport)
+      if (button) {
+        act(() => button.click())
+        expect(exportDiagnostics).toHaveBeenCalledWith(session)
+      }
+      renderPanel({
+        view: { activeSession: { ...session, id: 'different-session' }, actionError: message },
+        sessionTools: { exportDiagnostics }
+      })
+      expect(container.querySelector('[data-testid="resume-operation-error"]')).toBeNull()
+      act(() => clearWorkspaceOperationError(session.id))
+    }
+  )
 
   it('shows only the transient actionError, without a Report button, for a non-failed session', () => {
     renderPanel({
