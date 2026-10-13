@@ -8,6 +8,7 @@ import { normalizeSessionFile } from '../../../../shared/session-persistence'
 import {
   createConversationItems,
   formatActivityTitle,
+  hidesBehindPresentationBarrier,
   isActivityActive
 } from './workspace-conversation-items'
 
@@ -634,6 +635,68 @@ describe('workspace conversation items', () => {
         ).toEqual([])
       }
     )
+
+    it('keeps a text-first resumed divider visible with its later tool while older text is paced', () => {
+      const first = stampedUserMessage('original', 1, targetA)
+      const oldText = { ...stampedUserMessage('old-text', 2), role: 'agent' as const }
+      const resumedText = { ...stampedUserMessage('resumed-text', 3), role: 'agent' as const }
+      const graph = createLinearConversationGraph({
+        sessionId: baseSession.id,
+        messages: [first, oldText, resumedText],
+        frameworkId: 'claude-code',
+        createdAt: 1,
+        updatedAt: 4
+      })
+      graph.runtimeSegments.push({
+        id: 'resumed-segment',
+        agentFrameId: graph.rootFrameId,
+        frameworkId: 'codebuddy',
+        startedAt: 3
+      })
+      graph.messages.find((message) => message.id === resumedText.id)!.runtimeSegmentId =
+        'resumed-segment'
+      const activity = createActivity({
+        id: 'resumed-tool',
+        createdAt: resumedText.createdAt + 1,
+        sortIndex: 4
+      })
+      graph.activities.push({
+        ...activity,
+        runtimeSegmentId: 'resumed-segment',
+        agentFrameId: graph.rootFrameId,
+        messageBranchId: graph.frames[0].activeBranchId,
+        promptMessageId: first.id
+      })
+      const session = {
+        ...baseSession,
+        conversationGraph: graph,
+        messages: [first, oldText, resumedText],
+        activities: [activity]
+      }
+      const items = createConversationItems(session)
+      const visibleAtBarrier = (barrier: number): typeof items =>
+        items.filter((item, index) => index <= barrier || !hidesBehindPresentationBarrier(item))
+      const paced = visibleAtBarrier(1)
+      const divider = items.find((item) => item.type === 'session-config-change')!
+      expect(paced.map((item) => item.id)).toEqual([
+        first.id,
+        oldText.id,
+        divider.id,
+        'activity-resumed-tool'
+      ])
+      expect(
+        visibleAtBarrier(items.length).filter((item) => item.type === 'session-config-change')
+      ).toEqual([divider])
+      expect(items.indexOf(divider)).toBeLessThan(
+        items.findIndex((item) => item.id === resumedText.id)
+      )
+
+      // Raw graph activities that are not projected cannot release a text-only marker.
+      const textOnlyDivider = configChangeItems({ ...session, activities: [] })[0]
+      expect(hidesBehindPresentationBarrier(textOnlyDivider)).toBe(true)
+      graph.activities[0].runtimeSegmentId = graph.runtimeSegments[0].id
+      expect(hidesBehindPresentationBarrier(configChangeItems(session)[0])).toBe(true)
+    })
 
     it('marks a model change above the new user message', () => {
       const session: ChatSession = {

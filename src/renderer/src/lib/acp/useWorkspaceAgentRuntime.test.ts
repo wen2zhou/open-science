@@ -8886,11 +8886,12 @@ describe('resuming an interrupted session on demand', () => {
   })
 
   it.each([
-    ['claude-code', 'codex', 'codex-response'],
-    ['codex', 'claude-code', 'claude-code']
+    ['claude-code', 'codex', 'codex-response', false],
+    ['codex', 'claude-code', 'claude-code', false],
+    ['claude-code', 'codex', 'codex-response', true]
   ] as const)(
-    'persists attachment identity before renderer continuation: %s to %s',
-    async (from, to, target) => {
+    'persists attachment identity before renderer continuation: %s to %s (%s, retry=%s)',
+    async (from, to, target, failFirstAttachmentSave) => {
       useSessionStore.getState().appendUserMessage({
         sessionId: 'session-1',
         content: 'Continue the original research',
@@ -8908,6 +8909,8 @@ describe('resuming an interrupted session on demand', () => {
       }
       useSessionStore.getState().hydrateSessions([durable])
       const originalPrompt = structuredClone(durable.conversationGraph!.messages[0])
+      let rejectAttachmentSave = false
+      let attachmentSaveFailed = false
       const persistence = new SessionPersistenceStateOwner({
         repository: {
           loadSessionWithDiagnostics: async () => ({
@@ -8915,6 +8918,11 @@ describe('resuming an interrupted session on demand', () => {
             session: structuredClone(durable)
           }),
           saveSession: async (candidate) => {
+            if (rejectAttachmentSave) {
+              rejectAttachmentSave = false
+              attachmentSaveFailed = true
+              throw new Error('Attachment repository save failed')
+            }
             durable = {
               ...structuredClone(candidate),
               revision: (durable.revision ?? 0) + 1
@@ -8956,6 +8964,7 @@ describe('resuming an interrupted session on demand', () => {
         {
           loadSession: async () => structuredClone(durable),
           completeRuntimeAttachment: async (projectId, sessionId, attached) => {
+            rejectAttachmentSave = failFirstAttachmentSave && !attachmentSaveFailed
             await persistence.mutateRuntimeSession({ projectId, sessionId }, (current) =>
               completeRuntimeAttachmentRecovery(current, attached)
             )
@@ -8979,16 +8988,27 @@ describe('resuming an interrupted session on demand', () => {
           workflows.continueInterruptedTurn(request)
         )
       }
-      await resumeInterruptedWorkspaceSession(runtime, 'session-1', undefined, {
-        agentTarget: { frameworkId: to, providerId: to, reasoningEffort: 'default' },
-        historyReplayDescriptor: { target },
-        flushPersistence: async () => {
-          const candidate = toPersistedSession(useSessionStore.getState().sessions[0])
-          await saveSession(candidate, {
-            conversationCommands: pendingSessionConversationCommands(candidate.id)
-          })
-        }
-      })
+      const resume = (): Promise<void> =>
+        resumeInterruptedWorkspaceSession(runtime, 'session-1', undefined, {
+          agentTarget: { frameworkId: to, providerId: to, reasoningEffort: 'default' },
+          historyReplayDescriptor: { target },
+          flushPersistence: async () => {
+            const candidate = toPersistedSession(useSessionStore.getState().sessions[0])
+            await saveSession(candidate, {
+              conversationCommands: pendingSessionConversationCommands(candidate.id)
+            })
+          }
+        })
+      await resume()
+      if (failFirstAttachmentSave) {
+        expect(attachmentSaveFailed).toBe(true)
+        expect(startContinuation).not.toHaveBeenCalled()
+        expect(durable.agentFrameworkId).toBe(from)
+        expect(useWorkspaceOperationErrors.getState().errors['session-1']).toContain(
+          'Attachment repository save failed'
+        )
+        await resume()
+      }
       expect(useWorkspaceOperationErrors.getState().errors['session-1']).toBeUndefined()
       expect(startContinuation).toHaveBeenCalledOnce()
       expect(durable.agentFrameworkId).toBe(to)

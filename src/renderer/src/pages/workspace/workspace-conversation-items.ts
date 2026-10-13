@@ -276,6 +276,14 @@ const createSessionConfigChangeItems = (
   const activitySegments = new Map(
     graph?.activities.map((activity) => [activity.id, activity.runtimeSegmentId])
   )
+  // A later tool can be visible while its segment's first text is still paced. Only projected
+  // activities release that segment's divider; hidden or inactive graph rows do not count.
+  const liveActivitySegments = new Set(
+    messages.flatMap((item) => {
+      const segmentId = 'activity' in item ? activitySegments.get(item.activity.id) : undefined
+      return segmentId ? [segmentId] : []
+    })
+  )
   const segments = new Map(
     graph?.runtimeSegments
       .filter((segment) => segment.agentFrameId === graph.activeFrameId)
@@ -316,16 +324,21 @@ const createSessionConfigChangeItems = (
     if (!target) continue
     // Output ownership can change inside an interrupted user turn. A newly opened segment alone
     // is not visible evidence: only a displayed text/tool row can introduce the switch marker.
-    const changed =
-      baseline &&
-      (userTarget
-        ? runtimeBaseline
-          ? baseline.frameworkId !== target.frameworkId ||
-            baseline.backendId !== target.backendId ||
-            (baseline.providerId !== '' && baseline.providerId !== target.providerId) ||
-            (baseline.model !== undefined && baseline.model !== target.model)
-          : !agentTargetsMatch(baseline, target)
-        : baseline.frameworkId !== target.frameworkId || baseline.backendId !== target.backendId)
+    let changed = false
+    if (baseline) {
+      const frameworkChanged =
+        baseline.frameworkId !== target.frameworkId || baseline.backendId !== target.backendId
+      if (!userTarget) {
+        changed = frameworkChanged
+      } else if (runtimeBaseline) {
+        changed =
+          frameworkChanged ||
+          (baseline.providerId !== '' && baseline.providerId !== target.providerId) ||
+          (baseline.model !== undefined && baseline.model !== target.model)
+      } else {
+        changed = !agentTargetsMatch(baseline, target)
+      }
+    }
     if (changed) {
       items.push({
         id: `session-config-change-${item.id}`,
@@ -333,7 +346,9 @@ const createSessionConfigChangeItems = (
         createdAt: item.createdAt,
         sortIndex: item.sortIndex - 0.5,
         agentTarget: target,
-        ...(!userTarget && 'activity' in item ? { followsLiveActivity: true as const } : {})
+        ...(!userTarget && outputSegmentId && liveActivitySegments.has(outputSegmentId)
+          ? { followsLiveActivity: true as const }
+          : {})
       })
     }
     // A same-framework fallback must not erase the full configuration snapshot of its user turn.

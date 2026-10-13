@@ -994,6 +994,22 @@ const ConversationPanel = ({
     localizeImageAnnotationSourceError(actionError, t) ??
     localizeVisionRunFailure(actionError, t) ??
     actionError
+  let resumeErrorDescription = resolvedActionError
+  if (resumeDiagnostic && resolvedActionError) {
+    if (/timed out/i.test(resumeDiagnostic.detail)) {
+      resumeErrorDescription = t(
+        'The agent did not respond in time. Your conversation is preserved. Try Resume again.'
+      )
+    } else if (
+      /Runtime Segment does not match the adopted Agent context/i.test(resumeDiagnostic.detail)
+    ) {
+      resumeErrorDescription = t(
+        'The selected agent could not be attached to this conversation. Try Resume again.'
+      )
+    } else if (isReportableRunFailure(actionError)) {
+      resumeErrorDescription = t('Your conversation is preserved. Try Resume again.')
+    }
+  }
   const errorKey = JSON.stringify([
     activeSession?.id,
     legacyDisplayState?.status === 'error' ? legacyDisplayState.error : null,
@@ -1708,21 +1724,7 @@ const ConversationPanel = ({
                             data-testid="resume-operation-error"
                             className="mb-2"
                             title={t('Could not resume this conversation')}
-                            description={
-                              /timed out/i.test(resumeDiagnostic.detail)
-                                ? t(
-                                    'The agent did not respond in time. Your conversation is preserved. Try Resume again.'
-                                  )
-                                : /Runtime Segment does not match the adopted Agent context/i.test(
-                                      resumeDiagnostic.detail
-                                    )
-                                  ? t(
-                                      'The selected agent could not be attached to this conversation. Try Resume again.'
-                                    )
-                                  : !isReportableRunFailure(actionError)
-                                    ? resolvedActionError
-                                    : t('Your conversation is preserved. Try Resume again.')
-                            }
+                            description={resumeErrorDescription ?? undefined}
                             secondaryButton={
                               activeSession && sessionTools.exportDiagnostics
                                 ? {

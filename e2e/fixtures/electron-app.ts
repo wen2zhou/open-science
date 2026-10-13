@@ -1075,7 +1075,7 @@ class ElectronAppHarness implements ElectronApp {
     )
     settings.opencodeVersion = '1.0.0'
     if (options?.crossFramework) {
-      // Both providers speak ACP; only their external executable is replaced in this journey.
+      // Both framework adapters remain real; this block replaces their external executables.
       const codebuddyPath = join(
         this.roots.fakeAgentBinRoot,
         process.platform === 'win32' ? 'codebuddy.cmd' : 'codebuddy'

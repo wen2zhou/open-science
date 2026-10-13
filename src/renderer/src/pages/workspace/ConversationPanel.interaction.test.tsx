@@ -8347,19 +8347,28 @@ describe('ConversationPanel error box + report affordance', () => {
   it.each(
     [true, false].flatMap((canExport) =>
       [
-        'Internal error',
-        'Resume timed out',
-        'Resume Runtime Segment does not match the adopted Agent context.'
-      ].map((failure) => ({ canExport, failure }))
+        ['Internal error', 'Your conversation is preserved. Try Resume again.'],
+        [
+          'Resume timed out',
+          'The agent did not respond in time. Your conversation is preserved. Try Resume again.'
+        ],
+        [
+          'Resume Runtime Segment does not match the adopted Agent context.',
+          'The selected agent could not be attached to this conversation. Try Resume again.'
+        ]
+      ].map(([failure, explanation]) => ({ canExport, failure, explanation }))
     )
   )(
     'shows resume diagnostics for $failure with export capability $canExport',
-    async ({ canExport, failure }) => {
+    async ({ canExport, failure, explanation }) => {
       const session = { ...errorSession, status: 'idle' as const, error: undefined }
       const raw = new Error(`Error invoking remote method 'acp:resume-session': ${failure}`)
       const message = 'Agent session resume failed: Unknown error'
       const exportDiagnostics = vi.fn()
-      const writeText = vi.fn().mockResolvedValue(undefined)
+      const writeText = vi
+        .fn()
+        .mockRejectedValueOnce(new Error('Clipboard unavailable'))
+        .mockResolvedValue(undefined)
       Object.defineProperty(navigator, 'clipboard', { configurable: true, value: { writeText } })
       act(() =>
         reportWorkspaceOperationError(session.id, message, { operation: 'resume', rawError: raw })
@@ -8375,6 +8384,7 @@ describe('ConversationPanel error box + report affordance', () => {
       expect(notice.closest('.border-red-200')).toBeNull()
       expect(notice.getAttribute('data-notice-inline')).toBeNull()
       expect(notice.textContent).toContain('Could not resume this conversation')
+      expect(notice.textContent).toContain(explanation)
       const details = notice.querySelector('details')!
       expect(details.open).toBe(false)
       expect(details.parentElement?.classList.contains('pl-7')).toBe(true)
@@ -8383,6 +8393,13 @@ describe('ConversationPanel error box + report affordance', () => {
       expect(details.open).toBe(true)
       await act(async () => details.querySelector<HTMLButtonElement>('button')!.click())
       expect(writeText).toHaveBeenCalledWith(raw.stack)
+      expect(details.querySelector('[role="status"]')?.textContent).toBe(
+        'Could not copy details. Select the text and copy it manually.'
+      )
+      expect(details.open).toBe(true)
+      await act(async () => details.querySelector<HTMLButtonElement>('button')!.click())
+      expect(writeText).toHaveBeenCalledTimes(2)
+      expect(details.querySelector('[role="status"]')).toBeNull()
       const button = Array.from(notice.querySelectorAll('button')).find(
         (button) => button.textContent === 'Export diagnostics…'
       )
