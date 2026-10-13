@@ -8370,9 +8370,14 @@ describe('ConversationPanel error box + report affordance', () => {
       })
       const notice = container.querySelector('[data-testid="resume-operation-error"]')!
       expect(notice).not.toBeNull()
+      expect(notice.classList.contains('bg-card')).toBe(true)
+      expect(notice.classList.contains('border-border')).toBe(true)
+      expect(notice.closest('.border-red-200')).toBeNull()
+      expect(notice.getAttribute('data-notice-inline')).toBeNull()
       expect(notice.textContent).toContain('Could not resume this conversation')
       const details = notice.querySelector('details')!
       expect(details.open).toBe(false)
+      expect(details.parentElement?.classList.contains('pl-7')).toBe(true)
       expect(details.textContent).toContain(raw.message)
       act(() => details.querySelector('summary')!.click())
       expect(details.open).toBe(true)
@@ -8394,6 +8399,72 @@ describe('ConversationPanel error box + report affordance', () => {
       act(() => clearWorkspaceOperationError(session.id))
     }
   )
+
+  it('keeps Resume reachable after dismissal and reopens the same failure on retry or recurrence', async () => {
+    const session: ChatSession = {
+      ...errorSession,
+      resumeRecovery: { kind: 'resume-required', cause: 'connection-lost' }
+    }
+    const message = 'Agent session resume failed: Unknown error'
+    const resume = vi.fn().mockResolvedValue(undefined)
+    const show = (actionError: string | null = message, activeSession = session): void =>
+      renderPanel({ view: { activeSession, actionError }, conversation: { actions: { resume } } })
+    act(() =>
+      reportWorkspaceOperationError(session.id, message, {
+        operation: 'resume',
+        rawError: new Error('Resume timed out')
+      })
+    )
+    const notice = (): Element | null =>
+      container.querySelector('[data-testid="resume-operation-error"]')
+    const dismiss = (): void =>
+      act(() => notice()?.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')?.click())
+    show()
+    dismiss()
+    expect(notice()).toBeNull()
+    show(message, { ...session, updatedAt: session.updatedAt + 1 })
+    expect(notice()).toBeNull()
+    const resumeButton = container.querySelector<HTMLButtonElement>(
+      '[aria-label="Resume session"]'
+    )!
+    expect(resumeButton.disabled).toBe(false)
+    await act(async () => resumeButton.click())
+    expect(resume).toHaveBeenCalledOnce()
+    expect(notice()).not.toBeNull()
+    expect(session.error).toBe(errorSession.error)
+    expect(session.resumeRecovery?.kind).toBe('resume-required')
+    dismiss()
+    show(null)
+    show()
+    expect(notice()).not.toBeNull()
+    act(() => clearWorkspaceOperationError(session.id))
+  })
+
+  it('preserves the shared dismissal scope for a coexisting run failure', () => {
+    const message = 'Agent session resume failed: Unknown error'
+    act(() =>
+      reportWorkspaceOperationError(errorSession.id, message, {
+        operation: 'resume',
+        rawError: new Error('Resume timed out')
+      })
+    )
+    renderPanel({ view: { activeSession: errorSession, actionError: message } })
+    const notice = container.querySelector('[data-testid="resume-operation-error"]')!
+    expect(errorBoxText()).toContain(errorSession.error)
+    expect(reportButton()).not.toBeNull()
+    act(() => notice.querySelector<HTMLButtonElement>('[aria-label="Dismiss error"]')?.click())
+    expect(container.querySelector('[data-testid="resume-operation-error"]')).toBeNull()
+    expect(errorBoxText()).toBe('')
+    expect(reportButton()).toBeNull()
+    renderPanel({ view: { activeSession: errorSession, actionError: null } })
+    expect(errorBoxText()).toContain(errorSession.error)
+    act(() => reportButton()?.click())
+    expect(
+      document.body.querySelector<HTMLTextAreaElement>('textarea[aria-label="Error details"]')
+        ?.value
+    ).toBe(errorSession.error)
+    act(() => clearWorkspaceOperationError(errorSession.id))
+  })
 
   it('shows only the transient actionError, without a Report button, for a non-failed session', () => {
     renderPanel({

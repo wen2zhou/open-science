@@ -1,6 +1,6 @@
 import { expect, type Page } from '@playwright/test'
 import type { ElectronApplication } from 'playwright'
-import { mkdir, readFile, writeFile } from 'node:fs/promises'
+import { mkdir, readFile, unlink, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
 import { createServer, type Server } from 'node:http'
 import { x as extract } from 'tar'
@@ -135,7 +135,11 @@ test('failed provider attachment exposes original details and exports real diagn
   await project.getByRole('button', { name: 'Create project' }).click()
   await stopStreaming(page)
   const before = await persistedSession(page)
-  const failure = 'Resume acceptance attachment failed; api_key=fixture-secret-must-be-redacted'
+  const failure = [
+    'Resume acceptance attachment failed; api_key=fixture-secret-must-be-redacted',
+    `Provider diagnostic: ${'long-provider-detail-'.repeat(35)}`,
+    ...Array.from({ length: 16 }, (_, index) => `Diagnostic context line ${index + 1}`)
+  ].join('\n')
   await writeFile(join(before.cwd, '.e2e-resume-attachment-failure'), failure)
   await page.evaluate(async () => {
     await window.api.settings.setAgentFramework({ id: 'codebuddy' })
@@ -143,18 +147,71 @@ test('failed provider attachment exposes original details and exports real diagn
   await page.getByRole('button', { name: 'Resume session', exact: true }).click()
   const error = page.getByTestId('resume-operation-error')
   await expect(error.getByText('Could not resume this conversation', { exact: true })).toBeVisible()
+  await expect(error).toHaveClass(/bg-card/)
+  await expect(error).toHaveClass(/border-border/)
+  await expect(error).not.toHaveAttribute('data-notice-inline')
   await expect(error.locator('details')).not.toHaveAttribute('open')
   await page.screenshot({ path: info.outputPath('resume-friendly-error.png'), fullPage: true })
   await error.locator('summary').focus()
   await page.keyboard.press('Enter')
   await expect(error.locator('pre')).toContainText('Resume acceptance attachment failed')
+  const titleBounds = await error
+    .getByText('Could not resume this conversation', { exact: true })
+    .boundingBox()
+  const detailsBounds = await error.locator('details').boundingBox()
+  expect(titleBounds).not.toBeNull()
+  expect(detailsBounds).not.toBeNull()
+  expect(Math.abs(titleBounds!.x - detailsBounds!.x)).toBeLessThanOrEqual(1)
+  await error.getByRole('button', { name: 'Copy', exact: true }).click()
+  const application = (app as unknown as { application: ElectronApplication }).application
+  const displayedDetails = (await error.locator('pre').textContent())!.replace(/\r\n/g, '\n')
+  await expect
+    .poll(async () =>
+      (await application.evaluate(({ clipboard }) => clipboard.readText())).replace(/\r\n/g, '\n')
+    )
+    .toBe(displayedDetails)
   await page.screenshot({ path: info.outputPath('resume-original-details.png'), fullPage: true })
   await page.setViewportSize({ width: 640, height: 850 })
+  await page.screenshot({
+    path: info.outputPath('resume-light-narrow-expanded.png'),
+    fullPage: true
+  })
   await page.evaluate(() => document.documentElement.classList.add('dark'))
+  const layout = await error.evaluate((element) => {
+    const pre = element.querySelector('pre')!
+    return {
+      cardWidth: element.getBoundingClientRect().width,
+      preWidth: pre.getBoundingClientRect().width,
+      preHeight: pre.getBoundingClientRect().height,
+      pageWidth: document.documentElement.scrollWidth,
+      viewportWidth: window.innerWidth
+    }
+  })
+  expect(layout.preWidth).toBeLessThan(layout.cardWidth)
+  expect(layout.preHeight).toBeLessThanOrEqual(160)
+  expect(layout.pageWidth).toBeLessThanOrEqual(layout.viewportWidth)
   await page.screenshot({ path: info.outputPath('resume-dark-narrow.png'), fullPage: true })
+  await error.locator('summary').click()
+  await page.screenshot({
+    path: info.outputPath('resume-dark-narrow-collapsed.png'),
+    fullPage: true
+  })
+  await page.evaluate(() => document.documentElement.classList.remove('dark'))
+  await page.screenshot({
+    path: info.outputPath('resume-light-narrow-collapsed.png'),
+    fullPage: true
+  })
+  await error.getByRole('button', { name: 'Dismiss error', exact: true }).click()
+  await expect(error).toHaveCount(0)
+  const dismissed = await persistedSession(page)
+  expect(dismissed.resumeRecovery).toEqual(before.resumeRecovery)
+  expect(dismissed.messages).toEqual(before.messages)
+  await expect(page.getByRole('button', { name: 'Resume session', exact: true })).toBeEnabled()
+  await page.getByRole('button', { name: 'Resume session', exact: true }).click()
+  await expect(error).toBeVisible()
+  await expect(error.locator('details')).not.toHaveAttribute('open')
   await page.setViewportSize({ width: 1280, height: 900 })
   await page.evaluate(() => document.documentElement.classList.remove('dark'))
-  const application = (app as unknown as { application: ElectronApplication }).application
   const archive = info.outputPath('resume-failure-diagnostics.tar.gz')
   await application.evaluate(({ dialog }, path) => {
     dialog.showSaveDialog = async () => ({ canceled: false, filePath: path })
@@ -201,10 +258,19 @@ test('failed provider attachment exposes original details and exports real diagn
         failureRecord,
         errorFound: true,
         secretRedacted: true,
-        recoveryUnchanged: true
+        recoveryUnchanged: true,
+        dismissalPreservedRecovery: true,
+        retryReopenedSameFailure: true,
+        layout
       },
       null,
       2
     )
   )
+  await dialog.getByRole('button', { name: 'Close', exact: true }).last().click()
+  await error.getByRole('button', { name: 'Dismiss error', exact: true }).click()
+  await unlink(join(before.cwd, '.e2e-resume-attachment-failure'))
+  await page.getByRole('button', { name: 'Resume session', exact: true }).click()
+  await expect(page.getByText(COMPLETED, { exact: true })).toBeVisible({ timeout: 60_000 })
+  await expect(error).toHaveCount(0)
 })
