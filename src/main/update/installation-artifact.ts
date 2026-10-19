@@ -17,7 +17,8 @@ export async function inspectMacUpdateArtifact(
   archive: string,
   targetVersion: string,
   signal?: AbortSignal,
-  retainBundle?: (bundle: string) => Promise<void>
+  retainBundle?: (bundle: string) => Promise<void>,
+  verifyPublisher?: (signature: ReadonlySet<string>) => void
 ): Promise<InstallationManifest> {
   if (process.platform !== 'darwin')
     throw new UpdateLifecycleError('installation-busy', 'This artifact verifier requires macOS.')
@@ -40,7 +41,11 @@ export async function inspectMacUpdateArtifact(
     await run('/usr/bin/codesign', ['--verify', '--deep', '--strict', bundle])
     const signature = await run('/usr/bin/codesign', ['-d', '--verbose=4', bundle])
     const lines = new Set(`${signature.stdout}\n${signature.stderr}`.split(/\r?\n/))
-    if (!lines.has('Identifier=com.aipoch.open-science') || !lines.has('TeamIdentifier=87G9WFU9H3'))
+    if (verifyPublisher) verifyPublisher(lines)
+    else if (
+      !lines.has('Identifier=com.aipoch.open-science') ||
+      !lines.has('TeamIdentifier=87G9WFU9H3')
+    )
       throw new UpdateLifecycleError(
         'install-failed',
         'The update application signature does not match this publisher.'

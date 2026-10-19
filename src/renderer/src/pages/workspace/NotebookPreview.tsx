@@ -62,6 +62,7 @@ import {
 } from './notebook-cell-utils'
 import { NotebookCodeBlock } from './notebook-code'
 import { NotebookInputDataStrip } from './NotebookInputDataStrip'
+import { NotebookShellTerminal } from './NotebookShellTerminal'
 import { NotebookRunEvidence } from './NotebookRunEvidence'
 import { NotebookRunOutputs } from './NotebookRunOutputs'
 import {
@@ -732,7 +733,9 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
       ? notebookState?.runtimeBindings?.[effectiveActiveKind]
       : undefined
   const activeRuntimeTargetReady = hasActiveRuntimeTarget(activeRuntimeBinding)
-  const gated = notebookGated(envStatus, provisionUi, item.notebook.sessionId, activeRuntimeBinding)
+  const gated =
+    effectiveActiveKind !== 'bash' &&
+    notebookGated(envStatus, provisionUi, item.notebook.sessionId, activeRuntimeBinding)
   const activeRuntimeUnavailable = activeRuntimeBinding?.status === 'unavailable'
   const activeRuntimeUnavailableReason =
     activeRuntimeBinding?.reason === 'disabled'
@@ -1367,7 +1370,30 @@ const NotebookPreview = ({ item }: NotebookPreviewProps): React.JSX.Element => {
     </div>
   )
   const notebookView =
-    !activeDataLanguage || isNamespaceLost || isHistoricalEnvironmentView ? (
+    effectiveActiveKind === 'bash' ? (
+      <div className="flex min-h-0 flex-1 flex-col overflow-hidden">
+        <div className="min-h-0 flex-1 overflow-hidden">{notebookCells}</div>
+        <NotebookShellTerminal
+          key={`${notebookRequestKey}:${recoveryEpoch}`}
+          request={createNotebookRequest(item.notebook)}
+          active={runs.some(
+            (run) =>
+              run.kernelKind === 'bash' &&
+              run.source === 'user' &&
+              ['running', 'queued'].includes(run.status)
+          )}
+          disabled={
+            !notebookState || Boolean(notebookState.activeWrite || notebookState.activeRunId)
+          }
+          onSubmitted={() => {
+            const rootFrameId = session?.conversationGraph?.rootFrameId
+            if (rootFrameId) setFrameFilter(`frame:${rootFrameId}`)
+            setActiveKind('bash')
+          }}
+          onChanged={loadNotebookState}
+        />
+      </div>
+    ) : !activeDataLanguage || isNamespaceLost || isHistoricalEnvironmentView ? (
       <div className="min-h-0 flex-1 overflow-hidden">{notebookCells}</div>
     ) : (
       <ResizablePanelGroup orientation="vertical" className="min-h-0 flex-1 flex-col">

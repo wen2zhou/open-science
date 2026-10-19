@@ -145,6 +145,7 @@ const useApplicationEventBindings = ({
   const desktopRecoveryPhase = useDesktopRuntimeRecoveryStore((state) => state.phase)
   const desktopClosing = useDesktopRuntimeRecoveryStore((state) => state.closing)
   const plannedUpdateShutdown = desktopClosing && isApplyingUpdate
+  const runtimeRecoveryOwner = useDesktopRuntimeRecoveryStore((state) => state.recoveryOwner)
   const lifecycle = useLifecycleSync({
     // Keep incoming changes queued while a catalog reload can still replace the store snapshot.
     isSessionPersistenceHydrated:
@@ -165,6 +166,7 @@ const useApplicationEventBindings = ({
         isSessionPersistenceHydrated: sessionPersistence.isHydrated,
         isSessionPersistenceLoading: sessionPersistence.isLoading,
         view,
+        runtimeRecoveryOwner,
         presentations: {
           closeConfirmation: isCloseConfirmOpen,
           webEventRecovery:
@@ -200,6 +202,7 @@ const useApplicationEventBindings = ({
       webEventConnectionPhase,
       desktopRecoveryPhase,
       plannedUpdateShutdown,
+      runtimeRecoveryOwner,
       view
     ]
   )

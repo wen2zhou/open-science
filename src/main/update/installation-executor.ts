@@ -114,8 +114,8 @@ async function main() {
   // deferred to a future explicit maintenance action; it is outside the installed bundle.
   atomic('result.json',{operationId:request.operationId,requestSha256:digest,pid:process.pid,outcome,error});
   if (outcome==='installed' && request.relaunch) {
-    const opener="const {DatabaseSync}=require('node:sqlite');const {spawn}=require('node:child_process');const p=process.argv[1], app=process.argv[2];(async()=>{for(;;){let db;try{db=new DatabaseSync(p);db.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE');db.close();break}catch{try{db?.close()}catch{}await new Promise(r=>setTimeout(r,25))}}spawn(process.platform==='darwin'?'/usr/bin/open':app,process.platform==='darwin'?['-a',app]:[],{detached:true,stdio:'ignore',env:{...process.env,APPIMAGE:app}}).unref()})()";
-    spawn(process.execPath,['-e',opener,path.join(directory,'executor.sqlite'),request.launchPath || request.installationRoot],{detached:true,stdio:'ignore'}).unref();
+    const opener="const {DatabaseSync}=require('node:sqlite');const {spawn}=require('node:child_process');const fs=require('node:fs'),path=require('node:path');const p=process.argv[1], app=process.argv[2], executable=process.argv[3],operationId=process.argv[4],requestSha256=process.argv[5];(async()=>{for(;;){let db;try{db=new DatabaseSync(p);db.exec('PRAGMA busy_timeout=0; BEGIN EXCLUSIVE');db.close();break}catch{try{db?.close()}catch{}await new Promise(r=>setTimeout(r,25))}}const child=spawn(executable || (process.platform==='darwin'?'/usr/bin/open':app),executable?[]:(process.platform==='darwin'?['-a',app]:[]),{detached:true,stdio:'ignore',env:{...process.env,APPIMAGE:app}});child.once('spawn',()=>{const file=path.join(path.dirname(p),'relaunch.json');fs.writeFileSync(file+'.tmp',JSON.stringify({operationId,requestSha256,pid:child.pid,executable:executable||app,at:new Date().toISOString()}),{mode:0o600});fs.renameSync(file+'.tmp',file)});child.once('error',e=>{fs.writeFileSync(path.join(path.dirname(p),'relaunch-error.json'),JSON.stringify({operationId,error:String(e)}),{mode:0o600});process.exitCode=1});child.unref()})()";
+    spawn(process.execPath,['-e',opener,path.join(directory,'executor.sqlite'),request.launchPath || request.installationRoot,request.relaunchExecutable || '',request.operationId,digest],{detached:true,stdio:'ignore'}).unref();
   }
   process.exit(outcome==='failed'?1:0);
 }
@@ -140,6 +140,7 @@ export async function prepareSupervisedMacInstallation(
     archive: string
     targetVersion: string
     sha512?: string
+    verifyPublisher?: (signature: ReadonlySet<string>) => void
     signal?: AbortSignal
   }
 ): Promise<PreparedMacInstallation> {
@@ -163,7 +164,8 @@ export async function prepareSupervisedMacInstallation(
           signal: options.signal,
           cwd: directory
         })
-      }
+      },
+      options.verifyPublisher
     )
     const copiedManifest = await captureInstallationManifestAsync(
       stagedBundle,
@@ -212,8 +214,13 @@ export async function launchPreparedMacInstaller(
   location: InstallationLocation,
   operationId: string,
   prepared: PreparedMacInstallation,
-  options: { desktopPid: number; relaunch: boolean }
+  options: { desktopPid: number; relaunch: boolean; relaunchExecutable?: string }
 ): Promise<void> {
+  if (
+    options.relaunchExecutable &&
+    options.relaunchExecutable !== join(prepared.installationRoot, 'Contents/MacOS/Open-Science')
+  )
+    throw new Error('Relaunch executable must belong to the replaced application.')
   const record = inspectInstallationUpdate(location)
   if (!record || record.operationId !== operationId)
     throw new Error('The installation operation changed.')

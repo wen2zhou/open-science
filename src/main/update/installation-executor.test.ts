@@ -1,6 +1,7 @@
 import { prefetchSystemBootIdentity } from '../system-boot-identity'
 import { afterEach, beforeAll, expect, it } from 'vitest'
 import {
+  chmodSync,
   copyFileSync,
   mkdtempSync,
   mkdirSync,
@@ -44,7 +45,8 @@ it.each([
   'kill-after-rename',
   'cancel-before-start',
   'appimage',
-  'deb-delayed'
+  'deb-delayed',
+  ...(process.platform === 'win32' ? [] : ['relaunch'])
 ])('settles a real isolated replacement/rollback: %s', async (fault) => {
   const dir = mkdtempSync(join(tmpdir(), 'executor-test-'))
   directories.push(dir)
@@ -55,10 +57,17 @@ it.each([
   const native = fault === 'deb-delayed'
   const channel =
     fault === 'deb-delayed' ? 'supervised-deb' : image ? 'supervised-appimage' : 'supervised-mac'
-  const rollback = !!fault && !image && !native
+  const relaunch = fault === 'relaunch'
+  const rollback = !!fault && !image && !native && !relaunch
   for (const p of image ? [executor] : [root, staged, executor]) mkdirSync(p)
   writeFileSync(image ? root : join(root, 'program'), 'old')
   writeFileSync(image ? staged : join(staged, 'program'), 'new')
+  if (relaunch) {
+    mkdirSync(join(staged, 'Contents/MacOS'), { recursive: true })
+    const executable = join(staged, 'Contents/MacOS/Open-Science')
+    writeFileSync(executable, `#!/bin/sh\nprintf 'B started' > '${join(dir, 'relaunched')}'\n`)
+    chmodSync(executable, 0o700)
+  }
   const location = { installationRoot: root, stateRoot: join(dir, 'state') }
   const configRoot = join(dir, 'config')
   const record = beginInstallationUpdate({
@@ -99,7 +108,8 @@ it.each([
     backup: join(dir, 'backup'),
     discard: join(dir, 'discard'),
     desktopPid: 2147483647,
-    relaunch: false,
+    relaunch,
+    relaunchExecutable: relaunch ? join(root, 'Contents/MacOS/Open-Science') : undefined,
     nodeSha256: captureInstallationManifest(process.execPath, 'executor').files['@image'],
     executorSha256: createHash('sha256').update(INSTALLATION_EXECUTOR_SOURCE).digest('hex'),
     fault,
@@ -184,6 +194,15 @@ it.each([
     rollback ? 'rolled-back' : 'installed'
   )
   expect(readFileSync(image ? root : join(root, 'program'), 'utf8')).toBe(rollback ? 'old' : 'new')
+  if (relaunch) {
+    const deadline = Date.now() + 5000
+    while (!existsSync(join(dir, 'relaunched'))) {
+      if (Date.now() > deadline)
+        throw new Error('Replacement application was not automatically relaunched')
+      await new Promise((resolve) => setTimeout(resolve, 20))
+    }
+    expect(readFileSync(join(dir, 'relaunched'), 'utf8')).toBe('B started')
+  }
   finishInstallationRecovery(location, record.operationId, rollback ? 'cancel' : 'complete')
   expect(inspectInstallationUpdate(location)).toBeUndefined()
 })

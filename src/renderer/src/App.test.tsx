@@ -3,11 +3,16 @@ import { act, useImperativeHandle, type ReactNode, type Ref } from 'react'
 import type { SettingsPageHandle } from './pages/settings/SettingsPage'
 import { createRoot, type Root } from 'react-dom/client'
 import { i18next } from './i18n'
-import { useDesktopRuntimeRecoveryStore } from '@/stores/desktop-runtime-recovery-store'
 import { WindowsTitleBar } from '@/components/WindowsTitleBar'
 import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 import { createLinearConversationGraph } from '../../shared/conversation-graph'
+import type { UpdateStatus } from '../../shared/update'
+import { DesktopRuntimeRecovery } from '@/components/desktop-runtime-recovery'
+import {
+  desktopRuntimeWritable,
+  useDesktopRuntimeRecoveryStore
+} from '@/stores/desktop-runtime-recovery-store'
 
 const mocks = vi.hoisted(() => {
   // Captures the onOpenSession listener so tests can fire the notification nudge directly.
@@ -136,9 +141,11 @@ const mocks = vi.hoisted(() => {
     },
     update: {
       isDialogOpen: false,
-      status: { state: 'idle' },
-      closeDialog: vi.fn()
+      status: { state: 'idle', current: '1' } as UpdateStatus,
+      closeDialog: vi.fn(),
+      recover: vi.fn(async () => undefined)
     },
+    realUpdateDialog: false,
     startupView: 'app' as 'app' | 'onboarding',
     getStatus: vi.fn(),
     getInfo: vi.fn(),
@@ -276,8 +283,9 @@ vi.mock('@/stores/update-store', () => {
   })
   return {
     useUpdateStore: Object.assign(
-      <T,>(selector: (state: ReturnType<typeof getState>) => T): T => selector(getState()),
-      { getState }
+      <T,>(selector?: (state: ReturnType<typeof getState>) => T): T =>
+        selector ? selector(getState()) : (getState() as T),
+      { getState, subscribe: () => () => undefined }
     )
   }
 })
@@ -314,12 +322,19 @@ vi.mock('@/components/ConnectorAuthToast', () => ({
 vi.mock('@/components/NotificationLiveToast', () => ({
   NotificationLiveToast: (): React.JSX.Element => <div data-testid="notification-live-toast" />
 }))
-vi.mock('@/components/UpdateDialog', () => ({
-  UpdateDialog: (props: { active?: boolean }): React.JSX.Element => {
-    mocks.presentationProps.update = props
-    return <div data-testid="update-dialog" />
+vi.mock('@/components/UpdateDialog', async () => {
+  const { RuntimeUpdateDialog } = await import('@/components/RuntimeUpdateDialog')
+  return {
+    UpdateDialog: (props: { active?: boolean }): React.JSX.Element => {
+      mocks.presentationProps.update = props
+      return mocks.realUpdateDialog ? (
+        <RuntimeUpdateDialog active={props.active} />
+      ) : (
+        <div data-testid="update-dialog" />
+      )
+    }
   }
-}))
+})
 vi.mock('@/components/PermissionUndoSnackbar', () => ({
   PermissionUndoSnackbar: (): React.JSX.Element => <div data-testid="permission-undo" />
 }))
@@ -486,7 +501,9 @@ describe('App startup routing', () => {
   let canvasContextSpy: { mockRestore: () => void }
 
   beforeEach(() => {
-    useDesktopRuntimeRecoveryStore.setState({ phase: 'connected', epoch: 0, closing: false })
+    useDesktopRuntimeRecoveryStore.setState({ phase: 'connected', epoch: 0, closing: false }, true)
+    mocks.realUpdateDialog = false
+    mocks.update.recover.mockClear()
     useStorageInfoStore.setState({
       status: null,
       info: null,
@@ -540,7 +557,7 @@ describe('App startup routing', () => {
     mocks.sessionPersistence.persistenceBlockedSessionIds = []
     mocks.sessionPersistence.reportSessionSizeLimit.mockClear()
     mocks.update.isDialogOpen = false
-    mocks.update.status.state = 'idle'
+    mocks.update.status = { state: 'idle', current: '1' }
     mocks.update.closeDialog.mockClear()
     mocks.sessionPersistence.dismissLoadWarning.mockClear()
     mocks.sessionPersistence.dismissWriteWarning.mockClear()
@@ -1197,6 +1214,78 @@ describe('App startup routing', () => {
       useDesktopRuntimeRecoveryStore.setState({ phase: 'disconnected', closing: false })
     })
     expect(mocks.presentationProps.update?.active).toBe(false)
+  })
+
+  it('keeps real update recovery interactive through the full host when its backend stops', async () => {
+    mocks.settings.isLoaded = true
+    mocks.update.isDialogOpen = true
+    mocks.realUpdateDialog = true
+    mocks.update.status = {
+      state: 'applying',
+      current: '1',
+      latest: '2',
+      recovery: {
+        phase: 'stopping',
+        runtime: 'unknown',
+        installation: 'unchanged',
+        canCancel: false,
+        canRecover: false,
+        canRetryInstall: false
+      }
+    }
+    root = createRoot(container)
+    await act(async () =>
+      root.render(
+        <>
+          <App />
+          <DesktopRuntimeRecovery />
+        </>
+      )
+    )
+    await vi.waitFor(() => expect(mocks.presentationProps.update?.active).toBe(true))
+    await act(async () => {
+      mocks.update.status = {
+        ...mocks.update.status,
+        state: 'ready',
+        reason: 'install-failed',
+        recovery: {
+          ...mocks.update.status.recovery!,
+          phase: 'stopped',
+          runtime: 'stopped-clean',
+          canRecover: true
+        }
+      }
+      useDesktopRuntimeRecoveryStore.setState({
+        phase: 'unavailable',
+        epoch: 1,
+        closing: false,
+        recoveryOwner: 'update'
+      })
+      root.render(
+        <>
+          <App />
+          <DesktopRuntimeRecovery />
+        </>
+      )
+    })
+    expect(mocks.presentationProps.update?.active).toBe(true)
+    expect(document.querySelectorAll('[role="dialog"], [role="alertdialog"]')).toHaveLength(1)
+    const retry = [...document.querySelectorAll<HTMLButtonElement>('button')].find(
+      (button) => button.textContent === 'Retry'
+    )!
+    expect(retry.closest('[aria-hidden="true"], [inert]')).toBeNull()
+    retry.focus()
+    expect(document.activeElement).toBe(retry)
+    await act(async () => retry.click())
+    expect(mocks.update.recover).toHaveBeenCalledOnce()
+    expect(desktopRuntimeWritable()).toBe(false)
+    expect(mocks.lifecycleSync).toHaveBeenLastCalledWith({ isSessionPersistenceHydrated: false })
+
+    // An unrelated disconnect gives presentation back to ordinary desktop recovery.
+    await act(async () => useDesktopRuntimeRecoveryStore.setState({ recoveryOwner: undefined }))
+    expect(mocks.presentationProps.update?.active).toBe(false)
+    expect(document.querySelector('[data-testid="runtime-update-dialog"]')).toBeNull()
+    expect(document.querySelector('[role="alertdialog"]')).not.toBeNull()
   })
 
   it('closes the update dialog before underlying surfaces', async () => {

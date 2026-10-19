@@ -39,6 +39,18 @@ describe('desktop recovery notice', () => {
     } as unknown as Window['api']
   })
   afterEach(cleanup)
+  it('clears update presentation ownership when a new attachment snapshot replaces it', async () => {
+    render(<DesktopRuntimeRecovery />)
+    await act(async () =>
+      publish({ phase: 'unavailable', epoch: 1, closing: false, recoveryOwner: 'update' })
+    )
+    expect(screen.queryByRole('alertdialog')).toBeNull()
+    await act(async () => publish({ phase: 'connected', epoch: 0, closing: false }))
+    await act(async () => publish({ phase: 'unavailable', epoch: 1, closing: false }))
+    expect(screen.getByRole('alertdialog')).toBeDefined()
+    expect(screen.getByRole('button', { name: 'Quit' })).toBeDefined()
+  })
+
   it('focuses the first available recovery action and keeps keyboard focus inside the dialog', async () => {
     render(
       <>

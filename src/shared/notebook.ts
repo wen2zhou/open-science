@@ -893,6 +893,8 @@ export type ExecuteNotebookControlRequest = NotebookSessionRequest & {
 // Runs a command in the live session lane's shell. State lasts until the interpreter stops;
 // each invocation is still persisted as a separate "bash" Run, without variable snapshots.
 export type ExecuteShellRequest = NotebookSessionRequest & {
+  source?: NotebookRunSource
+  inputKind?: NotebookRunInputKind
   command: string
   background?: boolean
   timeoutMs?: number
@@ -900,3 +902,9 @@ export type ExecuteShellRequest = NotebookSessionRequest & {
   // the immutable binding it advertised when the capability was created.
   shellRuntime?: ShellRuntimeBinding
 }
+
+// Human-authored Shell input never carries agent provenance or runtime authority.
+export type ExecuteNotebookShellCommandRequest = Pick<
+  NotebookSessionRequest,
+  'projectId' | 'sessionId' | 'workspaceCwd'
+> & { command: string; timeoutMs?: number }

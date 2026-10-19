@@ -1,28 +1,70 @@
 {
   "schemaVersion": 1,
   "modules": {
+    "acp_session_policy": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
     "artifact_reproducibility_contract": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
+    "cli_sdk": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
     "compute_domain_contracts": [
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
+    ],
+    "desktop_composition": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
+    "durable_files": [
+      "scripts/local-update-validation/fixture.test.ts"
     ],
     "environment_contracts": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
+      "src/renderer/src/pages/workspace/NotebookShellTerminal.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
+    "environment_engine": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "host_command_runtime": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
+    "host_http_transport": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
+    "host_installation": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
+    "host_process_runtime": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
     "host_runtime_lifecycle": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "scripts/local-update-validation/shutdown-fault.integration.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
       "src/main/update/windows-install-progress.test.ts",
       "src/main/update/windows-update-handoff.test.ts"
     ],
     "host_runtime_ports": [
+      "scripts/local-update-validation/fixture.test.ts",
       "src/main/cli-install/launcher.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
       "src/main/update/windows-update-handoff.test.ts"
     ],
-    "host_value_guards": ["src/main/update/windows-update-handoff.test.ts"],
+    "host_value_guards": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
+      "src/main/update/windows-update-handoff.test.ts"
+    ],
     "i18n_main_adapter": [
+      "src/main/local-update-validation/adapter.test.ts",
       "src/main/update/electron-updater-provider-regressions.test.ts",
       "src/main/update/electron-updater-strategy.test.ts",
       "src/main/update/windows-install-progress.test.ts"
@@ -32,6 +74,7 @@
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
     "i18n_shared_runtime": [
+      "src/main/local-update-validation/adapter.test.ts",
       "src/main/update/electron-updater-provider-regressions.test.ts",
       "src/main/update/electron-updater-strategy.test.ts",
       "src/main/update/windows-install-progress.test.ts",
@@ -50,18 +93,71 @@
       "src/renderer/src/pages/workspace/WorkspaceToolDetailsRow.render.test.tsx",
       "src/renderer/src/pages/workspace/literature-save-contract.test.tsx"
     ],
+    "local_update_validation": [
+      "src/main/index-fatal-errors.test.ts",
+      "src/main/index-startup-failure.test.ts"
+    ],
+    "main_agent_framework": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
+    "main_agents": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
+    "main_database": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "main_managed_file_versions": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "main_storage": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "main_update": [
+      "src/main/local-update-validation/adapter.test.ts",
+      "src/main/notebook/runtime-service.test.ts"
+    ],
+    "managed_version_files": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "native_file_publisher": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "native_process_tree": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
     "notebook_analysis": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
+      "src/renderer/src/pages/workspace/NotebookShellTerminal.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
+    "notebook_execution": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "notebook_execution_model": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "notebook_network_sandbox": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "notebook_repository": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "notebook_syntax": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
     "package_journal_catalog": [
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/LiteratureToolReferenceList.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
     "package_literature_citations": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
       "src/main/update/windows-update-handoff.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/LiteratureToolReferenceList.test.tsx",
@@ -69,20 +165,26 @@
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
     "package_literature_discovery": [
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/LiteratureToolReferenceList.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
     "package_literature_library": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
       "src/main/update/windows-update-handoff.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/LiteratureToolReferenceList.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
-    "package_literature_reading": ["src/main/settings/codex-bridge-tools.test.ts"],
+    "package_literature_reading": [
+      "src/main/settings/codex-bridge-tools.test.ts"
+    ],
     "package_literature_screening": [
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/LiteratureToolReferenceList.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
@@ -91,13 +193,23 @@
     "package_pdf_translation": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
-    "page_home": ["src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"],
-    "pdf_annotations": ["src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"],
+    "page_home": [
+      "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
+    ],
+    "pdf_annotations": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
+    ],
     "pdf_document_source": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/LiteratureToolReferenceList.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
+    ],
+    "pdf_documents": [
+      "scripts/local-update-validation/fixture.test.ts"
     ],
     "pdf_preview_runtime": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
@@ -105,17 +217,34 @@
     "pdf_structure_engine": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
+    "project_database": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
     "project_file_mentions": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
-    "project_files_view": ["src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"],
-    "renderer_acp": ["src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"],
+    "project_files_view": [
+      "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
+    ],
+    "provider_credentials": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
+    "provider_transport": [
+      "src/main/local-update-validation/adapter.test.ts"
+    ],
+    "renderer_acp": [
+      "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
+    ],
     "renderer_action_menu": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
-    "renderer_app_icons": ["src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"],
-    "renderer_compute": ["src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"],
+    "renderer_app_icons": [
+      "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
+    ],
+    "renderer_compute": [
+      "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
+    ],
     "renderer_compute_recovery": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
@@ -123,6 +252,7 @@
       "src/renderer/src/pages/literature/journals/JournalDatasetActions.render.test.tsx",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/LiteratureToolReferenceList.test.tsx",
+      "src/renderer/src/pages/workspace/NotebookShellTerminal.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx",
       "src/renderer/src/pages/workspace/literature-save-contract.test.tsx"
@@ -208,10 +338,12 @@
     "renderer_ui": [
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/LiteratureToolReferenceList.test.tsx",
+      "src/renderer/src/pages/workspace/NotebookShellTerminal.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
     "renderer_upload_transfer": [
+      "src/renderer/src/components/RuntimeUpdateDialog.test.tsx",
       "src/renderer/src/hooks/useQuitPersistenceFlush.test.ts",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
@@ -221,11 +353,18 @@
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
     "reproducibility_contracts": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
+      "src/renderer/src/pages/workspace/NotebookShellTerminal.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
+    "reproducibility_engine": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
     "resilient_download": [
+      "src/main/local-update-validation/adapter.test.ts",
       "src/main/update/windows-update-handoff.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
@@ -240,8 +379,12 @@
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
     "session_replay": [
+      "src/renderer/src/components/RuntimeUpdateDialog.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
+    ],
+    "settings_backend_resolution": [
+      "src/main/local-update-validation/adapter.test.ts"
     ],
     "settings_extension_presentation": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
@@ -258,19 +401,37 @@
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/literature-save-contract.test.tsx"
     ],
-    "settings_repository": ["src/main/settings/workflows/local-shell.test.ts"],
+    "settings_repository": [
+      "src/main/settings/workflows/local-shell.test.ts"
+    ],
     "shared_promise_identity": [
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
     "skill_package": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
       "src/main/update/windows-update-handoff.test.ts",
       "src/renderer/src/pages/workspace/LiteratureCandidateStatus.test.tsx",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
     "specialist_package": [
+      "src/main/local-update-validation/adapter.test.ts",
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
+    ],
+    "storage_location": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "storage_state": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "upload_file_transport": [
+      "scripts/local-update-validation/fixture.test.ts"
+    ],
+    "upload_repository": [
+      "scripts/local-update-validation/fixture.test.ts"
     ],
     "web_renderer_bridge": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
@@ -342,12 +503,17 @@
     "workspace_navigation": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
-    "workspace_notebook": ["src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"],
+    "workspace_notebook": [
+      "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
+    ],
     "workspace_notebook_model": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx",
       "src/renderer/src/pages/workspace/WorkspaceSidebar.session-gestures.test.tsx"
     ],
-    "workspace_page": ["src/renderer/src/hooks/useQuitPersistenceFlush.test.ts"],
+    "workspace_page": [
+      "src/renderer/src/components/RuntimeUpdateDialog.test.tsx",
+      "src/renderer/src/hooks/useQuitPersistenceFlush.test.ts"
+    ],
     "workspace_permissions": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
@@ -377,7 +543,9 @@
     "workspace_run_marks": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],
-    "workspace_runtime": ["src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"],
+    "workspace_runtime": [
+      "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
+    ],
     "workspace_session_dialogs": [
       "src/renderer/src/pages/workspace/WorkspacePage.compute-entry.test.tsx"
     ],

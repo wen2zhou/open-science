@@ -3332,6 +3332,7 @@ describe('startWebHttpServer', () => {
       'notebook:begin-code-cell',
       'notebook:cancel-background-run',
       'notebook:execute',
+      'notebook:execute-shell',
       'notebook:finish-code-cell',
       'notebook:background-run',
       'notebook:project-activity',

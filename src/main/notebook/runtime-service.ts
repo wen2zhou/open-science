@@ -1,3 +1,4 @@
+import { NotebookExecutionStopError } from '../../shared/notebook-execution-error'
 import type { NotebookDependencyAnalyzer } from '@aipoch/notebook-analysis'
 import { randomUUID } from 'node:crypto'
 import { existsSync, realpathSync } from 'node:fs'
@@ -2496,10 +2497,14 @@ class NotebookRuntimeService {
     const laneKey = notebookLaneKey(this.sessionLifecycle.laneForRequest(request))
     const releaseFence = this.executionOwner.fenceShellRuns({ laneKey })
     try {
-      await this.executionOwner.cancelShellRuns(
+      const shell = await this.executionOwner.cancelShellRuns(
         { laneKey },
         new Error('Notebook Session is shutting down.')
       )
+      if (!shell.reaped)
+        throw new NotebookExecutionStopError(
+          'SHELL_CLEANUP_INCOMPLETE: Notebook shutdown requires verified Shell cleanup.'
+        )
       return await this.sessionLifecycle.shutdown(request)
     } finally {
       releaseFence()
@@ -2509,10 +2514,14 @@ class NotebookRuntimeService {
   async shutdownSession(sessionId: string): Promise<{ sessionId: string; status: 'shutdown' }> {
     const releaseFence = this.executionOwner.fenceShellRuns({ sessionId })
     try {
-      await this.executionOwner.cancelShellRuns(
+      const shell = await this.executionOwner.cancelShellRuns(
         { sessionId },
         new Error('Notebook Session is shutting down.')
       )
+      if (!shell.reaped)
+        throw new NotebookExecutionStopError(
+          'SHELL_CLEANUP_INCOMPLETE: Notebook shutdown requires verified Shell cleanup.'
+        )
       return await this.sessionLifecycle.shutdownSession(sessionId)
     } finally {
       releaseFence()
@@ -2523,10 +2532,14 @@ class NotebookRuntimeService {
     this.sessionLifecycle.beginProjectDeletion(projectId)
     const releaseFence = this.executionOwner.fenceShellRuns({ projectId })
     try {
-      await this.executionOwner.cancelShellRuns(
+      const shell = await this.executionOwner.cancelShellRuns(
         { projectId },
         new Error('Notebook Project is shutting down.')
       )
+      if (!shell.reaped)
+        throw new NotebookExecutionStopError(
+          'SHELL_CLEANUP_INCOMPLETE: Notebook shutdown requires verified Shell cleanup.'
+        )
       return await this.sessionLifecycle.shutdownProject(projectId)
     } finally {
       releaseFence()
@@ -2858,9 +2871,16 @@ class NotebookRuntimeService {
     return disposal
   }
 
-  // Lists sessions with a cell mid-execution, for the pre-migration active-session warning.
+  // Lists live data-kernel and Shell work for update, migration and close/quit admission.
   getActiveNotebookSessions(): { projectId: string; sessionId: string }[] {
-    return this.sessionLifecycle.activeSessions()
+    return [
+      ...new Map(
+        [
+          ...this.sessionLifecycle.activeSessions(),
+          ...this.executionOwner.activeShellSessions()
+        ].map((scope) => [JSON.stringify([scope.projectId, scope.sessionId]), scope] as const)
+      ).values()
+    ]
   }
 
   // Purely in-memory Project projection for renderer monitoring. Dormant Sessions have no kernel

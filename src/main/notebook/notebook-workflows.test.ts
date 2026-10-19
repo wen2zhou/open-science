@@ -36,6 +36,7 @@ const createRuntime = (
   finishCodeCell: unavailable('finishCodeCell'),
   runCell: unavailable('runCell'),
   execute: unavailable('execute'),
+  executeShell: unavailable('executeShell'),
   exportIpynb: unavailable('exportIpynb'),
   exportIpynbAll: unavailable('exportIpynbAll'),
   restart: unavailable('restart'),
@@ -65,6 +66,33 @@ const runSummary = (runId: string): NotebookRunSummary => ({
 })
 
 describe('Notebook command workflows', () => {
+  it('admits human Shell commands without accepting agent authority or a runtime override', async () => {
+    const executeShell = vi.fn().mockResolvedValue({ stdout: '', stderr: '', exitCode: 0 })
+    const workflows = createNotebookCommandWorkflows(createRuntime({ executeShell }))
+    await workflows.executeShell({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      command: 'pwd',
+      timeoutMs: 1000,
+      source: 'agent',
+      provenanceContext: { agentFrameId: 'forged' },
+      executionInvocationId: 'forged',
+      shellRuntime: { kind: 'powershell' },
+      background: true,
+      registeredInputFiles: [{ path: '/secret' }]
+    } as never)
+    expect(executeShell).toHaveBeenCalledExactlyOnceWith({
+      projectId: 'project-1',
+      sessionId: 'session-1',
+      workspaceCwd: '/workspace',
+      command: 'pwd',
+      timeoutMs: 1000,
+      source: 'user',
+      inputKind: 'terminal'
+    })
+  })
+
   it('reads in-memory Project activity while data-root writes are blocked', async () => {
     const getProjectActivity = vi.fn<NotebookCommandRuntime['getProjectActivity']>(() => ({
       kernels: [],

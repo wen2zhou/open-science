@@ -1,3 +1,5 @@
+import { createActiveResearchSafeInstallGate } from '../update/strategy'
+import { detectActiveSessions } from '../storage/detect-active'
 import { configureTestRuntimeMetadata } from '../../../test/runtime-metadata'
 import { createHash, randomUUID } from 'node:crypto'
 import { existsSync } from 'node:fs'
@@ -4011,6 +4013,153 @@ describe('notebook runtime service', () => {
       return service
     }
 
+    it.skipIf(process.platform === 'win32')(
+      'blocks updates for real running and queued Shell work until settlement',
+      async () => {
+        const root = await createStorageRoot()
+        const repository = new NotebookRunRepository(root)
+        const service = new NotebookRuntimeService({
+          configRoot: root,
+          dataRoot: root,
+          projectId: 'default-project',
+          repository,
+          platform: process.platform === 'darwin' ? 'linux' : process.platform,
+          shellConcurrencyLimit: 1
+        })
+        liveShellServices.push(service)
+        const quote = (value: string): string => `'${value.replaceAll("'", "'\\''")}'`
+        const scope = (sessionId: string): { sessionId: string; workspaceCwd: string } => ({
+          sessionId,
+          workspaceCwd: root
+        })
+        const command = (name: string): string =>
+          `printf '%s' "$$" > ${quote(join(root, `${name}.pid`))}; while [ ! -f ${quote(join(root, `${name}.release`))} ]; do /bin/sleep 0.02; done; printf FINISHED`
+        const teardown = vi.fn().mockResolvedValue({ completed: true, reaped: true })
+        const gate = createActiveResearchSafeInstallGate(
+          () =>
+            detectActiveSessions({
+              runtime: { getActivePromptSessions: () => [] },
+              sideChat: { getActivePromptSessions: () => [] },
+              delegated: { getActiveDelegatedSessions: () => [] },
+              notebook: service
+            }).map((entry) => entry.kind),
+          teardown
+        )
+        const first = service.executeShell({
+          ...scope('running-shell'),
+          command: command('first'),
+          source: 'user',
+          inputKind: 'terminal'
+        })
+        const executions = [first]
+        let settled = Promise.allSettled(executions)
+        try {
+          await vi.waitFor(() => expect(existsSync(join(root, 'first.pid'))).toBe(true), {
+            timeout: 10_000
+          })
+          const pid = Number(await readFile(join(root, 'first.pid'), 'utf8'))
+          expect(pid).toBeGreaterThan(0)
+          expect(() => process.kill(pid, 0)).not.toThrow()
+          const second = service.executeShell({
+            ...scope('queued-shell'),
+            command: command('second'),
+            source: 'user',
+            inputKind: 'terminal'
+          })
+          executions.push(second)
+          settled = Promise.allSettled(executions)
+          await vi.waitFor(
+            async () =>
+              expect((await service.state(scope('queued-shell'))).runs[0]?.status).toBe('queued'),
+            { timeout: 10_000 }
+          )
+          expect(service.getActiveNotebookSessions()).toEqual(
+            expect.arrayContaining([
+              { projectId: 'default-project', sessionId: 'running-shell' },
+              { projectId: 'default-project', sessionId: 'queued-shell' }
+            ])
+          )
+          expect(existsSync(join(root, 'second.pid'))).toBe(false)
+          expect(await gate()).toMatchObject({
+            completed: false,
+            reaped: false,
+            blockedBy: ['notebook']
+          })
+          expect(teardown).not.toHaveBeenCalled()
+          await writeFile(join(root, 'first.release'), '')
+          await first
+          await vi.waitFor(() => expect(existsSync(join(root, 'second.pid'))).toBe(true), {
+            timeout: 10_000
+          })
+          expect(service.getActiveNotebookSessions()).toEqual([
+            { projectId: 'default-project', sessionId: 'queued-shell' }
+          ])
+          expect(await gate()).toMatchObject({ completed: false, blockedBy: ['notebook'] })
+          await writeFile(join(root, 'second.release'), '')
+          await second
+          expect(service.getActiveNotebookSessions()).toEqual([])
+          expect((await service.state(scope('running-shell'))).runs[0].status).toBe('completed')
+          expect((await service.state(scope('queued-shell'))).runs[0].status).toBe('completed')
+          expect(await gate()).toMatchObject({ completed: true, reaped: true })
+          expect(teardown).toHaveBeenCalledOnce()
+        } finally {
+          await Promise.all(
+            ['first', 'second'].map((name) => writeFile(join(root, `${name}.release`), ''))
+          )
+          await settled
+        }
+      }
+    )
+
+    it.each(['lane', 'session', 'project'] as const)(
+      'refuses %s shutdown until Shell process reaping is verified',
+      async (scope) => {
+        const root = await createStorageRoot()
+        const shellShutdown = vi.fn().mockResolvedValue({ reaped: false })
+        const service = new NotebookRuntimeService({
+          configRoot: root,
+          dataRoot: root,
+          projectId: 'default-project',
+          repository: new NotebookRunRepository(root),
+          shellProcess: { execute: vi.fn(), shutdown: shellShutdown }
+        })
+        const request = { sessionId: 'session-1', workspaceCwd: root }
+        await service.state(request)
+        const shutdown = (): Promise<unknown> =>
+          scope === 'lane'
+            ? service.shutdown(request)
+            : scope === 'session'
+              ? service.shutdownSession(request.sessionId)
+              : service.shutdownProject('default-project')
+        await expect(shutdown()).rejects.toBeInstanceOf(NotebookExecutionStopError)
+        shellShutdown.mockResolvedValue({ reaped: true })
+        if (scope === 'project') await expect(shutdown()).resolves.toBeUndefined()
+        else await expect(shutdown()).resolves.toMatchObject({ status: 'shutdown' })
+        expect(shellShutdown).toHaveBeenCalledTimes(2)
+      }
+    )
+
+    it('runs and preserves a human Shell command without a model or data kernel', async () => {
+      const root = await createStorageRoot()
+      const service = createShellService(root)
+      const result = await service.executeShell({
+        sessionId: 'session-1',
+        workspaceCwd: root,
+        command: 'printf HUMAN_SHELL_OK',
+        source: 'user',
+        inputKind: 'terminal'
+      })
+      expect(result.exitCode).toBe(0)
+      expect(result.stdout).toContain('HUMAN_SHELL_OK')
+      const state = await service.state({ sessionId: 'session-1', workspaceCwd: root })
+      expect(state.runs[0]).toMatchObject({
+        source: 'user',
+        inputKind: 'terminal',
+        kernelKind: 'bash',
+        status: 'completed'
+      })
+    })
+
     it('runs a command in the session shell and captures stdout/exitCode', async () => {
       const root = await createStorageRoot()
       const service = createShellService(root)
@@ -4813,6 +4962,9 @@ describe('notebook runtime service', () => {
           { timeout: 10_000 }
         )
         expect(entered).toEqual(['first'])
+        expect(service.getActiveNotebookSessions()).toEqual([
+          { projectId: 'default-project', sessionId: 'session-1' }
+        ])
         cancellation.abort()
         await expect(queued).resolves.toEqual({
           stdout: '',
@@ -4970,14 +5122,21 @@ describe('notebook runtime service', () => {
         command: 'long-running'
       })
       await shellStarted
+      expect(service.getActiveNotebookSessions()).toEqual([
+        { projectId: 'default-project', sessionId: 'session-1' }
+      ])
 
       const shutdown = service.shutdownSession('session-1')
       await cancellationStarted
       await new Promise<void>((resolve) => setImmediate(resolve))
+      expect(service.getActiveNotebookSessions()).toEqual([
+        { projectId: 'default-project', sessionId: 'session-1' }
+      ])
       const removedBeforeShellFinished = shutdownExecutor.mock.calls.length > 0
       finishShell()
 
       await Promise.all([running, shutdown])
+      expect(service.getActiveNotebookSessions()).toEqual([])
       expect(removedBeforeShellFinished).toBe(false)
       expect(shutdownExecutor).toHaveBeenCalledOnce()
     })

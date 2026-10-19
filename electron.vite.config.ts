@@ -20,6 +20,10 @@ export default defineConfig(({ command }) => ({
     plugins: [nativeLocaleAssets()],
     define: {
       __OPEN_SCIENCE_NATIVE_LOCALE_DIRECTORY__: JSON.stringify('native-locales'),
+      // Rollup erases the guarded dynamic import completely from ordinary release bundles.
+      __OPEN_SCIENCE_LOCAL_UPDATE_VALIDATION__: JSON.stringify(
+        process.env.OPEN_SCIENCE_LOCAL_UPDATE_VALIDATION === '1'
+      ),
       ...windowsSigningBuildDefines(process.env),
       ...wsl2BuildDefines(process.platform, command === 'serve', process.env)
     },

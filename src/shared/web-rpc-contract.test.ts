@@ -145,6 +145,7 @@ describe('Web RPC contract', () => {
       'notebook.beginCodeCell',
       'notebook.cancelBackgroundRun',
       'notebook.execute',
+      'notebook.executeShell',
       'notebook.exportIpynb',
       'notebook.exportIpynbAll',
       'notebook.finishCodeCell',

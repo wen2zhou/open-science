@@ -28,6 +28,7 @@ import { DesktopBackendStartupError } from './backend-startup'
 import { recoverDesktopBackendStartup } from './backend-startup-recovery'
 import { createDesktopRecoveryEventBuffer } from './desktop-recovery-event-buffer'
 import { createDesktopRuntimeRecovery } from './desktop-runtime-recovery'
+import { createDesktopOwnedCrashHandler } from './desktop-owned-crash-handler'
 import { DESKTOP_RUNTIME_RECOVERY_CHANNELS } from '../shared/desktop-runtime-recovery'
 import { deliverDesktopEvent } from './desktop-event-delivery'
 import {
@@ -199,7 +200,22 @@ const buildZoomSafeApplicationMenu = (
   return MenuConstructor.buildFromTemplate(template)
 }
 
+declare const __OPEN_SCIENCE_LOCAL_UPDATE_VALIDATION__: boolean
+
 async function startDesktop(): Promise<void> {
+  let localValidation:
+    | ReturnType<typeof import('./local-update-validation/adapter').initializeLocalUpdateValidation>
+    | undefined
+  if (
+    typeof __OPEN_SCIENCE_LOCAL_UPDATE_VALIDATION__ !== 'undefined' &&
+    __OPEN_SCIENCE_LOCAL_UPDATE_VALIDATION__
+  ) {
+    const path = process.env.OPEN_SCIENCE_LOCAL_UPDATE_VALIDATION_CONFIG
+    if (!path)
+      throw new Error('This local validation build requires its isolated run configuration.')
+    const { initializeLocalUpdateValidation } = await import('./local-update-validation/adapter')
+    localValidation = initializeLocalUpdateValidation(path)
+  }
   const { headless } = parseWebModeOptions(process.argv)
   configureRuntimeMetadata(() => ({
     version: app.getVersion(),
@@ -431,6 +447,11 @@ async function startDesktop(): Promise<void> {
     ipcMain,
     createRendererFailureReporter({ log: createLogger('renderer') })
   )
+  const ownedCrashHandler = createDesktopOwnedCrashHandler({
+    resourcesPath: process.resourcesPath,
+    profilePath,
+    crashDatabasePath: app.getPath('crashDumps')
+  })
   startLocalCrashReporting({
     platform: process.platform,
     productName: APP_NAME,
@@ -439,7 +460,10 @@ async function startDesktop(): Promise<void> {
     start: (options) =>
       crashReporter.start({
         ...options,
-        globalExtra: { openScienceInstance: crashReporterInstance }
+        globalExtra: {
+          openScienceInstance: crashReporterInstance,
+          ...ownedCrashHandler.globalExtra
+        }
       })
   })
   const [
@@ -711,6 +735,7 @@ async function startDesktop(): Promise<void> {
           preview = await createDesktopPreviewProxy(configRoot, client!.processId())
           installRelay()
           ready = true
+          localValidation?.runtimeStarted(client!, preview)
           // The web service lives in the Node backend (#3358) and logs to its own file; packaged
           // certification parses the app stdout for this readiness line, so main re-publishes it.
           webServiceLog.info(`Open-Science Web: http://127.0.0.1:${preview.port}/`, {
@@ -1157,11 +1182,14 @@ async function startDesktop(): Promise<void> {
       }
     })
   let recovery = makeRecovery()
-  if (client.ownsRuntime())
+  if (client.ownsRuntime()) {
+    const ownedClient = client
     launch.startedProcess?.once('exit', () => {
+      if (client !== ownedClient) return
       if (headless && !updateCommitted && !plannedRelaunch) app.exit(0)
-      else if (client && !updateCommitted && !plannedRelaunch) recovery!.disconnect(client)
+      else if (!updateCommitted && !plannedRelaunch) recovery!.disconnect(ownedClient)
     })
+  }
   const requireRecoveryFrame = (event: import('electron').IpcMainInvokeEvent): void => {
     if (
       !isApplicationWindow(event.sender) ||
@@ -1303,12 +1331,17 @@ async function startDesktop(): Promise<void> {
   const flushUpdateRenderer = createElectronSessionPersistenceFlush(() => getMainWindow())
   let preparedMacInstallation: PreparedMacInstallation | undefined
   const isLegacyInstall = (status: { localPath?: string }): boolean =>
-    !status.localPath || !usesSupervisedInstall(process.platform, status.localPath)
+    localValidation
+      ? localValidation.config.installBehavior !== 'upgrade'
+      : !status.localPath || !usesSupervisedInstall(process.platform, status.localPath)
   const updateIntegration = createDesktopUpdateIntegration({
     location: { installationRoot: installationRootForEntry(backendPaths.entry) },
     client: () => client!,
     currentVersion: app.getVersion(),
-    allowedProcessIds: allowedInstallationProcessIds,
+    allowedProcessIds: () => [
+      ...allowedInstallationProcessIds(),
+      ...ownedCrashHandler.allowedProcessIds()
+    ],
     preparedDebGate: () => preparedMacInstallation?.debGate,
     verifyInstallerReady: async () => {
       const gate = preparedMacInstallation?.debGate
@@ -1343,6 +1376,11 @@ async function startDesktop(): Promise<void> {
             detail: 'unsupported-channel'
           }
         )
+      if (localValidation?.config.installBehavior === 'upgrade') {
+        if (preparedMacInstallation) await discardPreparedMacInstallation(preparedMacInstallation)
+        preparedMacInstallation = await localValidation.prepareInstallation(status, signal)
+        return preparedMacInstallation.manifest
+      }
       assertInstallationChannelCertified(
         installationChannelFor(process.platform, status.localPath) ?? 'linux-deb'
       )
@@ -1411,6 +1449,7 @@ async function startDesktop(): Promise<void> {
       )
     },
     validateConfiguration: (config) => {
+      localValidation?.assertConfiguration(config)
       // Attachment permits file-backed credentials, but an interactive replacement Desktop cannot
       // silently change their storage mode or the Chromium profile selected during preflight.
       if (
@@ -1433,7 +1472,17 @@ async function startDesktop(): Promise<void> {
     },
     retainLease: retainShutdownLease,
     onProgress: (status) => update.publishLifecycleStatus?.(status),
+    onStopRequested: () => recovery.ownUpdateStop(client!),
     onStopped: () => {
+      const info = client!.runtimeInfo()
+      localValidation?.runtimeStopped({
+        pid: client!.processId(),
+        generation: info.generation,
+        configRoot: info.startupOptions.configRoot,
+        processExited: true,
+        lockHeld: true,
+        exitRecord: 'clean'
+      })
       runtimeStopped = true
     },
     onHandoff: () => {
@@ -1479,16 +1528,27 @@ async function startDesktop(): Promise<void> {
       client = await attach()
       notifications = makeNotifications()
       await verifyDesktopRecoveryReadiness(client, config)
+      localValidation?.assertConfiguration(client.runtimeInfo().startupOptions)
       runtimeStopped = false
       updateCommitted = false
       recovery = makeRecovery()
       publishStartup(client.startupState())
       await readiness
+      if (localValidation) {
+        if (!ready || !preview) throw new Error('Recovered service endpoint is not ready.')
+        localValidation.runtimeRecovered(client, preview)
+      }
       for (const window of BrowserWindow.getAllWindows())
         if (isMainWindow(window)) window.webContents.reload()
     }
   })
-  const update = createUpdateStrategy(process.platform, {
+  const makeUpdateStrategy = localValidation
+    ? (
+        _platform: NodeJS.Platform,
+        options: import('./update/create-strategy').CreateStrategyOptions
+      ) => localValidation!.createStrategy(options)
+    : createUpdateStrategy
+  const update = makeUpdateStrategy(process.platform, {
     translate,
     getStartupOptions: () => client!.runtimeInfo().startupOptions,
     ...updateIntegration,
@@ -1516,7 +1576,18 @@ async function startDesktop(): Promise<void> {
               { installationRoot: installationRootForEntry(backendPaths.entry) },
               operationId,
               preparedMacInstallation,
-              { desktopPid: process.pid, relaunch: options.relaunch ?? true }
+              {
+                desktopPid: process.pid,
+                relaunch: options.relaunch ?? true,
+                ...(localValidation
+                  ? {
+                      relaunchExecutable: join(
+                        installationRootForEntry(backendPaths.entry),
+                        'Contents/MacOS/Open-Science'
+                      )
+                    }
+                  : {})
+              }
             )
             app.exit(0)
             return undefined

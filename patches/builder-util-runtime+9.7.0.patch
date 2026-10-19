@@ -1,0 +1,11 @@
+diff --git a/node_modules/builder-util-runtime/out/httpExecutor.js b/node_modules/builder-util-runtime/out/httpExecutor.js
+--- a/node_modules/builder-util-runtime/out/httpExecutor.js
++++ b/node_modules/builder-util-runtime/out/httpExecutor.js
+@@ -270,6 +270,7 @@ class HttpExecutor {
+         this.addRedirectHandlers(request, requestOptions, options.callback, redirectCount, requestOptions => {
+             this.doDownload(requestOptions, options, redirectCount++);
+         });
++        options.onCancel(() => request.abort());
+         request.end();
+     }
+     createMaxRedirectError() {

@@ -6,6 +6,7 @@ import type {
   AppendNotebookCodeCellRequest,
   BeginNotebookCodeCellRequest,
   ExecuteNotebookCodeRequest,
+  ExecuteNotebookShellCommandRequest,
   ExportNotebookAllRequest,
   ExportNotebookAllResult,
   ExportNotebookKernelRequest,
@@ -61,6 +62,9 @@ export const contracts = {
   'notebook.execute': callable<
     (request: ExecuteNotebookCodeRequest) => Promise<NotebookRunSummary>
   >()('notebook', ['notebook:execute']),
+  'notebook.executeShell': callable<
+    (request: ExecuteNotebookShellCommandRequest) => Promise<void>
+  >()('notebook', ['notebook:execute-shell']),
   'notebook.getBackgroundRun': callable<
     (request: NotebookBackgroundRunLookupRequest) => Promise<NotebookBackgroundRunResult>
   >()('notebook', ['notebook:background-run']),

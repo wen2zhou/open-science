@@ -21,6 +21,7 @@ export type AppShellPresentationInput = Readonly<{
   isSessionPersistenceHydrated: boolean
   isSessionPersistenceLoading: boolean
   view: NavigationView
+  runtimeRecoveryOwner?: 'update'
   presentations: AppShellPresentationState
 }>
 
@@ -78,7 +79,19 @@ const findTopmostDomPresentation = (
 const resolveActivePresentation = (input: AppShellPresentationInput): AppShellPresentation => {
   if (input.startupView !== 'app' || !input.isSessionPersistenceHydrated) return 'startup'
 
-  return PRESENTATION_PRIORITY.find((presentation) => input.presentations[presentation]) ?? 'base'
+  return (
+    PRESENTATION_PRIORITY.find(
+      (presentation) =>
+        input.presentations[presentation] &&
+        // An update-owned stop has its own recovery actions. On Desktop the Web event stream
+        // stays live, so selecting its recovery presentation here would render no dialog at all.
+        !(
+          presentation === 'webEventRecovery' &&
+          input.runtimeRecoveryOwner === 'update' &&
+          input.presentations.update
+        )
+    ) ?? 'base'
+  )
 }
 
 const closeActionFor = (active: AppShellPresentation, root: ParentNode): AppShellCloseAction => {

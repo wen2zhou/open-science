@@ -3,6 +3,8 @@ export type DesktopRuntimeRecoveryState = Readonly<{
   phase: 'connected' | 'disconnected' | 'reconnecting' | 'reconciling' | 'unavailable'
   epoch: number
   closing: boolean
+  /** The update operation owns recovery actions for its stopped attachment. */
+  recoveryOwner?: 'update'
 }>
 
 export const DESKTOP_RUNTIME_RECOVERY_CHANNELS = {

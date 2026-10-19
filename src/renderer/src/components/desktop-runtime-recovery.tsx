@@ -37,7 +37,7 @@ export function DesktopRuntimeRecovery(): React.JSX.Element | null {
           document.activeElement instanceof HTMLElement ? document.activeElement : null
       }
       if (next.phase !== 'connected') flushComposerDrafts()
-      useDesktopRuntimeRecoveryStore.setState(next)
+      useDesktopRuntimeRecoveryStore.setState(next, true)
     }
     let receivedEvent = false
     const remove = api.onStateChanged((next) => {
@@ -86,8 +86,14 @@ export function DesktopRuntimeRecovery(): React.JSX.Element | null {
       live = false
     }
   }, [state.epoch, state.phase])
-  // The update dialog owns planned shutdown; an aborted/failed update restores recovery here.
-  if (state.phase === 'connected' || (state.closing && updating)) return null
+  // Planned shutdown and update-owned recovery stay in the update dialog; unrelated
+  // disconnects retain the ordinary recovery surface and its focus restoration.
+  if (
+    state.phase === 'connected' ||
+    state.recoveryOwner === 'update' ||
+    (state.closing && updating)
+  )
+    return null
   const busy = state.phase === 'reconnecting' || state.phase === 'reconciling'
   return (
     <AlertDialog.Root open>

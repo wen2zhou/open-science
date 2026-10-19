@@ -564,6 +564,15 @@ class NotebookExecutionOwner {
     }
   }
 
+  activeShellSessions(): { projectId: string; sessionId: string }[] {
+    // Process-owned registrations cover preparation, queued admission, execution and cancellation
+    // through settlement. Durable history alone must never keep an update or migration blocked.
+    return Array.from(this.liveShellRuns.values(), ({ projectId, sessionId }) => ({
+      projectId,
+      sessionId
+    }))
+  }
+
   async cancelShellRuns(
     scope: { projectId?: string; sessionId?: string; laneKey?: string; runId?: string },
     reason: unknown
@@ -1561,8 +1570,8 @@ class NotebookExecutionOwner {
           ? { executionInvocationId: request.executionInvocationId }
           : {}),
         cellId: `bash-${runId}`,
-        source: 'agent',
-        inputKind: 'cell',
+        source: request.source ?? 'agent',
+        inputKind: request.inputKind ?? 'cell',
         kernelKind: 'bash',
         shellRuntime: runtimeBinding,
         script: request.command,

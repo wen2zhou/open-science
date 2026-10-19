@@ -8,6 +8,11 @@ const f = vi.hoisted(() => {
     log,
     initLogs: vi.fn(),
     fatalLog: vi.fn(),
+    crashAnnotations: Object.freeze({ open_science_desktop_owner: 'private-launch-owner' }),
+    crashStart: vi.fn((options: { companyName: string; globalExtra: Record<string, string> }) => {
+      // Electron's JS adapter adds this alias before passing annotations to native Crashpad.
+      options.globalExtra._companyName = options.companyName
+    }),
     ready: false,
     lock: true,
     fail: undefined as unknown,
@@ -56,7 +61,7 @@ vi.mock('electron', () => ({
   BrowserWindow: { getAllWindows: () => [], fromWebContents: () => null },
   Menu: { getApplicationMenu: () => null, setApplicationMenu: vi.fn(), buildFromTemplate: vi.fn() },
   Notification: {},
-  crashReporter: { start: vi.fn() },
+  crashReporter: { start: f.crashStart },
   ipcMain: {},
   nativeImage: {},
   nativeTheme: {},
@@ -75,6 +80,12 @@ vi.mock('./desktop-recovery-readiness', () => ({
   verifyDesktopRecoveryReadiness: f.verifyRecovery
 }))
 vi.mock('./runtime-metadata', () => ({ configureRuntimeMetadata: vi.fn() }))
+vi.mock('./desktop-owned-crash-handler', () => ({
+  createDesktopOwnedCrashHandler: () => ({
+    globalExtra: f.crashAnnotations,
+    allowedProcessIds: () => []
+  })
+}))
 vi.mock('./ipc-handler-registry', () => ({
   configureIpcHandlerRegistry: vi.fn(),
   ipcMainHandle: (name: string, fn: (...args: unknown[]) => unknown) => f.handlers.set(name, fn)
@@ -134,9 +145,9 @@ vi.mock('./diagnostics/startup', () => ({
   },
   reportApplicationStartupFailure: f.report
 }))
-vi.mock('./crash-diagnostics', () => ({
-  installChildProcessGoneLogging: vi.fn(),
-  startLocalCrashReporting: vi.fn()
+vi.mock('./crash-diagnostics', async (original) => ({
+  ...(await original<typeof import('./crash-diagnostics')>()),
+  installChildProcessGoneLogging: vi.fn()
 }))
 vi.mock('./renderer-diagnostics', () => ({
   registerRendererDiagnosticsIpc: vi.fn(),
@@ -221,6 +232,21 @@ beforeEach(() => {
   vi.spyOn(process, 'on').mockImplementation(() => process)
 })
 afterEach(() => vi.restoreAllMocks())
+
+it('passes Electron mutable crash annotations without exposing the private owner object', async () => {
+  await import('./index')
+  await vi.waitFor(() => expect(f.launch).toHaveBeenCalledOnce())
+  expect(f.crashStart).toHaveBeenCalledOnce()
+  const options = f.crashStart.mock.calls[0][0]
+  expect(options.globalExtra).toEqual({
+    openScienceInstance: expect.any(String),
+    open_science_desktop_owner: 'private-launch-owner',
+    _companyName: 'aipoch'
+  })
+  expect(options.globalExtra).not.toBe(f.crashAnnotations)
+  options.globalExtra.open_science_desktop_owner = 'mutated-by-consumer'
+  expect(f.crashAnnotations).toEqual({ open_science_desktop_owner: 'private-launch-owner' })
+})
 
 it.each(['mac-keychain', 'windows-dpapi'] as const)(
   'completes %s identity preflight before yielding to Electron, without acquiring business ownership',

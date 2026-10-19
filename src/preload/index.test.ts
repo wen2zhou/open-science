@@ -439,6 +439,7 @@ describe('preload bridge — public surface inventory', () => {
       'notebook.beginCodeCell',
       'notebook.cancelBackgroundRun',
       'notebook.execute',
+      'notebook.executeShell',
       'notebook.exportIpynb',
       'notebook.exportIpynbAll',
       'notebook.finishCodeCell',

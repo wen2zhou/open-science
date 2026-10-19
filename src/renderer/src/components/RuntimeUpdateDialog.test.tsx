@@ -5,11 +5,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 import { RuntimeUpdateOutcomeNotice } from './runtime-update-outcome-notice'
 import { UpdateDialog } from './UpdateDialog'
 import { RuntimeUpdateDialog } from './RuntimeUpdateDialog'
+import { DesktopRuntimeRecovery } from './desktop-runtime-recovery'
+import {
+  assertDesktopRuntimeWrite,
+  desktopRuntimeWritable,
+  useDesktopRuntimeRecoveryStore
+} from '@/stores/desktop-runtime-recovery-store'
 import { useUpdateStore } from '@/stores/update-store'
 import type { UpdateStatus } from '../../../shared/update'
 
 let root: Root, container: HTMLDivElement
 const original = useUpdateStore.getState()
+const originalRuntime = useDesktopRuntimeRecoveryStore.getState()
 const buttons = (label: string): HTMLButtonElement[] =>
   [...document.querySelectorAll('button')].filter((b) => b.textContent === label)
 const r = (
@@ -37,8 +44,47 @@ afterEach(() => {
   act(() => root.unmount())
   container.remove()
   useUpdateStore.setState(original)
+  useDesktopRuntimeRecoveryStore.setState(originalRuntime, true)
 })
 const render = (): void => act(() => root.render(<RuntimeUpdateDialog />))
+it('leaves the update recovery action accessible after its stopped backend becomes unavailable', async () => {
+  window.api = {} as typeof window.api
+  const recover = vi.fn(async () => {})
+  useDesktopRuntimeRecoveryStore.setState({
+    phase: 'unavailable',
+    epoch: 3,
+    closing: false,
+    recoveryOwner: 'update'
+  })
+  useUpdateStore.setState({
+    recover,
+    status: {
+      state: 'ready',
+      current: '1',
+      latest: '2',
+      reason: 'runtime-stop-unclean',
+      recovery: r({ phase: 'stopping', runtime: 'unknown', canRecover: true })
+    }
+  })
+  act(() =>
+    root.render(
+      <>
+        <RuntimeUpdateDialog />
+        <DesktopRuntimeRecovery />
+      </>
+    )
+  )
+  expect(document.querySelectorAll('[role="dialog"], [role="alertdialog"]')).toHaveLength(1)
+  const retry = buttons('Retry')[0]
+  expect(retry.disabled).toBe(false)
+  retry.focus()
+  expect(document.activeElement).toBe(retry)
+  await act(async () => retry.click())
+  expect(recover).toHaveBeenCalledOnce()
+  expect(desktopRuntimeWritable()).toBe(false)
+  expect(() => assertDesktopRuntimeWrite()).toThrow('Desktop connection changed')
+})
+
 describe('runtime update operation boundaries', () => {
   it('allows cancellation while the apply request is unresolved', async () => {
     let finish!: () => void

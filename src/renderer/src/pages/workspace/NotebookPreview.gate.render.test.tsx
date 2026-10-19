@@ -1858,6 +1858,23 @@ describe('NotebookPreview per-kernel tabs', () => {
     expect(userBadge?.className).toContain('dark:text-blue-300')
   })
 
+  it('allows human input in saved Shell history without provisioning Python or a model', async () => {
+    await mountWithRuns([makeRun({ runId: 'shell-saved', kernelKind: 'bash', source: 'user' })])
+    await act(async () =>
+      useNotebookEnvStore.setState({
+        status: { pythonReady: false, rReady: false, version: 1, provisioning: false },
+        ui: { kind: 'ready' }
+      })
+    )
+    const input = container.querySelector<HTMLTextAreaElement>(
+      '[data-testid="notebook-shell-terminal"] textarea'
+    )
+    expect(input).not.toBeNull()
+    expect(input!.disabled).toBe(false)
+    expect(container.querySelector('[data-testid="notebook-env-gate"]')).toBeNull()
+    expect(window.api.notebookEnv.provision).not.toHaveBeenCalled()
+  })
+
   it('shows no kernel tabs before a kernel has produced a run', async () => {
     await mountWithRuns([])
 

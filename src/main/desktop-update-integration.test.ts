@@ -62,6 +62,7 @@ function setup(
   setClosing: ReturnType<typeof vi.fn>
   verifyArtifact: ReturnType<typeof vi.fn>
   onHandoff: ReturnType<typeof vi.fn>
+  onStopRequested: ReturnType<typeof vi.fn>
   hooks: ReturnType<typeof createDesktopUpdateIntegration>
   invoke: ReturnType<typeof vi.fn>
   stop: ReturnType<typeof vi.fn>
@@ -101,6 +102,7 @@ function setup(
   const setClosing = vi.fn()
   const verifyArtifact = vi.fn().mockResolvedValue({ version: '2', files: {} })
   const onHandoff = vi.fn()
+  const onStopRequested = vi.fn()
   const hooks = createDesktopUpdateIntegration({
     location: { installationRoot: '/tmp' },
     client: () => client,
@@ -117,6 +119,7 @@ function setup(
     reconnectOriginal: reconnect,
     onProgress: progress,
     onHandoff,
+    onStopRequested,
     onStopped: vi.fn()
   })
   return {
@@ -130,7 +133,8 @@ function setup(
     progress,
     setClosing,
     verifyArtifact,
-    onHandoff
+    onHandoff,
+    onStopRequested
   }
 }
 const status = { state: 'ready' as const, current: '1', latest: '2' }
@@ -188,7 +192,7 @@ describe('Desktop installation orchestration', () => {
     )
   })
   it('retains the stop lease and retries stopped-clean installation without a dead task gate', async () => {
-    const { hooks, invoke, stop, retainLease } = setup()
+    const { hooks, invoke, stop, retainLease, onStopRequested } = setup()
     await hooks.prepareInstall!(status, {})
     await hooks.installGate!({ force: true })
     expect(invoke).toHaveBeenCalledWith('desktop:update-gate', [{ force: true }])
@@ -197,6 +201,10 @@ describe('Desktop installation orchestration', () => {
     await hooks.installGate!({})
     expect(invoke).toHaveBeenCalledTimes(1)
     expect(stop).toHaveBeenCalledTimes(1)
+    expect(onStopRequested).toHaveBeenCalledOnce()
+    expect(onStopRequested.mock.invocationCallOrder[0]).toBeLessThan(
+      stop.mock.invocationCallOrder[0]
+    )
     await hooks.beforeInstallHandoff!(status)
     expect(state.record?.phase).toBe('handoff')
   })
@@ -410,7 +418,7 @@ describe('supervised install admission release', () => {
 describe('legacy install for uncertified channels', () => {
   const legacy = (): true => true
   it('stops and confirms the runtime without a supervised record or artifact verification', async () => {
-    const { hooks, invoke, stop, retainLease, verifyArtifact, onHandoff } = setup(
+    const { hooks, invoke, stop, retainLease, verifyArtifact, onHandoff, onStopRequested } = setup(
       'desktop',
       undefined,
       legacy
@@ -421,28 +429,60 @@ describe('legacy install for uncertified channels', () => {
     await hooks.beforeInstallHandoff!(status)
     expect(invoke).toHaveBeenCalledWith('desktop:update-gate', [{}])
     expect(stop).toHaveBeenCalledTimes(1)
+    expect(onStopRequested).toHaveBeenCalledOnce()
+    expect(onStopRequested.mock.invocationCallOrder[0]).toBeLessThan(
+      stop.mock.invocationCallOrder[0]
+    )
     expect(retainLease).toHaveBeenCalledTimes(1)
     expect(onHandoff).toHaveBeenCalledTimes(1)
     expect(verifyArtifact).not.toHaveBeenCalled()
     expect(state.begin).not.toHaveBeenCalled()
   })
 
-  it('aborts an unconfirmed stop and releases admission', async () => {
+  it('retains an unconfirmed stop for explicit proof and recovery', async () => {
     const { hooks, invoke, stop, setClosing } = setup('desktop', undefined, legacy)
     stop.mockRejectedValue(new RuntimeStopError('runtime-stop-timeout', {} as never))
     await hooks.prepareInstall!(status, {})
     await expect(hooks.installGate!({})).rejects.toMatchObject({ reason: 'runtime-stop-timeout' })
-    expect(invoke).toHaveBeenCalledWith('desktop:update-abort')
+    expect(invoke).not.toHaveBeenCalledWith('desktop:update-abort')
+    hooks.releaseInstallHandoff!()
+    expect(await hooks.prepareInstall!(status, {})).toMatchObject({
+      recovery: { runtime: 'unknown', canRecover: true }
+    })
+    expect(setClosing).toHaveBeenLastCalledWith(false)
+  })
+
+  it('preserves recovery after a real ownership/filesystem stop-proof error', async () => {
+    const { hooks, stop, restart, setClosing } = setup('desktop', undefined, legacy)
+    const failure = new Error('Unsafe runtime lock file: /tmp/config/.open-science-runtime.sqlite')
+    await hooks.prepareInstall!(status, {})
+    stop.mockRejectedValue(failure)
+    await expect(hooks.installGate!({})).rejects.toMatchObject({
+      reason: 'runtime-stop-unclean',
+      cause: failure,
+      recovery: { runtime: 'unknown', canRecover: true, canRetryInstall: false }
+    })
+    hooks.releaseInstallHandoff!()
+    await expect(hooks.recoverInstall!()).rejects.toBe(failure)
+    expect(restart).not.toHaveBeenCalled()
+    stop.mockResolvedValue({ release: vi.fn() })
+    await expect(hooks.recoverInstall!()).resolves.toMatchObject({ outcome: 'recovered' })
+    expect(restart).toHaveBeenCalledWith(config)
     expect(setClosing).toHaveBeenLastCalledWith(false)
   })
 
   it('releases admission when the task gate refuses', async () => {
-    const { hooks, invoke, setClosing, stop } = setup('desktop', undefined, legacy)
+    const { hooks, invoke, setClosing, stop, onStopRequested } = setup('desktop', undefined, legacy)
     invoke.mockResolvedValue({ completed: false, reaped: false, blockedBy: ['agent'] })
     await hooks.prepareInstall!(status, {})
-    expect(await hooks.installGate!({})).toMatchObject({ completed: false, blockedBy: ['agent'] })
+    expect(await hooks.installGate!({})).toMatchObject({
+      completed: false,
+      blockedBy: ['agent'],
+      recovery: { runtime: 'running', canRecover: false }
+    })
     expect(setClosing).toHaveBeenLastCalledWith(false)
     expect(stop).not.toHaveBeenCalled()
+    expect(onStopRequested).not.toHaveBeenCalled()
   })
 
   it('refuses a live occupant before touching the runtime', async () => {
@@ -454,13 +494,46 @@ describe('legacy install for uncertified channels', () => {
     expect(setClosing).not.toHaveBeenCalledWith(true)
   })
 
-  it('restarts the runtime and releases admission when the installer cannot start', async () => {
-    const { hooks, restart, setClosing } = setup('desktop', undefined, legacy)
+  it('waits for the user to recover after the installer cannot start', async () => {
+    const { hooks, restart, setClosing, progress } = setup('desktop', undefined, legacy)
     await hooks.prepareInstall!(status, {})
     await hooks.installGate!({})
     hooks.releaseInstallHandoff!()
-    await vi.waitFor(() => expect(restart).toHaveBeenCalledWith(config))
+    expect(restart).not.toHaveBeenCalled()
+    expect(progress).toHaveBeenLastCalledWith({
+      recovery: expect.objectContaining({
+        runtime: 'stopped-clean',
+        canRecover: true
+      })
+    })
+    expect(await hooks.recoverInstall!()).toMatchObject({ state: 'ready', outcome: 'recovered' })
+    expect(restart).toHaveBeenCalledWith(config)
     expect(setClosing).toHaveBeenLastCalledWith(false)
+  })
+
+  it('keeps the original configuration available if explicit service recovery fails', async () => {
+    const { hooks, restart } = setup('desktop', undefined, legacy)
+    await hooks.prepareInstall!(status, {})
+    await hooks.installGate!({})
+    hooks.releaseInstallHandoff!()
+    restart.mockRejectedValueOnce(new Error('readiness failed'))
+    await expect(hooks.recoverInstall!()).rejects.toThrow('readiness failed')
+    await hooks.recoverInstall!()
+    expect(restart).toHaveBeenCalledTimes(2)
+    expect(restart).toHaveBeenLastCalledWith(config)
+  })
+
+  it('never restarts after a stop timeout until clean exit evidence becomes available', async () => {
+    const { hooks, stop, restart } = setup('desktop', undefined, legacy)
+    await hooks.prepareInstall!(status, {})
+    stop.mockRejectedValue(new RuntimeStopError('runtime-stop-timeout', {} as never))
+    await expect(hooks.installGate!({})).rejects.toThrow()
+    hooks.releaseInstallHandoff!()
+    await expect(hooks.recoverInstall!()).rejects.toThrow()
+    expect(restart).not.toHaveBeenCalled()
+    stop.mockResolvedValue({ release: vi.fn() })
+    await hooks.recoverInstall!()
+    expect(restart).toHaveBeenCalledWith(config)
   })
 
   it('releases admission when the legacy handoff release cannot abort the gate', async () => {

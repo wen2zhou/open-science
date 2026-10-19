@@ -83,6 +83,11 @@ const notebookExecuteCommand = defineApplicationCommand<
   WorkflowArgs<'execute'>,
   WorkflowResult<'execute'>
 >('notebook:execute')
+const notebookExecuteShellCommand = defineApplicationCommand<
+  'notebook:execute-shell',
+  WorkflowArgs<'executeShell'>,
+  WorkflowResult<'executeShell'>
+>('notebook:execute-shell')
 const notebookGetBackgroundRunCommand = defineApplicationCommand<
   'notebook:background-run',
   WorkflowArgs<'getBackgroundRun'>,
@@ -131,6 +136,7 @@ const notebookApplicationCommands = defineApplicationCommandGroup('notebook', [
   notebookFinishCodeCellCommand,
   notebookRunCellCommand,
   notebookExecuteCommand,
+  notebookExecuteShellCommand,
   notebookGetBackgroundRunCommand,
   notebookCancelBackgroundRunCommand,
   notebookExportIpynbCommand,
@@ -164,6 +170,8 @@ const installNotebookApplicationCommands = (
         dependencies.workflows.finishCodeCell(invocation.args[0]),
       'notebook:run-cell': (invocation) => dependencies.workflows.runCell(invocation.args[0]),
       'notebook:execute': (invocation) => dependencies.workflows.execute(invocation.args[0]),
+      'notebook:execute-shell': (invocation) =>
+        dependencies.workflows.executeShell(invocation.args[0]),
       'notebook:background-run': (invocation) =>
         dependencies.workflows.getBackgroundRun(invocation.args[0]),
       'notebook:cancel-background-run': (invocation) =>
@@ -195,6 +203,7 @@ export {
   notebookBeginCodeCellCommand,
   notebookCancelBackgroundRunCommand,
   notebookExecuteCommand,
+  notebookExecuteShellCommand,
   notebookExportIpynbAllCommand,
   notebookExportIpynbCommand,
   notebookAbortCodeCellCommand,

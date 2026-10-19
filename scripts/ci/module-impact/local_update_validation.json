@@ -1,0 +1,51 @@
+{
+  "ownerPaths": [
+    "docs/local-update-validation.md",
+    "scripts/local-update-validation/build.mjs",
+    "scripts/local-update-validation/fixture.test.ts",
+    "scripts/local-update-validation/fixture.ts",
+    "scripts/local-update-validation/index.mjs",
+    "scripts/local-update-validation/keychain.mjs",
+    "scripts/local-update-validation/keychain.test.ts",
+    "scripts/local-update-validation/lifecycle.mjs",
+    "scripts/local-update-validation/production-package.mjs",
+    "scripts/local-update-validation/production-package.test.ts",
+    "scripts/local-update-validation/report.mjs",
+    "scripts/local-update-validation/runner.test.ts",
+    "scripts/local-update-validation/scope.test.ts",
+    "scripts/local-update-validation/server.mjs",
+    "scripts/local-update-validation/shutdown-fault.integration.test.ts",
+    "scripts/local-update-validation/shutdown-fault.mjs",
+    "scripts/local-update-validation/source.mjs",
+    "src/main/local-update-validation/adapter.test.ts",
+    "src/main/local-update-validation/adapter.ts",
+    "src/main/local-update-validation/build-boundary.test.ts",
+    "src/main/local-update-validation/config.test.ts",
+    "src/main/local-update-validation/config.ts",
+    "src/main/local-update-validation/credentials.test.ts",
+    "src/main/local-update-validation/credentials.ts"
+  ],
+  "interfacePaths": [
+    "src/main/local-update-validation/adapter.ts",
+    "scripts/local-update-validation/index.mjs"
+  ],
+  "consumerModules": [],
+  "testFiles": {
+    "owner": [
+      "scripts/local-update-validation/fixture.test.ts",
+      "scripts/local-update-validation/keychain.test.ts",
+      "scripts/local-update-validation/production-package.test.ts",
+      "scripts/local-update-validation/runner.test.ts",
+      "scripts/local-update-validation/scope.test.ts",
+      "scripts/local-update-validation/shutdown-fault.integration.test.ts",
+      "src/main/local-update-validation/adapter.test.ts",
+      "src/main/local-update-validation/build-boundary.test.ts",
+      "src/main/local-update-validation/config.test.ts",
+      "src/main/local-update-validation/credentials.test.ts"
+    ],
+    "contract": ["src/main/desktop-update-integration.test.ts"],
+    "consumer": []
+  },
+  "capabilityOverlays": [],
+  "fallbackCapability": "main_runtime"
+}

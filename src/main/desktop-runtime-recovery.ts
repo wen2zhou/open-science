@@ -20,6 +20,7 @@ export function createDesktopRuntimeRecovery(options: {
 }): {
   state(): DesktopRuntimeRecoveryState
   disconnect(client: DesktopRuntimeClient): void
+  ownUpdateStop(client: DesktopRuntimeClient): void
   reconnect(): Promise<DesktopRuntimeRecoveryState>
   setClosing(closing: boolean): void
 } {
@@ -27,6 +28,7 @@ export function createDesktopRuntimeRecovery(options: {
   const generation = options.client.runtimeInfo().generation
   let current = options.client
   let pendingCandidate: DesktopRuntimeClient | undefined
+  let updateStopOwner: DesktopRuntimeClient | undefined
   let state: DesktopRuntimeRecoveryState = { phase: 'connected', epoch: 0, closing: false }
   let attempt: Promise<DesktopRuntimeRecoveryState> | undefined
   let cancellation: AbortController | undefined
@@ -37,13 +39,17 @@ export function createDesktopRuntimeRecovery(options: {
   const childAlive = (): boolean => isRuntimeProcessAlive(processId)
   return {
     state: () => state,
+    ownUpdateStop: (client) => {
+      if (client === current && state.phase === 'connected') updateStopOwner = client
+    },
     disconnect: (client) => {
       if (client !== current && client !== pendingCandidate) return
       cancellation?.abort()
       publish({
         ...state,
         phase: childAlive() ? 'disconnected' : 'unavailable',
-        epoch: state.epoch + 1
+        epoch: state.epoch + 1,
+        recoveryOwner: client === updateStopOwner ? 'update' : undefined
       })
     },
     setClosing: (closing) => {
@@ -98,7 +104,8 @@ export function createDesktopRuntimeRecovery(options: {
           if (controller.signal.aborted) throw new Error('Desktop reconnect canceled.')
           current = candidate
           candidate = undefined
-          publish({ ...state, phase: 'connected' })
+          updateStopOwner = undefined
+          publish({ ...state, phase: 'connected', recoveryOwner: undefined })
         } catch (error) {
           if (candidate) options.discard?.(candidate)
           candidate?.close()

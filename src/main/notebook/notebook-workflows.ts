@@ -3,6 +3,8 @@ import type {
   AppendNotebookCodeCellRequest,
   BeginNotebookCodeCellRequest,
   ExecuteNotebookCodeRequest,
+  ExecuteNotebookShellCommandRequest,
+  ExecuteShellRequest,
   ExportNotebookAllRequest,
   ExportNotebookAllResult,
   ExportNotebookKernelRequest,
@@ -24,6 +26,7 @@ import type {
   NotebookSessionState,
   RunNotebookCellRequest
 } from '../../shared/notebook'
+import type { NotebookShellResult } from './shell-process-contract'
 import { withDataRootWrite } from '../storage/migration-state'
 
 type BeginNotebookCodeCellResult = {
@@ -61,6 +64,7 @@ type NotebookCommandRuntime = {
   finishCodeCell(request: FinishNotebookCodeCellRequest): Promise<FinishNotebookCodeCellResult>
   runCell(request: RunNotebookCellRequest): Promise<NotebookRunSummary>
   execute(request: ExecuteNotebookCodeRequest): Promise<NotebookRunSummary>
+  executeShell(request: ExecuteShellRequest): Promise<NotebookShellResult>
   exportIpynb(request: ExportNotebookKernelRequest): Promise<ExportNotebookResult>
   exportIpynbAll(request: ExportNotebookAllRequest): Promise<ExportNotebookAllResult>
   restart(request: NotebookRestartRequest): Promise<NotebookSessionState>
@@ -85,6 +89,7 @@ type NotebookCommandWorkflows = {
   finishCodeCell(request: FinishNotebookCodeCellRequest): Promise<FinishNotebookCodeCellResult>
   runCell(request: RunNotebookCellRequest): Promise<NotebookRunSummary>
   execute(request: ExecuteNotebookCodeRequest): Promise<NotebookRunSummary>
+  executeShell(request: ExecuteNotebookShellCommandRequest): Promise<void>
   exportIpynb(request: ExportNotebookKernelRequest): Promise<ExportNotebookResult>
   exportIpynbAll(request: ExportNotebookAllRequest): Promise<ExportNotebookAllResult>
   restart(request: NotebookRestartRequest): Promise<NotebookSessionState>
@@ -139,6 +144,18 @@ const createNotebookCommandWorkflows = (
     withDataRootWrite(() => runtime.runCell(withoutTrustedTurnContext(request))),
   execute: (request) =>
     withDataRootWrite(() => runtime.execute(withoutTrustedTurnContext(request))),
+  executeShell: (request) =>
+    withDataRootWrite(async () => {
+      await runtime.executeShell({
+        projectId: request.projectId,
+        sessionId: request.sessionId,
+        workspaceCwd: request.workspaceCwd,
+        command: request.command,
+        timeoutMs: request.timeoutMs,
+        source: 'user',
+        inputKind: 'terminal'
+      })
+    }),
   exportIpynb: (request) => runtime.exportIpynb(request),
   exportIpynbAll: (request) => runtime.exportIpynbAll(request),
   restart: (request) => withDataRootWrite(() => runtime.restart(request)),

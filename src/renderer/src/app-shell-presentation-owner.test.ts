@@ -34,6 +34,24 @@ const input = (
 })
 
 describe('App Shell presentation owner', () => {
+  it('gives update-owned stop recovery its requested presentation without changing other priorities', () => {
+    const presentations = { webEventRecovery: true, update: true }
+    expect(resolveAppShellPresentation(input(presentations)).active).toBe('webEventRecovery')
+    expect(
+      resolveAppShellPresentation(input(presentations, { runtimeRecoveryOwner: 'update' })).active
+    ).toBe('update')
+    expect(
+      resolveAppShellPresentation(
+        input({ ...presentations, closeConfirmation: true }, { runtimeRecoveryOwner: 'update' })
+      ).active
+    ).toBe('closeConfirmation')
+    expect(
+      resolveAppShellPresentation(
+        input({ webEventRecovery: true }, { runtimeRecoveryOwner: 'update' })
+      ).active
+    ).toBe('webEventRecovery')
+  })
+
   it('selects one presentation from the fixed semantic priority', () => {
     const priority: Array<keyof AppShellPresentationState> = [
       'closeConfirmation',

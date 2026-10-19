@@ -1,15 +1,86 @@
 import { afterEach, expect, it, vi } from 'vitest'
 import { randomUUID } from 'node:crypto'
-import { mkdtemp, rm } from 'node:fs/promises'
+import { link, mkdtemp, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { listenForDesktop } from './desktop-connection'
 import { connectDesktopRuntime } from './desktop-runtime-client'
 import { WEB_EVENT_STREAM_PROTOCOL_VERSION } from '../shared/web-rpc-contract'
+import { createDesktopRuntimeRecovery } from './desktop-runtime-recovery'
+import { isRuntimeProcessAlive } from './runtime-stop-confirmation'
+import { RUNTIME_LOCK_FILE } from './runtime-ownership'
 const cleanup: Array<() => unknown> = []
 afterEach(async () => {
   for (const close of cleanup.splice(0).reverse()) await close()
 })
+it('keeps update recovery reachable when the actual stop client rejects unsafe lock proof', async () => {
+  const configRoot = await mkdtemp(join(tmpdir(), 'desktop-update-stop-proof-'))
+  cleanup.push(() => rm(configRoot, { recursive: true, force: true }))
+  const unsafeLock = join(configRoot, RUNTIME_LOCK_FILE)
+  await writeFile(unsafeLock, '')
+  await link(unsafeLock, join(configRoot, 'lock-hardlink'))
+  const stoppedPid = 2_147_483_647
+  expect(isRuntimeProcessAlive(stoppedPid)).toBe(false)
+  const host = await listenForDesktop('test', (socket) => {
+    socket.on('message', (bytes) => {
+      const request = JSON.parse(bytes.toString())
+      if (request.kind === 'bootstrap')
+        socket.send(
+          JSON.stringify({
+            kind: 'bootstrap',
+            pid: stoppedPid,
+            generation: host.endpoint.generation,
+            launch: 'desktop',
+            control: 'granted',
+            entryPath: process.execPath,
+            startupOptions: {
+              configRoot,
+              dataRoot: configRoot,
+              profilePath: configRoot,
+              port: 0,
+              host: '127.0.0.1',
+              credentialStore: 'os'
+            },
+            rpcProtocolVersion: 1,
+            rpcChannels: [],
+            eventStream: {
+              protocolVersion: WEB_EVENT_STREAM_PROTOCOL_VERSION,
+              streamId: randomUUID(),
+              latestSequence: 0
+            }
+          })
+        )
+      if (request.kind === 'shutdown') socket.close()
+    })
+  })
+  cleanup.push(host.close)
+  const disconnected = vi.fn(() => recovery.disconnect(client))
+  const client = await connectDesktopRuntime({
+    endpoint: host.endpoint,
+    onEvent: vi.fn(),
+    onDisconnect: disconnected
+  })
+  cleanup.push(client.close)
+  const recovery = createDesktopRuntimeRecovery({
+    client,
+    connect: vi.fn(),
+    activate: vi.fn(),
+    onState: vi.fn()
+  })
+  recovery.ownUpdateStop(client)
+  recovery.setClosing(true)
+  await expect(client.stopRuntime()).rejects.toThrow('Unsafe runtime lock file:')
+  recovery.setClosing(false)
+  expect(disconnected).toHaveBeenCalledOnce()
+  expect(recovery.state()).toMatchObject({
+    phase: 'unavailable',
+    closing: false,
+    recoveryOwner: 'update'
+  })
+  // Rechecking still rejects the unsafe inode. Ownership never constitutes clean-stop proof.
+  await expect(client.waitForStopped()).rejects.toThrow('Unsafe runtime lock file:')
+})
+
 it.each(['unanswered', 'closed'] as const)(
   'bounds the entire stop when shutdown is %s and reports disconnection once',
   async (mode) => {

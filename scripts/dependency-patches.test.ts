@@ -123,3 +123,42 @@ describe('dependency patch installation', () => {
     }
   })
 })
+
+describe('updater download cancellation patch installation', () => {
+  it.each(['pristine', 'already patched'] as const)(
+    'applies to %s builder-util-runtime',
+    (state) => {
+      const name = 'builder-util-runtime+9.7.0.patch'
+      const installedSource = readFileSync(
+        'node_modules/builder-util-runtime/out/httpExecutor.js',
+        'utf8'
+      )
+      const registration = '        options.onCancel(() => request.abort());\n'
+      const originalSource = installedSource.replace(registration, '')
+      fixture = mkdtempSync(join(tmpdir(), 'updater-cancellation-patch-'))
+      const packageDir = join(fixture, 'node_modules', 'builder-util-runtime')
+      const entry = join(packageDir, 'out', 'httpExecutor.js')
+      mkdirSync(join(packageDir, 'out'), { recursive: true })
+      mkdirSync(join(fixture, 'patches'))
+      writeFileSync(join(fixture, 'package.json'), '{}')
+      writeFileSync(
+        join(packageDir, 'package.json'),
+        JSON.stringify({ name: 'builder-util-runtime', version: '9.7.0' })
+      )
+      writeFileSync(entry, state === 'pristine' ? originalSource : installedSource)
+      copyFileSync(join('patches', name), join(fixture, 'patches', name))
+      const result = spawnSync(process.execPath, [patchCli, '--error-on-fail'], {
+        cwd: fixture,
+        env: { ...process.env, CI: '' },
+        encoding: 'utf8'
+      })
+      expect(result.status, result.stdout + result.stderr).toBe(0)
+      expect(readFileSync(entry, 'utf8')).toBe(
+        originalSource.replace(
+          '        request.end();\n    }\n    createMaxRedirectError()',
+          registration + '        request.end();\n    }\n    createMaxRedirectError()'
+        )
+      )
+    }
+  )
+})

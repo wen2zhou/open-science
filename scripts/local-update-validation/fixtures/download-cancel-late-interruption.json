@@ -1,0 +1,195 @@
+{
+  "source": "Reduced real UI trace: Cancel returns available, retry succeeds, first transfer closes only when A quits. Paths and digest anonymized; event times unchanged.",
+  "scenario": "download-cancel",
+  "app": [
+    {
+      "type": "application-started",
+      "at": "2026-10-16T09:23:21.198Z",
+      "pid": 60671,
+      "version": "0.0.1"
+    },
+    {
+      "type": "update-status",
+      "at": "2026-10-16T09:23:22.291Z",
+      "status": {
+        "state": "available",
+        "totalBytes": 327999845
+      }
+    },
+    {
+      "type": "update-status",
+      "at": "2026-10-16T09:23:22.296Z",
+      "status": {
+        "state": "available",
+        "totalBytes": 327999845
+      }
+    },
+    {
+      "type": "update-status",
+      "at": "2026-10-16T09:23:59.738Z",
+      "status": {
+        "state": "downloading",
+        "totalBytes": 327999845,
+        "progress": 0,
+        "downloadedBytes": 0
+      }
+    },
+    {
+      "type": "update-progress",
+      "at": "2026-10-16T09:24:00.863Z",
+      "progress": {
+        "phase": "downloading",
+        "percent": 0,
+        "transferred": 1441792,
+        "total": 327999845,
+        "bytesPerSecond": 1420485,
+        "attempt": 0
+      }
+    },
+    {
+      "type": "update-status",
+      "at": "2026-10-16T09:24:00.863Z",
+      "status": {
+        "state": "downloading",
+        "totalBytes": 327999845,
+        "progress": 0,
+        "downloadedBytes": 1441792
+      }
+    },
+    {
+      "type": "update-status",
+      "at": "2026-10-16T09:24:09.267Z",
+      "status": {
+        "state": "available",
+        "totalBytes": 327999845
+      }
+    },
+    {
+      "type": "update-status",
+      "at": "2026-10-16T09:24:18.556Z",
+      "status": {
+        "state": "downloading",
+        "totalBytes": 327999845,
+        "progress": 0,
+        "downloadedBytes": 0
+      }
+    },
+    {
+      "type": "update-progress",
+      "at": "2026-10-16T09:24:19.009Z",
+      "progress": {
+        "phase": "downloading",
+        "percent": 100,
+        "transferred": 327999845,
+        "total": 327999845,
+        "bytesPerSecond": 730511904,
+        "attempt": 0
+      }
+    },
+    {
+      "type": "update-status",
+      "at": "2026-10-16T09:24:19.009Z",
+      "status": {
+        "state": "downloading",
+        "totalBytes": 327999845,
+        "progress": 100,
+        "downloadedBytes": 327999845
+      }
+    },
+    {
+      "type": "download-verified",
+      "at": "2026-10-16T09:24:19.012Z",
+      "artifactSha512": "fixture-B-sha512",
+      "networkTransferred": true,
+      "checksumAlgorithm": "sha512"
+    },
+    {
+      "type": "update-status",
+      "at": "2026-10-16T09:24:19.012Z",
+      "status": {
+        "state": "ready",
+        "totalBytes": 327999845,
+        "progress": 100,
+        "downloadedBytes": 327999845
+      }
+    },
+    {
+      "type": "application-quit",
+      "at": "2026-10-16T09:24:32.237Z",
+      "pid": 60671
+    }
+  ],
+  "server": [
+    {
+      "at": "2026-10-16T09:23:17.390Z",
+      "type": "source-ready",
+      "origin": "http://127.0.0.1:59002"
+    },
+    {
+      "at": "2026-10-16T09:23:59.743Z",
+      "type": "request",
+      "method": "GET",
+      "path": "/B.zip"
+    },
+    {
+      "at": "2026-10-16T09:23:59.744Z",
+      "type": "fault-triggered",
+      "fault": "download-cancel",
+      "mechanism": "first-transfer-throttle"
+    },
+    {
+      "at": "2026-10-16T09:24:18.559Z",
+      "type": "request",
+      "method": "GET",
+      "path": "/B.zip"
+    },
+    {
+      "at": "2026-10-16T09:24:19.000Z",
+      "type": "response-completed",
+      "path": "/B.zip",
+      "start": 0,
+      "end": 327999844,
+      "throttled": false
+    },
+    {
+      "at": "2026-10-16T09:24:32.278Z",
+      "type": "response-interrupted",
+      "path": "/B.zip",
+      "error": "Premature close",
+      "throttled": true
+    },
+    {
+      "at": "2026-10-16T09:24:44.845Z",
+      "type": "source-closed",
+      "origin": "http://127.0.0.1:59002"
+    }
+  ],
+  "observations": [
+    {
+      "at": "2026-10-16T09:23:17.401Z",
+      "type": "source-health-before-launch",
+      "origin": "http://127.0.0.1:59002",
+      "ready": true
+    },
+    {
+      "at": "2026-10-16T09:23:17.403Z",
+      "type": "initial-application-launched",
+      "pid": 60671,
+      "version": "0.0.1"
+    },
+    {
+      "at": "2026-10-16T09:24:32.486Z",
+      "type": "source-health-after-application-quit",
+      "origin": "http://127.0.0.1:59002",
+      "ready": true,
+      "pid": 60671
+    },
+    {
+      "at": "2026-10-16T09:24:44.846Z",
+      "type": "source-port-released",
+      "origin": "http://127.0.0.1:59002",
+      "port": 59002
+    }
+  ],
+  "zipSha512": "fixture-B-sha512"
+}

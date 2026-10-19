@@ -129,6 +129,7 @@ export const WEB_INVOKE_CHANNELS = {
   'notebook.beginCodeCell': 'notebook:begin-code-cell',
   'notebook.cancelBackgroundRun': 'notebook:cancel-background-run',
   'notebook.execute': 'notebook:execute',
+  'notebook.executeShell': 'notebook:execute-shell',
   'notebook.exportIpynb': 'notebook:export-ipynb',
   'notebook.exportIpynbAll': 'notebook:export-ipynb-all',
   'notebook.finishCodeCell': 'notebook:finish-code-cell',

@@ -23,6 +23,48 @@ afterEach(() => {
   vi.mocked(isRuntimeProcessAlive).mockReturnValue(true)
 })
 describe('same-backend desktop recovery', () => {
+  it('does not let a later update claim an attachment that already disconnected unexpectedly', () => {
+    const old = client()
+    const recovery = createDesktopRuntimeRecovery({
+      client: old,
+      connect: vi.fn(),
+      activate: vi.fn(),
+      onState: vi.fn()
+    })
+    recovery.disconnect(old)
+    recovery.ownUpdateStop(old)
+    recovery.disconnect(old)
+    expect(recovery.state()).toMatchObject({ phase: 'disconnected', recoveryOwner: undefined })
+  })
+
+  it('keeps update-owned stop failure truthful and scopes presentation ownership to the old attachment', async () => {
+    const old = client()
+    const next = client()
+    const recovery = createDesktopRuntimeRecovery({
+      client: old,
+      connect: async () => next,
+      activate: async () => undefined,
+      onState: vi.fn()
+    })
+    recovery.ownUpdateStop(old)
+    vi.mocked(isRuntimeProcessAlive).mockReturnValue(false)
+    recovery.disconnect(old)
+    recovery.setClosing(false)
+    expect(recovery.state()).toMatchObject({
+      phase: 'unavailable',
+      recoveryOwner: 'update',
+      closing: false
+    })
+    vi.mocked(isRuntimeProcessAlive).mockReturnValue(true)
+    recovery.disconnect(old)
+    await recovery.reconnect()
+    expect(recovery.state()).toMatchObject({ phase: 'connected', recoveryOwner: undefined })
+    // A late stop notification cannot claim the newly attached client.
+    recovery.ownUpdateStop(old)
+    recovery.disconnect(next)
+    expect(recovery.state()).toMatchObject({ phase: 'disconnected', recoveryOwner: undefined })
+  })
+
   it('deduplicates concurrent attempts, waits for reconciliation, ignores old disconnects', async () => {
     const old = client()
     const next = client()

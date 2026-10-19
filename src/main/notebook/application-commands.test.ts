@@ -13,6 +13,7 @@ import {
   notebookBeginCodeCellCommand,
   notebookCancelBackgroundRunCommand,
   notebookExecuteCommand,
+  notebookExecuteShellCommand,
   notebookExportIpynbAllCommand,
   notebookExportIpynbCommand,
   notebookAbortCodeCellCommand,
@@ -77,7 +78,7 @@ const invocation = <Args extends readonly unknown[]>(
 })
 
 describe('Notebook application commands', () => {
-  it('owns exactly the 22 renderer-callable Notebook and Environment commands', () => {
+  it('owns exactly the 23 renderer-callable Notebook and Environment commands', () => {
     expect([
       ...notebookApplicationCommands.commands,
       ...notebookEnvironmentApplicationCommands.commands
@@ -93,6 +94,7 @@ describe('Notebook application commands', () => {
       expect.objectContaining({ name: 'notebook:finish-code-cell' }),
       expect.objectContaining({ name: 'notebook:run-cell' }),
       expect.objectContaining({ name: 'notebook:execute' }),
+      expect.objectContaining({ name: 'notebook:execute-shell' }),
       expect.objectContaining({ name: 'notebook:background-run' }),
       expect.objectContaining({ name: 'notebook:cancel-background-run' }),
       expect.objectContaining({ name: 'notebook:export-ipynb' }),
@@ -119,6 +121,7 @@ describe('Notebook application commands', () => {
       'finishCodeCell',
       'runCell',
       'execute',
+      'executeShell',
       'getBackgroundRun',
       'cancelBackgroundRun',
       'exportIpynb',
@@ -168,6 +171,7 @@ describe('Notebook application commands', () => {
       ],
       [notebookRunCellCommand, [{ ...session, cellId: 'cell-1' }], 'runCell'],
       [notebookExecuteCommand, [{ ...session, code: 'print(1)' }], 'execute'],
+      [notebookExecuteShellCommand, [{ ...session, command: 'pwd' }], 'executeShell'],
       [notebookGetBackgroundRunCommand, [{ ...session, runId: 'run-1' }], 'getBackgroundRun'],
       [notebookCancelBackgroundRunCommand, [{ ...session, runId: 'run-1' }], 'cancelBackgroundRun'],
       [notebookExportIpynbCommand, [{ ...session, kernel: 'python' }], 'exportIpynb'],
