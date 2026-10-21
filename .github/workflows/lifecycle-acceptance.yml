@@ -58,6 +58,8 @@ jobs:
       - name: Build source application
         id: build
         run: npm run build:e2e 2>&1 | tee acceptance-results/build.log
+      - name: Bind built artifacts to product revision
+        run: node scripts/acceptance/hash-artifacts.mjs
       - name: Real source lifecycle
         id: source
         continue-on-error: true
