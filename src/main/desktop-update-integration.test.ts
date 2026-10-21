@@ -11,6 +11,7 @@ const state = vi.hoisted(() => ({
   finish: vi.fn(),
   check: vi.fn(),
   availability: vi.fn(),
+  exitOutcome: vi.fn(async () => 'clean'),
   alive: vi.fn(() => false)
 }))
 vi.mock('./update/installation-reboot-recovery', () => ({
@@ -34,7 +35,8 @@ vi.mock('./update/installation-protection', () => ({
 }))
 vi.mock('./runtime-stop-confirmation', async (original) => ({
   ...(await original<typeof import('./runtime-stop-confirmation')>()),
-  isRuntimeProcessAlive: state.alive
+  isRuntimeProcessAlive: state.alive,
+  readRuntimeExitOutcome: state.exitOutcome
 }))
 import { createDesktopUpdateIntegration } from './desktop-update-integration'
 const config = {
@@ -142,8 +144,8 @@ beforeEach(() => {
   state.availability.mockResolvedValue(undefined)
   state.begin.mockImplementation(async () => (state.record = { ...base }))
   state.advance.mockImplementation(
-    (_location, _id, phase, stoppedClean) =>
-      (state.record = { ...state.record!, phase, stoppedClean })
+    (_location, _id, phase, stoppedClean, runtimeExited) =>
+      (state.record = { ...state.record!, phase, stoppedClean, runtimeExited })
   )
   state.check.mockResolvedValue('unchanged')
   state.finish.mockReturnValue(config)
@@ -342,7 +344,7 @@ describe('Desktop installation orchestration', () => {
     const { hooks, stop, restart, progress } = setup()
     const evidence = { processExited: true, lockHeld: false, exitRecord: 'failed' as const }
     stop.mockRejectedValueOnce(new RuntimeStopError('runtime-stop-unclean', evidence))
-    await expect(hooks.recoverInstall!()).rejects.toThrow('remaining processes')
+    await expect(hooks.recoverInstall!()).rejects.toThrow('directory ownership')
     expect(progress).toHaveBeenCalledWith({
       diagnostics: expect.stringContaining('"exitRecord": "failed"')
     })
@@ -358,6 +360,18 @@ describe('Desktop installation orchestration', () => {
     })
     expect(stop).toHaveBeenCalledOnce()
     expect(state.record?.stoppedClean).toBe(true)
+  })
+  it('accepts proven exit and directory release without inventing a clean receipt', async () => {
+    state.record = { ...base, phase: 'stopping' }
+    state.exitOutcome.mockResolvedValueOnce('failed')
+    const { hooks, stop } = setup()
+    expect(await hooks.recheckInstall!()).toMatchObject({
+      reason: undefined,
+      recovery: { phase: 'stopped' }
+    })
+    expect(stop).toHaveBeenCalledWith(undefined, false)
+    expect(state.record?.stoppedClean).toBe(false)
+    expect(state.record?.runtimeExited).toBe(true)
   })
   it('recovers a verified rollback through the core terminal-proof check', async () => {
     state.record = { ...base, phase: 'handoff', stoppedClean: true }
@@ -506,7 +520,7 @@ it.each([true, false])('saves before stopping the runtime (legacy=%s)', async (l
     expect(h.progress).toHaveBeenLastCalledWith({
       recovery: expect.objectContaining({
         phase: 'handoff',
-        runtime: 'stopped-clean',
+        runtime: 'stopped-unclean',
         canCancel: false
       })
     })
