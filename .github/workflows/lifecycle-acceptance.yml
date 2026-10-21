@@ -1,0 +1,147 @@
+name: Local Service Acceptance
+on:
+  push:
+    branches: [codex/lifecycle-acceptance-20261021]
+  workflow_dispatch:
+permissions:
+  contents: read
+concurrency:
+  group: lifecycle-acceptance-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  native:
+    name: Lifecycle ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [ubuntu-24.04, windows-latest, macos-26]
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 60
+    env:
+      OPEN_SCIENCE_E2E_BASELINE: cb41dc2034cca484c4487167b07a3caf63783c4d
+      OPEN_SCIENCE_E2E_BUILD_ID: 98930b5e359dd597d295f0e80c9b5ed559eefe30
+      CSC_IDENTITY_AUTO_DISCOVERY: 'false'
+      ONNXRUNTIME_NODE_INSTALL: skip
+    defaults:
+      run:
+        shell: bash
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          fetch-depth: 0
+          persist-credentials: false
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1
+        with:
+          node-version: 24
+          cache: npm
+      - name: Verify product revision and record environment
+        run: |
+          mkdir -p acceptance-results
+          git diff --name-only "$OPEN_SCIENCE_E2E_BUILD_ID" HEAD > acceptance-results/validation-overlay.txt
+          node -e 'const fs=require("fs");const p=fs.readFileSync("acceptance-results/validation-overlay.txt","utf8").trim().split("\n").filter(Boolean);if(p.some(x=>!x.startsWith("scripts/acceptance/")&&!x.startsWith("e2e/acceptance/")&&x!==".github/workflows/lifecycle-acceptance.yml"))throw Error("Unexpected product modification");fs.writeFileSync("acceptance-results/identity.json",JSON.stringify({product:process.env.OPEN_SCIENCE_E2E_BUILD_ID,validation:process.env.GITHUB_SHA,platform:process.platform,arch:process.arch,node:process.version},null,2))'
+      - name: Install dependencies
+        run: node scripts/ci/npm-ci.mjs --no-fund
+      - name: Linux desktop and Secret Service
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y --no-install-recommends libsecret-1-0 libdbus-1-3 libatomic1 libgomp1 gnome-keyring dbus-x11 xvfb bubblewrap apparmor-utils apparmor-profiles
+          npx playwright install-deps chromium
+          if [ "$(sysctl -n kernel.apparmor_restrict_unprivileged_userns 2>/dev/null || true)" = 1 ]; then
+            sudo install -m 0644 /usr/share/apparmor/extra-profiles/bwrap-userns-restrict /etc/apparmor.d/bwrap-userns-restrict
+            sudo apparmor_parser -r /etc/apparmor.d/bwrap-userns-restrict
+          fi
+      - name: Lifecycle unit and native integration
+        id: units
+        continue-on-error: true
+        run: node scripts/acceptance/run-tests.mjs 2>&1 | tee acceptance-results/unit.log
+      - name: Build source application
+        id: build
+        run: npm run build:e2e 2>&1 | tee acceptance-results/build.log
+      - name: Real source lifecycle
+        id: source
+        continue-on-error: true
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: acceptance-results/source-e2e.json
+        run: |
+          args=(node node_modules/@playwright/test/cli.js test e2e/local-service-lifecycle.spec.ts e2e/desktop-runtime-native-relaunch.spec.ts e2e/runtime-update-ui-acceptance.spec.ts --workers=1 --retries=0 --output=test-results/source-electron)
+          if [ "$RUNNER_OS" = Linux ]; then
+            dbus-run-session -- bash -euo pipefail -c 'printf "lifecycle-ci-vault\n" | gnome-keyring-daemon --unlock --components=secrets; export XDG_CURRENT_DESKTOP=GNOME; xvfb-run -a "$@"' bash "${args[@]}" 2>&1 | tee acceptance-results/source-e2e.log
+          else
+            "${args[@]}" 2>&1 | tee acceptance-results/source-e2e.log
+          fi
+      - name: Preserve source lifecycle evidence before packaged execution
+        if: always()
+        run: node -e 'const fs=require("fs");const p=".scratch/local-service-lifecycle-implementation/e2e";if(fs.existsSync(p))fs.cpSync(p,"acceptance-results/source-lifecycle",{recursive:true});'
+      - name: Canonical native package
+        id: package
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
+        continue-on-error: true
+        run: node scripts/acceptance/stage-packaging.mjs 2>&1 | tee acceptance-results/package.log
+      - name: Packaged macOS lifecycle with isolated Keychain
+        id: packaged_mac
+        if: ${{ !cancelled() && runner.os == 'macOS' && steps.package.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: acceptance-results/packaged-e2e.json
+        run: |
+          export OPEN_SCIENCE_E2E_EXECUTABLE="$PWD/acceptance-package/mac-arm64/Open-Science.app/Contents/MacOS/Open-Science"
+          bash scripts/ci/run-macos-packaged-e2e.sh node node_modules/@playwright/test/cli.js test e2e/local-service-lifecycle.spec.ts --workers=1 --retries=0 --output=test-results/packaged-electron 2>&1 | tee acceptance-results/packaged-e2e.log
+      - name: Packaged Windows lifecycle
+        id: packaged_win
+        if: ${{ !cancelled() && runner.os == 'Windows' && steps.package.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: acceptance-results/packaged-e2e.json
+        run: |
+          export OPEN_SCIENCE_E2E_EXECUTABLE="$(cygpath -w "$PWD/acceptance-package/win-unpacked/open-science.exe")"
+          node node_modules/@playwright/test/cli.js test e2e/local-service-lifecycle.spec.ts --workers=1 --retries=0 --output=test-results/packaged-electron 2>&1 | tee acceptance-results/packaged-e2e.log
+      - name: Packaged Linux lifecycle
+        id: packaged_linux
+        if: ${{ !cancelled() && runner.os == 'Linux' && steps.package.outcome == 'success' }}
+        continue-on-error: true
+        env:
+          PLAYWRIGHT_JSON_OUTPUT_NAME: acceptance-results/packaged-e2e.json
+        run: |
+          export OPEN_SCIENCE_E2E_EXECUTABLE="$PWD/acceptance-package/linux-unpacked/open-science"
+          dbus-run-session -- bash -euo pipefail -c 'printf "lifecycle-ci-vault\n" | gnome-keyring-daemon --unlock --components=secrets; export XDG_CURRENT_DESKTOP=GNOME; xvfb-run -a node node_modules/@playwright/test/cli.js test e2e/local-service-lifecycle.spec.ts --workers=1 --retries=0 --output=test-results/packaged-electron' 2>&1 | tee acceptance-results/packaged-e2e.log
+      - name: Preserve test evidence
+        if: always()
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: lifecycle-${{ matrix.os }}-${{ github.run_attempt }}
+          include-hidden-files: true
+          retention-days: 3
+          path: |
+            acceptance-results/
+            test-results/
+            .scratch/local-service-lifecycle-implementation/e2e/
+      - name: Preserve immutable installer
+        if: ${{ !cancelled() && steps.package.outcome == 'success' }}
+        uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9
+        with:
+          name: lifecycle-package-${{ matrix.os }}
+          compression-level: 0
+          retention-days: 3
+          path: |
+            acceptance-package/*.zip
+            acceptance-package/*.exe
+            acceptance-package/*.AppImage
+      - name: Require selected checks
+        if: always()
+        env:
+          UNITS: ${{ steps.units.outcome }}
+          SOURCE: ${{ steps.source.outcome }}
+          PACKAGE: ${{ steps.package.outcome }}
+          PACKAGED_MAC: ${{ steps.packaged_mac.outcome }}
+          PACKAGED_WIN: ${{ steps.packaged_win.outcome }}
+          PACKAGED_LINUX: ${{ steps.packaged_linux.outcome }}
+        run: |
+          test "$UNITS" = success
+          test "$SOURCE" = success
+          test "$PACKAGE" = success
+          case "$RUNNER_OS" in
+            macOS) test "$PACKAGED_MAC" = success ;;
+            Windows) test "$PACKAGED_WIN" = success ;;
+            Linux) test "$PACKAGED_LINUX" = success ;;
+          esac
